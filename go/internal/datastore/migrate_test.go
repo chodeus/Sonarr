@@ -1,0 +1,410 @@
+package datastore
+
+import (
+	"context"
+	"database/sql"
+	"sort"
+	"testing"
+)
+
+// expectedTablesAfterMigration1 lists every table the C# Migration/001 creates
+// in the *main* DB, in name-sorted order. The Go port's goose migration must
+// produce the same table set; subsequent migration PRs grow this list.
+//
+// The set is unchanged at versions 2-5 (003 and 004 drop-and-recreate
+// SceneMappings and History but the table names persist).
+var expectedTablesAfterMigration1 = []string{
+	"Config",
+	"EpisodeFiles",
+	"Episodes",
+	"History",
+	"Indexers",
+	"NamingConfig",
+	"Notifications",
+	"QualityProfiles",
+	"QualitySizes",
+	"RootFolders",
+	"SceneMappings",
+	"ScheduledTasks",
+	"Seasons",
+	"Series",
+}
+
+// headVersion is the highest migration this PR has ported. Bump as new
+// migration files land. Tests use this to call MigrateTo(headVersion) so
+// the head-checkpoint suite stays accurate without manual renumbering.
+const headVersion int64 = 5
+
+// columnSpec is what we assert about each column. Type strings are the
+// dialect-canonical form returned by introspection; differences between
+// SQLite and Postgres are wrapped in dialectColumns below.
+type columnSpec struct {
+	name     string
+	wantType string
+	notNull  bool
+}
+
+// dialectColumns returns the per-dialect expected column shape for a few
+// representative tables — Config (the simplest), Series (the most columns),
+// and a sample of nullable columns. Hitting all 14 tables × all columns is
+// out of scope for this PR; the structural assertion below covers
+// existence-of-table for every table.
+func dialectColumns(engine Engine) (table string, want []columnSpec) {
+	switch engine {
+	case EngineSQLite:
+		return "Config", []columnSpec{
+			// SQLite type names come back uppercase from pragma_table_info.
+			{name: "Id", wantType: "INTEGER", notNull: true},
+			{name: "Key", wantType: "TEXT", notNull: true},
+			{name: "Value", wantType: "TEXT", notNull: true},
+		}
+	case EnginePostgres:
+		return "Config", []columnSpec{
+			// Postgres information_schema returns lowercase canonical types.
+			{name: "Id", wantType: "integer", notNull: true},
+			{name: "Key", wantType: "text", notNull: true},
+			{name: "Value", wantType: "text", notNull: true},
+		}
+	}
+	return "", nil
+}
+
+func TestMigrate_SQLite_ToVersion1(t *testing.T) {
+	t.Parallel()
+	db := openSQLite(t)
+	if err := MigrateTo(t.Context(), db, 1); err != nil {
+		t.Fatalf("MigrateTo(1): %v", err)
+	}
+	assertVersion(t, db, 1)
+
+	got := listTablesSQLite(t, db.SQL)
+	if !equalStringSlices(got, expectedTablesAfterMigration1) {
+		t.Errorf("tables mismatch\n got: %v\nwant: %v", got, expectedTablesAfterMigration1)
+	}
+
+	table, want := dialectColumns(EngineSQLite)
+	gotCols := listColumnsSQLite(t, db.SQL, table)
+	if !equalColumnSpecs(gotCols, want) {
+		t.Errorf("columns(%s) mismatch\n got: %+v\nwant: %+v", table, gotCols, want)
+	}
+}
+
+func TestMigrate_SQLite_ToHead(t *testing.T) {
+	t.Parallel()
+	db := openSQLite(t)
+	if err := Migrate(t.Context(), db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	assertVersion(t, db, headVersion)
+
+	// Version-2 dropped IX_Series_TvRageId and IX_Series_ImdbId; the
+	// other Series unique indexes (TvdbId, TitleSlug) survive.
+	indexes := listIndexesSQLite(t, db.SQL, "Series")
+	for _, gone := range []string{"IX_Series_TvRageId", "IX_Series_ImdbId"} {
+		if containsString(indexes, gone) {
+			t.Errorf("Series still has dropped index %q (post-v2)", gone)
+		}
+	}
+	for _, kept := range []string{"IX_Series_TvdbId", "IX_Series_TitleSlug"} {
+		if !containsString(indexes, kept) {
+			t.Errorf("Series missing kept index %q (post-v2)", kept)
+		}
+	}
+
+	// Version-3 reshaped SceneMappings: dropped CleanTitle, SceneName;
+	// added SearchTerm, ParseTerm.
+	sm := columnNames(listColumnsSQLite(t, db.SQL, "SceneMappings"))
+	for _, want := range []string{"Id", "TvdbId", "SeasonNumber", "SearchTerm", "ParseTerm"} {
+		if !containsString(sm, want) {
+			t.Errorf("SceneMappings missing column %q (post-v3): %v", want, sm)
+		}
+	}
+	for _, gone := range []string{"CleanTitle", "SceneName"} {
+		if containsString(sm, gone) {
+			t.Errorf("SceneMappings still has dropped column %q (post-v3): %v", gone, sm)
+		}
+	}
+
+	// Version-4 reshaped History; version-5 added EventType. The
+	// resulting columns are the v4 set plus EventType.
+	hist := columnNames(listColumnsSQLite(t, db.SQL, "History"))
+	for _, want := range []string{"Id", "EpisodeId", "SeriesId", "SourceTitle", "Date", "Quality", "Data", "EventType"} {
+		if !containsString(hist, want) {
+			t.Errorf("History missing column %q (post-v5): %v", want, hist)
+		}
+	}
+	for _, gone := range []string{"NzbTitle", "Indexer", "NzbInfoUrl", "ReleaseGroup"} {
+		if containsString(hist, gone) {
+			t.Errorf("History still has dropped column %q (post-v4): %v", gone, hist)
+		}
+	}
+}
+
+func TestMigrate_SQLite_Idempotent(t *testing.T) {
+	t.Parallel()
+	db := openSQLite(t)
+	if err := Migrate(t.Context(), db); err != nil {
+		t.Fatalf("first Migrate: %v", err)
+	}
+	if err := Migrate(t.Context(), db); err != nil {
+		t.Fatalf("second Migrate: %v", err)
+	}
+	assertVersion(t, db, headVersion)
+}
+
+func TestMigrate_Postgres_ToVersion1(t *testing.T) {
+	// Postgres tests share the spike DB and rebuild the public schema
+	// for hermeticity, so they cannot run in parallel with each other.
+	// SQLite tests still run in parallel.
+	db := openPostgres(t)
+
+	if err := MigrateTo(t.Context(), db, 1); err != nil {
+		t.Fatalf("MigrateTo(1): %v", err)
+	}
+	assertVersion(t, db, 1)
+
+	got := listTablesPostgres(t, db.SQL)
+	if !equalStringSlices(got, expectedTablesAfterMigration1) {
+		t.Errorf("tables mismatch\n got: %v\nwant: %v", got, expectedTablesAfterMigration1)
+	}
+
+	table, want := dialectColumns(EnginePostgres)
+	gotCols := listColumnsPostgres(t, db.SQL, table)
+	if !equalColumnSpecs(gotCols, want) {
+		t.Errorf("columns(%s) mismatch\n got: %+v\nwant: %+v", table, gotCols, want)
+	}
+}
+
+func TestMigrate_Postgres_ToHead(t *testing.T) {
+	// See note on TestMigrate_Postgres_ToVersion1 — no t.Parallel().
+	db := openPostgres(t)
+	if err := Migrate(t.Context(), db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	assertVersion(t, db, headVersion)
+
+	indexes := listIndexesPostgres(t, db.SQL, "Series")
+	for _, gone := range []string{"IX_Series_TvRageId", "IX_Series_ImdbId"} {
+		if containsString(indexes, gone) {
+			t.Errorf("Series still has dropped index %q (post-v2)", gone)
+		}
+	}
+
+	sm := columnNames(listColumnsPostgres(t, db.SQL, "SceneMappings"))
+	for _, want := range []string{"Id", "TvdbId", "SeasonNumber", "SearchTerm", "ParseTerm"} {
+		if !containsString(sm, want) {
+			t.Errorf("SceneMappings missing column %q (post-v3): %v", want, sm)
+		}
+	}
+	for _, gone := range []string{"CleanTitle", "SceneName"} {
+		if containsString(sm, gone) {
+			t.Errorf("SceneMappings still has dropped column %q (post-v3): %v", gone, sm)
+		}
+	}
+
+	hist := columnNames(listColumnsPostgres(t, db.SQL, "History"))
+	for _, want := range []string{"Id", "EpisodeId", "SeriesId", "SourceTitle", "Date", "Quality", "Data", "EventType"} {
+		if !containsString(hist, want) {
+			t.Errorf("History missing column %q (post-v5): %v", want, hist)
+		}
+	}
+}
+
+// openPostgres + resetPostgresSchema is the shared setup for any Postgres
+// migration test — opens against the spike DB and drops public so the test
+// is hermetic. Skips when SONARR_PG_DSN is unset.
+func openPostgres(t *testing.T) *DB {
+	t.Helper()
+	dsn := pgDSN(t)
+	c, err := configFromSpikeDSN(dsn)
+	if err != nil {
+		t.Fatalf("configFromSpikeDSN: %v", err)
+	}
+	db, err := Open(t.Context(), c)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	resetPostgresSchema(t, db.SQL)
+	return db
+}
+
+func assertVersion(t *testing.T, db *DB, want int64) {
+	t.Helper()
+	got, err := CurrentVersion(t.Context(), db)
+	if err != nil {
+		t.Fatalf("CurrentVersion: %v", err)
+	}
+	if got != want {
+		t.Errorf("CurrentVersion = %d, want %d", got, want)
+	}
+}
+
+// --- introspection helpers ---
+
+func listTablesSQLite(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(),
+		`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> 'goose_db_version' ORDER BY name`)
+	if err != nil {
+		t.Fatalf("query tables: %v", err)
+	}
+	return scanStrings(t, rows)
+}
+
+func listTablesPostgres(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(),
+		`SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name <> 'goose_db_version' ORDER BY table_name`)
+	if err != nil {
+		t.Fatalf("query tables: %v", err)
+	}
+	return scanStrings(t, rows)
+}
+
+func listColumnsSQLite(t *testing.T, db *sql.DB, table string) []columnSpec {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), `SELECT name, type, "notnull" FROM pragma_table_info(?)`, table)
+	if err != nil {
+		t.Fatalf("pragma_table_info(%s): %v", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []columnSpec
+	for rows.Next() {
+		var c columnSpec
+		var nn int
+		if err := rows.Scan(&c.name, &c.wantType, &nn); err != nil {
+			t.Fatalf("scan column: %v", err)
+		}
+		c.notNull = nn != 0
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out
+}
+
+func listColumnsPostgres(t *testing.T, db *sql.DB, table string) []columnSpec {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), `
+		SELECT column_name, data_type, is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = $1
+		ORDER BY column_name`, table)
+	if err != nil {
+		t.Fatalf("information_schema.columns(%s): %v", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []columnSpec
+	for rows.Next() {
+		var c columnSpec
+		var nullable string
+		if err := rows.Scan(&c.name, &c.wantType, &nullable); err != nil {
+			t.Fatalf("scan column: %v", err)
+		}
+		c.notNull = nullable == "NO"
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	return out
+}
+
+func resetPostgresSchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+	// The shared sonarr_spike DB may host residue from earlier spike runs
+	// (e.g. the pgx spike's "counter" table). Wipe public entirely so the
+	// migration runner starts on a clean slate. The spike re-creates its
+	// own state on every run, so this doesn't disrupt it.
+	for _, q := range []string{
+		`DROP SCHEMA IF EXISTS public CASCADE`,
+		`CREATE SCHEMA public`,
+	} {
+		if _, err := db.ExecContext(context.Background(), q); err != nil {
+			t.Fatalf("reset %q: %v", q, err)
+		}
+	}
+}
+
+func scanStrings(t *testing.T, rows *sql.Rows) []string {
+	t.Helper()
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	return out
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalColumnSpecs(a, b []columnSpec) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func columnNames(cols []columnSpec) []string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = c.name
+	}
+	return out
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func listIndexesSQLite(t *testing.T, db *sql.DB, table string) []string {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(),
+		`SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=? AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY name`,
+		table)
+	if err != nil {
+		t.Fatalf("query indexes(%s): %v", table, err)
+	}
+	return scanStrings(t, rows)
+}
+
+func listIndexesPostgres(t *testing.T, db *sql.DB, table string) []string {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(),
+		`SELECT indexname FROM pg_indexes WHERE schemaname='public' AND tablename=$1 ORDER BY indexname`,
+		table)
+	if err != nil {
+		t.Fatalf("query indexes(%s): %v", table, err)
+	}
+	return scanStrings(t, rows)
+}
