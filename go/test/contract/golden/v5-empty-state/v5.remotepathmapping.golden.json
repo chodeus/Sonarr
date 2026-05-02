@@ -1,0 +1,35 @@
+{
+  "entry_id": "v5.remotepathmapping",
+  "status": 200,
+  "headers": {
+    "Cache-Control": [
+      "no-cache, no-store"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "Date": [
+      "Sat, 02 May 2026 07:02:09 GMT"
+    ],
+    "Expires": [
+      "-1"
+    ],
+    "Pragma": [
+      "no-cache"
+    ],
+    "Server": [
+      "Kestrel"
+    ],
+    "Vary": [
+      "Accept-Encoding"
+    ],
+    "X-Application-Version": [
+      "10.0.0.26712"
+    ],
+    "X-Miniprofiler-Ids": [
+      "[\"9197707c-55a3-440b-a335-0243464678c7\",\"78d82f60-4c95-4bfa-8ad7-08036610b643\",\"fcc423db-e05f-44bd-ac79-73dbbfdaed41\",\"cf5cf455-586f-4e11-8470-e7525b5dfebf\",\"b2e6283c-81cb-4c54-9bfe-25fbaef241ac\",\"13e63564-1810-4ed1-af59-a44e440a01e6\",\"328df138-120a-4d4e-b422-977284dc3664\",\"8c556267-7114-43a5-baf6-aa06d8f0b3e7\",\"195baf28-023d-43cc-a33a-1fa801f436f3\",\"a6a951da-04d1-451b-93a0-aae7e2b99659\",\"da0ae589-ff08-4eca-9307-c1cca1759603\",\"420bb6da-6f5f-4aef-a90c-905864d57577\",\"e0ad6d18-244f-4a38-918e-007521cfeb60\",\"456d5a98-c15b-4ad7-9455-31e07e0cbbe3\",\"f5630c83-6688-4aae-9fb5-3a6d9cec9684\",\"fef19239-dc06-454d-bcdc-ee1a09b2cd48\",\"40701aa1-c665-4bc5-926d-71586cccd783\",\"0ca5060e-0338-45e8-9c2f-8dfe59fbfef3\",\"f91d7559-83f0-4e8a-8c99-f2047bb19d76\",\"6d30a9c1-7038-47a2-a128-e62628744a55\",\"e93baa46-39aa-46ea-9334-1ab3c3575f92\",\"741ab7d2-aa15-486f-8bca-d0f6aefac44b\"]"
+    ]
+  },
+  "body_json": [],
+  "body_is_json": true
+}

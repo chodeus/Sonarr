@@ -1,0 +1,776 @@
+{
+  "entry_id": "v3.customformat.schema",
+  "status": 200,
+  "headers": {
+    "Cache-Control": [
+      "no-cache, no-store"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "Date": [
+      "Sat, 02 May 2026 07:02:08 GMT"
+    ],
+    "Expires": [
+      "-1"
+    ],
+    "Pragma": [
+      "no-cache"
+    ],
+    "Server": [
+      "Kestrel"
+    ],
+    "Vary": [
+      "Accept-Encoding"
+    ],
+    "X-Application-Version": [
+      "10.0.0.26712"
+    ],
+    "X-Miniprofiler-Ids": [
+      "[\"77d75529-d1af-4168-ac2b-982963c24cbf\",\"d0d96a9d-597e-4889-93ad-751a7313e5fe\",\"2a5a9bd3-de6e-4c79-874b-3b1b4f376abf\",\"6ae72b40-6d02-4216-9468-80e9f5d6423f\",\"820e2d89-3207-477b-956b-2668496b5f90\",\"0cce7c54-0624-4d84-bd53-32ae3d59ba1c\",\"75a2fc3f-b1b2-4abc-be34-856f7accd480\",\"aa737407-5850-41b2-b86f-4a0161ca19ad\",\"99212afc-7978-47a3-8374-457decf0f288\",\"9adbcb5b-7e2a-4478-8b32-2e9879f05376\",\"9a2b26df-34c6-4ae1-bbce-f59e979ef4e7\",\"3fc8751c-e413-48d7-b424-09b67ba82384\",\"179efdfe-2666-4f32-83c1-e2b78679a949\",\"4cab9bde-828d-4ebc-9899-d64b5af2d90f\",\"3e81ea9a-11ea-4038-860c-36a965f91429\",\"f069f7c2-bce3-442d-936b-909f7324a75d\",\"73b6e909-c64a-445b-83c6-461723abcb1c\",\"1a914ebb-fe89-4531-bc48-3697862adbdd\",\"864d1897-6c2f-4178-8d32-138bf3d31cfa\",\"8f06fec6-ad14-472b-b4d6-40a020a21f8b\",\"3c0bab2f-e955-4bb5-97cb-92f458aaa26f\"]"
+    ]
+  },
+  "body_json": [
+    {
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Custom Format RegEx is Case Insensitive",
+          "isFloat": false,
+          "label": "Regular Expression",
+          "name": "value",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "ReleaseTitleSpecification",
+      "implementationName": "Release Title",
+      "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+      "negate": false,
+      "presets": [
+        {
+          "fields": [
+            {
+              "advanced": false,
+              "helpText": "Custom Format RegEx is Case Insensitive",
+              "isFloat": false,
+              "label": "Regular Expression",
+              "name": "value",
+              "order": 0,
+              "privacy": "normal",
+              "type": "textbox",
+              "value": "(x|h)\\.?264"
+            }
+          ],
+          "implementation": "ReleaseTitleSpecification",
+          "implementationName": "Release Title",
+          "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+          "name": "x264",
+          "negate": false,
+          "required": false
+        },
+        {
+          "fields": [
+            {
+              "advanced": false,
+              "helpText": "Custom Format RegEx is Case Insensitive",
+              "isFloat": false,
+              "label": "Regular Expression",
+              "name": "value",
+              "order": 0,
+              "privacy": "normal",
+              "type": "textbox",
+              "value": "(((x|h)\\.?265)|(HEVC))"
+            }
+          ],
+          "implementation": "ReleaseTitleSpecification",
+          "implementationName": "Release Title",
+          "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+          "name": "x265",
+          "negate": false,
+          "required": false
+        },
+        {
+          "fields": [
+            {
+              "advanced": false,
+              "helpText": "Custom Format RegEx is Case Insensitive",
+              "isFloat": false,
+              "label": "Regular Expression",
+              "name": "value",
+              "order": 0,
+              "privacy": "normal",
+              "type": "textbox",
+              "value": "subs?"
+            }
+          ],
+          "implementation": "ReleaseTitleSpecification",
+          "implementationName": "Release Title",
+          "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+          "name": "Simple Hardcoded Subs",
+          "negate": false,
+          "required": false
+        },
+        {
+          "fields": [
+            {
+              "advanced": false,
+              "helpText": "Custom Format RegEx is Case Insensitive",
+              "isFloat": false,
+              "label": "Regular Expression",
+              "name": "value",
+              "order": 0,
+              "privacy": "normal",
+              "type": "textbox",
+              "value": "\\b(?<hcsub>(\\w+SUBS?)\\b)|(?<hc>(HC|SUBBED))\\b"
+            }
+          ],
+          "implementation": "ReleaseTitleSpecification",
+          "implementationName": "Release Title",
+          "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+          "name": "Hardcoded Subs",
+          "negate": false,
+          "required": false
+        },
+        {
+          "fields": [
+            {
+              "advanced": false,
+              "helpText": "Custom Format RegEx is Case Insensitive",
+              "isFloat": false,
+              "label": "Regular Expression",
+              "name": "value",
+              "order": 0,
+              "privacy": "normal",
+              "type": "textbox",
+              "value": "DTS.?(HD|ES|X(?!\\D))|TRUEHD|ATMOS|DD(\\+|P).?([5-9])|EAC3.?([5-9])"
+            }
+          ],
+          "implementation": "ReleaseTitleSpecification",
+          "implementationName": "Release Title",
+          "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+          "name": "Surround Sound",
+          "negate": false,
+          "required": false
+        },
+        {
+          "fields": [
+            {
+              "advanced": false,
+              "helpText": "Custom Format RegEx is Case Insensitive",
+              "isFloat": false,
+              "label": "Regular Expression",
+              "name": "value",
+              "order": 0,
+              "privacy": "normal",
+              "type": "textbox",
+              "value": "\\b(SPARKS|Framestor)\\b"
+            }
+          ],
+          "implementation": "ReleaseTitleSpecification",
+          "implementationName": "Release Title",
+          "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+          "name": "Preferred Words",
+          "negate": false,
+          "required": false
+        }
+      ],
+      "required": false
+    },
+    {
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Language",
+          "name": "value",
+          "order": 0,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Original",
+              "order": 0,
+              "value": -2
+            },
+            {
+              "name": "Unknown",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "Arabic",
+              "order": 0,
+              "value": 26
+            },
+            {
+              "name": "Azerbaijani",
+              "order": 0,
+              "value": 47
+            },
+            {
+              "name": "Bosnian",
+              "order": 0,
+              "value": 41
+            },
+            {
+              "name": "Bulgarian",
+              "order": 0,
+              "value": 28
+            },
+            {
+              "name": "Catalan",
+              "order": 0,
+              "value": 38
+            },
+            {
+              "name": "Chinese",
+              "order": 0,
+              "value": 10
+            },
+            {
+              "name": "Croatian",
+              "order": 0,
+              "value": 39
+            },
+            {
+              "name": "Czech",
+              "order": 0,
+              "value": 25
+            },
+            {
+              "name": "Danish",
+              "order": 0,
+              "value": 6
+            },
+            {
+              "name": "Dutch",
+              "order": 0,
+              "value": 7
+            },
+            {
+              "name": "English",
+              "order": 0,
+              "value": 1
+            },
+            {
+              "name": "Estonian",
+              "order": 0,
+              "value": 42
+            },
+            {
+              "name": "Finnish",
+              "order": 0,
+              "value": 16
+            },
+            {
+              "name": "Flemish",
+              "order": 0,
+              "value": 19
+            },
+            {
+              "name": "French",
+              "order": 0,
+              "value": 2
+            },
+            {
+              "name": "Georgian",
+              "order": 0,
+              "value": 52
+            },
+            {
+              "name": "German",
+              "order": 0,
+              "value": 4
+            },
+            {
+              "name": "Greek",
+              "order": 0,
+              "value": 20
+            },
+            {
+              "name": "Hebrew",
+              "order": 0,
+              "value": 23
+            },
+            {
+              "name": "Hindi",
+              "order": 0,
+              "value": 27
+            },
+            {
+              "name": "Hungarian",
+              "order": 0,
+              "value": 22
+            },
+            {
+              "name": "Icelandic",
+              "order": 0,
+              "value": 9
+            },
+            {
+              "name": "Indonesian",
+              "order": 0,
+              "value": 44
+            },
+            {
+              "name": "Italian",
+              "order": 0,
+              "value": 5
+            },
+            {
+              "name": "Japanese",
+              "order": 0,
+              "value": 8
+            },
+            {
+              "name": "Korean",
+              "order": 0,
+              "value": 21
+            },
+            {
+              "name": "Latvian",
+              "order": 0,
+              "value": 36
+            },
+            {
+              "name": "Lithuanian",
+              "order": 0,
+              "value": 24
+            },
+            {
+              "name": "Macedonian",
+              "order": 0,
+              "value": 45
+            },
+            {
+              "name": "Malay",
+              "order": 0,
+              "value": 49
+            },
+            {
+              "name": "Malayalam",
+              "order": 0,
+              "value": 29
+            },
+            {
+              "name": "Norwegian",
+              "order": 0,
+              "value": 15
+            },
+            {
+              "name": "Persian",
+              "order": 0,
+              "value": 37
+            },
+            {
+              "name": "Polish",
+              "order": 0,
+              "value": 12
+            },
+            {
+              "name": "Portuguese",
+              "order": 0,
+              "value": 18
+            },
+            {
+              "name": "Portuguese (Brazil)",
+              "order": 0,
+              "value": 33
+            },
+            {
+              "name": "Romanian",
+              "order": 0,
+              "value": 35
+            },
+            {
+              "name": "Romansh",
+              "order": 0,
+              "value": 51
+            },
+            {
+              "name": "Russian",
+              "order": 0,
+              "value": 11
+            },
+            {
+              "name": "Serbian",
+              "order": 0,
+              "value": 40
+            },
+            {
+              "name": "Slovak",
+              "order": 0,
+              "value": 31
+            },
+            {
+              "name": "Slovenian",
+              "order": 0,
+              "value": 46
+            },
+            {
+              "name": "Spanish",
+              "order": 0,
+              "value": 3
+            },
+            {
+              "name": "Spanish (Latino)",
+              "order": 0,
+              "value": 34
+            },
+            {
+              "name": "Swedish",
+              "order": 0,
+              "value": 14
+            },
+            {
+              "name": "Tamil",
+              "order": 0,
+              "value": 43
+            },
+            {
+              "name": "Thai",
+              "order": 0,
+              "value": 32
+            },
+            {
+              "name": "Turkish",
+              "order": 0,
+              "value": 17
+            },
+            {
+              "name": "Ukrainian",
+              "order": 0,
+              "value": 30
+            },
+            {
+              "name": "Urdu",
+              "order": 0,
+              "value": 50
+            },
+            {
+              "name": "Uzbek",
+              "order": 0,
+              "value": 48
+            },
+            {
+              "name": "Vietnamese",
+              "order": 0,
+              "value": 13
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Matches if any language other than the selected language is present",
+          "isFloat": false,
+          "label": "Except Language",
+          "name": "exceptLanguage",
+          "order": 1,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        }
+      ],
+      "implementation": "LanguageSpecification",
+      "implementationName": "Language",
+      "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+      "negate": false,
+      "presets": [],
+      "required": false
+    },
+    {
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Flag",
+          "name": "value",
+          "order": 0,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Freeleech",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Halfleech",
+              "order": 2,
+              "value": 2
+            },
+            {
+              "name": "DoubleUpload",
+              "order": 4,
+              "value": 4
+            },
+            {
+              "name": "Internal",
+              "order": 8,
+              "value": 8
+            },
+            {
+              "name": "Scene",
+              "order": 16,
+              "value": 16
+            },
+            {
+              "name": "Freeleech75",
+              "order": 32,
+              "value": 32
+            },
+            {
+              "name": "Freeleech25",
+              "order": 64,
+              "value": 64
+            },
+            {
+              "name": "Nuked",
+              "order": 128,
+              "value": 128
+            },
+            {
+              "name": "Subtitles",
+              "order": 256,
+              "value": 256
+            }
+          ],
+          "type": "select",
+          "value": 0
+        }
+      ],
+      "implementation": "IndexerFlagSpecification",
+      "implementationName": "Indexer Flag",
+      "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+      "negate": false,
+      "presets": [],
+      "required": false
+    },
+    {
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Source",
+          "name": "value",
+          "order": 0,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Unknown",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "Television",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "TelevisionRaw",
+              "order": 2,
+              "value": 2
+            },
+            {
+              "name": "Web",
+              "order": 3,
+              "value": 3
+            },
+            {
+              "name": "WebRip",
+              "order": 4,
+              "value": 4
+            },
+            {
+              "name": "DVD",
+              "order": 5,
+              "value": 5
+            },
+            {
+              "name": "Bluray",
+              "order": 6,
+              "value": 6
+            },
+            {
+              "name": "BlurayRaw",
+              "order": 7,
+              "value": 7
+            }
+          ],
+          "type": "select",
+          "value": 0
+        }
+      ],
+      "implementation": "SourceSpecification",
+      "implementationName": "Source",
+      "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+      "negate": false,
+      "presets": [],
+      "required": false
+    },
+    {
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Resolution",
+          "name": "value",
+          "order": 0,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Unknown",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "R360p",
+              "order": 360,
+              "value": 360
+            },
+            {
+              "name": "R480p",
+              "order": 480,
+              "value": 480
+            },
+            {
+              "name": "R540p",
+              "order": 540,
+              "value": 540
+            },
+            {
+              "name": "R576p",
+              "order": 576,
+              "value": 576
+            },
+            {
+              "name": "R720p",
+              "order": 720,
+              "value": 720
+            },
+            {
+              "name": "R1080p",
+              "order": 1080,
+              "value": 1080
+            },
+            {
+              "name": "R2160p",
+              "order": 2160,
+              "value": 2160
+            }
+          ],
+          "type": "select",
+          "value": 0
+        }
+      ],
+      "implementation": "ResolutionSpecification",
+      "implementationName": "Resolution",
+      "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+      "negate": false,
+      "presets": [],
+      "required": false
+    },
+    {
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Release must be greater than this size",
+          "isFloat": true,
+          "label": "Minimum Size",
+          "name": "min",
+          "order": 0,
+          "privacy": "normal",
+          "type": "number",
+          "unit": "GB",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Release must be less than or equal to this size",
+          "isFloat": true,
+          "label": "Maximum Size",
+          "name": "max",
+          "order": 1,
+          "privacy": "normal",
+          "type": "number",
+          "unit": "GB",
+          "value": 0
+        }
+      ],
+      "implementation": "SizeSpecification",
+      "implementationName": "Size",
+      "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+      "negate": false,
+      "presets": [],
+      "required": false
+    },
+    {
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Custom Format RegEx is Case Insensitive",
+          "isFloat": false,
+          "label": "Regular Expression",
+          "name": "value",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "ReleaseGroupSpecification",
+      "implementationName": "Release Group",
+      "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+      "negate": false,
+      "presets": [],
+      "required": false
+    },
+    {
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Release Type",
+          "name": "value",
+          "order": 0,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Unknown",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "hint": "(1)",
+              "name": "Single Episode",
+              "order": 9,
+              "value": 1
+            },
+            {
+              "hint": "(2)",
+              "name": "Multi-Episode",
+              "order": 12,
+              "value": 2
+            },
+            {
+              "hint": "(3)",
+              "name": "Season Pack",
+              "order": 15,
+              "value": 3
+            }
+          ],
+          "type": "select",
+          "value": 0
+        }
+      ],
+      "implementation": "ReleaseTypeSpecification",
+      "implementationName": "Release Type",
+      "infoLink": "https://wiki.servarr.com/sonarr/settings#custom-formats-2",
+      "negate": false,
+      "presets": [],
+      "required": false
+    }
+  ],
+  "body_is_json": true
+}

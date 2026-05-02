@@ -1,0 +1,306 @@
+{
+  "entry_id": "v3.language",
+  "status": 200,
+  "headers": {
+    "Cache-Control": [
+      "no-cache, no-store"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "Date": [
+      "Sat, 02 May 2026 07:02:09 GMT"
+    ],
+    "Expires": [
+      "-1"
+    ],
+    "Pragma": [
+      "no-cache"
+    ],
+    "Server": [
+      "Kestrel"
+    ],
+    "Vary": [
+      "Accept-Encoding"
+    ],
+    "X-Application-Version": [
+      "10.0.0.26712"
+    ],
+    "X-Miniprofiler-Ids": [
+      "[\"88c05535-643f-4e7d-850c-22ec33998e8c\",\"a45261da-00fc-4625-8d56-a92eaf9770e5\",\"479dbb98-d820-4131-9399-18439ffcaf19\",\"9ba4509b-2ac8-422d-9552-c8b8b6373dc3\",\"08b1b251-28bb-42bd-81a0-b3073737f68e\",\"94f45814-8db8-4103-9162-c993a762afa6\",\"46660b29-4481-4262-802c-619545aa71ad\",\"43833658-9058-43cd-b8b9-1a30ae59ca34\",\"3b54ab7a-8301-4ccc-b380-60344dd45a1a\",\"0c70bf5a-765b-494a-850e-56623a72db38\",\"d641e10b-8c13-42db-b4b7-5536566ce09a\",\"d9bdbd8c-133d-4714-82cf-5fe885d84bae\",\"222ee732-c6de-44bd-ba1d-e15c8608d0b5\",\"cb52fc6c-eefb-4ed3-b7aa-e262ed438507\",\"eed23717-0433-445d-95ff-d61d7d8ea504\",\"3a84780b-a75e-4384-bd5b-6237ef6aaa20\",\"f6c4c29f-3509-4b03-a542-7d0776c0f032\",\"19e203f5-9186-4a78-9ac6-3e4d709175cf\",\"143fa42d-6e5c-4995-aa38-0be426810081\",\"5c5c56f2-7b3e-4d1b-bd39-de00fc7ce444\",\"2a667e94-a84e-4b3d-a27a-6c8d8856e0b0\",\"419e48e0-017c-4b96-8976-ee630b802aa2\"]"
+    ]
+  },
+  "body_json": [
+    {
+      "id": -2,
+      "name": "Original",
+      "nameLower": "original"
+    },
+    {
+      "id": 0,
+      "name": "Unknown",
+      "nameLower": "unknown"
+    },
+    {
+      "id": 26,
+      "name": "Arabic",
+      "nameLower": "arabic"
+    },
+    {
+      "id": 47,
+      "name": "Azerbaijani",
+      "nameLower": "azerbaijani"
+    },
+    {
+      "id": 41,
+      "name": "Bosnian",
+      "nameLower": "bosnian"
+    },
+    {
+      "id": 28,
+      "name": "Bulgarian",
+      "nameLower": "bulgarian"
+    },
+    {
+      "id": 38,
+      "name": "Catalan",
+      "nameLower": "catalan"
+    },
+    {
+      "id": 10,
+      "name": "Chinese",
+      "nameLower": "chinese"
+    },
+    {
+      "id": 39,
+      "name": "Croatian",
+      "nameLower": "croatian"
+    },
+    {
+      "id": 25,
+      "name": "Czech",
+      "nameLower": "czech"
+    },
+    {
+      "id": 6,
+      "name": "Danish",
+      "nameLower": "danish"
+    },
+    {
+      "id": 7,
+      "name": "Dutch",
+      "nameLower": "dutch"
+    },
+    {
+      "id": 1,
+      "name": "English",
+      "nameLower": "english"
+    },
+    {
+      "id": 42,
+      "name": "Estonian",
+      "nameLower": "estonian"
+    },
+    {
+      "id": 16,
+      "name": "Finnish",
+      "nameLower": "finnish"
+    },
+    {
+      "id": 19,
+      "name": "Flemish",
+      "nameLower": "flemish"
+    },
+    {
+      "id": 2,
+      "name": "French",
+      "nameLower": "french"
+    },
+    {
+      "id": 52,
+      "name": "Georgian",
+      "nameLower": "georgian"
+    },
+    {
+      "id": 4,
+      "name": "German",
+      "nameLower": "german"
+    },
+    {
+      "id": 20,
+      "name": "Greek",
+      "nameLower": "greek"
+    },
+    {
+      "id": 23,
+      "name": "Hebrew",
+      "nameLower": "hebrew"
+    },
+    {
+      "id": 27,
+      "name": "Hindi",
+      "nameLower": "hindi"
+    },
+    {
+      "id": 22,
+      "name": "Hungarian",
+      "nameLower": "hungarian"
+    },
+    {
+      "id": 9,
+      "name": "Icelandic",
+      "nameLower": "icelandic"
+    },
+    {
+      "id": 44,
+      "name": "Indonesian",
+      "nameLower": "indonesian"
+    },
+    {
+      "id": 5,
+      "name": "Italian",
+      "nameLower": "italian"
+    },
+    {
+      "id": 8,
+      "name": "Japanese",
+      "nameLower": "japanese"
+    },
+    {
+      "id": 21,
+      "name": "Korean",
+      "nameLower": "korean"
+    },
+    {
+      "id": 36,
+      "name": "Latvian",
+      "nameLower": "latvian"
+    },
+    {
+      "id": 24,
+      "name": "Lithuanian",
+      "nameLower": "lithuanian"
+    },
+    {
+      "id": 45,
+      "name": "Macedonian",
+      "nameLower": "macedonian"
+    },
+    {
+      "id": 49,
+      "name": "Malay",
+      "nameLower": "malay"
+    },
+    {
+      "id": 29,
+      "name": "Malayalam",
+      "nameLower": "malayalam"
+    },
+    {
+      "id": 15,
+      "name": "Norwegian",
+      "nameLower": "norwegian"
+    },
+    {
+      "id": 37,
+      "name": "Persian",
+      "nameLower": "persian"
+    },
+    {
+      "id": 12,
+      "name": "Polish",
+      "nameLower": "polish"
+    },
+    {
+      "id": 18,
+      "name": "Portuguese",
+      "nameLower": "portuguese"
+    },
+    {
+      "id": 33,
+      "name": "Portuguese (Brazil)",
+      "nameLower": "portuguese (brazil)"
+    },
+    {
+      "id": 35,
+      "name": "Romanian",
+      "nameLower": "romanian"
+    },
+    {
+      "id": 51,
+      "name": "Romansh",
+      "nameLower": "romansh"
+    },
+    {
+      "id": 11,
+      "name": "Russian",
+      "nameLower": "russian"
+    },
+    {
+      "id": 40,
+      "name": "Serbian",
+      "nameLower": "serbian"
+    },
+    {
+      "id": 31,
+      "name": "Slovak",
+      "nameLower": "slovak"
+    },
+    {
+      "id": 46,
+      "name": "Slovenian",
+      "nameLower": "slovenian"
+    },
+    {
+      "id": 3,
+      "name": "Spanish",
+      "nameLower": "spanish"
+    },
+    {
+      "id": 34,
+      "name": "Spanish (Latino)",
+      "nameLower": "spanish (latino)"
+    },
+    {
+      "id": 14,
+      "name": "Swedish",
+      "nameLower": "swedish"
+    },
+    {
+      "id": 43,
+      "name": "Tamil",
+      "nameLower": "tamil"
+    },
+    {
+      "id": 32,
+      "name": "Thai",
+      "nameLower": "thai"
+    },
+    {
+      "id": 17,
+      "name": "Turkish",
+      "nameLower": "turkish"
+    },
+    {
+      "id": 30,
+      "name": "Ukrainian",
+      "nameLower": "ukrainian"
+    },
+    {
+      "id": 50,
+      "name": "Urdu",
+      "nameLower": "urdu"
+    },
+    {
+      "id": 48,
+      "name": "Uzbek",
+      "nameLower": "uzbek"
+    },
+    {
+      "id": 13,
+      "name": "Vietnamese",
+      "nameLower": "vietnamese"
+    }
+  ],
+  "body_is_json": true
+}

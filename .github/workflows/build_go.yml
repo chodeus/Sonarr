@@ -1,0 +1,97 @@
+name: Build (Go port)
+
+on:
+  push:
+    branches:
+      - v5-develop
+      - v5-main
+    paths:
+      - "go/**"
+      - ".github/workflows/build_go.yml"
+  pull_request:
+    branches:
+      - v5-develop
+    paths:
+      - "go/**"
+      - ".github/workflows/build_go.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: go
+
+jobs:
+  vet-lint-test:
+    name: Vet, lint, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Verify modules
+        run: |
+          go mod download
+          go mod verify
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.11.4
+          working-directory: go
+
+      - name: go test
+        run: go test -race -count=1 ./...
+
+  build-matrix:
+    name: Build ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: linux,   goarch: arm   }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: freebsd, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Build sonarr
+        env:
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w \
+            -X sonarr.tv/sonarr/internal/buildinfo.Version=${{ github.run_number }} \
+            -X sonarr.tv/sonarr/internal/buildinfo.Commit=${{ github.sha }} \
+            -X sonarr.tv/sonarr/internal/buildinfo.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o dist/ ./cmd/...
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonarr-go-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
+          path: go/dist/
+          retention-days: 7

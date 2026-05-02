@@ -1,0 +1,300 @@
+{
+  "entry_id": "v3.metadata.list",
+  "status": 200,
+  "headers": {
+    "Cache-Control": [
+      "no-cache, no-store"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "Date": [
+      "Sat, 02 May 2026 07:02:09 GMT"
+    ],
+    "Expires": [
+      "-1"
+    ],
+    "Pragma": [
+      "no-cache"
+    ],
+    "Server": [
+      "Kestrel"
+    ],
+    "Vary": [
+      "Accept-Encoding"
+    ],
+    "X-Application-Version": [
+      "10.0.0.26712"
+    ],
+    "X-Miniprofiler-Ids": [
+      "[\"8f06fec6-ad14-472b-b4d6-40a020a21f8b\",\"3c0bab2f-e955-4bb5-97cb-92f458aaa26f\",\"403bc832-4cc1-4b57-9c42-4484937945a1\",\"1d736d5a-d4a0-4bb1-800f-340a8756f6b2\",\"c8d43a2f-abdf-448d-9334-8ff4acb55255\",\"5e17565d-fb92-4b1e-86f8-0bbc88bdf930\",\"4f5a7dd8-858c-4d39-ba2d-1c5c36ff1bac\",\"4594f3b9-2d9c-494b-99d6-5f949fb6b2e3\",\"b06c30ec-dc14-4b79-a52d-ee47e8f89701\",\"3199c7d4-aef0-4306-b92f-7a75211f9f4d\",\"88c05535-643f-4e7d-850c-22ec33998e8c\",\"a45261da-00fc-4625-8d56-a92eaf9770e5\",\"479dbb98-d820-4131-9399-18439ffcaf19\",\"9ba4509b-2ac8-422d-9552-c8b8b6373dc3\",\"08b1b251-28bb-42bd-81a0-b3073737f68e\",\"94f45814-8db8-4103-9162-c993a762afa6\",\"46660b29-4481-4262-802c-619545aa71ad\",\"43833658-9058-43cd-b8b9-1a30ae59ca34\",\"3b54ab7a-8301-4ccc-b380-60344dd45a1a\",\"0c70bf5a-765b-494a-850e-56623a72db38\",\"d641e10b-8c13-42db-b4b7-5536566ce09a\",\"d9bdbd8c-133d-4714-82cf-5fe885d84bae\"]"
+    ]
+  },
+  "body_json": [
+    {
+      "configContract": "XbmcMetadataSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "tvshow.nfo with full series metadata",
+          "isFloat": false,
+          "label": "Series Metadata",
+          "name": "seriesMetadata",
+          "order": 0,
+          "privacy": "normal",
+          "section": "metadata",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": true,
+          "helpText": "Include JSON formatted episode guide element in tvshow.nfo (Requires 'Series Metadata')",
+          "isFloat": false,
+          "label": "Series Metadata Episode Guide",
+          "name": "seriesMetadataEpisodeGuide",
+          "order": 1,
+          "privacy": "normal",
+          "section": "metadata",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Include TheTVDB show URL in tvshow.nfo (can be combined with 'Series Metadata')",
+          "isFloat": false,
+          "label": "Series Metadata URL",
+          "name": "seriesMetadataUrl",
+          "order": 2,
+          "privacy": "normal",
+          "section": "metadata",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "<filename>.nfo",
+          "isFloat": false,
+          "label": "Episode Metadata",
+          "name": "episodeMetadata",
+          "order": 3,
+          "privacy": "normal",
+          "section": "metadata",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": true,
+          "helpText": "Include image thumb tags in <filename>.nfo (Requires 'Episode Metadata')",
+          "isFloat": false,
+          "label": "Episode Metadata Image Thumbs",
+          "name": "episodeImageThumb",
+          "order": 4,
+          "privacy": "normal",
+          "section": "image",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "fanart.jpg, poster.jpg, banner.jpg",
+          "isFloat": false,
+          "label": "Series Images",
+          "name": "seriesImages",
+          "order": 5,
+          "privacy": "normal",
+          "section": "image",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "helpText": "season##-poster.jpg, season##-banner.jpg, season-specials-poster.jpg, season-specials-banner.jpg",
+          "isFloat": false,
+          "label": "Season Images",
+          "name": "seasonImages",
+          "order": 6,
+          "privacy": "normal",
+          "section": "image",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "helpText": "<filename>-thumb.jpg",
+          "isFloat": false,
+          "label": "Episode Images",
+          "name": "episodeImages",
+          "order": 7,
+          "privacy": "normal",
+          "section": "image",
+          "type": "checkbox",
+          "value": true
+        }
+      ],
+      "id": 1,
+      "implementation": "XbmcMetadata",
+      "implementationName": "Kodi (XBMC) / Emby",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#xbmcmetadata",
+      "name": "Kodi (XBMC) / Emby",
+      "tags": []
+    },
+    {
+      "configContract": "PlexMetadataSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Creates a .plexmatch file in the series folder",
+          "isFloat": false,
+          "label": "Series Plex Match File",
+          "name": "seriesPlexMatchFile",
+          "order": 0,
+          "privacy": "normal",
+          "section": "metadata",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "helpText": "Include episode mappings for all files in .plexmatch file",
+          "isFloat": false,
+          "label": "Episode Mappings",
+          "name": "episodeMappings",
+          "order": 1,
+          "privacy": "normal",
+          "section": "metadata",
+          "type": "checkbox",
+          "value": false
+        }
+      ],
+      "id": 4,
+      "implementation": "PlexMetadata",
+      "implementationName": "Plex",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#plexmetadata",
+      "name": "Plex",
+      "tags": []
+    },
+    {
+      "configContract": "RoksboxMetadataSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Season##\\filename.xml",
+          "isFloat": false,
+          "label": "Episode Metadata",
+          "name": "episodeMetadata",
+          "order": 0,
+          "privacy": "normal",
+          "section": "metadata",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "helpText": "Series Title.jpg",
+          "isFloat": false,
+          "label": "Series Images",
+          "name": "seriesImages",
+          "order": 1,
+          "privacy": "normal",
+          "section": "image",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "helpText": "Season ##.jpg",
+          "isFloat": false,
+          "label": "Season Images",
+          "name": "seasonImages",
+          "order": 2,
+          "privacy": "normal",
+          "section": "image",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "helpText": "Season##\\filename.jpg",
+          "isFloat": false,
+          "label": "Episode Images",
+          "name": "episodeImages",
+          "order": 3,
+          "privacy": "normal",
+          "section": "image",
+          "type": "checkbox",
+          "value": true
+        }
+      ],
+      "id": 3,
+      "implementation": "RoksboxMetadata",
+      "implementationName": "Roksbox",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#roksboxmetadata",
+      "name": "Roksbox",
+      "tags": []
+    },
+    {
+      "configContract": "WdtvMetadataSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Season##\\filename.xml",
+          "isFloat": false,
+          "label": "Episode Metadata",
+          "name": "episodeMetadata",
+          "order": 0,
+          "privacy": "normal",
+          "section": "metadata",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "helpText": "folder.jpg",
+          "isFloat": false,
+          "label": "Series Images",
+          "name": "seriesImages",
+          "order": 1,
+          "privacy": "normal",
+          "section": "image",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "helpText": "Season##\\folder.jpg",
+          "isFloat": false,
+          "label": "Season Images",
+          "name": "seasonImages",
+          "order": 2,
+          "privacy": "normal",
+          "section": "image",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "helpText": "Season##\\filename.metathumb",
+          "isFloat": false,
+          "label": "Episode Images",
+          "name": "episodeImages",
+          "order": 3,
+          "privacy": "normal",
+          "section": "image",
+          "type": "checkbox",
+          "value": true
+        }
+      ],
+      "id": 2,
+      "implementation": "WdtvMetadata",
+      "implementationName": "WDTV",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#wdtvmetadata",
+      "name": "WDTV",
+      "tags": []
+    }
+  ],
+  "body_is_json": true
+}

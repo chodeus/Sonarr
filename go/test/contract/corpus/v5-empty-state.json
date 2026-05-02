@@ -1,0 +1,40 @@
+{
+  "entries": [
+    { "id": "v5.system.status",            "request": { "method": "GET", "path": "/api/v5/system/status" },
+      "normalize": { "redact_paths": ["$.startupPath", "$.appData", "$.osName", "$.osVersion", "$.runtimeName", "$.runtimeVersion", "$.startTime", "$.buildTime", "$.version", "$.databaseVersion", "$.databaseType", "$.databaseHost", "$.urlBase", "$.runtimeArchitecture", "$.osIsDocker", "$.deploymentMethod"] } },
+    { "id": "v5.system.routes",            "request": { "method": "GET", "path": "/api/v5/system/routes" } },
+    { "id": "v5.health",                   "request": { "method": "GET", "path": "/api/v5/health" } },
+
+    { "id": "v5.qualityprofile",           "request": { "method": "GET", "path": "/api/v5/qualityprofile" } },
+    { "id": "v5.qualityprofile.schema",    "request": { "method": "GET", "path": "/api/v5/qualityprofile/schema" } },
+    { "id": "v5.releaseprofile",           "request": { "method": "GET", "path": "/api/v5/releaseprofile" } },
+
+    { "id": "v5.series.list",              "request": { "method": "GET", "path": "/api/v5/series" } },
+    { "id": "v5.history",                  "request": { "method": "GET", "path": "/api/v5/history" } },
+    { "id": "v5.queue",                    "request": { "method": "GET", "path": "/api/v5/queue" } },
+    { "id": "v5.blocklist",                "request": { "method": "GET", "path": "/api/v5/blocklist" } },
+    { "id": "v5.calendar",                 "request": { "method": "GET", "path": "/api/v5/calendar", "query": { "start": ["2026-01-01"], "end": ["2026-12-31"] } } },
+    { "id": "v5.wanted.missing",           "request": { "method": "GET", "path": "/api/v5/wanted/missing" } },
+    { "id": "v5.wanted.cutoff",            "request": { "method": "GET", "path": "/api/v5/wanted/cutoff" } },
+
+    { "id": "v5.indexer.list",             "request": { "method": "GET", "path": "/api/v5/indexer" } },
+    { "id": "v5.indexer.schema",           "request": { "method": "GET", "path": "/api/v5/indexer/schema" } },
+    { "id": "v5.metadata.list",            "request": { "method": "GET", "path": "/api/v5/metadata" } },
+    { "id": "v5.metadata.schema",          "request": { "method": "GET", "path": "/api/v5/metadata/schema" } },
+
+    { "id": "v5.rootfolder",               "request": { "method": "GET", "path": "/api/v5/rootfolder" } },
+    { "id": "v5.remotepathmapping",        "request": { "method": "GET", "path": "/api/v5/remotepathmapping" } },
+    { "id": "v5.diskspace",                "request": { "method": "GET", "path": "/api/v5/diskspace" },
+      "normalize": { "redact_paths": ["$[*].path", "$[*].label", "$[*].freeSpace", "$[*].totalSpace"] } },
+    { "id": "v5.tag",                      "request": { "method": "GET", "path": "/api/v5/tag" } },
+    { "id": "v5.customfilter",             "request": { "method": "GET", "path": "/api/v5/customfilter" } },
+    { "id": "v5.localization",             "request": { "method": "GET", "path": "/api/v5/localization" } },
+    { "id": "v5.localization.language",    "request": { "method": "GET", "path": "/api/v5/localization/language" } },
+    { "id": "v5.language",                 "request": { "method": "GET", "path": "/api/v5/language" } },
+    { "id": "v5.log",                      "request": { "method": "GET", "path": "/api/v5/log", "query": { "page": ["1"], "pageSize": ["10"] } },
+      "normalize": { "redact_paths": ["$.records[*].time", "$.records[*].id", "$.records[*].exception", "$.records[*].message", "$.records[*].method", "$.records[*].logger", "$.totalRecords"] } },
+    { "id": "v5.update",                   "request": { "method": "GET", "path": "/api/v5/update" } },
+    { "id": "v5.command",                  "request": { "method": "GET", "path": "/api/v5/command" },
+      "normalize": { "redact_paths": ["$[*].started", "$[*].ended", "$[*].duration", "$[*].stateChangeTime", "$[*].lastExecutionTime", "$[*].id", "$[*].queued"] } }
+  ]
+}

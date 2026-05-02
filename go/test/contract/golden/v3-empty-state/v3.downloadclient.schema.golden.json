@@ -1,0 +1,2606 @@
+{
+  "entry_id": "v3.downloadclient.schema",
+  "status": 200,
+  "headers": {
+    "Cache-Control": [
+      "no-cache, no-store"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "Date": [
+      "Sat, 02 May 2026 07:02:08 GMT"
+    ],
+    "Expires": [
+      "-1"
+    ],
+    "Pragma": [
+      "no-cache"
+    ],
+    "Server": [
+      "Kestrel"
+    ],
+    "Vary": [
+      "Accept-Encoding"
+    ],
+    "X-Application-Version": [
+      "10.0.0.26712"
+    ],
+    "X-Miniprofiler-Ids": [
+      "[\"3e81ea9a-11ea-4038-860c-36a965f91429\",\"f069f7c2-bce3-442d-936b-909f7324a75d\",\"73b6e909-c64a-445b-83c6-461723abcb1c\",\"1a914ebb-fe89-4531-bc48-3697862adbdd\",\"864d1897-6c2f-4178-8d32-138bf3d31cfa\",\"8f06fec6-ad14-472b-b4d6-40a020a21f8b\",\"3c0bab2f-e955-4bb5-97cb-92f458aaa26f\",\"403bc832-4cc1-4b57-9c42-4484937945a1\",\"1d736d5a-d4a0-4bb1-800f-340a8756f6b2\",\"c8d43a2f-abdf-448d-9334-8ff4acb55255\",\"5e17565d-fb92-4b1e-86f8-0bbc88bdf930\",\"4f5a7dd8-858c-4d39-ba2d-1c5c36ff1bac\",\"4594f3b9-2d9c-494b-99d6-5f949fb6b2e3\",\"b06c30ec-dc14-4b79-a52d-ee47e8f89701\",\"3199c7d4-aef0-4306-b92f-7a75211f9f4d\",\"88c05535-643f-4e7d-850c-22ec33998e8c\",\"a45261da-00fc-4625-8d56-a92eaf9770e5\",\"479dbb98-d820-4131-9399-18439ffcaf19\",\"9ba4509b-2ac8-422d-9552-c8b8b6373dc3\",\"08b1b251-28bb-42bd-81a0-b3073737f68e\",\"94f45814-8db8-4103-9162-c993a762afa6\",\"46660b29-4481-4262-802c-619545aa71ad\"]"
+    ]
+  },
+  "body_json": [
+    {
+      "configContract": "Aria2Settings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "number",
+          "value": 6800
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "XML RPC Path",
+          "name": "rpcPath",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "/rpc"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 3,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Secret Token",
+          "name": "secretToken",
+          "order": 4,
+          "privacy": "password",
+          "type": "password",
+          "value": "********"
+        },
+        {
+          "advanced": false,
+          "helpText": "Optional location to put downloads in, leave blank to use the default Aria2 location",
+          "isFloat": false,
+          "label": "Directory",
+          "name": "directory",
+          "order": 5,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "Aria2",
+      "implementationName": "Aria2",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#aria2",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "DelugeSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 8112
+        },
+        {
+          "advanced": false,
+          "helpText": "Use secure connection when connection to Deluge",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds a prefix to the deluge json url, see http://[host]:[port]/[urlBase]/json",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 4,
+          "privacy": "password",
+          "type": "password",
+          "value": "********"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended.",
+          "isFloat": false,
+          "label": "Category",
+          "name": "tvCategory",
+          "order": 5,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "tv-sonarr"
+        },
+        {
+          "advanced": true,
+          "helpText": "Category for Sonarr to set after it has imported the download. Sonarr will not remove torrents in that category even if seeding finished. Leave blank to keep same category.",
+          "isFloat": false,
+          "label": "Post-Import Category",
+          "name": "tvImportedCategory",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired within the last 14 days",
+          "isFloat": false,
+          "label": "Recent Priority",
+          "name": "recentTvPriority",
+          "order": 7,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Last",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "First",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired over 14 days ago",
+          "isFloat": false,
+          "label": "Older Priority",
+          "name": "olderTvPriority",
+          "order": 8,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Last",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "First",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Add Paused",
+          "name": "addPaused",
+          "order": 9,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Optional location to put downloads in, leave blank to use the default Deluge location",
+          "isFloat": false,
+          "label": "Download Directory",
+          "name": "downloadDirectory",
+          "order": 10,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "helpText": "Optional location to move completed downloads to, leave blank to use the default Deluge location",
+          "isFloat": false,
+          "label": "Move When Completed Directory",
+          "name": "completedDirectory",
+          "order": 11,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "Deluge",
+      "implementationName": "Deluge",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#deluge",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "DownloadStationSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "127.0.0.1"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 5000
+        },
+        {
+          "advanced": false,
+          "helpText": "Use secure connection when connection to Download Station",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 3,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 4,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended. Creates a [category] subdirectory in the output directory.",
+          "isFloat": false,
+          "label": "Category",
+          "name": "tvCategory",
+          "order": 5,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Optional shared folder to put downloads into, leave blank to use the default Download Station location",
+          "isFloat": false,
+          "label": "Directory",
+          "name": "tvDirectory",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "TorrentDownloadStation",
+      "implementationName": "Download Station",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#torrentdownloadstation",
+      "message": {
+        "message": "Sonarr is unable to connect to Download Station if 2-Factor Authentication is enabled on your DSM account",
+        "type": "warning"
+      },
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "DownloadStationSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "127.0.0.1"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 5000
+        },
+        {
+          "advanced": false,
+          "helpText": "Use secure connection when connection to Download Station",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 3,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 4,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended. Creates a [category] subdirectory in the output directory.",
+          "isFloat": false,
+          "label": "Category",
+          "name": "tvCategory",
+          "order": 5,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Optional shared folder to put downloads into, leave blank to use the default Download Station location",
+          "isFloat": false,
+          "label": "Directory",
+          "name": "tvDirectory",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "UsenetDownloadStation",
+      "implementationName": "Download Station",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#usenetdownloadstation",
+      "message": {
+        "message": "Sonarr is unable to connect to Download Station if 2-Factor Authentication is enabled on your DSM account",
+        "type": "warning"
+      },
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "usenet",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "FloodSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 3000
+        },
+        {
+          "advanced": false,
+          "helpText": "Use secure connection when connection to Flood",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Adds a prefix to the Flood API, such as [protocol]://[host]:[port]/[urlBase]/api",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 4,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 5,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "helpText": "Manually specifies download destination, leave blank to use the default",
+          "isFloat": false,
+          "label": "Destination",
+          "name": "destination",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Initial tags of a download. To be recognized, a download must have all initial tags. This avoids conflicts with unrelated downloads.",
+          "isFloat": false,
+          "label": "Tags",
+          "name": "tags",
+          "order": 7,
+          "privacy": "normal",
+          "type": "tag",
+          "value": [
+            "sonarr"
+          ]
+        },
+        {
+          "advanced": true,
+          "helpText": "Appends tags after a download is imported. Torrents with all these tags will be filtered from the queue and will not removed automatically.",
+          "isFloat": false,
+          "label": "Post-Import Tags",
+          "name": "postImportTags",
+          "order": 8,
+          "privacy": "normal",
+          "type": "tag"
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds properties of media as tags. Hints are examples.",
+          "isFloat": false,
+          "label": "Additional Tags",
+          "name": "additionalTags",
+          "order": 9,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "hint": "big-buck-bunny",
+              "name": "TitleSlug",
+              "order": 7,
+              "value": 0
+            },
+            {
+              "hint": "Bluray-2160p",
+              "name": "Quality",
+              "order": 10,
+              "value": 1
+            },
+            {
+              "hint": "English",
+              "name": "Languages",
+              "order": 13,
+              "value": 2
+            },
+            {
+              "hint": "Example-Raws",
+              "name": "ReleaseGroup",
+              "order": 16,
+              "value": 3
+            },
+            {
+              "hint": "2020",
+              "name": "Year",
+              "order": 19,
+              "value": 4
+            },
+            {
+              "hint": "Torznab",
+              "name": "Indexer",
+              "order": 22,
+              "value": 5
+            },
+            {
+              "hint": "C-SPAN",
+              "name": "Network",
+              "order": 25,
+              "value": 6
+            }
+          ],
+          "type": "select",
+          "value": []
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Start on Add",
+          "name": "startOnAdd",
+          "order": 10,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": true
+        }
+      ],
+      "implementation": "Flood",
+      "implementationName": "Flood",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#flood",
+      "message": {
+        "message": "Sonarr will handle automatic removal of torrents based on the current seed criteria in Settings -> Indexers",
+        "type": "info"
+      },
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "FreeboxDownloadSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Hostname or host IP address of the Freebox, defaults to 'mafreebox.freebox.fr' (will only work if on same network)",
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "mafreebox.freebox.fr"
+        },
+        {
+          "advanced": false,
+          "helpText": "Port used to access Freebox interface, defaults to '443'",
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 443
+        },
+        {
+          "advanced": false,
+          "helpText": "Use secure connection when connection to Freebox API",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": true,
+          "helpText": "Define Freebox API base URL with API version, eg 'http://[host]:[port]/[api_base_url]/[api_version]/', defaults to '/api/v1/'",
+          "isFloat": false,
+          "label": "API URL",
+          "name": "apiUrl",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "/api/v1/"
+        },
+        {
+          "advanced": false,
+          "helpText": "App ID given when creating access to Freebox API (ie 'app_id')",
+          "isFloat": false,
+          "label": "App ID",
+          "name": "appId",
+          "order": 4,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "App token retrieved when creating access to Freebox API (ie 'app_token')",
+          "isFloat": false,
+          "label": "App Token",
+          "name": "appToken",
+          "order": 5,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": true,
+          "helpText": "Manually specifies download destination, leave blank to use the default",
+          "isFloat": false,
+          "label": "Destination",
+          "name": "destinationDirectory",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended. Creates a [category] subdirectory in the output directory.",
+          "isFloat": false,
+          "label": "Category",
+          "name": "category",
+          "order": 7,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired within the last 14 days",
+          "isFloat": false,
+          "label": "Recent Priority",
+          "name": "recentPriority",
+          "order": 8,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Last",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "First",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired over 14 days ago",
+          "isFloat": false,
+          "label": "Older Priority",
+          "name": "olderPriority",
+          "order": 9,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Last",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "First",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Add Paused",
+          "name": "addPaused",
+          "order": 10,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        }
+      ],
+      "implementation": "TorrentFreeboxDownload",
+      "implementationName": "Freebox Download",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#torrentfreeboxdownload",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "HadoukenSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 7070
+        },
+        {
+          "advanced": false,
+          "helpText": "Use secure connection when connection to Hadouken",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds a prefix to the Hadouken url, such as http://[host]:[port]/[urlBase]/api",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 4,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 5,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended.",
+          "isFloat": false,
+          "label": "Category",
+          "name": "category",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "sonarr-tv"
+        }
+      ],
+      "implementation": "Hadouken",
+      "implementationName": "Hadouken",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#hadouken",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "NzbgetSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 6789
+        },
+        {
+          "advanced": false,
+          "helpText": "Use secure connection when connection to NZBGet",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds a prefix to the NZBGet url, such as http://[host]:[port]/[urlBase]/jsonrpc",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 4,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 5,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended.",
+          "isFloat": false,
+          "label": "Category",
+          "name": "tvCategory",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "tv"
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired within the last 14 days",
+          "isFloat": false,
+          "label": "Recent Priority",
+          "name": "recentTvPriority",
+          "order": 7,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "VeryLow",
+              "order": -100,
+              "value": -100
+            },
+            {
+              "name": "Low",
+              "order": -50,
+              "value": -50
+            },
+            {
+              "name": "Normal",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "High",
+              "order": 50,
+              "value": 50
+            },
+            {
+              "name": "VeryHigh",
+              "order": 100,
+              "value": 100
+            },
+            {
+              "name": "Force",
+              "order": 900,
+              "value": 900
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired over 14 days ago",
+          "isFloat": false,
+          "label": "Older Priority",
+          "name": "olderTvPriority",
+          "order": 8,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "VeryLow",
+              "order": -100,
+              "value": -100
+            },
+            {
+              "name": "Low",
+              "order": -50,
+              "value": -50
+            },
+            {
+              "name": "Normal",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "High",
+              "order": 50,
+              "value": 50
+            },
+            {
+              "name": "VeryHigh",
+              "order": 100,
+              "value": 100
+            },
+            {
+              "name": "Force",
+              "order": 900,
+              "value": 900
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "This option requires at least NzbGet version 16.0",
+          "isFloat": false,
+          "label": "Add Paused",
+          "name": "addPaused",
+          "order": 9,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        }
+      ],
+      "implementation": "Nzbget",
+      "implementationName": "NZBGet",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#nzbget",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "usenet",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "NzbVortexSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 4321
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds a prefix to the NZBVortex url, such as http://[host]:[port]/[urlBase]/api",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "API Key",
+          "name": "apiKey",
+          "order": 3,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended.",
+          "isFloat": false,
+          "label": "Group",
+          "name": "tvCategory",
+          "order": 4,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "TV Shows"
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired within the last 14 days",
+          "isFloat": false,
+          "label": "Recent Priority",
+          "name": "recentTvPriority",
+          "order": 5,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Low",
+              "order": -1,
+              "value": -1
+            },
+            {
+              "name": "Normal",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "High",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired over 14 days ago",
+          "isFloat": false,
+          "label": "Older Priority",
+          "name": "olderTvPriority",
+          "order": 6,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Low",
+              "order": -1,
+              "value": -1
+            },
+            {
+              "name": "Normal",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "High",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        }
+      ],
+      "implementation": "NzbVortex",
+      "implementationName": "NZBVortex",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#nzbvortex",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "usenet",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "PneumaticSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "This folder will need to be reachable from XBMC",
+          "isFloat": false,
+          "label": "Nzb Folder",
+          "name": "nzbFolder",
+          "order": 0,
+          "privacy": "normal",
+          "type": "path"
+        },
+        {
+          "advanced": false,
+          "helpText": ".strm files in this folder will be import by drone",
+          "isFloat": false,
+          "label": "Strm Folder",
+          "name": "strmFolder",
+          "order": 1,
+          "privacy": "normal",
+          "type": "path"
+        }
+      ],
+      "implementation": "Pneumatic",
+      "implementationName": "Pneumatic",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#pneumatic",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "usenet",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "QBittorrentSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 8080
+        },
+        {
+          "advanced": false,
+          "helpText": "Use a secure connection. See Options -> Web UI -> 'Use HTTPS instead of HTTP' in qBittorrent.",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds a prefix to the qBittorrent url, such as http://[host]:[port]/[urlBase]/api",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "API Key",
+          "name": "apiKey",
+          "order": 4,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 5,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 6,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended.",
+          "isFloat": false,
+          "label": "Category",
+          "name": "tvCategory",
+          "order": 7,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "tv-sonarr"
+        },
+        {
+          "advanced": true,
+          "helpText": "Category for Sonarr to set after it has imported the download. Sonarr will not remove torrents in that category even if seeding finished. Leave blank to keep same category.",
+          "isFloat": false,
+          "label": "Post-Import Category",
+          "name": "tvImportedCategory",
+          "order": 8,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired within the last 14 days",
+          "isFloat": false,
+          "label": "Recent Priority",
+          "name": "recentTvPriority",
+          "order": 9,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Last",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "First",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired over 14 days ago",
+          "isFloat": false,
+          "label": "Older Priority",
+          "name": "olderTvPriority",
+          "order": 10,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Last",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "First",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Initial state for torrents added to qBittorrent. Note that Forced Torrents do not abide by seed restrictions",
+          "isFloat": false,
+          "label": "Initial State",
+          "name": "initialState",
+          "order": 11,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "hint": "(0)",
+              "name": "Started",
+              "order": 7,
+              "value": 0
+            },
+            {
+              "hint": "(1)",
+              "name": "Force Started",
+              "order": 10,
+              "value": 1
+            },
+            {
+              "hint": "(2)",
+              "name": "Stopped",
+              "order": 13,
+              "value": 2
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Download in sequential order (qBittorrent 4.1.0+)",
+          "isFloat": false,
+          "label": "Sequential Order",
+          "name": "sequentialOrder",
+          "order": 12,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Download first and last pieces first (qBittorrent 4.1.0+)",
+          "isFloat": false,
+          "label": "First and Last First",
+          "name": "firstAndLast",
+          "order": 13,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Whether to use qBittorrent's configured content layout, the original layout from the torrent or always create a subfolder (qBittorrent 4.3.2+)",
+          "isFloat": false,
+          "label": "Content Layout",
+          "name": "contentLayout",
+          "order": 14,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Default",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "Original",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Subfolder",
+              "order": 2,
+              "value": 2
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Add series tags to new torrents added to the download client (qBittorrent 4.1.0+)",
+          "isFloat": false,
+          "label": "Add Series Tags",
+          "name": "addSeriesTags",
+          "order": 15,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        }
+      ],
+      "implementation": "QBittorrent",
+      "implementationName": "qBittorrent",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#qbittorrent",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "RQbitSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 3030
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "/"
+        }
+      ],
+      "implementation": "RQBit",
+      "implementationName": "RQBit",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#rqbit",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "RTorrentSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 8080
+        },
+        {
+          "advanced": false,
+          "helpText": "Use secure connection when connection to rTorrent",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Path to the XMLRPC endpoint, see http(s)://[host]:[port]/[urlPath]. This is usually RPC2 or [path to ruTorrent]/plugins/rpc/rpc.php when using ruTorrent.",
+          "isFloat": false,
+          "label": "Url Path",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "RPC2"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 4,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 5,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended.",
+          "isFloat": false,
+          "label": "Category",
+          "name": "tvCategory",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "tv-sonarr"
+        },
+        {
+          "advanced": true,
+          "helpText": "Category for Sonarr to set after it has imported the download. Sonarr will not remove torrents in that category even if seeding finished. Leave blank to keep same category.",
+          "isFloat": false,
+          "label": "Post-Import Category",
+          "name": "tvImportedCategory",
+          "order": 7,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "helpText": "Optional location to put downloads in, leave blank to use the default rTorrent location",
+          "isFloat": false,
+          "label": "Directory",
+          "name": "tvDirectory",
+          "order": 8,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired within the last 14 days",
+          "isFloat": false,
+          "label": "Recent Priority",
+          "name": "recentTvPriority",
+          "order": 9,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "VeryLow",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "Low",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Normal",
+              "order": 2,
+              "value": 2
+            },
+            {
+              "name": "High",
+              "order": 3,
+              "value": 3
+            }
+          ],
+          "type": "select",
+          "value": 2
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired over 14 days ago",
+          "isFloat": false,
+          "label": "Older Priority",
+          "name": "olderTvPriority",
+          "order": 10,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "VeryLow",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "Low",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Normal",
+              "order": 2,
+              "value": 2
+            },
+            {
+              "name": "High",
+              "order": 3,
+              "value": 3
+            }
+          ],
+          "type": "select",
+          "value": 2
+        },
+        {
+          "advanced": false,
+          "helpText": "Enabling will add torrents and magnets to rTorrent in a stopped state. This may break magnet files.",
+          "isFloat": false,
+          "label": "Add Stopped",
+          "name": "addStopped",
+          "order": 11,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        }
+      ],
+      "implementation": "RTorrent",
+      "implementationName": "rTorrent",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#rtorrent",
+      "message": {
+        "message": "rTorrent will not pause torrents when they meet the seed criteria. Sonarr will handle automatic removal of torrents based on the current seed criteria in Settings->Indexers only when Remove Completed is enabled.  After importing it will also set sonarr_imported as an rTorrent view, which can be used in rTorrent scripts to customize behavior.",
+        "type": "info"
+      },
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "SabnzbdSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 8080
+        },
+        {
+          "advanced": false,
+          "helpText": "Use secure connection when connection to Sabnzbd",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds a prefix to the Sabnzbd url, such as http://[host]:[port]/[urlBase]/api",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "API Key",
+          "name": "apiKey",
+          "order": 4,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 5,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 6,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended.",
+          "isFloat": false,
+          "label": "Category",
+          "name": "tvCategory",
+          "order": 7,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "tv"
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired within the last 14 days",
+          "isFloat": false,
+          "label": "Recent Priority",
+          "name": "recentTvPriority",
+          "order": 8,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Default",
+              "order": -100,
+              "value": -100
+            },
+            {
+              "name": "Paused",
+              "order": -2,
+              "value": -2
+            },
+            {
+              "name": "Low",
+              "order": -1,
+              "value": -1
+            },
+            {
+              "name": "Normal",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "High",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Force",
+              "order": 2,
+              "value": 2
+            }
+          ],
+          "type": "select",
+          "value": -100
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired over 14 days ago",
+          "isFloat": false,
+          "label": "Older Priority",
+          "name": "olderTvPriority",
+          "order": 9,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Default",
+              "order": -100,
+              "value": -100
+            },
+            {
+              "name": "Paused",
+              "order": -2,
+              "value": -2
+            },
+            {
+              "name": "Low",
+              "order": -1,
+              "value": -1
+            },
+            {
+              "name": "Normal",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "High",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Force",
+              "order": 2,
+              "value": 2
+            }
+          ],
+          "type": "select",
+          "value": -100
+        }
+      ],
+      "implementation": "Sabnzbd",
+      "implementationName": "SABnzbd",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#sabnzbd",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "usenet",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "TorrentBlackholeSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Folder in which Sonarr will store the .torrent file",
+          "isFloat": false,
+          "label": "Torrent Folder",
+          "name": "torrentFolder",
+          "order": 0,
+          "privacy": "normal",
+          "type": "path"
+        },
+        {
+          "advanced": false,
+          "helpText": "Folder from which Sonarr should import completed downloads",
+          "isFloat": false,
+          "label": "Watch Folder",
+          "name": "watchFolder",
+          "order": 1,
+          "privacy": "normal",
+          "type": "path"
+        },
+        {
+          "advanced": false,
+          "helpText": "Save the magnet link if no .torrent file is available (only useful if the download client supports magnets saved to a file)",
+          "isFloat": false,
+          "label": "Save Magnet Files",
+          "name": "saveMagnetFiles",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Extension to use for magnet links, defaults to '.magnet'",
+          "isFloat": false,
+          "label": "Save Magnet Files Extension",
+          "name": "magnetFileExtension",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": ".magnet"
+        },
+        {
+          "advanced": false,
+          "helpText": "Instead of moving files this will instruct Sonarr to Copy or Hardlink (depending on settings/system configuration)",
+          "isFloat": false,
+          "label": "Read Only",
+          "name": "readOnly",
+          "order": 4,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": true
+        }
+      ],
+      "implementation": "TorrentBlackhole",
+      "implementationName": "Torrent Blackhole",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#torrentblackhole",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "TransmissionSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 9091
+        },
+        {
+          "advanced": false,
+          "helpText": "Use secure connection when connection to Transmission",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds a prefix to the Transmission rpc url, eg http://[host]:[port]/[urlBase]/rpc, defaults to '/transmission/'",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "/transmission/"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 4,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 5,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended. Creates a [category] subdirectory in the output directory.",
+          "isFloat": false,
+          "label": "Category",
+          "name": "tvCategory",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "tv-sonarr"
+        },
+        {
+          "advanced": true,
+          "helpText": "Category for Sonarr to set after it has imported the download. Sonarr will not remove torrents in that category even if seeding finished. Leave blank to keep same category.",
+          "isFloat": false,
+          "label": "Post-Import Category",
+          "name": "tvImportedCategory",
+          "order": 7,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "helpText": "Optional location to put downloads in, leave blank to use the default Transmission location",
+          "isFloat": false,
+          "label": "Directory",
+          "name": "tvDirectory",
+          "order": 8,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired within the last 14 days",
+          "isFloat": false,
+          "label": "Recent Priority",
+          "name": "recentTvPriority",
+          "order": 9,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Last",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "First",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired over 14 days ago",
+          "isFloat": false,
+          "label": "Older Priority",
+          "name": "olderTvPriority",
+          "order": 10,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Last",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "First",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Add Paused",
+          "name": "addPaused",
+          "order": 11,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        }
+      ],
+      "implementation": "Transmission",
+      "implementationName": "Transmission",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#transmission",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "TriblerDownloadSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 20100
+        },
+        {
+          "advanced": false,
+          "helpText": "Use secure connection when connection to {clientName}",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds a prefix to the Tribler url, such as http://[host]:[port]/[urlBase]",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": ""
+        },
+        {
+          "advanced": false,
+          "helpText": "[api].key from triblerd.conf",
+          "isFloat": false,
+          "label": "API Key",
+          "name": "apiKey",
+          "order": 4,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended.",
+          "isFloat": false,
+          "label": "Category",
+          "name": "tvCategory",
+          "order": 5,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "helpText": "Optional location to put downloads in, leave blank to use the default Tribler location",
+          "isFloat": false,
+          "label": "Directory",
+          "name": "tvDirectory",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Number of proxies to use when downloading content. To disable set to 0. Proxies reduce download/upload speed. See https://www.tribler.org/anonymity.html",
+          "isFloat": false,
+          "label": "Anonymity level",
+          "name": "anonymityLevel",
+          "order": 7,
+          "privacy": "normal",
+          "type": "number",
+          "value": 1
+        },
+        {
+          "advanced": false,
+          "helpText": "When enabled, only seed through proxies.",
+          "isFloat": false,
+          "label": "Safe Seeding",
+          "name": "safeSeeding",
+          "order": 8,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": true
+        }
+      ],
+      "implementation": "TriblerDownloadClient",
+      "implementationName": "Tribler",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#triblerdownloadclient",
+      "message": {
+        "message": "The tribler integration is highly experimental. Tested against Tribler version 8.0.7.",
+        "type": "warning"
+      },
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "UsenetBlackholeSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Folder in which Sonarr will store the .nzb file",
+          "isFloat": false,
+          "label": "Nzb Folder",
+          "name": "nzbFolder",
+          "order": 0,
+          "privacy": "normal",
+          "type": "path"
+        },
+        {
+          "advanced": false,
+          "helpText": "Folder from which Sonarr should import completed downloads",
+          "isFloat": false,
+          "label": "Watch Folder",
+          "name": "watchFolder",
+          "order": 1,
+          "privacy": "normal",
+          "type": "path"
+        }
+      ],
+      "implementation": "UsenetBlackhole",
+      "implementationName": "Usenet Blackhole",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#usenetblackhole",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "usenet",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "UTorrentSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 8080
+        },
+        {
+          "advanced": false,
+          "helpText": "Use secure connection when connection to uTorrent",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds a prefix to the uTorrent url, such as http://[host]:[port]/[urlBase]/api",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 4,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 5,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended.",
+          "isFloat": false,
+          "label": "Category",
+          "name": "tvCategory",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "tv-sonarr"
+        },
+        {
+          "advanced": true,
+          "helpText": "Category for Sonarr to set after it has imported the download. Sonarr will not remove torrents in that category even if seeding finished. Leave blank to keep same category.",
+          "isFloat": false,
+          "label": "Post-Import Category",
+          "name": "tvImportedCategory",
+          "order": 7,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired within the last 14 days",
+          "isFloat": false,
+          "label": "Recent Priority",
+          "name": "recentTvPriority",
+          "order": 8,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Last",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "First",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired over 14 days ago",
+          "isFloat": false,
+          "label": "Older Priority",
+          "name": "olderTvPriority",
+          "order": 9,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Last",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "First",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Initial state for torrents added to uTorrent",
+          "isFloat": false,
+          "label": "Initial State",
+          "name": "intialState",
+          "order": 10,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Start",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "ForceStart",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Pause",
+              "order": 2,
+              "value": 2
+            },
+            {
+              "name": "Stop",
+              "order": 3,
+              "value": 3
+            }
+          ],
+          "type": "select",
+          "value": 0
+        }
+      ],
+      "implementation": "UTorrent",
+      "implementationName": "uTorrent",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#utorrent",
+      "message": {
+        "message": "uTorrent has a history of including cryptominers, malware and ads, we strongly encourage you to choose a different client.",
+        "type": "warning"
+      },
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    },
+    {
+      "configContract": "TransmissionSettings",
+      "enable": false,
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "localhost"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 9091
+        },
+        {
+          "advanced": false,
+          "helpText": "Use secure connection when connection to Transmission",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds a prefix to the Transmission rpc url, eg http://[host]:[port]/[urlBase]/rpc, defaults to '/transmission/'",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "/transmission/"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 4,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 5,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended. Creates a [category] subdirectory in the output directory.",
+          "isFloat": false,
+          "label": "Category",
+          "name": "tvCategory",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "tv-sonarr"
+        },
+        {
+          "advanced": true,
+          "helpText": "Category for Sonarr to set after it has imported the download. Sonarr will not remove torrents in that category even if seeding finished. Leave blank to keep same category.",
+          "isFloat": false,
+          "label": "Post-Import Category",
+          "name": "tvImportedCategory",
+          "order": 7,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "helpText": "Optional location to put downloads in, leave blank to use the default Transmission location",
+          "isFloat": false,
+          "label": "Directory",
+          "name": "tvDirectory",
+          "order": 8,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired within the last 14 days",
+          "isFloat": false,
+          "label": "Recent Priority",
+          "name": "recentTvPriority",
+          "order": 9,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Last",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "First",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority to use when grabbing episodes that aired over 14 days ago",
+          "isFloat": false,
+          "label": "Older Priority",
+          "name": "olderTvPriority",
+          "order": 10,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Last",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "First",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Add Paused",
+          "name": "addPaused",
+          "order": 11,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        }
+      ],
+      "implementation": "Vuze",
+      "implementationName": "Vuze",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#vuze",
+      "name": "",
+      "presets": [],
+      "priority": 1,
+      "protocol": "torrent",
+      "removeCompletedDownloads": true,
+      "removeFailedDownloads": true,
+      "tags": []
+    }
+  ],
+  "body_is_json": true
+}

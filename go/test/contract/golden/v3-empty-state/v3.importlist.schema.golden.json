@@ -1,0 +1,1176 @@
+{
+  "entry_id": "v3.importlist.schema",
+  "status": 200,
+  "headers": {
+    "Cache-Control": [
+      "no-cache, no-store"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "Date": [
+      "Sat, 02 May 2026 07:02:09 GMT"
+    ],
+    "Expires": [
+      "-1"
+    ],
+    "Pragma": [
+      "no-cache"
+    ],
+    "Server": [
+      "Kestrel"
+    ],
+    "Vary": [
+      "Accept-Encoding"
+    ],
+    "X-Application-Version": [
+      "10.0.0.26712"
+    ],
+    "X-Miniprofiler-Ids": [
+      "[\"864d1897-6c2f-4178-8d32-138bf3d31cfa\",\"8f06fec6-ad14-472b-b4d6-40a020a21f8b\",\"3c0bab2f-e955-4bb5-97cb-92f458aaa26f\",\"403bc832-4cc1-4b57-9c42-4484937945a1\",\"1d736d5a-d4a0-4bb1-800f-340a8756f6b2\",\"c8d43a2f-abdf-448d-9334-8ff4acb55255\",\"5e17565d-fb92-4b1e-86f8-0bbc88bdf930\",\"4f5a7dd8-858c-4d39-ba2d-1c5c36ff1bac\",\"4594f3b9-2d9c-494b-99d6-5f949fb6b2e3\",\"b06c30ec-dc14-4b79-a52d-ee47e8f89701\",\"3199c7d4-aef0-4306-b92f-7a75211f9f4d\",\"88c05535-643f-4e7d-850c-22ec33998e8c\",\"a45261da-00fc-4625-8d56-a92eaf9770e5\",\"479dbb98-d820-4131-9399-18439ffcaf19\",\"9ba4509b-2ac8-422d-9552-c8b8b6373dc3\",\"08b1b251-28bb-42bd-81a0-b3073737f68e\",\"94f45814-8db8-4103-9162-c993a762afa6\",\"46660b29-4481-4262-802c-619545aa71ad\",\"43833658-9058-43cd-b8b9-1a30ae59ca34\",\"3b54ab7a-8301-4ccc-b380-60344dd45a1a\",\"0c70bf5a-765b-494a-850e-56623a72db38\",\"d641e10b-8c13-42db-b4b7-5536566ce09a\"]"
+    ]
+  },
+  "body_json": [
+    {
+      "configContract": "AniListSettings",
+      "enableAutomaticAdd": false,
+      "fields": [
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Access Token",
+          "name": "accessToken",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Refresh Token",
+          "name": "refreshToken",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Expires",
+          "name": "expires",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "0001-01-01T00:00:00Z"
+        },
+        {
+          "advanced": false,
+          "helpText": "Username for the List to import from",
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "List: Currently Watching",
+          "isFloat": false,
+          "label": "Import Watching",
+          "name": "importCurrent",
+          "order": 4,
+          "privacy": "normal",
+          "section": "Import List Status",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "helpText": "List: Planning to Watch",
+          "isFloat": false,
+          "label": "Import Planning",
+          "name": "importPlanning",
+          "order": 5,
+          "privacy": "normal",
+          "section": "Import List Status",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "helpText": "List: Completed Watching",
+          "isFloat": false,
+          "label": "Import Completed",
+          "name": "importCompleted",
+          "order": 6,
+          "privacy": "normal",
+          "section": "Import List Status",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "List: Dropped",
+          "isFloat": false,
+          "label": "Import Dropped",
+          "name": "importDropped",
+          "order": 7,
+          "privacy": "normal",
+          "section": "Import List Status",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "List: On Hold",
+          "isFloat": false,
+          "label": "Import Paused",
+          "name": "importPaused",
+          "order": 8,
+          "privacy": "normal",
+          "section": "Import List Status",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "List: Currently Re-watching",
+          "isFloat": false,
+          "label": "Import Repeating",
+          "name": "importRepeating",
+          "order": 9,
+          "privacy": "normal",
+          "section": "Import List Status",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Media: All episodes have aired",
+          "isFloat": false,
+          "label": "Import Finished",
+          "name": "importFinished",
+          "order": 10,
+          "privacy": "normal",
+          "section": "Import List Status",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "helpText": "Media: Currently airing new episodes",
+          "isFloat": false,
+          "label": "Import Releasing",
+          "name": "importReleasing",
+          "order": 11,
+          "privacy": "normal",
+          "section": "Import List Status",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "helpText": "Media: Airing has not yet started",
+          "isFloat": false,
+          "label": "Import Not Yet Released",
+          "name": "importUnreleased",
+          "order": 12,
+          "privacy": "normal",
+          "section": "Import List Status",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Media: Series is cancelled",
+          "isFloat": false,
+          "label": "Import Cancelled",
+          "name": "importCancelled",
+          "order": 13,
+          "privacy": "normal",
+          "section": "Import List Status",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Media: Series on Hiatus",
+          "isFloat": false,
+          "label": "Import Hiatus",
+          "name": "importHiatus",
+          "order": 14,
+          "privacy": "normal",
+          "section": "Import List Status",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Authenticate with AniList",
+          "name": "signIn",
+          "order": 15,
+          "privacy": "normal",
+          "type": "oAuth",
+          "value": "startOAuth"
+        }
+      ],
+      "implementation": "AniListImport",
+      "implementationName": "AniList List",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#anilistimport",
+      "listOrder": 4,
+      "listType": "other",
+      "minRefreshInterval": "12:00:00",
+      "monitorNewItems": "all",
+      "presets": [],
+      "qualityProfileId": 0,
+      "searchForMissingEpisodes": false,
+      "seasonFolder": false,
+      "seriesType": "standard",
+      "shouldMonitor": "unknown",
+      "tags": []
+    },
+    {
+      "configContract": "CustomSettings",
+      "enableAutomaticAdd": false,
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "The URL for the series list",
+          "isFloat": false,
+          "label": "List URL",
+          "name": "baseUrl",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": ""
+        }
+      ],
+      "implementation": "CustomImport",
+      "implementationName": "Custom List",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#customimport",
+      "listOrder": 5,
+      "listType": "advanced",
+      "minRefreshInterval": "06:00:00",
+      "monitorNewItems": "all",
+      "presets": [],
+      "qualityProfileId": 0,
+      "searchForMissingEpisodes": false,
+      "seasonFolder": false,
+      "seriesType": "standard",
+      "shouldMonitor": "unknown",
+      "tags": []
+    },
+    {
+      "configContract": "MyAnimeListSettings",
+      "enableAutomaticAdd": false,
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Type of list you want to import from, set to 'All' for all lists",
+          "isFloat": false,
+          "label": "List Status",
+          "name": "listStatus",
+          "order": 0,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "hint": "(0)",
+              "name": "All",
+              "order": 7,
+              "value": 0
+            },
+            {
+              "hint": "(1)",
+              "name": "Watching",
+              "order": 10,
+              "value": 1
+            },
+            {
+              "hint": "(2)",
+              "name": "Completed",
+              "order": 13,
+              "value": 2
+            },
+            {
+              "hint": "(3)",
+              "name": "On Hold",
+              "order": 16,
+              "value": 3
+            },
+            {
+              "hint": "(4)",
+              "name": "Dropped",
+              "order": 19,
+              "value": 4
+            },
+            {
+              "hint": "(5)",
+              "name": "Plan to Watch",
+              "order": 22,
+              "value": 5
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Access Token",
+          "name": "accessToken",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Refresh Token",
+          "name": "refreshToken",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Expires",
+          "name": "expires",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "0001-01-01T00:00:00Z"
+        },
+        {
+          "advanced": false,
+          "helpText": "Minimum score for shows to be imported",
+          "isFloat": false,
+          "label": "Minimum Score",
+          "name": "minimumScore",
+          "order": 4,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Authenticate with MyAnimeList",
+          "name": "signIn",
+          "order": 5,
+          "privacy": "normal",
+          "type": "oAuth"
+        }
+      ],
+      "implementation": "MyAnimeListImport",
+      "implementationName": "MyAnimeList",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#myanimelistimport",
+      "listOrder": 4,
+      "listType": "other",
+      "minRefreshInterval": "06:00:00",
+      "monitorNewItems": "all",
+      "presets": [],
+      "qualityProfileId": 0,
+      "searchForMissingEpisodes": false,
+      "seasonFolder": false,
+      "seriesType": "standard",
+      "shouldMonitor": "unknown",
+      "tags": []
+    },
+    {
+      "configContract": "PlexListSettings",
+      "enableAutomaticAdd": false,
+      "fields": [
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Access Token",
+          "name": "accessToken",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Authenticate with Plex.tv",
+          "name": "signIn",
+          "order": 1,
+          "privacy": "normal",
+          "type": "oAuth",
+          "value": "startOAuth"
+        }
+      ],
+      "implementation": "PlexImport",
+      "implementationName": "Plex Watchlist",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#pleximport",
+      "listOrder": 1,
+      "listType": "plex",
+      "minRefreshInterval": "06:00:00",
+      "monitorNewItems": "all",
+      "presets": [],
+      "qualityProfileId": 0,
+      "searchForMissingEpisodes": false,
+      "seasonFolder": false,
+      "seriesType": "standard",
+      "shouldMonitor": "unknown",
+      "tags": []
+    },
+    {
+      "configContract": "PlexRssImportSettings",
+      "enableAutomaticAdd": false,
+      "fields": [
+        {
+          "advanced": false,
+          "helpLink": "https://app.plex.tv/desktop/#!/settings/watchlist",
+          "isFloat": false,
+          "label": "RSS URL",
+          "name": "url",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "PlexRssImport",
+      "implementationName": "Plex Watchlist RSS",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#plexrssimport",
+      "listOrder": 1,
+      "listType": "plex",
+      "minRefreshInterval": "06:00:00",
+      "monitorNewItems": "all",
+      "presets": [],
+      "qualityProfileId": 0,
+      "searchForMissingEpisodes": false,
+      "seasonFolder": false,
+      "seriesType": "standard",
+      "shouldMonitor": "unknown",
+      "tags": []
+    },
+    {
+      "configContract": "SimklUserSettings",
+      "enableAutomaticAdd": false,
+      "fields": [
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Access Token",
+          "name": "accessToken",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Refresh Token",
+          "name": "refreshToken",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Expires",
+          "name": "expires",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "0001-01-01T00:00:00Z"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Auth User",
+          "name": "authUser",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Type of list you're seeking to import from",
+          "isFloat": false,
+          "label": "List Type",
+          "name": "listType",
+          "order": 4,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "hint": "(0)",
+              "name": "Watching",
+              "order": 7,
+              "value": 0
+            },
+            {
+              "hint": "(1)",
+              "name": "Plan To Watch",
+              "order": 9,
+              "value": 1
+            },
+            {
+              "hint": "(2)",
+              "name": "Hold",
+              "order": 11,
+              "value": 2
+            },
+            {
+              "hint": "(3)",
+              "name": "Completed",
+              "order": 13,
+              "value": 3
+            },
+            {
+              "hint": "(4)",
+              "name": "Dropped",
+              "order": 15,
+              "value": 4
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Type of show you're seeking to import from",
+          "isFloat": false,
+          "label": "Show Type",
+          "name": "showType",
+          "order": 5,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Shows",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "Anime",
+              "order": 1,
+              "value": 1
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Authenticate with Simkl",
+          "name": "signIn",
+          "order": 6,
+          "privacy": "normal",
+          "type": "oAuth",
+          "value": "startOAuth"
+        }
+      ],
+      "implementation": "SimklUserImport",
+      "implementationName": "Simkl User Watchlist",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#simkluserimport",
+      "listOrder": 3,
+      "listType": "simkl",
+      "minRefreshInterval": "06:00:00",
+      "monitorNewItems": "all",
+      "presets": [],
+      "qualityProfileId": 0,
+      "searchForMissingEpisodes": false,
+      "seasonFolder": false,
+      "seriesType": "standard",
+      "shouldMonitor": "unknown",
+      "tags": []
+    },
+    {
+      "configContract": "SonarrSettings",
+      "enableAutomaticAdd": false,
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "URL, including port, of the Sonarr instance to import from",
+          "isFloat": false,
+          "label": "Full URL",
+          "name": "baseUrl",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": ""
+        },
+        {
+          "advanced": false,
+          "helpText": "API Key of the Sonarr instance to import from",
+          "isFloat": false,
+          "label": "API Key",
+          "name": "apiKey",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": ""
+        },
+        {
+          "advanced": false,
+          "helpText": "Sync season monitoring from Sonarr instance, if enabled 'Monitor' will be ignored",
+          "isFloat": false,
+          "label": "Sync Season Monitoring",
+          "name": "syncSeasonMonitoring",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Quality Profiles from the source instance to import from",
+          "isFloat": false,
+          "label": "Quality Profiles",
+          "name": "profileIds",
+          "order": 3,
+          "privacy": "normal",
+          "selectOptionsProviderAction": "getProfiles",
+          "type": "select",
+          "value": []
+        },
+        {
+          "advanced": false,
+          "helpText": "Tags from the source instance to import from",
+          "isFloat": false,
+          "label": "Tags",
+          "name": "tagIds",
+          "order": 4,
+          "privacy": "normal",
+          "selectOptionsProviderAction": "getTags",
+          "type": "select",
+          "value": []
+        },
+        {
+          "advanced": false,
+          "helpText": "Root Folders from the source instance to import from",
+          "isFloat": false,
+          "label": "Root Folders",
+          "name": "rootFolderPaths",
+          "order": 5,
+          "privacy": "normal",
+          "selectOptionsProviderAction": "getRootFolders",
+          "type": "select",
+          "value": []
+        },
+        {
+          "advanced": false,
+          "helpText": "Language Profiles from the source instance to import from",
+          "isFloat": false,
+          "label": "Language Profiles",
+          "name": "languageProfileIds",
+          "order": 6,
+          "privacy": "normal",
+          "selectOptionsProviderAction": "getLanguageProfiles",
+          "type": "select",
+          "value": []
+        }
+      ],
+      "implementation": "SonarrImport",
+      "implementationName": "Sonarr",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#sonarrimport",
+      "listOrder": 0,
+      "listType": "program",
+      "minRefreshInterval": "00:05:00",
+      "monitorNewItems": "all",
+      "presets": [],
+      "qualityProfileId": 0,
+      "searchForMissingEpisodes": false,
+      "seasonFolder": false,
+      "seriesType": "standard",
+      "shouldMonitor": "unknown",
+      "tags": []
+    },
+    {
+      "configContract": "TraktListSettings",
+      "enableAutomaticAdd": false,
+      "fields": [
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Access Token",
+          "name": "accessToken",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Refresh Token",
+          "name": "refreshToken",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Expires",
+          "name": "expires",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "0001-01-01T00:00:00Z"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Auth User",
+          "name": "authUser",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Username for the List to import from",
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 4,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "List name for import, list must be public or you must have access to the list",
+          "isFloat": false,
+          "label": "List Name",
+          "name": "listname",
+          "order": 5,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Limit the number of series to get",
+          "isFloat": false,
+          "label": "Limit",
+          "name": "limit",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 100
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Authenticate with Trakt",
+          "name": "signIn",
+          "order": 7,
+          "privacy": "normal",
+          "type": "oAuth",
+          "value": "startOAuth"
+        }
+      ],
+      "implementation": "TraktListImport",
+      "implementationName": "Trakt List",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#traktlistimport",
+      "listOrder": 2,
+      "listType": "trakt",
+      "minRefreshInterval": "12:00:00",
+      "monitorNewItems": "all",
+      "presets": [],
+      "qualityProfileId": 0,
+      "searchForMissingEpisodes": false,
+      "seasonFolder": false,
+      "seriesType": "standard",
+      "shouldMonitor": "unknown",
+      "tags": []
+    },
+    {
+      "configContract": "TraktPopularSettings",
+      "enableAutomaticAdd": false,
+      "fields": [
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Access Token",
+          "name": "accessToken",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Refresh Token",
+          "name": "refreshToken",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Expires",
+          "name": "expires",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "0001-01-01T00:00:00Z"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Auth User",
+          "name": "authUser",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Type of list you're seeking to import from",
+          "isFloat": false,
+          "label": "List Type",
+          "name": "traktListType",
+          "order": 4,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "hint": "(0)",
+              "name": "Trending Shows",
+              "order": 8,
+              "value": 0
+            },
+            {
+              "hint": "(1)",
+              "name": "Popular Shows",
+              "order": 11,
+              "value": 1
+            },
+            {
+              "hint": "(2)",
+              "name": "Anticipated Shows",
+              "order": 14,
+              "value": 2
+            },
+            {
+              "hint": "(3)",
+              "name": "Top Watched Shows By Week",
+              "order": 17,
+              "value": 3
+            },
+            {
+              "hint": "(4)",
+              "name": "Top Watched Shows By Month",
+              "order": 20,
+              "value": 4
+            },
+            {
+              "hint": "(6)",
+              "name": "Top Watched Shows Of All Time",
+              "order": 27,
+              "value": 6
+            },
+            {
+              "hint": "(7)",
+              "name": "Recommended Shows By Week",
+              "order": 30,
+              "value": 7
+            },
+            {
+              "hint": "(8)",
+              "name": "Recommended Shows By Month",
+              "order": 33,
+              "value": 8
+            },
+            {
+              "hint": "(10)",
+              "name": "Recommended Shows Of All Time",
+              "order": 40,
+              "value": 10
+            }
+          ],
+          "type": "select",
+          "value": 1
+        },
+        {
+          "advanced": false,
+          "helpText": "Filter series by rating range (0-100)",
+          "isFloat": false,
+          "label": "Rating",
+          "name": "rating",
+          "order": 5,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Filter series by Trakt Genre Slug (Comma Separated) Only for Popular Lists",
+          "isFloat": false,
+          "label": "Genres",
+          "name": "genres",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Filter series by year or year range",
+          "isFloat": false,
+          "label": "Years",
+          "name": "years",
+          "order": 7,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "helpText": "Additional Trakt API parameters",
+          "isFloat": false,
+          "label": "Additional Parameters",
+          "name": "traktAdditionalParameters",
+          "order": 8,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Limit the number of series to get",
+          "isFloat": false,
+          "label": "Limit",
+          "name": "limit",
+          "order": 9,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 100
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Authenticate with Trakt",
+          "name": "signIn",
+          "order": 10,
+          "privacy": "normal",
+          "type": "oAuth",
+          "value": "startOAuth"
+        }
+      ],
+      "implementation": "TraktPopularImport",
+      "implementationName": "Trakt Popular List",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#traktpopularimport",
+      "listOrder": 2,
+      "listType": "trakt",
+      "minRefreshInterval": "12:00:00",
+      "monitorNewItems": "all",
+      "presets": [],
+      "qualityProfileId": 0,
+      "searchForMissingEpisodes": false,
+      "seasonFolder": false,
+      "seriesType": "standard",
+      "shouldMonitor": "unknown",
+      "tags": []
+    },
+    {
+      "configContract": "TraktUserSettings",
+      "enableAutomaticAdd": false,
+      "fields": [
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Access Token",
+          "name": "accessToken",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Refresh Token",
+          "name": "refreshToken",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Expires",
+          "name": "expires",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "0001-01-01T00:00:00Z"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Auth User",
+          "name": "authUser",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Type of list you're seeking to import from",
+          "isFloat": false,
+          "label": "List Type",
+          "name": "traktListType",
+          "order": 4,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "hint": "(0)",
+              "name": "User Watch List",
+              "order": 7,
+              "value": 0
+            },
+            {
+              "hint": "(1)",
+              "name": "User Watched List",
+              "order": 9,
+              "value": 1
+            },
+            {
+              "hint": "(2)",
+              "name": "User Collection List",
+              "order": 11,
+              "value": 2
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "If List Type is Watched, select the series type you want to import",
+          "isFloat": false,
+          "label": "Watched List Filter",
+          "name": "traktWatchedListType",
+          "order": 5,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "hint": "(0)",
+              "name": "All",
+              "order": 7,
+              "value": 0
+            },
+            {
+              "hint": "(1)",
+              "name": "In Progress",
+              "order": 9,
+              "value": 1
+            },
+            {
+              "hint": "(2)",
+              "name": "100% Watched",
+              "order": 11,
+              "value": 2
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "If List Type is Watch, select the order to sort the list",
+          "isFloat": false,
+          "label": "Watch List Sorting",
+          "name": "traktWatchSorting",
+          "order": 6,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Rank",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "Added",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Title",
+              "order": 2,
+              "value": 2
+            },
+            {
+              "name": "Released",
+              "order": 3,
+              "value": 3
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Username for the List to import from (leave empty to use Auth User)",
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 7,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Limit the number of series to get",
+          "isFloat": false,
+          "label": "Limit",
+          "name": "limit",
+          "order": 8,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 100
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Authenticate with Trakt",
+          "name": "signIn",
+          "order": 9,
+          "privacy": "normal",
+          "type": "oAuth",
+          "value": "startOAuth"
+        }
+      ],
+      "implementation": "TraktUserImport",
+      "implementationName": "Trakt User",
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#traktuserimport",
+      "listOrder": 2,
+      "listType": "trakt",
+      "minRefreshInterval": "12:00:00",
+      "monitorNewItems": "all",
+      "presets": [],
+      "qualityProfileId": 0,
+      "searchForMissingEpisodes": false,
+      "seasonFolder": false,
+      "seriesType": "standard",
+      "shouldMonitor": "unknown",
+      "tags": []
+    }
+  ],
+  "body_is_json": true
+}

@@ -1,0 +1,75 @@
+{
+  "entry_id": "v3.config.host",
+  "status": 200,
+  "headers": {
+    "Cache-Control": [
+      "no-cache, no-store"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "Date": [
+      "Sat, 02 May 2026 07:02:08 GMT"
+    ],
+    "Expires": [
+      "-1"
+    ],
+    "Pragma": [
+      "no-cache"
+    ],
+    "Server": [
+      "Kestrel"
+    ],
+    "Vary": [
+      "Accept-Encoding"
+    ],
+    "X-Application-Version": [
+      "10.0.0.26712"
+    ],
+    "X-Miniprofiler-Ids": [
+      "[\"77d75529-d1af-4168-ac2b-982963c24cbf\",\"d0d96a9d-597e-4889-93ad-751a7313e5fe\",\"2a5a9bd3-de6e-4c79-874b-3b1b4f376abf\",\"6ae72b40-6d02-4216-9468-80e9f5d6423f\",\"820e2d89-3207-477b-956b-2668496b5f90\",\"0cce7c54-0624-4d84-bd53-32ae3d59ba1c\",\"75a2fc3f-b1b2-4abc-be34-856f7accd480\",\"aa737407-5850-41b2-b86f-4a0161ca19ad\",\"99212afc-7978-47a3-8374-457decf0f288\"]"
+    ]
+  },
+  "body_json": {
+    "analyticsEnabled": false,
+    "apiKey": "<redacted>",
+    "applicationUrl": "",
+    "authenticationMethod": "none",
+    "authenticationRequired": "enabled",
+    "backupFolder": "Backups",
+    "backupInterval": 7,
+    "backupRetention": 28,
+    "bindAddress": "*",
+    "branch": "main",
+    "certificateValidation": "enabled",
+    "consoleLogLevel": "",
+    "enableSsl": false,
+    "id": 1,
+    "instanceName": "<redacted>",
+    "launchBrowser": false,
+    "logLevel": "debug",
+    "logSizeLimit": 1,
+    "password": "",
+    "passwordConfirmation": "",
+    "port": 9898,
+    "proxyBypassFilter": "",
+    "proxyBypassLocalAddresses": true,
+    "proxyEnabled": false,
+    "proxyHostname": "",
+    "proxyPassword": "",
+    "proxyPort": 8080,
+    "proxyType": "http",
+    "proxyUsername": "",
+    "sslCertPassword": "",
+    "sslCertPath": "",
+    "sslKeyPath": "",
+    "sslPort": 9898,
+    "trustCgnatIpAddresses": false,
+    "updateAutomatically": false,
+    "updateMechanism": "builtIn",
+    "updateScriptPath": "",
+    "urlBase": "",
+    "username": ""
+  },
+  "body_is_json": true
+}

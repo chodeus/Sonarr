@@ -1,0 +1,41 @@
+{
+  "entry_id": "v3.config.downloadclient",
+  "status": 200,
+  "headers": {
+    "Cache-Control": [
+      "no-cache, no-store"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "Date": [
+      "Sat, 02 May 2026 07:02:08 GMT"
+    ],
+    "Expires": [
+      "-1"
+    ],
+    "Pragma": [
+      "no-cache"
+    ],
+    "Server": [
+      "Kestrel"
+    ],
+    "Vary": [
+      "Accept-Encoding"
+    ],
+    "X-Application-Version": [
+      "10.0.0.26712"
+    ],
+    "X-Miniprofiler-Ids": [
+      "[\"77d75529-d1af-4168-ac2b-982963c24cbf\",\"d0d96a9d-597e-4889-93ad-751a7313e5fe\",\"2a5a9bd3-de6e-4c79-874b-3b1b4f376abf\",\"6ae72b40-6d02-4216-9468-80e9f5d6423f\",\"820e2d89-3207-477b-956b-2668496b5f90\",\"0cce7c54-0624-4d84-bd53-32ae3d59ba1c\",\"75a2fc3f-b1b2-4abc-be34-856f7accd480\",\"aa737407-5850-41b2-b86f-4a0161ca19ad\",\"99212afc-7978-47a3-8374-457decf0f288\",\"9adbcb5b-7e2a-4478-8b32-2e9879f05376\",\"9a2b26df-34c6-4ae1-bbce-f59e979ef4e7\",\"3fc8751c-e413-48d7-b424-09b67ba82384\",\"179efdfe-2666-4f32-83c1-e2b78679a949\"]"
+    ]
+  },
+  "body_json": {
+    "autoRedownloadFailed": true,
+    "autoRedownloadFailedFromInteractiveSearch": true,
+    "downloadClientWorkingFolders": "_UNPACK_|_FAILED_",
+    "enableCompletedDownloadHandling": true,
+    "id": 1
+  },
+  "body_is_json": true
+}

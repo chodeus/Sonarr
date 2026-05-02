@@ -1,0 +1,19 @@
+# Compiled binaries
+/bin/
+/dist/
+sonarr
+sonarr-update
+
+# Go workspaces
+go.work
+go.work.sum
+
+# Test artifacts
+coverage.out
+coverage.html
+profile.out
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

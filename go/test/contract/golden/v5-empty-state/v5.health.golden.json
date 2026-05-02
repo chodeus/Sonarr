@@ -1,0 +1,57 @@
+{
+  "entry_id": "v5.health",
+  "status": 200,
+  "headers": {
+    "Cache-Control": [
+      "no-cache, no-store"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "Date": [
+      "Sat, 02 May 2026 07:02:09 GMT"
+    ],
+    "Expires": [
+      "-1"
+    ],
+    "Pragma": [
+      "no-cache"
+    ],
+    "Server": [
+      "Kestrel"
+    ],
+    "Vary": [
+      "Accept-Encoding"
+    ],
+    "X-Application-Version": [
+      "10.0.0.26712"
+    ],
+    "X-Miniprofiler-Ids": [
+      "[\"46660b29-4481-4262-802c-619545aa71ad\",\"43833658-9058-43cd-b8b9-1a30ae59ca34\",\"3b54ab7a-8301-4ccc-b380-60344dd45a1a\",\"0c70bf5a-765b-494a-850e-56623a72db38\",\"d641e10b-8c13-42db-b4b7-5536566ce09a\",\"d9bdbd8c-133d-4714-82cf-5fe885d84bae\",\"222ee732-c6de-44bd-ba1d-e15c8608d0b5\",\"cb52fc6c-eefb-4ed3-b7aa-e262ed438507\",\"eed23717-0433-445d-95ff-d61d7d8ea504\",\"3a84780b-a75e-4384-bd5b-6237ef6aaa20\",\"f6c4c29f-3509-4b03-a542-7d0776c0f032\",\"19e203f5-9186-4a78-9ac6-3e4d709175cf\",\"143fa42d-6e5c-4995-aa38-0be426810081\",\"5c5c56f2-7b3e-4d1b-bd39-de00fc7ce444\",\"2a667e94-a84e-4b3d-a27a-6c8d8856e0b0\",\"419e48e0-017c-4b96-8976-ee630b802aa2\",\"9197707c-55a3-440b-a335-0243464678c7\",\"78d82f60-4c95-4bfa-8ad7-08036610b643\",\"fcc423db-e05f-44bd-ac79-73dbbfdaed41\",\"cf5cf455-586f-4e11-8470-e7525b5dfebf\",\"b2e6283c-81cb-4c54-9bfe-25fbaef241ac\",\"13e63564-1810-4ed1-af59-a44e440a01e6\"]"
+    ]
+  },
+  "body_json": [
+    {
+      "message": "No indexers available with RSS sync enabled, Sonarr will not grab new releases automatically",
+      "reason": "indexerRssNoIndexersEnabled",
+      "source": "IndexerRssCheck",
+      "type": "error",
+      "wikiUrl": "https://wiki.servarr.com/sonarr/system#no-indexers-available-with-rss-sync-enabled-sonarr-will-not-grab-new-releases-automatically"
+    },
+    {
+      "message": "No download client is available",
+      "reason": "downloadClientCheckNoneAvailable",
+      "source": "DownloadClientCheck",
+      "type": "warning",
+      "wikiUrl": "https://wiki.servarr.com/sonarr/system#no-download-client-is-available"
+    },
+    {
+      "message": "No indexers available with Automatic Search enabled, Sonarr will not provide any automatic search results",
+      "reason": "indexerSearchNoAutomatic",
+      "source": "IndexerSearchCheck",
+      "type": "warning",
+      "wikiUrl": "https://wiki.servarr.com/sonarr/system#no-indexers-available-with-automatic-search-enabled-sonarr-will-not-provide-any-automatic-search-results"
+    }
+  ],
+  "body_is_json": true
+}

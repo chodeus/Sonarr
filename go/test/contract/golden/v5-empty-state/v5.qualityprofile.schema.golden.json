@@ -1,0 +1,353 @@
+{
+  "entry_id": "v5.qualityprofile.schema",
+  "status": 200,
+  "headers": {
+    "Cache-Control": [
+      "no-cache, no-store"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "Date": [
+      "Sat, 02 May 2026 07:02:09 GMT"
+    ],
+    "Expires": [
+      "-1"
+    ],
+    "Pragma": [
+      "no-cache"
+    ],
+    "Server": [
+      "Kestrel"
+    ],
+    "Vary": [
+      "Accept-Encoding"
+    ],
+    "X-Application-Version": [
+      "10.0.0.26712"
+    ],
+    "X-Miniprofiler-Ids": [
+      "[\"3b54ab7a-8301-4ccc-b380-60344dd45a1a\",\"0c70bf5a-765b-494a-850e-56623a72db38\",\"d641e10b-8c13-42db-b4b7-5536566ce09a\",\"d9bdbd8c-133d-4714-82cf-5fe885d84bae\",\"222ee732-c6de-44bd-ba1d-e15c8608d0b5\",\"cb52fc6c-eefb-4ed3-b7aa-e262ed438507\",\"eed23717-0433-445d-95ff-d61d7d8ea504\",\"3a84780b-a75e-4384-bd5b-6237ef6aaa20\",\"f6c4c29f-3509-4b03-a542-7d0776c0f032\",\"19e203f5-9186-4a78-9ac6-3e4d709175cf\",\"143fa42d-6e5c-4995-aa38-0be426810081\",\"5c5c56f2-7b3e-4d1b-bd39-de00fc7ce444\",\"2a667e94-a84e-4b3d-a27a-6c8d8856e0b0\",\"419e48e0-017c-4b96-8976-ee630b802aa2\",\"9197707c-55a3-440b-a335-0243464678c7\",\"78d82f60-4c95-4bfa-8ad7-08036610b643\",\"fcc423db-e05f-44bd-ac79-73dbbfdaed41\",\"cf5cf455-586f-4e11-8470-e7525b5dfebf\",\"b2e6283c-81cb-4c54-9bfe-25fbaef241ac\",\"13e63564-1810-4ed1-af59-a44e440a01e6\",\"328df138-120a-4d4e-b422-977284dc3664\",\"8c556267-7114-43a5-baf6-aa06d8f0b3e7\"]"
+    ]
+  },
+  "body_json": {
+    "cutoff": 0,
+    "cutoffFormatScore": 0,
+    "formatItems": [],
+    "items": [
+      {
+        "allowed": false,
+        "items": [],
+        "maxSize": 199.9,
+        "minSize": 1,
+        "preferredSize": 95,
+        "quality": {
+          "id": 0,
+          "name": "Unknown",
+          "resolution": 0,
+          "source": "unknown"
+        }
+      },
+      {
+        "allowed": false,
+        "items": [],
+        "maxSize": 100,
+        "minSize": 2,
+        "preferredSize": 95,
+        "quality": {
+          "id": 1,
+          "name": "SDTV",
+          "resolution": 480,
+          "source": "television"
+        }
+      },
+      {
+        "allowed": false,
+        "id": 1000,
+        "items": [
+          {
+            "allowed": false,
+            "items": [],
+            "maxSize": 100,
+            "minSize": 2,
+            "preferredSize": 95,
+            "quality": {
+              "id": 12,
+              "name": "WEBRip-480p",
+              "resolution": 480,
+              "source": "webRip"
+            }
+          },
+          {
+            "allowed": false,
+            "items": [],
+            "maxSize": 100,
+            "minSize": 2,
+            "preferredSize": 95,
+            "quality": {
+              "id": 8,
+              "name": "WEBDL-480p",
+              "resolution": 480,
+              "source": "web"
+            }
+          }
+        ],
+        "name": "WEB 480p"
+      },
+      {
+        "allowed": false,
+        "items": [],
+        "maxSize": 100,
+        "minSize": 2,
+        "preferredSize": 95,
+        "quality": {
+          "id": 2,
+          "name": "DVD",
+          "resolution": 480,
+          "source": "dvd"
+        }
+      },
+      {
+        "allowed": false,
+        "items": [],
+        "maxSize": 100,
+        "minSize": 2,
+        "preferredSize": 95,
+        "quality": {
+          "id": 13,
+          "name": "Bluray-480p",
+          "resolution": 480,
+          "source": "bluray"
+        }
+      },
+      {
+        "allowed": false,
+        "items": [],
+        "maxSize": 100,
+        "minSize": 2,
+        "preferredSize": 95,
+        "quality": {
+          "id": 22,
+          "name": "Bluray-576p",
+          "resolution": 576,
+          "source": "bluray"
+        }
+      },
+      {
+        "allowed": false,
+        "items": [],
+        "maxSize": 125,
+        "minSize": 3,
+        "preferredSize": 95,
+        "quality": {
+          "id": 4,
+          "name": "HDTV-720p",
+          "resolution": 720,
+          "source": "television"
+        }
+      },
+      {
+        "allowed": false,
+        "items": [],
+        "maxSize": 125,
+        "minSize": 4,
+        "preferredSize": 95,
+        "quality": {
+          "id": 9,
+          "name": "HDTV-1080p",
+          "resolution": 1080,
+          "source": "television"
+        }
+      },
+      {
+        "allowed": false,
+        "items": [],
+        "minSize": 4,
+        "preferredSize": 95,
+        "quality": {
+          "id": 10,
+          "name": "Raw-HD",
+          "resolution": 1080,
+          "source": "televisionRaw"
+        }
+      },
+      {
+        "allowed": false,
+        "id": 1001,
+        "items": [
+          {
+            "allowed": false,
+            "items": [],
+            "maxSize": 130,
+            "minSize": 3,
+            "preferredSize": 95,
+            "quality": {
+              "id": 14,
+              "name": "WEBRip-720p",
+              "resolution": 720,
+              "source": "webRip"
+            }
+          },
+          {
+            "allowed": false,
+            "items": [],
+            "maxSize": 130,
+            "minSize": 3,
+            "preferredSize": 95,
+            "quality": {
+              "id": 5,
+              "name": "WEBDL-720p",
+              "resolution": 720,
+              "source": "web"
+            }
+          }
+        ],
+        "name": "WEB 720p"
+      },
+      {
+        "allowed": false,
+        "items": [],
+        "maxSize": 130,
+        "minSize": 4,
+        "preferredSize": 95,
+        "quality": {
+          "id": 6,
+          "name": "Bluray-720p",
+          "resolution": 720,
+          "source": "bluray"
+        }
+      },
+      {
+        "allowed": false,
+        "id": 1002,
+        "items": [
+          {
+            "allowed": false,
+            "items": [],
+            "maxSize": 130,
+            "minSize": 4,
+            "preferredSize": 95,
+            "quality": {
+              "id": 15,
+              "name": "WEBRip-1080p",
+              "resolution": 1080,
+              "source": "webRip"
+            }
+          },
+          {
+            "allowed": false,
+            "items": [],
+            "maxSize": 130,
+            "minSize": 4,
+            "preferredSize": 95,
+            "quality": {
+              "id": 3,
+              "name": "WEBDL-1080p",
+              "resolution": 1080,
+              "source": "web"
+            }
+          }
+        ],
+        "name": "WEB 1080p"
+      },
+      {
+        "allowed": false,
+        "items": [],
+        "maxSize": 155,
+        "minSize": 4,
+        "preferredSize": 95,
+        "quality": {
+          "id": 7,
+          "name": "Bluray-1080p",
+          "resolution": 1080,
+          "source": "bluray"
+        }
+      },
+      {
+        "allowed": false,
+        "items": [],
+        "minSize": 35,
+        "preferredSize": 95,
+        "quality": {
+          "id": 20,
+          "name": "Bluray-1080p Remux",
+          "resolution": 1080,
+          "source": "blurayRaw"
+        }
+      },
+      {
+        "allowed": false,
+        "items": [],
+        "maxSize": 199.9,
+        "minSize": 35,
+        "preferredSize": 95,
+        "quality": {
+          "id": 16,
+          "name": "HDTV-2160p",
+          "resolution": 2160,
+          "source": "television"
+        }
+      },
+      {
+        "allowed": false,
+        "id": 1003,
+        "items": [
+          {
+            "allowed": false,
+            "items": [],
+            "minSize": 35,
+            "preferredSize": 95,
+            "quality": {
+              "id": 17,
+              "name": "WEBRip-2160p",
+              "resolution": 2160,
+              "source": "webRip"
+            }
+          },
+          {
+            "allowed": false,
+            "items": [],
+            "minSize": 35,
+            "preferredSize": 95,
+            "quality": {
+              "id": 18,
+              "name": "WEBDL-2160p",
+              "resolution": 2160,
+              "source": "web"
+            }
+          }
+        ],
+        "name": "WEB 2160p"
+      },
+      {
+        "allowed": false,
+        "items": [],
+        "minSize": 35,
+        "preferredSize": 95,
+        "quality": {
+          "id": 19,
+          "name": "Bluray-2160p",
+          "resolution": 2160,
+          "source": "bluray"
+        }
+      },
+      {
+        "allowed": false,
+        "items": [],
+        "minSize": 35,
+        "preferredSize": 95,
+        "quality": {
+          "id": 21,
+          "name": "Bluray-2160p Remux",
+          "resolution": 2160,
+          "source": "blurayRaw"
+        }
+      }
+    ],
+    "minFormatScore": 0,
+    "minUpgradeFormatScore": 1,
+    "name": "",
+    "upgradeAllowed": false
+  },
+  "body_is_json": true
+}

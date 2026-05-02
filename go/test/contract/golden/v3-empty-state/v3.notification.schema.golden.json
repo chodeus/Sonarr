@@ -1,0 +1,2995 @@
+{
+  "entry_id": "v3.notification.schema",
+  "status": 200,
+  "headers": {
+    "Cache-Control": [
+      "no-cache, no-store"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "Date": [
+      "Sat, 02 May 2026 07:02:09 GMT"
+    ],
+    "Expires": [
+      "-1"
+    ],
+    "Pragma": [
+      "no-cache"
+    ],
+    "Server": [
+      "Kestrel"
+    ],
+    "Vary": [
+      "Accept-Encoding"
+    ],
+    "X-Application-Version": [
+      "10.0.0.26712"
+    ],
+    "X-Miniprofiler-Ids": [
+      "[\"73b6e909-c64a-445b-83c6-461723abcb1c\",\"1a914ebb-fe89-4531-bc48-3697862adbdd\",\"864d1897-6c2f-4178-8d32-138bf3d31cfa\",\"8f06fec6-ad14-472b-b4d6-40a020a21f8b\",\"3c0bab2f-e955-4bb5-97cb-92f458aaa26f\",\"403bc832-4cc1-4b57-9c42-4484937945a1\",\"1d736d5a-d4a0-4bb1-800f-340a8756f6b2\",\"c8d43a2f-abdf-448d-9334-8ff4acb55255\",\"5e17565d-fb92-4b1e-86f8-0bbc88bdf930\",\"4f5a7dd8-858c-4d39-ba2d-1c5c36ff1bac\",\"4594f3b9-2d9c-494b-99d6-5f949fb6b2e3\",\"b06c30ec-dc14-4b79-a52d-ee47e8f89701\",\"3199c7d4-aef0-4306-b92f-7a75211f9f4d\",\"88c05535-643f-4e7d-850c-22ec33998e8c\",\"a45261da-00fc-4625-8d56-a92eaf9770e5\",\"479dbb98-d820-4131-9399-18439ffcaf19\",\"9ba4509b-2ac8-422d-9552-c8b8b6373dc3\",\"08b1b251-28bb-42bd-81a0-b3073737f68e\",\"94f45814-8db8-4103-9162-c993a762afa6\",\"46660b29-4481-4262-802c-619545aa71ad\",\"43833658-9058-43cd-b8b9-1a30ae59ca34\",\"3b54ab7a-8301-4ccc-b380-60344dd45a1a\"]"
+    ]
+  },
+  "body_json": [
+    {
+      "configContract": "AppriseSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpLink": "https://github.com/caronc/apprise-api",
+          "helpText": "Apprise server URL, including http(s):// and port if needed",
+          "isFloat": false,
+          "label": "Apprise Server URL",
+          "name": "serverUrl",
+          "order": 0,
+          "placeholder": "http://localhost:8000",
+          "privacy": "normal",
+          "type": "url"
+        },
+        {
+          "advanced": false,
+          "helpLink": "https://github.com/caronc/apprise-api#persistent-storage-solution",
+          "helpText": "Configuration Key for the Persistent Storage Solution. Leave empty if Stateless URLs is used.",
+          "isFloat": false,
+          "label": "Apprise Configuration Key",
+          "name": "configurationKey",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpLink": "https://github.com/caronc/apprise#productivity-based-notifications",
+          "helpText": "One or more URLs separated by commas identifying where the notification should be sent to. Leave empty if Persistent Storage is used.",
+          "isFloat": false,
+          "label": "Apprise Stateless URLs",
+          "name": "statelessUrls",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Apprise Notification Type",
+          "name": "notificationType",
+          "order": 3,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Info",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "Success",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Warning",
+              "order": 2,
+              "value": 2
+            },
+            {
+              "name": "Failure",
+              "order": 3,
+              "value": 3
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Optionally notify only those tagged accordingly.",
+          "isFloat": false,
+          "label": "Apprise Tags",
+          "name": "tags",
+          "order": 4,
+          "privacy": "normal",
+          "type": "tag",
+          "value": []
+        },
+        {
+          "advanced": false,
+          "helpText": "Include poster in message",
+          "isFloat": false,
+          "label": "Include Poster",
+          "name": "includePoster",
+          "order": 5,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "HTTP Basic Auth Username",
+          "isFloat": false,
+          "label": "Username",
+          "name": "authUsername",
+          "order": 6,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "HTTP Basic Auth Password",
+          "isFloat": false,
+          "label": "Password",
+          "name": "authPassword",
+          "order": 7,
+          "privacy": "password",
+          "type": "password"
+        }
+      ],
+      "implementation": "Apprise",
+      "implementationName": "Apprise",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#apprise",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "CustomScriptSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Path",
+          "name": "path",
+          "order": 0,
+          "privacy": "normal",
+          "type": "filePath"
+        },
+        {
+          "advanced": false,
+          "helpText": "Arguments to pass to the script",
+          "hidden": "hiddenIfNotSet",
+          "isFloat": false,
+          "label": "Arguments",
+          "name": "arguments",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "CustomScript",
+      "implementationName": "Custom Script",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#customscript",
+      "message": {
+        "message": "Testing will execute the script with the EventType set to Test, ensure your script handles this correctly",
+        "type": "warning"
+      },
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": true,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "DiscordSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Discord channel webhook url",
+          "isFloat": false,
+          "label": "Webhook URL",
+          "name": "webHookUrl",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "The username to post as, defaults to Discord webhook default",
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 1,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Change the avatar that is used for messages from this integration",
+          "isFloat": false,
+          "label": "Avatar",
+          "name": "avatar",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "helpText": "Override the embed author that shows for this notification. Blank is instance name",
+          "isFloat": false,
+          "label": "Author",
+          "name": "author",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "helpText": "Change the fields that are passed in for this 'on grab' notification",
+          "isFloat": false,
+          "label": "On Grab Fields",
+          "name": "grabFields",
+          "order": 4,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Overview",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "Rating",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Genres",
+              "order": 2,
+              "value": 2
+            },
+            {
+              "name": "Quality",
+              "order": 3,
+              "value": 3
+            },
+            {
+              "name": "Group",
+              "order": 4,
+              "value": 4
+            },
+            {
+              "name": "Size",
+              "order": 5,
+              "value": 5
+            },
+            {
+              "name": "Links",
+              "order": 6,
+              "value": 6
+            },
+            {
+              "name": "Release",
+              "order": 7,
+              "value": 7
+            },
+            {
+              "name": "Poster",
+              "order": 8,
+              "value": 8
+            },
+            {
+              "name": "Fanart",
+              "order": 9,
+              "value": 9
+            },
+            {
+              "name": "Indexer",
+              "order": 10,
+              "value": 10
+            },
+            {
+              "name": "CustomFormats",
+              "order": 11,
+              "value": 11
+            },
+            {
+              "name": "CustomFormatScore",
+              "order": 12,
+              "value": 12
+            }
+          ],
+          "type": "select",
+          "value": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ]
+        },
+        {
+          "advanced": true,
+          "helpText": "Change the fields that are passed in for this 'on import' notification",
+          "isFloat": false,
+          "label": "On Import Fields",
+          "name": "importFields",
+          "order": 5,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Overview",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "Rating",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Genres",
+              "order": 2,
+              "value": 2
+            },
+            {
+              "name": "Quality",
+              "order": 3,
+              "value": 3
+            },
+            {
+              "name": "Codecs",
+              "order": 4,
+              "value": 4
+            },
+            {
+              "name": "Group",
+              "order": 5,
+              "value": 5
+            },
+            {
+              "name": "Size",
+              "order": 6,
+              "value": 6
+            },
+            {
+              "name": "Languages",
+              "order": 7,
+              "value": 7
+            },
+            {
+              "name": "Subtitles",
+              "order": 8,
+              "value": 8
+            },
+            {
+              "name": "Links",
+              "order": 9,
+              "value": 9
+            },
+            {
+              "name": "Release",
+              "order": 10,
+              "value": 10
+            },
+            {
+              "name": "Poster",
+              "order": 11,
+              "value": 11
+            },
+            {
+              "name": "Fanart",
+              "order": 12,
+              "value": 12
+            },
+            {
+              "name": "CustomFormats",
+              "order": 13,
+              "value": 13
+            },
+            {
+              "name": "CustomFormatScore",
+              "order": 14,
+              "value": 14
+            }
+          ],
+          "type": "select",
+          "value": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ]
+        },
+        {
+          "advanced": true,
+          "helpText": "Change the fields that are passed in for this 'on manual interation' notification",
+          "isFloat": false,
+          "label": "On Manual Interaction Fields",
+          "name": "manualInteractionFields",
+          "order": 6,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Overview",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "Rating",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Genres",
+              "order": 2,
+              "value": 2
+            },
+            {
+              "name": "Quality",
+              "order": 3,
+              "value": 3
+            },
+            {
+              "name": "Group",
+              "order": 4,
+              "value": 4
+            },
+            {
+              "name": "Size",
+              "order": 5,
+              "value": 5
+            },
+            {
+              "name": "Links",
+              "order": 6,
+              "value": 6
+            },
+            {
+              "name": "DownloadTitle",
+              "order": 7,
+              "value": 7
+            },
+            {
+              "name": "Poster",
+              "order": 8,
+              "value": 8
+            },
+            {
+              "name": "Fanart",
+              "order": 9,
+              "value": 9
+            }
+          ],
+          "type": "select",
+          "value": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ]
+        }
+      ],
+      "implementation": "Discord",
+      "implementationName": "Discord",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#discord",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": true,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "EmailSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Hostname or IP of Email server",
+          "isFloat": false,
+          "label": "Server",
+          "name": "server",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 587
+        },
+        {
+          "advanced": false,
+          "helpText": "Whether to prefer using encryption if configured on the server, to always use encryption via SSL (Port 465 only) or StartTLS (any other port) or to never use encryption",
+          "isFloat": false,
+          "label": "Use Encryption",
+          "name": "useEncryption",
+          "order": 2,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Preferred",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "Always",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Never",
+              "order": 2,
+              "value": 2
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 3,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 4,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "From Address",
+          "name": "from",
+          "order": 5,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Comma separated list of email recipients",
+          "isFloat": false,
+          "label": "Recipient Address(es)",
+          "name": "to",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": []
+        },
+        {
+          "advanced": true,
+          "helpText": "Comma separated list of email cc recipients",
+          "isFloat": false,
+          "label": "CC Address(es)",
+          "name": "cc",
+          "order": 7,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": []
+        },
+        {
+          "advanced": true,
+          "helpText": "Comma separated list of email bcc recipients",
+          "isFloat": false,
+          "label": "BCC Address(es)",
+          "name": "bcc",
+          "order": 8,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": []
+        }
+      ],
+      "implementation": "Email",
+      "implementationName": "Email",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#email",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "MediaBrowserSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 8096
+        },
+        {
+          "advanced": false,
+          "helpText": "Connect to Emby/Jellyfin over HTTPS instead of HTTP",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds a prefix to the Emby/Jellyfin url, such as http://[host]:[port]/[urlBase]/mediabrowser",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "API Key",
+          "name": "apiKey",
+          "order": 4,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Have Emby send notifications to configured providers. Not supported on Jellyfin.",
+          "isFloat": false,
+          "label": "Send Notifications",
+          "name": "notify",
+          "order": 5,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Update Library on Import, Rename, or Delete",
+          "isFloat": false,
+          "label": "Update Library",
+          "name": "updateLibrary",
+          "order": 6,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": true,
+          "helpText": "Sonarr path, used to modify series paths when Emby/Jellyfin sees library path location differently from Sonarr (Requires 'Update Library')",
+          "isFloat": false,
+          "label": "Map Paths From",
+          "name": "mapFrom",
+          "order": 7,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "helpText": "Emby/Jellyfin path, used to modify series paths when Emby/Jellyfin sees library path location differently from Sonarr (Requires 'Update Library')",
+          "isFloat": false,
+          "label": "Map Paths To",
+          "name": "mapTo",
+          "order": 8,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "MediaBrowser",
+      "implementationName": "Emby / Jellyfin",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#mediabrowser",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": false,
+      "supportsOnRename": true,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "GotifySettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Gotify server URL, including http(s):// and port if needed",
+          "isFloat": false,
+          "label": "Gotify Server",
+          "name": "server",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "The Application Token generated by Gotify",
+          "isFloat": false,
+          "label": "App Token",
+          "name": "appToken",
+          "order": 1,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Priority of the notification",
+          "isFloat": false,
+          "label": "Priority",
+          "name": "priority",
+          "order": 2,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Min",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "Low",
+              "order": 2,
+              "value": 2
+            },
+            {
+              "name": "Normal",
+              "order": 5,
+              "value": 5
+            },
+            {
+              "name": "High",
+              "order": 8,
+              "value": 8
+            }
+          ],
+          "type": "select",
+          "value": 5
+        },
+        {
+          "advanced": false,
+          "helpText": "Include series poster in message",
+          "isFloat": false,
+          "label": "Include Series Poster",
+          "name": "includeSeriesPoster",
+          "order": 3,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Add a links to series metadata when sending notifications",
+          "isFloat": false,
+          "label": "Metadata Links",
+          "name": "metadataLinks",
+          "order": 4,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "hint": "(0)",
+              "name": "IMDb",
+              "order": 7,
+              "value": 0
+            },
+            {
+              "hint": "(1)",
+              "name": "TVDb",
+              "order": 10,
+              "value": 1
+            },
+            {
+              "hint": "(2)",
+              "name": "TVMaze",
+              "order": 13,
+              "value": 2
+            },
+            {
+              "hint": "(3)",
+              "name": "Trakt",
+              "order": 16,
+              "value": 3
+            }
+          ],
+          "type": "select",
+          "value": []
+        },
+        {
+          "advanced": false,
+          "helpText": "Metadata link for clients that only support a single link",
+          "isFloat": false,
+          "label": "Preferred Metadata Link",
+          "name": "preferredMetadataLink",
+          "order": 5,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "hint": "(0)",
+              "name": "IMDb",
+              "order": 7,
+              "value": 0
+            },
+            {
+              "hint": "(1)",
+              "name": "TVDb",
+              "order": 10,
+              "value": 1
+            },
+            {
+              "hint": "(2)",
+              "name": "TVMaze",
+              "order": 13,
+              "value": 2
+            },
+            {
+              "hint": "(3)",
+              "name": "Trakt",
+              "order": 16,
+              "value": 3
+            }
+          ],
+          "type": "select",
+          "value": 1
+        }
+      ],
+      "implementation": "Gotify",
+      "implementationName": "Gotify",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#gotify",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "JoinSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpLink": "https://joinjoaomgcd.appspot.com/",
+          "helpText": "The API Key from your Join account settings (click Join API button).",
+          "isFloat": false,
+          "label": "API Key",
+          "name": "apiKey",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Deprecated, use Device Names instead. Comma separated list of Device IDs you'd like to send notifications to. If unset, all devices will receive notifications.",
+          "hidden": "hiddenIfNotSet",
+          "isFloat": false,
+          "label": "Device IDs",
+          "name": "deviceIds",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpLink": "https://joaoapps.com/join/api/",
+          "helpText": "Comma separated list of full or partial device names you'd like to send notifications to. If unset, all devices will receive notifications.",
+          "isFloat": false,
+          "label": "Device Names",
+          "name": "deviceNames",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Notification Priority",
+          "name": "priority",
+          "order": 3,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Silent",
+              "order": -2,
+              "value": -2
+            },
+            {
+              "name": "Quiet",
+              "order": -1,
+              "value": -1
+            },
+            {
+              "name": "Normal",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "High",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Emergency",
+              "order": 2,
+              "value": 2
+            }
+          ],
+          "type": "select",
+          "value": 0
+        }
+      ],
+      "implementation": "Join",
+      "implementationName": "Join",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#join",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "XbmcSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 8080
+        },
+        {
+          "advanced": false,
+          "helpText": "Connect to Kodi over HTTPS instead of HTTP",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds a prefix to the Kodi url, such as http://[host]:[port]/[urlBase]/kodi",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "/jsonrpc"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 4,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 5,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "helpText": "How long the notification will be displayed for (In seconds)",
+          "isFloat": false,
+          "label": "Display Time",
+          "name": "displayTime",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 5
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "GUI Notification",
+          "name": "notify",
+          "order": 7,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Update library on Import & Rename?",
+          "isFloat": false,
+          "label": "Update Library",
+          "name": "updateLibrary",
+          "order": 8,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Clean library after update",
+          "isFloat": false,
+          "label": "Clean Library",
+          "name": "cleanLibrary",
+          "order": 9,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Update library even when a video is playing?",
+          "isFloat": false,
+          "label": "Always Update",
+          "name": "alwaysUpdate",
+          "order": 10,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        }
+      ],
+      "implementation": "Xbmc",
+      "implementationName": "Kodi",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#xbmc",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": true,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "MailgunSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "The API key generated from MailGun",
+          "isFloat": false,
+          "label": "API Key",
+          "name": "apiKey",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Enable to use the EU MailGun endpoint",
+          "isFloat": false,
+          "label": "Use EU Endpoint",
+          "name": "useEuEndpoint",
+          "order": 1,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "From Address",
+          "name": "from",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Sender Domain",
+          "name": "senderDomain",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Recipient Address(es)",
+          "name": "recipients",
+          "order": 4,
+          "privacy": "normal",
+          "type": "tag",
+          "value": []
+        }
+      ],
+      "implementation": "MailGun",
+      "implementationName": "Mailgun",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#mailgun",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "NotifiarrSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpLink": "https://notifiarr.com",
+          "helpText": "Your API key from your profile",
+          "isFloat": false,
+          "label": "API Key",
+          "name": "apiKey",
+          "order": 0,
+          "privacy": "apiKey",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "Notifiarr",
+      "implementationName": "Notifiarr",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#notifiarr",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": true,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "NtfySettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpLink": "https://ntfy.sh/docs/install/",
+          "helpText": "Leave blank to use public server (https://ntfy.sh)",
+          "isFloat": false,
+          "label": "Server URL",
+          "name": "serverUrl",
+          "order": 0,
+          "privacy": "normal",
+          "type": "url"
+        },
+        {
+          "advanced": false,
+          "helpLink": "https://docs.ntfy.sh/config/#access-tokens",
+          "helpText": "Optional token-based authorization. Takes priority over username/password",
+          "isFloat": false,
+          "label": "Access Token",
+          "name": "accessToken",
+          "order": 1,
+          "privacy": "apiKey",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "helpText": "Optional username",
+          "isFloat": false,
+          "label": "Username",
+          "name": "userName",
+          "order": 2,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Optional password",
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 3,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Priority",
+          "name": "priority",
+          "order": 4,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Min",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Low",
+              "order": 2,
+              "value": 2
+            },
+            {
+              "name": "Default",
+              "order": 3,
+              "value": 3
+            },
+            {
+              "name": "High",
+              "order": 4,
+              "value": 4
+            },
+            {
+              "name": "Max",
+              "order": 5,
+              "value": 5
+            }
+          ],
+          "type": "select",
+          "value": 3
+        },
+        {
+          "advanced": false,
+          "helpText": "List of Topics to send notifications to",
+          "isFloat": false,
+          "label": "Topics",
+          "name": "topics",
+          "order": 5,
+          "privacy": "normal",
+          "type": "tag",
+          "value": []
+        },
+        {
+          "advanced": false,
+          "helpLink": "https://ntfy.sh/docs/emojis/",
+          "helpText": "Optional list of tags or emojis to use",
+          "isFloat": false,
+          "label": "Ntfy Tags and Emojis",
+          "name": "tags",
+          "order": 6,
+          "privacy": "normal",
+          "type": "tag"
+        },
+        {
+          "advanced": false,
+          "helpText": "Optional link when user clicks notification",
+          "isFloat": false,
+          "label": "Click Url",
+          "name": "clickUrl",
+          "order": 7,
+          "privacy": "normal",
+          "type": "url"
+        }
+      ],
+      "implementation": "Ntfy",
+      "implementationName": "ntfy.sh",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#ntfy",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "PlexServerSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Select server from plex.tv account after authenticating",
+          "isFloat": false,
+          "label": "Server",
+          "name": "server",
+          "order": 0,
+          "privacy": "normal",
+          "selectOptionsProviderAction": "servers",
+          "type": "select"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": ""
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 2,
+          "privacy": "normal",
+          "type": "number",
+          "value": 32400
+        },
+        {
+          "advanced": false,
+          "helpText": "Connect to Plex over HTTPS instead of HTTP",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 3,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Adds a prefix to the Plex url, such as http://[host]:[port]/[urlBase]/plex",
+          "isFloat": false,
+          "label": "URL Base",
+          "name": "urlBase",
+          "order": 4,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "isFloat": false,
+          "label": "Auth Token",
+          "name": "authToken",
+          "order": 5,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Authenticate with Plex.tv",
+          "name": "signIn",
+          "order": 6,
+          "privacy": "normal",
+          "type": "oAuth",
+          "value": "startOAuth"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Update Library",
+          "name": "updateLibrary",
+          "order": 7,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": true,
+          "helpText": "Sonarr path, used to modify series paths when Plex sees library path location differently from Sonarr (Requires 'Update Library')",
+          "isFloat": false,
+          "label": "Map Paths From",
+          "name": "mapFrom",
+          "order": 8,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "helpText": "Plex path, used to modify series paths when Plex sees library path location differently from Sonarr (Requires 'Update Library')",
+          "isFloat": false,
+          "label": "Map Paths To",
+          "name": "mapTo",
+          "order": 9,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "PlexServer",
+      "implementationName": "Plex Media Server",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#plexserver",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": false,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": false,
+      "supportsOnHealthIssue": false,
+      "supportsOnHealthRestored": false,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": false,
+      "supportsOnRename": true,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "ProwlSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpLink": "https://www.prowlapp.com/api_settings.php",
+          "isFloat": false,
+          "label": "API Key",
+          "name": "apiKey",
+          "order": 0,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Priority",
+          "name": "priority",
+          "order": 1,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "VeryLow",
+              "order": -2,
+              "value": -2
+            },
+            {
+              "name": "Low",
+              "order": -1,
+              "value": -1
+            },
+            {
+              "name": "Normal",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "High",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Emergency",
+              "order": 2,
+              "value": 2
+            }
+          ],
+          "type": "select",
+          "value": 0
+        }
+      ],
+      "implementation": "Prowl",
+      "implementationName": "Prowl",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#prowl",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "PushBulletSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpLink": "https://www.pushbullet.com/#settings/account",
+          "isFloat": false,
+          "label": "Access Token",
+          "name": "apiKey",
+          "order": 0,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "List of device IDs (leave blank to send to all devices)",
+          "isFloat": false,
+          "label": "Device IDs",
+          "name": "deviceIds",
+          "order": 1,
+          "privacy": "normal",
+          "type": "device",
+          "value": []
+        },
+        {
+          "advanced": false,
+          "helpText": "List of Channel Tags to send notifications to",
+          "isFloat": false,
+          "label": "Channel Tags",
+          "name": "channelTags",
+          "order": 2,
+          "privacy": "normal",
+          "type": "tag",
+          "value": []
+        },
+        {
+          "advanced": false,
+          "helpText": "The device ID to send notifications from, use device_iden in the device's URL on pushbullet.com (leave blank to send from yourself)",
+          "isFloat": false,
+          "label": "Sender ID",
+          "name": "senderId",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "PushBullet",
+      "implementationName": "Pushbullet",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#pushbullet",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "PushcutSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Notification name from Notifications tab of the Pushcut app",
+          "isFloat": false,
+          "label": "Notification Name",
+          "name": "notificationName",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "API Keys can be managed in the Account view of the Pushcut app",
+          "isFloat": false,
+          "label": "API Key",
+          "name": "apiKey",
+          "order": 1,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Enable to mark the notification as \"Time Sensitive\"",
+          "isFloat": false,
+          "label": "Time Sensitive",
+          "name": "timeSensitive",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Include poster with notification",
+          "isFloat": false,
+          "label": "Include Poster",
+          "name": "includePoster",
+          "order": 3,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Add a links to series metadata when sending notifications",
+          "isFloat": false,
+          "label": "Metadata Links",
+          "name": "metadataLinks",
+          "order": 4,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "hint": "(0)",
+              "name": "IMDb",
+              "order": 7,
+              "value": 0
+            },
+            {
+              "hint": "(1)",
+              "name": "TVDb",
+              "order": 10,
+              "value": 1
+            },
+            {
+              "hint": "(2)",
+              "name": "TVMaze",
+              "order": 13,
+              "value": 2
+            },
+            {
+              "hint": "(3)",
+              "name": "Trakt",
+              "order": 16,
+              "value": 3
+            }
+          ],
+          "type": "select",
+          "value": []
+        }
+      ],
+      "implementation": "Pushcut",
+      "implementationName": "Pushcut",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#pushcut",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "PushoverSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpLink": "https://pushover.net/apps/clone/sonarr",
+          "isFloat": false,
+          "label": "API Key",
+          "name": "apiKey",
+          "order": 0,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpLink": "https://pushover.net/",
+          "isFloat": false,
+          "label": "User Key",
+          "name": "userKey",
+          "order": 1,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "List of device names (leave blank to send to all devices)",
+          "isFloat": false,
+          "label": "Devices",
+          "name": "devices",
+          "order": 2,
+          "privacy": "normal",
+          "type": "tag",
+          "value": []
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Priority",
+          "name": "priority",
+          "order": 3,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "Silent",
+              "order": -2,
+              "value": -2
+            },
+            {
+              "name": "Quiet",
+              "order": -1,
+              "value": -1
+            },
+            {
+              "name": "Normal",
+              "order": 0,
+              "value": 0
+            },
+            {
+              "name": "High",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "Emergency",
+              "order": 2,
+              "value": 2
+            }
+          ],
+          "type": "select",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Interval to retry Emergency alerts, minimum 30 seconds",
+          "isFloat": false,
+          "label": "Retry",
+          "name": "retry",
+          "order": 4,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Maximum time to retry Emergency alerts, maximum 86400 seconds",
+          "isFloat": false,
+          "label": "Expire",
+          "name": "expire",
+          "order": 5,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 0
+        },
+        {
+          "advanced": true,
+          "helpText": "Time in seconds before the message expires. Set to 0 for unlimited duration",
+          "isFloat": false,
+          "label": "Time To Live",
+          "name": "ttl",
+          "order": 6,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpLink": "https://pushover.net/api#sounds",
+          "helpText": "Notification sound, leave blank to use the default",
+          "isFloat": false,
+          "label": "Sound",
+          "name": "sound",
+          "order": 7,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "Pushover",
+      "implementationName": "Pushover",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#pushover",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "SendGridSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpLink": "https://sendgrid.com/docs/ui/account-and-settings/api-keys/#creating-an-api-key",
+          "helpText": "The API Key generated by SendGrid",
+          "isFloat": false,
+          "label": "API Key",
+          "name": "apiKey",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "From Address",
+          "name": "from",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Recipient Address(es)",
+          "name": "recipients",
+          "order": 2,
+          "privacy": "normal",
+          "type": "tag",
+          "value": []
+        }
+      ],
+      "implementation": "SendGrid",
+      "implementationName": "SendGrid",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#sendgrid",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "SignalSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Host",
+          "name": "host",
+          "order": 0,
+          "placeholder": "localhost",
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Port",
+          "name": "port",
+          "order": 1,
+          "placeholder": "8080",
+          "privacy": "normal",
+          "type": "textbox",
+          "value": 0
+        },
+        {
+          "advanced": false,
+          "helpText": "Connect to Signal over HTTPS instead of HTTP",
+          "isFloat": false,
+          "label": "Use SSL",
+          "name": "useSsl",
+          "order": 2,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Phone number of the sender register in signal-api",
+          "isFloat": false,
+          "label": "Sender Number",
+          "name": "senderNumber",
+          "order": 3,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Group ID / Phone Number of the receiver",
+          "isFloat": false,
+          "label": "Group ID / Phone Number",
+          "name": "receiverId",
+          "order": 4,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Username used to authenticate requests toward signal-api",
+          "isFloat": false,
+          "label": "Username",
+          "name": "authUsername",
+          "order": 5,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Password used to authenticate requests toward signal-api",
+          "isFloat": false,
+          "label": "Password",
+          "name": "authPassword",
+          "order": 6,
+          "privacy": "password",
+          "type": "password"
+        }
+      ],
+      "implementation": "Signal",
+      "implementationName": "Signal",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#signal",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "SimplepushSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpLink": "https://simplepush.io/features",
+          "isFloat": false,
+          "label": "Key",
+          "name": "key",
+          "order": 0,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpLink": "https://simplepush.io/features",
+          "helpText": "Customize the behavior of push notifications",
+          "isFloat": false,
+          "label": "Event",
+          "name": "event",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "Simplepush",
+      "implementationName": "Simplepush",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#simplepush",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "SlackSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpLink": "https://my.slack.com/services/new/incoming-webhook/",
+          "helpText": "Slack channel webhook url",
+          "isFloat": false,
+          "label": "Webhook URL",
+          "name": "webHookUrl",
+          "order": 0,
+          "privacy": "normal",
+          "type": "url"
+        },
+        {
+          "advanced": false,
+          "helpText": "Username to post to Slack as",
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 1,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpLink": "http://www.emoji-cheat-sheet.com/",
+          "helpText": "Change the icon that is used for messages posted to Slack (Emoji or URL)",
+          "isFloat": false,
+          "label": "Icon",
+          "name": "icon",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Overrides the default channel for the incoming webhook (#other-channel)",
+          "isFloat": false,
+          "label": "Channel",
+          "name": "channel",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        }
+      ],
+      "implementation": "Slack",
+      "implementationName": "Slack",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#slack",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": true,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "SynologyIndexerSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpText": "Call synoindex on localhost to update a library file",
+          "isFloat": false,
+          "label": "Update Library",
+          "name": "updateLibrary",
+          "order": 0,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": true
+        }
+      ],
+      "implementation": "SynologyIndexer",
+      "implementationName": "Synology Indexer",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#synologyindexer",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": false,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": false,
+      "supportsOnHealthIssue": false,
+      "supportsOnHealthRestored": false,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": false,
+      "supportsOnRename": true,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "TelegramSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpLink": "https://core.telegram.org/bots",
+          "isFloat": false,
+          "label": "Bot Token",
+          "name": "botToken",
+          "order": 0,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpLink": "http://stackoverflow.com/a/37396871/882971",
+          "helpText": "You must start a conversation with the bot or add it to your group to receive messages",
+          "isFloat": false,
+          "label": "Chat ID",
+          "name": "chatId",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpLink": "https://stackoverflow.com/a/75178418",
+          "helpText": "Specify a Topic ID to send notifications to that topic. Leave blank to use the general topic (Supergroups only)",
+          "isFloat": false,
+          "label": "Topic ID",
+          "name": "topicId",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Sends the message silently. Users will receive a notification with no sound",
+          "isFloat": false,
+          "label": "Send Silently",
+          "name": "sendSilently",
+          "order": 3,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Optionally prefix message title with Sonarr to differentiate notifications from different applications",
+          "isFloat": false,
+          "label": "Include Sonarr in Title",
+          "name": "includeAppNameInTitle",
+          "order": 4,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": true,
+          "helpText": "Optionally include Instance name in notification",
+          "isFloat": false,
+          "label": "Include Instance Name in Title",
+          "name": "includeInstanceNameInTitle",
+          "order": 5,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": false
+        },
+        {
+          "advanced": false,
+          "helpText": "Add a links to series metadata when sending notifications",
+          "isFloat": false,
+          "label": "Metadata Links",
+          "name": "metadataLinks",
+          "order": 6,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "hint": "(0)",
+              "name": "IMDb",
+              "order": 7,
+              "value": 0
+            },
+            {
+              "hint": "(1)",
+              "name": "TVDb",
+              "order": 10,
+              "value": 1
+            },
+            {
+              "hint": "(2)",
+              "name": "TVMaze",
+              "order": 13,
+              "value": 2
+            },
+            {
+              "hint": "(3)",
+              "name": "Trakt",
+              "order": 16,
+              "value": 3
+            }
+          ],
+          "type": "select",
+          "value": []
+        },
+        {
+          "advanced": false,
+          "helpText": "Determines which link will be previewed in the Telegram notification. Choose 'None' to disable",
+          "isFloat": false,
+          "label": "Link Preview",
+          "name": "linkPreview",
+          "order": 7,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "hint": "(-1)",
+              "name": "None",
+              "order": 9,
+              "value": -1
+            },
+            {
+              "hint": "(0)",
+              "name": "IMDb",
+              "order": 12,
+              "value": 0
+            },
+            {
+              "hint": "(2)",
+              "name": "TVMaze",
+              "order": 19,
+              "value": 2
+            },
+            {
+              "hint": "(3)",
+              "name": "Trakt",
+              "order": 22,
+              "value": 3
+            }
+          ],
+          "type": "select",
+          "value": -1
+        }
+      ],
+      "implementation": "Telegram",
+      "implementationName": "Telegram",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#telegram",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "TraktSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Access Token",
+          "name": "accessToken",
+          "order": 0,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Refresh Token",
+          "name": "refreshToken",
+          "order": 1,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Expires",
+          "name": "expires",
+          "order": 2,
+          "privacy": "normal",
+          "type": "textbox",
+          "value": "0001-01-01T00:00:00Z"
+        },
+        {
+          "advanced": false,
+          "hidden": "hidden",
+          "isFloat": false,
+          "label": "Auth User",
+          "name": "authUser",
+          "order": 3,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Authenticate with Trakt",
+          "name": "signIn",
+          "order": 4,
+          "privacy": "normal",
+          "type": "oAuth",
+          "value": "startOAuth"
+        }
+      ],
+      "implementation": "Trakt",
+      "implementationName": "Trakt",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#trakt",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": false,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": false,
+      "supportsOnHealthIssue": false,
+      "supportsOnHealthRestored": false,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": false,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "TwitterSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "helpLink": "https://wiki.servarr.com/useful-tools#twitter-connect",
+          "helpText": "Consumer key from a Twitter application",
+          "isFloat": false,
+          "label": "Consumer Key",
+          "name": "consumerKey",
+          "order": 0,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpLink": "https://wiki.servarr.com/useful-tools#twitter-connect",
+          "helpText": "Consumer secret from a Twitter application",
+          "isFloat": false,
+          "label": "Consumer Secret",
+          "name": "consumerSecret",
+          "order": 1,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "isFloat": false,
+          "label": "Access Token",
+          "name": "accessToken",
+          "order": 2,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "isFloat": false,
+          "label": "Access Token Secret",
+          "name": "accessTokenSecret",
+          "order": 3,
+          "privacy": "apiKey",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Mention this user in sent tweets",
+          "isFloat": false,
+          "label": "Mention",
+          "name": "mention",
+          "order": 4,
+          "privacy": "normal",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "helpText": "Send a direct message instead of a public message",
+          "isFloat": false,
+          "label": "Direct Message",
+          "name": "directMessage",
+          "order": 5,
+          "privacy": "normal",
+          "type": "checkbox",
+          "value": true
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Connect to Twitter / X",
+          "name": "authorizeNotification",
+          "order": 6,
+          "privacy": "normal",
+          "type": "oAuth",
+          "value": "startOAuth"
+        }
+      ],
+      "implementation": "Twitter",
+      "implementationName": "Twitter",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#twitter",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": false,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    },
+    {
+      "configContract": "WebhookSettings",
+      "fields": [
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Webhook URL",
+          "name": "url",
+          "order": 0,
+          "privacy": "normal",
+          "type": "url"
+        },
+        {
+          "advanced": false,
+          "helpText": "Which HTTP method to use submit to the Webservice",
+          "isFloat": false,
+          "label": "Method",
+          "name": "method",
+          "order": 1,
+          "privacy": "normal",
+          "selectOptions": [
+            {
+              "name": "POST",
+              "order": 1,
+              "value": 1
+            },
+            {
+              "name": "PUT",
+              "order": 2,
+              "value": 2
+            }
+          ],
+          "type": "select",
+          "value": 1
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Username",
+          "name": "username",
+          "order": 2,
+          "privacy": "userName",
+          "type": "textbox"
+        },
+        {
+          "advanced": false,
+          "isFloat": false,
+          "label": "Password",
+          "name": "password",
+          "order": 3,
+          "privacy": "password",
+          "type": "password"
+        },
+        {
+          "advanced": true,
+          "isFloat": false,
+          "label": "Headers",
+          "name": "headers",
+          "order": 4,
+          "privacy": "normal",
+          "type": "keyValueList",
+          "value": []
+        }
+      ],
+      "implementation": "Webhook",
+      "implementationName": "Webhook",
+      "includeHealthWarnings": false,
+      "infoLink": "https://wiki.servarr.com/sonarr/supported#webhook",
+      "name": "",
+      "onApplicationUpdate": false,
+      "onDownload": false,
+      "onEpisodeFileDelete": false,
+      "onEpisodeFileDeleteForUpgrade": false,
+      "onGrab": false,
+      "onHealthIssue": false,
+      "onHealthRestored": false,
+      "onImportComplete": false,
+      "onManualInteractionRequired": false,
+      "onRename": false,
+      "onSeriesAdd": false,
+      "onSeriesDelete": false,
+      "onUpgrade": false,
+      "presets": [],
+      "supportsOnApplicationUpdate": true,
+      "supportsOnDownload": true,
+      "supportsOnEpisodeFileDelete": true,
+      "supportsOnEpisodeFileDeleteForUpgrade": true,
+      "supportsOnGrab": true,
+      "supportsOnHealthIssue": true,
+      "supportsOnHealthRestored": true,
+      "supportsOnImportComplete": true,
+      "supportsOnManualInteractionRequired": true,
+      "supportsOnRename": true,
+      "supportsOnSeriesAdd": true,
+      "supportsOnSeriesDelete": true,
+      "supportsOnUpgrade": true,
+      "tags": []
+    }
+  ],
+  "body_is_json": true
+}

@@ -1,0 +1,259 @@
+{
+  "entry_id": "v5.command",
+  "status": 200,
+  "headers": {
+    "Cache-Control": [
+      "no-cache, no-store"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "Date": [
+      "Sat, 02 May 2026 07:02:09 GMT"
+    ],
+    "Expires": [
+      "-1"
+    ],
+    "Pragma": [
+      "no-cache"
+    ],
+    "Server": [
+      "Kestrel"
+    ],
+    "Vary": [
+      "Accept-Encoding"
+    ],
+    "X-Application-Version": [
+      "10.0.0.26712"
+    ],
+    "X-Miniprofiler-Ids": [
+      "[\"a6a951da-04d1-451b-93a0-aae7e2b99659\",\"da0ae589-ff08-4eca-9307-c1cca1759603\",\"420bb6da-6f5f-4aef-a90c-905864d57577\",\"e0ad6d18-244f-4a38-918e-007521cfeb60\",\"456d5a98-c15b-4ad7-9455-31e07e0cbbe3\",\"f5630c83-6688-4aae-9fb5-3a6d9cec9684\",\"fef19239-dc06-454d-bcdc-ee1a09b2cd48\",\"40701aa1-c665-4bc5-926d-71586cccd783\",\"0ca5060e-0338-45e8-9c2f-8dfe59fbfef3\",\"f91d7559-83f0-4e8a-8c99-f2047bb19d76\",\"6d30a9c1-7038-47a2-a128-e62628744a55\",\"e93baa46-39aa-46ea-9334-1ab3c3575f92\",\"741ab7d2-aa15-486f-8bca-d0f6aefac44b\",\"fe9cf2d4-d7da-4a75-8d16-fc610e781265\",\"fa144926-6fc8-445a-8e5e-860af9be1e4d\",\"23368be7-7119-477c-995d-1e0a9db63377\",\"76d6b314-4938-4edd-baa7-c98145107a66\",\"1df9382a-b339-49ea-b91d-70f597df6008\",\"a1e7b2e3-086b-4920-a6da-009538bd37b9\",\"124ac766-e7fa-474c-8690-fd2035e77b31\",\"44bf3a20-8e07-4608-aa03-c9f604d7ae00\",\"797e8fe1-b119-4c2a-ad56-0e80c7ff0cd6\"]"
+    ]
+  },
+  "body_json": [
+    {
+      "body": {
+        "isExclusive": false,
+        "isLongRunning": false,
+        "lastExecutionTime": "2026-05-02T06:56:55Z",
+        "lastStartTime": "0001-01-01T00:00:00Z",
+        "name": "RefreshMonitoredDownloads",
+        "requiresDiskAccess": false,
+        "sendUpdatesToClient": false,
+        "suppressMessages": false,
+        "trigger": "scheduled",
+        "updateScheduledTask": true
+      },
+      "commandName": "Refresh Monitored Downloads",
+      "duration": "<redacted>",
+      "ended": "<redacted>",
+      "id": "<redacted>",
+      "lastExecutionTime": "<redacted>",
+      "name": "RefreshMonitoredDownloads",
+      "priority": "high",
+      "queued": "<redacted>",
+      "result": "successful",
+      "sendUpdatesToClient": false,
+      "started": "<redacted>",
+      "stateChangeTime": "<redacted>",
+      "status": "completed",
+      "trigger": "scheduled",
+      "updateScheduledTask": true
+    },
+    {
+      "body": {
+        "isExclusive": false,
+        "isLongRunning": true,
+        "name": "ProcessMonitoredDownloads",
+        "requiresDiskAccess": true,
+        "sendUpdatesToClient": false,
+        "suppressMessages": false,
+        "trigger": "unspecified",
+        "updateScheduledTask": true
+      },
+      "commandName": "Process Monitored Downloads",
+      "duration": "<redacted>",
+      "ended": "<redacted>",
+      "id": "<redacted>",
+      "name": "ProcessMonitoredDownloads",
+      "priority": "high",
+      "queued": "<redacted>",
+      "result": "successful",
+      "sendUpdatesToClient": false,
+      "started": "<redacted>",
+      "stateChangeTime": "<redacted>",
+      "status": "completed",
+      "trigger": "unspecified",
+      "updateScheduledTask": true
+    },
+    {
+      "body": {
+        "isExclusive": false,
+        "isLongRunning": false,
+        "lastExecutionTime": "2026-05-02T06:57:55Z",
+        "lastStartTime": "2026-05-02T06:57:55Z",
+        "name": "RefreshMonitoredDownloads",
+        "requiresDiskAccess": false,
+        "sendUpdatesToClient": false,
+        "suppressMessages": false,
+        "trigger": "scheduled",
+        "updateScheduledTask": true
+      },
+      "commandName": "Refresh Monitored Downloads",
+      "duration": "<redacted>",
+      "ended": "<redacted>",
+      "id": "<redacted>",
+      "lastExecutionTime": "<redacted>",
+      "name": "RefreshMonitoredDownloads",
+      "priority": "high",
+      "queued": "<redacted>",
+      "result": "successful",
+      "sendUpdatesToClient": false,
+      "started": "<redacted>",
+      "stateChangeTime": "<redacted>",
+      "status": "completed",
+      "trigger": "scheduled",
+      "updateScheduledTask": true
+    },
+    {
+      "body": {
+        "isExclusive": false,
+        "isLongRunning": true,
+        "name": "ProcessMonitoredDownloads",
+        "requiresDiskAccess": true,
+        "sendUpdatesToClient": false,
+        "suppressMessages": false,
+        "trigger": "unspecified",
+        "updateScheduledTask": true
+      },
+      "commandName": "Process Monitored Downloads",
+      "duration": "<redacted>",
+      "ended": "<redacted>",
+      "id": "<redacted>",
+      "name": "ProcessMonitoredDownloads",
+      "priority": "high",
+      "queued": "<redacted>",
+      "result": "successful",
+      "sendUpdatesToClient": false,
+      "started": "<redacted>",
+      "stateChangeTime": "<redacted>",
+      "status": "completed",
+      "trigger": "unspecified",
+      "updateScheduledTask": true
+    },
+    {
+      "body": {
+        "isExclusive": false,
+        "isLongRunning": false,
+        "lastExecutionTime": "2026-05-02T06:59:25Z",
+        "lastStartTime": "2026-05-02T06:59:25Z",
+        "name": "RefreshMonitoredDownloads",
+        "requiresDiskAccess": false,
+        "sendUpdatesToClient": false,
+        "suppressMessages": false,
+        "trigger": "scheduled",
+        "updateScheduledTask": true
+      },
+      "commandName": "Refresh Monitored Downloads",
+      "duration": "<redacted>",
+      "ended": "<redacted>",
+      "id": "<redacted>",
+      "lastExecutionTime": "<redacted>",
+      "name": "RefreshMonitoredDownloads",
+      "priority": "high",
+      "queued": "<redacted>",
+      "result": "successful",
+      "sendUpdatesToClient": false,
+      "started": "<redacted>",
+      "stateChangeTime": "<redacted>",
+      "status": "completed",
+      "trigger": "scheduled",
+      "updateScheduledTask": true
+    },
+    {
+      "body": {
+        "isExclusive": false,
+        "isLongRunning": true,
+        "name": "ProcessMonitoredDownloads",
+        "requiresDiskAccess": true,
+        "sendUpdatesToClient": false,
+        "suppressMessages": false,
+        "trigger": "unspecified",
+        "updateScheduledTask": true
+      },
+      "commandName": "Process Monitored Downloads",
+      "duration": "<redacted>",
+      "ended": "<redacted>",
+      "id": "<redacted>",
+      "name": "ProcessMonitoredDownloads",
+      "priority": "high",
+      "queued": "<redacted>",
+      "result": "successful",
+      "sendUpdatesToClient": false,
+      "started": "<redacted>",
+      "stateChangeTime": "<redacted>",
+      "status": "completed",
+      "trigger": "unspecified",
+      "updateScheduledTask": true
+    },
+    {
+      "body": {
+        "isExclusive": false,
+        "isLongRunning": false,
+        "lastExecutionTime": "2026-05-02T06:56:55Z",
+        "lastStartTime": "0001-01-01T00:00:00Z",
+        "name": "MessagingCleanup",
+        "requiresDiskAccess": false,
+        "sendUpdatesToClient": false,
+        "suppressMessages": false,
+        "trigger": "scheduled",
+        "updateScheduledTask": true
+      },
+      "commandName": "Messaging Cleanup",
+      "duration": "<redacted>",
+      "ended": "<redacted>",
+      "id": "<redacted>",
+      "lastExecutionTime": "<redacted>",
+      "name": "MessagingCleanup",
+      "priority": "low",
+      "queued": "<redacted>",
+      "result": "successful",
+      "sendUpdatesToClient": false,
+      "started": "<redacted>",
+      "stateChangeTime": "<redacted>",
+      "status": "completed",
+      "trigger": "scheduled",
+      "updateScheduledTask": true
+    },
+    {
+      "body": {
+        "isExclusive": false,
+        "isLongRunning": false,
+        "lastExecutionTime": "2026-05-02T06:56:55Z",
+        "lastStartTime": "0001-01-01T00:00:00Z",
+        "name": "ImportListSync",
+        "requiresDiskAccess": false,
+        "sendUpdatesToClient": true,
+        "suppressMessages": false,
+        "trigger": "scheduled",
+        "updateScheduledTask": true
+      },
+      "commandName": "Import List Sync",
+      "duration": "<redacted>",
+      "ended": "<redacted>",
+      "id": "<redacted>",
+      "lastExecutionTime": "<redacted>",
+      "name": "ImportListSync",
+      "priority": "low",
+      "queued": "<redacted>",
+      "result": "successful",
+      "sendUpdatesToClient": true,
+      "started": "<redacted>",
+      "stateChangeTime": "<redacted>",
+      "status": "completed",
+      "trigger": "scheduled",
+      "updateScheduledTask": true
+    }
+  ],
+  "body_is_json": true
+}

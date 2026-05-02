@@ -1,0 +1,146 @@
+{
+  "entry_id": "v3.system.tasks",
+  "status": 200,
+  "headers": {
+    "Cache-Control": [
+      "no-cache, no-store"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "Date": [
+      "Sat, 02 May 2026 07:02:08 GMT"
+    ],
+    "Expires": [
+      "-1"
+    ],
+    "Pragma": [
+      "no-cache"
+    ],
+    "Server": [
+      "Kestrel"
+    ],
+    "Vary": [
+      "Accept-Encoding"
+    ],
+    "X-Application-Version": [
+      "10.0.0.26712"
+    ],
+    "X-Miniprofiler-Ids": [
+      "[\"77d75529-d1af-4168-ac2b-982963c24cbf\",\"d0d96a9d-597e-4889-93ad-751a7313e5fe\",\"2a5a9bd3-de6e-4c79-874b-3b1b4f376abf\",\"6ae72b40-6d02-4216-9468-80e9f5d6423f\",\"820e2d89-3207-477b-956b-2668496b5f90\",\"0cce7c54-0624-4d84-bd53-32ae3d59ba1c\",\"75a2fc3f-b1b2-4abc-be34-856f7accd480\",\"aa737407-5850-41b2-b86f-4a0161ca19ad\"]"
+    ]
+  },
+  "body_json": [
+    {
+      "id": "<redacted>",
+      "interval": 360,
+      "lastDuration": "739737.06:56:55.4737650",
+      "lastExecution": "<redacted>",
+      "lastStartTime": "<redacted>",
+      "name": "Application Update Check",
+      "nextExecution": "<redacted>",
+      "taskName": "ApplicationUpdateCheck"
+    },
+    {
+      "id": "<redacted>",
+      "interval": 10080,
+      "lastDuration": "739737.06:56:55.4754360",
+      "lastExecution": "<redacted>",
+      "lastStartTime": "<redacted>",
+      "name": "Backup",
+      "nextExecution": "<redacted>",
+      "taskName": "Backup"
+    },
+    {
+      "id": "<redacted>",
+      "interval": 360,
+      "lastDuration": "739737.06:56:55.4745010",
+      "lastExecution": "<redacted>",
+      "lastStartTime": "<redacted>",
+      "name": "Check Health",
+      "nextExecution": "<redacted>",
+      "taskName": "CheckHealth"
+    },
+    {
+      "id": "<redacted>",
+      "interval": 1440,
+      "lastDuration": "739737.06:56:55.4751000",
+      "lastExecution": "<redacted>",
+      "lastStartTime": "<redacted>",
+      "name": "Clean Up Recycle Bin",
+      "nextExecution": "<redacted>",
+      "taskName": "CleanUpRecycleBin"
+    },
+    {
+      "id": "<redacted>",
+      "interval": 1440,
+      "lastDuration": "739737.06:56:55.4749220",
+      "lastExecution": "<redacted>",
+      "lastStartTime": "<redacted>",
+      "name": "Housekeeping",
+      "nextExecution": "<redacted>",
+      "taskName": "Housekeeping"
+    },
+    {
+      "id": "<redacted>",
+      "interval": 5,
+      "lastDuration": "00:00:00.0072550",
+      "lastExecution": "<redacted>",
+      "lastStartTime": "<redacted>",
+      "name": "Import List Sync",
+      "nextExecution": "<redacted>",
+      "taskName": "ImportListSync"
+    },
+    {
+      "id": "<redacted>",
+      "interval": 5,
+      "lastDuration": "00:00:00.0067430",
+      "lastExecution": "<redacted>",
+      "lastStartTime": "<redacted>",
+      "name": "Messaging Cleanup",
+      "nextExecution": "<redacted>",
+      "taskName": "MessagingCleanup"
+    },
+    {
+      "id": "<redacted>",
+      "interval": 1,
+      "lastDuration": "00:00:00.0021890",
+      "lastExecution": "<redacted>",
+      "lastStartTime": "<redacted>",
+      "name": "Refresh Monitored Downloads",
+      "nextExecution": "<redacted>",
+      "taskName": "RefreshMonitoredDownloads"
+    },
+    {
+      "id": "<redacted>",
+      "interval": 720,
+      "lastDuration": "739737.06:56:55.4747180",
+      "lastExecution": "<redacted>",
+      "lastStartTime": "<redacted>",
+      "name": "Refresh Series",
+      "nextExecution": "<redacted>",
+      "taskName": "RefreshSeries"
+    },
+    {
+      "id": "<redacted>",
+      "interval": 15,
+      "lastDuration": "739737.06:56:55.4755990",
+      "lastExecution": "<redacted>",
+      "lastStartTime": "<redacted>",
+      "name": "Rss Sync",
+      "nextExecution": "<redacted>",
+      "taskName": "RssSync"
+    },
+    {
+      "id": "<redacted>",
+      "interval": 180,
+      "lastDuration": "739737.06:56:55.4740530",
+      "lastExecution": "<redacted>",
+      "lastStartTime": "<redacted>",
+      "name": "Update Scene Mapping",
+      "nextExecution": "<redacted>",
+      "taskName": "UpdateSceneMapping"
+    }
+  ],
+  "body_is_json": true
+}
