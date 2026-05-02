@@ -1,5 +1,7 @@
--- Ports Migration/100. ALTER SeasonNumber to nullable on SceneMappings;
--- on SQLite the existing column remains nullable (no constraint).
+-- Ports Migration/100. ALTER SeasonNumber to nullable on SceneMappings
+-- and add the new SceneSeasonNumber column. Postgres supports
+-- ALTER COLUMN DROP NOT NULL directly; the SQLite sibling needs the
+-- recreate-table dance.
 -- See ledger row 100.
 
 -- +goose Up

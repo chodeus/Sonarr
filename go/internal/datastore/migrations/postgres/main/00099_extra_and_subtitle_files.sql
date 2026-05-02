@@ -1,4 +1,9 @@
--- Ports Migration/099. See ledger row 99.
+-- Ports Migration/099. See SQLite sibling for the full discussion of
+-- the deliberate deviations (collapsed MetadataFiles.Extension nullable+
+-- ALTER-NOT-NULL into a single NOT NULL DEFAULT, and SubtitleFiles.Added
+-- declared nullable from v99 instead of waiting for v188's per-engine
+-- nullability changes).
+-- See ledger row 99.
 
 -- +goose Up
 -- +goose StatementBegin
@@ -21,10 +26,16 @@ CREATE TABLE "SubtitleFiles" (
     "EpisodeFileId" integer NOT NULL,
     "RelativePath" text NOT NULL,
     "Extension" text NOT NULL,
-    "Added" timestamp without time zone NOT NULL,
+    "Added" timestamp without time zone,
     "LastUpdated" timestamp without time zone NOT NULL,
     "Language" integer NOT NULL
 );
+-- +goose StatementEnd
+-- +goose StatementBegin
+ALTER TABLE "MetadataFiles" ADD COLUMN "Added" timestamp without time zone;
+-- +goose StatementEnd
+-- +goose StatementBegin
+ALTER TABLE "MetadataFiles" ADD COLUMN "Extension" text NOT NULL DEFAULT '';
 -- +goose StatementEnd
 
 -- +goose Down

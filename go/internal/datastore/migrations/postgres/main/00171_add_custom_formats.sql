@@ -1,6 +1,16 @@
--- Ports Migration/171. CREATE CustomFormats + ADD CF columns on QualityProfiles.
--- The PreferredTerms/NamingConfigs backfill is no-op for fresh DBs.
--- See ledger row 171.
+-- Ports Migration/171. The C# migration does:
+--   * Create.TableForModel("CustomFormats")
+--   * Alter.Table("QualityProfiles").AddColumn("FormatItems")
+--   * Alter.Table("QualityProfiles").AddColumn("MinFormatScore")
+--   * Alter.Table("QualityProfiles").AddColumn("CutoffFormatScore")
+--   * Execute.WithConnection (PreferredTerms backfill — no-op for fresh DBs)
+--   * Execute.WithConnection (NamingConfigs backfill — no-op for fresh DBs)
+--   * Delete.Column("Preferred").FromTable("ReleaseProfiles")
+--   * Delete.Column("IncludePreferredWhenRenaming").FromTable("ReleaseProfiles")
+--   * Delete.FromTable("ReleaseProfiles").Row(Required='[]', Ignored='[]')
+--
+-- The original sweep dropped the trailing schema cleanup. Fixed
+-- 2026-05-02. See ledger row 171.
 
 -- +goose Up
 -- +goose StatementBegin
@@ -22,6 +32,15 @@ ALTER TABLE "QualityProfiles" ADD COLUMN "MinFormatScore" integer NOT NULL DEFAU
 -- +goose StatementEnd
 -- +goose StatementBegin
 ALTER TABLE "QualityProfiles" ADD COLUMN "CutoffFormatScore" integer NOT NULL DEFAULT 0;
+-- +goose StatementEnd
+-- +goose StatementBegin
+ALTER TABLE "ReleaseProfiles" DROP COLUMN "Preferred";
+-- +goose StatementEnd
+-- +goose StatementBegin
+ALTER TABLE "ReleaseProfiles" DROP COLUMN "IncludePreferredWhenRenaming";
+-- +goose StatementEnd
+-- +goose StatementBegin
+DELETE FROM "ReleaseProfiles" WHERE "Required" = '[]' AND "Ignored" = '[]';
 -- +goose StatementEnd
 
 -- +goose Down

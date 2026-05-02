@@ -104,18 +104,20 @@ func TestMigrate_SQLite_ToHead(t *testing.T) {
 	}
 	assertVersion(t, db, headVersion)
 
-	// IX_Series_TvdbId and IX_Series_TitleSlug remain at HEAD (v19
-	// idempotent restore confirmed them). IX_Series_ImdbId stays dropped
-	// (v2 dropped it, never restored). IX_Series_TvRageId was dropped
-	// at v2 but v45 added a non-unique IX_Series_TvRageId.
+	// IX_Series_TvdbId remains at HEAD (recreated explicitly by v34's
+	// recreate-table dance). IX_Series_ImdbId stays dropped (v2 dropped
+	// it, never restored). IX_Series_TitleSlug is also dropped at v34
+	// when TitleSlug loses its UNIQUE constraint. IX_Series_TvRageId was
+	// dropped at v2 but v45 added a non-unique IX_Series_TvRageId.
 	indexes := listIndexesSQLite(t, db.SQL, "Series")
-	for _, kept := range []string{"IX_Series_TvdbId", "IX_Series_TitleSlug"} {
-		if !containsString(indexes, kept) {
-			t.Errorf("Series missing kept index %q: %v", kept, indexes)
-		}
+	if !containsString(indexes, "IX_Series_TvdbId") {
+		t.Errorf("Series missing kept index IX_Series_TvdbId: %v", indexes)
 	}
 	if containsString(indexes, "IX_Series_ImdbId") {
 		t.Errorf("Series still has dropped IX_Series_ImdbId: %v", indexes)
+	}
+	if containsString(indexes, "IX_Series_TitleSlug") {
+		t.Errorf("Series still has v34-dropped IX_Series_TitleSlug: %v", indexes)
 	}
 
 	// Version-3 reshaped SceneMappings: dropped CleanTitle, SceneName;
