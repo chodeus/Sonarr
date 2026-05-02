@@ -38,8 +38,8 @@ var expectedTablesAfterMigration1 = []string{
 // Note: log-DB versions are sparse — only the C# migrations whose
 // LogDbUpgrade() override is non-empty get a Go counterpart. Today: 1, 6.
 const (
-	headVersion    int64 = 60
-	headLogVersion int64 = 6
+	headVersion    int64 = 79
+	headLogVersion int64 = 64
 )
 
 // columnSpec is what we assert about each column. Type strings are the
