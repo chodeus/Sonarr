@@ -1,0 +1,304 @@
+// Package series is the Go port of NzbDrone.Core.Tv.Series persistence.
+// The Series table is the most-cross-cut model in the schema — every
+// subsystem (parser, indexer, decision engine, scheduler, renamer,
+// notifications, metadata, history) reads or joins it.
+//
+// Schema at HEAD (v230) is 41 columns wide. See the Bind/Scan funcs in
+// this file for the canonical ordering. Notable shape:
+//
+//   - 7 nullable timestamps (LastInfoSync, LastDiskSync, FirstAired,
+//     NextAiring, Added, LastAired). All round-trip via *time.Time +
+//     sql.NullTime, UTC-normalised on both write and read.
+//   - 3 boolean columns persisted as boolean / INTEGER 0-or-1:
+//     Monitored, SeasonFolder, UseSceneNumbering. All NOT NULL.
+//   - 6 opaque embedded-JSON columns: Images, Seasons, Actors, Ratings,
+//     Genres, AddOptions. Stored as raw `string` until Phase 2 ports
+//     the typed wrappers.
+//   - 2 embedded-doc id-array columns: MalIds and AniListIds carry
+//     `[]int` JSON. Required NOT NULL with DEFAULT '[]'.
+//   - Tags is the same `[]int` JSON shape, but nullable in the schema.
+//   - Year, QualityProfileId are nullable ints.
+//   - TitleSlug, ImdbId, AirTime, Network, OriginalCountry, Certification,
+//     SortTitle are nullable strings; modeled as plain `string` with
+//     NULL coerced to "" because callers don't need the distinction.
+package series
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+
+	"sonarr.tv/sonarr/internal/datastore"
+	"sonarr.tv/sonarr/internal/repo"
+)
+
+// Series is one Series row.
+type Series struct {
+	ID                int        `json:"id"`
+	TvdbID            int        `json:"tvdbId"`
+	TvRageID          int        `json:"tvRageId"`
+	ImdbID            string     `json:"imdbId,omitempty"`
+	Title             string     `json:"title"`
+	TitleSlug         string     `json:"titleSlug,omitempty"`
+	CleanTitle        string     `json:"cleanTitle"`
+	Status            int        `json:"status"`
+	Overview          string     `json:"overview,omitempty"`
+	AirTime           string     `json:"airTime,omitempty"`
+	Images            string     `json:"images"`
+	Path              string     `json:"path"`
+	Monitored         bool       `json:"monitored"`
+	SeasonFolder      bool       `json:"seasonFolder"`
+	LastInfoSync      *time.Time `json:"lastInfoSync,omitempty"`
+	LastDiskSync      *time.Time `json:"lastDiskSync,omitempty"`
+	Runtime           int        `json:"runtime"`
+	SeriesType        int        `json:"seriesType"`
+	Network           string     `json:"network,omitempty"`
+	UseSceneNumbering bool       `json:"useSceneNumbering"`
+	FirstAired        *time.Time `json:"firstAired,omitempty"`
+	NextAiring        *time.Time `json:"nextAiring,omitempty"`
+	Year              *int       `json:"year,omitempty"`
+	Seasons           string     `json:"seasons,omitempty"`
+	Actors            string     `json:"actors,omitempty"`
+	Ratings           string     `json:"ratings,omitempty"`
+	Genres            string     `json:"genres,omitempty"`
+	Certification     string     `json:"certification,omitempty"`
+	SortTitle         string     `json:"sortTitle,omitempty"`
+	QualityProfileID  *int       `json:"qualityProfileId,omitempty"`
+	Tags              []int      `json:"tags"`
+	Added             *time.Time `json:"added,omitempty"`
+	AddOptions        string     `json:"addOptions,omitempty"`
+	TvMazeID          int        `json:"tvMazeId"`
+	OriginalLanguage  int        `json:"originalLanguage"`
+	LastAired         *time.Time `json:"lastAired,omitempty"`
+	MonitorNewItems   int        `json:"monitorNewItems"`
+	TmdbID            int        `json:"tmdbId"`
+	MalIDs            []int      `json:"malIds"`
+	AniListIDs        []int      `json:"aniListIds"`
+	OriginalCountry   string     `json:"originalCountry,omitempty"`
+}
+
+// ErrNotFound is returned when no row matches.
+var ErrNotFound = errors.New("series: not found")
+
+// Repo is the CRUD wrapper.
+type Repo struct {
+	*repo.Repository[Series]
+}
+
+var mapper = repo.Mapper[Series]{
+	Name:  "series",
+	Table: "Series",
+	Columns: []string{
+		"TvdbId", "TvRageId", "ImdbId", "Title", "TitleSlug", "CleanTitle",
+		"Status", "Overview", "AirTime", "Images", "Path", "Monitored",
+		"SeasonFolder", "LastInfoSync", "LastDiskSync", "Runtime",
+		"SeriesType", "Network", "UseSceneNumbering", "FirstAired",
+		"NextAiring", "Year", "Seasons", "Actors", "Ratings", "Genres",
+		"Certification", "SortTitle", "QualityProfileId", "Tags",
+		"Added", "AddOptions", "TvMazeId", "OriginalLanguage", "LastAired",
+		"MonitorNewItems", "TmdbId", "MalIds", "AniListIds", "OriginalCountry",
+	},
+	OrderBy: "Id",
+	Bind: func(s *Series) []any {
+		return []any{
+			s.TvdbID, s.TvRageID,
+			nullableStringEmpty(s.ImdbID),
+			s.Title,
+			nullableStringEmpty(s.TitleSlug),
+			s.CleanTitle, s.Status,
+			nullableStringEmpty(s.Overview),
+			nullableStringEmpty(s.AirTime),
+			defaultJSON(s.Images, "[]"),
+			s.Path, s.Monitored, s.SeasonFolder,
+			nullableTime(s.LastInfoSync),
+			nullableTime(s.LastDiskSync),
+			s.Runtime, s.SeriesType,
+			nullableStringEmpty(s.Network),
+			s.UseSceneNumbering,
+			nullableTime(s.FirstAired),
+			nullableTime(s.NextAiring),
+			nullableInt(s.Year),
+			nullableStringEmpty(s.Seasons),
+			nullableStringEmpty(s.Actors),
+			nullableStringEmpty(s.Ratings),
+			nullableStringEmpty(s.Genres),
+			nullableStringEmpty(s.Certification),
+			nullableStringEmpty(s.SortTitle),
+			nullableInt(s.QualityProfileID),
+			nullableTagsJSON(s.Tags),
+			nullableTime(s.Added),
+			nullableStringEmpty(s.AddOptions),
+			s.TvMazeID, s.OriginalLanguage,
+			nullableTime(s.LastAired),
+			s.MonitorNewItems, s.TmdbID,
+			marshalInts(s.MalIDs),
+			marshalInts(s.AniListIDs),
+			nullableStringEmpty(s.OriginalCountry),
+		}
+	},
+	Scan: func(s *Series, sc repo.RowScanner) error {
+		var imdbID, titleSlug, overview, airTime, network sql.NullString
+		var seasons, actors, ratings, genres, certification, sortTitle sql.NullString
+		var addOptions, originalCountry, tagsJSON sql.NullString
+		var year, qualityProfileID sql.NullInt64
+		var lastInfoSync, lastDiskSync, firstAired, nextAiring, added, lastAired sql.NullTime
+		var malIDs, aniListIDs string
+		if err := sc.Scan(
+			&s.ID, &s.TvdbID, &s.TvRageID, &imdbID, &s.Title, &titleSlug,
+			&s.CleanTitle, &s.Status, &overview, &airTime, &s.Images,
+			&s.Path, &s.Monitored, &s.SeasonFolder,
+			&lastInfoSync, &lastDiskSync, &s.Runtime, &s.SeriesType,
+			&network, &s.UseSceneNumbering, &firstAired, &nextAiring,
+			&year, &seasons, &actors, &ratings, &genres, &certification,
+			&sortTitle, &qualityProfileID, &tagsJSON, &added, &addOptions,
+			&s.TvMazeID, &s.OriginalLanguage, &lastAired,
+			&s.MonitorNewItems, &s.TmdbID, &malIDs, &aniListIDs, &originalCountry,
+		); err != nil {
+			return err
+		}
+		s.ImdbID = imdbID.String
+		s.TitleSlug = titleSlug.String
+		s.Overview = overview.String
+		s.AirTime = airTime.String
+		s.Network = network.String
+		s.Seasons = seasons.String
+		s.Actors = actors.String
+		s.Ratings = ratings.String
+		s.Genres = genres.String
+		s.Certification = certification.String
+		s.SortTitle = sortTitle.String
+		s.AddOptions = addOptions.String
+		s.OriginalCountry = originalCountry.String
+		s.Year = unwrapInt(year)
+		s.QualityProfileID = unwrapInt(qualityProfileID)
+		s.LastInfoSync = unwrapTime(lastInfoSync)
+		s.LastDiskSync = unwrapTime(lastDiskSync)
+		s.FirstAired = unwrapTime(firstAired)
+		s.NextAiring = unwrapTime(nextAiring)
+		s.Added = unwrapTime(added)
+		s.LastAired = unwrapTime(lastAired)
+		// Tags is nullable in schema; tagsJSON.Valid → unmarshal, else nil.
+		if tagsJSON.Valid && tagsJSON.String != "" {
+			if err := datastore.UnmarshalEmbedded(tagsJSON.String, &s.Tags); err != nil {
+				return fmt.Errorf("unmarshal Tags: %w", err)
+			}
+		}
+		if err := datastore.UnmarshalEmbedded(malIDs, &s.MalIDs); err != nil {
+			return fmt.Errorf("unmarshal MalIds: %w", err)
+		}
+		if err := datastore.UnmarshalEmbedded(aniListIDs, &s.AniListIDs); err != nil {
+			return fmt.Errorf("unmarshal AniListIds: %w", err)
+		}
+		return nil
+	},
+	GetID: func(s *Series) int { return s.ID },
+	SetID: func(s *Series, id int) { s.ID = id },
+}
+
+// NewRepo returns a Repo bound to the given DB.
+func NewRepo(db *datastore.DB) (*Repo, error) {
+	r, err := repo.New(db, mapper, ErrNotFound)
+	if err != nil {
+		return nil, err
+	}
+	return &Repo{Repository: r}, nil
+}
+
+// GetByTvdbID returns the Series with the given TvdbId or ErrNotFound.
+// TvdbId is UNIQUE in the schema and is the primary external identifier
+// the parser/import path uses.
+func (r *Repo) GetByTvdbID(ctx context.Context, tvdbID int) (*Series, error) {
+	db := r.DB()
+	q := fmt.Sprintf(
+		`SELECT %s FROM "Series" WHERE "TvdbId" = %s`,
+		selectColumnList(), datastore.Placeholder(db.Engine, 1))
+	var s Series
+	if err := mapper.Scan(&s, db.SQL.QueryRowContext(ctx, q, tvdbID)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("series: getByTvdbID(%d): %w", tvdbID, err)
+	}
+	return &s, nil
+}
+
+func selectColumnList() string {
+	return `"Id","TvdbId","TvRageId","ImdbId","Title","TitleSlug","CleanTitle",` +
+		`"Status","Overview","AirTime","Images","Path","Monitored","SeasonFolder",` +
+		`"LastInfoSync","LastDiskSync","Runtime","SeriesType","Network",` +
+		`"UseSceneNumbering","FirstAired","NextAiring","Year","Seasons","Actors",` +
+		`"Ratings","Genres","Certification","SortTitle","QualityProfileId","Tags",` +
+		`"Added","AddOptions","TvMazeId","OriginalLanguage","LastAired",` +
+		`"MonitorNewItems","TmdbId","MalIds","AniListIds","OriginalCountry"`
+}
+
+// nullableTagsJSON serialises Series.Tags as JSON. Schema permits NULL,
+// but C# defaults to an empty list; we persist "[]" for nil to match
+// the typical UI representation.
+func nullableTagsJSON(xs []int) string {
+	if xs == nil {
+		xs = []int{}
+	}
+	out, err := datastore.MarshalEmbedded(xs)
+	if err != nil {
+		return `<marshal-error: ` + err.Error() + `>`
+	}
+	return out
+}
+
+func marshalInts(xs []int) string {
+	if xs == nil {
+		xs = []int{}
+	}
+	out, err := datastore.MarshalEmbedded(xs)
+	if err != nil {
+		return `<marshal-error: ` + err.Error() + `>`
+	}
+	return out
+}
+
+func nullableInt(p *int) sql.NullInt64 {
+	if p == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: int64(*p), Valid: true}
+}
+
+func unwrapInt(n sql.NullInt64) *int {
+	if !n.Valid {
+		return nil
+	}
+	v := int(n.Int64)
+	return &v
+}
+
+func nullableStringEmpty(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func nullableTime(t *time.Time) sql.NullTime {
+	if t == nil {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: t.UTC(), Valid: true}
+}
+
+func unwrapTime(n sql.NullTime) *time.Time {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Time.UTC()
+	return &v
+}
+
+func defaultJSON(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
