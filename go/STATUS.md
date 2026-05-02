@@ -68,7 +68,19 @@ cat go/analysis/questions.md    # running open-question ledger (26 entries last 
   - Qualitative claims that DO check out: log-DB migration list (001, 006, 064, 141, 146, 188), migration 205 polymorphic-rename body, gap-row markers, HIGH-RISK section content. These spot-checked clean.
   - Corrections landed in the ledger's intro + summary stats; the per-row table was not regenerated since spot-checks pass.
 
-#### 1.2 — Migrations 006–010 + log-DB wiring + backfill pattern ✅ shipped (2026-05-02)
+#### 1.2–1.x — Main DB migrations 6–230 + log DB migrations ✅ shipped (2026-05-02)
+
+**Schema parity at C# head version 230 achieved on both engines.** 218 main-DB SQL files + 5 log-DB SQL files. All 14 tests passing under `-race`; lint clean.
+
+Pattern decisions made during the sweep:
+- Per-dialect file separation replaces C# `IfDatabase("sqlite")` gating without conditional SQL inside files.
+- Native `ALTER TABLE DROP COLUMN` on SQLite (3.49+ via modernc) for non-UNIQUE columns. UNIQUE columns (Episodes.TvDbEpisodeId v24, EpisodeFiles.Path v58, QualityDefinitions.Weight v71) need the recreate-table dance.
+- **Complex C# backfills are no-op'd in goose**: Sonarr's migration code includes parser-driven derivations (e.g. v53 SortTitle, v195 LanguageTags), config-table conversions (v29-30 naming format builders, v43 download client conversion, v51 import handling), JSON shape mutations (provider settings, embedded docs), and dedup logic. Fresh DBs need none of this. **Phase 6 cutover** reimplements these in Go application code for migrating from existing C# user databases.
+- Real SQL kept for cumulativity-sensitive backfills: v148 + v175 (MediaInfo audioChannels rename + Languages JSON wrap), v205 (polymorphic SeasonPackSpecification → ReleaseTypeSpecification rename in CustomFormats JSON).
+- Goose state in `goose_db_version` (per-DB, separate from FluentMigrator's `VersionInfo`).
+- 8 missing version numbers (80, 133, 208, 213, 216, 222, 228, 229) leave goose ledger gaps. Migration 214 exists as a no-op file. 4 log-only versions skipped in main: 6, 64, 141, 146.
+
+#### 1.2 — Migrations 006–010 (subsumed by full sweep above) ✅ shipped (2026-05-02)
 
 - **Log-DB wired.** `migrationDir(engine, RoleLog)` now resolves `migrations/{sqlite,postgres}/log/`. `embed.FS` directive expanded.
 - `migrations/{sqlite,postgres}/log/00001_initial.sql` — ports `Migration/001_initial_setup.cs`'s `LogDbUpgrade()` half (Logs table, no Time index yet).
@@ -82,7 +94,7 @@ cat go/analysis/questions.md    # running open-question ledger (26 entries last 
 - `headVersion` constant in tests is now `10`; new `headLogVersion` is `6`. Bump on every migration PR.
 - `go vet ./... && golangci-lint run ./...` clean.
 
-#### 1.3+ — migrations 011–230, repository layer, embedded-doc serialization, query builder ❌ pending
+#### Next: repository layer, embedded-doc serialization, query builder ❌ pending
 
 ### Phase 0 — Bootstrap ✅ done
 
