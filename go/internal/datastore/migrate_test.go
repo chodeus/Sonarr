@@ -38,8 +38,8 @@ var expectedTablesAfterMigration1 = []string{
 // Note: log-DB versions are sparse — only the C# migrations whose
 // LogDbUpgrade() override is non-empty get a Go counterpart. Today: 1, 6.
 const (
-	headVersion    int64 = 140
-	headLogVersion int64 = 64
+	headVersion    int64 = 160
+	headLogVersion int64 = 146
 )
 
 // columnSpec is what we assert about each column. Type strings are the
@@ -188,7 +188,7 @@ func TestMigrate_SQLite_ToHead(t *testing.T) {
 	// MetadataFiles (v39), QualityDefinitions (v37). Tables dropped:
 	// Seasons (v21), QualitySizes (v37).
 	tables := listTablesSQLite(t, db.SQL)
-	for _, want := range []string{"Blacklist", "Metadata", "MetadataFiles", "QualityDefinitions"} {
+	for _, want := range []string{"Blocklist", "Metadata", "MetadataFiles", "QualityDefinitions"} {
 		if !containsString(tables, want) {
 			t.Errorf("missing table %q at HEAD: %v", want, tables)
 		}
@@ -297,7 +297,7 @@ func TestMigrate_Postgres_ToHead(t *testing.T) {
 		}
 	}
 	tables := listTablesPostgres(t, db.SQL)
-	for _, want := range []string{"Blacklist", "Metadata", "MetadataFiles", "QualityDefinitions"} {
+	for _, want := range []string{"Blocklist", "Metadata", "MetadataFiles", "QualityDefinitions"} {
 		if !containsString(tables, want) {
 			t.Errorf("missing table %q at HEAD: %v", want, tables)
 		}
