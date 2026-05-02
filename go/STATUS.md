@@ -94,7 +94,15 @@ Pattern decisions made during the sweep:
 - `headVersion` constant in tests is now `10`; new `headLogVersion` is `6`. Bump on every migration PR.
 - `go vet ./... && golangci-lint run ./...` clean.
 
-#### Next: repository layer, embedded-doc serialization, query builder ❌ pending
+#### 1.x — Tags package: first repository ✅ shipped (2026-05-02)
+
+- `internal/tags/tags.go` — `Tag` model + `Repo` with Insert / Get / GetByLabel / All / Update / Delete. Hand-written SQL via `database/sql`, no Dapper-equivalent ORM yet — IBasicRepository<T> generic equivalent lands when a model with embedded-doc fields needs the reflection plumbing.
+- Per-dialect placeholder helper (`?` vs `$N`); RETURNING used uniformly for INSERT.
+- 5 tests under `-race`: SQLite + Postgres CRUD suite, log-role rejection, nil-DB rejection, UNIQUE-constraint enforcement.
+- ErrNotFound sentinel; `int` (Go-native) for Id matching C# `int Id` convention.
+- Pattern set for subsequent model packages: `internal/<domain>/{model.go,repo.go,test.go}`, no shared ORM until justified.
+
+#### Next: more model packages, then embedded-doc serialization + query builder ❌ pending
 
 ### Phase 0 — Bootstrap ✅ done
 
