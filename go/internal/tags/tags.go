@@ -48,24 +48,13 @@ func NewRepo(db *datastore.DB) (*Repo, error) {
 	return &Repo{db: db}, nil
 }
 
-// ph returns the engine's placeholder syntax for the n-th parameter,
-// 1-indexed. SQLite ignores n; Postgres uses it.
-func (r *Repo) ph(n int) string {
-	switch r.db.Engine {
-	case datastore.EnginePostgres:
-		return fmt.Sprintf("$%d", n)
-	default:
-		return "?"
-	}
-}
-
 // Insert persists a new Tag and populates t.ID from the engine's
 // generated identity column. Returns the same pointer for chaining.
 func (r *Repo) Insert(ctx context.Context, t *Tag) (*Tag, error) {
 	if t == nil {
 		return nil, errors.New("tags: nil Tag")
 	}
-	q := fmt.Sprintf(`INSERT INTO "Tags" ("Label") VALUES (%s) RETURNING "Id"`, r.ph(1))
+	q := fmt.Sprintf(`INSERT INTO "Tags" ("Label") VALUES (%s) RETURNING "Id"`, datastore.Placeholder(r.db.Engine, 1))
 	if err := r.db.SQL.QueryRowContext(ctx, q, t.Label).Scan(&t.ID); err != nil {
 		return nil, fmt.Errorf("tags: insert: %w", err)
 	}
@@ -74,7 +63,7 @@ func (r *Repo) Insert(ctx context.Context, t *Tag) (*Tag, error) {
 
 // Get returns the Tag with the given ID or ErrNotFound.
 func (r *Repo) Get(ctx context.Context, id int) (*Tag, error) {
-	q := fmt.Sprintf(`SELECT "Id", "Label" FROM "Tags" WHERE "Id" = %s`, r.ph(1))
+	q := fmt.Sprintf(`SELECT "Id", "Label" FROM "Tags" WHERE "Id" = %s`, datastore.Placeholder(r.db.Engine, 1))
 	var t Tag
 	switch err := r.db.SQL.QueryRowContext(ctx, q, id).Scan(&t.ID, &t.Label); {
 	case errors.Is(err, sql.ErrNoRows):
@@ -88,7 +77,7 @@ func (r *Repo) Get(ctx context.Context, id int) (*Tag, error) {
 // GetByLabel returns the Tag whose Label matches exactly, or ErrNotFound.
 // Tags.Label is UNIQUE so at most one row matches.
 func (r *Repo) GetByLabel(ctx context.Context, label string) (*Tag, error) {
-	q := fmt.Sprintf(`SELECT "Id", "Label" FROM "Tags" WHERE "Label" = %s`, r.ph(1))
+	q := fmt.Sprintf(`SELECT "Id", "Label" FROM "Tags" WHERE "Label" = %s`, datastore.Placeholder(r.db.Engine, 1))
 	var t Tag
 	switch err := r.db.SQL.QueryRowContext(ctx, q, label).Scan(&t.ID, &t.Label); {
 	case errors.Is(err, sql.ErrNoRows):
@@ -126,7 +115,7 @@ func (r *Repo) Update(ctx context.Context, t *Tag) error {
 	if t == nil {
 		return errors.New("tags: nil Tag")
 	}
-	q := fmt.Sprintf(`UPDATE "Tags" SET "Label" = %s WHERE "Id" = %s`, r.ph(1), r.ph(2))
+	q := fmt.Sprintf(`UPDATE "Tags" SET "Label" = %s WHERE "Id" = %s`, datastore.Placeholder(r.db.Engine, 1), datastore.Placeholder(r.db.Engine, 2))
 	res, err := r.db.SQL.ExecContext(ctx, q, t.Label, t.ID)
 	if err != nil {
 		return fmt.Errorf("tags: update(%d): %w", t.ID, err)
@@ -144,7 +133,7 @@ func (r *Repo) Update(ctx context.Context, t *Tag) error {
 // Delete removes the Tag with the given ID. Returns ErrNotFound if no
 // row matched.
 func (r *Repo) Delete(ctx context.Context, id int) error {
-	q := fmt.Sprintf(`DELETE FROM "Tags" WHERE "Id" = %s`, r.ph(1))
+	q := fmt.Sprintf(`DELETE FROM "Tags" WHERE "Id" = %s`, datastore.Placeholder(r.db.Engine, 1))
 	res, err := r.db.SQL.ExecContext(ctx, q, id)
 	if err != nil {
 		return fmt.Errorf("tags: delete(%d): %w", id, err)

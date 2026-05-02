@@ -2,64 +2,13 @@ package tags_test
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/datastore"
+	"sonarr.tv/sonarr/internal/datastore/datastoretest"
 	"sonarr.tv/sonarr/internal/tags"
 )
-
-func openSQLiteAtHead(t *testing.T) *datastore.DB {
-	t.Helper()
-	dir := t.TempDir()
-	db, err := datastore.Open(t.Context(), datastore.Config{
-		Engine: datastore.EngineSQLite,
-		Path:   filepath.Join(dir, "sonarr.db"),
-	})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := datastore.Migrate(t.Context(), db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	return db
-}
-
-func openPostgresAtHead(t *testing.T) *datastore.DB {
-	t.Helper()
-	dsn := os.Getenv("SONARR_PG_DSN")
-	if dsn == "" {
-		t.Skip("SONARR_PG_DSN not set; skipping Postgres test")
-	}
-	const prefix = "postgres:///"
-	if !strings.HasPrefix(dsn, prefix) {
-		t.Fatalf("DSN must start with postgres:///")
-	}
-	dbname := dsn[len(prefix):]
-	db, err := datastore.Open(t.Context(), datastore.Config{
-		Engine:   datastore.EnginePostgres,
-		Host:     "/tmp",
-		Database: dbname,
-		User:     os.Getenv("USER"),
-	})
-	if err != nil {
-		t.Fatalf("Open Postgres: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	// Wipe public so each test starts hermetic.
-	for _, q := range []string{`DROP SCHEMA IF EXISTS public CASCADE`, `CREATE SCHEMA public`} {
-		if _, err := db.SQL.ExecContext(t.Context(), q); err != nil {
-			t.Fatalf("reset %q: %v", q, err)
-		}
-	}
-	if err := datastore.Migrate(t.Context(), db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	return db
-}
 
 // runRepoSuite is the shared assertion set, parameterized by engine. Each
 // engine runs the suite in its own (sub)test against its own DB.
@@ -169,12 +118,12 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 
 func TestRepo_SQLite(t *testing.T) {
 	t.Parallel()
-	runRepoSuite(t, openSQLiteAtHead(t))
+	runRepoSuite(t, datastoretest.OpenSQLite(t))
 }
 
 func TestRepo_Postgres(t *testing.T) {
 	// Cannot t.Parallel — shares spike DB and rebuilds public schema.
-	runRepoSuite(t, openPostgresAtHead(t))
+	runRepoSuite(t, datastoretest.OpenPostgres(t))
 }
 
 func TestRepo_RejectsLogRole(t *testing.T) {
@@ -207,7 +156,7 @@ func TestRepo_RejectsNilDB(t *testing.T) {
 // so we just assert err is non-nil.
 func TestRepo_UniqueLabel_SQLite(t *testing.T) {
 	t.Parallel()
-	db := openSQLiteAtHead(t)
+	db := datastoretest.OpenSQLite(t)
 	repo, _ := tags.NewRepo(db)
 	if _, err := repo.Insert(t.Context(), &tags.Tag{Label: "dup"}); err != nil {
 		t.Fatalf("first Insert: %v", err)
