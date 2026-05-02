@@ -38,7 +38,7 @@ var expectedTablesAfterMigration1 = []string{
 // Note: log-DB versions are sparse — only the C# migrations whose
 // LogDbUpgrade() override is non-empty get a Go counterpart. Today: 1, 6.
 const (
-	headVersion    int64 = 40
+	headVersion    int64 = 60
 	headLogVersion int64 = 6
 )
 
@@ -104,18 +104,18 @@ func TestMigrate_SQLite_ToHead(t *testing.T) {
 	}
 	assertVersion(t, db, headVersion)
 
-	// Version-2 dropped IX_Series_TvRageId and IX_Series_ImdbId; the
-	// other Series unique indexes (TvdbId, TitleSlug) survive.
+	// IX_Series_TvdbId and IX_Series_TitleSlug remain at HEAD (v19
+	// idempotent restore confirmed them). IX_Series_ImdbId stays dropped
+	// (v2 dropped it, never restored). IX_Series_TvRageId was dropped
+	// at v2 but v45 added a non-unique IX_Series_TvRageId.
 	indexes := listIndexesSQLite(t, db.SQL, "Series")
-	for _, gone := range []string{"IX_Series_TvRageId", "IX_Series_ImdbId"} {
-		if containsString(indexes, gone) {
-			t.Errorf("Series still has dropped index %q (post-v2)", gone)
-		}
-	}
 	for _, kept := range []string{"IX_Series_TvdbId", "IX_Series_TitleSlug"} {
 		if !containsString(indexes, kept) {
-			t.Errorf("Series missing kept index %q (post-v2)", kept)
+			t.Errorf("Series missing kept index %q: %v", kept, indexes)
 		}
+	}
+	if containsString(indexes, "IX_Series_ImdbId") {
+		t.Errorf("Series still has dropped IX_Series_ImdbId: %v", indexes)
 	}
 
 	// Version-3 reshaped SceneMappings: dropped CleanTitle, SceneName;
@@ -244,10 +244,8 @@ func TestMigrate_Postgres_ToHead(t *testing.T) {
 	assertVersion(t, db, headVersion)
 
 	indexes := listIndexesPostgres(t, db.SQL, "Series")
-	for _, gone := range []string{"IX_Series_TvRageId", "IX_Series_ImdbId"} {
-		if containsString(indexes, gone) {
-			t.Errorf("Series still has dropped index %q (post-v2)", gone)
-		}
+	if containsString(indexes, "IX_Series_ImdbId") {
+		t.Errorf("Series still has dropped IX_Series_ImdbId: %v", indexes)
 	}
 
 	sm := columnNames(listColumnsPostgres(t, db.SQL, "SceneMappings"))
