@@ -38,7 +38,7 @@ var expectedTablesAfterMigration1 = []string{
 // Note: log-DB versions are sparse — only the C# migrations whose
 // LogDbUpgrade() override is non-empty get a Go counterpart. Today: 1, 6.
 const (
-	headVersion    int64 = 10
+	headVersion    int64 = 20
 	headLogVersion int64 = 6
 )
 
@@ -172,6 +172,52 @@ func TestMigrate_SQLite_ToHead(t *testing.T) {
 			t.Errorf("%s missing Monitored column (post-v10): %v", table, cols)
 		}
 	}
+
+	// Version-11 dropped Seasons.Ignored and Episodes.Ignored.
+	for _, table := range []string{"Seasons", "Episodes"} {
+		cols := columnNames(listColumnsSQLite(t, db.SQL, table))
+		if containsString(cols, "Ignored") {
+			t.Errorf("%s still has dropped Ignored column (post-v11): %v", table, cols)
+		}
+	}
+
+	// Version-12 dropped Series.CustomStartDate.
+	if containsString(series, "CustomStartDate") {
+		t.Errorf("Series still has dropped CustomStartDate column (post-v12): %v", series)
+	}
+
+	// Versions 13/14/15: AirDate column-type pivot. Episodes ends with
+	// AirDate (TEXT) and AirDateUtc (DATETIME).
+	ep := listColumnsSQLite(t, db.SQL, "Episodes")
+	for _, want := range []string{"AirDate", "AirDateUtc"} {
+		if !containsString(columnNames(ep), want) {
+			t.Errorf("Episodes missing %q column (post-v13/15): %v", want, columnNames(ep))
+		}
+	}
+	for _, c := range ep {
+		if c.name == "AirDate" && c.wantType != "TEXT" {
+			t.Errorf("AirDate type = %q, want TEXT (post-v15)", c.wantType)
+		}
+	}
+
+	// Version-19 ensured IX_Series_TvdbId, IX_Series_TitleSlug,
+	// IX_Episodes_TvDbEpisodeId all exist as unique indexes.
+	for table, want := range map[string]string{
+		"Series":   "IX_Series_TvdbId",
+		"Episodes": "IX_Episodes_TvDbEpisodeId",
+	} {
+		idx := listIndexesSQLite(t, db.SQL, table)
+		if !containsString(idx, want) {
+			t.Errorf("%s missing %q index (post-v19): %v", table, want, idx)
+		}
+	}
+
+	// Version-20 added Series.Year and Series.Seasons (JSON text).
+	for _, want := range []string{"Year", "Seasons"} {
+		if !containsString(series, want) {
+			t.Errorf("Series missing %q column (post-v20): %v", want, series)
+		}
+	}
 }
 
 func TestMigrate_SQLite_Idempotent(t *testing.T) {
@@ -265,6 +311,28 @@ func TestMigrate_Postgres_ToHead(t *testing.T) {
 		cols := columnNames(listColumnsPostgres(t, db.SQL, table))
 		if !containsString(cols, "Monitored") {
 			t.Errorf("%s missing Monitored column (post-v10): %v", table, cols)
+		}
+	}
+
+	// v11 Ignored drops; v12 CustomStartDate drop; v13/15 AirDate pivot;
+	// v20 Series.Year and Series.Seasons.
+	for _, table := range []string{"Seasons", "Episodes"} {
+		cols := columnNames(listColumnsPostgres(t, db.SQL, table))
+		if containsString(cols, "Ignored") {
+			t.Errorf("%s still has Ignored column (post-v11): %v", table, cols)
+		}
+	}
+	if containsString(series, "CustomStartDate") {
+		t.Errorf("Series still has CustomStartDate (post-v12): %v", series)
+	}
+	for _, want := range []string{"AirDate", "AirDateUtc"} {
+		if !containsString(columnNames(listColumnsPostgres(t, db.SQL, "Episodes")), want) {
+			t.Errorf("Episodes missing %q (post-v15)", want)
+		}
+	}
+	for _, want := range []string{"Year", "Seasons"} {
+		if !containsString(series, want) {
+			t.Errorf("Series missing %q (post-v20): %v", want, series)
 		}
 	}
 }
@@ -540,6 +608,58 @@ func TestMigrate_SQLite_Log_ToHead(t *testing.T) {
 // (the column exists either way), so this test seeds rows at the pre-10 state
 // and checks the post-10 values directly. The same pattern applies to every
 // future backfill migration — copy this test and adjust the seed/assertion.
+
+// TestMigrate_SQLite_Backfill_020_SeriesSeasonsJSON locks in the
+// embedded-document JSON shape for Series.Seasons. This shape — a JSON array
+// of {"seasonNumber": N, "monitored": <bool>} objects — is the contract that
+// every later migration that reads or extends Series.Seasons must preserve
+// byte-for-byte. A regression here corrupts existing user databases on
+// upgrade.
+func TestMigrate_SQLite_Backfill_020_SeriesSeasonsJSON(t *testing.T) {
+	t.Parallel()
+	db := openSQLite(t)
+
+	// Bring schema up to v19, then seed a Series row with two Seasons.
+	// Season 0 (specials) → forced monitored=false even if Monitored=1.
+	// Season 1 → monitored=true. Season 2 → monitored=false.
+	if err := MigrateTo(t.Context(), db, 19); err != nil {
+		t.Fatalf("MigrateTo(19): %v", err)
+	}
+	for _, q := range []string{
+		// Series at v19 has TvdbId, TvRageId, ImdbId, Title, TitleSlug, CleanTitle,
+		// Status, Images, Path, Monitored, QualityProfileId, SeasonFolder,
+		// Runtime, SeriesType, UseSceneNumbering as NOT NULL columns.
+		`INSERT INTO "Series" ("TvdbId", "TvRageId", "ImdbId", "Title", "TitleSlug", "CleanTitle", "Status", "Images", "Path", "Monitored", "QualityProfileId", "SeasonFolder", "Runtime", "SeriesType", "UseSceneNumbering") VALUES (1, 1, 'tt1', 'Test Show', 'test-show', 'testshow', 0, '[]', '/data', 1, 1, 1, 30, 0, 0)`,
+		`INSERT INTO "Seasons" ("SeriesId", "SeasonNumber", "Monitored") VALUES (1, 0, 1)`,
+		`INSERT INTO "Seasons" ("SeriesId", "SeasonNumber", "Monitored") VALUES (1, 1, 1)`,
+		`INSERT INTO "Seasons" ("SeriesId", "SeasonNumber", "Monitored") VALUES (1, 2, 0)`,
+	} {
+		if _, err := db.SQL.ExecContext(t.Context(), q); err != nil {
+			t.Fatalf("seed: %v\nquery: %s", err, q)
+		}
+	}
+
+	// Apply v20: Year + Seasons columns added; Seasons JSON backfilled.
+	if err := MigrateTo(t.Context(), db, 20); err != nil {
+		t.Fatalf("MigrateTo(20): %v", err)
+	}
+
+	var got string
+	if err := db.SQL.QueryRowContext(t.Context(),
+		`SELECT "Seasons" FROM "Series" WHERE "TvdbId" = 1`).Scan(&got); err != nil {
+		t.Fatalf("read Series.Seasons: %v", err)
+	}
+
+	// The JSON shape must be exactly this string. Order is deterministic
+	// because SQLite's json_group_array follows correlated subquery row
+	// order (which is rowid order for the unindexed Seasons table).
+	want := `[{"seasonNumber":0,"monitored":false},` +
+		`{"seasonNumber":1,"monitored":true},` +
+		`{"seasonNumber":2,"monitored":false}]`
+	if got != want {
+		t.Errorf("Series.Seasons JSON mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
 
 func TestMigrate_SQLite_Backfill_010_MonitoredFromIgnored(t *testing.T) {
 	t.Parallel()
