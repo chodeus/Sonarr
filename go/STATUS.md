@@ -2,11 +2,13 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-02 (post-Phase-1.0).
+Last updated: 2026-05-03 (30 model repos shipped + 8 migration-sweep bugs fixed; non-provider tables of Phase 1 effectively complete).
 
 ## Where to resume
 
-**Phase 0.5 signed off; Phase 1.0 (datastore foundations) shipped to working tree.** Tests green for both engines (`go test -race ./...` against modernc/sqlite and SONARR_PG_DSN=postgres:///sonarr_spike). Lint clean (golangci-lint 0 issues). Migration 001 produces the 14-table set the C# Migration/001 produces; goose state stored in `goose_db_version` (SQLite + Postgres) — not the C# `VersionInfo` table because version numbering differs (gappy in FluentMigrator vs contiguous in goose).
+**Phase 0.5 signed off; Phase 1.0 (datastore foundations) shipped to working tree. 30 model repositories shipped on top — every non-provider table that survives at HEAD now has a Go repo.** Tests green for both engines (`SONARR_PG_DSN=postgres:///sonarr_spike go test -count=1 -race -p 1 ./...`). Lint clean (`golangci-lint run ./...` 0 issues). Migration 001 produces the 14-table set the C# Migration/001 produces; goose state stored in `goose_db_version` (SQLite + Postgres) — not the C# `VersionInfo` table because version numbering differs (gappy in FluentMigrator vs contiguous in goose).
+
+**Note on `-p 1`**: running `go test ./...` without `-p 1` causes intermittent Postgres deadlocks during migration version 71 because multiple test binaries hit the shared `sonarr_spike` DB and rebuild the `public` schema simultaneously. SQLite-only runs are unaffected. Worth fixing eventually (per-package schema or test-package-level mutex via filelock); for now use `-p 1` for the full suite.
 
 The next concrete actions, in priority order:
 1. **Migrations 002..230 sweep** — mechanical port of the remaining 223 migrations. Each one cites its `migrations/ledger.md` row. Probably batched (5-10 per PR) since most are simple ALTER TABLE / CREATE INDEX. The 28 HIGH-RISK embedded-doc mutations get individual PRs with extra test coverage.
@@ -122,7 +124,121 @@ Pattern decisions held across all four:
 - `internal/delayprofiles/` — first repo using embedded-doc fields. 11 columns including 4 bools, 1 nullable `*int` (MinimumCustomFormatScore), 1 `[]int` embedded-doc (Tags). Default profile from migration 070 verified at startup.
 - **Findings**: bool round-trip works on both engines without a wrapper (modernc/sqlite handles INTEGER↔bool, pgx handles boolean↔bool). `nullableInt(*int) -> sql.NullInt64` is the canonical pattern for `int?` columns. Reserved keyword "Order" works as long as identifier quoting is consistent.
 
-#### Next: more bigger models, then `IBasicRepository[T]` generic if dedup justifies it ❌ pending
+#### 1.x — Time-typed + flat repos: scheduledtasks, qualitydefinitions, importlistexclusions ✅ shipped (2026-05-02)
+
+Three more flat-table repos added on top of the original five. Each follows the established pattern (per-domain package, hand-rolled SQL, RETURNING "Id", ErrNotFound sentinel, Postgres tests non-parallel). 13 new tests, all green under `-race` on both engines.
+
+- `internal/scheduledtasks/` — Task with nullable `*time.Time` LastStartTime. **First repo to round-trip `time.Time` in real DB scan/value flow.** Both engines accept `time.Time` directly via `database/sql`; `sql.NullTime` covers nullable. UTC normalization on both write (`.UTC()` before persist) and read (`.UTC()` after Scan) so callers get deterministic timestamps regardless of input zone. The `STTime` wrapper in `datastore/embedded.go` is reserved for JSON-embedded times — scalar DATETIME columns don't go through it.
+- `internal/qualitydefinitions/` — Definition (Id, Quality UNIQUE int, Title UNIQUE string). The C# class has 5 extra fields (GroupName, Weight, MinSize, MaxSize, PreferredSize) that are explicitly `.Ignore()`'d in TableMapping.cs:135-140 — they're populated at runtime from `Quality.DefaultQualityDefinitions`. The Go repo mirrors the persistence shape only; the service layer (TBD) will decorate.
+- `internal/importlistexclusions/` — Exclusion (Id, TvdbId UNIQUE, Title). Trivial flat repo; All ordered by Title.
+
+#### 1.x — Provider-status repos: notificationstatus, downloadclientstatus ✅ shipped (2026-05-02)
+
+Two of the four `ProviderStatusBase`-shaped status tables ported. Each row records failure-escalation state for one provider (ProviderId, InitialFailure?, MostRecentFailure?, EscalationLevel, DisabledTill?). C# `DownloadClientStatus` and `NotificationStatus` are both empty subclasses of `ProviderStatusBase` — identical row shape, separate tables in the schema for namespace clarity.
+
+- `internal/notificationstatus/` — Status with all-three-nullable times. Includes `IsDisabled(now)` method matching `ProviderStatusBase.IsDisabled()`, but with the clock injected so tests are deterministic.
+- `internal/downloadclientstatus/` — Identical shape, different table name. Same surface, including IsDisabled(now).
+
+**Decision held:** the four status tables share enough structure that a `Base` struct via embedding was tempting, but caller ergonomics (`row.Base.ProviderID` access pattern) plus minor SQL-text divergence won out for inlined fields. Total duplication is ~80 LOC across the two so far. If the remaining two (`ImportListStatus` adds 2 columns, `IndexerStatus` adds an embedded `ReleaseInfo`) make the case stronger, revisit with an explicit refactor PR.
+
+**Pending follow-ups for the four-status set:**
+- `internal/importliststatus/` — same base + nullable LastInfoSync DATETIME + HasRemovedItemSinceLastClean BOOL.
+- `internal/indexerstatus/` — same base + LastRssSyncReleaseInfo embedded JSON. **Decision needed**: store as raw JSON `string` (deferred ReleaseInfo struct port) vs declare a thin ReleaseInfo struct now. Likely raw-string for now since ReleaseInfo is parser-owned and substantial.
+
+#### 1.x — Generic `Repository[T]` helper + 9-of-10 repo migration ✅ shipped (2026-05-02)
+
+**Decision: adopt.** Prototyped `internal/repo.Repository[T]` against tags (simplest case) and delayprofiles (hardest existing case: bools + embedded JSON + nullable int + reserved keyword). Both migrate cleanly with **all existing tests passing unchanged** — the migration is invisible to callers, which was the proof-point.
+
+The helper exposes Insert / Get / All / Update / Delete parameterised by a `Mapper[T]` that owns:
+- Table name, ordered Columns list (excluding Id), OrderBy column for All
+- `Bind(*T) []any` — produces persisted-column values, in Columns order (excluding Id)
+- `Scan(*T, RowScanner) error` — reads (Id, Columns…) into T
+- `GetID(*T) int` / `SetID(*T, int)` — Id accessors
+
+Per-domain packages compose by embedding `*repo.Repository[T]` in their own `Repo` struct, then add domain-specific helpers (`GetByLabel`, `GetByPath`, `GetByTypeName`, …) using the same `datastore.Placeholder` primitive against `r.DB()`.
+
+**Migrated to the helper (9 packages):** tags, rootfolders, remotepathmappings, delayprofiles, scheduledtasks, qualitydefinitions, importlistexclusions, notificationstatus, downloadclientstatus. Public API unchanged across all of them; existing test files require zero modifications.
+
+**Kept hand-written (1 package): `config`.** Its surface (Set is upsert via `ON CONFLICT`, Delete is by Key not by Id) doesn't fit the helper's CRUD-by-Id shape. Embedding `Repository[Entry]` would expose Insert/Update/Delete-by-id methods that aren't part of the C# IConfigService contract. Cleaner to leave it as 128 lines of explicit SQL.
+
+**LOC outcome:**
+- 4 originally-tracked packages: 472 deleted → 128 added (-344 LOC, -73%).
+- Helper itself: 281 LOC (lives once at `internal/repo/repo.go`).
+- Net: helper paid for itself after ~3 packages; future flat-table repos drop from ~150–200 LOC to ~70–100 LOC.
+
+**What the helper deliberately does NOT do** (documented in `internal/repo/repo.go` package comment):
+1. No reflection over struct tags. Bind/Scan are explicit; column ordering and types are owned by the caller. Reflection would save ~10 LOC per package at the cost of opaque errors and harder migrations when columns change.
+2. No embedded-doc serialization built-in. Domains needing it (delayprofiles.Tags, future indexerstatus.LastRssSyncReleaseInfo) call `datastore.MarshalEmbedded` / `UnmarshalEmbedded` inside their Bind/Scan funcs.
+3. No prepared-statement caching. Hot-path table reads are ms-level; not worth the lifecycle complexity until profiling proves otherwise.
+4. No upsert / delete-by-key / batch / where-builder primitives. Domain helpers cover those one-offs (e.g. config.Set's `ON CONFLICT` upsert).
+
+#### 1.x — Four-status set complete + namingconfig + users ✅ shipped (2026-05-02)
+
+Four more packages shipped on top of the helper. Each follows the established pattern: domain struct + `Mapper[T]` + `*repo.Repository[T]` embedded in a per-package `Repo`, with domain-specific `GetByX` helpers (`GetByProviderID`, `GetByUsername`, `GetByIdentifier`).
+
+- `internal/importliststatus/` — completes the ProviderStatusBase set with 2 import-list-specific columns (LastInfoSync nullable timestamp + HasRemovedItemSinceLastClean bool).
+- `internal/indexerstatus/` — completes the set with `LastRssSyncReleaseInfo` embedded JSON. **Decision held**: stored as raw JSON `string` (empty string ⇄ NULL via sql.NullString) until the ReleaseInfo struct lands in Phase 2; the on-disk column shape doesn't change when the typed wrapper is introduced. Test exercises a realistic-shape JSON body to catch escaping bugs.
+- `internal/namingconfig/` — singleton-style table for the Organizer's filename templates. Exposes `Default()` returning the canonical defaults the C# NamingConfigService inserts on first read. Persistence is non-singleton (the schema doesn't enforce one row); singleton-ness lives at the service layer.
+- `internal/users/` — auth admin account. **Modeled `Salt *string` + `Iterations *int`** (vs C#'s `string`/`int`) to preserve the schema's nullable semantics — old rows have NULL Salt+Iterations from the lazy SHA-256 → PBKDF2 upgrade-on-login flow, so the auth service can branch on nil-vs-set instead of a sentinel value. `Identifier` is a Guid in C#; modeled as plain `string` since database/sql treats UUIDs as opaque text.
+
+**Bug found in ported migrations during this session:** `00193_add_import_list_items.sql` was missing the `ALTER TABLE ImportListStatus ADD COLUMN HasRemovedItemSinceLastClean` half (only the `CREATE TABLE ImportListItems` half got ported). The captured-schema dumps in `analysis/schema/{sqlite,postgres}.sql` do show the column, so the recorder ran against a complete C# DB; the goose port just missed translating the second statement. **Fixed both engine variants of migration 193 in-place** (no production DBs yet, only test harnesses). Worth grep-checking the rest of the 193-row migration sweep for the same `Alter.Table` pattern that might have been split off similarly — captured as a follow-up below.
+
+#### 1.x — 16 more repos shipped (2026-05-03 session)
+
+Sixteen additional repos on top of the helper. Total per-domain LOC ≈ 4,500; aggregate test surface 30 packages, all green under `-race -p 1` against both engines. Notable per-package shape:
+
+- `internal/customfilters/` — flat 4-col table, opaque JSON Filters column.
+- `internal/importlistitems/` — 10 cols, mostly nullable; `AllByImportListID` helper.
+- `internal/scenemappings/` — 13 cols, lots of nullable; `AllByTvdbID` + `DeleteAll` (refresh-pattern).
+- `internal/releaseprofiles/` — five embedded JSON collection columns (Required/Ignored []string, Tags/ExcludedTags/IndexerIds []int).
+- `internal/blocklist/` — 16 cols, three JSON columns, BIGINT Size, nullable Protocol/Size/PublishedDate.
+- `internal/history/` — 10 cols incl. opaque Quality + Data + Languages JSON; `AllByEpisodeID` / `AllBySeriesID` / `AllByDownloadID` helpers.
+- `internal/downloadhistory/` — 11 cols, three nullable provider FKs; per-DownloadID and per-SeriesID lookups.
+- `internal/commands/` — 12 cols including the **first TimeSpan-typed column** (Duration). Added `datastore.FormatDuration` / `ParseDuration` exported helpers (delegating to the pre-existing private formatTimeSpan / parseTimeSpan in embedded.go) so callers see a regular `*time.Duration`. `AllByStatus` exposes the scheduler's queue-drain query.
+- `internal/pendingreleases/` — 8 cols, three opaque JSON columns; `AllBySeriesID` helper.
+- `internal/extrafiles/` + `internal/subtitlefiles/` + `internal/metadatafiles/` — the sidecar-files trio. SubtitleFiles tests `LanguageTags []string` JSON round-trip; MetadataFiles models `Hash`/`Added` as nullable per the schema.
+- `internal/qualityprofiles/` — 9 cols, two opaque JSON columns; `GetByName` for the unique-name lookup.
+- `internal/episodefiles/` — 15 cols incl. opaque MediaInfo/Quality JSON, BIGINT Size, Languages []int.
+- `internal/episodes/` — 24 cols, ~half nullable. Two by-key lookups (`AllBySeriesID`, `AllBySeriesAndSeason`) with ordered output.
+- `internal/series/` — 41 cols (largest table in the schema). Three embedded-int-array columns (Tags, MalIds, AniListIds), six nullable timestamps, six opaque JSON columns. `GetByTvdbID` for the parser/import-path lookup.
+
+**`config` remains the only hand-written repo** (29 of 30 use `repo.Repository[T]`). Its API (Set upsert + Delete-by-Key) doesn't fit the helper's CRUD-by-Id surface; the cost of forcing a fit outweighs the benefit.
+
+#### 1.x — Migration-sweep bugs fixed during the model-port grind
+
+While porting the repos this session, eight load-bearing bugs in the original 1-pass migration sweep were uncovered and fixed in place. Two background audit agents (one for dropped statements, one for column-type mismatches) ran in parallel; the audits surfaced 5 of these. The remaining 3 fell out from per-repo test failures.
+
+| Mig | Bug | Fix |
+|-----|-----|-----|
+| v34 | SQLite was a no-op; C# relaxes Series.ImdbId/TitleSlug NOT NULL + drops TvRageId UNIQUE | Recreate-table dance with the 25 then-actual columns; explicitly recreate IX_Series_TvdbId. |
+| v83 | Postgres Size column declared `integer` but C# was `AsInt64()` (truncates >2GB blocklist sizes) | Change to `bigint`. |
+| v99 | Whole MetadataFiles ALTER chunk dropped (Added + Extension columns + backfill); SubtitleFiles.Added too-strict NOT NULL | Add the MetadataFiles columns; declare SubtitleFiles.Added nullable from v99 to land at HEAD shape. |
+| v100 | SQLite skipped the `AlterColumn("SeasonNumber").Nullable()` half (the comment was actively wrong); column stayed NOT NULL | Recreate-table dance to drop NOT NULL on SeasonNumber. |
+| v119 | Final `ALTER COLUMN "EnableInteractiveSearch" SET NOT NULL` dropped from both engines; column stayed nullable | Collapse C#'s ADD-nullable + UPDATE + ALTER-NOT-NULL into a single ADD-NOT-NULL-DEFAULT + UPDATE. |
+| v171 | Trailing `Delete.Column "Preferred"` + `Delete.Column "IncludePreferredWhenRenaming"` + targeted DELETE on ReleaseProfiles dropped | Add the two DROP COLUMN + DELETE statements. |
+| v175 | Trailing 5 DROP COLUMN + DROP TABLE LanguageProfiles dropped — left orphan columns and a defunct table at HEAD | Add the cleanup statements. |
+| v193 | Whole `Alter.Table("ImportListStatus").AddColumn("HasRemovedItemSinceLastClean")` half dropped | Add the ALTER. |
+
+**Pattern observation:** the sweep tended to drop trailing schema cleanup that came after a more-prominent CREATE TABLE / ADD COLUMN block, plus AlterColumn calls that needed the SQLite recreate dance. The two background audits ran the patterns systematically; future migration work should rerun an equivalent audit after any changes to the C# tree.
+
+#### Open follow-ups
+
+- **v188 Postgres nullability changes still partial.** Our v188 Postgres port does the TYPE conversion (timestamp → timestamp with time zone) but **does not** drop NOT NULL on the columns C# v188 also makes nullable (Series.LastInfoSync/LastDiskSync/FirstAired/NextAiring/Added, Episodes.AirDateUtc/LastSearchTime, etc.). Episodes survives this because v1 declared those columns nullable already. Series likewise survives via the v34 fix. But other tables touched by v188 (Blocklist.Date, Commands.QueuedAt, History.Date, etc.) silently retain stricter NOT NULL than HEAD. Decide whether to: (a) expand v188 to do per-column DROP NOT NULL, or (b) like v34/v99 declare those columns nullable from their original migrations. **Tracked as future work; not blocking any current repo.**
+- **v188 SQLite is still a no-op.** SQLite has no ALTER COLUMN; matching C# v188 on SQLite would require recreate-table dances for ~12 tables. The captured SQLite HEAD schema does show many of these columns as nullable, so there's a real schema-parity gap. Lower priority since SQLite tolerates strict-superset constraints during fresh insert tests. If/when a repo's test fails on a NOT NULL surprise, fix at the originating migration like v34/v99.
+- **`-p 1` parallel-package deadlock** is still a known issue; not blocking but worth fixing eventually.
+- The two automated migration audits' approach is a useful template — re-run after any future C# tree update to catch new drops.
+
+#### Next: provider-pattern repos (gated on TP-Q1/Q2)
+
+The remaining non-provider tables are done. The seven provider-pattern tables (`Indexers`, `DownloadClients`, `Notifications`, `ImportLists`, `Metadata`, `CustomFormats`, `AutoTagging`) are still gated on the **stable string registry** decision (TP-Q1/Q2 in the questions ledger). Each row stores `Implementation` and `ConfigContract` as C# class-name strings; the Go port can't use Go type names verbatim because that would break C#-Go round-trips and any future class rename cascade.
+
+The next session's first task: settle the provider registry shape. Options:
+1. **Opaque string registry** — keep the C# class-name strings as-is, with a Go-side registration table mapping `(impl_id, contract_id)` → Go constructor. No migration cost. Two known cases (Vuze/Transmission share TransmissionSettings; Usenet/TorrentDownloadStation share DownloadStationSettings) require pair lookup not single key.
+2. **Lighter wire-format alias** — define a stable short ID per provider (e.g. "indexer.newznab"), keep a one-time migration that rewrites existing rows.
+
+Option 1 is the lowest-friction path and aligns with how the C# side already works. Recommend starting there.
+
+After the provider registry: the seven provider repos are mostly mechanical (each is a `Settings`/`ConfigContract` polymorphic-doc table; the existing helper handles the CRUD shape).
 
 ### Phase 0 — Bootstrap ✅ done
 
