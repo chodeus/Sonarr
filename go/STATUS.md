@@ -94,15 +94,29 @@ Pattern decisions made during the sweep:
 - `headVersion` constant in tests is now `10`; new `headLogVersion` is `6`. Bump on every migration PR.
 - `go vet ./... && golangci-lint run ./...` clean.
 
-#### 1.x — Tags package: first repository ✅ shipped (2026-05-02)
+#### 1.x — Domain-primitive repositories ✅ shipped (2026-05-02)
 
-- `internal/tags/tags.go` — `Tag` model + `Repo` with Insert / Get / GetByLabel / All / Update / Delete. Hand-written SQL via `database/sql`, no Dapper-equivalent ORM yet — IBasicRepository<T> generic equivalent lands when a model with embedded-doc fields needs the reflection plumbing.
-- Per-dialect placeholder helper (`?` vs `$N`); RETURNING used uniformly for INSERT.
-- 5 tests under `-race`: SQLite + Postgres CRUD suite, log-role rejection, nil-DB rejection, UNIQUE-constraint enforcement.
-- ErrNotFound sentinel; `int` (Go-native) for Id matching C# `int Id` convention.
-- Pattern set for subsequent model packages: `internal/<domain>/{model.go,repo.go,test.go}`, no shared ORM until justified.
+Four packages, all flat Id+columns tables (no embedded-doc fields yet):
 
-#### Next: more model packages, then embedded-doc serialization + query builder ❌ pending
+- `internal/tags/` — `Tag` (Id, Label UNIQUE) + Repo with Insert/Get/GetByLabel/All/Update/Delete.
+- `internal/config/` — `Entry` (Id, Key UNIQUE, Value) + Repo with Set/Get/GetByKey/All/Delete. `Set` is an upsert via `ON CONFLICT (Key)`.
+- `internal/rootfolders/` — `RootFolder` (Id, Path UNIQUE) + Repo with Insert/Get/GetByPath/All/Delete.
+- `internal/remotepathmappings/` — `Mapping` (Id, Host, RemotePath, LocalPath) + Repo with Insert/Get/All/Update/Delete.
+
+Shared infrastructure:
+- `internal/datastore/sql.go` — `Placeholder(engine, n)` helper for the SQLite (`?`) vs Postgres (`$N`) divergence.
+- `internal/datastore/datastoretest/` — `OpenSQLite(t)` + `OpenPostgres(t)` test helpers that open a fresh DB, run migrations to head, and wire `t.Cleanup`.
+
+Pattern decisions held across all four:
+- Hand-written SQL via `database/sql`, no Dapper-equivalent ORM yet.
+- `RETURNING "Id"` used uniformly for INSERT (works on both engines).
+- Each Repo has `NewRepo(db) (*Repo, error)` that rejects nil DB and non-main role.
+- ErrNotFound sentinel per package, accessible via `errors.Is`.
+- Postgres tests can't `t.Parallel` within a package (shared spike DB). SQLite tests stay parallel.
+
+15 tests under `-race`. Lint clean.
+
+#### Next: embedded-doc serialization + first complex model (Series) ❌ pending
 
 ### Phase 0 — Bootstrap ✅ done
 
