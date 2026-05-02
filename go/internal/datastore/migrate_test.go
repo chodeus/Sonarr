@@ -30,10 +30,17 @@ var expectedTablesAfterMigration1 = []string{
 	"Series",
 }
 
-// headVersion is the highest migration this PR has ported. Bump as new
-// migration files land. Tests use this to call MigrateTo(headVersion) so
-// the head-checkpoint suite stays accurate without manual renumbering.
-const headVersion int64 = 5
+// headVersion is the highest main-DB migration this PR has ported.
+// headLogVersion is the highest log-DB migration. Bump both as new migrations
+// land. Tests use these to call Migrate() and assert the version a head-
+// checkpoint test expects to see.
+//
+// Note: log-DB versions are sparse — only the C# migrations whose
+// LogDbUpgrade() override is non-empty get a Go counterpart. Today: 1, 6.
+const (
+	headVersion    int64 = 10
+	headLogVersion int64 = 6
+)
 
 // columnSpec is what we assert about each column. Type strings are the
 // dialect-canonical form returned by introspection; differences between
@@ -138,6 +145,33 @@ func TestMigrate_SQLite_ToHead(t *testing.T) {
 			t.Errorf("History still has dropped column %q (post-v4): %v", gone, hist)
 		}
 	}
+
+	// Version-7 added NamingConfig.RenameEpisodes; v8 dropped UseSceneName;
+	// v9 dropped SeasonFolderFormat. NamingConfig at HEAD has RenameEpisodes
+	// and lacks both of those.
+	naming := columnNames(listColumnsSQLite(t, db.SQL, "NamingConfig"))
+	if !containsString(naming, "RenameEpisodes") {
+		t.Errorf("NamingConfig missing RenameEpisodes column (post-v7): %v", naming)
+	}
+	for _, gone := range []string{"UseSceneName", "SeasonFolderFormat"} {
+		if containsString(naming, gone) {
+			t.Errorf("NamingConfig still has dropped column %q: %v", gone, naming)
+		}
+	}
+
+	// Version-8 dropped Series.BacklogSetting.
+	series := columnNames(listColumnsSQLite(t, db.SQL, "Series"))
+	if containsString(series, "BacklogSetting") {
+		t.Errorf("Series still has dropped BacklogSetting column (post-v8): %v", series)
+	}
+
+	// Version-10 added Monitored to Episodes and Seasons.
+	for _, table := range []string{"Episodes", "Seasons"} {
+		cols := columnNames(listColumnsSQLite(t, db.SQL, table))
+		if !containsString(cols, "Monitored") {
+			t.Errorf("%s missing Monitored column (post-v10): %v", table, cols)
+		}
+	}
 }
 
 func TestMigrate_SQLite_Idempotent(t *testing.T) {
@@ -206,6 +240,31 @@ func TestMigrate_Postgres_ToHead(t *testing.T) {
 	for _, want := range []string{"Id", "EpisodeId", "SeriesId", "SourceTitle", "Date", "Quality", "Data", "EventType"} {
 		if !containsString(hist, want) {
 			t.Errorf("History missing column %q (post-v5): %v", want, hist)
+		}
+	}
+
+	// v7/v8/v9 NamingConfig deltas.
+	naming := columnNames(listColumnsPostgres(t, db.SQL, "NamingConfig"))
+	if !containsString(naming, "RenameEpisodes") {
+		t.Errorf("NamingConfig missing RenameEpisodes column (post-v7): %v", naming)
+	}
+	for _, gone := range []string{"UseSceneName", "SeasonFolderFormat"} {
+		if containsString(naming, gone) {
+			t.Errorf("NamingConfig still has dropped column %q: %v", gone, naming)
+		}
+	}
+
+	// v8 Series delta.
+	series := columnNames(listColumnsPostgres(t, db.SQL, "Series"))
+	if containsString(series, "BacklogSetting") {
+		t.Errorf("Series still has dropped BacklogSetting column (post-v8): %v", series)
+	}
+
+	// v10 Episodes/Seasons delta.
+	for _, table := range []string{"Episodes", "Seasons"} {
+		cols := columnNames(listColumnsPostgres(t, db.SQL, table))
+		if !containsString(cols, "Monitored") {
+			t.Errorf("%s missing Monitored column (post-v10): %v", table, cols)
 		}
 	}
 }
@@ -407,4 +466,128 @@ func listIndexesPostgres(t *testing.T, db *sql.DB, table string) []string {
 		t.Fatalf("query indexes(%s): %v", table, err)
 	}
 	return scanStrings(t, rows)
+}
+
+// --- log-DB tests ---
+//
+// Postgres log-DB testing requires a separate physical database (the C# side
+// uses sonarr-log alongside sonarr-main). Provisioning that for tests is a
+// later PR. For now log-DB coverage is SQLite-only; the migration files for
+// Postgres exist and were vetted via go vet.
+
+func openSQLiteLog(t *testing.T) *DB {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := Open(t.Context(), Config{
+		Engine: EngineSQLite,
+		Role:   RoleLog,
+		Path:   dir + "/logs.db",
+	})
+	if err != nil {
+		t.Fatalf("Open SQLite log: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func TestMigrate_SQLite_Log_ToVersion1(t *testing.T) {
+	t.Parallel()
+	db := openSQLiteLog(t)
+	if err := MigrateTo(t.Context(), db, 1); err != nil {
+		t.Fatalf("MigrateTo(1): %v", err)
+	}
+	assertVersion(t, db, 1)
+
+	// Logs is the only table at v1; no IX_Logs_Time index yet (added in v6).
+	tables := listTablesSQLite(t, db.SQL)
+	if !equalStringSlices(tables, []string{"Logs"}) {
+		t.Errorf("log-DB tables at v1 = %v, want [Logs]", tables)
+	}
+	idx := listIndexesSQLite(t, db.SQL, "Logs")
+	if containsString(idx, "IX_Logs_Time") {
+		t.Errorf("Logs already has IX_Logs_Time at v1 (should land in v6): %v", idx)
+	}
+}
+
+func TestMigrate_SQLite_Log_ToHead(t *testing.T) {
+	t.Parallel()
+	db := openSQLiteLog(t)
+	if err := Migrate(t.Context(), db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	assertVersion(t, db, headLogVersion)
+
+	// v6 dropped + recreated Logs and added IX_Logs_Time.
+	idx := listIndexesSQLite(t, db.SQL, "Logs")
+	if !containsString(idx, "IX_Logs_Time") {
+		t.Errorf("Logs missing IX_Logs_Time index (post-v6): %v", idx)
+	}
+
+	// Column shape unchanged from v1.
+	cols := columnNames(listColumnsSQLite(t, db.SQL, "Logs"))
+	for _, want := range []string{"Id", "Message", "Time", "Logger", "Level"} {
+		if !containsString(cols, want) {
+			t.Errorf("Logs missing column %q (post-v6): %v", want, cols)
+		}
+	}
+}
+
+// --- backfill correctness ---
+//
+// Migration 010 is the first port-time migration with a non-trivial UPDATE-
+// based backfill: it adds a Monitored column and derives its value from the
+// legacy Ignored column. Schema-only assertions don't catch a busted backfill
+// (the column exists either way), so this test seeds rows at the pre-10 state
+// and checks the post-10 values directly. The same pattern applies to every
+// future backfill migration — copy this test and adjust the seed/assertion.
+
+func TestMigrate_SQLite_Backfill_010_MonitoredFromIgnored(t *testing.T) {
+	t.Parallel()
+	db := openSQLite(t)
+
+	// Bring schema up to v9 — Episodes and Seasons exist with Ignored
+	// but not yet Monitored.
+	if err := MigrateTo(t.Context(), db, 9); err != nil {
+		t.Fatalf("MigrateTo(9): %v", err)
+	}
+
+	// Seed two episode rows and two season rows with mixed Ignored values.
+	for _, q := range []string{
+		`INSERT INTO "Episodes" ("TvDbEpisodeId", "SeriesId", "SeasonNumber", "EpisodeNumber", "Ignored") VALUES (1, 1, 1, 1, 0)`,
+		`INSERT INTO "Episodes" ("TvDbEpisodeId", "SeriesId", "SeasonNumber", "EpisodeNumber", "Ignored") VALUES (2, 1, 1, 2, 1)`,
+		`INSERT INTO "Seasons" ("SeriesId", "SeasonNumber", "Ignored") VALUES (1, 1, 0)`,
+		`INSERT INTO "Seasons" ("SeriesId", "SeasonNumber", "Ignored") VALUES (1, 2, 1)`,
+	} {
+		if _, err := db.SQL.ExecContext(t.Context(), q); err != nil {
+			t.Fatalf("seed: %v\nquery: %s", err, q)
+		}
+	}
+
+	// Now migrate to v10; the backfill UPDATEs should set Monitored as the
+	// inverse of Ignored.
+	if err := MigrateTo(t.Context(), db, 10); err != nil {
+		t.Fatalf("MigrateTo(10): %v", err)
+	}
+
+	cases := []struct {
+		table       string
+		key, keyVal string
+		want        int
+	}{
+		{"Episodes", "TvDbEpisodeId", "1", 1}, // Ignored=0 → Monitored=1
+		{"Episodes", "TvDbEpisodeId", "2", 0}, // Ignored=1 → Monitored=0
+		{"Seasons", "SeasonNumber", "1", 1},
+		{"Seasons", "SeasonNumber", "2", 0},
+	}
+	for _, c := range cases {
+		var got int
+		row := db.SQL.QueryRowContext(t.Context(),
+			`SELECT "Monitored" FROM "`+c.table+`" WHERE "`+c.key+`" = `+c.keyVal)
+		if err := row.Scan(&got); err != nil {
+			t.Fatalf("%s.%s=%s: %v", c.table, c.key, c.keyVal, err)
+		}
+		if got != c.want {
+			t.Errorf("%s.%s=%s: Monitored = %d, want %d", c.table, c.key, c.keyVal, got, c.want)
+		}
+	}
 }

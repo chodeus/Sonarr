@@ -11,6 +11,8 @@ import (
 
 //go:embed migrations/sqlite/main/*.sql
 //go:embed migrations/postgres/main/*.sql
+//go:embed migrations/sqlite/log/*.sql
+//go:embed migrations/postgres/log/*.sql
 var migrationsFS embed.FS
 
 // Migrate brings the schema up to head for the given DB. The migration
@@ -19,9 +21,9 @@ var migrationsFS embed.FS
 // Goose state is stored in goose's own table ("goose_db_version") in the
 // same database. The C# side uses FluentMigrator's "VersionInfo" table
 // instead; the Go port doesn't reuse that table because the version
-// numbering is contiguous-from-1 in goose vs gappy in FluentMigrator (the
-// Sonarr ledger has gaps at 5/15/18/21/57/82). Cross-cite
-// analysis/migrations/ledger.md.
+// numbering style differs — see analysis/migrations/ledger.md for the
+// actual numbering layout (the Sonarr ledger has 8 missing version
+// numbers and one empty no-op file across the 0..230 range).
 func Migrate(ctx context.Context, db *DB) error {
 	if db == nil || db.SQL == nil {
 		return fmt.Errorf("datastore: nil DB")
@@ -104,23 +106,28 @@ func CurrentVersion(ctx context.Context, db *DB) (int64, error) {
 }
 
 // migrationDir maps an (engine, role) pair to the goose dialect and the
-// embed path that holds its migration files. Today only main is wired;
-// log will land alongside the C# log-DB ledger (6 migrations per
-// analysis/migrations/ledger.md). New engines or roles must be added here
-// AND have a sibling directory under migrations/.
+// embed path that holds its migration files. The log role's ledger is
+// sparser than main — only the migrations whose C# equivalent overrode
+// LogDbUpgrade() (per analysis/migrations/ledger.md: 1, 6, 64, 141, 146,
+// 188 — six total). The log DB lives in a separate physical database
+// from main; LogDbEnabled=false in C# config skips it entirely (per
+// subsystems/system.md), so callers that want to disable logging just
+// don't open a log-role DB.
 func migrationDir(engine Engine, role Role) (dialect goose.Dialect, dir string, err error) {
+	var sub string
 	switch role {
 	case RoleMain:
+		sub = "main"
 	case RoleLog:
-		return "", "", fmt.Errorf("datastore: log role not yet wired (Phase 1 follow-up)")
+		sub = "log"
 	default:
 		return "", "", fmt.Errorf("datastore: unknown role %q", role)
 	}
 	switch engine {
 	case EngineSQLite:
-		return goose.DialectSQLite3, "migrations/sqlite/main", nil
+		return goose.DialectSQLite3, "migrations/sqlite/" + sub, nil
 	case EnginePostgres:
-		return goose.DialectPostgres, "migrations/postgres/main", nil
+		return goose.DialectPostgres, "migrations/postgres/" + sub, nil
 	default:
 		return "", "", fmt.Errorf("datastore: unknown engine %q", engine)
 	}

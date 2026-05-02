@@ -68,9 +68,21 @@ cat go/analysis/questions.md    # running open-question ledger (26 entries last 
   - Qualitative claims that DO check out: log-DB migration list (001, 006, 064, 141, 146, 188), migration 205 polymorphic-rename body, gap-row markers, HIGH-RISK section content. These spot-checked clean.
   - Corrections landed in the ledger's intro + summary stats; the per-row table was not regenerated since spot-checks pass.
 
-#### 1.2+ — migrations 006–230, repository layer, embedded-doc serialization, query builder ❌ pending
+#### 1.2 — Migrations 006–010 + log-DB wiring + backfill pattern ✅ shipped (2026-05-02)
 
-Next migration batch should pull in log-DB wiring (migration 006 is `add_index_to_log_time` against `Logs` table in the log DB) and set up the backfill pattern for migrations 007/010 (UPDATE statements that derive new columns from old ones).
+- **Log-DB wired.** `migrationDir(engine, RoleLog)` now resolves `migrations/{sqlite,postgres}/log/`. `embed.FS` directive expanded.
+- `migrations/{sqlite,postgres}/log/00001_initial.sql` — ports `Migration/001_initial_setup.cs`'s `LogDbUpgrade()` half (Logs table, no Time index yet).
+- `migrations/{sqlite,postgres}/log/00006_add_index_to_log_time.sql` — drops + recreates Logs with `IX_Logs_Time` index.
+- `migrations/{sqlite,postgres}/main/00007_add_renameEpisodes_to_naming.sql` — `ALTER NamingConfig ADD COLUMN RenameEpisodes` + first UPDATE-based **backfill** (`= NOT UseSceneName`).
+- `migrations/{sqlite,postgres}/main/00008_remove_backlog.sql` — `ALTER TABLE DROP COLUMN` for `Series.BacklogSetting` and `NamingConfig.UseSceneName`. SQLite uses native DROP COLUMN (3.35+), available in modernc.org/sqlite v1.50.0.
+- `migrations/{sqlite,postgres}/main/00009_fix_renameEpisodes.sql` — drops `NamingConfig.SeasonFolderFormat`. SQLite-only sentinel-value fixups (RenameEpisodes = -1/-2 → 1/0) live only in the SQLite file; the C# `IfDatabase("sqlite")` gating becomes implicit by per-dialect file separation.
+- `migrations/{sqlite,postgres}/main/00010_add_monitored.sql` — adds `Monitored` to `Episodes` and `Seasons` with backfill from the legacy `Ignored` column. The Ignored column itself stays until migration 011.
+- **3 new tests, 14 total all green under `-race`.** New: `TestMigrate_SQLite_Log_ToVersion1`, `TestMigrate_SQLite_Log_ToHead`, `TestMigrate_SQLite_Backfill_010_MonitoredFromIgnored` (the backfill test seeds rows with mixed Ignored values, runs the migration, and asserts Monitored matches the inverse). The pattern from this last test is the template every future backfill migration will copy.
+- **Postgres log-DB testing deferred** — the C# side uses a separate physical database for logs (`sonarr-log` vs `sonarr-main`), so PG log-DB tests need a second DB provisioned. SQLite log-DB coverage is sufficient for now; PG log-DB migration files were vetted via `go vet` and follow the same shape.
+- `headVersion` constant in tests is now `10`; new `headLogVersion` is `6`. Bump on every migration PR.
+- `go vet ./... && golangci-lint run ./...` clean.
+
+#### 1.3+ — migrations 011–230, repository layer, embedded-doc serialization, query builder ❌ pending
 
 ### Phase 0 — Bootstrap ✅ done
 
