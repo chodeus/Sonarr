@@ -38,7 +38,7 @@ var expectedTablesAfterMigration1 = []string{
 // Note: log-DB versions are sparse — only the C# migrations whose
 // LogDbUpgrade() override is non-empty get a Go counterpart. Today: 1, 6.
 const (
-	headVersion    int64 = 20
+	headVersion    int64 = 40
 	headLogVersion int64 = 6
 )
 
@@ -146,76 +146,56 @@ func TestMigrate_SQLite_ToHead(t *testing.T) {
 		}
 	}
 
-	// Version-7 added NamingConfig.RenameEpisodes; v8 dropped UseSceneName;
-	// v9 dropped SeasonFolderFormat. NamingConfig at HEAD has RenameEpisodes
-	// and lacks both of those.
+	// HEAD assertions cover only deltas that survive to HEAD. Intermediate
+	// state (e.g. v9 dropping SeasonFolderFormat then v30 re-adding it,
+	// v10 adding Monitored to Seasons then v21 dropping the table) is
+	// out of scope here — those would be ToVersion-N tests if we needed
+	// them.
 	naming := columnNames(listColumnsSQLite(t, db.SQL, "NamingConfig"))
 	if !containsString(naming, "RenameEpisodes") {
-		t.Errorf("NamingConfig missing RenameEpisodes column (post-v7): %v", naming)
+		t.Errorf("NamingConfig missing RenameEpisodes column: %v", naming)
 	}
-	for _, gone := range []string{"UseSceneName", "SeasonFolderFormat"} {
-		if containsString(naming, gone) {
-			t.Errorf("NamingConfig still has dropped column %q: %v", gone, naming)
-		}
+	if containsString(naming, "UseSceneName") {
+		t.Errorf("NamingConfig still has UseSceneName: %v", naming)
 	}
 
-	// Version-8 dropped Series.BacklogSetting.
 	series := columnNames(listColumnsSQLite(t, db.SQL, "Series"))
-	if containsString(series, "BacklogSetting") {
-		t.Errorf("Series still has dropped BacklogSetting column (post-v8): %v", series)
+	for _, gone := range []string{"BacklogSetting", "CustomStartDate"} {
+		if containsString(series, gone) {
+			t.Errorf("Series still has %q: %v", gone, series)
+		}
 	}
-
-	// Version-10 added Monitored to Episodes and Seasons.
-	for _, table := range []string{"Episodes", "Seasons"} {
-		cols := columnNames(listColumnsSQLite(t, db.SQL, table))
-		if !containsString(cols, "Monitored") {
-			t.Errorf("%s missing Monitored column (post-v10): %v", table, cols)
+	for _, want := range []string{"Year", "Seasons"} {
+		if !containsString(series, want) {
+			t.Errorf("Series missing %q (post-v20): %v", want, series)
 		}
 	}
 
-	// Version-11 dropped Seasons.Ignored and Episodes.Ignored.
-	for _, table := range []string{"Seasons", "Episodes"} {
-		cols := columnNames(listColumnsSQLite(t, db.SQL, table))
-		if containsString(cols, "Ignored") {
-			t.Errorf("%s still has dropped Ignored column (post-v11): %v", table, cols)
-		}
+	// Episodes.Ignored dropped at v11 and stays gone.
+	ep := columnNames(listColumnsSQLite(t, db.SQL, "Episodes"))
+	if containsString(ep, "Ignored") {
+		t.Errorf("Episodes still has Ignored: %v", ep)
 	}
 
-	// Version-12 dropped Series.CustomStartDate.
-	if containsString(series, "CustomStartDate") {
-		t.Errorf("Series still has dropped CustomStartDate column (post-v12): %v", series)
-	}
-
-	// Versions 13/14/15: AirDate column-type pivot. Episodes ends with
-	// AirDate (TEXT) and AirDateUtc (DATETIME).
-	ep := listColumnsSQLite(t, db.SQL, "Episodes")
-	for _, want := range []string{"AirDate", "AirDateUtc"} {
-		if !containsString(columnNames(ep), want) {
-			t.Errorf("Episodes missing %q column (post-v13/15): %v", want, columnNames(ep))
-		}
-	}
-	for _, c := range ep {
+	// Episodes.AirDate column-type pivot: TEXT after v15.
+	for _, c := range listColumnsSQLite(t, db.SQL, "Episodes") {
 		if c.name == "AirDate" && c.wantType != "TEXT" {
 			t.Errorf("AirDate type = %q, want TEXT (post-v15)", c.wantType)
 		}
 	}
 
-	// Version-19 ensured IX_Series_TvdbId, IX_Series_TitleSlug,
-	// IX_Episodes_TvDbEpisodeId all exist as unique indexes.
-	for table, want := range map[string]string{
-		"Series":   "IX_Series_TvdbId",
-		"Episodes": "IX_Episodes_TvDbEpisodeId",
-	} {
-		idx := listIndexesSQLite(t, db.SQL, table)
-		if !containsString(idx, want) {
-			t.Errorf("%s missing %q index (post-v19): %v", table, want, idx)
+	// Tables introduced after v1: Blacklist (v28), Metadata (v39),
+	// MetadataFiles (v39), QualityDefinitions (v37). Tables dropped:
+	// Seasons (v21), QualitySizes (v37).
+	tables := listTablesSQLite(t, db.SQL)
+	for _, want := range []string{"Blacklist", "Metadata", "MetadataFiles", "QualityDefinitions"} {
+		if !containsString(tables, want) {
+			t.Errorf("missing table %q at HEAD: %v", want, tables)
 		}
 	}
-
-	// Version-20 added Series.Year and Series.Seasons (JSON text).
-	for _, want := range []string{"Year", "Seasons"} {
-		if !containsString(series, want) {
-			t.Errorf("Series missing %q column (post-v20): %v", want, series)
+	for _, gone := range []string{"Seasons", "QualitySizes"} {
+		if containsString(tables, gone) {
+			t.Errorf("dropped table %q still present at HEAD: %v", gone, tables)
 		}
 	}
 }
@@ -289,50 +269,44 @@ func TestMigrate_Postgres_ToHead(t *testing.T) {
 		}
 	}
 
-	// v7/v8/v9 NamingConfig deltas.
+	// HEAD assertions only — see comment on the SQLite counterpart for
+	// why intermediate states aren't asserted.
 	naming := columnNames(listColumnsPostgres(t, db.SQL, "NamingConfig"))
 	if !containsString(naming, "RenameEpisodes") {
-		t.Errorf("NamingConfig missing RenameEpisodes column (post-v7): %v", naming)
+		t.Errorf("NamingConfig missing RenameEpisodes: %v", naming)
 	}
-	for _, gone := range []string{"UseSceneName", "SeasonFolderFormat"} {
-		if containsString(naming, gone) {
-			t.Errorf("NamingConfig still has dropped column %q: %v", gone, naming)
-		}
+	if containsString(naming, "UseSceneName") {
+		t.Errorf("NamingConfig still has UseSceneName: %v", naming)
 	}
-
-	// v8 Series delta.
 	series := columnNames(listColumnsPostgres(t, db.SQL, "Series"))
-	if containsString(series, "BacklogSetting") {
-		t.Errorf("Series still has dropped BacklogSetting column (post-v8): %v", series)
-	}
-
-	// v10 Episodes/Seasons delta.
-	for _, table := range []string{"Episodes", "Seasons"} {
-		cols := columnNames(listColumnsPostgres(t, db.SQL, table))
-		if !containsString(cols, "Monitored") {
-			t.Errorf("%s missing Monitored column (post-v10): %v", table, cols)
-		}
-	}
-
-	// v11 Ignored drops; v12 CustomStartDate drop; v13/15 AirDate pivot;
-	// v20 Series.Year and Series.Seasons.
-	for _, table := range []string{"Seasons", "Episodes"} {
-		cols := columnNames(listColumnsPostgres(t, db.SQL, table))
-		if containsString(cols, "Ignored") {
-			t.Errorf("%s still has Ignored column (post-v11): %v", table, cols)
-		}
-	}
-	if containsString(series, "CustomStartDate") {
-		t.Errorf("Series still has CustomStartDate (post-v12): %v", series)
-	}
-	for _, want := range []string{"AirDate", "AirDateUtc"} {
-		if !containsString(columnNames(listColumnsPostgres(t, db.SQL, "Episodes")), want) {
-			t.Errorf("Episodes missing %q (post-v15)", want)
+	for _, gone := range []string{"BacklogSetting", "CustomStartDate"} {
+		if containsString(series, gone) {
+			t.Errorf("Series still has %q: %v", gone, series)
 		}
 	}
 	for _, want := range []string{"Year", "Seasons"} {
 		if !containsString(series, want) {
 			t.Errorf("Series missing %q (post-v20): %v", want, series)
+		}
+	}
+	ep := columnNames(listColumnsPostgres(t, db.SQL, "Episodes"))
+	if containsString(ep, "Ignored") {
+		t.Errorf("Episodes still has Ignored: %v", ep)
+	}
+	for _, want := range []string{"AirDate", "AirDateUtc"} {
+		if !containsString(ep, want) {
+			t.Errorf("Episodes missing %q (post-v15)", want)
+		}
+	}
+	tables := listTablesPostgres(t, db.SQL)
+	for _, want := range []string{"Blacklist", "Metadata", "MetadataFiles", "QualityDefinitions"} {
+		if !containsString(tables, want) {
+			t.Errorf("missing table %q at HEAD: %v", want, tables)
+		}
+	}
+	for _, gone := range []string{"Seasons", "QualitySizes"} {
+		if containsString(tables, gone) {
+			t.Errorf("dropped table %q still at HEAD: %v", gone, tables)
 		}
 	}
 }
