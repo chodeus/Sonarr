@@ -116,7 +116,13 @@ Pattern decisions held across all four:
 
 15 tests under `-race`. Lint clean.
 
-#### Next: embedded-doc serialization + first complex model (Series) ❌ pending
+#### 1.x — Embedded-doc serialization + delayprofiles ✅ shipped (2026-05-02)
+
+- `internal/datastore/embedded.go` — `MarshalEmbedded` / `UnmarshalEmbedded` plus `STTime` and `STDuration` wrappers. STTime emits `"yyyy-MM-ddTHH:mm:ssZ"` UTC matching C# STJUtcConverter. STDuration emits `[-][d.]hh:mm:ss[.fffffff]` matching C# TimeSpan.ToString(). Indented 2-space output matches WriteIndented = true.
+- `internal/delayprofiles/` — first repo using embedded-doc fields. 11 columns including 4 bools, 1 nullable `*int` (MinimumCustomFormatScore), 1 `[]int` embedded-doc (Tags). Default profile from migration 070 verified at startup.
+- **Findings**: bool round-trip works on both engines without a wrapper (modernc/sqlite handles INTEGER↔bool, pgx handles boolean↔bool). `nullableInt(*int) -> sql.NullInt64` is the canonical pattern for `int?` columns. Reserved keyword "Order" works as long as identifier quoting is consistent.
+
+#### Next: more bigger models, then `IBasicRepository[T]` generic if dedup justifies it ❌ pending
 
 ### Phase 0 — Bootstrap ✅ done
 
