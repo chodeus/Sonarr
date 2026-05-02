@@ -155,6 +155,16 @@ func (d *STDuration) UnmarshalJSON(b []byte) error {
 // Duration returns the underlying time.Duration.
 func (d STDuration) Duration() time.Duration { return time.Duration(d) }
 
+// FormatDuration emits the canonical TimeSpan string the C# side stores
+// in scalar text columns like Commands.Duration. Use this for SQL writes
+// of TimeSpan-typed columns; STDuration handles the same format inside
+// JSON embedded documents.
+func FormatDuration(d time.Duration) string { return formatTimeSpan(d) }
+
+// ParseDuration parses the same TimeSpan grammar FormatDuration emits.
+// Use this for SQL reads of TimeSpan-typed columns.
+func ParseDuration(s string) (time.Duration, error) { return parseTimeSpan(s) }
+
 // formatTimeSpan emits the canonical `[-][d'.']hh:mm:ss['.'fffffff]` form.
 // Sub-second nanoseconds are encoded as 7 digits matching the .NET ticks
 // granularity (100ns); higher-precision Go nanoseconds are truncated.
