@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.6 shipped: data model + helpers + ParseTitle pipeline shell + 8 ReportTitleRegex rules (canonical daily airdate / anime [SubGroup] absolute / no-title multi+single episode / title + Nx-episode / title + S-E episode / Title.103 3-digit shortcut / Title.1013 4-digit shortcut). 4-digit season `S1936E18` form supported. ~114 of 122 ReportTitleRegex patterns plus the downstream pipeline stages still pending).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.6 shipped: data model + helpers + ParseTitle pipeline shell + 8 ReportTitleRegex rules (canonical daily airdate / anime [SubGroup] absolute / no-title multi+single episode / title + Nx-episode / title + S-E episode / Title.103 3-digit shortcut / Title.1013 4-digit shortcut). 4-digit season `S1936E18` form supported. ~114 of 122 ReportTitleRegex patterns plus the downstream pipeline stages still pending. Pre-existing `spikes/postgres/TestConcurrentReadersSingleWriter` flake under full-suite PG socket pressure also fixed — full `-race -p 1` suite now clean without the standalone-pass workaround).
 
 ## Where to resume
 
