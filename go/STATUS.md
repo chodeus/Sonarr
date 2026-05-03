@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.9 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.9 adds three rule clusters (bracketed `[Sxx]` separator, Spanish `Cap.NN`, 6/8-digit airdate); spec at end of 2.12.9 is **pass=144 xfail=56 regression=0** out of 200.).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.10 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.10 adds the `Season N Episode M` keyword rule + no-title airdate-at-start rule; spec at end of 2.12.10 is **pass=150 xfail=50 regression=0** out of 200.).
 
 ## Where to resume
 
@@ -830,6 +830,33 @@ What stays xfail (56 rows after this slice):
 - Various assorted forms each requiring a dedicated C# rule port — see `parser_spec_rows_test.go` for the per-row xfail comments.
 
 Lint clean (`golangci-lint run ./...` 0 issues); full `-race -p 1` suite green on both engines (`SONARR_PG_DSN=postgres:///sonarr_spike`).
+
+#### 2.12.10 — Season N Episode M keyword + no-title airdate-at-start ✅ shipped (2026-05-04)
+
+Two more clusters from the 2.12.9 "what stays xfail" list. Both have unique anchors that won't compete with existing rules.
+
+**Spec delta**: pass=144 → 150 (+6); xfail=56 → 50 (-6); regression=0 throughout.
+
+What ships:
+
+1. **`Season N Episode M(-K-…)` keyword rule** (+3 rows). Ports `Parser.cs:247`. Single + multi-episode forms, e.g. `Series - Season 1 - Episode 01 (Resolution).avi` and `Series Title Season 01 Episode 05-06 720p`. Listed last in the rule chain because the `Season<n>…Episode<n>` keyword anchor is unique to this shape — won't collide with any earlier rule's prefix. RE2 reformulations: C# leading `(?:.*(?:\""|^))` collapses to `^` for non-quoted inputs; title-to-Season separator narrows from `(?:[-_\W](?<![()\[]))+` (parens/brackets-excluded) to `[-_. ]+` since none of the current fixtures exercise the title-with-`(2010)` combination; C# `(?<!\d+)` / `(?!\d+)` lookarounds on season/episode replaced by `\b` word boundaries — stops `\d{1,2}` from bleeding into longer trailing digit runs like `720p`. The C# `(?:[-_. ]?(?<episode>...))+` repeated-named-group capture splits into one explicit `<episode>` plus an `<extra>` group `(?:[-_. ]\d{1,2}\b)*` for additional episodes; new `buildSeasonEpisodeKeyword` Build scans `<extra>` for digits and range-expands first..last to mirror the C# `Enumerable.Range` consumer.
+
+2. **No-title airdate-at-start rule** (+3 rows). Ports `Parser.cs:33`. Catches `2018-11-14.1080.all.mp4`, `2019_08_20_1080_all.mp4`, and `20161024- Exotic Payback…`. Listed BEFORE the no-title multi/single + title+Nx rules so an input that starts with a year-shaped run isn't grabbed first as `season=2018 episodes=[11,14]` (no-title multi) or as `21x41` Nx inside the trailing tokens (title+Nx, in the 8-digit case). Year range `19[6-9]\d|20\d\d` (1960-2099) and stricter month range (`0\d|1[0-2]` = 00-12 vs the standard rule's `[0-1][0-9]` = 00-19) preserved verbatim — the no-title rule is stricter about validity since there's no title context to disambiguate. RE2 reformulations: C# `\k<sep>` named backreference (forces both separators to match — `2018-11-14` ✓, `2018-11_14` ✗) dropped, both separators independent `[-_]?`. The C# `(?!\d)` non-consuming lookahead becomes the consuming `(?:[^\d]|$)` end-anchor; buildDailyAirdate reads only year/month/day groups so consuming a trailing non-digit byte is harmless. Reuses `buildDailyAirdate` for the Build.
+
+What stays xfail (50 rows after this slice):
+
+- **Anime title-without-subgroup** (~6 rows). `<title> - <abs>` shape, no `[Group]` brackets.
+- **Reversed-date forms** (~6 rows). `04.28.2018` / `28.04.2018` / `30-04-2024` / `13.02.2025`.
+- **Title-with-airdate composite shapes** (~3 rows). `Series Title (1955) - 1954-01-23 05 00 00 - …` / `Series On TitleClub E76 2024 08 08 …`.
+- **Hybrid airdate+season+episode** (1 row). Parser.cs:161 + consumer's airdate-preference logic.
+- **`S<n>-E<nn>` and 3-digit-season forms** (~3 rows). `Series S1-E1`, `Series S1E1`, `Series.S010E16`.
+- **Multi-episode S6E1.E2 / S6E1-E2 / S6E1E2 variants** (~5 rows).
+- **Multi-episode bracketed `[02x01x02]` etc.** (~3 rows).
+- **Multi-episode bracketed `(S15E06-08)` parenthesised** (~2 rows).
+- **3-digit forms with year-shape title** (~2 rows).
+- Various assorted forms each requiring a dedicated C# rule port — see `parser_spec_rows_test.go` for the per-row xfail comments.
+
+Lint clean (`golangci-lint run ./...` 0 issues); full `-race -p 1` suite green on both engines.
 
 ### Phase 1 — Foundations ✅ done
 
