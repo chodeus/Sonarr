@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.4 shipped: data model + helpers + ParseTitle pipeline shell + 6 ReportTitleRegex rules (canonical daily airdate / title + Nx-episode / no-title multi+single episode / title + S-E episode / anime [SubGroup] absolute) covering basic SingleEpisode / MultiEpisode / anime-absolute / canonical daily / `Nx05` Title-form fixture rows. ~116 of 122 ReportTitleRegex patterns plus the downstream pipeline stages still pending).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.5 shipped: data model + helpers + ParseTitle pipeline shell + 6 ReportTitleRegex rules (canonical daily airdate / title + Nx-episode / no-title multi+single episode / title + S-E episode / anime [SubGroup] absolute) covering basic SingleEpisode / MultiEpisode / anime-absolute / canonical daily / `Nx05` Title-form fixture rows. 4-digit season `S1936E18` form supported. ~116 of 122 ReportTitleRegex patterns plus the downstream pipeline stages still pending).
 
 ## Where to resume
 
@@ -678,6 +678,30 @@ Tests: 1 new function / 11 cases in `parse_title_test.go`:
 - `TestParseTitle_NxEpisode` — 8 title-bearing cases from `SingleEpisodeParserFixture.cs` (`4x05`, `7x6` single-digit, `1x1` single-digit-both, `2x4`, `19x06`, `10x12`, `6x12`) + 3 raw no-title cases (`1x04`, `5x10 WS PDTV...`, `01x04 - Halloween...`) confirming the existing no-title single rule handles them via the optional `S?` prefix.
 
 Lint clean; full suite green on both engines.
+
+#### 2.12.5 — ParseTitle rule polish: 4-digit season + Nx-episode false-positive fix ✅ shipped (2026-05-03)
+
+Sixth slice of the ParseTitle port. Refines two existing rules to fix issues surfaced by probing additional fixture cases.
+
+Two changes:
+
+1. **Title + S-E rule (rule 5) extended to support 4-digit seasons.** The C# code splits this across two array entries: `Parser.cs:188` (1-2 digit season) and `Parser.cs:192` (4-digit season `S2016E05`). The Go port merges them via `\d{4}|\d{1,2}` season alternation — 4-digit form tried first so titles like `Series Title - S1936E18 - I Love to Singa` parse as season=1936, not season=19.
+
+2. **Title + Nx-episode rule (rule 4) regression fix: `[^\d]` last-char constraint on title.** Probing surfaced a false positive where `Red Series S01 E01-E02 1080p AMZN WEBRip DDP5.1 x264 monkee` was matching the Nx rule with season=1 episode=264 (interpreting `5.1 x264` as `<title-end> <sep> <season> <[ex]> <episode>`). The C# code uses a `(?<!\d+)` lookbehind on the season group to reject this; RE2 has no lookbehind, so the Go port forces the title's last char to be non-digit via `(?P<title>.+?[^\d])`. Lazy `.+?` now extends only to positions where the title terminator isn't a digit, eliminating the `DDP5` false title and the cascading `1 x264` mis-classification.
+
+The regression fix preserves all existing `TestParseTitle_NxEpisode` cases (titles like `Series_Title_-_1x1_-_...` end on `e` non-digit, fine) AND the new test pin rejects the `x264` false positive.
+
+What this still doesn't handle (deferred):
+
+- 3-digit-form titles (`Series.Title.103` where `103` parses as S1E03) — needs `Parser.cs:336-338` rule with `(?<!\d+)` lookbehind on the season digit. The Go port can't simply drop the lookbehind because the title's lazy expansion would over-extend (e.g. `series.2009.416` parses as title=`series` season=20 episode=09 instead of title=`series 2009` season=4 episode=16).
+- 4-digit-form titles (`Series.and.a.Title.1013` where `1013` parses as S10E13) — same issue.
+- Multi-episode `Nx05x06` forms.
+
+Tests: 1 new function / 1 case in `parse_title_test.go`:
+
+- `TestParseTitle_NxEpisode_Regressions` — pins the `x264` false-positive rejection. Asserts that the `Red Series S01 E01-E02 ... x264 monkee` input does NOT classify as season=1 episode=264 (which would be the pre-fix Nx-rule output).
+
+Lint clean (`golangci-lint run ./...` 0 issues — gofmt struct alignment fixed); full suite green on both engines.
 
 ### Phase 1 — Foundations ✅ done
 
