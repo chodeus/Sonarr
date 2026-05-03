@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser slice (a) shipped: LanguagesOnlyRegex + LanguageRegex with subs-suffix filter + spa(?!\(Latino\)) split, case-insensitive `regexLanguagesCI` helper exercised by ~50 LanguageParserFixture rows).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser slices (a) + (b) shipped: LanguagesOnlyRegex + LanguageRegex (case-insensitive arm) + CaseSensitiveLanguageRegex (LT/CZ/PL/BG/SK/DE 2-letter arm with SUB-adjacency filters) + GermanDualLanguageRegex + GermanMultiLanguageRegex; ParseLanguages entry point + 4 subtitle entry points still pending in slice c).
 
 ## Where to resume
 
@@ -300,6 +300,41 @@ What's deferred to slices b and c:
 - **Slice (b)**: `CaseSensitiveLanguageRegex` (LT/CZ/PL/BG/SK/DE — bare 2-letter codes with case-sensitive matching and `(?<!SUB[\W_])` / `(?![\W_]SUB)` lookarounds), `GermanDualLanguageRegex` (`(?<!WEB[-_. ]?)\bDL\b` — the German `DL` tag for "Original" language addition), `GermanMultiLanguageRegex` (`\bML\b`).
 
 - **Slice (c)**: `ParseLanguages` entry point (the 30+ `lower.Contains("...")` arm + the regex arm + the German DL/ML post-processing + DistinctBy de-dup), plus `ParseSubtitleLanguage` / `ParseLanguageTags` / `ParseSubtitleLanguageInformation` / `UpdateTitleAndCopyFromTitle` / `ParseBasicSubtitle` (the 4 subtitle-related entry points + their `SubtitleLanguageRegex` / `SubtitleLanguageTitleRegex` / `SubtitleTitleRegex`). Tested against the full 612-line `LanguageParserFixture.cs`.
+
+#### 2.10b — LanguageParser: CaseSensitiveLanguageRegex + GermanDual/MultiLanguageRegex ✅ shipped (2026-05-03)
+
+Second slice. Three small regex primitives and one consumer helper land in `internal/parser/language_supplemental.go`:
+
+- `caseSensitiveLanguageRe` — the 6-arm bare-2-letter alternation `\bLT\b|\bCZ\b|\bPL\b|\bBG\b|\bSK\b|\bDE\b`, case-SENSITIVE at the top level. Mirrors `LanguageParser.cs:28`.
+- `regexLanguagesCS(title) []language.Language` — case-sensitive arm of the C# private `RegexLanguage` consumer at `:354-384`. Walks every `caseSensitiveLanguageRe` match, applies the SUB-adjacency filters, and emits one Language per surviving match.
+- `IsGermanDualLanguage(name) bool` — true iff title contains `\bDL\b` NOT preceded by `WEB[-_. ]?`. Drives the German "DL" tag at `:213-217`.
+- `IsGermanMultiLanguage(name) bool` — true iff title contains `\bML\b`. Drives the German "ML" tag at `:218-223`.
+
+Two RE2 reformulations vs the C# literal:
+
+1. The case-sensitive regex's `(?<!SUB[\W|_|^])` lookbehind and `(?![\W|_|^]SUB)` lookahead are unsupported by RE2. Both are post-match filtered in `regexLanguagesCS` by inspecting up to 4 bytes around the match position. The C# `[\W|_|^]` char class is the literal set `[\W|_^]` (the `|` chars inside `[...]` are literal pipes, NOT alternation metachars — and `\W` already covers `|` and `^` so the effective set is `\W ∪ {_}`, i.e. any non-alphanumeric byte). Almost certainly an authoring quirk in the C# tree; behaviour preserved verbatim via the inline `subAdjacentChar` helper.
+
+2. The `GermanDualLanguageRegex` `(?<!WEB[-_. ]?)\bDL\b` lookbehind is unsupported. Each `\bDL\b` match is post-filtered against the up-to-4 bytes before `matchStart`: rejected if those bytes spell `WEB` (3-byte form) or `WEB[-_. ]` (4-byte form, optional separator from the C# `?`). Note `\bDL\b` does not fire inside `WEBDL` anyway because `B` and `D` are both word chars and `\b` does not match between them — the 3-byte form is preserved for parity rather than a real-input concern.
+
+C# behavioural quirks preserved verbatim:
+
+- The case-sensitive alternation has NO `(?i)` flag at the outer scope. Only the lookarounds carry inline `(?i)`, so `lt` lowercase does NOT register as Lithuanian — only `LT` does. Pinned by `TestRegexLanguagesCS_CaseSensitivity` and the structural pin `TestRegexLanguagesCS_Pins` (regex.String() must not start with `(?i)`).
+- `GermanMultiLanguageRegex` at `:32` IS case-insensitive (`Compiled | IgnoreCase` in the C# tree); preserved.
+
+Tests: 5 test functions / ~40 cases in `language_supplemental_test.go`:
+
+- `TestRegexLanguagesCS_FixtureRows` — 6 fixture rows: LT (lithuanian / mixed-pack), CZ (with U+200B zero-width-space embedded, preserved via Go `​` escapes — staticcheck ST1018 flags raw Unicode-format chars in string literals), PL bare, BG bare (the `BG.AUDIO` row — bare `BG` precedes `.AUDIO` so slice (a)'s `\bbgaudio\b` doesn't fire and slice (b) catches it instead), SK bare.
+- `TestRegexLanguagesCS_CaseSensitivity` — 8 negatives confirming lowercase / mixed-case 2-letter forms do not register.
+- `TestRegexLanguagesCS_SubAdjacencyFilter` — 13 cases: 5 SUB-prefix forms (`SUB-LT`, `SUB.LT`, `SUB_LT`, `sub-LT` case-insensitive, `Sub.CZ`) all rejected; 4 SUB-suffix forms (`LT-SUB`, `LT.SUB`, `LT_SUB`, `LT-sub`) all rejected; 4 plain forms (no SUB adjacency) accepted; 2 edge cases (`SUBSCRIBE.LT.Bar` accepts because the chars after SUB are alphanumeric, not in `[\W_]`; `LTD.Bar` rejects because `\b` doesn't fire inside `LTD`).
+- `TestIsGermanDualLanguage` — 9 fixture rows: 5 positives from `should_add_original_language_to_german_release_with_dl_tag` (German.DL forms); 4 negatives from `should_not_add_original_language_to_german_release_when_title_contains_web_dl` (WEB-DL / WEB.DL / WEB DL / WEBDL).
+- `TestIsGermanMultiLanguage` — 5 cases: positive from `should_add_original_language_and_english_to_german_release_with_ml_tag`, case-insensitive `ml`, negatives (MLB, no ML token, empty).
+- `TestRegexLanguagesCS_Pins` — structural: every named group in `caseSensitiveGroupOrder` resolves to a real `SubexpIndex > 0`; the regex source does NOT start with `(?i)`.
+
+Lint clean (`golangci-lint run ./...` 0 issues; staticcheck QF1001 De Morgan inversion + ST1018 raw-Unicode fixes applied during the slice); full suite green on both engines under `-race -p 1`.
+
+What's deferred to slice (c):
+
+- **Slice (c)**: `ParseLanguages` entry point — the 30+ `lower.Contains(...)` arm + the regex arm wiring (slice a + b helpers) + the German DL/ML post-processing branches + DistinctBy de-dup. Plus the four subtitle-related entry points (`ParseSubtitleLanguage` / `ParseLanguageTags` / `ParseSubtitleLanguageInformation` / `UpdateTitleAndCopyFromTitle` / `ParseBasicSubtitle`) and their three subtitle regexes (`SubtitleLanguageRegex` / `SubtitleLanguageTitleRegex` / `SubtitleTitleRegex`). Tested against the full 612-line `LanguageParserFixture.cs`.
 
 ### Phase 1 — Foundations ✅ done
 
