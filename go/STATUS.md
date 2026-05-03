@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 sign-off bar reached: cmd/sonarr boots end-to-end, opens DB, runs migrations, reports schemaVersion=230, drains bus on signal). Phase 2 ready to start.
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 kicked off — internal/parser title normalisers + first 2 ParserTests fixtures ported as table-driven Go tests, both green).
 
 ## Where to resume
 
@@ -42,7 +42,32 @@ cat go/analysis/questions.md    # running open-question ledger (26 entries last 
 
 ## Phase status
 
-### Phase 1 — Foundations ⏳ in progress
+### Phase 2 — Domain core ⏳ in progress
+
+#### 2.0 — Parser title normalisers ✅ shipped (2026-05-03)
+
+First Phase 2 commit. `internal/parser` ports the title-normalisation primitives the rest of `Parser.cs` builds on.
+
+The strategic plan's Phase 2 directive: "Port src/NzbDrone.Core.Test/ParserTests/** as table-driven Go tests *first*; they're the spec." This commit ports two of the smaller fixtures verbatim:
+
+- `NormalizeSeriesTitleFixture.cs` (33 cases across 8 [Test]/[TestCase] methods) → `TestCleanSeriesTitle*` table-driven tests.
+- `NormalizeEpisodeTitleFixture.cs` (6 cases) → `TestNormalizeEpisodeTitle`.
+
+Implementation surface:
+
+- `parser.CleanSeriesTitle(title) string` — the canonical search-key form: replace digits-followed-by-`%` with `<digits>percent`, strip middle-of-string common words (`a / à / an / the / and / or / of`) when bordered by non-word boundaries on both sides AND not at string start/end, strip remaining non-word characters and underscores, lowercase, RemoveDiacritics. Pure-numeric input passes through unchanged.
+- `parser.NormalizeEpisodeTitle(title) string` — extracts the inner episode title from a `S<N>E00.*` or `S<N>.Special.*` release name when matched, then strips `(N)`-trailing parts and punctuation, collapses whitespace, lowercases.
+- `parser.NormalizeTitle(title) string` — looser title-matching variant that strips punctuation, leading articles, and collapses whitespace.
+- `parser.RemoveDiacritics(s) string` — NFKD + combining-mark strip plus a hand-curated lookup table for Latin extension characters that don't decompose under NFKD (`ð → d`, `þ → th`, `æ → ae`, `ø → o`, `ß → ss`, `ł → l`, `đ → d`, `œ → oe`, plus capitalised and `Ð`/`Ø` variants). Mirrors the `Diacritical` NuGet package the C# tree calls into. The `Ríkið` → `rikid` test case exercises the lookup table; without it, the bare NFKD pass would leave `ð` intact.
+
+Notable RE2 reformulations vs the C# regex literals:
+
+- `(?<=\b\d+)%` → `\b(\d+)%` with capture-and-emit replacement. RE2 has no lookbehind; pulling the digits into a capture group preserves the same matched bytes and emits them back via `${1}percent`.
+- The complex `NormalizeRegex` `((?:\b|_)(?<!^)([aà](?!$)|an|the|and|or|of)(?!$)(?:\b|_))|\W|_` was split: the alternation's first arm (with `(?<!^)` / `(?!$)` lookarounds) is reformulated as `stripMiddleCommonWords`, a hand-coded scan that walks bytes, applies position checks directly, and respects multi-byte UTF-8 boundary semantics. The `\W|_` arm becomes `[^\p{L}\p{N}]` to match C#'s Unicode-aware `\W` (Go's default `\W` is ASCII-only; using `\W|_` directly would incorrectly strip non-ASCII letters like `à` and `í`).
+
+What's deliberately deferred to subsequent Phase 2 commits: `ParseTitle` (the main entry point), the 104-element `ReportTitleRegex[]` array (the heavy lifting), `QualityParser`, `LanguageParser`, `ReleaseGroupParser`, `SceneChecker`, and the IsoLanguages registry. Each owes its corresponding `*Fixture.cs` test as the first commit, then the implementation. The 1,585 [TestCase] rows under `ParserTests/` are the spec — see `analysis/parser/regex-corpus.md` for the porter's checklist.
+
+### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
 
