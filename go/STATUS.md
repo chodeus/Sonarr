@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 storage layer complete + non-storage Foundations underway: messaging bus + auth shipped; configfile loader + common helpers still owed before Phase 1 sign-off).
+Last updated: 2026-05-03 (Phase 1 storage layer complete; messaging bus + auth + configfile loader shipped; only common/disk/http helpers + lifecycle wiring left before Phase 1 sign-off).
 
 ## Where to resume
 
@@ -324,6 +324,24 @@ Identifier (the GUID stored on the cookie path) is generated as 16 bytes from `c
 What this package deliberately does NOT do: HTTP cookie issuance, Forms/External/None scheme dispatch, ApiKeyAuthenticationHandler middleware, TLS settings (SEC-Q12). All of that is HTTP-server glue and lands in Phase 5 once the HTTP surface exists.
 
 12 tests covering: hash round-trip, fresh-salt-each-time, tampered-hash rejection, SHA-256 parity vector, API key length + uniqueness + length-safe constant-time compare, cookie name derivation across diacritics / fallback / mixed input, full Service flow on both engines (Add/Authenticate/FindByIdentifier with case-insensitive username), uniform-failure on bad credentials, lazy SHA-256 upgrade with persistence + post-upgrade verify, and the C#-parity "Upsert always rehashes" behaviour. Lint clean. `golang.org/x/text` promoted from indirect to direct.
+
+#### 1.x — XML config file loader ✅ shipped (2026-05-03)
+
+`internal/configfile` ports `NzbDrone.Core.Configuration.ConfigFileProvider` — the host-level XML settings file at `<dataDir>/config.xml` (port, SSL, API key, branch, Postgres connection details, log levels). Resolves CFG-Q1/Q3/Q9 from the bundle direction in analysis/questions.md (Q9 transactional save is the actual bug fix; Q3 ApiKey skip preserved verbatim; Q1 XML-wins-on-read preserved).
+
+Three files:
+
+- `loader.go` — `Loader` owns one config file path, goroutine-safe via per-loader mutex. `Load(ctx)` parses the XML; missing file yields an empty in-memory doc (not an error). `Save(ctx)` writes atomically via temp + fsync + rename — CFG-Q9 fix vs the C# direct-overwrite that risks half-written files on crash. `parseXML` enforces C# `InvalidConfigFileException` parity: empty content, all-control-character content, unparseable XML, missing `<Config>` root, and >1 root element each return `ErrInvalidConfigFile`.
+- `provider.go` — `Provider` exposes `String/Int/Bool` accessors with override → XML → default precedence. `Set(key, value)` writes through; `SaveConfigDictionary` is the user-initiated batch path that diff-tracks updates, silently drops `ApiKey` (CFG-Q3), and publishes `ConfigFileSavedEvent` via the messaging bus only when something actually changed.
+- `wellknown.go` — typed accessors for `BindAddress`, `Port`, `SslPort`, `EnableSsl`, `LaunchBrowser`, `APIKey`, `URLBase`, `InstanceName`, `LogLevel`, `Branch`, `AuthenticationMethod`. Each preserves the C# special-case logic: APIKey auto-generates + persists when missing or whitespace; URLBase trims surrounding slashes and prefixes a single leading slash; InstanceName falls back to `AppName` ("Sonarr") if the configured value neither starts nor ends with it; AuthenticationMethod auto-upgrades the legacy `AuthenticationEnabled=true` flag and the deprecated `Basic` value to `Forms`. The remaining ~30 well-known keys (Postgres credentials, syslog, UpdateMechanism, log overrides) are mechanical — defer until a downstream consumer pulls on them.
+
+`Overrides` is the host-binding view of env-var / CLI overrides (each well-known key has a `*T` pointer field). Phase 5 wires this from a CLI parser; Phase 1 ships only the data shape.
+
+`APIKeyGenerator` is a func injection point so production wiring passes `auth.GenerateAPIKey` from `internal/auth` shipped earlier this session. Tests inject deterministic generators.
+
+13 tests: missing-file empty load, full Set→Load round-trip, persist-on-default-read (true and false), override-wins-over-XML, empty-override falls back to default, APIKey auto-generate + persist, ResetAPIKey rotation, URLBase normalisation table, InstanceName clamp table, AuthenticationMethod legacy + Basic upgrade + None default, SaveConfigDictionary skips ApiKey + dirty-only emission, all five corrupt-file cases hit `ErrInvalidConfigFile`, realistic v3/v4/v5 sample parses correctly, EnsureDefault no-op on existing files. Lint clean.
+
+What this package deliberately does NOT do: the host-binding env / CLI parser; `MigrateConfigFile` (the C# AppHandle that disables SSL when the cert hash leaks back in — Phase 5 work); the Config-table side (DB-backed user settings, owned by the existing `internal/config` package); `ResetApiKeyCommand` handler (lands when the command bus ships in Phase 3).
 
 ### Phase 0 — Bootstrap ✅ done
 
