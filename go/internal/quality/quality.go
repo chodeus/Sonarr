@@ -34,11 +34,26 @@ const (
 // Quality is one entry in the quality taxonomy. Rows reference it by
 // Id; Name is for display; Source classifies the medium; Resolution
 // is the height in pixels (480 / 576 / 720 / 1080 / 2160).
+//
+// JSON tags use camelCase to match the C# embedded-doc serializer
+// profile (analysis/embedded-docs/catalogue.md § "JSON serialiser
+// profile"). The full-form Quality JSON is used by REST endpoints
+// only — when persisted inside QualityModel, Quality is reduced to
+// its bare Id via Model.MarshalJSON.
+//
+// NOTE: the Source field marshals as the int enum value, not the
+// C# `JsonStringEnumConverter` camelCase string ("television" etc.).
+// Phase 2 ships the integer wire form because no Phase 2 consumer
+// reads or emits the full-form Quality yet — REST is Phase 5 and
+// will swap in a string marshaller. Until then, deserialising a
+// REST-style Quality JSON with `"source":"television"` will fail;
+// the persisted-model path uses int-reduction so this is fine for
+// the current scope.
 type Quality struct {
-	ID         int
-	Name       string
-	Source     QualitySource
-	Resolution int
+	ID         int           `json:"id"`
+	Name       string        `json:"name"`
+	Source     QualitySource `json:"source"`
+	Resolution int           `json:"resolution"`
 }
 
 // Predefined Quality values. IDs are frozen — they are persisted in
