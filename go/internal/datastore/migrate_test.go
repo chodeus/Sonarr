@@ -685,3 +685,84 @@ func TestMigrate_SQLite_Backfill_010_MonitoredFromIgnored(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrate_Postgres_v188_TimestampShapes pins the Postgres timestamp
+// shape v188 produces. Every column the C# v188 alters via
+// `AlterColumn(...).AsDateTimeOffset().Nullable()` must end up
+// `timestamp with time zone` AND nullable; every `.NotNullable()`
+// column must end up `timestamp with time zone` AND not-nullable. This
+// caught the prior abbreviated v188 port that converted only 8 of 38
+// columns and never touched nullability.
+func TestMigrate_Postgres_v188_TimestampShapes(t *testing.T) {
+	db := openPostgres(t)
+	if err := Migrate(t.Context(), db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	type tsExpect struct {
+		table, column string
+		notNull       bool
+	}
+	// Mirrors the AlterColumn list in
+	// src/NzbDrone.Core/Datastore/Migration/188_postgres_update_timestamp_columns_to_with_timezone.cs
+	// at C# HEAD. Order doesn't matter; the assertion is per-column.
+	expectations := []tsExpect{
+		{"Blocklist", "Date", true},
+		{"Blocklist", "PublishedDate", false},
+		{"Commands", "QueuedAt", true},
+		{"Commands", "StartedAt", false},
+		{"Commands", "EndedAt", false},
+		{"DownloadClientStatus", "InitialFailure", false},
+		{"DownloadClientStatus", "MostRecentFailure", false},
+		{"DownloadClientStatus", "DisabledTill", false},
+		{"DownloadHistory", "Date", true},
+		{"EpisodeFiles", "DateAdded", true},
+		{"Episodes", "AirDateUtc", false},
+		{"Episodes", "LastSearchTime", false},
+		{"ExtraFiles", "Added", true},
+		{"ExtraFiles", "LastUpdated", true},
+		{"History", "Date", true},
+		{"ImportListStatus", "InitialFailure", false},
+		{"ImportListStatus", "MostRecentFailure", false},
+		{"ImportListStatus", "DisabledTill", false},
+		{"ImportListStatus", "LastInfoSync", false},
+		{"IndexerStatus", "InitialFailure", false},
+		{"IndexerStatus", "MostRecentFailure", false},
+		{"IndexerStatus", "DisabledTill", false},
+		{"MetadataFiles", "LastUpdated", true},
+		{"MetadataFiles", "Added", false},
+		{"PendingReleases", "Added", true},
+		{"ScheduledTasks", "LastExecution", true},
+		{"ScheduledTasks", "LastStartTime", false},
+		{"Series", "LastInfoSync", false},
+		{"Series", "LastDiskSync", false},
+		{"Series", "FirstAired", false},
+		{"Series", "NextAiring", false},
+		{"Series", "Added", false},
+		{"SubtitleFiles", "LastUpdated", true},
+		{"SubtitleFiles", "Added", false},
+	}
+	for _, want := range expectations {
+		got := findColumn(t, listColumnsPostgres(t, db.SQL, want.table), want.column)
+		if got == nil {
+			t.Errorf("%s.%s missing", want.table, want.column)
+			continue
+		}
+		if got.wantType != "timestamp with time zone" {
+			t.Errorf("%s.%s type = %q, want %q", want.table, want.column, got.wantType, "timestamp with time zone")
+		}
+		if got.notNull != want.notNull {
+			t.Errorf("%s.%s notNull = %v, want %v", want.table, want.column, got.notNull, want.notNull)
+		}
+	}
+}
+
+func findColumn(t *testing.T, cols []columnSpec, name string) *columnSpec {
+	t.Helper()
+	for i := range cols {
+		if cols[i].name == name {
+			return &cols[i]
+		}
+	}
+	return nil
+}
