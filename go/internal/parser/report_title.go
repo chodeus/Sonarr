@@ -74,6 +74,38 @@ var reportTitleRules = []rgRule{
 		Build: buildAnimeAbsolute,
 	},
 
+	// `Parser.cs:33` — No-title airdate at start of string. Mirrors
+	// the C# `^<year>(<sep>)<month>\k<sep><day>` pattern that catches
+	// release names like `2018-11-14.1080.all.mp4`,
+	// `2019_08_20_1080_all.mp4`, and `20161024- Exotic Payback…`. The
+	// year range `19[6-9]\d|20\d\d` (1960-2099) preserves the C#
+	// pattern verbatim. Month uses the C# `0\d|1[0-2]` range (00-12)
+	// rather than the standard rule's `[0-1][0-9]` (00-19) — the
+	// no-title rule is stricter about validity since there's no title
+	// context to disambiguate.
+	//
+	// Listed BEFORE the no-title multi/single + title+Nx rules so an
+	// input that starts with a year-shaped run isn't first grabbed as
+	// season=2018 episodes=[11,14] (no-title multi) or as a 21x41 Nx
+	// shape inside the trailing tokens (title+Nx).
+	//
+	// RE2 reformulations:
+	//
+	//   - The C# `\k<sep>` named backreference (forces both separators
+	//     to match — `2018-11-14` ✓ but `2018-11_14` ✗) is dropped.
+	//     Both separators are independent `[-_]?`. None of the current
+	//     fixture rows exercise the mixed-separator case.
+	//   - The C# `(?!\d)` non-consuming lookahead becomes the
+	//     consuming `(?:[^\d]|$)` end-anchor. The buildDailyAirdate
+	//     consumer reads only the year/month/day groups, so consuming
+	//     a trailing non-digit byte is harmless.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<airyear>19[6-9]\d|20\d\d)[-_]?(?P<airmonth>0\d|1[0-2])[-_]?(?P<airday>[0-2]\d|3[01])(?:[^\d]|$)`,
+		),
+		Build: buildDailyAirdate,
+	},
+
 	// `Parser.cs:45` — Episodes without a title, Multi (`S01E04E05`,
 	// `1x04x05`). Listed BEFORE the no-title single rule so the
 	// multi-episode form wins over the single-episode form's prefix.
@@ -328,6 +360,43 @@ var reportTitleRules = []rgRule{
 			`(?i)^(?P<title>.+?[^\d])[_.\-]+(?P<season>\d{2})(?P<episode>\d{2})(?:[_.]|$)`,
 		),
 		Build: buildTitleNxEpisode,
+	},
+
+	// `Parser.cs:247` — Supports `Season 01 Episode 03` keyword form,
+	// including multi-episode `Episode 05-06`. Listed last because the
+	// `Season<n>...Episode<n>` keyword anchor is unique to this shape
+	// and won't compete with any earlier rule's prefix.
+	//
+	// C# original:
+	//
+	//	(?:.*(?:\""|^))(?<title>.*?)(?:[-_\W](?<![()\[]))+
+	//	(?:\W?Season\W?)(?<season>(?<!\d+)\d{1,2}(?!\d+))(?:\W|_)+
+	//	(?:Episode\W)(?:[-_. ]?(?<episode>(?<!\d+)\d{1,2}(?!\d+)))+
+	//
+	// RE2 reformulations:
+	//
+	//   - The C# leading `(?:.*(?:\""|^))` is degenerate `^` for inputs
+	//     without an embedded `"`; replaced by `^`.
+	//   - The C# title-to-Season separator `(?:[-_\W](?<![()\[]))+`
+	//     drops parens/brackets via lookbehind; the Go port narrows the
+	//     class to `[-_. ]+` (no parens/brackets to begin with). This
+	//     diverges from C# when the title carries a `(2010)` year
+	//     suffix bordered by parens — none of the current fixture rows
+	//     exercise that combination.
+	//   - The C# `(?<!\d+)` / `(?!\d+)` digit-boundary lookarounds on
+	//     season and episode are replaced by `\b` word boundaries —
+	//     stops `\d{1,2}` from bleeding into longer digit runs like
+	//     `720p` after the keyword block.
+	//   - The C# `(?:[-_. ]?(?<episode>...))+` repeated-named-group
+	//     capture is split into one explicit `<episode>` first-capture
+	//     plus an `<extra>` group `(?:[-_. ]\d{1,2}\b)*` for additional
+	//     episode digits. The Build scans `<extra>` for digit runs and
+	//     range-expands first..last to mirror C# `Enumerable.Range`.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?)[-_. ]+\W?Season\W?(?P<season>\d{1,2})\b(?:\W|_)+Episode(?:\W|_)+(?P<episode>\d{1,2})\b(?P<extra>(?:[-_. ]\d{1,2}\b)*)`,
+		),
+		Build: buildSeasonEpisodeKeyword,
 	},
 }
 
@@ -585,5 +654,61 @@ func buildAnimeAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEpisode
 	info.AbsoluteEpisodeNumbers = []int{abs}
 	info.ReleaseGroup = subgroup
 	info.ReleaseHash = hashText
+	return info
+}
+
+// keywordExtraDigitsRe extracts trailing `\d{1,2}` runs from the
+// `<extra>` group emitted by the `Season N Episode M(-K-…)` rule.
+// `\b`-bordered to avoid bleeding into longer digit runs.
+var keywordExtraDigitsRe = regexp.MustCompile(`\d{1,2}\b`)
+
+// buildSeasonEpisodeKeyword extracts (title, season, episodes) from a
+// `Season <n> Episode <m>(-<k>-…)` keyword match. The first episode
+// comes from the explicit `<episode>` group; additional episodes come
+// from scanning the `<extra>` group for `\d{1,2}\b` runs. Range
+// expansion mirrors `findAllEpisodes`.
+func buildSeasonEpisodeKeyword(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
+	seasonText, _ := extractGroupSpan(re, m, "season", title)
+	season, ok := ParseNumber(seasonText)
+	if !ok {
+		return nil
+	}
+	episodeText, _ := extractGroupSpan(re, m, "episode", title)
+	firstEp, ok := ParseNumber(episodeText)
+	if !ok {
+		return nil
+	}
+
+	titleText, _ := extractGroupSpan(re, m, "title", title)
+	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
+	titleText = strings.TrimSpace(titleText)
+
+	captured := []int{firstEp}
+	extraText, _ := extractGroupSpan(re, m, "extra", title)
+	for _, raw := range keywordExtraDigitsRe.FindAllString(extraText, -1) {
+		if n, ok := ParseNumber(raw); ok {
+			captured = append(captured, n)
+		}
+	}
+
+	var episodes []int
+	if len(captured) == 1 {
+		episodes = captured
+	} else {
+		first, last := captured[0], captured[len(captured)-1]
+		if first <= last {
+			episodes = make([]int, 0, last-first+1)
+			for n := first; n <= last; n++ {
+				episodes = append(episodes, n)
+			}
+		} else {
+			episodes = captured
+		}
+	}
+
+	info := NewParsedEpisodeInfo()
+	info.SeriesTitle = titleText
+	info.SeasonNumber = season
+	info.EpisodeNumbers = episodes
 	return info
 }

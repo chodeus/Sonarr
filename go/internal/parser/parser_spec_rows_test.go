@@ -124,8 +124,8 @@ func singleEpisodeRows() []specRow {
 		sex("Series S1-E1-WEB-DL-1080p-NZBgeek", "Series", 1, 1),
 		sex("Series S1E1-WEB-DL-1080p-NZBgeek", "Series", 1, 1),
 		sex("Series.S010E16.720p.HDTV.X264-DIMENSION", "Series", 10, 16),
-		sex("Series - Season 1 - Episode 01 (Resolution).avi", "Series", 1, 1),
-		sex("Series Title Season 01 Episode 05 720p", "Series Title", 1, 5),
+		se("Series - Season 1 - Episode 01 (Resolution).avi", "Series", 1, 1),
+		se("Series Title Season 01 Episode 05 720p", "Series Title", 1, 5),
 
 		// `S2009E09` 4-digit-season form (passing via the title+S-E
 		// rule's `\d{4}` season alternation):
@@ -208,7 +208,7 @@ func multiEpisodeRows() []specRow {
 		mex("Series.10708.hdtv-lol.mp4", "Series", 1, []int{7, 8}),
 		mex("Series.10910.hdtv-lol.mp4", "Series", 1, []int{9, 10}),
 		mex("World Series of Sonarr - 2010x15 - 2010x16 - HD TV.mkv", "World Series of Sonarr", 2010, []int{15, 16}),
-		mex("Series Title Season 01 Episode 05-06 720p", "Series Title", 1, []int{5, 6}),
+		me("Series Title Season 01 Episode 05-06 720p", "Series Title", 1, []int{5, 6}),
 		mex("The Series And The Code - S42 Ep10718 - Ep10722", "The Series And The Code", 42, []int{10718, 10719, 10720, 10721, 10722}),
 		mex("Series Title.S6.E1.E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
 		mex("Series Title.S6E1-E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
@@ -264,13 +264,14 @@ func dailyEpisodeRows() []specRow {
 		dailyx("Series.Title.13.02.2025.1080i.HDTV.MPA2.0.H.264", "Series Title", "2025-02-13"),
 		dailyx("Series On TitleClub E76 2024 08 08 1080p WEB H264-RnB96 [TJET]", "Series On TitleClub", "2024-08-08"),
 		daily("Series.2025.09.01.The.170.Million.Pound.Diamond.Scam.1080p.HDTV.H264-DEADPOOL'", "Series", "2025-09-01"),
-		dailyx("20161024- Exotic Payback.21x41_720.mkv", "", "2016-10-24"),
-		// XFail — title-less airdate forms get grabbed by the no-title
-		// 4-digit shortcut (which interprets `2018` as season=20
-		// episode=18). Needs a no-title airdate-anchored rule from
-		// Parser.cs:33 to fire before the 4-digit shortcut.
-		dailyx("2018-11-14.1080.all.mp4", "", "2018-11-14"),
-		dailyx("2019_08_20_1080_all.mp4", "", "2019-08-20"),
+		// No-title airdate at start (Parser.cs:33) — flipped by the
+		// dedicated no-title-airdate rule placed before the no-title
+		// multi/single + title+Nx rules.
+		daily("20161024- Exotic Payback.21x41_720.mkv", "", "2016-10-24"),
+		// Title-less airdate forms — flipped by the no-title airdate
+		// rule (Parser.cs:33) that fires before no-title multi/single.
+		daily("2018-11-14.1080.all.mp4", "", "2018-11-14"),
+		daily("2019_08_20_1080_all.mp4", "", "2019-08-20"),
 	}
 }
 
