@@ -47,6 +47,33 @@ type rgRule struct {
 // `E` / `x` separators around the digit runs) already enforces the
 // "exactly N digits at this position" constraint.
 var reportTitleRules = []rgRule{
+	// `Parser.cs:112-114` — Anime - [SubGroup] Title Absolute Episode
+	// Number. Matches the most common anime release shape:
+	// `[SubGroup] Title <separator> <absolute_episode> ... [hash]`.
+	// Listed before the no-title single/multi rules so anime forms
+	// like `[FFF] Show - 12` don't accidentally match the no-title
+	// rules' prefix.
+	//
+	// C# original:
+	//
+	//	^\[(?<subgroup>.+?)\][-_. ]?
+	//	(?<title>.+?)[-_. ]+
+	//	(?<absoluteepisode>(?<!\d+)\d{2,3}(\.\d{1,2})?(?!\d+))
+	//	.*?(?<hash>[(\[]\w{8}[)\]])?(?:$|\.mkv)
+	//	flags: i, c
+	//
+	// RE2 reformulations: `(?<!\d+)` and `(?!\d+)` lookarounds dropped
+	// — the surrounding shape (separator-then-2-3-digits with `\d{2,3}`
+	// greedy) preserves the intent. Hash is captured into a separate
+	// group so the post-processor can read the bare 8-char hash without
+	// the surrounding bracket.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^\[(?P<subgroup>.+?)\][-_. ]?(?P<title>.+?)[-_. ]+(?P<absoluteepisode>\d{2,3}(?:\.\d{1,2})?).*?(?:[(\[](?P<hash>\w{8})[)\]])?(?:$|\.mkv)`,
+		),
+		Build: buildAnimeAbsolute,
+	},
+
 	// `Parser.cs:45` — Episodes without a title, Multi (`S01E04E05`,
 	// `1x04x05`). Listed BEFORE the no-title single rule so the
 	// multi-episode form wins over the single-episode form's prefix.
@@ -185,4 +212,33 @@ func buildNoTitleEpisode(re *regexp.Regexp, m []int, title string) *ParsedEpisod
 
 func buildNoTitleMultiEpisode(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
 	return buildNoTitleEpisode(re, m, title)
+}
+
+// buildAnimeAbsolute extracts the subgroup / title / absoluteepisode
+// (and optional hash) from an anime [SubGroup] match. Mirrors the
+// C# read of the same named groups from a `MatchCollection` element
+// in `Parser.ParseMatchCollection` plus `GetSubGroup` /
+// `GetReleaseHash` at `Parser.cs:1210-1239`.
+func buildAnimeAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
+	subgroup, _ := extractGroupSpan(re, m, "subgroup", title)
+	subgroup = strings.TrimSpace(subgroup)
+
+	titleText, _ := extractGroupSpan(re, m, "title", title)
+	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
+	titleText = strings.TrimSpace(titleText)
+
+	absText, _ := extractGroupSpan(re, m, "absoluteepisode", title)
+	abs, ok := ParseNumber(absText)
+	if !ok {
+		return nil
+	}
+
+	hashText, _ := extractGroupSpan(re, m, "hash", title)
+
+	info := NewParsedEpisodeInfo()
+	info.SeriesTitle = titleText
+	info.AbsoluteEpisodeNumbers = []int{abs}
+	info.ReleaseGroup = subgroup
+	info.ReleaseHash = hashText
+	return info
 }

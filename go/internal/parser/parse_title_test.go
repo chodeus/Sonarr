@@ -114,7 +114,6 @@ func TestParseTitle_NoMatchingRule(t *testing.T) {
 	// migrate to positive-assertion tests.
 	cases := []string{
 		"Series Title 2009-06-02.PDTV.XviD-LOL",      // daily — not yet ported
-		"[HorribleSubs] Anime - 01 [1080p]",          // anime — not yet ported
 		"Series.Title.S01.Special.Behind.The.Scenes", // special — not yet ported
 	}
 	for _, title := range cases {
@@ -122,6 +121,46 @@ func TestParseTitle_NoMatchingRule(t *testing.T) {
 			got := parser.ParseTitle(title)
 			if got != nil {
 				t.Logf("ParseTitle(%q) returned %+v — confirm whether the matching rule landed in a later slice", title, got)
+			}
+		})
+	}
+}
+
+// TestParseTitle_AnimeAbsolute ports cases from
+// `AbsoluteEpisodeNumberParserFixture.cs` that match the broad
+// `[SubGroup] Title <sep> <absolute_episode>` shape (Parser.cs
+// rule 112-114, the most common anime form). Cases where the title
+// contains a season+episode marker like `S10E14 214` still fall
+// through to subsequent slices.
+func TestParseTitle_AnimeAbsolute(t *testing.T) {
+	cases := []struct {
+		title     string
+		wantTitle string
+		wantAbs   int
+	}{
+		{"[Commie]_Some_Anime_Show_-_11_[65F220B4]", "Some Anime Show", 11},
+		{"[Underwater]_Some_Anime_Show_-_12_(720p)_[5C7BC4F9]", "Some Anime Show", 12},
+		{"[Commie]_Some_Anime_Show_-_15_[E76552EA]", "Some Anime Show", 15},
+		{"[HorribleSubs]_Some_Anime_Show_-_33_[720p]", "Some Anime Show", 33},
+		{"[HorribleSubs]_Some_Anime_Show_-_145_[720p]", "Some Anime Show", 145},
+		{"[HorribleSubs] Some Anime Show - 13 [1080p].mkv", "Some Anime Show", 13},
+		{"[K-F] Some Anime Show 214", "Some Anime Show", 214},
+		{"[FroZen] Series Title - 23 [DVD][7F6170E6]", "Series Title", 23},
+		{"[Commie] Series Title - 32 [0BA19D5B]", "Series Title", 32},
+		{"[HorribleSubs] Series Title - 32 [480p]", "Series Title", 32},
+		{"[CR] Series Title - 004 [480p][48CE2D0F]", "Series Title", 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.title, func(t *testing.T) {
+			got := parser.ParseTitle(tc.title)
+			if got == nil {
+				t.Fatalf("ParseTitle(%q) = nil, want a result", tc.title)
+			}
+			if got.SeriesTitle != tc.wantTitle {
+				t.Errorf("SeriesTitle = %q, want %q", got.SeriesTitle, tc.wantTitle)
+			}
+			if len(got.AbsoluteEpisodeNumbers) != 1 || got.AbsoluteEpisodeNumbers[0] != tc.wantAbs {
+				t.Errorf("AbsoluteEpisodeNumbers = %v, want [%d]", got.AbsoluteEpisodeNumbers, tc.wantAbs)
 			}
 		})
 	}
