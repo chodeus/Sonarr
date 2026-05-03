@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.7 shipped: data model + helpers + ParseTitle pipeline shell with PreSubstitutionRegex wired in + 10 ReportTitleRegex rules (daily airdate / anime [SubGroup] absolute / no-title multi+single / title + Nx-episode / title + S-E / mini-series-year+E / mini-series Part-N / Title.103 3-digit / Title.1013 4-digit). Korean F1RST/NEXT fixture passes via the pre-substitution wire-up. ~112 of 122 ReportTitleRegex patterns plus the downstream pipeline stages still pending. Pre-existing pg_spike flake also fixed — full `-race -p 1` suite clean).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.8 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`) — 200 fixture rows ported from SingleEpisode/MultiEpisode/Daily/MiniSeries/AbsoluteEpisode parser fixtures, with 130 currently-passing rows pinned and 70 xfail rows tracking the gap. Each new rule slice now produces a clear delta via REGRESSION (test-fail) and NEWLY-PASSING (test-log) summaries. Pre-existing pg_spike flake also fixed.).
 
 ## Where to resume
 
@@ -747,6 +747,61 @@ Tests: 2 new functions / 7 cases in `parse_title_test.go`:
 What this still doesn't handle: `kill-roy-was-here-e07-720p` (no Part keyword, dash-separated `e07` with title containing a year-shaped substring). Deferred to a later slice.
 
 Lint clean; full suite green on both engines.
+
+#### 2.12.8 — Bulk fixture spec port + rule polish ✅ shipped (2026-05-03)
+
+Ninth slice of the ParseTitle port — and a methodology shift. Previous slices added rules one-at-a-time with hand-crafted xfail-followed-by-fix tests, which surfaced regressions only when the next slice happened to probe the regressed input. The bulk spec port replaces that with a 200-row fixture spec where each new slice's effect is visible as `REGRESSION` (a previously-passing row broke — test fails) or `NEWLY-PASSING` (an xfail row started passing — test logs a reminder to flip the marker).
+
+What ships:
+
+- **`parser_spec_test.go` (~150 LOC)** — `TestParserSpec` dispatcher walking 200 fixture rows. Each row has an `expected` outcome (Title / Season / Episodes / Abs / AirDate / Special / Mini / SplitEp / Daily) and an `XFail` flag. The dispatcher reports four buckets:
+  - `pass` (XFail=false, actual matches)
+  - `xfail` (XFail=true, actual doesn't match — silent)
+  - `regression` (XFail=false, actual doesn't match — `t.Errorf`)
+  - `newly-passing` (XFail=true, actual matches — `t.Logf` with reminder to flip)
+- **`parser_spec_rows_test.go` (~250 LOC)** — 200 rows ported from `SingleEpisodeParserFixture.cs` (~80) / `MultiEpisodeParserFixture.cs` (~50) / `DailyEpisodeParserFixture.cs` (~22) / `MiniSeriesEpisodeParserFixture.cs` (~8) / `AbsoluteEpisodeNumberParserFixture.cs` (~30), tagged via 6 row-builder helpers (`se` / `sex` / `me` / `mex` / `daily` / `dailyx` / `mini` / `minix` / `anime` / `animex`).
+
+Spec summary at slice end: **pass=130 xfail=70 regression=0**.
+
+Rule polish along the way:
+
+1. **Daily airdate rule reordered** — moved from first to between title+S-E and the 3/4-digit shortcuts. Daily-form titles like `A.Late.Talk.Show.2010.10.11` now match airdate (not 4-digit-shortcut S20E10), AND title+Nx forms like `Top Series - 06x11 - 2005.08.07` still match Nx (not the bogus airdate read).
+
+2. **Multi-S-E rule added** (`Parser.cs:117`) — `^<title>?(<sep>S<n>(?:E\d{2,3})+){2,}` for repeated `S07E22 - S07E23` / `S03E01.S03E02` forms. Listed BEFORE the single-S-E rule so multi wins.
+
+3. **No-title multi rule extended** — `(?:[-_]|[ex]){1,2}` separator alternation now also accepts `[-_. ]?S\d{1,2}E` to handle `S03E01.S03E02` no-title form.
+
+4. **`findAllEpisodes` extended to `\d{1,3}`** (was `\d{2,3}`) so `1x1` single-digit-episode form parses correctly.
+
+5. **`findAllEpisodes` adds range expansion** — mirrors C# `Enumerable.Range(first, count)`. `S01E01-E03` (captures [1,3]) now returns [1, 2, 3]; `S01E91-E100` returns [91..100]; `S01E04E05` (already contiguous) returns [4, 5] unchanged.
+
+6. **`buildTitleSeasonEpisode` scans from `titleEnd`** instead of `seasonEnd` — when the regex `{2,}` quantifier matches multiple SxxExx blocks and Go RE2 retains only the LAST `season` capture, scanning from titleEnd ensures we still see the FIRST SxxExx's episode tokens.
+
+Newly-passing fixture rows (18 flipped from `*x` to non-xfail this slice):
+
+- 4-digit season `S2009E09` / `S2016E14` / `S2010E994` (single-rule extension hit).
+- `Series.Title.S15.E06`, `Series Title - S15 E06`, `Red Show - S02 - E06` (Arm A `[-_. ]+E\d{2,3}` change).
+- `Series.S03E01-06` (range expansion).
+- `Series.S01E91-E100`, `Series.S29E161-E165` (range expansion).
+- `2x04x05.720p.BluRay-FUTV`, `1x01-x03 - Episode Title` (no-title multi extension).
+- `The Series S01e01 e02 ShoHD On Demand` (multi-S-E rule).
+- `8x01_02 - Free Falling`, `Series's Sonarr - 8x01_02 - Free Falling` (multi-form, recategorized).
+- Daily forms with year-prefixed titles like `Series.2025.09.01.The...`.
+
+What stays xfail (70 rows):
+
+- Bracketed `[S01E01-02-03]` form — needs separator class to include `[`.
+- Title with year + s01e13 hybrid form (`The Show Series 2015 02 09 WEBRIP s01e13`) — needs `Parser.cs:161` airdate-and-S-E hybrid rule.
+- Anime title-without-subgroup forms (`Some Anime Show - 031`) — needs Parser.cs:130-style title+absolute rule.
+- Reversed-date forms (`04.28.2018`, `28.04.2018`) — need `Parser.cs:354/:358` rules.
+- 6-digit/8-digit airdate forms — need `Parser.cs:62`-style rule.
+- Spanish `Cap.NN` forms — need `Parser.cs:329` rule.
+- Title with year-shaped 3-digit fragment (`series.2009.416`) — needs lookbehind-equivalent.
+- Various assorted forms each requiring a dedicated C# rule port.
+
+Each subsequent slice now has a single source of truth for "did I gain or lose coverage". Regression detection is automatic.
+
+Lint clean (`golangci-lint run ./...` 0 issues — gofmt + misspell + unused-fn fixes applied); full `-race -p 1` suite green on both engines.
 
 ### Phase 1 — Foundations ✅ done
 
