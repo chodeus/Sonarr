@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slice 2.12.0 shipped: ParsedEpisodeInfo + SeriesTitleInfo + ReleaseType data models + small standalone helpers (ValidateBeforeParsing / HasMultipleLanguages / NormalizeImdbID / ParseNumber / ParseDecimal / convertToNumerals) + RejectHashedReleasesRegexes + SeasonFolderRegexes; the 122-element ReportTitleRegex array + ParseTitle pipeline still pending in slices 2.12.x).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0 + 2.12.1 shipped: data model + helpers + ParseTitle pipeline shell + 3 ReportTitleRegex rules (no-title multi episode / no-title single episode / title + season-episode) covering basic SingleEpisode / MultiEpisode fixture rows. ~119 of 122 ReportTitleRegex patterns plus the downstream pipeline stages (SimplifyTitle / language / quality / release-group / year-in-title / daily / anime branches) still pending).
 
 ## Where to resume
 
@@ -565,6 +565,46 @@ What's deferred:
 - SimplifyTitle + ReversedTitleRegex — the bytes-reversed-title detection and pre-parse normalisation.
 - ParseSeriesName — delegates to ParseTitle and falls back to CleanSeriesTitle (already in the Go port).
 - The `SimpleTitleRegex` / `YearInTitleRegex` / `TitleComponentsRegex` / `SixDigitAirDateRegex` / `RequestInfoRegex` / `SimpleEpisodeNumberRegex` / `SeasonFolderRegex` (the standalone-name version, distinct from the array) support regexes — port alongside their consumers.
+
+#### 2.12.1 — ParseTitle skeleton + 3 ReportTitleRegex rules ✅ shipped (2026-05-03)
+
+Second slice of the ParseTitle port. Lays the rule-walking pipeline + ports the 3 most common ReportTitleRegex patterns so basic single + multi episode parsing works.
+
+Two new files:
+
+- `internal/parser/report_title.go` — `rgRule` struct (regex + Build function pair), `reportTitleRules` table, plus the `findAllEpisodes` post-match scanner that recovers all episode digit runs from a matched span (Go RE2 `(...)*` retains only the last capture per named group, so the C# `Captures` collection's per-iteration values don't transfer; same fixup pattern as QualityParser slice 2.10c).
+- `internal/parser/parse_title.go` — `ParseTitle(title) *ParsedEpisodeInfo` public entry + `ParseSeriesName(title) string` wrapper that falls back to CleanSeriesTitle on parse failure.
+
+Rules ported (3 of 122):
+
+- **No-title multi episode** (`Parser.cs:45`) — `^(?:S?<season>\d{4}|\d{1,2}(?:(?:[-_]|[ex]){1,2}\d{2,3}){2,})`. Order matters: this rule MUST come before the no-title single rule so `S01E04E05` matches the multi form rather than the single form's prefix `S01E04`.
+- **No-title single episode** (`Parser.cs:53`) — `^(?:S?<season>\d{4}|\d{1,2}(?:[-_ ]?[ex]\d{2,3}))`.
+- **Title + season-episode** (`Parser.cs:188`) — `^<title>.+?[-_. ]+S<season>\d{1,2}(?:(?:[-_. ]+E\d{2,3})+|E\d{2,3}(?:[-_. ]?(?:E?\d{2,3}))*)`.
+
+Two RE2 reformulations vs the C# literals:
+
+1. The pervasive `(?<!\d+)` / `(?!\d+)` digit-boundary lookarounds around season/episode digit runs are dropped — the surrounding regex shape (literal `S` / `E` / `x` separators around the digit groups) already enforces the "exactly N digits at this position" constraint. Verified by `S012E05` rejection trace: the `\d{1,2}` greedy matches `01`, then `[ex]` requires `e`/`x` at position 3, but the next char is `2` → fail; backtracks fully → no match.
+
+2. The C# duplicate-`<episode>` named groups in the title-bearing rule are dropped (RE2 rejects duplicates) and replaced with a `findAllEpisodes` post-match scan over the matched span using a tag-only regex `[ex](\d{2,3})|(?:[-_]\s?)(\d{2,3})`.
+
+Pipeline shape: `ParseTitle` validates via `ValidateBeforeParsing`, strips file extension, walks `reportTitleRules` in declaration order, and the first rule whose Build returns non-nil wins. Returns nil otherwise. Currently sets only `SeriesTitle` / `SeasonNumber` / `EpisodeNumbers` / `ReleaseTitle` — the broader pipeline stages (language / quality / release-group / year / daily / anime / multi-season) are deferred to subsequent slices.
+
+Tests: 4 functions / ~25 cases in `parse_title_test.go` (black-box `package parser_test`):
+
+- `TestParseTitle_SingleEpisode` (8 cases) — title-bearing single + raw `S01E05` shapes.
+- `TestParseTitle_MultiEpisode` (6 cases) — title-bearing multi + raw `S01E04E05` shapes.
+- `TestParseTitle_RejectInvalid` (5 cases) — confirms ValidateBeforeParsing pass-through (empty / no-content / season-folder / yEnc-password).
+- `TestParseTitle_NoMatchingRule` (3 informational cases) — daily / anime / special inputs that don't yet match (will migrate to positive assertions when their rules land).
+- `TestParseSeriesName` (2 cases) — fallback to CleanSeriesTitle when ParseTitle returns nil.
+
+Lint clean (`golangci-lint run ./...` 0 issues — staticcheck unused-helper warnings on initial scaffolding were resolved by removing/inlining the dead helpers); full suite green on both engines under `-race -p 1`.
+
+What's deferred to subsequent slices (rough categorisation per the strategic plan):
+
+- 2.12.2 — Anime patterns (~25 regexes covering `[SubGroup]` shapes, absolute-episode-number forms, season-in-brackets variants).
+- 2.12.3 — Daily / Special / Mini-series patterns (~15 regexes).
+- 2.12.4 — Edge cases / 4-digit-season / multi-season / partial-season / language-prefixed releases / etc. (~80 regexes).
+- 2.12.final — Full ParseTitle pipeline: SimplifyTitle / quality+language+release-group integration / GetSeriesTitleInfo (year-in-title + AKA / `|` / `(...)` title splits) / GetSubGroup / GetReleaseHash / ParsePath. Plus the C# `MatchCollection`-style multi-match LastOrDefault semantics for rules where multiple matches contribute to a single result.
 
 ### Phase 1 — Foundations ✅ done
 
