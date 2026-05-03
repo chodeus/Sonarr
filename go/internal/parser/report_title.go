@@ -189,7 +189,7 @@ var reportTitleRules = []rgRule{
 	// is what matters for the multi-S form.
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?)?(?:[-_. \W]+S(?P<season>\d{4}|\d{1,2})(?:E\d{2,3})+){2,}`,
+			`(?i)^(?P<title>.+?)?(?:[-_. \W]+S(?P<season>\d{4}|\d{1,3})(?:E\d{1,3})+){2,}`,
 		),
 		Build: buildTitleSeasonEpisode,
 	},
@@ -202,9 +202,26 @@ var reportTitleRules = []rgRule{
 	// and the Go port keeps the narrower `[-_. ]` class plus an
 	// explicit `[` to avoid eating other punctuation that would let
 	// titles ending in `(YYYY)` collide with subsequent groups.
+	//
+	// Season `\d{4}|\d{1,3}` (was `\d{1,2}` before 2.12.11) admits
+	// 3-digit seasons (`S010E16`, `S006E18`, `S101E01-E02`).
+	//
+	// Arm B's trailing iteration is split into:
+	//
+	//   - `(?:[-_. ]?E\d{1,3})*` — E-required iterations, allow
+	//     1-digit episodes. Catches `S6E1.E2`, `S6E1-E2`, `S6E1E2`,
+	//     `S6E1-E2-E3`, `S01E91-E100`.
+	//   - `(?:[-_. ]?\d{2,3})*` — digits-only iterations, require 2+
+	//     digits. Catches `S01E05-06`, `S01E01-02-03`.
+	//
+	// The 2-digit minimum on the digits-only arm is what stops
+	// `Series.S01E04.2-45.PM.[HDTV-720p]` from slurping the trailing
+	// `.2-45.PM` as multi-episode [4,5,6,…,45] (the C# regex achieves
+	// the same constraint via `\d{2,3}(?!\d+)`; the Go port skips the
+	// lookahead and keeps the minimum-length floor).
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?)(?:[-_. \[]+S(?P<season>\d{4}|\d{1,2}))(?:(?:[-_. ]+E\d{2,3})+|(?:E\d{2,3}(?:[-_. ]?(?:E?\d{2,3}))*))`,
+			`(?i)^(?P<title>.+?)(?:[-_. \[]+S(?P<season>\d{4}|\d{1,3}))(?:(?:[-_. ]+E\d{1,3})+|(?:E\d{1,3}(?:[-_. ]?E\d{1,3})*(?:[-_. ]?\d{2,3})*))`,
 		),
 		Build: buildTitleSeasonEpisode,
 	},
@@ -274,6 +291,41 @@ var reportTitleRules = []rgRule{
 			`(?i)^(?P<title>.+?[^\d])?\W*(?P<airyear>\d{4})(?P<airmonth>[0-1][0-9])(?P<airday>[0-3][0-9])(?:\W|$)`,
 		),
 		Build: buildDailyAirdate,
+	},
+
+	// `Parser.cs:354` — Reversed date (month-day-year),
+	// `Series.Title - 04.28.2014`. Listed AFTER the standard daily +
+	// 8-digit rules so canonical year-first forms win first.
+	//
+	// C# original:
+	//
+	//	^(?<title>.+?)?\W*(?<ambiguousairmonth>[0-1][0-9])[-_. ]+
+	//	(?<ambiguousairday>[0-3][0-9])[-_. ]+(?<airyear>\d{4})(?!\d+)
+	//
+	// `(?!\d+)` lookahead becomes the consuming `(?:[^\d]|$)` end-anchor.
+	// The buildReversedAirdate consumer applies the C# ambiguous-date
+	// logic at `Parser.cs:1082-1095`: if both groups are ≤ 12 the date
+	// is truly ambiguous and Build returns nil so the next rule can
+	// try; if month > 12 (rule-A interpretation invalid) Build also
+	// returns nil so rule B's day-month-year interpretation gets a
+	// chance.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?)?\W*(?P<ambiguousairmonth>[0-1][0-9])[-_. ]+(?P<ambiguousairday>[0-3][0-9])[-_. ]+(?P<airyear>\d{4})(?:[^\d]|$)`,
+		),
+		Build: buildReversedAirdate,
+	},
+
+	// `Parser.cs:358` — Reversed date (day-month-year),
+	// `Series Title - 30-04-2024`. Same shape as the rule above with
+	// the first 2-digit group named `<ambiguousairday>` instead of
+	// `<ambiguousairmonth>`. buildReversedAirdate is symmetric and
+	// reads both groups by name.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?)?\W*(?P<ambiguousairday>[0-3][0-9])[-_. ]+(?P<ambiguousairmonth>[0-1][0-9])[-_. ]+(?P<airyear>\d{4})(?:[^\d]|$)`,
+		),
+		Build: buildReversedAirdate,
 	},
 
 	// `Parser.cs:224`-style — Mini-Series with year in title +
@@ -654,6 +706,58 @@ func buildAnimeAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEpisode
 	info.AbsoluteEpisodeNumbers = []int{abs}
 	info.ReleaseGroup = subgroup
 	info.ReleaseHash = hashText
+	return info
+}
+
+// buildReversedAirdate handles both Parser.cs:354 (month-day-year)
+// and Parser.cs:358 (day-month-year) reversed-date forms. The
+// `<ambiguousairmonth>` and `<ambiguousairday>` named groups are read
+// regardless of regex position; the C# ambiguous-date logic at
+// `Parser.cs:1082-1095` is applied verbatim:
+//
+//   - Both ≤ 12 → truly ambiguous → return nil so the alternate
+//     interpretation rule can try.
+//   - Month > 12 (or < 1) → rule-A interpretation invalid → return nil.
+//   - Day > 31 (or < 1) → invalid → return nil.
+//   - Otherwise → use captured values verbatim.
+//
+// The C# `DateTime` constructor would throw on a bogus month/day; the
+// thrown exception is caught upstream and the parse falls through to
+// the next rule. The Go port returns nil to achieve the same effect.
+func buildReversedAirdate(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
+	monthText, _ := extractGroupSpan(re, m, "ambiguousairmonth", title)
+	dayText, _ := extractGroupSpan(re, m, "ambiguousairday", title)
+	yearText, _ := extractGroupSpan(re, m, "airyear", title)
+
+	month, ok := ParseNumber(monthText)
+	if !ok {
+		return nil
+	}
+	day, ok := ParseNumber(dayText)
+	if !ok {
+		return nil
+	}
+	year, ok := ParseNumber(yearText)
+	if !ok || year < 1900 {
+		return nil
+	}
+	if month <= 12 && day <= 12 {
+		return nil
+	}
+	if month < 1 || month > 12 {
+		return nil
+	}
+	if day < 1 || day > 31 {
+		return nil
+	}
+
+	titleText, _ := extractGroupSpan(re, m, "title", title)
+	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
+	titleText = strings.TrimSpace(titleText)
+
+	info := NewParsedEpisodeInfo()
+	info.SeriesTitle = titleText
+	info.AirDate = yearText + "-" + monthText + "-" + dayText
 	return info
 }
 

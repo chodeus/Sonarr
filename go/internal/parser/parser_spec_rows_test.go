@@ -120,10 +120,12 @@ func singleEpisodeRows() []specRow {
 		se("Series Title - S15 E06 - City Code", "Series Title", 15, 6),
 		se("Red Show - S02 - E06 - Parallel Series", "Red Show", 2, 6),
 
-		// XFail — `S<n>-E<nn>` and `Season N Episode M`:
-		sex("Series S1-E1-WEB-DL-1080p-NZBgeek", "Series", 1, 1),
-		sex("Series S1E1-WEB-DL-1080p-NZBgeek", "Series", 1, 1),
-		sex("Series.S010E16.720p.HDTV.X264-DIMENSION", "Series", 10, 16),
+		// `S<n>-E<nn>` 1-digit + 3-digit season — flipped by the
+		// single-S-E rule's `\d{1,3}` extension (season + episode) plus
+		// split-arm trailing iteration to avoid `.N-NN.PM` regression.
+		se("Series S1-E1-WEB-DL-1080p-NZBgeek", "Series", 1, 1),
+		se("Series S1E1-WEB-DL-1080p-NZBgeek", "Series", 1, 1),
+		se("Series.S010E16.720p.HDTV.X264-DIMENSION", "Series", 10, 16),
 		se("Series - Season 1 - Episode 01 (Resolution).avi", "Series", 1, 1),
 		se("Series Title Season 01 Episode 05 720p", "Series Title", 1, 5),
 
@@ -155,8 +157,8 @@ func singleEpisodeRows() []specRow {
 		// the broader `\d{1,4}` episode shape on title+S-E.
 		sex("Anime Title - S2020E1527 [1527] [2020-10-11] - Episode Title", "Anime Title", 2020, 1527),
 		se("Anime Title - S2010E994 [0994] [2010-02-28] - Episode Title [x264 720p][AAC 2ch][HS][Shion+GakiDave]", "Anime Title", 2010, 994),
-		sex("Series.S006E18.Some.Title.Name-Part.1.1080p.WEB-DL.AAC2.0.H.264-Release", "Series", 6, 18),
-		sex("Series.2006.S006E18.Some.Title.Name-Part.1.1080p.WEB-DL.AAC2.0.H.264-Release", "Series 2006", 6, 18),
+		se("Series.S006E18.Some.Title.Name-Part.1.1080p.WEB-DL.AAC2.0.H.264-Release", "Series", 6, 18),
+		se("Series.2006.S006E18.Some.Title.Name-Part.1.1080p.WEB-DL.AAC2.0.H.264-Release", "Series 2006", 6, 18),
 	}
 }
 
@@ -210,11 +212,11 @@ func multiEpisodeRows() []specRow {
 		mex("World Series of Sonarr - 2010x15 - 2010x16 - HD TV.mkv", "World Series of Sonarr", 2010, []int{15, 16}),
 		me("Series Title Season 01 Episode 05-06 720p", "Series Title", 1, []int{5, 6}),
 		mex("The Series And The Code - S42 Ep10718 - Ep10722", "The Series And The Code", 42, []int{10718, 10719, 10720, 10721, 10722}),
-		mex("Series Title.S6.E1.E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
-		mex("Series Title.S6E1-E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
-		mex("Series Title.S6E1-S6E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
-		mex("Series Title.S6E1E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
-		mex("Series Title.S6E1-E2-E3.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2, 3}),
+		me("Series Title.S6.E1.E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
+		me("Series Title.S6E1-E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
+		me("Series Title.S6E1-S6E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
+		me("Series Title.S6E1E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
+		me("Series Title.S6E1-E2-E3.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2, 3}),
 		me("1x01-x03 - Episode Title.HDTV-720p", "", 1, []int{1, 2, 3}),
 		mex("Series.Title.E07-E08.180612.1080p-NEXT", "Series Title", 1, []int{7, 8}),
 		mex("Series Title? E11-E12 1080p HDTV AAC H.264-NEXT", "Series Title", 1, []int{11, 12}),
@@ -223,7 +225,7 @@ func multiEpisodeRows() []specRow {
 		mex("Series Title - [02x01-02] - Episode 1", "Series Title", 2, []int{1, 2}),
 		mex("Series Title (S15E06-08) City Sushi", "Series Title", 15, []int{6, 7, 8}),
 		mex("Series Title (S05E06-08 of 24) City Sushi", "Series Title", 5, []int{6, 7, 8}),
-		mex("Series.S101E01-E02.Some.Title.Name.1080p.WEB-DL.AAC2.0.H.264-Release", "Series", 101, []int{1, 2}),
+		me("Series.S101E01-E02.Some.Title.Name.1080p.WEB-DL.AAC2.0.H.264-Release", "Series", 101, []int{1, 2}),
 	}
 }
 
@@ -249,8 +251,10 @@ func dailyEpisodeRows() []specRow {
 		dailyx("The Show Series 2015 02 09 WEBRIP s01e13", "The Show Series", "2015-02-09"),
 		daily("Tree_Series_2018_06_22_Seth_Meyers_720p_HEVC_x265-MeGusta", "Tree Series", "2018-06-22"),
 
-		// XFail — reversed dates, 6-digit, 8-digit, etc.:
-		dailyx("The_Series_US_04.28.2014_hdtv.x264.Poke.mp4", "The Series US", "2014-04-28"),
+		// Reversed-date forms (Parser.cs:354 / :358) — flipped by the
+		// month-day-year + day-month-year rules with the C# ambiguous-
+		// date logic (both ≤ 12 → ambiguous → reject).
+		daily("The_Series_US_04.28.2014_hdtv.x264.Poke.mp4", "The Series US", "2014-04-28"),
 		// 6-digit YYMMDD form — flipped by the SixDigitAirDateRegex
 		// preprocessor that rewrites `_YYMMDD_` to `_20YY.MM.DD_`
 		// before the standard 4-2-2 airdate rule fires.
@@ -260,8 +264,8 @@ func dailyEpisodeRows() []specRow {
 		// airdate rule below the standard 4-2-2 rule.
 		daily("Series and Title 20201013 Ep7432 [720p WebRip (x264)] [SUBS]", "Series and Title", "2020-10-13"),
 		dailyx("Series Title (1955) - 1954-01-23 05 00 00 - Cottage for Sale.ts", "Series Title (1955)", "1954-01-23"),
-		dailyx("Series Title - 30-04-2024 HDTV 1080p H264 AAC", "Series Title", "2024-04-30"),
-		dailyx("Series.Title.13.02.2025.1080i.HDTV.MPA2.0.H.264", "Series Title", "2025-02-13"),
+		daily("Series Title - 30-04-2024 HDTV 1080p H264 AAC", "Series Title", "2024-04-30"),
+		daily("Series.Title.13.02.2025.1080i.HDTV.MPA2.0.H.264", "Series Title", "2025-02-13"),
 		dailyx("Series On TitleClub E76 2024 08 08 1080p WEB H264-RnB96 [TJET]", "Series On TitleClub", "2024-08-08"),
 		daily("Series.2025.09.01.The.170.Million.Pound.Diamond.Scam.1080p.HDTV.H264-DEADPOOL'", "Series", "2025-09-01"),
 		// No-title airdate at start (Parser.cs:33) — flipped by the
