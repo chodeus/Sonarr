@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language/Iso registry shipped, 3 ParserTests fixtures ported as table-driven Go tests).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — parser title normalisers + language/Iso registry + quality registry shipped; 3 ParserTests fixtures ported).
 
 ## Where to resume
 
@@ -90,6 +90,22 @@ Public surface:
 Test corpus: 12 tests / ~30 cases. Direct ports of `IsoLanguagesFixture.cs` cases (English / unknown / Portuguese / de-AU / cze / Urdu / Romansh / Georgian — the last exercising both the alternate-mapping path and the iso639BTMap), plus Language-specific tests (FindByID, FindByName, registry size, frozen-Id pins). All green; lint clean.
 
 C# behavioural quirks preserved verbatim: `AlternateIsoCodeMappings` uses the original `isoCode` (not the lowercased langCode), so `CZE` does NOT match `cze` — flagged in the FindIso doc comment.
+
+#### 2.2 — Quality registry ✅ shipped (2026-05-03)
+
+`internal/quality` ports `NzbDrone.Core.Qualities.Quality` plus the `QualitySource` enum. Same shape as the language registry: 22 named qualities (`Unknown` + 21 active) with frozen integer Ids that persist in user databases. Id 11 is intentionally skipped — `HDTV480p` was retired (`Quality.cs:89` carries a commented-out declaration as the historical pin); never repurpose it.
+
+Public surface:
+
+- `quality.QualitySource` int enum: SourceUnknown / Television / TelevisionRaw / Web / WebRip / DVD / Bluray / BlurayRaw. Integer order matches the C# enum at `QualitySource.cs`; values appear in CustomFormat SourceSpecification.value JSON.
+- `quality.Quality` value type with `ID` + `Name` + `Source` + `Resolution`. Comparable by value.
+- Predefined vars: `Unknown`, `SDTV`, `DVD`, `HDTV720p`, `WEBDL1080p`, `Bluray2160p`, `Bluray1080pRemux`, etc.
+- `quality.All() []Quality` — fresh copy in registration order (matches C# `Quality.All` order, which differs from declaration order — reading order is the UI quality-profile order).
+- `quality.FindByID(id) (Quality, bool)` — Id 0 always resolves to Unknown matching C# `Quality.cs:191`. Unknown ids return `ok=false` (the C# tree throws `ArgumentException`; the Go port returns false instead).
+
+Tests: 5 functions covering FindByID (incl. retired Id 11 returns false), All count + ordering pin, frozen-Id pin, Source/Resolution sanity. Lint clean.
+
+What's deferred: `Revision` (proper/repack metadata, lives in C# as a sibling), `QualityModel` (Quality + Revision + QualityDetectionSource), `QualityModelComparer`, and `QualityParser` itself (15 regexes, 522-line fixture — its own commit). The `QualityDefinition` repo (per-user min/max/preferred MB-per-minute thresholds) shipped earlier in Phase 1 as part of the storage layer.
 
 ### Phase 1 — Foundations ✅ done
 
