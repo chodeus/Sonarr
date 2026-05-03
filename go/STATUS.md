@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (TP-Q1/Q2 resolved; 7 provider-pattern repos + provider registry shipped; 38 model repos cover every persisted table at HEAD).
+Last updated: 2026-05-03 (Phase 1 storage layer complete: 38 model repos, provider registry, full v188 PG fix; in-process event bus shipped, opens Phase 1 service-layer work).
 
 ## Where to resume
 
@@ -262,6 +262,41 @@ All pass `-race -p 1` against both engines. Lint clean.
 - TP-Q3 / TP-Q9 — HealthCheck-on-unknown-impl in place of silent delete. Service layer concern.
 - PROV-Q1 — Newznab's 9 named presets: hardcode vs YAML vs operator-curated. Affects Phase 4 schema endpoint.
 - EDOC-Q20 — `SeasonPackSpecification` legacy alias. Migration 205 already rewrites rows on disk; leave alone unless old user DBs surface the old string.
+
+#### 1.x — v188 Postgres parity fix ✅ shipped (2026-05-03)
+
+The original Go v188 was abbreviated — only 8 of the 38 C# `AlterColumn` statements were ported, and nullability constraints were never reapplied. ~13 columns silently retained stricter NOT NULL than HEAD: Series timestamps (LastInfoSync/LastDiskSync/FirstAired/NextAiring/Added), Episodes timestamps (AirDateUtc/LastSearchTime), MetadataFiles.Added, ScheduledTasks.LastStartTime, and the InitialFailure/MostRecentFailure/DisabledTill triple on each of ImportListStatus and IndexerStatus.
+
+Ported the full 38-statement list verbatim. Each `AsDateTimeOffset().Nullable()` becomes TYPE → timestamptz + DROP NOT NULL; `.NotNullable()` becomes TYPE + SET NOT NULL. ALTER COLUMN TYPE on already-correct types and DROP NOT NULL on already-nullable columns are no-ops, so the migration is safe across both fresh and partially-migrated DBs.
+
+Added `TestMigrate_Postgres_v188_TimestampShapes` that pins the post-v188 shape — every column the C# v188 alters is asserted on type+nullability, so any future abbreviated edit fails loudly with "column X type/notNull = Y, want Z". The test mirrors the C# AlterColumn list directly.
+
+VersionInfo intentionally excluded — goose tracks state in `goose_db_version`, the Go migrations never create `VersionInfo`, and ALTER on a missing table errors. SQLite v188 stays a no-op (no native TZ support; captured HEAD schema's TEXT-shaped timestamps already match what modernc/sqlite produces).
+
+#### 1.x — In-process event bus ✅ shipped (2026-05-03)
+
+`internal/messaging` ports the C# `EventAggregator` (analysis/subsystems/messaging.md) — the in-process pub/sub mechanism that fans every domain event Sonarr raises (60+ types) to subscribed handlers. Resolves MSG-Q1/Q2/Q3/Q4/Q6/Q7/Q8/Q9/Q10/Q11.
+
+Surface:
+
+- `messaging.New(*slog.Logger) *Bus` — instance-based; no global singleton.
+- `Subscribe[E](b, name, h)` / `SubscribeOrdered[E](b, name, order, h)` / `SubscribeAsync[E](b, name, h)` — type-parametric free functions (Go can't put type-params on interface methods).
+- `SubscribeAllAsync(b, name, h func(ctx, any) error)` — global async tap; mirrors C# `IHandleAsync<IEvent>`. Sole production user is HealthCheckService.
+- `Publish[E](ctx, b, event)` — fans out: sync handlers in OrderFirst → OrderAny → OrderLast tier order on the publisher's goroutine; async handlers spawn onto a bounded worker pool.
+- `b.BeginShutdown()` / `b.Wait()` — exit-time gate. Lifecycle events (those implementing `Lifecycle() bool` returning true) are blocked once exiting; non-lifecycle events still publish so HistoryService et al. can drain. `Wait()` blocks until all in-flight async dispatches complete.
+- `ErrShutdown`, `ErrRecursionLimit` sentinels.
+
+Behavioural parity vs C#:
+
+- Sync handlers run on publisher goroutine, ordered (matches C#).
+- Async handlers run on a bounded pool of `runtime.NumCPU()*2` slots (improves over C#'s unlimited `Task.Factory.StartNew`, per MSG-Q9 resolution).
+- Per-handler panics are recovered and logged via slog; sibling handlers are unaffected (matches C# per-handler try/catch).
+- Re-entrant publish from inside a handler is allowed, but a recursion-depth guard (limit 32) blows up with `ErrRecursionLimit` instead of overflowing the stack on a runaway cycle (improvement over C# per MSG-Q10).
+- Async handler ordering supported in addition to sync ordering (improvement over C# per MSG-Q4).
+
+What this package deliberately does NOT do: persistence, outbox, cross-process delivery, ProgressMessaging (`CommandUpdatedEvent` from inside an NLog target is owned by the command-bus port in Phase 3 once Commands has a real executor).
+
+10 tests covering: subscriber registration & dispatch, type isolation, ordering tiers, error/panic survival, async fan-out, global handler firing on every type, lifecycle shutdown gate, recursion limit, async drain on Wait, and concurrent publish safety. Lint clean.
 
 ### Phase 0 — Bootstrap ✅ done
 
