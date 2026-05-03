@@ -110,10 +110,9 @@ func TestParseTitle_RejectInvalid(t *testing.T) {
 
 func TestParseTitle_NoMatchingRule(t *testing.T) {
 	// Titles that pass ValidateBeforeParsing but don't match any rule
-	// in slice 2.12.1's subset → nil. As more rules land, these should
-	// migrate to positive-assertion tests.
+	// in the current slice subset → nil. As more rules land, these
+	// should migrate to positive-assertion tests.
 	cases := []string{
-		"Series Title 2009-06-02.PDTV.XviD-LOL",      // daily — not yet ported
 		"Series.Title.S01.Special.Behind.The.Scenes", // special — not yet ported
 	}
 	for _, title := range cases {
@@ -121,6 +120,58 @@ func TestParseTitle_NoMatchingRule(t *testing.T) {
 			got := parser.ParseTitle(title)
 			if got != nil {
 				t.Logf("ParseTitle(%q) returned %+v — confirm whether the matching rule landed in a later slice", title, got)
+			}
+		})
+	}
+}
+
+// TestParseTitle_DailyAirDate ports cases from
+// `DailyEpisodeParserFixture.cs` `should_parse_daily_episode` that
+// match the canonical `<title> <airyear>.<airmonth>.<airday>` form
+// (Parser.cs:333). Cases with reversed date orders (`04.28.2018` /
+// `28.04.2018`) or 6-digit forms (`140722`) need additional rules
+// — deferred to subsequent slices.
+func TestParseTitle_DailyAirDate(t *testing.T) {
+	cases := []struct {
+		title     string
+		wantTitle string
+		wantDate  string
+	}{
+		{"Series Title 2011 04 18 Emma Roberts HDTV XviD BFF", "Series Title", "2011-04-18"},
+		{"A Late Talk Show 2011 04 15 1080i HDTV DD5 1 MPEG2 TrollHD", "A Late Talk Show", "2011-04-15"},
+		{"A.Late.Talk.Show.2010.10.11.Johnny.Knoxville.iTouch-MW", "A Late Talk Show", "2010-10-11"},
+		{"A Late Talk Show - 2011-04-12 - Gov. Deval Patrick", "A Late Talk Show", "2011-04-12"},
+		{"2011.01.10 - A Late Talk Show- HD TV.mkv", "", "2011-01-10"},
+		{"2011.03.13 - A Late Talk Show - HD TV.mkv", "", "2011-03-13"},
+		{"Series Title - 2013-10-30 - Episode Title (1) [HDTV-720p]", "Series Title", "2013-10-30"},
+		{"The Show Series 2015 02 09 WEBRIP s01e13", "The Show Series", "2015-02-09"},
+		{"Tree_Series_2018_06_22_Seth_Meyers_720p_HEVC_x265-MeGusta", "Tree Series", "2018-06-22"},
+		// Deferred: 8-digit-airdate form (`20201013`) needs Parser.cs:362
+		// rule which lands in a later slice.
+		// {"Series and Title 20201013 Ep7432 [720p WebRip (x264)] [SUBS]", "Series and Title", "2020-10-13"},
+		// Deferred: title-with-episode-marker form (`Series E76 2024 08 08`)
+		// needs the C# pipeline's post-match title cleaning step which
+		// strips trailing `E\d+` tokens — lands with the full pipeline
+		// in slice 2.12.final.
+		// {"Series On TitleClub E76 2024 08 08 1080p WEB H264-RnB96 [TJET]", "Series On TitleClub", "2024-08-08"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.title, func(t *testing.T) {
+			got := parser.ParseTitle(tc.title)
+			if got == nil {
+				t.Fatalf("ParseTitle(%q) = nil, want a daily result", tc.title)
+			}
+			if got.AirDate != tc.wantDate {
+				t.Errorf("AirDate = %q, want %q", got.AirDate, tc.wantDate)
+			}
+			if got.SeriesTitle != tc.wantTitle {
+				t.Errorf("SeriesTitle = %q, want %q", got.SeriesTitle, tc.wantTitle)
+			}
+			if len(got.EpisodeNumbers) != 0 {
+				t.Errorf("EpisodeNumbers = %v, want empty for daily", got.EpisodeNumbers)
+			}
+			if !got.IsDaily() {
+				t.Errorf("IsDaily() = false, want true")
 			}
 		})
 	}

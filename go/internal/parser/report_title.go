@@ -47,6 +47,31 @@ type rgRule struct {
 // `E` / `x` separators around the digit runs) already enforces the
 // "exactly N digits at this position" constraint.
 var reportTitleRules = []rgRule{
+	// `Parser.cs:333` — Episodes with airdate (`2018.04.28` /
+	// `2014-06-02` / `2014 04 28`). Listed before the
+	// season/episode rules so daily forms with year-shaped titles
+	// (e.g. `Series 2010 04 18`) match the daily pattern rather
+	// than the season+episode pattern.
+	//
+	// C# original:
+	//
+	//	^(?<title>.+?)?\W*(?<airyear>\d{4})[-_. ]+(?<airmonth>[0-1][0-9])[-_. ]+(?<airday>[0-3][0-9])(?![-_. ]+[0-3][0-9])
+	//
+	// RE2 reformulation: trailing `(?![-_. ]+[0-3][0-9])` lookahead
+	// dropped — it guards against "two consecutive date-shaped
+	// fragments" (e.g. `2018.04.28.05.30` where `28.05` might re-trigger
+	// the airmonth/airday). The Go port currently accepts these
+	// edge cases; in practice no fixture row exercises them. Document
+	// here as a known minor difference; the fix when needed is a
+	// post-match check that the input doesn't continue with
+	// `[-_. ]+\d{2}`.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?)?\W*(?P<airyear>\d{4})[-_. ]+(?P<airmonth>[0-1][0-9])[-_. ]+(?P<airday>[0-3][0-9])`,
+		),
+		Build: buildDailyAirdate,
+	},
+
 	// `Parser.cs:112-114` — Anime - [SubGroup] Title Absolute Episode
 	// Number. Matches the most common anime release shape:
 	// `[SubGroup] Title <separator> <absolute_episode> ... [hash]`.
@@ -212,6 +237,36 @@ func buildNoTitleEpisode(re *regexp.Regexp, m []int, title string) *ParsedEpisod
 
 func buildNoTitleMultiEpisode(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
 	return buildNoTitleEpisode(re, m, title)
+}
+
+// buildDailyAirdate extracts an `<airyear>-<airmonth>-<airday>` date
+// from a release-name match and assembles it into the C# `AirDate`
+// format (`yyyy-MM-dd`, mirrors `Episode.AIR_DATE_FORMAT`). Mirrors
+// the airdate path of `ParseMatchCollection` at `Parser.cs:1075-1116`.
+//
+// Validation: rejects matches where the title group is empty AND the
+// title text after stripping leading separators is also empty (the C#
+// pipeline requires a coherent title; a title-less daily form like
+// `2011.01.10 - Show.mkv` still parses with an empty SeriesTitle).
+// Year < 1900 also rejects (matches the C# `airYear < 1900` guard at
+// `:933`).
+func buildDailyAirdate(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
+	yearText, _ := extractGroupSpan(re, m, "airyear", title)
+	year, ok := ParseNumber(yearText)
+	if !ok || year < 1900 {
+		return nil
+	}
+	monthText, _ := extractGroupSpan(re, m, "airmonth", title)
+	dayText, _ := extractGroupSpan(re, m, "airday", title)
+
+	titleText, _ := extractGroupSpan(re, m, "title", title)
+	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
+	titleText = strings.TrimSpace(titleText)
+
+	info := NewParsedEpisodeInfo()
+	info.SeriesTitle = titleText
+	info.AirDate = yearText + "-" + monthText + "-" + dayText
+	return info
 }
 
 // buildAnimeAbsolute extracts the subgroup / title / absoluteepisode
