@@ -213,8 +213,10 @@ func ParseReleaseGroup(title string) string {
 	title = strings.TrimSpace(title)
 	title = RemoveFileExtension(title)
 
-	// `:32-38` PreSubstitutionRegex — STUBBED for slice 2.11b. Chinese-
-	// anime normalisations land in slice 2.11c.
+	// `:32-38` PreSubstitutionRegex (foreach + TryReplace + break).
+	// Three rules currently shipped (1 / 2 / 14); the remaining 11 are
+	// stubbed in `pre_substitution.go` pending per-pattern RE2 rewrites.
+	title = applyPreSubstitution(title)
 
 	title = ApplyWebsitePrefix(title)
 	title = ApplyCleanTorrentSuffix(title)
