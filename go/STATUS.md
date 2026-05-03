@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 storage layer complete; messaging bus + auth + configfile loader shipped; only common/disk/http helpers + lifecycle wiring left before Phase 1 sign-off).
+Last updated: 2026-05-03 (Phase 1 sign-off bar reached: cmd/sonarr boots end-to-end, opens DB, runs migrations, reports schemaVersion=230, drains bus on signal). Phase 2 ready to start.
 
 ## Where to resume
 
@@ -342,6 +342,70 @@ Three files:
 13 tests: missing-file empty load, full Set→Load round-trip, persist-on-default-read (true and false), override-wins-over-XML, empty-override falls back to default, APIKey auto-generate + persist, ResetAPIKey rotation, URLBase normalisation table, InstanceName clamp table, AuthenticationMethod legacy + Basic upgrade + None default, SaveConfigDictionary skips ApiKey + dirty-only emission, all five corrupt-file cases hit `ErrInvalidConfigFile`, realistic v3/v4/v5 sample parses correctly, EnsureDefault no-op on existing files. Lint clean.
 
 What this package deliberately does NOT do: the host-binding env / CLI parser; `MigrateConfigFile` (the C# AppHandle that disables SSL when the cert hash leaks back in — Phase 5 work); the Config-table side (DB-backed user settings, owned by the existing `internal/config` package); `ResetApiKeyCommand` handler (lands when the command bus ships in Phase 3).
+
+#### 1.x — Lifecycle events + appenv (OsInfo + AppFolderInfo + StartupContext) ✅ shipped (2026-05-03)
+
+Two small foundation packages that bridge the bus and the configfile loader to a real host:
+
+- `internal/lifecycle` — three event types: `ApplicationStartingEvent`, `ApplicationStartedEvent`, `ApplicationShutdownRequested{Restarting bool}`. All three implement `Lifecycle() bool` returning true so `messaging.Bus.BeginShutdown()` blocks further publishes — matches the C# `[LifecycleEvent]` attribute behaviour. Subscribers attach to the concrete type via the messaging package's generic Subscribe.
+- `internal/appenv` — the runtime / paths / startup-args triple from `NzbDrone.Common.EnvironmentInfo`:
+  - `Os` enum + `CurrentOs` package var derived from `runtime.GOOS` (linux/darwin/windows/freebsd-netbsd-openbsd → BSD). C# `LinuxMusl` flavor collapses to `OsLinux` because Go has no runtime musl-vs-glibc detection; if a future port needs it, gate on a build tag.
+  - `OsInfo` with Docker / Podman / generic-container detection mirroring `OsInfo.cs:84-92` (`/.dockerenv`, `/proc/1/cgroup` containing `/docker/`, `/run/.containerenv`, `container=` env, `DOTNET_RUNNING_IN_CONTAINER`).
+  - `AppFolderInfo` with `AppData / Startup / Temp` plus derived `ConfigPath()`, `MainDBPath(name)`, `LogDBPath(name)`. Path resolution: `--data` override wins; otherwise XDG_CONFIG_HOME/Sonarr → $HOME/.config/Sonarr on Unix (matches the existing C# Mono behaviour where macOS also lands at ~/.config rather than ~/Library/Application Support); $PROGRAMDATA\Sonarr on Windows.
+  - `StartupContext` minimal CLI arg parser. Accepts `/key=value`, `--key=value`, `key=value`, and bare boolean flags. Strips leading `-/`, lowercases keys, unquotes `="..."` values. Well-known constants: `StartupArgData`, `StartupFlagNoBrowser`, `StartupFlagHelp`, `StartupFlagTerminateExisting`. Unknown / future args are still captured so adding new flags doesn't require parser changes.
+  - Legacy v3 NzbDrone path (`LegacyAppDataFolder` in C#) intentionally omitted — that's a Phase 6 cutover concern.
+
+Tests: lifecycle round-trip with shutdown gate (3 cases); GOOS detection mapping + Is*() mutual exclusivity; container detection invariant (non-Linux must produce all-false); StartupContext arg/flag parsing across 7 input shapes; AppFolderInfo override-wins + default OS-conventional path + derived path helpers. `SONARR_PG_DSN=postgres:///sonarr_spike go test -race -p 1 ./...` green; `golangci-lint run ./...` 0 issues.
+
+The remaining Phase 1 surface is now host-binary glue: `cmd/sonarr/main.go` that wires StartupContext → AppFolderInfo → Loader → Provider → DataStore → Bus → Auth, plus the `IDiskProvider` abstraction (file ops + free space + atomic move) that downstream Phase 2/3 services will pull on. Neither blocks the existing storage layer.
+
+#### 1.x — cmd/sonarr end-to-end wiring ✅ shipped (2026-05-03) — Phase 1 sign-off bar
+
+The strategic plan's Phase 1 bar (~/.claude/plans/curried-discovering-meadow.md): "a Go binary that opens an existing user DB and reports the same schema version." Reached.
+
+`cmd/sonarr/main.go` startup sequence:
+
+1. `appenv.ParseStartupArgs(os.Args[1:])` — handles `/data=PATH`, `/nobrowser`, etc.
+2. `appenv.DetectAppFolder` — resolves data dir / startup dir / temp dir, honours `--data`, falls through to OS-conventional paths.
+3. `os.MkdirAll` the data dir.
+4. `configfile.NewLoader(folder.ConfigPath()).Load(ctx)` — empty doc on missing file.
+5. `messaging.New(logger)` — instance-bound bus.
+6. `configfile.NewProvider(loader, Overrides{}, bus, auth.GenerateAPIKey)` — wires the API-key generator from `internal/auth`.
+7. `cfg.InstanceName(ctx)` — defaults to "Sonarr".
+8. `buildDatastoreConfig` — picks SQLite at `<data>/<instance>.db` unless config.xml carries `PostgresMainDb` (matches the C# detection).
+9. `datastore.Open` + `datastore.Migrate` to head.
+10. `datastore.CurrentVersion` logged through structured slog.
+11. `messaging.Publish(ctx, bus, lifecycle.ApplicationStartedEvent{})`.
+12. Block on `ctx.Done()`.
+13. On signal: publish `ApplicationShutdownRequested` BEFORE `bus.BeginShutdown()` (the lifecycle gate would otherwise block the publish), then `bus.Wait` to drain async handlers, then close the DB.
+
+Smoke test:
+
+```
+$ sonarr /data=/tmp/sonarr-phase1-data
+... appfolder data=/tmp/sonarr-phase1-data startup=/private/tmp config=/tmp/sonarr-phase1-data/config.xml
+... datastore ready engine=sqlite role=main source=sqlite:/tmp/sonarr-phase1-data/Sonarr.db schemaVersion=230 instance=Sonarr
+... daemon ready hint="HTTP server / SignalR / scheduler arrive in Phase 5"
+^C
+... sonarr shutdown requested
+... sonarr stopped
+```
+
+`config.xml` and `Sonarr.db` materialise on disk; subsequent runs replay migrations idempotently (goose tracks state in `goose_db_version`).
+
+`.gitignore` tightened along the way: the leading-`sonarr` rule was matching the `cmd/sonarr/` source directory, so anchored both binary names with a leading slash. Unmasked the long-standing `cmd/sonarr-update/main.go` stub at the same time — landed under version control so the updater port can plug in during Phase 4.
+
+What this binary still does NOT do — every entry corresponds to a later phase:
+
+- HTTP server + middleware, SignalR hub, web asset serving (Phase 5).
+- Command bus (`IExecute<T>`, `CommandQueue`, scheduler) (Phase 3).
+- Provider integrations — actual indexer/downloadclient/notification/importlist constructors (Phase 4).
+- Parser regex corpus (Phase 2).
+- Disk abstraction (`IDiskProvider`: file ops + free space + atomic move + hardlinks) — lazily portable; the first Phase 2 / 3 consumer that needs it will pull it.
+- `MigrateConfigFile` — the C# AppHandle that disables SSL when the cert hash leaks back in. Phase 5 work.
+- ResetApiKeyCommand handler. Lands when commands ship in Phase 3.
+
+Phase 1 is done.
 
 ### Phase 0 — Bootstrap ✅ done
 
