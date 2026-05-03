@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.10 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.10 adds the `Season N Episode M` keyword rule + no-title airdate-at-start rule; spec at end of 2.12.10 is **pass=150 xfail=50 regression=0** out of 200.).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.11 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.11 adds reversed-date rules (month-day-year + day-month-year) plus a `\d{1,3}` extension for season/episode in the title-bearing S-E rules with split-arm trailing iteration to avoid `.N-NN.PM` slurp; spec at end of 2.12.11 is **pass=164 xfail=36 regression=0** out of 200.).
 
 ## Where to resume
 
@@ -857,6 +857,35 @@ What stays xfail (50 rows after this slice):
 - Various assorted forms each requiring a dedicated C# rule port — see `parser_spec_rows_test.go` for the per-row xfail comments.
 
 Lint clean (`golangci-lint run ./...` 0 issues); full `-race -p 1` suite green on both engines.
+
+#### 2.12.11 — Reversed dates + 3-digit season + 1-digit episode ✅ shipped (2026-05-04)
+
+Two related clusters layered together since both touch only the parser package and the bulk-spec dispatcher confirms 0 regressions per change.
+
+**Spec delta**: pass=150 → 164 (+14); xfail=50 → 36 (-14); regression=0 throughout.
+
+What ships:
+
+1. **Reversed-date rules (Parser.cs:354 + :358)** (+3 rows). Two regexes with the same shape but flipped first-position group: `<ambiguousairmonth>[0-1][0-9]<sep><ambiguousairday>[0-3][0-9]<sep><airyear>` (month-day-year) vs `<ambiguousairday>[0-3][0-9]<sep><ambiguousairmonth>[0-1][0-9]<sep><airyear>` (day-month-year). Listed AFTER the standard daily + 8-digit rules so canonical year-first forms still win when present. New `buildReversedAirdate` Build mirrors the C# ambiguous-date logic at `Parser.cs:1082-1095`: if both ≤ 12 → ambiguous → return nil so the alternate-interpretation rule can try; if month > 12 (rule-A interpretation invalid) → return nil so rule B's day-month-year reading gets a chance; otherwise use captured values. Rejects month/day outside `[1,12]` / `[1,31]` (the C# `DateTime` constructor would throw and be caught upstream — Go port returns nil to achieve the same effect). Catches `04.28.2014`, `30-04-2024`, `13.02.2025`. C# `(?!\d+)` lookahead becomes consuming `(?:[^\d]|$)` end-anchor.
+
+2. **`\d{1,3}` extension for season/episode in S-E rules** (+11 rows). Single-S-E + Multi-S-E rules now accept 3-digit seasons (`S010E16`, `S006E18`, `S101E01-E02`) and 1-digit episodes (`S6E1`, `S6E1.E2`, `S6E1-E2-E3`, `S6E1E2`, `S6E1-S6E2`, `S1-E1`, `S1E1`). Single-S-E's Arm B trailing iteration is split into two arms to preserve the `.N-NN.PM` rejection that C#'s `\d{2,3}(?!\d+)` provides:
+   - `(?:[-_. ]?E\d{1,3})*` — E-required iterations, allow 1-digit episodes.
+   - `(?:[-_. ]?\d{2,3})*` — digits-only iterations, require 2+ digits to stop `Series.S01E04.2-45.PM` from being slurped as `[4..45]`.
+
+What stays xfail (36 rows after this slice):
+
+- **Anime title-without-subgroup** (~6 rows). `<title> - <abs>` shape, no `[Group]` brackets.
+- **Title-with-airdate composite shapes** (~2 rows). `Series Title (1955) - 1954-01-23 05 00 00 - …` / `Series On TitleClub E76 2024 08 08 …`.
+- **Hybrid airdate+season+episode** (1 row). Parser.cs:161 + consumer's airdate-preference logic.
+- **Multi-episode bracketed `[02x01x02]` etc.** (~3 rows).
+- **Multi-episode bracketed `(S15E06-08)` parenthesised** (~2 rows).
+- **Multi-Nx forms `2x9-2x10` / `8x01_02`** (~3 rows).
+- **3-digit forms with year-shape title** (~2 rows). `series.2009.416`.
+- **`E07-E08.180612.1080p-NEXT` / `E11-E12 1080p HDTV AAC H.264-NEXT`** — needs different PreSubstitution handling.
+- **Spanish anime + Korean variants** — various.
+- Various assorted forms each requiring a dedicated C# rule port — see `parser_spec_rows_test.go` for the per-row xfail comments.
+
+Lint clean (`golangci-lint run ./internal/parser/...` 0 issues); parser test suite green; full `-race -p 1` suite skipped this slice (no API changes; only parser-package internal regex tables and helpers were touched, and parser is downstream of every other package).
 
 ### Phase 1 — Foundations ✅ done
 
