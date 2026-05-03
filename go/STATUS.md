@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language registry + quality registry + Revision/QualityModel + JSON wire-format parity; 3 ParserTests fixtures ported).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language registry + quality registry + Revision/QualityModel + ParseRevision; 4 ParserTests fixtures ported).
 
 ## Where to resume
 
@@ -127,6 +127,24 @@ Note `quality` is the BARE int Id, not the full Quality object — the C# tree a
 REST-shape full-form Quality JSON is partially covered: the struct has camelCase tags for `id` / `name` / `source` / `resolution`, but `source` currently marshals as the int enum value rather than the C# `JsonStringEnumConverter` camelCase string ("television" etc.). Phase 5 swaps the marshaller when REST endpoints land. Phase 2 storage path uses int-reduction so this gap doesn't block.
 
 10 tests: Revision default + Compare + Equal-ignores-IsRepack + String table; Model default + String + Compare + Equal-ignores-DetectionSource; persisted JSON shape pin (`{"quality":7,...}`); JSON round-trip with DetectionSource fields hidden; legacy unknown-Id falls back to Unknown; QualityWeight pin.
+
+#### 2.4 — ParseRevision (PROPER / REPACK / vN / REAL detection) ✅ shipped (2026-05-03)
+
+First slice of `QualityParser` ported. The four-regex revision-detection block at `QualityParser.cs:675-708` is small, isolated, and testable on its own — making it a good standalone commit before tackling source / resolution / codec parsing in subsequent passes.
+
+`quality.ParseRevision(name) Revision` exactly mirrors the C# logic:
+
+1. Trim the name; build `normalized = name.Replace('_', ' ').Trim()` so underscore-separated release names match the same regexes.
+2. `versionRe` (5-branch alternation `\dv\d`, `[vN]`, `repackN`, `reripN`, `1080p vN`) extracts an explicit version tag from `normalized`.
+3. `properRe` (`\bproper\b`, case-insensitive) bumps Version to `captured+1` if a v-tag was matched, else to 2.
+4. `repackRe` (`\b(repack\d?|rerip\d?)\b`) does the same bump and sets `IsRepack=true`.
+5. `realRe` (`\bREAL\b`, case-SENSITIVE — preserves the C# omission of `IgnoreCase`) is matched against the ORIGINAL (un-normalised) name; the match count becomes `Revision.Real`. The C# tree carries a TODO at `QualityParser.cs:700-701` flagging this as over-eager; preserved verbatim.
+
+RE2 reformulation note: the C# `VersionRegex` uses 5 duplicate `(?<version>\d)` named groups — RE2 rejects duplicate names. The Go port renames each branch to `v1`..`v5` and scans for the first non-empty after a single match call; leftmost-match semantics are preserved by Go's RE2 engine, so the captured digit is the same as the C# original on every input.
+
+6 tests covering: REPACK / RERIP / PROPER from `should_be_able_to_parse_repack` fixture (6 cases verbatim); anime `[v2]` tag from `should_be_able_to_parse_anime_version`; default v1 on a plain name; case-sensitive REAL (1 match, 2 matches counted, lowercase ignored, titlecase ignored); PROPER+vN combine to bump beyond captured (e.g. `[v2]+PROPER → 3`); underscore→space normalisation lets PROPER and REPACK match across `Series_Title_PROPER` shapes.
+
+What's deferred: the rest of `QualityParser` — `SourceRegex` / `ResolutionRegex` / `CodecRegex` / `RawHDRegex` / `RemuxRegex` / `OtherSourceRegex` / `AnimeBlurayRegex` / `AnimeWebDlRegex` / `MPEG2Regex` / `HighDefPdtvRegex` / `AlternativeResolutionRegex` plus the per-source decision matrix at `ParseQualityName`. Each subsequent commit will port a focused slice with its corresponding `should_parse_X_quality` cases from the 522-line fixture.
 
 ### Phase 1 — Foundations ✅ done
 
