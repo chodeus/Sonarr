@@ -189,11 +189,25 @@ func TestConcurrentReadersSingleWriter(t *testing.T) {
 			defer wg.Done()
 			for ctx.Err() == nil {
 				var v int
-				if err := pool.QueryRow(ctx, `SELECT V FROM Counter`).Scan(&v); err != nil &&
-					!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-					t.Errorf("read: %v", err)
+				err := pool.QueryRow(ctx, `SELECT V FROM Counter`).Scan(&v)
+				if err == nil {
+					continue
+				}
+				// pgx wraps mid-call context expiration as
+				// `write unix .../tmp/.s.PGSQL.5432: i/o timeout` rather
+				// than `context.DeadlineExceeded` directly. Re-check the
+				// context after the error: if it's done, the error is
+				// collateral from shutdown and should not fail the test.
+				// Without this, the test is flaky under cumulative
+				// full-suite PG socket pressure when the 5s deadline
+				// expires mid-Scan.
+				if ctx.Err() != nil ||
+					errors.Is(err, context.Canceled) ||
+					errors.Is(err, context.DeadlineExceeded) {
 					return
 				}
+				t.Errorf("read: %v", err)
+				return
 			}
 		}()
 	}
