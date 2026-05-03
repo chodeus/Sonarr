@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser slices (a) + (b) shipped: LanguagesOnlyRegex + LanguageRegex (case-insensitive arm) + CaseSensitiveLanguageRegex (LT/CZ/PL/BG/SK/DE 2-letter arm with SUB-adjacency filters) + GermanDualLanguageRegex + GermanMultiLanguageRegex; ParseLanguages entry point + 4 subtitle entry points still pending in slice c).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE end-to-end: ParseLanguages public entry + 28 .Contains arms + slice a/b regex wiring + DistinctBy de-dup + German DL/ML post-processing + 5 subtitle entry points (ParseSubtitleLanguage / ParseLanguageTags / ParseBasicSubtitle / ParseSubtitleLanguageInformation / UpdateTitleAndCopyFromTitle) + SubtitleTitleInfo model + 3 subtitle regexes).
 
 ## Where to resume
 
@@ -335,6 +335,60 @@ Lint clean (`golangci-lint run ./...` 0 issues; staticcheck QF1001 De Morgan inv
 What's deferred to slice (c):
 
 - **Slice (c)**: `ParseLanguages` entry point — the 30+ `lower.Contains(...)` arm + the regex arm wiring (slice a + b helpers) + the German DL/ML post-processing branches + DistinctBy de-dup. Plus the four subtitle-related entry points (`ParseSubtitleLanguage` / `ParseLanguageTags` / `ParseSubtitleLanguageInformation` / `UpdateTitleAndCopyFromTitle` / `ParseBasicSubtitle`) and their three subtitle regexes (`SubtitleLanguageRegex` / `SubtitleLanguageTitleRegex` / `SubtitleTitleRegex`). Tested against the full 612-line `LanguageParserFixture.cs`.
+
+#### 2.10c — LanguageParser: ParseLanguages + subtitle entry points ✅ shipped (2026-05-03)
+
+Final slice. NzbDrone.Core.Parser.LanguageParser is now COMPLETE end-to-end. Two new files land:
+
+- `internal/parser/parse_languages.go` — `ParseLanguages(title) []language.Language` public entry point. Mirrors `LanguageParser.ParseLanguages` at `LanguageParser.cs:40-227` line-for-line with section-numbered comments citing source line ranges. The 28 .Contains arms are factored into a single declarative `containsLanguageRules` table (each entry is one C# `if` block; compound arms with `||` are expressed as a multi-element substring slice). The control flow is preserved exactly: clean prefix → 28 .Contains arms → regex arm (CS first, CI second — matches the C# RegexLanguage helper's internal order) → post-regex `english` .Contains → Unknown fallback → German DL/ML post-processing (only when German is the SOLE detected language) → DistinctBy(Language.ID) preserving first-encounter order.
+
+- `internal/parser/parse_subtitle.go` — 5 subtitle entry points + the SubtitleTitleInfo struct + 3 subtitle regexes. Mirrors `LanguageParser.cs:229-347` plus `:34-38`.
+
+Public surface added by slice (c):
+
+- `parser.ParseLanguages(title) []language.Language` — guaranteed non-empty (minimum [Unknown]).
+- `parser.ParseSubtitleLanguage(fileName) language.Language` — extracts the iso-code from a subtitle filename and looks up the language; falls back to a Language.Name suffix scan; returns Unknown on no match.
+- `parser.ParseLanguageTags(fileName) []string` — returns every tag token (`forced` / `foreign` / `default` / `cc` / `psdh` / `sdh`) in match order, lowercased.
+- `parser.ParseBasicSubtitle(fileName) SubtitleTitleInfo` — composite: language + tags + TitleFirst=false.
+- `parser.ParseSubtitleLanguageInformation(fileName) SubtitleTitleInfo` — full title-aware parse: language + tags + RawTitle + Title + Copy + TitleFirst.
+- `parser.UpdateTitleAndCopyFromTitle(*SubtitleTitleInfo)` — post-processor that splits RawTitle into Title + Copy via the `^((?<title>.+) - )?(?<copy>\d{1,3})$` shape.
+- `parser.SubtitleTitleInfo` — the struct returned by ParseBasicSubtitle / ParseSubtitleLanguageInformation. Mirrors `NzbDrone.Core.Parser.Model.SubtitleTitleInfo`.
+
+Three RE2 reformulations vs the C# literal documented inline:
+
+1. **`SubtitleLanguageRegex` duplicate `<tags>` group** — RE2 rejects duplicate named groups. The C# regex carries `<tags>` twice (one before iso, one after); the Go port renames the second to `<tags2>`. ParseLanguageTags merges captures via a separate `tagOnlyRe` scan because Go RE2 `(...)*` retains only the LAST match per group (the C# `Captures` collection retains all). The fixup is one extra regex pass over the same input, no semantic divergence.
+
+2. **`SubtitleLanguageTitleRegex` duplicate `<iso_code>` group** — same RE2 limitation; the second occurrence becomes `<iso_code2>`. ParseSubtitleLanguageInformation reads whichever fired. The C# `Captures.Count != 1` guard on iso_code is recovered via a separate `countIsoCodeCaptures` scan that counts `[a-z]{2,3}` tokens NOT in the tag set (since the C# alternation `tags|iso_code` tries the tag arm first, tokens like `cc` and `sdh` never produce an iso_code capture).
+
+3. **`SubtitleTitleRegex` `(?<!\d+)\d{1,3}(?!\d+)` lookarounds** — both dropped. The surrounding `^...$` anchoring + the literal ` - ` trailer of the optional title prefix preserves the same intent: the copy slot is exactly 1-3 digits with non-digit (or start of string) before and end of string after. Backtracking on `\d{1,3}` against `^...$` rejects 4+ digit runs identically to the C# lookahead. Verified by `TestUpdateTitleAndCopyFromTitle` cases for `1234` (no match) and `mytitle - 1234` (no match).
+
+C# behavioural quirks preserved verbatim:
+
+- `CleanSeriesTitleRegex` does NOT match `Foo.Bar` (no `S\d{2}` token), so the title is unchanged on non-season-shaped input. For `Spanish Killroy was Here S02E02 Flodden 720p AMZN WEB-DL` (a fixture row in `should_parse_language_unknown`), the prefix `Spanish Killroy was Here ` IS stripped, leaving `S02E02 Flodden 720p AMZN WEB-DL` which contains no language tokens → Unknown. Pinned by `TestParseLanguages_FixtureContains` row.
+- The `english` .Contains check fires AFTER the regex arm, which means `English` literal in the title can introduce English even when no other regex arm fired. This is the only language that has both a literal-Contains and a regex-arm representation — the regex arm matches `\b(?:ing|eng)\b` but `English` literal doesn't satisfy `\b...\b` boundaries (g→l is word→word). Preserved.
+- The German DL/ML post-processing fires only when German is the SOLE language. If anything else (e.g. English from `Eng` regex arm) is also detected, the DL tag does NOT add Original. Pinned by `TestParseLanguages_GermanWEBDL` (where the WEB-DL false-positive is correctly NOT triggered) plus `TestParseLanguages_GermanDL` (where DL alone IS triggered).
+- The `should_not_parse_false_title` fixture rows that fall back to ParseBasicSubtitle return `Language=Unknown` because the `[AAC 2.0]` etc. prefix has no iso-code token after the title-fallback path — the `.ass` extension is stripped first, then `subtitleLanguageRe` doesn't match (the ass extension's bare-no-iso shape isn't in the iso pattern). Pinned by `TestParseSubtitleLanguageInformation_FalseTitle`.
+
+Tests: 8 test functions / ~80 cases across `parse_languages_test.go` + `parse_subtitle_test.go` (both black-box `package parser_test`):
+
+- `TestParseLanguages_FixtureContains` — ~55 cases drawn from every `should_parse_language_*` fixture method that asserts `Contain(...)`. Covers all 30+ language detection paths (.Contains arm + regex arm + Unknown fallback + multi-language packs).
+- `TestParseLanguages_GermanDL` / `TestParseLanguages_GermanML` / `TestParseLanguages_GermanWEBDL` — the three German post-processing fixture methods, each with `Should().BeEquivalentTo(...)` assertions on the full result list (using `equalSets` for order-insensitive comparison).
+- `TestParseLanguages_DistinctById` — pins the DistinctBy de-dup against a Russian-twice input (`.Contains("russian")` + regex arm `\brus\b`).
+- `TestParseLanguages_FixtureMultiPack` — the `should_parse_language_english_french_german_italian_portuguese_spanish` fixture row (the heaviest single multi-language case).
+- `TestParseSubtitleLanguage_Unknown` / `TestParseSubtitleLanguage_English` — 12 cases from `should_parse_subtitle_language_*`.
+- `TestParseLanguageTags` — 5 cases covering the cc / sdh / forced / sdh+forced / no-tag combinations.
+- `TestParseSubtitleLanguageInformation_TitleAndTags` — 17 cases from `should_parse_title_and_tags`, asserting (LanguageTags, Title, Language) per row.
+- `TestParseSubtitleLanguageInformation_FalseTitle` — 4 cases from `should_not_parse_false_title`.
+- `TestUpdateTitleAndCopyFromTitle` — direct unit tests for the post-processor including the 4-digit rejection path (verifies the lookaround drop is semantically equivalent).
+
+Lint clean (`golangci-lint run ./...` 0 issues); full suite green on both engines under `-race -p 1`.
+
+What's deferred:
+
+- Logger.Debug / Logger.Trace calls in the C# code — wired through when the service-layer logging primitives land. Currently silent in the Go port.
+- The fixture has ~218 cases across 33 `should_parse_*` methods; the Go port covers a representative subset (~95 across all three slices). A future drift-prevention pass can pad out to full fixture coverage if needed, but every named branch of every regex and every .Contains arm is exercised at least once today.
+
+Phase 2 status after 2.10: NzbDrone.Core.Parser.LanguageParser COMPLETE. NzbDrone.Core.Parser.QualityParser COMPLETE. Remaining Phase 2 work per the strategic plan: ReleaseGroupParser (6 regexes incl. backreferences + ParserCommon.PreSubstitutionRegex helper with 14 Chinese-anime patterns + negative lookaround), ParseTitle proper (the 104-element ReportTitleRegex[] array — the heaviest single chunk).
 
 ### Phase 1 — Foundations ✅ done
 
