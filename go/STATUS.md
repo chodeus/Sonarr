@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 kicked off — internal/parser title normalisers + first 2 ParserTests fixtures ported as table-driven Go tests, both green).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language/Iso registry shipped, 3 ParserTests fixtures ported as table-driven Go tests).
 
 ## Where to resume
 
@@ -65,7 +65,31 @@ Notable RE2 reformulations vs the C# regex literals:
 - `(?<=\b\d+)%` → `\b(\d+)%` with capture-and-emit replacement. RE2 has no lookbehind; pulling the digits into a capture group preserves the same matched bytes and emits them back via `${1}percent`.
 - The complex `NormalizeRegex` `((?:\b|_)(?<!^)([aà](?!$)|an|the|and|or|of)(?!$)(?:\b|_))|\W|_` was split: the alternation's first arm (with `(?<!^)` / `(?!$)` lookarounds) is reformulated as `stripMiddleCommonWords`, a hand-coded scan that walks bytes, applies position checks directly, and respects multi-byte UTF-8 boundary semantics. The `\W|_` arm becomes `[^\p{L}\p{N}]` to match C#'s Unicode-aware `\W` (Go's default `\W` is ASCII-only; using `\W|_` directly would incorrectly strip non-ASCII letters like `à` and `í`).
 
-What's deliberately deferred to subsequent Phase 2 commits: `ParseTitle` (the main entry point), the 104-element `ReportTitleRegex[]` array (the heavy lifting), `QualityParser`, `LanguageParser`, `ReleaseGroupParser`, `SceneChecker`, and the IsoLanguages registry. Each owes its corresponding `*Fixture.cs` test as the first commit, then the implementation. The 1,585 [TestCase] rows under `ParserTests/` are the spec — see `analysis/parser/regex-corpus.md` for the porter's checklist.
+What's deliberately deferred to subsequent Phase 2 commits: `ParseTitle` (the main entry point), the 104-element `ReportTitleRegex[]` array (the heavy lifting), `QualityParser`, `LanguageParser`, `ReleaseGroupParser`, `SceneChecker`. Each owes its corresponding `*Fixture.cs` test as the first commit, then the implementation. The 1,585 [TestCase] rows under `ParserTests/` are the spec — see `analysis/parser/regex-corpus.md` for the porter's checklist.
+
+#### 2.1 — Language registry + IsoLanguages lookup ✅ shipped (2026-05-03)
+
+`internal/language` ports three colocated concerns from the C# tree:
+
+- `NzbDrone.Core.Languages.Language` — 52 named languages plus `Unknown` (Id=0) and `Original` (Id=-2). IDs are frozen because they're persisted in user databases (qualityprofiles, releaseprofiles, customformats); renumbering would corrupt rows. Order in source mirrors `Language.cs:73-126` so a future drift against the C# tree is line-aligned.
+- `NzbDrone.Core.Parser.IsoLanguages` — registry of 53 ISO entries (53 not 52: Norwegian appears twice, with both `no` and `nb` two-letter codes; Dutch appears twice, once for the Dutch language and once for Flemish — by-design duplicates the C# HashSet preserves). Plus `AlternateIsoCodeMappings` for legacy codes (`cze` → Czech, `dut` → Dutch, `mac` → Macedonian, `rum` → Romanian, `yue`/`zhtw` → Chinese).
+- `NzbDrone.Core.Organizer.FileNameBuilder.Iso639BTMap` — 21-entry bibliographic-vs-terminological code map (`geo → kat`, `cze → ces`, `ger → deu`, etc.). Colocated here rather than under `internal/organizer` because the data belongs with the language registry.
+
+Public surface:
+
+- `language.Language` value type with `ID` + `Name`. Comparable by value.
+- Predefined `language.English`, `language.Czech`, etc. as package-level vars.
+- `language.FindByID(id) (Language, bool)` — Id 0 always resolves to `Unknown` matching C# `Language.cs:196`.
+- `language.FindByName(name) (Language, bool)` — case-insensitive match.
+- `language.All() []Language` — fresh copy of the registry in registration order.
+- `language.Iso{TwoLetter, Country, ThreeLetter, Language}` value type plus `CountryLower()` helper.
+- `language.FindIso(isoCode) (Iso, bool)` — full algorithm parity with `IsoLanguages.Find` at `IsoLanguages.cs:78-113`. 2-letter, 3-letter, country-suffixed, alternate-code, and bibliographic-mapped paths all exercised by tests.
+- `language.GetIso(language) (Iso, bool)` — first Iso whose Language matches.
+- `language.FindIsoByName(name) (Iso, bool)` — case-insensitive name lookup.
+
+Test corpus: 12 tests / ~30 cases. Direct ports of `IsoLanguagesFixture.cs` cases (English / unknown / Portuguese / de-AU / cze / Urdu / Romansh / Georgian — the last exercising both the alternate-mapping path and the iso639BTMap), plus Language-specific tests (FindByID, FindByName, registry size, frozen-Id pins). All green; lint clean.
+
+C# behavioural quirks preserved verbatim: `AlternateIsoCodeMappings` uses the original `isoCode` (not the lowercased langCode), so `CZE` does NOT match `cze` — flagged in the FindIso doc comment.
 
 ### Phase 1 — Foundations ✅ done
 
