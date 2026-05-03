@@ -2,11 +2,11 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (30 model repos shipped + 8 migration-sweep bugs fixed; non-provider tables of Phase 1 effectively complete).
+Last updated: 2026-05-03 (TP-Q1/Q2 resolved; 7 provider-pattern repos + provider registry shipped; 38 model repos cover every persisted table at HEAD).
 
 ## Where to resume
 
-**Phase 0.5 signed off; Phase 1.0 (datastore foundations) shipped to working tree. 30 model repositories shipped on top — every non-provider table that survives at HEAD now has a Go repo.** Tests green for both engines (`SONARR_PG_DSN=postgres:///sonarr_spike go test -count=1 -race -p 1 ./...`). Lint clean (`golangci-lint run ./...` 0 issues). Migration 001 produces the 14-table set the C# Migration/001 produces; goose state stored in `goose_db_version` (SQLite + Postgres) — not the C# `VersionInfo` table because version numbering differs (gappy in FluentMigrator vs contiguous in goose).
+**Phase 0.5 signed off; Phase 1.0 (datastore foundations) shipped to working tree. 30 non-provider repos + 7 provider-pattern repos = every persisted table at HEAD now has a Go repo. Provider registry (TP-Q1/Q2) shipped with the full 71-class catalog populated.** Tests green for both engines (`SONARR_PG_DSN=postgres:///sonarr_spike go test -count=1 -race -p 1 ./...`). Lint clean (`golangci-lint run ./...` 0 issues). Migration 001 produces the 14-table set the C# Migration/001 produces; goose state stored in `goose_db_version` (SQLite + Postgres) — not the C# `VersionInfo` table because version numbering differs (gappy in FluentMigrator vs contiguous in goose).
 
 **Note on `-p 1`**: running `go test ./...` without `-p 1` causes intermittent Postgres deadlocks during migration version 71 because multiple test binaries hit the shared `sonarr_spike` DB and rebuild the `public` schema simultaneously. SQLite-only runs are unaffected. Worth fixing eventually (per-package schema or test-package-level mutex via filelock); for now use `-p 1` for the full suite.
 
@@ -228,17 +228,40 @@ While porting the repos this session, eight load-bearing bugs in the original 1-
 - **`-p 1` parallel-package deadlock** is still a known issue; not blocking but worth fixing eventually.
 - The two automated migration audits' approach is a useful template — re-run after any future C# tree update to catch new drops.
 
-#### Next: provider-pattern repos (gated on TP-Q1/Q2)
+#### 1.x — Provider registry + 7 provider-pattern repos ✅ shipped (2026-05-03)
 
-The remaining non-provider tables are done. The seven provider-pattern tables (`Indexers`, `DownloadClients`, `Notifications`, `ImportLists`, `Metadata`, `CustomFormats`, `AutoTagging`) are still gated on the **stable string registry** decision (TP-Q1/Q2 in the questions ledger). Each row stores `Implementation` and `ConfigContract` as C# class-name strings; the Go port can't use Go type names verbatim because that would break C#-Go round-trips and any future class rename cascade.
+**TP-Q1/Q2 resolution: opaque string registry, pair-keyed `(Implementation, ConfigContract)`.** The Go port keeps the C# class-name strings as the on-disk identifier, mirroring how `ProviderRepository.Query` already resolves Settings via `Type.Name` reflection. A class rename in Go does NOT mutate the on-disk strings; instead, the Phase 4 constructor registration grows new `Register(family, key, factory)` lines and the storage layer keeps round-tripping the legacy strings without modification.
 
-The next session's first task: settle the provider registry shape. Options:
-1. **Opaque string registry** — keep the C# class-name strings as-is, with a Go-side registration table mapping `(impl_id, contract_id)` → Go constructor. No migration cost. Two known cases (Vuze/Transmission share TransmissionSettings; Usenet/TorrentDownloadStation share DownloadStationSettings) require pair lookup not single key.
-2. **Lighter wire-format alias** — define a stable short ID per provider (e.g. "indexer.newznab"), keep a one-time migration that rewrites existing rows.
+- `internal/provider/provider.go` — `Family`-namespaced `Registry` with `Register / Has / Lookup / Keys`, plus an `ErrAlreadyRegistered` sentinel that surfaces double-init bugs. Constructors are nil-allowed (Phase 1 catalog shape; Phase 4 wires real factories as each provider class is ported).
+- `internal/provider/ids.go` — `Default()` returns a Registry seeded with all 71 known provider classes from `analysis/providers/*.md` (10 indexers, 20 download clients, 25 notifications, 10 import lists, 4 metadata writers) plus 19 polymorphic-spec discriminators from `analysis/embedded-docs/catalogue.md` (8 CustomFormat specs, 11 AutoTagging specs). Two known shared-contract pairs are explicitly distinct entries: `(Vuze, TransmissionSettings)` and `(Transmission, TransmissionSettings)`; `(UsenetDownloadStation, DownloadStationSettings)` and `(TorrentDownloadStation, DownloadStationSettings)`. Pair-keying disambiguates them without any DB-level distinction.
+- `provider_test.go` covers register / lookup / family-namespace isolation / dup rejection / Phase-1 catalog count assertions / shared-contract pair survival.
 
-Option 1 is the lowest-friction path and aligns with how the C# side already works. Recommend starting there.
+**Seven provider repos shipped on top of the registry.** Each in its own `internal/<name>/` package, all using `repo.Repository[T]`. Settings (5 of 7 tables) and Specifications (the other 2) are stored as opaque `string` / `*string` for byte-for-byte C#-Go round-trip; Phase 4 service code calls `provider.Default().Lookup(...)` for typed deserialisation.
 
-After the provider registry: the seven provider repos are mostly mechanical (each is a `Settings`/`ConfigContract` polymorphic-doc table; the existing helper handles the CRUD shape).
+| Package | Cols | Notable shape |
+|---------|------|---------------|
+| `internal/indexers/` | 12 | Name UNIQUE; nullable Settings/ConfigContract; nullable bool EnableRss/EnableAutomaticSearch; nullable Tags. `FindByName` helper. |
+| `internal/downloadclients/` | 10 | Settings/ConfigContract NOT NULL; nullable Tags. `FindByName`. Test exercises Vuze/Transmission shared-contract round-trip. |
+| `internal/notifications/` | 20 | 13 OnX bool flags + the lone nullable bool OnUpgrade; nullable ConfigContract; nullable Tags. `FindByName`. |
+| `internal/importlists/` | 13 | Name UNIQUE; nullable Settings/ConfigContract/EnableAutomaticAdd; SeasonFolder default true; SearchForMissingEpisodes default true. `FindByName`. |
+| `internal/metadata/` | 5 | Smallest table — Enable/Name/Implementation/Settings/ConfigContract, all NOT NULL. `FindByName`. |
+| `internal/customformats/` | 3 | Different shape: no Implementation/ConfigContract; opaque Specifications JSON envelope (8 known spec types). `FindByName`. |
+| `internal/autotagging/` | 4 | Same envelope shape as CustomFormats (11 known spec types) plus an `[]int` Tags column with `[]` default NOT NULL. `FindByName`. |
+
+All pass `-race -p 1` against both engines. Lint clean.
+
+**What deliberately did not happen this session:**
+- No typed Settings deserialisation. Phase 4 ports the actual provider implementations (Newznab, Sabnzbd, Discord, …) and registers their constructors. The registry shape is ready; the catalog sits as data with nil factories for now.
+- No `RemoveMissingImplementations` semantics. The repo layer never deletes rows on unknown identifiers — that's a Phase 4 service-level concern (TP-Q3/Q9 direction: HealthCheck on missing impl, not silent delete).
+- No `[FieldDefinition]` schema rendering / SchemaBuilder equivalent (ANNO-Q1 / TP-Q4 still open).
+- The 6 PROV-Q* open questions on `analysis/providers/indexers.md` (preset list, Torznab dead code, IndexerStatus column-name, rate-limit-key tying, BTN 5s override, TorrentRss parser cache) are downstream of Phase 4 and left untouched.
+
+#### Open questions still gated on later phases
+
+- ANNO-Q1 / TP-Q4 — `[FieldDefinition]` Go idiom (struct tags + schema function). Blocks `/schema` endpoints in Phase 4.
+- TP-Q3 / TP-Q9 — HealthCheck-on-unknown-impl in place of silent delete. Service layer concern.
+- PROV-Q1 — Newznab's 9 named presets: hardcode vs YAML vs operator-curated. Affects Phase 4 schema endpoint.
+- EDOC-Q20 — `SeasonPackSpecification` legacy alias. Migration 205 already rewrites rows on disk; leave alone unless old user DBs surface the old string.
 
 ### Phase 0 — Bootstrap ✅ done
 
