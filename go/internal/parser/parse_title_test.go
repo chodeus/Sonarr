@@ -295,6 +295,43 @@ func TestParseTitle_NxEpisode(t *testing.T) {
 	}
 }
 
+// TestParseTitle_3DigitEpisode ports cases from
+// `SingleEpisodeParserFixture.cs` that match the 3-digit-episode
+// shortcut form (`Title.103` → S1E03, Parser.cs:336). Cases with
+// embedded year prefixes (e.g. `series.2009.416`) are deferred — the
+// `[^\d]` title constraint can't extend past the trailing year digit.
+func TestParseTitle_3DigitEpisode(t *testing.T) {
+	cases := []struct {
+		title       string
+		wantTitle   string
+		wantSeason  int
+		wantEpisode int
+	}{
+		{"Series.and.a.Title.103.720p.HDTV.X264-DIMENSION", "Series and a Title", 1, 3},
+		{"Series.and.a.Title.113.720p.HDTV.X264-DIMENSION", "Series and a Title", 1, 13},
+		{"Series.Title.525", "Series Title", 5, 25},
+		// 4-digit form
+		{"Series.and.a.Title.1013.720p.HDTV.X264-DIMENSION", "Series and a Title", 10, 13},
+	}
+	for _, tc := range cases {
+		t.Run(tc.title, func(t *testing.T) {
+			got := parser.ParseTitle(tc.title)
+			if got == nil {
+				t.Fatalf("ParseTitle(%q) = nil, want a result", tc.title)
+			}
+			if got.SeasonNumber != tc.wantSeason {
+				t.Errorf("SeasonNumber = %d, want %d", got.SeasonNumber, tc.wantSeason)
+			}
+			if len(got.EpisodeNumbers) != 1 || got.EpisodeNumbers[0] != tc.wantEpisode {
+				t.Errorf("EpisodeNumbers = %v, want [%d]", got.EpisodeNumbers, tc.wantEpisode)
+			}
+			if got.SeriesTitle != tc.wantTitle {
+				t.Errorf("SeriesTitle = %q, want %q", got.SeriesTitle, tc.wantTitle)
+			}
+		})
+	}
+}
+
 func TestParseSeriesName(t *testing.T) {
 	cases := []struct {
 		title string

@@ -149,6 +149,18 @@ var reportTitleRules = []rgRule{
 	//   (?:(?:(?:[-_. ]+E(?<episode>\d{2,3}(?!\d+)))+)
 	//   |(?:E(?<episode>\d{2,3}(?!\d+))(?:[-_. ]?(?:E?(?<episode>\d{2,3}(?!\d+))))*)))`
 	//
+	// Listed BEFORE the 3-digit/4-digit shortcut rules below so an
+	// explicit `<title>.S<n>E<nn>` form wins over the lazy
+	// `<title>.<NNNN>` interpretation (e.g.
+	// `Series.Title.2010.S05E07.720p.HDTV.X264-LOL` parses as title=
+	// `Series.Title.2010` season=5 episode=7 instead of being grabbed
+	// by the 4-digit rule as season=20 episode=10).
+	//
+	// `\d{1,2}|\d{4}` season alternation merges `Parser.cs:188` (1-2
+	// digit season) and `Parser.cs:192` (4-digit season `S2016E05`).
+	// 4-digit form is tried first (regex alternation order) so 4-digit
+	// titles like `S1936E18` win over the truncated-2-digit reading.
+	//
 	// Go RE2 has no lookbehind; the `\d{1,2}` digit-count constraint is
 	// preserved by the surrounding `S<digits>E<digits>` shape (both
 	// flanking literals reject extra digits). The C# regex uses the
@@ -156,16 +168,56 @@ var reportTitleRules = []rgRule{
 	// RE2 rejects duplicates so the duplicate-name aliases are dropped
 	// and episode tokens are merged via a separate `findAllEpisodes`
 	// scan over the matched span.
-	//
-	// `\d{1,2}|\d{4}` season alternation merges `Parser.cs:188` (1-2
-	// digit season) and `Parser.cs:192` (4-digit season `S2016E05`).
-	// 4-digit form is tried first (regex alternation order) so 4-digit
-	// titles like `S1936E18` win over the truncated-2-digit reading.
 	{
 		Re: regexp.MustCompile(
 			`(?i)^(?P<title>.+?)(?:[-_. ]+S(?P<season>\d{4}|\d{1,2}))(?:(?:[-_. ]+E\d{2,3})+|(?:E\d{2,3}(?:[-_. ]?(?:E?\d{2,3}))*))`,
 		),
 		Build: buildTitleSeasonEpisode,
+	},
+
+	// `Parser.cs:336` — Supports 103/113 naming. Title + 3-digit
+	// episode shortcut where 1 digit is season and 2 digits are
+	// episode. Listed AFTER the more-specific S-E and Nx rules so
+	// the explicit `S<n>E<nn>` and `<n>x<nn>` forms win when present.
+	//
+	// C# original:
+	//
+	//	^(?<title>.+?)?(?:(?:[_.-](?<![()\[!]))+
+	//	(?<season>(?<!\d+)[1-9])(?<episode>[1-9][0-9]|[0][1-9])(?![a-z]|\d+))+
+	//	(?:[_.]|$)
+	//
+	// RE2 reformulation: the `(?<!\d+)` lookbehind on season is
+	// replaced with `(?P<title>.+?[^\d])` (title's last char must be
+	// non-digit, same idiom as the Nx-episode rule). The
+	// `(?![a-z]|\d+)` after episode is enforced via `(?:[_.]|$)`
+	// end-anchor. The C# `(?<![()\[!])` lookbehind on the separator
+	// group is dropped — it's a defensive guard against a few rare
+	// scene formats and isn't exercised by current fixtures.
+	//
+	// Known limitation: titles with embedded years like
+	// `series.2009.416` won't match this rule (the lazy `.+?` can't
+	// extend past the trailing `9` digit to keep the title together
+	// because of the `[^\d]` constraint). Current behaviour: returns
+	// nil. C# behaviour: parses as S4E16. Documented; lands in a
+	// later slice with a more sophisticated title-extraction path.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?[^\d])[_.\-]+(?P<season>[1-9])(?P<episode>[1-9][0-9]|[0][1-9])(?:[_.]|$)`,
+		),
+		Build: buildTitleNxEpisode,
+	},
+
+	// `Parser.cs:273` — Supports 1103/1113 naming. Title + 4-digit
+	// episode shortcut where 2 digits are season and 2 digits are
+	// episode. Listed AFTER the 3-digit rule (above) — for inputs
+	// where the 3-digit form fails (e.g. 1013 has 4 digits and the
+	// 3-digit rule's `(?:[_.]|$)` end-anchor rejects when a 4th digit
+	// follows), the 4-digit rule picks them up.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?[^\d])[_.\-]+(?P<season>\d{2})(?P<episode>\d{2})(?:[_.]|$)`,
+		),
+		Build: buildTitleNxEpisode,
 	},
 }
 
