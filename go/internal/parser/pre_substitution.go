@@ -121,3 +121,32 @@ func applyPreSubstitution(title string) string {
 	}
 	return title
 }
+
+// sixDigitAirDateRe ports `Parser.SixDigitAirDateRegex` at
+// `Parser.cs:527`. The C# regex uses non-consuming lookbehind +
+// lookahead anchors `(?<=[_.-])...(?=[_.-])`; the Go port consumes the
+// surrounding separators and re-emits them in the replacement so the
+// before/after byte sequence stays equivalent for the first match
+// (which is the only one C# rewrites — `Match`, not `Matches`).
+var sixDigitAirDateRe = regexp.MustCompile(`([_.\-])([1-9]\d)([0-1][0-9])([0-3][0-9])([_.\-])`)
+
+// applySixDigitAirDate rewrites a leading `_YYMMDD_` / `.YYMMDD.` /
+// `-YYMMDD-` substring to `_20YY.MM.DD_` so the standard 4-2-2 daily
+// airdate rule can match. Mirrors `Parser.cs:720-733`. The C# year-only
+// guard (`airMonth != "00" || airDay != "00"`) is preserved verbatim;
+// when both month and day are 00 the rewrite is skipped.
+func applySixDigitAirDate(title string) string {
+	m := sixDigitAirDateRe.FindStringSubmatchIndex(title)
+	if m == nil {
+		return title
+	}
+	leadSep := title[m[2]:m[3]]
+	airYear := title[m[4]:m[5]]
+	airMonth := title[m[6]:m[7]]
+	airDay := title[m[8]:m[9]]
+	trailSep := title[m[10]:m[11]]
+	if airMonth == "00" && airDay == "00" {
+		return title
+	}
+	return title[:m[2]] + leadSep + "20" + airYear + "." + airMonth + "." + airDay + trailSep + title[m[11]:]
+}

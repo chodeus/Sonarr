@@ -109,7 +109,7 @@ func singleEpisodeRows() []specRow {
 		se("Series Title-0 (2010) - 1x05 - Title", "Series Title-0 (2010)", 1, 5),
 		sex("Series (2009) - [06x16] - Room 147.mp4", "Series (2009)", 6, 16),
 		sex("Series Title [1x05] Episode Title", "Series Title", 1, 5),
-		sex("Series Title [S01E05] Episode Title", "Series Title", 1, 5),
+		se("Series Title [S01E05] Episode Title", "Series Title", 1, 5),
 		sex("[Impatience] Series - 0x01 [720p][34073169].mkv", "Series", 0, 1),
 		sex("Series Title - [02x01] - Episode 1", "Series Title", 2, 1),
 		sex("[RlsGrp] Series Title - S01E27 - 24-Hour", "Series Title", 1, 27),
@@ -133,16 +133,16 @@ func singleEpisodeRows() []specRow {
 		se("S2009E09 [SDTV].avi", "", 2009, 9),
 		se("Series Week S2009E09 [SDTV].avi", "Series Week", 2009, 9),
 
-		// XFail — Cap.NN forms (Spanish), bracketed [HDTV][Cap.101] etc.:
-		sex("Series Title - Temporada 2 [HDTV 720p][Cap.201][AC3 5.1 Castellano][www.pctnew.com]", "Series Title", 2, 1),
-		sex("Series Title - Temporada 2 [HDTV 720p][Cap.1901][AC3 5.1 Castellano][www.pctnew.com]", "Series Title", 19, 1),
-		sex("Series Title - Temporada 2 [HDTV 720p][Cap.408]", "Series Title", 4, 8),
-		sex("Series Title [HDTV][Cap.104](website.com).avi", "Series Title", 1, 4),
-		sex("Series Title [HDTV][Cap.402](website.com).avi", "Series Title", 4, 2),
-		sex("Series Title [HDTV 720p][Cap.101](website.com).mkv", "Series Title", 1, 1),
-		sex("Series - Temporada 1 - [HDTV 1080p][Cap.101](wolfmax4k.com)", "Series", 1, 1),
-		sex("Series [HDTV 1080p][Cap.101](wolfmax4k.com)", "Series", 1, 1),
-		sex("Series [HDTV 1080p][Cap. 101](wolfmax4k.com).mkv", "Series", 1, 1),
+		// Cap.NN forms (Spanish), bracketed [HDTV][Cap.101] etc.:
+		se("Series Title - Temporada 2 [HDTV 720p][Cap.201][AC3 5.1 Castellano][www.pctnew.com]", "Series Title", 2, 1),
+		se("Series Title - Temporada 2 [HDTV 720p][Cap.1901][AC3 5.1 Castellano][www.pctnew.com]", "Series Title", 19, 1),
+		se("Series Title - Temporada 2 [HDTV 720p][Cap.408]", "Series Title", 4, 8),
+		se("Series Title [HDTV][Cap.104](website.com).avi", "Series Title", 1, 4),
+		se("Series Title [HDTV][Cap.402](website.com).avi", "Series Title", 4, 2),
+		se("Series Title [HDTV 720p][Cap.101](website.com).mkv", "Series Title", 1, 1),
+		se("Series - Temporada 1 - [HDTV 1080p][Cap.101](wolfmax4k.com)", "Series", 1, 1),
+		se("Series [HDTV 1080p][Cap.101](wolfmax4k.com)", "Series", 1, 1),
+		se("Series [HDTV 1080p][Cap. 101](wolfmax4k.com).mkv", "Series", 1, 1),
 
 		// XFail — assorted unique shapes:
 		// Note: these are from MultiEpisodeParserFixture (multi-form),
@@ -180,10 +180,9 @@ func multiEpisodeRows() []specRow {
 		me("S01E01-E03 - Episode Title.HDTV-720p", "", 1, []int{1, 2, 3}),
 		me("Series Title - S15E06-07 - City Sushi HDTV-720p", "Series Title", 15, []int{6, 7}),
 		me("Series Title - S01E01-02-03 - Episode Title HDTV-720p", "Series Title", 1, []int{1, 2, 3}),
-		// XFail — bracketed [S01E01-02-03] form; my title+S-E rule's
-		// `[-_. ]+S` doesn't accept `[` as separator. Needs a dedicated
-		// bracketed-S<n>E<nn> rule.
-		mex("The Series Title (2010) - [S01E01-02-03] - Episode Title", "The Series Title (2010)", 1, []int{1, 2, 3}),
+		// Bracketed [S01E01-02-03] form — flipped by title+S-E rule's
+		// separator class extension to admit `[`.
+		me("The Series Title (2010) - [S01E01-02-03] - Episode Title", "The Series Title (2010)", 1, []int{1, 2, 3}),
 		me("Series Title (2011) - S01E23-E24 - ...E i nuovi orizzonti [HDTV 360p] [ITA].mkv", "Series Title (2011)", 1, []int{23, 24}),
 		me("The Series Title! - S01E01-02-03", "The Series Title!", 1, []int{1, 2, 3}),
 		me("Series Title! (2013) - S04E44-E45 - Il 200 spettacolare episodio da narcisisti!", "Series Title! (2013)", 4, []int{44, 45}),
@@ -252,9 +251,14 @@ func dailyEpisodeRows() []specRow {
 
 		// XFail — reversed dates, 6-digit, 8-digit, etc.:
 		dailyx("The_Series_US_04.28.2014_hdtv.x264.Poke.mp4", "The Series US", "2014-04-28"),
-		dailyx("A.Late.Talk.Show.140722.720p.HDTV.x264-YesTV", "A Late Talk Show", "2014-07-22"),
-		dailyx("A_Late_Talk_Show_140722_720p_HDTV_x264-YesTV", "A Late Talk Show", "2014-07-22"),
-		dailyx("Series and Title 20201013 Ep7432 [720p WebRip (x264)] [SUBS]", "Series and Title", "2020-10-13"),
+		// 6-digit YYMMDD form — flipped by the SixDigitAirDateRegex
+		// preprocessor that rewrites `_YYMMDD_` to `_20YY.MM.DD_`
+		// before the standard 4-2-2 airdate rule fires.
+		daily("A.Late.Talk.Show.140722.720p.HDTV.x264-YesTV", "A Late Talk Show", "2014-07-22"),
+		daily("A_Late_Talk_Show_140722_720p_HDTV_x264-YesTV", "A Late Talk Show", "2014-07-22"),
+		// 8-digit YYYYMMDD form — flipped by the dedicated 8-digit
+		// airdate rule below the standard 4-2-2 rule.
+		daily("Series and Title 20201013 Ep7432 [720p WebRip (x264)] [SUBS]", "Series and Title", "2020-10-13"),
 		dailyx("Series Title (1955) - 1954-01-23 05 00 00 - Cottage for Sale.ts", "Series Title (1955)", "1954-01-23"),
 		dailyx("Series Title - 30-04-2024 HDTV 1080p H264 AAC", "Series Title", "2024-04-30"),
 		dailyx("Series.Title.13.02.2025.1080i.HDTV.MPA2.0.H.264", "Series Title", "2025-02-13"),

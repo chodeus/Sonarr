@@ -42,6 +42,13 @@ func ParseTitle(title string) *ParsedEpisodeInfo {
 	// here pending the full SimplifyTitle pipeline.
 	titleNoExt = applyPreSubstitution(titleNoExt)
 
+	// Mirrors `Parser.cs:720-733`: rewrite a separator-bracketed
+	// 6-digit YYMMDD substring to `20YY.MM.DD` so the standard 4-2-2
+	// airdate rule can fire. C# applies this AFTER SimplifyTitle (which
+	// includes PreSubstitutionRegex) and BEFORE ReportTitleRegex; the
+	// Go port matches that ordering.
+	titleNoExt = applySixDigitAirDate(titleNoExt)
+
 	for _, rule := range reportTitleRules {
 		m := rule.Re.FindStringSubmatchIndex(titleNoExt)
 		if m == nil {

@@ -162,12 +162,49 @@ var reportTitleRules = []rgRule{
 		Build: buildTitleSeasonEpisode,
 	},
 
-	// `Parser.cs:188` — Single SxxExx (or repeating `EXX` after one S):
+	// `Parser.cs:188` — Single SxxExx (or repeating `EXX` after one S).
+	//
+	// The pre-S separator class `[-_. \[]+` admits `[` so bracketed
+	// shapes like `Title [S01E05]` and `Title (2010) - [S01E01-02-03]`
+	// match — the C# regex's `\W+` separator covers them implicitly,
+	// and the Go port keeps the narrower `[-_. ]` class plus an
+	// explicit `[` to avoid eating other punctuation that would let
+	// titles ending in `(YYYY)` collide with subsequent groups.
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?)(?:[-_. ]+S(?P<season>\d{4}|\d{1,2}))(?:(?:[-_. ]+E\d{2,3})+|(?:E\d{2,3}(?:[-_. ]?(?:E?\d{2,3}))*))`,
+			`(?i)^(?P<title>.+?)(?:[-_. \[]+S(?P<season>\d{4}|\d{1,2}))(?:(?:[-_. ]+E\d{2,3})+|(?:E\d{2,3}(?:[-_. ]?(?:E?\d{2,3}))*))`,
 		),
 		Build: buildTitleSeasonEpisode,
+	},
+
+	// `Parser.cs:329` — Spanish tracker releases (Temporada / Cap.NN).
+	// Two title shapes both anchored on the literal `[Cap` token:
+	//
+	//   1. `<Title> - Temporada N [<meta>][Cap.NN]...` (with the
+	//      Temporada keyword).
+	//   2. `<Title> [<meta>][Cap.NN]...` (no Temporada — just any
+	//      bracketed metadata group right before `[Cap`).
+	//
+	// The 3-digit code after `Cap.` decomposes into 1-2 digit season +
+	// 2 digit episode. Greedy `\d{1,2}` falls back when the fixed
+	// 2-digit episode arm can't match — RE2's leftmost-first semantics
+	// reach the same season/episode split as the C# regex.
+	//
+	// C# original:
+	//
+	//	^(?<title>.+?)(?:(?:[-_. ]+?Temporada.+?|\[.+?\])\[Cap)
+	//	(?:[-_. ]+(?<season>(?<!\d+)\d{1,2})
+	//	(?<episode>(?<!e|x)(?:[1-9][0-9]|[0][1-9])))+(?:\])
+	//
+	// The two RE2-incompatible lookbehinds (`(?<!\d+)` on season,
+	// `(?<!e|x)` on episode) are dropped — the surrounding shape
+	// (`[Cap[-_. ]+\d{1,2}<2-digit-episode>]`) constrains both
+	// positions adequately on real fixture inputs.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?)(?:(?:[-_. ]+?Temporada.+?|\[.+?\])\[Cap)(?:[-_. ]+(?P<season>\d{1,2})(?P<episode>(?:[1-9][0-9]|[0][1-9])))+(?:\])`,
+		),
+		Build: buildTitleNxEpisode,
 	},
 
 	// `Parser.cs:333` — Episodes with airdate (`2018.04.28` /
@@ -179,6 +216,30 @@ var reportTitleRules = []rgRule{
 	{
 		Re: regexp.MustCompile(
 			`(?i)^(?P<title>.+?)?\W*(?P<airyear>\d{4})[-_. ]+(?P<airmonth>[0-1][0-9])[-_. ]+(?P<airday>[0-3][0-9])`,
+		),
+		Build: buildDailyAirdate,
+	},
+
+	// `Parser.cs:362` — 8-digit airdate (`<title> 20201013` /
+	// `20161024-...`). Listed AFTER the standard 4-2-2 airdate rule so
+	// titles already carrying `YYYY.MM.DD` separators win first; listed
+	// BEFORE the 3/4-digit shortcuts so an 8-digit run isn't mis-read
+	// as a season+episode-shortcut prefix.
+	//
+	// C# original:
+	//
+	//	^(?<title>.+?)?\W*(?<!\d+)(?<airyear>\d{4})
+	//	(?<airmonth>[0-1][0-9])(?<airday>[0-3][0-9])(?!\d+)
+	//
+	// RE2 reformulations: `(?<!\d+)` lookbehind on airyear is replaced
+	// by constraining the title's last char to non-digit
+	// (`(?P<title>.+?[^\d])?` — same idiom as the title+Nx and 3/4-digit
+	// shortcut rules). `(?!\d+)` after airday becomes the explicit
+	// `(?:\W|$)` end-anchor — with `[0-3][0-9]` already exact-length, the
+	// only thing the lookahead guards against is a 9th digit.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?[^\d])?\W*(?P<airyear>\d{4})(?P<airmonth>[0-1][0-9])(?P<airday>[0-3][0-9])(?:\W|$)`,
 		),
 		Build: buildDailyAirdate,
 	},
