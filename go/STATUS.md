@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.5 shipped: data model + helpers + ParseTitle pipeline shell + 6 ReportTitleRegex rules (canonical daily airdate / title + Nx-episode / no-title multi+single episode / title + S-E episode / anime [SubGroup] absolute) covering basic SingleEpisode / MultiEpisode / anime-absolute / canonical daily / `Nx05` Title-form fixture rows. 4-digit season `S1936E18` form supported. ~116 of 122 ReportTitleRegex patterns plus the downstream pipeline stages still pending).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.6 shipped: data model + helpers + ParseTitle pipeline shell + 8 ReportTitleRegex rules (canonical daily airdate / anime [SubGroup] absolute / no-title multi+single episode / title + Nx-episode / title + S-E episode / Title.103 3-digit shortcut / Title.1013 4-digit shortcut). 4-digit season `S1936E18` form supported. ~114 of 122 ReportTitleRegex patterns plus the downstream pipeline stages still pending).
 
 ## Where to resume
 
@@ -702,6 +702,30 @@ Tests: 1 new function / 1 case in `parse_title_test.go`:
 - `TestParseTitle_NxEpisode_Regressions` — pins the `x264` false-positive rejection. Asserts that the `Red Series S01 E01-E02 ... x264 monkee` input does NOT classify as season=1 episode=264 (which would be the pre-fix Nx-rule output).
 
 Lint clean (`golangci-lint run ./...` 0 issues — gofmt struct alignment fixed); full suite green on both engines.
+
+#### 2.12.6 — Title + 3-digit and 4-digit episode shortcut rules ✅ shipped (2026-05-03)
+
+Seventh slice of the ParseTitle port. Adds two short-form rules that map a single concatenated digit run to season+episode without explicit `S`/`E`/`x` separators.
+
+What ships:
+
+- **3-digit shortcut** (`reportTitleRules` index after the title+S-E rule) — `Parser.cs:336`. Pattern: `^(?P<title>.+?[^\d])[_.\-]+(?P<season>[1-9])(?P<episode>[1-9][0-9]|[0][1-9])(?:[_.]|$)`. Maps `Title.103` → S1E03, `Title.113` → S1E13, `Title.525` → S5E25.
+- **4-digit shortcut** (next entry) — `Parser.cs:273`. Pattern: `^(?P<title>.+?[^\d])[_.\-]+(?P<season>\d{2})(?P<episode>\d{2})(?:[_.]|$)`. Maps `Title.1013` → S10E13. Listed AFTER the 3-digit rule because the 3-digit rule's `(?:[_.]|$)` end-anchor naturally rejects 4-digit runs (next char would be a digit), and the 4-digit rule picks up where the 3-digit rule fails.
+
+One critical reordering: the title+S-E rule (rule 5) was moved BEFORE these new shortcut rules. Otherwise an explicit `<title>.S<n>E<nn>.<rest>` form would be shadowed by the 4-digit rule grabbing the year-prefix as season+episode (e.g. `Series.Title.2010.S05E07.720p.HDTV.X264-LOL` was parsing as title=`Series.Title` season=20 episode=10; correct is title=`Series.Title.2010` season=5 episode=7).
+
+Two RE2 reformulations:
+
+1. The C# `(?<!\d+)` lookbehinds on season are replaced with `(?P<title>.+?[^\d])` (title's last char must be non-digit, same idiom as the Nx-episode rule). The `(?![a-z]|\d+)` after episode is enforced via `(?:[_.]|$)` end-anchor.
+2. The C# `(?<![()\[!])` lookbehind on the separator group is dropped — it's a defensive guard against a few rare scene formats and isn't exercised by current fixtures.
+
+Known limitation preserved: titles with embedded years like `series.2009.416.hdtv-lol` won't match (the lazy `.+?` can't extend past the trailing `9` digit because of the `[^\d]` constraint). Current behaviour: returns nil. C# behaviour: parses as title=`series.2009` season=4 episode=16. Documented in the rule comment; lands in a later slice with a more sophisticated title-extraction path that can express the C# `(?<!\d+)` semantic without forcing the title to end on non-digit.
+
+Tests: 1 new function / 4 cases in `parse_title_test.go`:
+
+- `TestParseTitle_3DigitEpisode` — 3 cases for the 3-digit form (`103`, `113`, `525`) + 1 case for the 4-digit form (`1013`). All pass; the year-embedded `series.2009.416.hdtv-lol` case from the C# fixture is documented as deferred in the rule's comment block.
+
+Lint clean (`golangci-lint run ./...` 0 issues — gofmt + reorder issues resolved); full suite green on both engines.
 
 ### Phase 1 — Foundations ✅ done
 
