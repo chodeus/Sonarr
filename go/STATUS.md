@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.3 shipped: data model + helpers + ParseTitle pipeline shell + 5 ReportTitleRegex rules (canonical daily airdate / no-title multi+single episode / title + season-episode / anime [SubGroup] absolute) covering basic SingleEpisode / MultiEpisode / anime-absolute / canonical daily fixture rows. ~117 of 122 ReportTitleRegex patterns plus the downstream pipeline stages (SimplifyTitle / language / quality / release-group / year-in-title / 6-digit-airdate / 8-digit-airdate / reversed-date / short-month / anime-with-season-episode branches) still pending).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.4 shipped: data model + helpers + ParseTitle pipeline shell + 6 ReportTitleRegex rules (canonical daily airdate / title + Nx-episode / no-title multi+single episode / title + S-E episode / anime [SubGroup] absolute) covering basic SingleEpisode / MultiEpisode / anime-absolute / canonical daily / `Nx05` Title-form fixture rows. ~116 of 122 ReportTitleRegex patterns plus the downstream pipeline stages still pending).
 
 ## Where to resume
 
@@ -661,6 +661,23 @@ Tests: 1 new function / 9 cases in `parse_title_test.go`:
 - `TestParseTitle_DailyAirDate` — 9 cases ported verbatim from `DailyEpisodeParserFixture.cs`'s `should_parse_daily_episode` rows that match the canonical `<airyear> <airmonth> <airday>` shape with literal separators (period / underscore / dash / space). Asserts SeriesTitle + AirDate format + empty EpisodeNumbers + IsDaily() returning true. The 8-digit-airdate and trailing-episode-marker rows are commented as deferred to subsequent slices.
 
 Lint clean (`golangci-lint run ./...` 0 issues); full suite green on both engines under `-race -p 1`.
+
+#### 2.12.4 — ReportTitleRegex Title + Nx-episode rule ✅ shipped (2026-05-03)
+
+Fifth slice of the ParseTitle port. Adds the `<Title> <N>x<NN>` shape (e.g. `Series.Title.4x05`, `Series_Title_-_1x1_-_...`) that the slice-2.12.1 title rule misses (requires literal `S` prefix) and the slice-2.12.1 no-title rule rejects (requires the title to start with a digit).
+
+What ships:
+
+- `reportTitleRules[3]` (new, between daily airdate and no-title rules) — title + Nx-episode rule with `^(?P<title>.+?)[-_. ]+(?P<season>\d{1,2})[-_ ]?[ex](?P<episode>\d{1,3})`. Handles 1-3 digit episodes including the single-digit `1x1` form.
+- `buildTitleNxEpisode` Build function — extracts episode directly from the named group rather than via `findAllEpisodes` (which requires 2-3 digits and would miss `1x1`).
+
+Single-episode focus only; multi-episode `Nx05x06` forms fall through to subsequent slices.
+
+Tests: 1 new function / 11 cases in `parse_title_test.go`:
+
+- `TestParseTitle_NxEpisode` — 8 title-bearing cases from `SingleEpisodeParserFixture.cs` (`4x05`, `7x6` single-digit, `1x1` single-digit-both, `2x4`, `19x06`, `10x12`, `6x12`) + 3 raw no-title cases (`1x04`, `5x10 WS PDTV...`, `01x04 - Halloween...`) confirming the existing no-title single rule handles them via the optional `S?` prefix.
+
+Lint clean; full suite green on both engines.
 
 ### Phase 1 — Foundations ✅ done
 
