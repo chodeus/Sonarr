@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language registry + quality registry + Revision/QualityModel + ParseRevision + ParseResolution; 5 ParserTests fixtures ported).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language registry + quality registry + Revision/QualityModel + ParseRevision + ParseResolution + ParseCodec + IsRemux; 5 ParserTests fixtures ported).
 
 ## Where to resume
 
@@ -159,6 +159,25 @@ Second slice of `QualityParser`. Resolution detection from a release name; mirro
 Group-priority order (R360p → R2160p) is preserved through a small lookup table; SubexpIndex is precomputed at package init so the hot path doesn't pay the lookup cost.
 
 3 tests / ~30 cases: ParseResolution table covering every spelling per resolution drawn from `should_parse_*_quality` fixtures (`[480p]`, `848x480`, `1280x720`, `1920x1080`, `1080i`, `FHD`, `1440p`, `3840x2160`); UHD / [4K] alternative-path cases; leftmost-match-wins behaviour with overlapping tags; `4k UHD` / `UHD 4k` / `4k HEVC` patterns inside the R2160p branch (not via the alternative path); empty / no-resolution → Unknown.
+
+#### 2.6 — ParseCodec + IsRemux ✅ shipped (2026-05-03)
+
+Third and fourth slices of `QualityParser`. Two small, RE2-clean regex helpers feeding the still-unported `ParseQualityName` decision matrix. Each is independently testable on the same shape as 2.4/2.5 (regex slice → tests-first → implementation); `ParseQualityName` itself remains deferred to a later commit once all the input regexes are ported.
+
+`quality.ParseCodec(name) Codec` — the 5-branch CodecRegex from `QualityParser.cs:56`. Returns `CodecUnknown` / `CodecX264` / `CodecH264` / `CodecXvidHD` / `CodecXvid` / `CodecDivX`. Each branch has a UNIQUE group name (the regex compiles directly under RE2 with no rewrite); branch ORDER pins XvidHD before Xvid so the longer token wins on leftmost match. Group-priority lookup table + precomputed SubexpIndex mirrors the ParseResolution shape.
+
+The C# code does not expose a public `ParseCodec` method — the regex is consumed inline at `QualityParser.cs:117` via `codecRegex.Groups["xvid"].Success` etc. Exposing a typed `Codec` value here keeps the regex slice testable on its own and gives `ParseQualityName` a single call site to consume when it lands.
+
+`quality.IsRemux(name) bool` — the two-arm RemuxRegex from `QualityParser.cs:66`. The C# original captures the matched substring into `(?<remux>...)` named groups on BOTH alternation arms; RE2 rejects duplicate named groups, so the Go port elides the names since the only consumer (`RemuxRegex.IsMatch(...)` at `QualityParser.cs:118`) checks match-success only and never reads the captured text. The two arms are preserved verbatim:
+
+- Branch A (prefix-anchored): `(?:[_. ]|\d{4}p-|\bHybrid-)(?:(?:BD|UHD)[-_. ]?)?Remux\b` — separator/`1080p-`/`Hybrid-` lead, optional `BD`/`UHD` qualifier, then `Remux` followed by a word boundary.
+- Branch B (suffix-anchored): `(?:(?:BD|UHD)[-_. ]?)?Remux[_. ]\d{4}p` — `Remux` followed by separator + 4-digit-`p` resolution.
+
+The anchored shape is what rejects false-positive release-group tokens like `[TMS-Remux]` and `[RandomRemux]` — the Remux substring is there but neither arm's anchoring conditions are met. Both false-positive shapes are pinned in the test table; they're real fixture rows from `should_parse_*` tests where the C# regex deliberately classifies the release as non-remux.
+
+3 tests total: ParseCodec table (~15 cases drawn from should_parse_sdtv / should_parse_hdtv720p / should_parse_webdl720p / should_parse_webdl1080p fixture rows + Hi10P brackets edge case) + alternation-order pin (XvidHD vs Xvid leftmost-match); IsRemux table (~17 cases drawn from should_parse_bluray1080p_remux_quality + should_parse_bluray2160p_remux_quality + the two false-positive release-group rows + plain non-remux negatives + branch-B suffix variants). Lint clean; full suite green on both engines under `-race -p 1`.
+
+What's deferred from QualityParser: `SourceRegex` (the big one — 9-branch alternation with `RegexOptions.IgnorePatternWhitespace` and `(?-i:WEB)` inline flag negation), `RawHDRegex`, `OtherSourceRegex`, `AnimeBlurayRegex`, `AnimeWebDlRegex`, `MPEG2Regex`, `HighDefPdtvRegex`, `QualityFinder.FindBySourceAndResolution`, and the per-source decision matrix at `ParseQualityName` itself. ParseSource is the next slice; everything else either ports cleanly alongside it or feeds into the final ParseQualityName commit.
 
 ### Phase 1 — Foundations ✅ done
 
