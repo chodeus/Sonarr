@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language registry + quality registry + Revision/QualityModel + ParseRevision + ParseResolution + ParseCodec + IsRemux; 5 ParserTests fixtures ported).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language registry + quality registry + Revision/QualityModel + ParseRevision + ParseResolution + ParseCodec + IsRemux + ParseSource; 5 ParserTests fixtures ported).
 
 ## Where to resume
 
@@ -178,6 +178,34 @@ The anchored shape is what rejects false-positive release-group tokens like `[TM
 3 tests total: ParseCodec table (~15 cases drawn from should_parse_sdtv / should_parse_hdtv720p / should_parse_webdl720p / should_parse_webdl1080p fixture rows + Hi10P brackets edge case) + alternation-order pin (XvidHD vs Xvid leftmost-match); IsRemux table (~17 cases drawn from should_parse_bluray1080p_remux_quality + should_parse_bluray2160p_remux_quality + the two false-positive release-group rows + plain non-remux negatives + branch-B suffix variants). Lint clean; full suite green on both engines under `-race -p 1`.
 
 What's deferred from QualityParser: `SourceRegex` (the big one — 9-branch alternation with `RegexOptions.IgnorePatternWhitespace` and `(?-i:WEB)` inline flag negation), `RawHDRegex`, `OtherSourceRegex`, `AnimeBlurayRegex`, `AnimeWebDlRegex`, `MPEG2Regex`, `HighDefPdtvRegex`, `QualityFinder.FindBySourceAndResolution`, and the per-source decision matrix at `ParseQualityName` itself. ParseSource is the next slice; everything else either ports cleanly alongside it or feeds into the final ParseQualityName commit.
+
+#### 2.7 — ParseSource ✅ shipped (2026-05-03)
+
+The big QualityParser regex slice. `quality.ParseSource(name) SourceTag` ports the 11-branch SourceRegex from `QualityParser.cs:17-30` plus the LastOrDefault selection semantic from the consumer at `:114-115`. Returns one of 12 SourceTag values (Unknown / Bluray / WebDL / WebRip / HDTV / BDRip / BRRip / DVD / DSR / PDTV / SDTV / TVRip).
+
+`SourceTag` is a parser-side classification distinct from the persisted `QualitySource` enum: multiple SourceTag values map to the same QualitySource (BDRip / BRRip / Bluray → QualitySource.Bluray; DSR / PDTV / SDTV / TVRip → QualitySource.Television). The decision matrix at `ParseQualityName` branches on the parser-side tag because each tag has different resolution-fallback rules.
+
+Three RE2 reformulations vs the C# literal documented inline in `parse_source.go`:
+
+1. `RegexOptions.IgnorePatternWhitespace` (REGEX-Q6) — Go's RE2 has no equivalent inline flag. The Go literal is written as a single line with all formatting whitespace removed; whitespace inside character classes is preserved verbatim because the C# `x` flag only ignores whitespace OUTSIDE character classes. One-time conversion; no behavioural change.
+
+2. `BD(?!$)` — RE2 has no negative lookahead. The bare `BD` is pulled into its own named group `blurayBD` so the post-match filter in ParseSource can reject matches where this group's captured text ends at the end of the input string. Functionally equivalent to the C# lookahead because the surrounding regex's trailing `(?:\b|$|[ .])` would otherwise admit the BD-at-end match.
+
+3. `(?:AMZN|NF|DP)[. -]WEB[. -](?!Rip)` — RE2 has no negative lookahead. The AMZN/NF/DP arm is split into its own named group `webdlamzn` so the post-match filter can reject matches where the next 3 bytes after the captured group spell `Rip` (case-insensitive). Both `webdl` and `webdlamzn` map to SourceTagWebDL.
+
+`(?-i:WEB)` is preserved verbatim — Go's RE2 supports inline flag scoping and negation (REGEX-Q7 verified by hand: `(?i)foo(?-i:WEB)$` matches `fooWEB` / `FOOWEB` but not `fooweb`). This keeps the case-sensitive WEB$ branch that distinguishes `Series.1080p.WEB` (matches → WebDL) from `Series.1080p.web` (no match → Unknown).
+
+LastOrDefault semantic preserved: ParseSource walks ALL matches via `FindAllStringSubmatchIndex`, applies the two post-match lookaround filters, and returns the SourceTag of the LAST surviving match. Mirrors the C# `sourceMatches.OfType<Match>().LastOrDefault()` so a release name with multiple source tokens (e.g. `BluRay.x264.HDTV`) resolves to the rightmost hit.
+
+3 tests covering: ParseSource table (~50 cases — every named group exercised plus the two RE2 lookaround filter cases plus underscore-form pre-normalise + multi-source last-wins + empty/no-source negatives), `(?-i:WEB)` case-sensitive flag pin (4 cases), and a fixture-spot-check against 17 verbatim QualityParserFixture rows pulled from should_parse_sdtv / should_parse_dvd / should_parse_webdl / should_parse_webrip / should_parse_bluray fixture methods. Lint clean; full suite green on both engines under `-race -p 1`.
+
+C# behavioural quirks preserved:
+
+- `WEB.Rip` (period-separated) does NOT match the WebRip group — the C# regex only matches `WebRip` / `Web-Rip` / `WEBMux` literals, not period-separated. Consequence: `AMZN.WEB.Rip-Grp` returns Unknown (AMZN/NF/DP-WEB arm filtered out by `(?!Rip)`, no other arm catches the `WEB.Rip` substring). Pinned by test.
+- `Web-Rip` arm is theoretically reachable but the resolution-WEB-arm `(?:720|1080|2160)p[-. ]WEB[-. ]` would consume `720p.Web-` first when both appear in the same name, leaving only `Rip.x264` for subsequent matching (which doesn't match anything). Pinned by test comment.
+- The `xvidvd` token in the dvd group is a real release-name fragment from `the.Series.1x13.circles.ws.xvidvd-tns` (a fixture row); preserved verbatim as a literal string in the alternation.
+
+What's deferred from QualityParser: `RawHDRegex`, `OtherSourceRegex`, `AnimeBlurayRegex` (uses lookbehind/lookahead — needs separate RE2 rewrite), `AnimeWebDlRegex`, `MPEG2Regex`, `HighDefPdtvRegex`, `QualityFinder.FindBySourceAndResolution`, and the per-source decision matrix at `ParseQualityName` itself. The remaining regexes are mostly small RE2-clean ports plus AnimeBlurayRegex which needs a lookbehind/lookahead rewrite. ParseQualityName lands as the final QualityParser commit once all the input regexes are ported.
 
 ### Phase 1 — Foundations ✅ done
 
