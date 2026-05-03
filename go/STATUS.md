@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 storage layer complete: 38 model repos, provider registry, full v188 PG fix; in-process event bus shipped, opens Phase 1 service-layer work).
+Last updated: 2026-05-03 (Phase 1 storage layer complete + non-storage Foundations underway: messaging bus + auth shipped; configfile loader + common helpers still owed before Phase 1 sign-off).
 
 ## Where to resume
 
@@ -297,6 +297,33 @@ Behavioural parity vs C#:
 What this package deliberately does NOT do: persistence, outbox, cross-process delivery, ProgressMessaging (`CommandUpdatedEvent` from inside an NLog target is owned by the command-bus port in Phase 3 once Commands has a real executor).
 
 10 tests covering: subscriber registration & dispatch, type isolation, ordering tiers, error/panic survival, async fan-out, global handler firing on every type, lifecycle shutdown gate, recursion limit, async drain on Wait, and concurrent publish safety. Lint clean.
+
+#### 1.x — Auth: hash + API key + cookie + Service ✅ shipped (2026-05-03)
+
+`internal/auth` ports the data-shape portion of `NzbDrone.Core.Authentication` (UserService) plus the API-key + cookie-name primitives that today live scattered across `NzbDrone.Common` / `Sonarr.Http`. Resolves AUTH-Q1 (lazy SHA-256→PBKDF2 upgrade), AUTH-Q6 (cookie name derivation), SEC-Q2 (constant-time compare), SEC-Q5 (256-bit API key entropy).
+
+Hash format frozen at C# parity (`UserService.cs:142-150`):
+
+- PBKDF2-HMAC-SHA512, 10,000 iterations, 16-byte random salt, 32-byte output.
+- Salt + Hash both base64-encoded (RFC 4648 standard alphabet); Iterations stored as int.
+- Maps directly onto the existing `users.User.{Salt, Iterations, Password}` columns shipped earlier this session.
+- 10k iterations is far below modern guidance (NIST 2023+: 600k for SHA-512); kept frozen for byte-equivalence with existing v3/v4/v5 user DBs. Bumping it is post-cutover work using the same lazy-upgrade pattern the SHA-256→PBKDF2 path already uses.
+
+Surface:
+
+- `auth.HashPassword(pw) (Hash, error)` — fresh salt + PBKDF2 hash.
+- `auth.VerifyPassword(stored, pw) bool` — constant-time string compare on the base64 hashes (the C# tree uses `==`, which is *not* constant-time; this fixes SEC-Q2 on the password side).
+- `auth.SHA256Hex(input) string` — UTF-8 → SHA-256 → lowercase hex, matches `NzbDrone.Core.Hashing.SHA256Hash(string)` byte-for-byte. Used only on the legacy upgrade path.
+- `auth.GenerateAPIKey() (string, error)` — 32 bytes from `crypto/rand`, hex-encoded to 64 chars (improves over C#'s `Guid.NewGuid().ToString().Replace("-","")` which yields only 122 bits in 32 chars). Existing C# 32-char keys keep validating because comparisons are constant-time over whatever the stored value is.
+- `auth.EqualAPIKey(a, b) bool` — `crypto/subtle.ConstantTimeCompare`, with a length-safe shortcut on empty strings.
+- `auth.DeriveCookieName(instanceName) string` — NFKD-strip via `golang.org/x/text/unicode/norm` + alphanumeric-only filter + `"Auth"` suffix. Matches `Sonarr.Http/Authentication/AuthenticationBuilderExtensions.cs:33-43`. Empty / all-stripped names fall back to `"SonarrAuth"`.
+- `auth.NewService(usersRepo).Add / Upsert / Authenticate / FindByIdentifier` — the auth service that wraps `internal/users.Repo`. Authenticate's lazy-upgrade path is exact C# parity: a row with `Salt = NULL` is treated as a legacy SHA-256 row; on successful login it's rehashed with PBKDF2 and persisted before returning. ErrInvalidCredentials is uniform across "no such user" / "wrong password" / "empty input" so the account-existence side channel stays closed.
+
+Identifier (the GUID stored on the cookie path) is generated as 16 bytes from `crypto/rand` formatted in the C# `Guid.ToString("D")` shape (8-4-4-4-12 lowercase hex with version=4, RFC-4122 variant bits). Same entropy as `Guid.NewGuid()`, indistinguishable from C# output for diagnostics.
+
+What this package deliberately does NOT do: HTTP cookie issuance, Forms/External/None scheme dispatch, ApiKeyAuthenticationHandler middleware, TLS settings (SEC-Q12). All of that is HTTP-server glue and lands in Phase 5 once the HTTP surface exists.
+
+12 tests covering: hash round-trip, fresh-salt-each-time, tampered-hash rejection, SHA-256 parity vector, API key length + uniqueness + length-safe constant-time compare, cookie name derivation across diacritics / fallback / mixed input, full Service flow on both engines (Add/Authenticate/FindByIdentifier with case-insensitive username), uniform-failure on bad credentials, lazy SHA-256 upgrade with persistence + post-upgrade verify, and the C#-parity "Upsert always rehashes" behaviour. Lint clean. `golang.org/x/text` promoted from indirect to direct.
 
 ### Phase 0 — Bootstrap ✅ done
 
