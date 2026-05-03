@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE end-to-end: ParseLanguages public entry + 28 .Contains arms + slice a/b regex wiring + DistinctBy de-dup + German DL/ML post-processing + 5 subtitle entry points (ParseSubtitleLanguage / ParseLanguageTags / ParseBasicSubtitle / ParseSubtitleLanguageInformation / UpdateTitleAndCopyFromTitle) + SubtitleTitleInfo model + 3 subtitle regexes).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser slice 2.11a shipped: ParserCommon helpers (WebsitePrefix with Naruto-Kun lookbehind / WebsitePostfix / CleanTorrentSuffix) + FileExtensions.RemoveFileExtension wiring through MediaFileExtensions).
 
 ## Where to resume
 
@@ -389,6 +389,32 @@ What's deferred:
 - The fixture has ~218 cases across 33 `should_parse_*` methods; the Go port covers a representative subset (~95 across all three slices). A future drift-prevention pass can pad out to full fixture coverage if needed, but every named branch of every regex and every .Contains arm is exercised at least once today.
 
 Phase 2 status after 2.10: NzbDrone.Core.Parser.LanguageParser COMPLETE. NzbDrone.Core.Parser.QualityParser COMPLETE. Remaining Phase 2 work per the strategic plan: ReleaseGroupParser (6 regexes incl. backreferences + ParserCommon.PreSubstitutionRegex helper with 14 Chinese-anime patterns + negative lookaround), ParseTitle proper (the 104-element ReportTitleRegex[] array — the heaviest single chunk).
+
+#### 2.11a — ParserCommon helpers + RemoveFileExtension ✅ shipped (2026-05-03)
+
+First slice of the ReleaseGroupParser port. Lays the foundation by porting `NzbDrone.Core.Parser.ParserCommon` (three regex helpers used across the parser surface, excluding the 14-pattern PreSubstitutionRegex array which is its own slice) plus `NzbDrone.Core.MediaFiles.FileExtensions.RemoveFileExtension` (which ParseReleaseGroup invokes before its main pipeline).
+
+Public surface added in `internal/parser/parser_common.go`:
+
+- `parser.ApplyWebsitePrefix(title) string` — strips a website-name prefix from the start of title. Mirrors `WebsitePrefixRegex.Replace(title, "")` at `ReleaseGroupParser.cs:40` with the C# `(?<!Naruto-Kun\.)` negative lookbehind enforced post-match. The domain stem is captured into a named `stem` group and the function returns title unchanged if the stem matches `Naruto-Kun` (case-insensitive) — the C# regex's anti-false-positive against anime release naming.
+- `parser.ApplyWebsitePostfix(title) string` — strips a `[www.example.com]` suffix at the end of title. RE2-clean. Currently unused by the production C# pipeline but exported for future use and to pin its behaviour under test.
+- `parser.ApplyCleanTorrentSuffix(title) string` — strips a trailing `[ettv]` / `[rartv]` / `[rarbg]` / `[cttv]` / `[publichd]` torrent-tracker suffix. Mirrors `CleanTorrentSuffixRegex.Replace` at `:41`. Note `[eztv]` is NOT in the C# alternation — preserved verbatim (likely intentional given `[eztv]` is widely used and stripping it could affect release-group detection downstream).
+- `parser.RemoveFileExtension(title) string` — strips a 2-4 char extension from the end of title IF the extension is in `MediaFileExtensions` or `usenetExtensions` (`.par2` / `.nzb`). Non-media extensions like `.com` / `.org` are preserved (the C# code uses `Regex.Replace` with a MatchEvaluator that returns the original match unchanged when the extension isn't recognised; the Go port replicates this via `ReplaceAllStringFunc`).
+
+The C# `WebsitePrefixRegex` lookbehind is the only RE2 reformulation in this slice. The strategy mirrors the established pattern from QualityParser slices 2.7 (BD-at-end post-filter) and 2.8 (IsAnimeBluray two-arm split): capture the relevant span into a named group, then post-filter byte-comparison against the literal token. Because the lookbehind sits at a fixed position relative to the named group's end (immediately after the literal `.`), the post-filter check reduces to a single `strings.EqualFold(stem, "Naruto-Kun")` — no scanning required.
+
+Tests: 4 functions / ~30 cases in `parser_common_test.go` (black-box `package parser_test`):
+
+- `TestApplyWebsitePrefix` — 6 cases: standard torrent-site prefix stripped, bracketed `www.` prefix, plain double-separator form, Naruto-Kun preserved (the lookbehind), mid-string website-shaped tokens preserved (regex is `^`-anchored), no-prefix unchanged.
+- `TestApplyCleanTorrentSuffix` — 8 cases: each of the 5 alternation members (ettv / rartv / rarbg / cttv / publichd) plus the verified-NOT-in-list `eztv` case, plus mid-string preservation, plus other-tracker preservation, plus no-suffix unchanged.
+- `TestApplyWebsitePostfix` — 5 cases including punycode TLD path.
+- `TestRemoveFileExtension` — 10 cases: 3 media extensions stripped, 2 usenet extensions stripped, 2 non-media extensions preserved, case-insensitive match, no-extension unchanged, empty input.
+
+Lint clean (`golangci-lint run ./...` 0 issues); full suite green on both engines under `-race -p 1`.
+
+What's deferred:
+
+- The 14-pattern `PreSubstitutionRegex` array at `ParserCommon.cs:9-52` — its own slice (2.11c). Most patterns are Chinese-anime-specific normalisations with positive/negative lookarounds (`(?=[^\]]*?[一-鿌])` / `(?![a-z])` / `(?<!\d+)`); each requires individual RE2 rewrite. Deferring keeps the ReleaseGroupParser core (slice 2.11b) testable against the bulk of fixture rows that don't trigger Chinese-anime substitutions.
 
 ### Phase 1 — Foundations ✅ done
 
