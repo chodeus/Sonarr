@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — parser title normalisers + language/Iso registry + quality registry shipped; 3 ParserTests fixtures ported).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language registry + quality registry + Revision/QualityModel + JSON wire-format parity; 3 ParserTests fixtures ported).
 
 ## Where to resume
 
@@ -105,7 +105,28 @@ Public surface:
 
 Tests: 5 functions covering FindByID (incl. retired Id 11 returns false), All count + ordering pin, frozen-Id pin, Source/Resolution sanity. Lint clean.
 
-What's deferred: `Revision` (proper/repack metadata, lives in C# as a sibling), `QualityModel` (Quality + Revision + QualityDetectionSource), `QualityModelComparer`, and `QualityParser` itself (15 regexes, 522-line fixture — its own commit). The `QualityDefinition` repo (per-user min/max/preferred MB-per-minute thresholds) shipped earlier in Phase 1 as part of the storage layer.
+What's deferred: `QualityModelComparer` (the runtime comparator that reads per-user QualityDefinition rows from the DB), and `QualityParser` itself (15 regexes, 522-line fixture — its own commit). The `QualityDefinition` repo (per-user min/max/preferred MB-per-minute thresholds) shipped earlier in Phase 1 as part of the storage layer.
+
+#### 2.3 — Revision + QualityModel + persisted JSON wire format ✅ shipped (2026-05-03)
+
+Companion to the registry: the persistable composite that wraps a Quality with its proper/repack metadata.
+
+- `quality.Revision` — `Version` (proper iteration, defaults to 1) + `Real` (REAL.PROPER count) + `IsRepack` flag. `Compare` ranks Real first then Version (matches `Revision.cs:33-56`); `Equal` is structural over `(Version, Real)` only — IsRepack is intentionally NOT part of equality, mirroring the C# behaviour. `String` emits `v<Version>` plus optional ` Real:<Real>` suffix.
+- `quality.DetectionSource` int enum: Unknown / Name / Extension / MediaInfo. Used to track HOW a quality call was derived during parsing (filename inference vs file-extension lookup vs MediaInfo probe). Persisted-form is `[JsonIgnore]` so these fields don't round-trip through serialisation.
+- `quality.Model` — Quality + Revision + 3 DetectionSource tags. `Compare` ranks via `QualityWeight` (the static C# `DefaultQualityDefinitions.Weight`) first, falling through to Revision. `Equal` compares Quality + Revision only.
+- `quality.QualityWeight(q) int` — static weights from `Quality.DefaultQualityDefinitions` at `Quality.cs:158-179`. Used by `Model.Compare`. Several qualities intentionally tie (WEBRip720p and WEBDL720p both Weight=10) so the upgrade path doesn't keep flipping between visually-equivalent sources.
+
+JSON wire-format parity (per `analysis/embedded-docs/catalogue.md` § QualityModel):
+
+```
+{"quality": 7, "revision": {"version":1,"real":0,"isRepack":false}}
+```
+
+Note `quality` is the BARE int Id, not the full Quality object — the C# tree applies a per-container `QualityIntConverter` to reduce Quality to its Id on serialise. The Go port replicates this via custom `MarshalJSON` / `UnmarshalJSON` on `Model` that go through the registry. Unknown legacy Ids (e.g. 11, the retired `HDTV480p`) deserialise to `Quality.Unknown` rather than erroring — preserves byte-equivalence on legacy rows.
+
+REST-shape full-form Quality JSON is partially covered: the struct has camelCase tags for `id` / `name` / `source` / `resolution`, but `source` currently marshals as the int enum value rather than the C# `JsonStringEnumConverter` camelCase string ("television" etc.). Phase 5 swaps the marshaller when REST endpoints land. Phase 2 storage path uses int-reduction so this gap doesn't block.
+
+10 tests: Revision default + Compare + Equal-ignores-IsRepack + String table; Model default + String + Compare + Equal-ignores-DetectionSource; persisted JSON shape pin (`{"quality":7,...}`); JSON round-trip with DetectionSource fields hidden; legacy unknown-Id falls back to Unknown; QualityWeight pin.
 
 ### Phase 1 — Foundations ✅ done
 
