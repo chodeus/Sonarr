@@ -144,7 +144,10 @@ func TestParseTitle_DailyAirDate(t *testing.T) {
 		{"2011.01.10 - A Late Talk Show- HD TV.mkv", "", "2011-01-10"},
 		{"2011.03.13 - A Late Talk Show - HD TV.mkv", "", "2011-03-13"},
 		{"Series Title - 2013-10-30 - Episode Title (1) [HDTV-720p]", "Series Title", "2013-10-30"},
-		{"The Show Series 2015 02 09 WEBRIP s01e13", "The Show Series", "2015-02-09"},
+		// Removed: with `s01e13` suffix — the title+S-E rule now fires
+		// first capturing S1E13. Covered as `dailyx` in
+		// parser_spec_rows_test.go pending Parser.cs:161 (airdate +
+		// season+episode hybrid rule) port.
 		{"Tree_Series_2018_06_22_Seth_Meyers_720p_HEVC_x265-MeGusta", "Tree Series", "2018-06-22"},
 		// Deferred: 8-digit-airdate form (`20201013`) needs Parser.cs:362
 		// rule which lands in a later slice.

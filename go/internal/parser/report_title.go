@@ -47,31 +47,6 @@ type rgRule struct {
 // `E` / `x` separators around the digit runs) already enforces the
 // "exactly N digits at this position" constraint.
 var reportTitleRules = []rgRule{
-	// `Parser.cs:333` — Episodes with airdate (`2018.04.28` /
-	// `2014-06-02` / `2014 04 28`). Listed before the
-	// season/episode rules so daily forms with year-shaped titles
-	// (e.g. `Series 2010 04 18`) match the daily pattern rather
-	// than the season+episode pattern.
-	//
-	// C# original:
-	//
-	//	^(?<title>.+?)?\W*(?<airyear>\d{4})[-_. ]+(?<airmonth>[0-1][0-9])[-_. ]+(?<airday>[0-3][0-9])(?![-_. ]+[0-3][0-9])
-	//
-	// RE2 reformulation: trailing `(?![-_. ]+[0-3][0-9])` lookahead
-	// dropped — it guards against "two consecutive date-shaped
-	// fragments" (e.g. `2018.04.28.05.30` where `28.05` might re-trigger
-	// the airmonth/airday). The Go port currently accepts these
-	// edge cases; in practice no fixture row exercises them. Document
-	// here as a known minor difference; the fix when needed is a
-	// post-match check that the input doesn't continue with
-	// `[-_. ]+\d{2}`.
-	{
-		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?)?\W*(?P<airyear>\d{4})[-_. ]+(?P<airmonth>[0-1][0-9])[-_. ]+(?P<airday>[0-3][0-9])`,
-		),
-		Build: buildDailyAirdate,
-	},
-
 	// `Parser.cs:112-114` — Anime - [SubGroup] Title Absolute Episode
 	// Number. Matches the most common anime release shape:
 	// `[SubGroup] Title <separator> <absolute_episode> ... [hash]`.
@@ -108,16 +83,20 @@ var reportTitleRules = []rgRule{
 	// `^(?:S?(?<season>(?<!\d+)(?:\d{1,2}|\d{4})(?!\d+))(?:(?:[-_]|[ex]){1,2}(?<episode>\d{2,3}(?!\d+))){2,})`
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?:S?(?P<season>\d{4}|\d{1,2})(?:(?:[-_]|[ex]){1,2}\d{2,3}){2,})`,
+			`(?i)^(?:S?(?P<season>\d{4}|\d{1,2})(?:(?:(?:[-_]|[ex]){1,2}|[-_. ]?S\d{1,2}E)\d{2,3}){2,})`,
 		),
 		Build: buildNoTitleMultiEpisode,
 	},
 
 	// `Parser.cs:53` — Episodes without a title, Single (`S01E05`, `1x05`).
 	// `^(?:S?(?<season>(?<!\d+)(?:\d{1,2}|\d{4})(?!\d+))(?:(?:[-_ ]?[ex])(?<episode>\d{2,3}(?!\d+))))`
+	//
+	// Episode `\d{1,3}` (vs C#'s `\d{2,3}`) so the bare `1x1` form
+	// matches — `Parser.cs:282` has a separate single-digit-episode
+	// rule the Go port collapses into this one.
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?:S?(?P<season>\d{4}|\d{1,2})(?:[-_ ]?[ex]\d{2,3}))`,
+			`(?i)^(?:S?(?P<season>\d{4}|\d{1,2})(?:[-_ ]?[ex]\d{1,3}))`,
 		),
 		Build: buildNoTitleEpisode,
 	},
@@ -168,11 +147,40 @@ var reportTitleRules = []rgRule{
 	// RE2 rejects duplicates so the duplicate-name aliases are dropped
 	// and episode tokens are merged via a separate `findAllEpisodes`
 	// scan over the matched span.
+	// `Parser.cs:117` — Multi-episode Repeated (`S01E05 - S01E06`).
+	// Listed BEFORE the title+S-E rule so multi-SxxExx forms with 2+
+	// repetitions (e.g. `Series Title - S07E22 - S07E23` or
+	// `S03E01.S03E02`) win over the single-SxxExx rule's prefix.
+	//
+	// The C# `(?:e|[-_. ]e){1,2}` separator-aware E matcher is
+	// simplified to `E\d{2,3}` here — the `(S\d{1,2})?E\d{2,3}` shape
+	// is what matters for the multi-S form.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?)?(?:[-_. \W]+S(?P<season>\d{4}|\d{1,2})(?:E\d{2,3})+){2,}`,
+		),
+		Build: buildTitleSeasonEpisode,
+	},
+
+	// `Parser.cs:188` — Single SxxExx (or repeating `EXX` after one S):
 	{
 		Re: regexp.MustCompile(
 			`(?i)^(?P<title>.+?)(?:[-_. ]+S(?P<season>\d{4}|\d{1,2}))(?:(?:[-_. ]+E\d{2,3})+|(?:E\d{2,3}(?:[-_. ]?(?:E?\d{2,3}))*))`,
 		),
 		Build: buildTitleSeasonEpisode,
+	},
+
+	// `Parser.cs:333` — Episodes with airdate (`2018.04.28` /
+	// `2014-06-02` / `2014 04 28`). Listed AFTER the title+S-E + Nx
+	// rules so titles like `Top Series - 06x11 - 2005.08.07` match
+	// the Nx-episode rule. Listed BEFORE the 3/4-digit shortcuts so
+	// titles like `A.Late.Talk.Show.2010.10.11` match the airdate
+	// rather than being misclassified as season=20 episode=10.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?)?\W*(?P<airyear>\d{4})[-_. ]+(?P<airmonth>[0-1][0-9])[-_. ]+(?P<airday>[0-3][0-9])`,
+		),
+		Build: buildDailyAirdate,
 	},
 
 	// `Parser.cs:224`-style — Mini-Series with year in title +
@@ -269,18 +277,28 @@ var reportTitleRules = []rgRule{
 // `Captures` collection's per-iteration values don't transfer
 // directly). See QualityParser slice 2.10c for the equivalent
 // per-pattern fixup.
-var episodeNumberRe = regexp.MustCompile(`(?i)[ex](\d{2,3})|(?:[-_]\s?)(\d{2,3})`)
+var episodeNumberRe = regexp.MustCompile(`(?i)[ex](\d{1,3})|(?:[-_]\s?)(\d{1,3})`)
 
 // findAllEpisodes scans a season+episode region for every episode
 // digit run, returning the integer values in match order. Mirrors the
 // C# `match.Groups["episode"].Captures` iteration in
 // `Parser.ParseMatchCollection` at `:944`.
+//
+// Range expansion: mirrors the C# `Enumerable.Range(first, count)`
+// path at `:953-959`. If two or more episodes were captured, the
+// returned slice is `first..last` (inclusive), filling in any gaps
+// between the first and last captured numbers. So `S01E01-E03` (which
+// captures [1, 3]) returns [1, 2, 3]; `S01E91-E100` returns
+// [91, 92, ..., 100]; `S01E04E05` (already contiguous, captures
+// [4, 5]) returns [4, 5] unchanged. Mirrors the C# behaviour where
+// the regex's per-match captures provide the endpoints and the post-
+// processor fills the interior.
 func findAllEpisodes(region string) []int {
 	matches := episodeNumberRe.FindAllStringSubmatch(region, -1)
 	if len(matches) == 0 {
 		return nil
 	}
-	out := make([]int, 0, len(matches))
+	captured := make([]int, 0, len(matches))
 	for _, m := range matches {
 		var raw string
 		switch {
@@ -292,10 +310,24 @@ func findAllEpisodes(region string) []int {
 			continue
 		}
 		if n, ok := ParseNumber(raw); ok {
-			out = append(out, n)
+			captured = append(captured, n)
 		}
 	}
-	return out
+	if len(captured) == 0 {
+		return nil
+	}
+	if len(captured) == 1 {
+		return captured
+	}
+	first, last := captured[0], captured[len(captured)-1]
+	if first > last {
+		return captured
+	}
+	expanded := make([]int, 0, last-first+1)
+	for n := first; n <= last; n++ {
+		expanded = append(expanded, n)
+	}
+	return expanded
 }
 
 // extractGroupSpan returns (text, end) of the named group, or
@@ -315,23 +347,28 @@ func extractGroupSpan(re *regexp.Regexp, m []int, name, title string) (string, i
 }
 
 func buildTitleSeasonEpisode(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
-	seasonText, seasonEnd := extractGroupSpan(re, m, "season", title)
+	seasonText, _ := extractGroupSpan(re, m, "season", title)
 	season, ok := ParseNumber(seasonText)
 	if !ok {
 		return nil
 	}
-	if seasonEnd < 0 {
-		return nil
-	}
 
-	titleText, _ := extractGroupSpan(re, m, "title", title)
+	titleText, titleEnd := extractGroupSpan(re, m, "title", title)
 	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
 	titleText = strings.TrimSpace(titleText)
+	if titleEnd < 0 {
+		titleEnd = m[0]
+	}
 
-	// The full match span is [m[0], m[1]); episodes live AFTER the
-	// season group's end. Re-scan the remainder of the match for
-	// every `E<digits>` / `<sep><digits>` token.
-	episodeRegion := title[seasonEnd:m[1]]
+	// Scan the post-title portion of the match for every `E<digits>`
+	// / `<sep><digits>` token. This covers both the simple
+	// `S01E05` form and the `S03E01.S03E02` repeated form (where the
+	// regex's `{2,}` quantifier extends m[1] past multiple SxxExx
+	// segments). Scanning from titleEnd (rather than seasonEnd)
+	// avoids missing episode tokens in the FIRST `SxxExx` when the
+	// regex captured `season` from a LATER iteration (Go RE2 retains
+	// only the last capture per named group).
+	episodeRegion := title[titleEnd:m[1]]
 	episodes := findAllEpisodes(episodeRegion)
 
 	info := NewParsedEpisodeInfo()
