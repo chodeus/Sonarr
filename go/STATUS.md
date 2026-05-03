@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.8 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`) — 200 fixture rows ported from SingleEpisode/MultiEpisode/Daily/MiniSeries/AbsoluteEpisode parser fixtures, with 130 currently-passing rows pinned and 70 xfail rows tracking the gap. Each new rule slice now produces a clear delta via REGRESSION (test-fail) and NEWLY-PASSING (test-log) summaries. Pre-existing pg_spike flake also fixed.).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.9 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.9 adds three rule clusters (bracketed `[Sxx]` separator, Spanish `Cap.NN`, 6/8-digit airdate); spec at end of 2.12.9 is **pass=144 xfail=56 regression=0** out of 200.).
 
 ## Where to resume
 
@@ -802,6 +802,34 @@ What stays xfail (70 rows):
 Each subsequent slice now has a single source of truth for "did I gain or lose coverage". Regression detection is automatic.
 
 Lint clean (`golangci-lint run ./...` 0 issues — gofmt + misspell + unused-fn fixes applied); full `-race -p 1` suite green on both engines.
+
+#### 2.12.9 — Bracketed-S separator + Spanish Cap.NN + 6/8-digit airdate ✅ shipped (2026-05-04)
+
+Three small focused rule clusters drawn from the 2.12.8 "what stays xfail" list. Each is independently small but the bulk-spec dispatcher made it clean to layer them in one session: every cluster lands with a `NEWLY-PASSING` log line per row it flips and a 0 regression count.
+
+**Spec delta**: pass=130 → 144 (+14); xfail=70 → 56 (-14); regression=0 throughout.
+
+What ships:
+
+1. **Bracketed `[S01E…]` separator extension** (+2 rows). The single-S-E rule's pre-S separator class `[-_. ]+` widened to `[-_. \[]+` so `Title [S01E05]` and `Title (2010) - [S01E01-02-03]` shapes match. The C# regex's `\W+` separator covers `[` implicitly; the Go port keeps the narrower class plus an explicit `[` to avoid eating other punctuation that would let titles ending in `(YYYY)` collide with subsequent groups. Multi-S-E rule already used `[-_. \W]+` so no change there.
+
+2. **Spanish tracker `Cap.NN` rule** (+9 rows). Ports `Parser.cs:329`. Two title shapes both anchored on the `[Cap` literal: `<Title> - Temporada N [<meta>][Cap.NN]…` (with Temporada keyword) and `<Title> [<meta>][Cap.NN]…` (no Temporada — just any bracketed metadata group). The 3-digit code after `Cap.` decomposes into 1-2 digit season + 2-digit episode via greedy `\d{1,2}` followed by `(?:[1-9][0-9]|[0][1-9])`; RE2's leftmost-first reaches the same season/episode split as the C# greedy-with-backtrack. Two RE2-incompatible lookbehinds (`(?<!\d+)` on season, `(?<!e|x)` on episode) dropped — the surrounding `[Cap[-_. ]+\d{1,2}<2-digit-episode>]` shape constrains both adequately on real fixture inputs. Reuses `buildTitleNxEpisode` for the Build (same shape: title + season + single episode).
+
+3. **6-digit YYMMDD airdate preprocessor + 8-digit YYYYMMDD rule** (+3 rows).
+   - `applySixDigitAirDate` (in `pre_substitution.go`) ports `Parser.cs:527 SixDigitAirDateRegex` plus the consumer at `Parser.cs:720-733`. Rewrites a separator-bracketed `_YYMMDD_` / `.YYMMDD.` / `-YYMMDD-` substring to `<sep>20YY.MM.DD<sep>` so the standard 4-2-2 daily airdate rule can fire. Wired into ParseTitle AFTER `applyPreSubstitution` and BEFORE rule-walking — mirrors the C# pipeline ordering. The C# year-only guard (`airMonth != "00" || airDay != "00"`) preserved verbatim. RE2 has no lookbehind/lookahead — both anchors `(?<=[_.-])` and `(?=[_.-])` reformulated as consuming character classes that the rewrite re-emits, byte-equivalent for the first match (which is the only one C# rewrites — `Match` not `Matches`).
+   - 8-digit ReportTitleRegex rule ports `Parser.cs:362`. Pattern `^(?P<title>.+?[^\d])?\W*(?P<airyear>\d{4})(?P<airmonth>[0-1][0-9])(?P<airday>[0-3][0-9])(?:\W|$)`. `(?<!\d+)` on airyear replaced by constraining the optional title group's last char to non-digit (`(?P<title>.+?[^\d])?` — same idiom as title+Nx and the 3/4-digit shortcut rules); `(?!\d+)` after airday becomes the explicit `(?:\W|$)` end-anchor. Listed AFTER the standard 4-2-2 airdate rule so titles already carrying `YYYY.MM.DD` separators win first; listed BEFORE the 3/4-digit shortcuts so an 8-digit run isn't mis-read as a season+episode-shortcut prefix. Reuses `buildDailyAirdate` for the Build.
+
+What stays xfail (56 rows after this slice):
+
+- **Anime title-without-subgroup** (~20 rows xfail). `<title> - <abs>` shape, no `[Group]` brackets. Parser.cs:130-style rule. Likely needs reorder analyses since anime + non-anime title rules overlap.
+- **Reversed-date forms** (~6 rows). `04.28.2018` / `28.04.2018`. Parser.cs:354 / :358 use `<ambiguousairmonth>` / `<ambiguousairday>` named groups feeding `ParseMatchCollection`'s ambiguous-date logic at `Parser.cs:1082-1095`.
+- **No-title airdate at start of string** (~3 rows). `2018-11-14.1080.all.mp4` / `20161024- Exotic Payback…`. Parser.cs:33 rule needs to fire BEFORE the no-title 4-digit shortcut so `2018` isn't grabbed as season=20 episode=18.
+- **Hybrid airdate+season+episode** (1 row). `Parser.cs:161` + consumer's airdate-preference logic — routes `<title> <airdate> sxxexx` titles through the daily branch.
+- **`S<n>-E<nn>` and `Season N Episode M` forms** (~5 rows).
+- **3-digit forms with year-shape title** (~2 rows). `series.2009.416` — needs lookbehind-equivalent that allows title to extend past digit run.
+- Various assorted forms each requiring a dedicated C# rule port — see `parser_spec_rows_test.go` for the per-row xfail comments.
+
+Lint clean (`golangci-lint run ./...` 0 issues); full `-race -p 1` suite green on both engines (`SONARR_PG_DSN=postgres:///sonarr_spike`).
 
 ### Phase 1 — Foundations ✅ done
 
