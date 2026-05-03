@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.6 shipped: data model + helpers + ParseTitle pipeline shell + 8 ReportTitleRegex rules (canonical daily airdate / anime [SubGroup] absolute / no-title multi+single episode / title + Nx-episode / title + S-E episode / Title.103 3-digit shortcut / Title.1013 4-digit shortcut). 4-digit season `S1936E18` form supported. ~114 of 122 ReportTitleRegex patterns plus the downstream pipeline stages still pending. Pre-existing `spikes/postgres/TestConcurrentReadersSingleWriter` flake under full-suite PG socket pressure also fixed — full `-race -p 1` suite now clean without the standalone-pass workaround).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.7 shipped: data model + helpers + ParseTitle pipeline shell with PreSubstitutionRegex wired in + 10 ReportTitleRegex rules (daily airdate / anime [SubGroup] absolute / no-title multi+single / title + Nx-episode / title + S-E / mini-series-year+E / mini-series Part-N / Title.103 3-digit / Title.1013 4-digit). Korean F1RST/NEXT fixture passes via the pre-substitution wire-up. ~112 of 122 ReportTitleRegex patterns plus the downstream pipeline stages still pending. Pre-existing pg_spike flake also fixed — full `-race -p 1` suite clean).
 
 ## Where to resume
 
@@ -726,6 +726,27 @@ Tests: 1 new function / 4 cases in `parse_title_test.go`:
 - `TestParseTitle_3DigitEpisode` — 3 cases for the 3-digit form (`103`, `113`, `525`) + 1 case for the 4-digit form (`1013`). All pass; the year-embedded `series.2009.416.hdtv-lol` case from the C# fixture is documented as deferred in the rule's comment block.
 
 Lint clean (`golangci-lint run ./...` 0 issues — gofmt + reorder issues resolved); full suite green on both engines.
+
+#### 2.12.7 — PreSubstitution pipeline wire-up + mini-series rules ✅ shipped (2026-05-03)
+
+Eighth slice of the ParseTitle port. Three additions:
+
+1. **PreSubstitution wired into ParseTitle.** ParseTitle now applies `applyPreSubstitution(title)` after extension-strip and before the ReportTitleRegex walk. Mirrors how the C# pipeline applies the same rules implicitly via SimplifyTitle. Unlocks the 4 `should_parse_korean_series_episode` fixture rows (F1RST/NEXT shape) for free since rule 1 of `preSubstitutionRules` reshapes `<Title>.E<NN>.<airdate6>.<rest>-<F1RST|NEXT>` into `<Title>.S01E<NN>.<rest>-<F1RST|NEXT>`.
+
+2. **Mini-series Part-N rule** (`Parser.cs:228`-style). Pattern: `^(?P<title>.+?)[-_. \W]+(?:Part|Pt)[-_. ]?(?P<episode>\d{1,2})(?:\W|$)`. Maps `The.Big.Series.Leader.Part.2.DSR.XviD-SYS` → S1E2 with IsMiniSeries=true. Listed before the 3/4-digit shortcuts so a `Part 01` form doesn't get misclassified.
+
+3. **Mini-series with year + E<NN> rule** (`Parser.cs:224`-style adapted). Pattern: `^(?P<title>.+?[-_. ]\d{4})[-_. ]+E(?P<episode>\d{1,3})(?:[-_. ]|$)`. Maps `Series Show.2016.E04.Power.720p.WEB-DL.DD5.1.H.264-MARS` → S1E4 with IsMiniSeries=true and SeriesTitle="Series Show 2016". Listed before the 3/4-digit shortcuts so `2016.E04` isn't misread as season=20 episode=16 (the C# uses `(?<!\d+)` lookbehind on season; the Go port uses positional ordering instead).
+
+`buildMiniSeriesPart` and `buildMiniSeriesYearE` set `SeasonNumber=1`, `IsMiniSeries=true`, and `EpisodeNumbers=[<n>]`. Mirrors `Parser.cs:1068-1073`'s mini-series classification path in ParseMatchCollection.
+
+Tests: 2 new functions / 7 cases in `parse_title_test.go`:
+
+- `TestParseTitle_MiniSeries` — 3 cases (Part-N + year+E forms).
+- `TestParseTitle_KoreanF1RST_NEXT` — 4 cases from `should_parse_korean_series_episode`.
+
+What this still doesn't handle: `kill-roy-was-here-e07-720p` (no Part keyword, dash-separated `e07` with title containing a year-shaped substring). Deferred to a later slice.
+
+Lint clean; full suite green on both engines.
 
 ### Phase 1 — Foundations ✅ done
 
