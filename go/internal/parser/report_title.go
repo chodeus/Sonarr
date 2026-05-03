@@ -127,14 +127,24 @@ var reportTitleRules = []rgRule{
 	// is not shadowed by the no-title rule's `[ex]` matcher when a
 	// title is present. Handles 1-3 digit episodes including the
 	// `1x1` single-digit-episode form.
+	//
+	// `(?P<title>.+?[^\d])` — title's last char is constrained to
+	// non-digit. RE2 stand-in for the C# `(?<!\d+)` lookbehind on the
+	// season group: without it, lazy `.+?` would extend past digit
+	// runs in the input (e.g. `...DDP5.1 x264 monkee` would
+	// mis-classify `DDP5` as title and `1 x264` as `Nx<NN>` with
+	// season=1 and episode=264). Forcing the title to end on a
+	// non-digit char prevents this — the only valid match position
+	// is now where a non-digit chars terminates the title.
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?)[-_. ]+(?P<season>\d{1,2})[-_ ]?[ex](?P<episode>\d{1,3})`,
+			`(?i)^(?P<title>.+?[^\d])[-_. ]+(?P<season>\d{1,2})[-_ ]?[ex](?P<episode>\d{1,3})`,
 		),
 		Build: buildTitleNxEpisode,
 	},
 
-	// `Parser.cs:188` — Episodes with a title, single + multi.
+	// `Parser.cs:188` + `:192` (4-digit season) — Episodes with a title,
+	// single + multi episode forms.
 	// `^(?<title>.+?)(?:[-_. ]+S(?<season>(?<!\d+)\d{1,2}(?!\d+))
 	//   (?:(?:(?:[-_. ]+E(?<episode>\d{2,3}(?!\d+)))+)
 	//   |(?:E(?<episode>\d{2,3}(?!\d+))(?:[-_. ]?(?:E?(?<episode>\d{2,3}(?!\d+))))*)))`
@@ -146,9 +156,14 @@ var reportTitleRules = []rgRule{
 	// RE2 rejects duplicates so the duplicate-name aliases are dropped
 	// and episode tokens are merged via a separate `findAllEpisodes`
 	// scan over the matched span.
+	//
+	// `\d{1,2}|\d{4}` season alternation merges `Parser.cs:188` (1-2
+	// digit season) and `Parser.cs:192` (4-digit season `S2016E05`).
+	// 4-digit form is tried first (regex alternation order) so 4-digit
+	// titles like `S1936E18` win over the truncated-2-digit reading.
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?)(?:[-_. ]+S(?P<season>\d{1,2}))(?:(?:[-_. ]+E\d{2,3})+|(?:E\d{2,3}(?:[-_. ]?(?:E?\d{2,3}))*))`,
+			`(?i)^(?P<title>.+?)(?:[-_. ]+S(?P<season>\d{4}|\d{1,2}))(?:(?:[-_. ]+E\d{2,3})+|(?:E\d{2,3}(?:[-_. ]?(?:E?\d{2,3}))*))`,
 		),
 		Build: buildTitleSeasonEpisode,
 	},

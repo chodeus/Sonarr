@@ -217,6 +217,38 @@ func TestParseTitle_AnimeAbsolute(t *testing.T) {
 	}
 }
 
+// TestParseTitle_NxEpisode_Regressions pins false-positive
+// rejections that exercise the title's `[^\d]` last-char constraint
+// (the RE2 stand-in for the C# `(?<!\d+)` lookbehind on season). Each
+// input has a `<digit>.<digit> x<NNN>` mid-string fragment that an
+// unanchored `<title> <Nx<NN>>` regex would mis-classify; the
+// constraint forces the lazy title to end on a non-digit, eliminating
+// the false positive.
+func TestParseTitle_NxEpisode_Regressions(t *testing.T) {
+	cases := []struct {
+		title        string
+		wantSeason   int
+		wantEpisodes []int
+		wantNoNx     bool // if true, the Nx-episode rule must NOT classify season=1 episode=264
+	}{
+		// from MultiEpisodeParserFixture (asserts null in C#)
+		{
+			"Red Series S01 E01-E02 1080p AMZN WEBRip DDP5.1 x264 monkee",
+			0, nil, true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.title, func(t *testing.T) {
+			got := parser.ParseTitle(tc.title)
+			if tc.wantNoNx && got != nil {
+				if len(got.EpisodeNumbers) == 1 && got.EpisodeNumbers[0] == 264 {
+					t.Errorf("ParseTitle(%q) = S%dE%v — Nx-episode rule wrongly classified `x264` as episode", tc.title, got.SeasonNumber, got.EpisodeNumbers)
+				}
+			}
+		})
+	}
+}
+
 // TestParseTitle_NxEpisode ports cases from
 // `SingleEpisodeParserFixture.cs` that match the `<Title> <N>x<NN>`
 // form (rule 5 in reportTitleRules). Also covers raw `1x05` no-title
