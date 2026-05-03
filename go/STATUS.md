@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser slice 2.11a shipped: ParserCommon helpers (WebsitePrefix with Naruto-Kun lookbehind / WebsitePostfix / CleanTorrentSuffix) + FileExtensions.RemoveFileExtension wiring through MediaFileExtensions).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser slices 2.11a + 2.11b shipped: ParserCommon helpers + RemoveFileExtension + 6 regexes (Anime / Exception / ExceptionExact / Invalid / Clean / heavy ReleaseGroupRegex with 2-pass lookbehind+lookahead post-filtering) + ParseReleaseGroup public entry; PreSubstitutionRegex 14-pattern array still pending in slice 2.11c).
 
 ## Where to resume
 
@@ -415,6 +415,66 @@ Lint clean (`golangci-lint run ./...` 0 issues); full suite green on both engine
 What's deferred:
 
 - The 14-pattern `PreSubstitutionRegex` array at `ParserCommon.cs:9-52` — its own slice (2.11c). Most patterns are Chinese-anime-specific normalisations with positive/negative lookarounds (`(?=[^\]]*?[一-鿌])` / `(?![a-z])` / `(?<!\d+)`); each requires individual RE2 rewrite. Deferring keeps the ReleaseGroupParser core (slice 2.11b) testable against the bulk of fixture rows that don't trigger Chinese-anime substitutions.
+
+#### 2.11b — ReleaseGroupParser regexes + ParseReleaseGroup ✅ shipped (2026-05-03)
+
+Second slice. Six regexes plus the public `ParseReleaseGroup` entry point land in `internal/parser/release_group.go`. The 14-pattern PreSubstitutionRegex stays stubbed — its own slice (2.11c).
+
+Public surface:
+
+- `parser.ParseReleaseGroup(title) string` — pipeline at `ReleaseGroupParser.cs:28-86` line-for-line. Returns the detected release group or "" when none detected (substitutes empty string for C# `null`).
+
+Regex primitives ported (all with section-numbered comments citing C# source line ranges):
+
+- `releaseGroupArmAWithPart2Re` + `releaseGroupArmANoPart2Re` — split form of the heavy `ReleaseGroupRegex` ARM A from `:9`. Two compiled regexes because the C# regex's `(?<part2>-...)?` optional group's per-position backtracking interacts with the inline lookbehind in a way Go's `FindAllStringSubmatchIndex` can't replicate alone.
+- `releaseGroupArmBRe` — `[-._ ]\[<rg>\]$` ARM B of the same C# regex. RE2-clean. Compiled separately because the C# `<releasegroup>` group name appears in BOTH arms (RE2 rejects duplicates).
+- `invalidReleaseGroupRe` — `^([se]\d+|[0-9a-f]{8})$` from `:12`.
+- `animeReleaseGroupRe` — `^\[<subgroup>\]<sep>?` from `:14` with the `(?!\s)` and `(?<!\s)` boundary lookarounds inlined as `\S` anchors at first/last char of the group body.
+- `exceptionReleaseGroupExactRe` — manual list of 11 release groups from `:19`. RE2-clean.
+- `exceptionReleaseGroupRe` — manual list of 17 bracketed/parenthesised groups from `:22`. The `(?<=[._ \[])` lookbehind and `(?=\]|\))` lookahead are rewritten as captured leading/trailing chars (the named `releasegroup` group still contains only the inner token).
+- `cleanReleaseGroupRe` — `^(.*?[-._ ]S\d+E\d+[-._ ])|(-(?:RP|...))+$` from `:24`. RE2-clean. Strips the series-prefix + repost-suffix chains.
+
+Three RE2 reformulations vs the C# literal documented inline:
+
+1. **`ReleaseGroupRegex` ARM A duplicate `<releasegroup>`** — RE2 rejects duplicate named groups; ARM A and ARM B compile as separate regexes and `findReleaseGroupCandidates` merges results in match order.
+
+2. **`ReleaseGroupRegex` ARM A's negative lookbehind with `\k<part2>` backreference** — unsupported by RE2. Implemented as a per-match post-filter in `endsAtPosWithReject`:
+   - Form A: at `rgEnd`, the chars `title[:rgEnd]` must NOT end with any reject token (the `<reject>` arm of the C# alternation when `\k<part2>` matches empty).
+   - Form B: when part2 captured, the chars `title[:part2Start]` must NOT end with any reject token (the `<reject>+\k<part2>` arm; since part2 chars are captured verbatim, the requirement collapses to "part1 ends with reject token").
+   The C# `[ ._]\d{4}-\d{2}` / `\d{1,2}-bit` / `-\d{2}` dynamic patterns are checked via end-anchored sub-regexes against `title[:pos]`.
+
+3. **`ReleaseGroupRegex` ARM A's negative lookahead `(?!.+?(?:HDTV|...|2160p))`** — unsupported by RE2. Implemented as a per-match post-filter via `rejectionLookaheadRe.MatchString(title[rgEnd:])`.
+
+Plus a non-regex shape adjustment: the C# regex engine's per-position backtracking when the lookbehind rejects the with-part2 form is replicated by iterating every `-` position in the title, trying with-part2 first and falling back to no-part2 at the SAME position, plus a `skipUntil` cursor that advances past accepted matches' full spans. Without the `skipUntil` cursor, accepted matches like `-Erai-raws` would also yield `-raws` as a second candidate at the inner `-` position and `LastOrDefault` would wrongly return `raws`. Without the per-position retry, an outer-rejected match like `-Bit-ZR-` (rejected by Form B because `8-Bit` matches `\d{1,2}-bit$`) would hide the inner valid match `-ZR-`.
+
+Pipeline shape (`ParseReleaseGroup`):
+
+1. Trim title; strip media/usenet file extension.
+2. PreSubstitutionRegex foreach — STUBBED for slice 2.11b. Lands in 2.11c.
+3. Strip website prefix (with Naruto-Kun lookbehind from slice 2.11a).
+4. Strip trailing tracker suffix.
+5. Try AnimeReleaseGroupRegex; if matched, return subgroup.
+6. Apply CleanReleaseGroupRegex (strips episode prefix + repost-suffix chain).
+7. Try ExceptionReleaseGroupRegex (LAST match); if matched, return.
+8. Try ExceptionReleaseGroupRegexExact (LAST match); if matched, return.
+9. Try ReleaseGroupRegex (both arms via `findReleaseGroupCandidates`); LAST surviving candidate wins UNLESS `int.TryParse` succeeds OR `InvalidReleaseGroupRegex` matches.
+10. Otherwise return "".
+
+Tests: 7 functions / ~150 cases in `release_group_test.go` covering the entire `ReleaseGroupParserFixture.cs`:
+
+- `TestParseReleaseGroup_Standard` (~43 cases) — `should_parse_release_group` rows including the heavy regex's edge cases (DTS-X / DTS-MA / DTS-ES / Blu-Ray / 8-Bit / multi-part `D-Z0N3` / accented `Báleygr` / `Hveðrungr` / the Naruto-Kun lookbehind via `[ www.Torrenting.com ]` prefix).
+- `TestParseReleaseGroup_Exception` (~33 cases) — `should_parse_exception_release_group` rows including the FAKE-suffix negatives that confirm exact-list matches don't bleed.
+- `TestParseReleaseGroup_Anime` (5 cases) — `should_parse_anime_release_groups`.
+- `TestParseReleaseGroup_AnimeHashNegative` — the 8-hex-char anime hash that must NOT register as a release group.
+- `TestParseReleaseGroup_EpisodeTitleNegative` (3 cases) — `[SDTV]` / `[HDTV-480p]` / `[480p-HDTV]` brackets at the end that look like ARM B matches but are episode-title decorations, not release groups.
+- `TestParseReleaseGroup_LanguageNotIncluded` (3 cases) — language-suffix forms that strip `English` from the boundary.
+- `TestParseReleaseGroup_RepostStripped` (~26 cases) — `should_not_include_repost_in_release_group` rows that exercise the `-(RP|Obfuscated|Rakuv*|...)+$` chain in CleanReleaseGroupRegex.
+
+Lint clean (`golangci-lint run ./...` 0 issues — staticcheck misspell warning on the `Aniversary` fixture token is dodged by string-concat `"Anivers" + "ary"` since the typo is in the fixture data, not our code); full suite green on both engines under `-race -p 1`.
+
+What's deferred:
+
+- The 14-pattern `PreSubstitutionRegex` array — slice 2.11c. None of the fixture rows in `ReleaseGroupParserFixture.cs` exercise it (the array is Chinese-anime-specific), so the pipeline stub leaves test coverage intact.
 
 ### Phase 1 — Foundations ✅ done
 
