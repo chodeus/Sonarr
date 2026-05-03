@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.2 shipped: data model + helpers + ParseTitle pipeline shell + 4 ReportTitleRegex rules (no-title multi/single episode / title + season-episode / anime [SubGroup] absolute) covering basic SingleEpisode / MultiEpisode / anime-absolute fixture rows. ~118 of 122 ReportTitleRegex patterns plus the downstream pipeline stages (SimplifyTitle / language / quality / release-group / year-in-title / daily / anime-with-season-episode branches) still pending).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.3 shipped: data model + helpers + ParseTitle pipeline shell + 5 ReportTitleRegex rules (canonical daily airdate / no-title multi+single episode / title + season-episode / anime [SubGroup] absolute) covering basic SingleEpisode / MultiEpisode / anime-absolute / canonical daily fixture rows. ~117 of 122 ReportTitleRegex patterns plus the downstream pipeline stages (SimplifyTitle / language / quality / release-group / year-in-title / 6-digit-airdate / 8-digit-airdate / reversed-date / short-month / anime-with-season-episode branches) still pending).
 
 ## Where to resume
 
@@ -633,6 +633,34 @@ Tests: 1 new function / 11 cases in `parse_title_test.go`:
 - `TestParseTitle_AnimeAbsolute` — 11 cases ported verbatim from `AbsoluteEpisodeNumberParserFixture.cs`'s `should_parse_absolute_numbers` rows that match the broad shape (excluding the season+episode combos that need later slices). Covers Commie / Underwater / HorribleSubs / FroZen / CR / K-F subgroup variants with both `_` and ` ` separators, with and without `.mkv` extension, with optional 8-char hash brackets.
 
 Lint clean (`golangci-lint run ./...` 0 issues — staticcheck gofmt nit on the test struct alignment was fixed); full suite green on both engines under `-race -p 1`.
+
+#### 2.12.3 — ReportTitleRegex canonical daily airdate rule ✅ shipped (2026-05-03)
+
+Fourth slice of the ParseTitle port. Adds the canonical daily airdate shape — `<title> <airyear>.<airmonth>.<airday>` — to `reportTitleRules` as the first entry (so daily forms like `Series 2010 04 18` match the daily pattern rather than the season+episode patterns).
+
+What ships:
+
+- `reportTitleRules[0]` (new, replacing previous head) — canonical daily airdate rule, mirrors `Parser.cs:333`. Captures `title` + `airyear` + `airmonth` + `airday` and assembles them into `AirDate` as `yyyy-MM-dd` (matches `Episode.AIR_DATE_FORMAT`).
+- `buildDailyAirdate` Build function — extracts and normalises title (`_` and `.` → space), validates `year >= 1900` (mirrors C# `airYear < 1900` guard at `:933`), assembles AirDate.
+
+One RE2 reformulation:
+
+- The trailing `(?![-_. ]+[0-3][0-9])` lookahead is dropped — it guards against "two consecutive date-shaped fragments" (e.g. `2018.04.28.05.30` where `28.05` could re-trigger). Currently no fixture row exercises the pathological case; documented as a known minor difference.
+
+What it does NOT yet handle (deferred):
+
+- 6-digit airdate (`140722`) — needs `Parser.cs:62` rule (line 65 of array).
+- 8-digit airdate (`20201013`) — needs `Parser.cs:62` rule (line 65 of array — same).
+- Reversed dates (`04.28.2018`, `28.04.2018`) — need `Parser.cs:354` and `:358` rules with `<ambiguousairmonth>` + `<ambiguousairday>` groups.
+- Short month names (`140722`-style with month abbreviations) — needs `Parser.cs:70` rule.
+- Title-with-trailing-episode-marker (e.g. `Series E76 2024 08 08`) — needs the post-match title cleaning step; lands with the full ParseTitle pipeline in slice 2.12.final.
+- Daily episodes with multi-part suffixes (`Series.2015.09.07.Part1`) — needs `Parser.cs:232` rule.
+
+Tests: 1 new function / 9 cases in `parse_title_test.go`:
+
+- `TestParseTitle_DailyAirDate` — 9 cases ported verbatim from `DailyEpisodeParserFixture.cs`'s `should_parse_daily_episode` rows that match the canonical `<airyear> <airmonth> <airday>` shape with literal separators (period / underscore / dash / space). Asserts SeriesTitle + AirDate format + empty EpisodeNumbers + IsDaily() returning true. The 8-digit-airdate and trailing-episode-marker rows are commented as deferred to subsequent slices.
+
+Lint clean (`golangci-lint run ./...` 0 issues); full suite green on both engines under `-race -p 1`.
 
 ### Phase 1 — Foundations ✅ done
 
