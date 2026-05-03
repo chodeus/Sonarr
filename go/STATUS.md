@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language registry + quality registry + Revision/QualityModel + ParseRevision + ParseResolution + ParseCodec + IsRemux + ParseSource; 5 ParserTests fixtures ported).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language registry + quality registry + Revision/QualityModel + ParseRevision + ParseResolution + ParseCodec + IsRemux + ParseSource + misc QualityParser predicates; 5 ParserTests fixtures ported).
 
 ## Where to resume
 
@@ -206,6 +206,21 @@ C# behavioural quirks preserved:
 - The `xvidvd` token in the dvd group is a real release-name fragment from `the.Series.1x13.circles.ws.xvidvd-tns` (a fixture row); preserved verbatim as a literal string in the alternation.
 
 What's deferred from QualityParser: `RawHDRegex`, `OtherSourceRegex`, `AnimeBlurayRegex` (uses lookbehind/lookahead — needs separate RE2 rewrite), `AnimeWebDlRegex`, `MPEG2Regex`, `HighDefPdtvRegex`, `QualityFinder.FindBySourceAndResolution`, and the per-source decision matrix at `ParseQualityName` itself. The remaining regexes are mostly small RE2-clean ports plus AnimeBlurayRegex which needs a lookbehind/lookahead rewrite. ParseQualityName lands as the final QualityParser commit once all the input regexes are ported.
+
+#### 2.8 — Misc QualityParser predicates ✅ shipped (2026-05-03)
+
+Final pre-`ParseQualityName` slice. Six small support regexes ported as predicate helpers in `internal/quality/parse_misc.go`. With this commit every input regex `ParseQualityName` consumes is now available — the next QualityParser commit is `ParseQualityName` itself wiring them into the per-source decision matrix.
+
+- `quality.IsRawHD(name) bool` — `\b(?:RawHD|Raw[-_. ]HD)\b`, case-insensitive. RE2-clean. Drives the early-exit at `QualityParser.cs:105` that classifies any RawHD-tagged release as `Quality.RAWHD` regardless of resolution.
+- `quality.IsMPEG2(name) bool` — `\b(?:MPEG[-_. ]?2)\b`, case-SENSITIVE per the C# regex declaration (no IgnoreCase flag). RE2-clean. Used at `:231` to flip HDTV+MPEG2 to RAWHD.
+- `quality.IsHighDefPdtv(name) bool` — `hr[-_. ]ws`, case-insensitive, NO anchors (substring match). RE2-clean. Used at `:308` to flip PDTV/SDTV/DSR/TVRip to HDTV720p when the HR-WS token is present.
+- `quality.IsAnimeWebDL(name) bool` — `\[WEB\]|[\[(]WEB[ .]`, case-insensitive. RE2-clean. Used at `:392` to enter the anime-WebDL branch of ParseQualityName.
+- `quality.IsAnimeBluray(name) bool` — the only RE2-rewrite case in this slice. The C# regex `bd(?:720|1080|2160)|(?<=[-_. (\[])bd(?=[-_. )\]])` uses both negative lookbehind AND negative lookahead in arm 2 (zero-width separator assertions on each side of `bd`). RE2 supports neither. The Go port splits into two compiled regexes: arm 1 (`bd(?:720|1080|2160)`) is RE2-clean as written; arm 2 is rewritten as `[-_. (\[]bd[-_. )\]]` — folding the surrounding chars INTO the match. Functionally equivalent for IsMatch on real release names because the C# lookarounds are zero-width on the same character classes; both rewrites pin the asymmetric `(`/`)` and `[`/`]` open-vs-close pairing that matches anime release-naming conventions like `[BD]` and `(BD)`. IsAnimeBluray short-circuits arm 1 first.
+- `quality.ClassifyOtherSource(name) SourceTag` — `(?P<hdtv>HD[-_. ]TV)|(?P<sdtv>SD[-_. ]TV)`, case-insensitive. RE2-clean. Returns `SourceTagHDTV` / `SourceTagSDTV` / `SourceTagUnknown`. Mirrors the C# `OtherSourceMatch` private helper at `:653-674` but returns a SourceTag instead of a Quality so the resolution-mapping decision lives in (still-unported) ParseQualityName rather than baked into the primitive.
+
+6 tests / ~70 cases drawn from QualityParserFixture rows where each predicate's classification is the discriminating factor: HR-WS PDTV (lines 149-150), MPEG2-TrollHD (lines 386-393), HorribleSubs `[Web]` (96, 212-213, 255, 286), LostYears/Netaro `(WEB ` (256, 260), FFF/coldhell `[BD]` and `[BD720p]/[BD1080p]` (311-312, 332-333), HD.TV/SD.TV final-fallback (461-462). Plus separator-class permutations (`-`, `_`, `.`, ` `), case-sensitivity pins (MPEG2 case-sensitive; everything else case-insensitive), and the IsAnimeBluray bare-`bd` separator-anchor edge cases. Lint clean; full suite green on both engines under `-race -p 1`.
+
+C# behavioural quirks preserved: the asymmetric paren/bracket pairing in IsAnimeBluray arm 2 (`(`/`)` and `[`/`]` only — never `(`/`]` or `[`/`)`), and the case-SENSITIVITY of MPEG2Regex (declared without IgnoreCase in the C# tree even though every other QualityParser regex IS case-insensitive — preserved verbatim because lowercase `mpeg2` does not appear in real release names per the fixture).
 
 ### Phase 1 — Foundations ✅ done
 
