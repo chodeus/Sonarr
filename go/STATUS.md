@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0 + 2.12.1 shipped: data model + helpers + ParseTitle pipeline shell + 3 ReportTitleRegex rules (no-title multi episode / no-title single episode / title + season-episode) covering basic SingleEpisode / MultiEpisode fixture rows. ~119 of 122 ReportTitleRegex patterns plus the downstream pipeline stages (SimplifyTitle / language / quality / release-group / year-in-title / daily / anime branches) still pending).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slices 2.12.0–2.12.2 shipped: data model + helpers + ParseTitle pipeline shell + 4 ReportTitleRegex rules (no-title multi/single episode / title + season-episode / anime [SubGroup] absolute) covering basic SingleEpisode / MultiEpisode / anime-absolute fixture rows. ~118 of 122 ReportTitleRegex patterns plus the downstream pipeline stages (SimplifyTitle / language / quality / release-group / year-in-title / daily / anime-with-season-episode branches) still pending).
 
 ## Where to resume
 
@@ -605,6 +605,34 @@ What's deferred to subsequent slices (rough categorisation per the strategic pla
 - 2.12.3 — Daily / Special / Mini-series patterns (~15 regexes).
 - 2.12.4 — Edge cases / 4-digit-season / multi-season / partial-season / language-prefixed releases / etc. (~80 regexes).
 - 2.12.final — Full ParseTitle pipeline: SimplifyTitle / quality+language+release-group integration / GetSeriesTitleInfo (year-in-title + AKA / `|` / `(...)` title splits) / GetSubGroup / GetReleaseHash / ParsePath. Plus the C# `MatchCollection`-style multi-match LastOrDefault semantics for rules where multiple matches contribute to a single result.
+
+#### 2.12.2 — ReportTitleRegex anime [SubGroup] absolute-episode rule ✅ shipped (2026-05-03)
+
+Third slice of the ParseTitle port. Adds the most common anime release shape — `[SubGroup] Title <separator> <absolute_episode> ... [hash]` — to `reportTitleRules` as a new entry at the head of the table (so anime forms don't accidentally match the no-title single/multi rules' prefix).
+
+What ships:
+
+- `reportTitleRules[0]` (new) — anime absolute-episode rule, mirrors `Parser.cs:112-114` (the broad form). Captures `subgroup` / `title` / `absoluteepisode` / optional 8-char `hash`.
+- `buildAnimeAbsolute` Build function — extracts subgroup → ReleaseGroup, title → SeriesTitle (with `_` and `.` → space normalisation), absoluteepisode → `AbsoluteEpisodeNumbers[0]`, hash → ReleaseHash.
+
+Two RE2 reformulations vs the C# literal:
+
+1. The `(?<!\d+)` and `(?!\d+)` digit-boundary lookarounds around `<absoluteepisode>\d{2,3}` are dropped — the surrounding `[-_. ]+<digits>` shape with greedy-2-3 already enforces the digit count for the anime case.
+2. The C# hash group `(?<hash>[(\[]\w{8}[)\]])` captures the brackets in the value; the Go port pulls the 8-char hash content into the named group via `[(\[](?P<hash>\w{8})[)\]]` so the consumer reads the bare hash without trimming brackets (mirrors the `Trim('[', ']', '(', ')')` step in the C# `Parser.GetReleaseHash` at `:1228`).
+
+What it does NOT yet handle (deferred to subsequent anime slices):
+
+- The `[SubGroup] Title S10E14 214` form where season+episode metadata coexists with the absolute episode number — needs the C# `multi-pattern union` approach where one regex catches absoluteepisode and another catches season+episode, and ParseMatchCollection merges them.
+- The `(?<![-_. ]|\b[0]\d+) - ` lookbehind-gated rule at `Parser.cs:92-94` that distinguishes `Show - 12` (valid) from `Show 01 - 12` (rejected because preceded by a zero-prefixed digit).
+- Batch forms like `Title - 12-13` (rule 108-110).
+- Hash + Season/Episode combo forms (rules 56-110, ~12 patterns).
+- Anime-OVA/special forms.
+
+Tests: 1 new function / 11 cases in `parse_title_test.go`:
+
+- `TestParseTitle_AnimeAbsolute` — 11 cases ported verbatim from `AbsoluteEpisodeNumberParserFixture.cs`'s `should_parse_absolute_numbers` rows that match the broad shape (excluding the season+episode combos that need later slices). Covers Commie / Underwater / HorribleSubs / FroZen / CR / K-F subgroup variants with both `_` and ` ` separators, with and without `.mkv` extension, with optional 8-char hash brackets.
+
+Lint clean (`golangci-lint run ./...` 0 issues — staticcheck gofmt nit on the test struct alignment was fixed); full suite green on both engines under `-race -p 1`.
 
 ### Phase 1 — Foundations ✅ done
 
