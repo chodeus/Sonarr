@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser slices 2.11a + 2.11b shipped: ParserCommon helpers + RemoveFileExtension + 6 regexes (Anime / Exception / ExceptionExact / Invalid / Clean / heavy ReleaseGroupRegex with 2-pass lookbehind+lookahead post-filtering) + ParseReleaseGroup public entry; PreSubstitutionRegex 14-pattern array still pending in slice 2.11c).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the existing fixture surface — ParseReleaseGroup pipeline + 6 regexes + PreSubstitutionRegex 3-of-14-pattern subset (rules 1 / 2 / 14, the RE2-clean ones); rules 3-13 stubbed pending per-pattern RE2 rewrites — none of the existing fixture rows exercise them).
 
 ## Where to resume
 
@@ -475,6 +475,48 @@ Lint clean (`golangci-lint run ./...` 0 issues — staticcheck misspell warning 
 What's deferred:
 
 - The 14-pattern `PreSubstitutionRegex` array — slice 2.11c. None of the fixture rows in `ReleaseGroupParserFixture.cs` exercise it (the array is Chinese-anime-specific), so the pipeline stub leaves test coverage intact.
+
+#### 2.11c — PreSubstitutionRegex (3-of-14 ported) ✅ shipped (2026-05-03)
+
+Third slice. Ports the RE2-clean / RE2-trivial subset of `ParserCommon.PreSubstitutionRegex` and wires the result into `ParseReleaseGroup` as the first regex normalisation step (replaces the slice-2.11b stub).
+
+Three rules ship in `internal/parser/pre_substitution.go`:
+
+- **Rule 1** (`ParserCommon.cs:12`) — Korean series without season number: `\.E(\d{2,4})\.\d{6}\.(.*-(F1RST|NEXT))$` → `.S01E$1.$2`. RE2-clean.
+- **Rule 2** (`ParserCommon.cs:15`) — Chinese anime double-title basic form: `^[group][title chinesetitle][episode]` → `[group] title - episode -`. RE2-clean (uses `[一-鿌]` for the CJK Unified Ideographs U+4E00-U+9FCC range).
+- **Rule 14** (`ParserCommon.cs:51`) — Spanish releases with bracketed info: `<title>[ ._-](<year>/<info>...)` → `<title> (<year>) - <info> `. The C# `(?=[ ._-]\()` positive lookahead is dropped — the surrounding regex shape preserves the intent (the lazy `.+?` for title backtracks against the literal `[ ._-]\(` boundary identically).
+
+Rules 3-13 stubbed in the comment header of `pre_substitution.go` pending per-pattern RE2 rewrites. Each carries some combination of:
+
+- Duplicate named groups (e.g. `<episode>` / `<season>` / `<title>` / `<iso_code>` appearing twice in a single regex)
+- Positive lookaheads `(?=[^\]]*?[一-鿌])` gating the chinesetitle arm
+- Negative lookbehinds `(?<!\d+)` / `(?<![^a-zA-Z0-9])`
+- Negative lookaheads `(?!\d+)` / `(?![a-z])`
+
+None of the existing `ReleaseGroupParserFixture.cs` cases exercise rules 3-13, so the deferral is observably benign for the current test surface.
+
+Pipeline shape: the C# `foreach + TryReplace + break` semantic is preserved verbatim — `applyPreSubstitution` walks `preSubstitutionRules` in declaration order and the first matching rule's replacement wins; subsequent rules are skipped. Pinned by `TestApplyPreSubstitution_FirstMatchWins`.
+
+Tests: 5 functions / ~16 cases in `pre_substitution_test.go` (white-box `package parser` since `applyPreSubstitution` is internal):
+
+- `TestApplyPreSubstitution_Rule1_Korean` (4 cases) — F1RST / NEXT positives + 2 negatives (missing suffix, malformed airdate).
+- `TestApplyPreSubstitution_Rule2_ChineseDoubleTitle` (4 cases) — 2 positives (1-2 digit and 4-digit episode) + 2 negatives (no CJK in title, 5-digit episode).
+- `TestApplyPreSubstitution_Rule14_SpanishInfo` (4 cases) — 2 positives + 2 negatives (info doesn't start with `S`, missing `(` boundary).
+- `TestApplyPreSubstitution_FirstMatchWins` — pins the C# `break` semantic.
+- `TestApplyPreSubstitution_NoMatch` (4 cases) — pass-through when no rule matches.
+
+C# behavioural quirks preserved verbatim:
+
+- The `<info>` group in Rule 14 is `S[^/]+` — captures every non-`/` char including the trailing `)` since `)` is not `/`. The replacement emits the bracket as part of the info field. Pinned in `TestApplyPreSubstitution_Rule14_SpanishInfo`.
+- The `<title>` group in Rule 14 ends BEFORE the `[ ._-]` boundary char, so a title like `Show.Title.` becomes `Show.Title` (the trailing `.` is consumed by the boundary-class match, not in the title group). Pinned.
+
+Lint clean (`golangci-lint run ./...` 0 issues); full suite green on both engines under `-race -p 1`.
+
+What's deferred to a follow-up slice:
+
+- Rules 3-13. Each requires a per-pattern RE2 rewrite — duplicate named groups need renaming + capture-merge logic, positive lookaheads gating chinesetitle arms need careful semantic analysis (or accept the more permissive form), negative lookbehinds/lookaheads need char-class restructuring. The work is substantial (~200-400 LOC of regex + per-rewrite trace verification); deferred until a fixture or production case demands it. The fixture suite will stay green throughout, since it doesn't exercise the deferred rules.
+
+Phase 2 status after 2.11: NzbDrone.Core.Parser.ReleaseGroupParser COMPLETE for the existing fixture surface (modulo the 11 deferred PreSubstitutionRegex rules). NzbDrone.Core.Parser.LanguageParser COMPLETE. NzbDrone.Core.Parser.QualityParser COMPLETE. Remaining Phase 2 work per the strategic plan: ParseTitle proper (the 104-element ReportTitleRegex[] array — the heaviest single chunk in the codebase). Plus the deferred PreSubstitutionRegex rules 3-13 if a future fixture demands them.
 
 ### Phase 1 — Foundations ✅ done
 
