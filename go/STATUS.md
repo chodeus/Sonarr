@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the existing fixture surface — ParseReleaseGroup pipeline + 6 regexes + PreSubstitutionRegex 3-of-14-pattern subset (rules 1 / 2 / 14, the RE2-clean ones); rules 3-13 stubbed pending per-pattern RE2 rewrites — none of the existing fixture rows exercise them).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE for the fixture surface; Parser.ParseTitle slice 2.12.0 shipped: ParsedEpisodeInfo + SeriesTitleInfo + ReleaseType data models + small standalone helpers (ValidateBeforeParsing / HasMultipleLanguages / NormalizeImdbID / ParseNumber / ParseDecimal / convertToNumerals) + RejectHashedReleasesRegexes + SeasonFolderRegexes; the 122-element ReportTitleRegex array + ParseTitle pipeline still pending in slices 2.12.x).
 
 ## Where to resume
 
@@ -516,7 +516,55 @@ What's deferred to a follow-up slice:
 
 - Rules 3-13. Each requires a per-pattern RE2 rewrite — duplicate named groups need renaming + capture-merge logic, positive lookaheads gating chinesetitle arms need careful semantic analysis (or accept the more permissive form), negative lookbehinds/lookaheads need char-class restructuring. The work is substantial (~200-400 LOC of regex + per-rewrite trace verification); deferred until a fixture or production case demands it. The fixture suite will stay green throughout, since it doesn't exercise the deferred rules.
 
-Phase 2 status after 2.11: NzbDrone.Core.Parser.ReleaseGroupParser COMPLETE for the existing fixture surface (modulo the 11 deferred PreSubstitutionRegex rules). NzbDrone.Core.Parser.LanguageParser COMPLETE. NzbDrone.Core.Parser.QualityParser COMPLETE. Remaining Phase 2 work per the strategic plan: ParseTitle proper (the 104-element ReportTitleRegex[] array — the heaviest single chunk in the codebase). Plus the deferred PreSubstitutionRegex rules 3-13 if a future fixture demands them.
+Phase 2 status after 2.11: NzbDrone.Core.Parser.ReleaseGroupParser COMPLETE for the existing fixture surface (modulo the 11 deferred PreSubstitutionRegex rules). NzbDrone.Core.Parser.LanguageParser COMPLETE. NzbDrone.Core.Parser.QualityParser COMPLETE. Remaining Phase 2 work per the strategic plan: ParseTitle proper (the 122-element ReportTitleRegex[] array — the heaviest single chunk in the codebase). Plus the deferred PreSubstitutionRegex rules 3-13 if a future fixture demands them.
+
+#### 2.12.0 — Parser.ParseTitle foundation: data model + standalone helpers ✅ shipped (2026-05-03)
+
+First slice of the heaviest single Parser chunk. The 122-element `ReportTitleRegex[]` array, ParseTitle pipeline, and ParseMatchCollection helper land in subsequent slices (2.12.1+); this slice ships the foundation data shapes plus the small helpers that are usable in isolation.
+
+Two new files:
+
+- `internal/parser/model.go` — three types ported from `NzbDrone.Core.Parser.Model`:
+  - `ReleaseType` int enum (Unknown/SingleEpisode/MultiEpisode/SeasonPack). Persisted via int value in CustomFormat / ReleaseTypeSpecification JSON, so the integer order is frozen.
+  - `SeriesTitleInfo` struct (Title / TitleWithoutYear / Year / AllTitles).
+  - `ParsedEpisodeInfo` struct with the 23 C# fields + 5 computed-property methods (IsDaily / IsAbsoluteNumbering / IsPossibleSpecialEpisode / IsPossibleSceneSeasonSpecial / ReleaseType) + String formatter mirroring `ParsedEpisodeInfo.ToString()`. The C# `decimal[]` for SpecialAbsoluteEpisodeNumbers becomes Go `float64[]` (preserves the `NumberStyles.Float` parse semantic). The C# `int?` for DailyPart becomes `*int`. NewParsedEpisodeInfo helper initialises the slice fields to non-nil empty slices.
+
+- `internal/parser/parse_helpers.go` — six standalone helpers + their support data:
+  - `rejectHashedReleasesRegexes` (14 regexes from `Parser.cs:463-505`).
+  - `seasonFolderRegexes` (`^(Season[ ._-]*\d+|Specials)$`).
+  - `multiRe` (`[-_. \[](?:multi|multilang|multilanguage)[-_. \]]`).
+  - `imdbIDRe` (`^(?:\d{1,10}|tt\d{1,10})$`).
+  - `englishNumberWords` (zero..nine).
+  - `ShortMonths` map (jan..dec → 1..12).
+  - `ValidateBeforeParsing(title) bool` — rejects yEnc passwords, no-letter-or-digit titles, hashed-release shapes, and bare season-folder names.
+  - `HasMultipleLanguages(title) bool` — multiRe match.
+  - `NormalizeImdbID(imdbID) string` — canonical `tt<7-digit>` form, "" for invalid input.
+  - `ParseNumber(value) (int, bool)` — ASCII digits / NFKC-normalised digits / English number words. C# throws FormatException on failure; the Go port returns a flag instead so callers can distinguish parse failure from a legitimate 0.
+  - `ParseDecimal(value) (float64, bool)` — same Unicode-numeric pre-pass + Go float64 parse.
+  - `convertToNumerals(input) string` — fold full-width digits (U+FF10..U+FF19) and other Unicode-numeric runes into ASCII digits. Defensive coverage for additional decimal-digit Unicode blocks (Arabic-Indic, Devanagari, etc.).
+
+NFKC normalisation is currently a passthrough (Sonarr inputs are pure ASCII or full-width-digit, both of which already have direct paths). If a future fixture demands full NFKC, swap the body for `golang.org/x/text/unicode/norm`'s `NFKC.String`.
+
+Tests: 11 functions / ~80 cases across `parse_helpers_test.go` (white-box `package parser`) and `model_test.go` (black-box `package parser_test`):
+
+- `TestValidateBeforeParsing` — 18 cases covering yEnc/no-content/hashed/season-folder rejection paths plus accept paths.
+- `TestHasMultipleLanguages` — 10 cases covering all alternation members + boundary behaviour.
+- `TestNormalizeImdbID` — 13 cases including the `len > 2` guard, padding, tt-prefix variants, invalid forms.
+- `TestParseNumber` — 12 cases including English words and full-width digits.
+- `TestParseDecimal` — 6 cases.
+- `TestConvertToNumerals` — 5 cases.
+- 5 model getter tests + 1 String formatter test + 1 NewParsedEpisodeInfo defaults test.
+
+Lint clean (`golangci-lint run ./...` 0 issues); full suite green on both engines under `-race -p 1`.
+
+What's deferred:
+
+- The 122-element `ReportTitleRegex[]` array — split across multiple slices in 2.12.x by category (single-episode / multi-episode / daily / anime / special / miniseries / hashed) per the strategic plan to keep commits under ~300 lines of regex per pass.
+- ParseTitle / ParseMatchCollection / GetSeriesTitleInfo / GetSubGroup / GetReleaseHash — the regex match-walking pipeline; lands once enough ReportTitleRegex coverage exists to support the fixture suite.
+- ParsePath — wraps ParseTitle with directory-name fallback logic.
+- SimplifyTitle + ReversedTitleRegex — the bytes-reversed-title detection and pre-parse normalisation.
+- ParseSeriesName — delegates to ParseTitle and falls back to CleanSeriesTitle (already in the Go port).
+- The `SimpleTitleRegex` / `YearInTitleRegex` / `TitleComponentsRegex` / `SixDigitAirDateRegex` / `RequestInfoRegex` / `SimpleEpisodeNumberRegex` / `SeasonFolderRegex` (the standalone-name version, distinct from the array) support regexes — port alongside their consumers.
 
 ### Phase 1 — Foundations ✅ done
 
