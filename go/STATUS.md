@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE: title normalisers + language registry + quality registry + Revision/QualityModel + ParseRevision + ParseResolution + ParseCodec + IsRemux + ParseSource + misc predicates + ParseQualityName end-to-end; QualityParserFixture representative subset ported).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser slice (a) shipped: LanguagesOnlyRegex + LanguageRegex with subs-suffix filter + spa(?!\(Latino\)) split, case-insensitive `regexLanguagesCI` helper exercised by ~50 LanguageParserFixture rows).
 
 ## Where to resume
 
@@ -250,6 +250,56 @@ What's deferred:
 - ParseQuality's Logger.Debug start-of-call message — same logger-not-wired-yet reason.
 
 Phase 2 status after 2.9: NzbDrone.Core.Parser.QualityParser is COMPLETE. Remaining Phase 2 work per the strategic plan: LanguageParser (8 regexes, 612-line fixture), ReleaseGroupParser (6 regexes incl. backreferences + ParserCommon.PreSubstitutionRegex helper with 14 Chinese-anime patterns + negative lookaround), ParseTitle proper (the 104-element ReportTitleRegex[] array — the heaviest single chunk).
+
+#### 2.10a — LanguageParser: LanguagesOnlyRegex + LanguageRegex ✅ shipped (2026-05-03)
+
+First slice of `LanguageParser`. Ports the two regex primitives at `LanguageParser.cs:23-26` plus the case-insensitive arm of the `RegexLanguage` consumer at `:386-520`. Lives in `internal/parser/language.go` (the parser package already houses `CleanSeriesTitle`/`NormalizeEpisodeTitle`).
+
+What lands:
+
+- `languagesOnlyExpr` — the 25-named-group alternation from `LanguagesOnlyRegex`, rewritten verbatim to RE2 syntax (`(?<name>...)` → `(?P<name>...)`). Flags applied at compile time on the matcher (`(?i)`), NOT embedded in the literal — embedding `(?i)` would propagate into the suffix-filter regex when the non-capturing variant is interpolated.
+- `languagesOnlyNonCapturingExpr` — the same pattern with every named capture rewritten to `(?:...)` via a one-time regex substitution at package init (`namedGroupHeader = (?P<...>` → `(?:`). Avoids hand-maintaining two copies; the outer LanguageRegex embeds LanguagesOnlyRegex twice (head + inside the negative lookahead) and RE2 rejects duplicate named groups.
+- `languageRe` — the case-insensitive matcher (LanguagesOnlyRegex compiled).
+- `subsFilterRe` — the positive form of the C# negative-lookahead filter at `:25` (`(?!(?:[-_. ](?:lang))*[-_. ]subs?)`), anchored at `^`. Checked against `name[matchEnd:]` for each candidate match — if it matches, the candidate is dropped. RE2 has no negative lookahead so this post-match check substitutes.
+- `regexLanguagesCI(title) []language.Language` — case-insensitive arm of the C# private `RegexLanguage`. Walks every `languageRe` match in title order, applies the two post-match filters (subs + spa-(Latino)), and emits one Language per surviving match. Returns nil on empty input. De-duplication is the caller's responsibility (ParseLanguages does it via DistinctBy in slice c).
+
+Two RE2 reformulations vs the C# literal documented inline:
+
+1. The spanish arm `\b(?:español|castellano|esp|spa(?!\(Latino\)))\b` uses a negative lookahead (REGEX-Q8 in `analysis/parser/regex-corpus.md`). The bare `spa` token is pulled into its own named group `spaspecial` so the post-match filter rejects matches where the captured `spa` is immediately followed by `(Latino)`. Both `spanish` and `spaspecial` map to `language.Spanish`. Mirrors the `webdlamzn` split in `internal/quality/parse_source.go`.
+
+2. The outer LanguageRegex's negative lookahead `(?!(?:[-_. ](?:LanguagesOnlyRegex))*[-_. ]subs?)` is unsupported by RE2. Rewritten as `subsFilterRe` (anchored positive form) and tested via `MatchString(title[matchEnd:])`. Equivalent semantics: "does the suffix from the match end start with `(?:[-_. ](?:lang))*[-_. ]subs?`? if yes, drop the match."
+
+REGEX-Q8 (dynamic-interpolation parity) is preserved by deriving `languagesOnlyNonCapturingExpr` from `languagesOnlyExpr` at package init via a single regex substitution. The pattern is authored once; both compile sites see the same source.
+
+Tests: 5 test functions / ~70 cases in `language_test.go` (white-box `package parser`, since the helper is internal):
+
+- `TestRegexLanguagesCI_Single` — ~40 single-language fixture rows whose discriminator is the case-insensitive arm. Cases ported verbatim from `should_parse_language_*` methods for: French (FR / VF / VFF / VFQ / TRUEFRENCH / `French` literal), German (Videomann / SwissGerman / Ger.Dub / Ger.Sub-filtered out — covered separately), Italian (`ita`), Japanese (`(JA)`), Chinese (`[CHS]`/`[BIG5]`/`[GB]` + CJK chars `简`/`繁`/`字幕`/`国语音轨`), Polish (PLDUB / PL-DUB / PLLEK / DUB-PL / LEK-PL — bare `PL` is case-sensitive, deferred to slice b), Flemish, Greek, Hungarian (HUNDUB / HUN), Hebrew (HebDub), Bulgarian (BGAUDIO — bare `BG` deferred), Thai, Romanian (RoDubbed / ROMANIAN), Urdu, Romansh (Romansh / Rumantsch / Romansch), Georgian (Georgian / Geo / KA), Original (Original / Orig).
+
+- `TestRegexLanguagesCI_Multi` — ~12 multi-language pack rows (e.g. `ENG-ITA-FRA`, `Eng Fre Ger Ita Por Spa`, Russian/English `Rus.Eng`, Latvian/English `LAV.ENG`, Ukrainian/English Cyrillic packs, Turkish/Ukrainian, Spanish/Catalan with the `cat Subs` arm).
+
+- `TestRegexLanguagesCI_SubsFilter` — pins the LanguageRegex outer wrapper. The 5 `Detektiv.Conan...Ger.Eng.Sub.AAC...` and variants from `should_parse_language_unknown` confirm Ger / Eng / Fre / Spa all get filtered out when followed by `[-_. ]subs?`.
+
+- `TestRegexLanguagesCI_SpaLatinoFilter` — pins the `spa(?!\(Latino\))` arm-level lookahead. `_Eng-Spa(Latino)_` registers neither English (no `\b` at `_E`) nor Spanish (filter trips on `(Latino)`), but bare `Foo.Spa.Bar` does register Spanish.
+
+- `TestRegexLanguagesCI_Negative` — empty input + the `Spanish` / `Korean` / `Vietnamese` / `Swedish` literal-English-word fixture rows that ParseLanguages catches via `lower.Contains(...)` in slice (c) — slice (a) regex returns nil for these, confirmed.
+
+- `TestLanguagesOnlyExpr_Pins` — three internal invariants: every entry in `languageGroupOrder` resolves to a real `SubexpIndex > 0` on `languageRe`; `languagesOnlyNonCapturingExpr` contains zero `(?P<` headers (drift would surface as a duplicate-named-group RE2 panic when subsFilterRe compiles); `subsFilterRe.String()` starts with `(?i)^` (the anchor is load-bearing).
+
+Lint clean (`golangci-lint run ./...` 0 issues); full suite green on both engines under `-race -p 1`.
+
+C# behavioural quirks preserved verbatim:
+
+- The C# consumer at `:426` reads `match.Groups["dutch"].Success` but `LanguagesOnlyRegex` has no `dutch` group — Dutch is purely `lower.Contains("dutch")`-driven. The Go port simply omits the dead group lookup; a future grep for "dutch" in `languageGroupOrder` will return nothing as expected.
+
+- The trailing `subs?` in the LanguageRegex outer wrapper is NOT anchored at the end (`subs?` not `subs?\b`), so a match like `Eng.SubReporters.foo` would also be filtered. Preserved verbatim — this is a C# regex quirk that likely never fires in practice (no real release name ends in `.Sub<word>...`).
+
+- `Series_Title_S01_ENG_ITA_FRA_AAC...` underscore-separated: ENG/ITA do NOT register as English/Italian because `_` is a word char in ASCII `\w` so `\b` does not fire at `_ENG_`. The french arm has explicit `(?:_|\b)` boundaries, so French DOES register. This matches the C# behaviour exactly (the C# fixture only asserts French for this row, not English/Italian).
+
+What's deferred to slices b and c:
+
+- **Slice (b)**: `CaseSensitiveLanguageRegex` (LT/CZ/PL/BG/SK/DE — bare 2-letter codes with case-sensitive matching and `(?<!SUB[\W_])` / `(?![\W_]SUB)` lookarounds), `GermanDualLanguageRegex` (`(?<!WEB[-_. ]?)\bDL\b` — the German `DL` tag for "Original" language addition), `GermanMultiLanguageRegex` (`\bML\b`).
+
+- **Slice (c)**: `ParseLanguages` entry point (the 30+ `lower.Contains("...")` arm + the regex arm + the German DL/ML post-processing + DistinctBy de-dup), plus `ParseSubtitleLanguage` / `ParseLanguageTags` / `ParseSubtitleLanguageInformation` / `UpdateTitleAndCopyFromTitle` / `ParseBasicSubtitle` (the 4 subtitle-related entry points + their `SubtitleLanguageRegex` / `SubtitleLanguageTitleRegex` / `SubtitleTitleRegex`). Tested against the full 612-line `LanguageParserFixture.cs`.
 
 ### Phase 1 — Foundations ✅ done
 
