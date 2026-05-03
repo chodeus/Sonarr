@@ -122,6 +122,18 @@ var reportTitleRules = []rgRule{
 		Build: buildNoTitleEpisode,
 	},
 
+	// `Parser.cs:188`-style — Episodes with a title, `<Title> <N>x<NN>`
+	// form. Listed BEFORE the `S<n>E<nn>` rule so the dash/no-S form
+	// is not shadowed by the no-title rule's `[ex]` matcher when a
+	// title is present. Handles 1-3 digit episodes including the
+	// `1x1` single-digit-episode form.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?)[-_. ]+(?P<season>\d{1,2})[-_ ]?[ex](?P<episode>\d{1,3})`,
+		),
+		Build: buildTitleNxEpisode,
+	},
+
 	// `Parser.cs:188` — Episodes with a title, single + multi.
 	// `^(?<title>.+?)(?:[-_. ]+S(?<season>(?<!\d+)\d{1,2}(?!\d+))
 	//   (?:(?:(?:[-_. ]+E(?<episode>\d{2,3}(?!\d+)))+)
@@ -218,6 +230,34 @@ func buildTitleSeasonEpisode(re *regexp.Regexp, m []int, title string) *ParsedEp
 	info.SeriesTitle = titleText
 	info.SeasonNumber = season
 	info.EpisodeNumbers = episodes
+	return info
+}
+
+// buildTitleNxEpisode handles the `<Title> <N>x<NN>` form where the
+// episode digits are captured directly in a named `episode` group
+// (rather than recovered post-match via findAllEpisodes). Only fires
+// for single episodes; multi-episode `Nx05x06` forms fall through
+// to subsequent slices.
+func buildTitleNxEpisode(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
+	seasonText, _ := extractGroupSpan(re, m, "season", title)
+	season, ok := ParseNumber(seasonText)
+	if !ok {
+		return nil
+	}
+	episodeText, _ := extractGroupSpan(re, m, "episode", title)
+	episode, ok := ParseNumber(episodeText)
+	if !ok {
+		return nil
+	}
+
+	titleText, _ := extractGroupSpan(re, m, "title", title)
+	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
+	titleText = strings.TrimSpace(titleText)
+
+	info := NewParsedEpisodeInfo()
+	info.SeriesTitle = titleText
+	info.SeasonNumber = season
+	info.EpisodeNumbers = []int{episode}
 	return info
 }
 

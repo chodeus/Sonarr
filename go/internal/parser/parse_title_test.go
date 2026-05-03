@@ -217,6 +217,52 @@ func TestParseTitle_AnimeAbsolute(t *testing.T) {
 	}
 }
 
+// TestParseTitle_NxEpisode ports cases from
+// `SingleEpisodeParserFixture.cs` that match the `<Title> <N>x<NN>`
+// form (rule 5 in reportTitleRules). Also covers raw `1x05` no-title
+// forms via the existing no-title single rule.
+func TestParseTitle_NxEpisode(t *testing.T) {
+	cases := []struct {
+		title       string
+		wantTitle   string
+		wantSeason  int
+		wantEpisode int
+	}{
+		// from SingleEpisodeParserFixture
+		{"Series.Title.4x05.HDTV.XviD-LOL", "Series Title", 4, 5},
+		{"Series_Title!_-_7x6_-_The_Scarlett_Getter_[SDTV]", "Series Title!", 7, 6},
+		{"Series_Title_-_1x1_-_Live_and_Learn_[HDTV-720p]", "Series Title", 1, 1},
+		{"Series - 2x12 - The Choice [HDTV-1080p].mkv", "Series", 2, 12},
+		{"Series - 2x4 - New Car Smell [HDTV-1080p].mkv", "Series", 2, 4},
+		{"Series_Title.19x06.720p_HDTV_x264-FoV", "Series Title", 19, 6},
+		{"The_Big_Series_Title_-_6x12_-_The_Code_Review_Equivalency_[HDTV-720p]", "The Big Series Title", 6, 12},
+		{"Series Title - 10x12 - 24 Hour Propane People [SDTV]", "Series Title", 10, 12},
+
+		// no-title raw `Nx<NN>` forms — pick up the existing no-title
+		// single rule (`S?` makes the leading S optional)
+		{"1x04", "", 1, 4},
+		{"5x10 WS PDTV XviD FUtV", "", 5, 10},
+		{"01x04 - Halloween, Part 1 - 720p WEB-DL", "", 1, 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.title, func(t *testing.T) {
+			got := parser.ParseTitle(tc.title)
+			if got == nil {
+				t.Fatalf("ParseTitle(%q) = nil, want a result", tc.title)
+			}
+			if got.SeasonNumber != tc.wantSeason {
+				t.Errorf("SeasonNumber = %d, want %d", got.SeasonNumber, tc.wantSeason)
+			}
+			if len(got.EpisodeNumbers) != 1 || got.EpisodeNumbers[0] != tc.wantEpisode {
+				t.Errorf("EpisodeNumbers = %v, want [%d]", got.EpisodeNumbers, tc.wantEpisode)
+			}
+			if tc.wantTitle != "" && got.SeriesTitle != tc.wantTitle {
+				t.Errorf("SeriesTitle = %q, want %q", got.SeriesTitle, tc.wantTitle)
+			}
+		})
+	}
+}
+
 func TestParseSeriesName(t *testing.T) {
 	cases := []struct {
 		title string
