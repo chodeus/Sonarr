@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language registry + quality registry + Revision/QualityModel + ParseRevision + ParseResolution + ParseCodec + IsRemux + ParseSource + misc QualityParser predicates; 5 ParserTests fixtures ported).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE: title normalisers + language registry + quality registry + Revision/QualityModel + ParseRevision + ParseResolution + ParseCodec + IsRemux + ParseSource + misc predicates + ParseQualityName end-to-end; QualityParserFixture representative subset ported).
 
 ## Where to resume
 
@@ -221,6 +221,35 @@ Final pre-`ParseQualityName` slice. Six small support regexes ported as predicat
 6 tests / ~70 cases drawn from QualityParserFixture rows where each predicate's classification is the discriminating factor: HR-WS PDTV (lines 149-150), MPEG2-TrollHD (lines 386-393), HorribleSubs `[Web]` (96, 212-213, 255, 286), LostYears/Netaro `(WEB ` (256, 260), FFF/coldhell `[BD]` and `[BD720p]/[BD1080p]` (311-312, 332-333), HD.TV/SD.TV final-fallback (461-462). Plus separator-class permutations (`-`, `_`, `.`, ` `), case-sensitivity pins (MPEG2 case-sensitive; everything else case-insensitive), and the IsAnimeBluray bare-`bd` separator-anchor edge cases. Lint clean; full suite green on both engines under `-race -p 1`.
 
 C# behavioural quirks preserved: the asymmetric paren/bracket pairing in IsAnimeBluray arm 2 (`(`/`)` and `[`/`]` only — never `(`/`]` or `[`/`)`), and the case-SENSITIVITY of MPEG2Regex (declared without IgnoreCase in the C# tree even though every other QualityParser regex IS case-insensitive — preserved verbatim because lowercase `mpeg2` does not appear in real release names per the fixture).
+
+#### 2.9 — ParseQuality + QualityFinder + MediaFileExtensions ✅ shipped (2026-05-03)
+
+QualityParser slice complete. Three new modules wired together to produce the full `quality.ParseQuality(name) Model` end-to-end:
+
+- `internal/quality/finder.go` — `FindBySourceAndResolution(source, resolution) Quality`. Mirrors `QualityFinder.FindBySourceAndResolution` at `src/NzbDrone.Core/Qualities/QualityFinder.cs:11-52`. Three-step decision: exact-match, sub-720 source-specific fallback (Television→SDTV, Web→WEBDL480p, WebRip→WEBRip480p), nearest-source-at-resolution scan. The C# logger warning on the fallback path is omitted because logging infrastructure isn't wired through in this package yet — caller-side logging will be added when the service layer lands.
+
+- `internal/quality/extensions.go` — `GetQualityForExtension(ext) Quality` plus the 43-entry `extensionQualities` map. Mirrors `MediaFileExtensions._fileExtensions` + `GetQualityForExtension` at `src/NzbDrone.Core/MediaFiles/MediaFileExtensions.cs:11-84`. **Naming exception**: the C# tree puts this in `NzbDrone.Core.MediaFiles`; the Go port colocates here because `quality.ParseQuality` is the only consumer and a separate `internal/mediafiles` package would create an import cycle (mediafiles would import quality for the Quality type; quality.ParseQuality needs mediafiles for the lookup). When the broader MediaFiles namespace lands in a later phase, this map can be moved out and re-exported via a small forwarding package. Decision noted in the file's package comment.
+
+- `internal/quality/parse.go` — `ParseQuality(name) Model` + `ParseQualityName(name) Model`. Mirrors `QualityParser.ParseQuality` + `ParseQualityName` at `QualityParser.cs:68-598`. The control flow follows the C# source line-for-line (each labelled section cites the source line ranges) so a future sync against the C# tree is direct. The decision matrix dispatches on `SourceTag` (the parser-side classification from Phase 2.7) into per-source sub-trees: Bluray decision tree, WebDL/WebRip/HDTV resolution-mapped, BDRip/BRRip → Bluray-by-resolution, DVD passthrough, DSR/PDTV/SDTV/TVRip with `containsCI` resolution-token fallback. After the source-driven branches: source-less remux fallback (resolution determines Bluray sub-quality), anime Bluray + anime WebDL fallbacks, resolution-only fallback (with extension-driven source guess), bare x264 → SDTV, 848x480/1280x720/1920x1080 token fallbacks, bluray720p/1080p/2160p concatenated-token fallback, final HD-TV/SD-TV via OtherSourceRegex.
+
+Two helper utilities live alongside:
+
+- `containsCI(s, substr) bool` — case-insensitive substring check mirroring C# `ContainsIgnoreCase`. Inlined byte-loop avoids two `strings.ToLower` allocations per call (called many times across the decision matrix).
+- `getPathExtension(path)` — substring-from-last-dot, mirroring `string.GetPathExtension()` at `src/NzbDrone.Common/Extensions/PathExtensions.cs:74-83`. NOT equivalent to Go's `filepath.Ext` because the Sonarr helper operates on the full string regardless of `\`/`/` separators.
+- `containsInvalidPathChars(s) bool` — mirrors `string.ContainsInvalidPathChars()` (delegates to .NET `Path.GetInvalidPathChars`'s cross-platform set: control chars 0x00–0x1F + `|`). Used in ParseQuality + the resolution-only fallback to skip the extension-lookup branch when `Path.GetExtension` would refuse the input — preserves the C# try/catch semantic without actually throwing.
+
+Tests: ~70 cases across 6 test functions — `TestParseQuality_FixtureRows` (~50 cases drawn 3-5 per fixture method from QualityParserFixture rows), `TestParseQuality_DetectionSources` (~13 cases from the `should_parse_*_from_*` methods), `TestParseQuality_RepackVersion`, `TestParseQuality_AnimeVersion`, `TestParseQuality_EmptyInput`, `TestParseQuality_SelfQualityEnumName` (16 cases — `My series S01E01 [<Quality.Name>]` for each canonical Quality, exercising the resolution-only fallback paths plus the Bluray720p/1080p/2160p concatenated-token fallbacks). Plus `TestFindBySourceAndResolution` (~14 cases pinning the three-step decision) and `TestGetQualityForExtension` (~18 cases sampling each Quality bucket + case-insensitive lookup + negatives).
+
+All tests passed first run (the line-for-line port from C# was reliable). Lint clean; full suite green on both engines under `-race -p 1`.
+
+What's deferred:
+
+- Logger.Warn in FindBySourceAndResolution's fallback path — needs a logger pointer wired through when the service layer lands.
+- MediaFileExtensions colocation in `internal/quality` — should move to `internal/mediafiles` when that namespace ports in a later phase.
+- Padding the should_parse_*_quality test tables out to the full ~150 fixture rows (only 3-5 per method ported in this commit) — drift-prevention pad can land as a follow-up.
+- ParseQuality's Logger.Debug start-of-call message — same logger-not-wired-yet reason.
+
+Phase 2 status after 2.9: NzbDrone.Core.Parser.QualityParser is COMPLETE. Remaining Phase 2 work per the strategic plan: LanguageParser (8 regexes, 612-line fixture), ReleaseGroupParser (6 regexes incl. backreferences + ParserCommon.PreSubstitutionRegex helper with 14 Chinese-anime patterns + negative lookaround), ParseTitle proper (the 104-element ReportTitleRegex[] array — the heaviest single chunk).
 
 ### Phase 1 — Foundations ✅ done
 
