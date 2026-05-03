@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language registry + quality registry + Revision/QualityModel + ParseRevision; 4 ParserTests fixtures ported).
+Last updated: 2026-05-03 (Phase 1 done; Phase 2 underway — title normalisers + language registry + quality registry + Revision/QualityModel + ParseRevision + ParseResolution; 5 ParserTests fixtures ported).
 
 ## Where to resume
 
@@ -144,7 +144,21 @@ RE2 reformulation note: the C# `VersionRegex` uses 5 duplicate `(?<version>\d)` 
 
 6 tests covering: REPACK / RERIP / PROPER from `should_be_able_to_parse_repack` fixture (6 cases verbatim); anime `[v2]` tag from `should_be_able_to_parse_anime_version`; default v1 on a plain name; case-sensitive REAL (1 match, 2 matches counted, lowercase ignored, titlecase ignored); PROPER+vN combine to bump beyond captured (e.g. `[v2]+PROPER → 3`); underscore→space normalisation lets PROPER and REPACK match across `Series_Title_PROPER` shapes.
 
-What's deferred: the rest of `QualityParser` — `SourceRegex` / `ResolutionRegex` / `CodecRegex` / `RawHDRegex` / `RemuxRegex` / `OtherSourceRegex` / `AnimeBlurayRegex` / `AnimeWebDlRegex` / `MPEG2Regex` / `HighDefPdtvRegex` / `AlternativeResolutionRegex` plus the per-source decision matrix at `ParseQualityName`. Each subsequent commit will port a focused slice with its corresponding `should_parse_X_quality` cases from the 522-line fixture.
+What's deferred: the rest of `QualityParser` — `SourceRegex` / `CodecRegex` / `RawHDRegex` / `RemuxRegex` / `OtherSourceRegex` / `AnimeBlurayRegex` / `AnimeWebDlRegex` / `MPEG2Regex` / `HighDefPdtvRegex` plus the per-source decision matrix at `ParseQualityName`. Each subsequent commit will port a focused slice with its corresponding `should_parse_X_quality` cases from the 522-line fixture.
+
+#### 2.5 — ParseResolution ✅ shipped (2026-05-03)
+
+Second slice of `QualityParser`. Resolution detection from a release name; mirrors `QualityParser.ParseResolution` at `QualityParser.cs:600-651` plus the `ResolutionRegex` and `AlternativeResolutionRegex` declarations.
+
+`quality.ParseResolution(name) Resolution` returns one of `ResolutionUnknown` / 360p / 480p / 540p / 576p / 720p / 1080p / 2160p:
+
+1. Match `ResolutionRegex` (the main 7-branch alternation: `360p`, `480p|480i|640x480|848x480`, `540p`, `576p`, `720p|1280x720|960p`, `1080p|1920x1080|1440p|FHD|1080i|4kto1080p`, `2160p|3840x2160|4k[-_. ](?:UHD|HEVC|BD|H265)|(?:UHD|HEVC|BD|H265)[-_. ]4k`). Each branch has a UNIQUE group name; RE2 compiles directly with no rewrite.
+2. Fallback to `AlternativeResolutionRegex` (`UHD` or `[4K]`) — a match implies 2160p. The C# original uses two `(?<R2160p>...)` groups with the SAME name; RE2 rejects duplicates so the Go port elides the names since both branches map to the same Resolution.
+3. Otherwise `ResolutionUnknown`.
+
+Group-priority order (R360p → R2160p) is preserved through a small lookup table; SubexpIndex is precomputed at package init so the hot path doesn't pay the lookup cost.
+
+3 tests / ~30 cases: ParseResolution table covering every spelling per resolution drawn from `should_parse_*_quality` fixtures (`[480p]`, `848x480`, `1280x720`, `1920x1080`, `1080i`, `FHD`, `1440p`, `3840x2160`); UHD / [4K] alternative-path cases; leftmost-match-wins behaviour with overlapping tags; `4k UHD` / `UHD 4k` / `4k HEVC` patterns inside the R2160p branch (not via the alternative path); empty / no-resolution → Unknown.
 
 ### Phase 1 — Foundations ✅ done
 
