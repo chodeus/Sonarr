@@ -332,6 +332,80 @@ func TestParseTitle_3DigitEpisode(t *testing.T) {
 	}
 }
 
+// TestParseTitle_MiniSeries ports cases from `MiniSeriesEpisodeParserFixture.cs`.
+// Covers the `Part N` form (Parser.cs:228) plus the `<Title>.<Year>.E<NN>`
+// form (Parser.cs:224-style). Asserts season=1, IsMiniSeries=true,
+// and the matching episode number. The `kill-roy-was-here-e07-720p`
+// form (no Part keyword, dash-separated `e07`) is deferred to a
+// later slice.
+func TestParseTitle_MiniSeries(t *testing.T) {
+	cases := []struct {
+		title       string
+		wantTitle   string
+		wantEpisode int
+	}{
+		{"The.Big.Series.Leader.Part.2.DSR.XviD-SYS", "The Big Series Leader", 2},
+		{"Series and Show 2012 Part 1 REPACK 720p HDTV x264 2HD", "Series and Show 2012", 1},
+		{"Series Show.2016.E04.Power.720p.WEB-DL.DD5.1.H.264-MARS", "Series Show 2016", 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.title, func(t *testing.T) {
+			got := parser.ParseTitle(tc.title)
+			if got == nil {
+				t.Fatalf("ParseTitle(%q) = nil, want a result", tc.title)
+			}
+			if got.SeasonNumber != 1 {
+				t.Errorf("SeasonNumber = %d, want 1", got.SeasonNumber)
+			}
+			if len(got.EpisodeNumbers) != 1 || got.EpisodeNumbers[0] != tc.wantEpisode {
+				t.Errorf("EpisodeNumbers = %v, want [%d]", got.EpisodeNumbers, tc.wantEpisode)
+			}
+			if got.SeriesTitle != tc.wantTitle {
+				t.Errorf("SeriesTitle = %q, want %q", got.SeriesTitle, tc.wantTitle)
+			}
+			if !got.IsMiniSeries {
+				t.Errorf("IsMiniSeries = false, want true")
+			}
+		})
+	}
+}
+
+// TestParseTitle_KoreanF1RST_NEXT ports `should_parse_korean_series_episode`
+// fixture rows from MiniSeriesEpisodeParserFixture. Wired through
+// PreSubstitutionRegex rule 1 (Korean F1RST/NEXT) which reshapes
+// `<Title>.E<NN>.<airdate6>.<rest>-<F1RST|NEXT>` into
+// `<Title>.S01E<NN>.<rest>-<F1RST|NEXT>` before the ReportTitleRegex
+// rules run.
+func TestParseTitle_KoreanF1RST_NEXT(t *testing.T) {
+	cases := []struct {
+		title       string
+		wantTitle   string
+		wantEpisode int
+	}{
+		{"It's a Series Title.E56.190121.720p-NEXT.mp4", "It's a Series Title", 56},
+		{"My Only Series Title.E37.190120.1080p-NEXT.mp4", "My Only Series Title", 37},
+		{"Series.E191.190121.720p-NEXT.mp4", "Series", 191},
+		{"The Series Title Challenge.E932.190120.720p-NEXT.mp4", "The Series Title Challenge", 932},
+	}
+	for _, tc := range cases {
+		t.Run(tc.title, func(t *testing.T) {
+			got := parser.ParseTitle(tc.title)
+			if got == nil {
+				t.Fatalf("ParseTitle(%q) = nil, want a result", tc.title)
+			}
+			if got.SeasonNumber != 1 {
+				t.Errorf("SeasonNumber = %d, want 1", got.SeasonNumber)
+			}
+			if len(got.EpisodeNumbers) != 1 || got.EpisodeNumbers[0] != tc.wantEpisode {
+				t.Errorf("EpisodeNumbers = %v, want [%d]", got.EpisodeNumbers, tc.wantEpisode)
+			}
+			if got.SeriesTitle != tc.wantTitle {
+				t.Errorf("SeriesTitle = %q, want %q", got.SeriesTitle, tc.wantTitle)
+			}
+		})
+	}
+}
+
 func TestParseSeriesName(t *testing.T) {
 	cases := []struct {
 		title string

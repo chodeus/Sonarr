@@ -32,6 +32,16 @@ func ParseTitle(title string) *ParsedEpisodeInfo {
 	// Go port pre-strips here so all rule regexes see consistent input.)
 	titleNoExt := RemoveFileExtension(title)
 
+	// Apply PreSubstitutionRegex (the same rules ReleaseGroupParser
+	// uses). Mirrors the C# pattern of "the foreach + TryReplace +
+	// break" applied to ParseTitle's input so Korean F1RST/NEXT
+	// titles like `It's a Series Title.E56.190121.720p-NEXT.mp4` get
+	// reshaped to `It's a Series Title.S01E56.720p-NEXT.mp4` before
+	// the ReportTitleRegex rules run. The C# tree applies this
+	// implicitly via the SimplifyTitle path; the Go port wires it in
+	// here pending the full SimplifyTitle pipeline.
+	titleNoExt = applyPreSubstitution(titleNoExt)
+
 	for _, rule := range reportTitleRules {
 		m := rule.Re.FindStringSubmatchIndex(titleNoExt)
 		if m == nil {

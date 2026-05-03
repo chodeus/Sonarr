@@ -175,6 +175,47 @@ var reportTitleRules = []rgRule{
 		Build: buildTitleSeasonEpisode,
 	},
 
+	// `Parser.cs:224`-style — Mini-Series with year in title +
+	// E<NN> (e.g. `Series Show.2016.E04.Power.720p...`). Listed
+	// BEFORE the 3/4-digit shortcuts so the year isn't misread as
+	// season+episode (without this rule, `2016.E04` would let the
+	// 4-digit shortcut interpret `2016` as season=20 episode=16).
+	// Title CAPTURES the year, mirroring the C# fixture's
+	// `title="Series Show 2016"` expectation at MiniSeriesEpisodeParserFixture.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?[-_. ]\d{4})[-_. ]+E(?P<episode>\d{1,3})(?:[-_. ]|$)`,
+		),
+		Build: buildMiniSeriesYearE,
+	},
+
+	// `Parser.cs:228` — Mini-Series, treated as season 1, episodes
+	// labelled as `Part 01` / `Part.1` / `Part-01`. Listed BEFORE
+	// the 3/4-digit shortcuts so a `Part 01` form doesn't get
+	// misclassified as season+episode. Mini-series fixture cases:
+	//   `The.Big.Series.Leader.Part.2.DSR.XviD-SYS` → S1E2
+	//   `Series and Show 2012 Part 1 REPACK 720p HDTV x264 2HD` → S1E1
+	//
+	// C# original:
+	//
+	//	^(?<title>.+?)(?:\W+(?:[-_. ]Part[-_. ](?<episode>\d{1,2}(?!\d+))))
+	//
+	// Plus `Parser.cs:224`'s mini-series-with-year variant:
+	//
+	//	^(?<title>.+?\W(?<year>\d{4}))\W+(?:(?:Part|Pt)[-_. ]?(?<episode>\d{1,2}(?!\d+)))
+	//
+	// The Go port merges both via the broader `Part|Pt` separator
+	// and the unified title pattern. The `(?!\d+)` lookahead is
+	// dropped — `\d{1,2}` is greedy 1-2 digits and the trailing
+	// non-greedy match (or the `\W+` separator that typically
+	// follows) constrains the episode count.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?)[-_. \W]+(?:Part|Pt)[-_. ]?(?P<episode>\d{1,2})(?:\W|$)`,
+		),
+		Build: buildMiniSeriesPart,
+	},
+
 	// `Parser.cs:336` — Supports 103/113 naming. Title + 3-digit
 	// episode shortcut where 1 digit is season and 2 digits are
 	// episode. Listed AFTER the more-specific S-E and Nx rules so
@@ -373,6 +414,50 @@ func buildDailyAirdate(re *regexp.Regexp, m []int, title string) *ParsedEpisodeI
 	info := NewParsedEpisodeInfo()
 	info.SeriesTitle = titleText
 	info.AirDate = yearText + "-" + monthText + "-" + dayText
+	return info
+}
+
+// buildMiniSeriesYearE extracts (title-with-year, episode) from a
+// `<Title>.<Year>.E<NN>` form. season=1, IsMiniSeries=true.
+func buildMiniSeriesYearE(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
+	titleText, _ := extractGroupSpan(re, m, "title", title)
+	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
+	titleText = strings.TrimSpace(titleText)
+
+	episodeText, _ := extractGroupSpan(re, m, "episode", title)
+	episode, ok := ParseNumber(episodeText)
+	if !ok {
+		return nil
+	}
+
+	info := NewParsedEpisodeInfo()
+	info.SeriesTitle = titleText
+	info.SeasonNumber = 1
+	info.EpisodeNumbers = []int{episode}
+	info.IsMiniSeries = true
+	return info
+}
+
+// buildMiniSeriesPart extracts (title, episode) from a `<title> Part <N>`
+// form and assembles a mini-series ParsedEpisodeInfo with season=1 and
+// IsMiniSeries=true. Mirrors `Parser.cs:1068-1073`'s mini-series
+// classification path in ParseMatchCollection.
+func buildMiniSeriesPart(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
+	titleText, _ := extractGroupSpan(re, m, "title", title)
+	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
+	titleText = strings.TrimSpace(titleText)
+
+	episodeText, _ := extractGroupSpan(re, m, "episode", title)
+	episode, ok := ParseNumber(episodeText)
+	if !ok {
+		return nil
+	}
+
+	info := NewParsedEpisodeInfo()
+	info.SeriesTitle = titleText
+	info.SeasonNumber = 1
+	info.EpisodeNumbers = []int{episode}
+	info.IsMiniSeries = true
 	return info
 }
 
