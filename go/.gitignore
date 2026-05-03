@@ -1,8 +1,8 @@
 # Compiled binaries
 /bin/
 /dist/
-sonarr
-sonarr-update
+/sonarr
+/sonarr-update
 
 # Go workspaces
 go.work
