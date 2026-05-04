@@ -51,9 +51,10 @@ import (
 // Service wraps the Repo with the higher-level surface the rest of
 // the app consumes.
 type Service struct {
-	repo *Repo
-	bus  *messaging.Bus
-	now  func() time.Time
+	repo  *Repo
+	bus   *messaging.Bus
+	queue *Queue
+	now   func() time.Time
 }
 
 // NewService builds a Service. `bus` may be nil to skip publishing.
@@ -73,6 +74,16 @@ func (s *Service) SetClock(f func() time.Time) {
 		return
 	}
 	s.now = f
+}
+
+// SetQueue wires the in-memory dispatcher buffer (Phase 3.11). When
+// set, [Service.Push] / [Service.PushMany] enqueue every newly-
+// inserted row so the dispatcher can pick it up, and [Service.Cancel]
+// drops the row from the in-memory pending set so the dispatcher
+// won't run a Cancelled command. Pass nil to detach (rare; useful in
+// tests that swap registries).
+func (s *Service) SetQueue(q *Queue) {
+	s.queue = q
 }
 
 // Push ports `CommandQueueManager.Push<TCommand>(...)` at
@@ -106,6 +117,9 @@ func (s *Service) Push(ctx context.Context, name, body string, priority Priority
 	}
 	if _, err := s.repo.Insert(ctx, row); err != nil {
 		return nil, fmt.Errorf("commands: Push(%q): %w", name, err)
+	}
+	if s.queue != nil {
+		s.queue.Add(row)
 	}
 	return row, nil
 }
@@ -155,6 +169,9 @@ func (s *Service) PushMany(ctx context.Context, items []PushItem) ([]*Command, e
 		}
 		if _, err := s.repo.Insert(ctx, row); err != nil {
 			return nil, fmt.Errorf("commands: PushMany(%q): %w", item.Name, err)
+		}
+		if s.queue != nil {
+			s.queue.Add(row)
 		}
 		out = append(out, row)
 	}
@@ -263,7 +280,19 @@ func (s *Service) Cancel(ctx context.Context, id int) error {
 	now := s.now()
 	row.EndedAt = &now
 	row.Result = int(ResultUnsuccessful)
-	return s.repo.End(ctx, row, now)
+	if err := s.repo.End(ctx, row, now); err != nil {
+		return err
+	}
+	if s.queue != nil {
+		// The DB row is now Cancelled; drop the in-memory copy so the
+		// dispatcher doesn't pick it up. The queue's RemoveIfQueued
+		// only matches rows still in the Queued state, which is what
+		// we want — a Started row was already pulled and is being
+		// run by the dispatcher (cancellation propagation into a
+		// running handler is a Phase 3.12 follow-up).
+		s.queue.RemoveIfQueued(id)
+	}
+	return nil
 }
 
 // ErrCannotCancel is returned by Cancel when the row is not in the

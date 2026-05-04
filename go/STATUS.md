@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-05 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery — modulo deferred in-memory queue + IExecute<T> dispatch) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: typed MediaInfo column on episodefiles.File (separate slice, touches Mapper + every read/write site). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
+Last updated: 2026-05-05 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler) + commands in-memory Queue + Dispatcher 3.11 (CommandQueue + CommandExecutor port: cond-blocked TryGet with priority/disk/long-running/exclusive gating, single-worker Dispatcher.Run with handler registry + panic-recovered Execute, Service.SetQueue wires Push/PushMany/Cancel into the in-memory queue — modulo deferred per-handler concurrency + cancellation propagation into running handlers). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: typed MediaInfo column on episodefiles.File (separate slice, touches Mapper + every read/write site). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
 
 ## Where to resume
 
@@ -2788,6 +2788,144 @@ roundtrips, SetFileID auto-forget, and every read+mutation
 pass-through.
 
 ### Phase 3 — Service / Workflow layer ⏳ in progress
+
+#### 3.11 — commands in-memory Queue + Dispatcher ✅ shipped (2026-05-05)
+
+Closes the deferred items called out in 3.9: the in-memory
+`CommandQueue` enumerator and the `IExecute<T>` reflection dispatch
+loop. Ports two C# files end-to-end:
+
+- `src/NzbDrone.Core/Messaging/Commands/CommandQueue.cs:1-224`
+- `src/NzbDrone.Core/Messaging/Commands/CommandExecutor.cs:1-143`
+
+`internal/commands/queue.go` — Queue is a `[]*Command` slice behind a
+`sync.Mutex` + `sync.Cond` (the C# uses `lock` + `Monitor.PulseAll`;
+same shape, idiomatic Go primitives). API:
+
+- `Add(c)` / `AddMany(cs)` → `CommandQueue.cs:21-29`. Pulse-broadcasts
+  cond on every push.
+- `Pull(ctx)` is the blocking consumer — ports `TryGet` at `:147-222`.
+  On entry it spawns a one-shot watcher that broadcasts the cond when
+  ctx cancels, then loops: tryGet under the lock, return on success,
+  Wait on cond otherwise. Returns `ctx.Err()` on cancel,
+  `ErrQueueClosed` on Close.
+- `tryGetLocked` mirrors the C# eligibility filter verbatim:
+  - When any Started command sets `RequiresDiskAccess`, only non-disk
+    queued commands are eligible.
+  - Else when any Started is `IsLongRunning`, only non-exclusive
+    queued candidates are eligible.
+  - Sort eligibles by Priority DESC, QueuedAt ASC (SliceStable so
+    insertion order wins on tie).
+  - If any Started is `IsExclusive`, hold (return nil → block).
+  - If candidate is `IsExclusive` and Started set is non-empty, hold.
+  - Otherwise stamp StartedAt + flip Status=Started in place; return.
+- `RemoveIfQueued(id)` → `:78-96`. Drops a Queued (not Started) row.
+  Used by Service.Cancel.
+- `RemoveCompleted(id)` — drops a row in any terminal state. Called
+  by the dispatcher after Service.Complete/Fail returns. The C# tree
+  doesn't explicitly remove (the row drops out of the queue at
+  consume time); the Go-port keeps Started rows in the slice so
+  `Find` and `QueuedOrStarted` see them, then drops them once
+  terminal.
+- `Find` / `All` / `Len` / `QueuedOrStarted` mirror the C# read
+  accessors (`:48-63`, `:98-102`).
+- `Close` marks drained; pending Pulls return ErrQueueClosed on
+  next iteration.
+
+The three eligibility flags (`RequiresDiskAccess` / `IsExclusive` /
+`IsLongRunning`) live on the C# Command base class as virtual
+properties. The Go-port stores Body as opaque JSON, so the queue
+asks a host-supplied `func(name string) QueueProperties` for them
+keyed by command Name. The same registry feeds both Queue and
+Dispatcher (see [CommandRegistry] below).
+
+`internal/commands/dispatcher.go` — single-worker drain loop. Phase
+3.11 ships one worker; per-handler concurrency (the C#
+`THREAD_LIMIT = 3`) is deferred. API:
+
+- `Handler` interface — `Execute(ctx, body string) error`. Replaces
+  the C# reflection-driven `IServiceFactory.Build(typeof(IExecute<T>))`
+  with an explicit registration table keyed by command Name. Body is
+  the same JSON string the host produced when calling `Service.Push`;
+  decoding is the handler's responsibility.
+- `HandlerFunc` adapter for inline closures.
+- `CommandSpec` carries `Handler` + the three eligibility flags;
+  one entry per command Name.
+- `CommandRegistry` (Register/Properties/Lookup) is the host-owned
+  map. `Register` panics on empty name / nil handler — boot-time
+  setup error, not a runtime condition. `Properties` returns
+  zero-value flags for unregistered names (matches the C# default
+  for any command that doesn't override the virtual properties).
+- `Dispatcher.Run(ctx)` — `for { c, err := queue.Pull(ctx); if err
+  return; dispatch(c) }`. Returns nil cleanly on ctx cancel or
+  ErrQueueClosed; other queue errors propagate. Per-command errors
+  are absorbed via Service.Fail and never break the loop.
+- `dispatch` per-command sequence ports `CommandExecutor.cs:65-116`:
+  registry.Lookup → missing handler triggers Fail(ErrNoHandler);
+  Service.Start; runHandler with panic recovery; Service.Complete on
+  nil err / Service.Fail on non-nil; queue.RemoveCompleted to drop
+  the row.
+- `runHandler` wraps Execute with `defer recover()`; converts panics
+  to errors carrying the recovered value + `debug.Stack()` so the
+  Exception column captures the stack trace at the panic site.
+- CommandExecutedEvent publish stays in Service.Complete/Fail (already
+  shipped in 3.9); the dispatcher does not double-publish.
+
+`internal/commands/service.go` updates — adds `queue` field +
+`SetQueue(*Queue)`. When set:
+
+- `Push` / `PushMany` call `queue.Add` after every fresh insert. The
+  DB-side dedup at `findExisting` still wins (no enqueue when dedup
+  hits) so DB and queue stay in sync.
+- `Cancel` calls `queue.RemoveIfQueued(id)` after the DB transition
+  to Cancelled, so the dispatcher won't pick up a cancelled row.
+  Cancellation propagation into a running (Started) handler is a
+  Phase 3.12 follow-up — the Go pattern (ctx.Cancel? per-command
+  cancel func?) lands when the first long-running handler ports.
+
+C# behavioural quirk preserved: `CommandRepository.End` at `:58-61`
+only persists 4 columns (EndedAt, Status, Duration, Exception). The
+Result column never round-trips on Complete — its in-memory value is
+correct (Service.Complete sets `ResultSuccessful` when Unknown), but
+DB readers see the Insert-time value. Listeners that need Result
+should consume `CommandExecutedEvent` (which carries the in-memory
+pointer) rather than re-fetching via Service.Get. The dispatcher
+tests for Result go through the event for that reason.
+
+Deferred (called out in commit body):
+
+- Per-handler concurrency tuning — single-worker dispatcher in 3.11.
+  Per-command-type parallelism (or the C# 3-thread pool replication)
+  is host-side wiring once the first long-running handler ports.
+- Cancellation propagation from `Service.Cancel` into a Started
+  handler — pick the Go pattern (handler context cancel? per-command
+  cancel registry?) in Phase 3.12.
+- `ProgressMessageContext` + `CommandUpdatedEvent` — owned by the
+  SignalR slice in Phase 5. The C# CommandExecutor publishes
+  CommandUpdatedEvent + maintains ProgressMessageContext; the Go
+  port lands it when SignalR ports.
+
+Tests:
+
+- `queue_test.go` (15 functions): Add+Pull happy, priority ordering,
+  QueuedAt tiebreak, disk-access gate, long-running gate, started-
+  exclusive blocks all, exclusive-candidate waits for started set,
+  RemoveIfQueued accept+reject, RemoveIfQueued rejects Started,
+  Pull on cancelled ctx, Pull cancel while waiting, Close drains
+  waiters, AddMany skips nils + wakes once, Find+All snapshot,
+  QueuedOrStarted snapshot, SetClock pin, concurrent
+  producer-consumer 50× under -race.
+- `dispatcher_test.go` (10 functions): happy path with body+event
+  assertion, handler error → Fail with Exception, handler panic →
+  Fail with stack trace + dispatcher survives, no-handler → Fail,
+  priority respected when dispatcher unblocks, boot re-push from
+  HandleApplicationStarted (orphan flips, queued rows feed into
+  queue, dispatcher drains them), ctx cancel stops cleanly,
+  Service.Cancel removes from queue, registry panics on bad input,
+  NewDispatcher nil guards.
+
+  internal/commands:  ok  (-race -p 1, both engines)
+  golangci-lint:      0 issues
 
 #### 3.10 — scheduledtasks.Service (TaskManager port) ✅ shipped (2026-05-05)
 
