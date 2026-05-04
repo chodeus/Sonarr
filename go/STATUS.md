@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.36 — parser pipeline COMPLETE; both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; TagService + AutoTaggingService + CustomFormatService + DelayProfileService + NamingConfigService + CustomFilterService + ImportListExclusionService + QualityDefinitionService + ReleaseProfileService + LifecycleService shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, RemotePathMappingService).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.37 — parser pipeline COMPLETE; both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; TagService + AutoTaggingService + CustomFormatService + DelayProfileService + NamingConfigService + CustomFilterService + ImportListExclusionService + QualityDefinitionService + ReleaseProfileService + LifecycleService shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, RemotePathMappingService).
 
 ## Where to resume
 
@@ -2645,6 +2645,37 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.37 — series.ShouldRefresh pure function (ShouldRefreshSeries port) ✅ shipped (2026-05-04)
+
+Ports `Tv/ShouldRefreshSeries.cs:24-77` as a pure function in
+the series package. The C# class injects IEpisodeService to
+load episodes inside the method; the Go port lifts the dep out so
+the caller passes the episode set directly, keeping the function
+trivially testable.
+
+Decision tree (faithful to C#):
+1. LastInfoSync older than 30 days → refresh.
+2. ANY aired in-season (SeasonNumber > 0) episode whose Title is
+   "TBA" (case-sensitive Ordinal compare) → refresh.
+3. LastInfoSync within last 6 hours → DO NOT refresh.
+4. Status != Ended → refresh.
+5. Most recent episode by AirDateUtc within last 30 days → refresh.
+6. Otherwise → DO NOT refresh.
+
+Nil-or-zero LastInfoSync is treated as "very old" — both rules 1
+and 3 fall through to refresh, matching the C# `DateTime.MinValue`
+default for unset rows. `now` is injected for deterministic tests.
+Nil series returns true ("when in doubt, refresh") matching the
+C# try/catch fallback.
+
+12 tests covering each decision-tree branch + edge cases:
+nil-series safety, nil LastInfoSync, TBA case-sensitivity (lowercase
+"tba" doesn't match), TBA in season 0 (specials) ignored, TBA on
+un-aired episode ignored, Continuing-but-stale, Ended-with-recent-
+episode, Ended-long-ago, Ended-no-episodes.
+
+Lint clean.
 
 #### 2.36 — series.NormalizeTitle (SeriesTitleNormalizer port) ✅ shipped (2026-05-04)
 
