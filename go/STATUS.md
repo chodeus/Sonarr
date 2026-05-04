@@ -1854,6 +1854,86 @@ What's deferred (full CustomFormat engine):
 Lint clean; package tests green; full `-race -p 1` suite skipped
 (touches only the new package).
 
+#### 2.18 — CustomFormat core matching algorithm (Calculate + SpecificationGroup) ✅ shipped (2026-05-04)
+
+Ports the per-type-grouping match loop at
+`CustomFormatCalculationService.cs:147-168` plus
+`SpecificationMatchesGroup.cs`. The seven typed entry-point
+methods (`ParseCustomFormat(RemoteEpisode, ...)`,
+`ParseCustomFormat(EpisodeFile, ...)`, etc.) are each adapter
+shims building a `CustomFormatInput` from a domain type the Go
+port hasn't reached yet — they land alongside their domain
+types. The core algorithm shipped here is what every adapter
+delegates to.
+
+What ships in `customformats/calculate.go`:
+
+1. **`customformats.Format`** — in-memory typed sibling of the
+   persisted `CustomFormat` struct. Carries the same Name +
+   IncludeWhenRenaming bit but with `[]Specification` (typed)
+   instead of opaque JSON. Persisted-spec deserialisation
+   produces `*Format` values from `CustomFormat` rows.
+
+2. **`SpecificationGroup`** + **`SpecificationMatch`** —
+   typed equivalents of the C#
+   `Dictionary<ICustomFormatSpecification, bool>`. Slice-shaped
+   instead of map-shaped because Go's map iteration is
+   randomised and the algorithm benefits from stable order for
+   diagnostic output.
+
+3. **`SpecificationGroup.DidMatch()`** ports the C# `DidMatch`
+   getter. Decoded: a group matches iff (no Required spec
+   unsatisfied) AND (at least one spec satisfied). Empty group
+   returns false (mirrors the C# vacuous-truth quirk:
+   `All(false)` over empty enumerable is true, so the second
+   clause makes the whole expression false).
+
+4. **`Calculate(input, formats) []*Format`** — the core
+   matching loop. Walks every format, groups its specs by Go
+   type (mirrors C# `GroupBy(t => t.GetType())` —
+   `reflect.TypeOf(spec)` for the Go equivalent), computes each
+   group's DidMatch, keeps the format if every group matches.
+   Returns survivors sorted by Name.
+
+5. **`requiredFlag(spec)` reflective extractor** — pulls the
+   `Required` bit from a Specification's embedded
+   `BaseSpecification` field. The Specification interface
+   doesn't expose `Required` directly (the C# interface does);
+   reflection here saves widening the interface or threading
+   internal accessors through. Defensive against future
+   spec types that might not embed `BaseSpecification` —
+   returns (false, false) in that case.
+
+Test coverage in `calculate_test.go` (12 cases):
+
+- Single-spec match picks the right format from a list.
+- Multiple matches sort by Name.
+- Two specs of the SAME type → only one needs to match
+  (within-group OR semantic).
+- Required spec failure kills the format match (even with a
+  sibling spec satisfied).
+- A single-spec format whose only spec fails → all-failed →
+  group fails → format doesn't match.
+- Two specs of DIFFERENT types → both groups must match.
+- Empty Specifications → no match (vacuous-truth quirk).
+- Nil entries in the formats slice are skipped, not
+  dereferenced.
+- Direct SpecificationGroup.DidMatch tests for: all-failed
+  group, mixed-no-required group, required-failed group.
+
+What's deferred:
+
+- The 7 typed adapters (`ParseCustomFormat(RemoteEpisode)`, etc.)
+  — each lands when its domain input type does.
+- Persisted-spec deserialisation (CustomFormat row →
+  *Format conversion via JSON discriminator catalogue).
+- IncludeCustomFormatWhenRenaming wiring (the renamer hasn't
+  been ported yet).
+
+Lint clean (after applying De Morgan's per staticcheck
+QF1001); package tests green; full `-race -p 1` suite skipped
+(touches only the new package).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
