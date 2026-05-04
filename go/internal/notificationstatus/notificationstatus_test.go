@@ -115,6 +115,53 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 	if _, err := repo.Get(t.Context(), 99999); !errors.Is(err, notificationstatus.ErrNotFound) {
 		t.Errorf("Get(missing): %v", err)
 	}
+
+	// Upsert: first call inserts, subsequent calls update in place.
+	up := &notificationstatus.Status{ProviderID: 12, EscalationLevel: 1}
+	if err := repo.Upsert(t.Context(), up); err != nil {
+		t.Fatalf("Upsert(new): %v", err)
+	}
+	if up.ID == 0 {
+		t.Errorf("Upsert(new): ID not populated")
+	}
+	firstID := up.ID
+
+	// Upsert when caller has Id=0 but a row exists for the ProviderId
+	// loads the existing Id and updates — matches the C# semantic
+	// where FindByProviderId precedes Upsert.
+	up2 := &notificationstatus.Status{ProviderID: 12, EscalationLevel: 5}
+	if err := repo.Upsert(t.Context(), up2); err != nil {
+		t.Fatalf("Upsert(existing, Id=0): %v", err)
+	}
+	if up2.ID != firstID {
+		t.Errorf("Upsert: expected to reuse Id %d, got %d", firstID, up2.ID)
+	}
+	got3, _ := repo.Get(t.Context(), firstID)
+	if got3.EscalationLevel != 5 {
+		t.Errorf("post-Upsert EscalationLevel: %d want 5", got3.EscalationLevel)
+	}
+
+	// Upsert with explicit Id is a straight Update.
+	up2.EscalationLevel = 7
+	if err := repo.Upsert(t.Context(), up2); err != nil {
+		t.Fatalf("Upsert(existing, Id set): %v", err)
+	}
+	got4, _ := repo.Get(t.Context(), firstID)
+	if got4.EscalationLevel != 7 {
+		t.Errorf("post-Upsert(Id set) EscalationLevel: %d want 7", got4.EscalationLevel)
+	}
+
+	// DeleteByProviderID removes the row.
+	if err := repo.DeleteByProviderID(t.Context(), 12); err != nil {
+		t.Fatalf("DeleteByProviderID: %v", err)
+	}
+	if _, err := repo.GetByProviderID(t.Context(), 12); !errors.Is(err, notificationstatus.ErrNotFound) {
+		t.Errorf("post-DeleteByProviderID Get: %v", err)
+	}
+	// No-op when no row matches.
+	if err := repo.DeleteByProviderID(t.Context(), 99999); err != nil {
+		t.Errorf("DeleteByProviderID(missing): %v", err)
+	}
 }
 
 func TestRepo_SQLite(t *testing.T) {

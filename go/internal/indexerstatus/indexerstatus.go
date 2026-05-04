@@ -125,6 +125,41 @@ func (r *Repo) GetByProviderID(ctx context.Context, providerID int) (*Status, er
 	return &s, nil
 }
 
+// Upsert inserts when ProviderID has no row, or updates the
+// existing row otherwise. Mirrors C# `BasicRepository.Upsert` at
+// the ProviderStatusServiceBase call-sites; see notificationstatus
+// for the cross-type design notes.
+func (r *Repo) Upsert(ctx context.Context, s *Status) error {
+	if s == nil {
+		return errors.New("indexerstatus: nil value")
+	}
+	if s.ID != 0 {
+		return r.Update(ctx, s)
+	}
+	existing, err := r.GetByProviderID(ctx, s.ProviderID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		_, err := r.Insert(ctx, s)
+		return err
+	case err != nil:
+		return err
+	}
+	s.ID = existing.ID
+	return r.Update(ctx, s)
+}
+
+// DeleteByProviderID removes the row matching the given ProviderId.
+func (r *Repo) DeleteByProviderID(ctx context.Context, providerID int) error {
+	db := r.DB()
+	q := fmt.Sprintf(
+		`DELETE FROM "IndexerStatus" WHERE "ProviderId" = %s`,
+		datastore.Placeholder(db.Engine, 1))
+	if _, err := db.SQL.ExecContext(ctx, q, providerID); err != nil {
+		return fmt.Errorf("indexerstatus: deleteByProviderID(%d): %w", providerID, err)
+	}
+	return nil
+}
+
 func nullableTime(t *time.Time) sql.NullTime {
 	if t == nil {
 		return sql.NullTime{}

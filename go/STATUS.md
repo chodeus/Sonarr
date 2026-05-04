@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.39 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping; series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, full Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, EscalationBackOff constants).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.40 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping; series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; EscalationBackOff constants + Upsert/DeleteByProviderID across the 4 status repos shipped — provider-status base infra ready for ProviderStatusServiceBase port; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, full Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives).
 
 ## Where to resume
 
@@ -2645,6 +2645,53 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.40 — EscalationBackOff + status-repo Upsert/DeleteByProviderID ✅ shipped (2026-05-04)
+
+Pre-work for the ProviderStatusServiceBase port. Two pieces:
+
+1. New shared `internal/providerstatus` package with the
+   EscalationBackOff schedule from
+   `src/NzbDrone.Core/ThingiProvider/Status/EscalationBackOff.cs`.
+   Exposes both forms: `BackOffPeriods []time.Duration` (the
+   ergonomic Go form) and `BackOffPeriodSeconds []int` (the
+   verbatim C# `int[]` — preserved because the C# code subscripts
+   it as integer seconds at a few sites and bridging both forms
+   keeps the per-type service body line-aligned with its C#
+   counterpart). Also exports `MaxEscalationLevel = 9` matching
+   the C# default at `ProviderStatusServiceBase.cs:31`.
+2. `Upsert(ctx, *Status)` and `DeleteByProviderID(ctx, providerID)`
+   added to all 4 status repos (notificationstatus,
+   downloadclientstatus, importliststatus, indexerstatus). Upsert
+   semantic: if `s.ID == 0`, look up the existing row by
+   ProviderId; if found copy the Id and Update; if not found
+   Insert. If `s.ID != 0`, straight Update. This matches the C#
+   `BasicRepository.Upsert` behaviour where the caller has just
+   loaded the row via `FindByProviderId` and either gets a
+   persisted-Id model back or an empty placeholder.
+
+   Concurrent callers must serialise at the service layer — the
+   C# version wraps the FindByProviderId/Upsert pair in a
+   per-service lock. The repo helpers do NOT serialise on their
+   own.
+
+DeleteByProviderID is silent on no-match, mirroring C#
+`BasicRepository.Delete(predicate)` which doesn't error when the
+predicate matches zero rows.
+
+Test corpus: 2 tests in providerstatus pin the BackOffPeriods table
+verbatim against the C# values + parity between the two exposed
+forms. Each of the 4 status repos got Upsert+Delete coverage tacked
+onto the existing `runRepoSuite` so SQLite + Postgres both exercise
+the new methods. Indexerstatus additionally pins that
+LastRssSyncReleaseInfo round-trips through Upsert→Update so the
+indexer-only column survives the path.
+
+Cross-DB green; lint clean. What this unblocks:
+ProviderStatusServiceBase + 4 typed derivatives — the next slice
+will port the generic-over-status-type RecordSuccess /
+RecordFailure / RecordConnectionFailure logic on top of these
+helpers.
 
 #### 2.39 — RemotePathMappingService ✅ shipped (2026-05-04)
 

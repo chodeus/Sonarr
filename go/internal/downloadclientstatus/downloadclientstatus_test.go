@@ -102,6 +102,30 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 	if _, err := repo.Get(t.Context(), 99999); !errors.Is(err, downloadclientstatus.ErrNotFound) {
 		t.Errorf("Get(missing): %v", err)
 	}
+
+	// Upsert insert + reuse-Id-for-existing + update.
+	up := &downloadclientstatus.Status{ProviderID: 21, EscalationLevel: 1}
+	if err := repo.Upsert(t.Context(), up); err != nil {
+		t.Fatalf("Upsert(new): %v", err)
+	}
+	firstID := up.ID
+	up2 := &downloadclientstatus.Status{ProviderID: 21, EscalationLevel: 4}
+	if err := repo.Upsert(t.Context(), up2); err != nil {
+		t.Fatalf("Upsert(existing, Id=0): %v", err)
+	}
+	if up2.ID != firstID {
+		t.Errorf("Upsert reuse Id: got %d want %d", up2.ID, firstID)
+	}
+
+	if err := repo.DeleteByProviderID(t.Context(), 21); err != nil {
+		t.Fatalf("DeleteByProviderID: %v", err)
+	}
+	if _, err := repo.GetByProviderID(t.Context(), 21); !errors.Is(err, downloadclientstatus.ErrNotFound) {
+		t.Errorf("post-DeleteByProviderID Get: %v", err)
+	}
+	if err := repo.DeleteByProviderID(t.Context(), 99999); err != nil {
+		t.Errorf("DeleteByProviderID(missing): %v", err)
+	}
 }
 
 func TestRepo_SQLite(t *testing.T) {

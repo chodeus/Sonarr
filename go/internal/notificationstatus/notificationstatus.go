@@ -111,6 +111,51 @@ func (r *Repo) GetByProviderID(ctx context.Context, providerID int) (*Status, er
 	return &s, nil
 }
 
+// Upsert inserts a new row when the Status carries no Id, or updates
+// the existing row otherwise. Mirrors C# `BasicRepository.Upsert` at
+// the call-sites `ProviderStatusServiceBase.cs:79` and `:136`. If a
+// row for the ProviderId already exists but the caller's `s.ID` is
+// 0, the existing Id is loaded and the row is updated — this matches
+// the C# semantic where `FindByProviderId` is called immediately
+// before Upsert and the returned model carries the persisted Id.
+//
+// Concurrent callers must serialise at the service layer; the C#
+// version wraps the FindByProviderId/Upsert pair in a per-service
+// lock. This repo helper does NOT serialise on its own.
+func (r *Repo) Upsert(ctx context.Context, s *Status) error {
+	if s == nil {
+		return errors.New("notificationstatus: nil value")
+	}
+	if s.ID != 0 {
+		return r.Update(ctx, s)
+	}
+	existing, err := r.GetByProviderID(ctx, s.ProviderID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		_, err := r.Insert(ctx, s)
+		return err
+	case err != nil:
+		return err
+	}
+	s.ID = existing.ID
+	return r.Update(ctx, s)
+}
+
+// DeleteByProviderID removes the row matching the given ProviderId.
+// No-op (no error) if no row matches, mirroring C#
+// `ProviderStatusRepository.DeleteByProviderId` which delegates to
+// `BasicRepository.Delete(predicate)` (silent on empty match).
+func (r *Repo) DeleteByProviderID(ctx context.Context, providerID int) error {
+	db := r.DB()
+	q := fmt.Sprintf(
+		`DELETE FROM "NotificationStatus" WHERE "ProviderId" = %s`,
+		datastore.Placeholder(db.Engine, 1))
+	if _, err := db.SQL.ExecContext(ctx, q, providerID); err != nil {
+		return fmt.Errorf("notificationstatus: deleteByProviderID(%d): %w", providerID, err)
+	}
+	return nil
+}
+
 func nullableTime(t *time.Time) sql.NullTime {
 	if t == nil {
 		return sql.NullTime{}

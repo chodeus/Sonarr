@@ -100,6 +100,36 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 	if _, err := repo.Get(t.Context(), 99999); !errors.Is(err, indexerstatus.ErrNotFound) {
 		t.Errorf("Get(missing): %v", err)
 	}
+
+	// Upsert insert + reuse-Id-for-existing + update. Verifies the
+	// LastRssSyncReleaseInfo column also round-trips through the
+	// Upsert→Update path (the indexer-only column).
+	up := &indexerstatus.Status{ProviderID: 21, EscalationLevel: 1, LastRssSyncReleaseInfo: `{"title":"first"}`}
+	if err := repo.Upsert(t.Context(), up); err != nil {
+		t.Fatalf("Upsert(new): %v", err)
+	}
+	firstID := up.ID
+	up2 := &indexerstatus.Status{ProviderID: 21, EscalationLevel: 4, LastRssSyncReleaseInfo: `{"title":"second"}`}
+	if err := repo.Upsert(t.Context(), up2); err != nil {
+		t.Fatalf("Upsert(existing, Id=0): %v", err)
+	}
+	if up2.ID != firstID {
+		t.Errorf("Upsert reuse Id: got %d want %d", up2.ID, firstID)
+	}
+	gotUp, _ := repo.Get(t.Context(), firstID)
+	if gotUp.LastRssSyncReleaseInfo != `{"title":"second"}` {
+		t.Errorf("LastRssSyncReleaseInfo: %q", gotUp.LastRssSyncReleaseInfo)
+	}
+
+	if err := repo.DeleteByProviderID(t.Context(), 21); err != nil {
+		t.Fatalf("DeleteByProviderID: %v", err)
+	}
+	if _, err := repo.GetByProviderID(t.Context(), 21); !errors.Is(err, indexerstatus.ErrNotFound) {
+		t.Errorf("post-DeleteByProviderID Get: %v", err)
+	}
+	if err := repo.DeleteByProviderID(t.Context(), 99999); err != nil {
+		t.Errorf("DeleteByProviderID(missing): %v", err)
+	}
 }
 
 func TestRepo_SQLite(t *testing.T) {
