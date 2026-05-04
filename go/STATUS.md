@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-05 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler) + commands in-memory Queue + Dispatcher 3.11 (CommandQueue + CommandExecutor port: cond-blocked TryGet with priority/disk/long-running/exclusive gating, single-worker Dispatcher.Run with handler registry + panic-recovered Execute, Service.SetQueue wires Push/PushMany/Cancel into the in-memory queue — modulo deferred per-handler concurrency + cancellation propagation into running handlers). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: typed MediaInfo column on episodefiles.File (separate slice, touches Mapper + every read/write site). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
+Last updated: 2026-05-05 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler) + commands in-memory Queue + Dispatcher 3.11 (CommandQueue + CommandExecutor port: cond-blocked TryGet with priority/disk/long-running/exclusive gating, single-worker Dispatcher.Run with handler registry + panic-recovered Execute, Service.SetQueue wires Push/PushMany/Cancel into the in-memory queue — modulo deferred per-handler concurrency + cancellation propagation into running handlers) + scheduledtasks.Scheduler ticker 3.12 (Scheduler.cs port: 30s time.Ticker drives Tick → tasks.GetPending → commands.Push at TriggerScheduled/PriorityLow with body="{}"; closes the bridge between the 3.10 task cache and the 3.11 command queue). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: typed MediaInfo column on episodefiles.File (separate slice, touches Mapper + every read/write site). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
 
 ## Where to resume
 
@@ -2788,6 +2788,76 @@ roundtrips, SetFileID auto-forget, and every read+mutation
 pass-through.
 
 ### Phase 3 — Service / Workflow layer ⏳ in progress
+
+#### 3.12 — scheduledtasks Scheduler ticker ✅ shipped (2026-05-05)
+
+Bridges the 3.10 task-cache and the 3.11 command queue end-to-end.
+Ports `NzbDrone.Core.Jobs.Scheduler` at
+`src/NzbDrone.Core/Jobs/Scheduler.cs:1-71` — a 30-second ticker that
+polls `TaskManager.GetPending` and pushes every due task into the
+command queue with `CommandTrigger.Scheduled`.
+
+`internal/scheduledtasks/scheduler.go`:
+
+- `Scheduler` struct: tasks `*Service` + commands `*Service` +
+  injectable `interval` (default `DefaultSchedulerInterval = 30s`,
+  matches `Scheduler.cs:57`).
+- `NewScheduler(tasks, cmds, log)` — non-nil guards on both services;
+  log defaults to `slog.Default`.
+- `SetInterval(d)` — overrides the ticker; rejects non-positive.
+- `Tick(ctx)` — one polling pass. Reads `tasks.GetPending`; for each
+  due Task, pushes `(t.TypeName, "{}", PriorityLow, TriggerScheduled)`
+  via `commands.Service.Push`. Returns the number of pushes attempted
+  plus the first push error (the rest are logged and the loop
+  continues — matches the C# `LogExceptions` shape so a single bad
+  task can't stop the loop). Public so tests can drive it
+  deterministically without sleeping for the ticker.
+- `Run(ctx)` — `time.Ticker`-driven loop until ctx cancellation.
+  Returns nil on clean shutdown; per-tick errors are swallowed (Tick
+  already logged them).
+
+Body / priority defaults:
+
+- Body is `"{}"`. The C# Scheduler's `Push(string, DateTime?,
+  DateTime?, ...)` reflection overload instantiates a default Command
+  subclass and stamps LastExecutionTime + LastStartTime onto it. Most
+  scheduled commands don't read those fields; the first handler that
+  does (likely `BackupCommand`) drives the body shape change. Until
+  then, `"{}"` keeps dedup tight (Service.Push dedups on (Name, Body)
+  equality, so repeated ticks collapse to a single queued row).
+- Priority is `PriorityLow`. The C# `IScheduledTask` carries a
+  per-implementation Priority property hardcoded in the constructor
+  (and not persisted); per `analysis/subsystems/system.md` PriorityLow
+  is the universal default for the 11 scheduled commands. A
+  per-task override is a trivial future extension when a task needs
+  different priority.
+
+Tests (7 functions): nil-guard on NewScheduler, Tick pushes pending
++ honours TypeName/Trigger/Priority/Body, Tick on empty pending is a
+no-op, repeated Tick deduplicates via commands.Service.Push, Run
+honours ctx cancel, Run ticker fires when interval is small, and
+SetInterval rejects non-positive (verified by observing that the
+default 30s interval doesn't fire within a 100ms Run window).
+
+Test harness pre-seeds the task row directly via `Repo.Upsert` so
+`RegisterDefaults` preserves a stale `LastExecution`. Without the
+pre-seed, RegisterDefaults stamps `LastExecution = clock-now` for
+*fresh* rows (per `service.go:160-161`), which means GetPending
+sees nothing as due in a freshly-bootstrapped test DB.
+
+Deferred:
+
+- Per-task body shape with LastExecutionTime + LastStartTime — wait
+  for the first handler that needs them.
+- Per-task priority override — wire a `func(typeName) Priority` hook
+  on Scheduler when a task wants something other than PriorityLow.
+- Host wire-up at boot (cmd/sonarr) — pulls `Scheduler` + `Dispatcher`
+  + their respective `Run(ctx)` calls into `cmd/sonarr` once the
+  first `IExecute<T>` handler ports.
+
+  internal/scheduledtasks:  ok  (-race -p 1, both engines)
+  internal/commands:        ok  (-race -p 1, both engines)
+  golangci-lint:            0 issues
 
 #### 3.11 — commands in-memory Queue + Dispatcher ✅ shipped (2026-05-05)
 
