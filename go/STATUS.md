@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.40 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping; series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; EscalationBackOff constants + Upsert/DeleteByProviderID across the 4 status repos shipped — provider-status base infra ready for ProviderStatusServiceBase port; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, full Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.41 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, NotificationStatus, DownloadClientStatus; series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; EscalationBackOff constants + ApplySuccess/ApplyFailure pure logic shipped + 2 of 4 ProviderStatus typed services live (NotificationStatus, DownloadClientStatus); remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, full Series/Episode service business logic, RootFolderService with disk-provider, ImportListStatus + IndexerStatus services).
 
 ## Where to resume
 
@@ -2645,6 +2645,103 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.41 — ProviderStatus base logic + Notification/DownloadClient services ✅ shipped (2026-05-04)
+
+The shared
+`ThingiProvider/Status/ProviderStatusServiceBase.cs:1-157` is
+ported as pure functions in `internal/providerstatus`, with two
+typed derivatives (NotificationStatus + DownloadClientStatus —
+the schema-clean pair) wired up. ImportListStatus + IndexerStatus
+land in a follow-up slice with the same shape.
+
+Pure-logic surface (`providerstatus/logic.go`):
+
+- `Tunables{MaxEscalationLevel, MinTimeSinceStartup,
+  MinTimeSinceInitialFailure, RuntimeStart}` — the per-service
+  knobs the C# class exposes as protected setters at `:31-33`.
+  `DefaultTunables(runtimeStart)` returns the C# defaults
+  (max=9, startup=15min, initial=0).
+- `State{InitialFailure, MostRecentFailure, DisabledTill,
+  EscalationLevel}` — the slice of ProviderStatusBase fields the
+  back-off logic mutates. Per-package Services marshal the
+  full Status row to/from this slim struct around the calls.
+- `BackOffFor(level) time.Duration` — ports
+  `CalculateBackOffPeriod` at `:53-58`. Clamps `level` to
+  `[0, MaxEscalationLevel]`.
+- `ApplySuccess(*State) bool` — ports `RecordSuccess` at
+  `:60-83`. Decrements EscalationLevel + clears DisabledTill.
+  Returns true when the state changed (so caller knows whether
+  to persist + publish); false when level was already 0.
+- `ApplyFailure(*State, now, minimumBackOff, escalate, Tunables)`
+  — ports the full `RecordFailure(int, TimeSpan, bool)` decision
+  matrix at `:85-140`. Seven-step algorithm preserved verbatim
+  (first-failure seed → escalate-or-not → minimum-back-off seek
+  → DisabledTill set → startup-grace cap). All branches covered
+  by 11 unit tests in `logic_test.go`.
+
+Service shape (notificationstatus + downloadclientstatus):
+
+- `NewService(*Repo, *messaging.Bus, runtimeStart time.Time)`.
+- `SetClock(func() time.Time)` — deterministic-test hook.
+- `SetTunables(providerstatus.Tunables)` — per-service override.
+- `GetBlockedProviders(ctx) ([]Status, error)` — All().Where(IsDisabled).
+- `RecordSuccess(ctx, providerID)` — calls ApplySuccess.
+- `RecordFailure(ctx, providerID, minimumBackOff)` — calls
+  ApplyFailure with escalate=true.
+- `RecordConnectionFailure(ctx, providerID)` — calls
+  ApplyFailure with escalate=false, minimumBackOff=0.
+- `OnProviderDeleted(ctx, providerID)` — DeleteByProviderID,
+  the Go-side translation of C# `HandleAsync(ProviderDeletedEvent)`.
+
+Each Service serialises Record* via `sync.Mutex` to match the
+C# `lock (_syncRoot)` at `:67/92`. Bus may be nil (tests,
+migrations). Per-package `StatusChangedEvent{ProviderID, Status}`
+is published on every successful mutation (i.e. RecordSuccess
+that actually changed anything, or any RecordFailure / Connection).
+ProviderID <= 0 is silently ignored, matching C# `:62-65`.
+
+C# behaviour preserved verbatim:
+
+- First failure forces escalate=false (the level=0→1 bump is
+  the escalation).
+- Inside startup-grace AND no minimum-back-off: DisabledTill is
+  capped at `now + BackOffPeriods[2]` (15min) regardless of
+  current EscalationLevel — prevents a flurry of startup-time
+  failures from disabling for hours.
+- Inside initial-grace AND no minimum-back-off: the existing
+  DisabledTill is preserved (no overwrite).
+- Inside initial-grace WITH a minimum-back-off: the cap is
+  bypassed (the if-condition's second arm fires).
+- EscalationLevel is clamped to MaxEscalationLevel everywhere.
+- minimumBackOff seeks EscalationLevel up to the first tier
+  whose BackOffFor() >= minimumBackOff.
+
+Test corpus:
+
+- `providerstatus/logic_test.go` — 11 unit tests over the pure
+  functions: ApplySuccess no-change/decrement, ApplyFailure
+  fresh/escalate/connection/clamp/min-back-off/startup-grace
+  cap/cap-bypassed/initial-grace preserve/initial-grace
+  overwrite, BackOffFor clamping.
+- `notificationstatus/service_test.go` — 10 service-level tests
+  exercising the full wiring through SQLite: fresh-failure seed,
+  escalation, RecordSuccess de-escalates, fresh-success no-op,
+  non-positive-id ignored, RecordConnectionFailure no-escalate,
+  minimum-back-off, OnProviderDeleted, bus-event-publication,
+  tunables override.
+- `downloadclientstatus/service_test.go` — 5 wiring smoke tests
+  (the deep behavioural coverage is on the pure-logic side).
+
+Cross-DB: SQLite + Postgres both green under `-race`.
+Lint clean.
+
+What this leaves: ImportListStatus + IndexerStatus services
+(same shape, the only difference is the type-specific extra
+column — LastInfoSync on importlist, LastRssSyncReleaseInfo on
+indexer — which the failure logic doesn't touch). Phase 2.42
+will copy the notificationstatus pattern verbatim into those
+two packages.
 
 #### 2.40 — EscalationBackOff + status-repo Upsert/DeleteByProviderID ✅ shipped (2026-05-04)
 
