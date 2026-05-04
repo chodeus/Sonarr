@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.54 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade — read-only + Add/Update/Delete + UpdateTags + bulk UpdateMany with optional SeriesPathBuilder; all 5 events fire), and ImportLists (read-only); cross-package compile-time bridges fully wired (*series.Service ↔ rootfolders.SeriesPaths + qualityprofiles.SeriesProfileChecker; *importlists.Service ↔ qualityprofiles.ImportListProfileChecker); remaining Phase 2 areas: Organizer/FileNameBuilder (largest, 5-8 slices), EpisodeService, episode-monitored cascade in UpdateSeries, ImportListService write surface).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.55 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade), and ImportLists (read-only); Organizer/FileNameBuilder kicked off — pure title helpers + CleanFileName/CleanFolderName + ColonReplacementFormat/MultiEpisodeStyle enums shipped (2.55); remaining Organizer work: token replacement engine (2.56), series/season/episode token resolvers (2.57-2.58), quality/media-info/custom-format tokens (2.59), full BuildFileName orchestration (2.60); other Phase 2 areas: EpisodeService, episode-monitored cascade in UpdateSeries, ImportListService write surface).
 
 ## Where to resume
 
@@ -2645,6 +2645,98 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.55 — Organizer pure title helpers + CleanFileName/CleanFolderName ✅ shipped (2026-05-04)
+
+First slice of the Organizer/FileNameBuilder port (1278 LOC C#).
+Foundation pure helpers — no I/O, no service deps. The token
+replacement engine and BuildFileName orchestration land in
+follow-up slices (2.56–2.60).
+
+New package `internal/organizer` with two files:
+
+`title.go` — title manipulation helpers ported verbatim from
+`FileNameBuilder.cs:302-385`:
+
+- `CleanTitle(title)` — `:302-309`. `&` → ` and `, `/` → space,
+  bracket removal, apostrophe-suffix collapse, space-flanked
+  special-char removal, diacritic strip. The C# regex bundles all
+  three sub-rules into a single alternation using lookbehind /
+  lookahead; RE2 lacks lookarounds so the Go port applies them
+  sequentially with the bracket pass first, then apostrophes
+  (capture-and-re-emit-suffix), then space-flanked (iterated to
+  catch adjacency).
+- `TitleThe` — `:311-314`. Moves leading `The/An/A ` prefix to
+  trailing `, The` etc.
+- `CleanTitleThe` — `:316-325`. Composes TitleThe + CleanTitle on
+  body and suffix with `, ` separator.
+- `TitleYear(title, year)` — `:327-342`. Appends ` (year)`;
+  zero year and existing trailing year are no-ops.
+- `CleanTitleTheYear` — `:344-361`. Combines CleanTitleThe + bare
+  year; existing trailing year wins over the parameter.
+- `TitleWithoutYear` — `:363-368`. Strips trailing `(####)`.
+- `TitleFirstCharacter` — `:370-385`. First letter/digit
+  uppercased + diacritic-stripped; falls through to the second
+  position; defaults to `_`.
+- `CleanTitleYear` / `CleanTitleWithoutYear` /
+  `CleanTitleTheWithoutYear` / `TitleTheWithoutYear` /
+  `TitleTheYear` — combinatorial helpers used by their
+  corresponding `{Series ...}` token resolvers (lifted out of the
+  C# inline lambdas at `:451-467`).
+
+`cleanname.go` — filename + folder-name normalisation:
+
+- `ColonReplacementFormat` enum (Delete/Dash/SpaceDash/
+  SpaceDashSpace/Smart/Custom) — ports `FileNameBuilder.cs:1269-1277`.
+- `MultiEpisodeStyle` enum — ports `:1259-1267`.
+- `CleanNameOptions` struct — read-only slice of NamingConfig
+  with `ReplaceIllegalCharacters/ColonReplacementFormat/CustomColonReplacementFormat`.
+- `CleanFileName(name, opts)` — full port of the
+  `:1159-1205` private overload. Smart-colon special case (`: ` →
+  ` - `, then `:` → `-`); BadCharacters → GoodCharacters when
+  ReplaceIllegalCharacters; trim leading spaces+dots and trailing
+  spaces.
+- `CleanFileNameDefault(name)` — public-overload shorthand.
+- `CleanFolderName(name)` — `:392-397`. Collapses runs of
+  separator chars (`-`, ` `, `.`, `_`); trims edges.
+
+RE2 divergence notes:
+
+- The C# `FileNameCleanupRegex = ([- ._])(\1)+` uses a
+  backreference; Go RE2 doesn't allow them. Replaced with one
+  per-char regex per separator and a sequential collapse pass.
+- The C# `ScenifyRemoveChars` uses lookbehind / lookahead to leave
+  surrounding whitespace untouched; Go captures and re-emits the
+  spaces, with iteration to handle adjacency.
+- Pure CleanTitle preserves double-space artifacts from
+  space-flanked-char removal — the C# fixture results
+  (`Free! Iwatobi Swim Club` single-spaced) come from downstream
+  `CleanFolderName/CleanFileName` run-collapse in the full
+  pipeline.
+
+Test corpus:
+
+`title_test.go`:
+- `TestCleanTitle` — 17 cases: `&`, `/`, brackets, apostrophes
+  with all 7 contraction suffixes, apostrophe-at-EOL, double-space
+  preservation, diacritic strip, passthrough.
+- `TestTitleThe` (7 cases), `TestTitleYear` (4), `TestTitleWithoutYear`
+  (3), `TestCleanTitleThe` (4), `TestCleanTitleTheYear` (4),
+  `TestTitleFirstCharacter` (7), `TestCleanTitleYear_NoArticleMove`,
+  `TestCleanTitleWithoutYear`, `TestCleanTitleTheWithoutYear`,
+  `TestTitleTheWithoutYear`, `TestTitleTheYear`.
+
+`cleanname_test.go`:
+- `TestCleanFileNameDefault` — 9 cases covering each BadCharacter
+  / GoodCharacter slot + Smart colon + trim.
+- `TestCleanFileName_ColonReplacement` — 8 sub-cases covering all
+  6 ColonReplacementFormat enum values + ReplaceIllegalCharacters
+  on/off interaction.
+- `TestCleanFileName_ReplaceIllegalCharactersFalse` — all
+  BadCharacters stripped without substitution.
+- `TestCleanFolderName` — 7 cases (run-collapse + edge trim).
+
+Tests: green under `-race`; golangci-lint clean.
 
 #### 2.54 — SeriesService bulk UpdateMany ✅ shipped (2026-05-04)
 
