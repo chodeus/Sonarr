@@ -172,7 +172,7 @@ var reportTitleRules = []rgRule{
 	// is now where a non-digit chars terminates the title.
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?[^\d])[-_. ]+(?P<season>\d{1,2})[-_ ]?[ex](?P<episode>\d{1,3})`,
+			`(?i)^(?P<title>.+?[^\d])[-_. \[]+(?P<season>\d{1,2})[-_ ]?[ex](?P<episode>\d{1,3})`,
 		),
 		Build: buildTitleNxEpisode,
 	},
@@ -419,9 +419,9 @@ var reportTitleRules = []rgRule{
 	// later slice with a more sophisticated title-extraction path.
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?[^\d])[_.\-]+(?P<season>[1-9])(?P<episode>[1-9][0-9]|[0][1-9])(?:[_.]|$)`,
+			`(?i)^(?P<title>.+?[^\d])(?:[_.\-]+(?P<season>[1-9])(?P<episode>[1-9][0-9]|[0][1-9]))+(?:[_.]|$)`,
 		),
-		Build: buildTitleNxEpisode,
+		Build: buildThreeDigitShortcut,
 	},
 
 	// `Parser.cs:273` — Supports 1103/1113 naming. Title + 4-digit
@@ -435,6 +435,29 @@ var reportTitleRules = []rgRule{
 			`(?i)^(?P<title>.+?[^\d])[_.\-]+(?P<season>\d{2})(?P<episode>\d{2})(?:[_.]|$)`,
 		),
 		Build: buildTitleNxEpisode,
+	},
+
+	// `Parser.cs:438` — "Extant, terrible multi-episode naming".
+	// Catches `Series.10708.hdtv-lol.mp4` (5-digit `<season=1><ep=07>
+	// <ep=08>`). The C# rule allows `<season>[0]?\d?` (0, 1, or 2
+	// digits with leading 0); the Go port narrows to `\d{1,2}` since
+	// no fixture exercises the leading-0 case differently. Listed
+	// AFTER the 4-digit shortcut so single 4-digit inputs aren't
+	// shadowed.
+	//
+	// C# original:
+	//
+	//	^(?<title>.+?)[-_. ](?<season>[0]?\d?)
+	//	(?:(?<episode>\d{2}){2}(?!\d+))[-_. ]
+	//
+	// `(?<episode>\d{2}){2}` captures 4 digits as 2x2; RE2 retains
+	// only the last named-group capture, so the build extracts both
+	// 2-digit chunks directly from the matched span.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?[^\d])[-_. ](?P<season>\d{1,2})(?P<eppair>\d{2}\d{2})(?:[-_. ]|$)`,
+		),
+		Build: buildExtantMultiEpisode,
 	},
 
 	// `Parser.cs:247` — Supports `Season 01 Episode 03` keyword form,
@@ -729,6 +752,105 @@ func buildAnimeAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEpisode
 	info.AbsoluteEpisodeNumbers = []int{abs}
 	info.ReleaseGroup = subgroup
 	info.ReleaseHash = hashText
+	return info
+}
+
+// buildExtantMultiEpisode handles the `<title>.<season><ep1><ep2>`
+// 5-digit form (Parser.cs:438). The `<eppair>` group is exactly 4
+// digits split into two 2-digit episodes; range-expand first..last.
+func buildExtantMultiEpisode(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
+	seasonText, _ := extractGroupSpan(re, m, "season", title)
+	season, ok := ParseNumber(seasonText)
+	if !ok {
+		return nil
+	}
+	pair, _ := extractGroupSpan(re, m, "eppair", title)
+	if len(pair) != 4 {
+		return nil
+	}
+	ep1, ok1 := ParseNumber(pair[:2])
+	ep2, ok2 := ParseNumber(pair[2:])
+	if !ok1 || !ok2 {
+		return nil
+	}
+
+	titleText, _ := extractGroupSpan(re, m, "title", title)
+	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
+	titleText = strings.TrimSpace(titleText)
+
+	var episodes []int
+	if ep1 <= ep2 {
+		episodes = make([]int, 0, ep2-ep1+1)
+		for n := ep1; n <= ep2; n++ {
+			episodes = append(episodes, n)
+		}
+	} else {
+		episodes = []int{ep1, ep2}
+	}
+
+	info := NewParsedEpisodeInfo()
+	info.SeriesTitle = titleText
+	info.SeasonNumber = season
+	info.EpisodeNumbers = episodes
+	return info
+}
+
+// threeDigitShortcutRe matches one iteration of the
+// `<sep><1-digit-season><2-digit-episode>` shortcut form. Used by
+// buildThreeDigitShortcut to recover all season+episode pairs when
+// the rule's `+` quantifier captures multiple iterations (Go RE2
+// retains only the last named-group capture, so a per-iteration scan
+// is required).
+var threeDigitShortcutRe = regexp.MustCompile(`[_.\-]+([1-9])([1-9][0-9]|[0][1-9])`)
+
+// buildThreeDigitShortcut handles single + multi 3-digit shortcut
+// matches. The first iteration's season is the canonical season; all
+// iterations contribute episodes, range-expanded first..last.
+func buildThreeDigitShortcut(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
+	titleText, titleEnd := extractGroupSpan(re, m, "title", title)
+	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
+	titleText = strings.TrimSpace(titleText)
+	if titleEnd < 0 {
+		titleEnd = m[0]
+	}
+
+	region := title[titleEnd:m[1]]
+	matches := threeDigitShortcutRe.FindAllStringSubmatch(region, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	season, ok := ParseNumber(matches[0][1])
+	if !ok {
+		return nil
+	}
+	captured := make([]int, 0, len(matches))
+	for _, mm := range matches {
+		if n, ok := ParseNumber(mm[2]); ok {
+			captured = append(captured, n)
+		}
+	}
+	if len(captured) == 0 {
+		return nil
+	}
+	var episodes []int
+	if len(captured) == 1 {
+		episodes = captured
+	} else {
+		first, last := captured[0], captured[len(captured)-1]
+		if first <= last {
+			episodes = make([]int, 0, last-first+1)
+			for n := first; n <= last; n++ {
+				episodes = append(episodes, n)
+			}
+		} else {
+			episodes = captured
+		}
+	}
+
+	info := NewParsedEpisodeInfo()
+	info.SeriesTitle = titleText
+	info.SeasonNumber = season
+	info.EpisodeNumbers = episodes
 	return info
 }
 

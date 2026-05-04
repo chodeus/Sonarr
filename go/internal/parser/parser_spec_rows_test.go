@@ -107,11 +107,13 @@ func singleEpisodeRows() []specRow {
 		// XFail — title with bracketed-Nx<NN> form:
 		se("Series Title-0 (2010) - 1x05 - Missing Title", "Series Title-0 (2010)", 1, 5),
 		se("Series Title-0 (2010) - 1x05 - Title", "Series Title-0 (2010)", 1, 5),
-		sex("Series (2009) - [06x16] - Room 147.mp4", "Series (2009)", 6, 16),
-		sex("Series Title [1x05] Episode Title", "Series Title", 1, 5),
+		// Bracketed-Nx single forms — flipped by extending title+Nx
+		// rule's pre-season separator class to admit `[`.
+		se("Series (2009) - [06x16] - Room 147.mp4", "Series (2009)", 6, 16),
+		se("Series Title [1x05] Episode Title", "Series Title", 1, 5),
 		se("Series Title [S01E05] Episode Title", "Series Title", 1, 5),
 		sex("[Impatience] Series - 0x01 [720p][34073169].mkv", "Series", 0, 1),
-		sex("Series Title - [02x01] - Episode 1", "Series Title", 2, 1),
+		se("Series Title - [02x01] - Episode 1", "Series Title", 2, 1),
 		sex("[RlsGrp] Series Title - S01E27 - 24-Hour", "Series Title", 1, 27),
 
 		// `S<n>.E<nn>` with separator before E (passing via title+S-E
@@ -194,7 +196,11 @@ func multiEpisodeRows() []specRow {
 
 		// XFail — exotic separator forms:
 		me("Series.S03E01-06.DUAL.BDRip.XviD.AC3.-HELLYWOOD", "Series", 3, []int{1, 2, 3, 4, 5, 6}),
-		mex("Series.Title.103.104.720p.HDTV.X264-DIMENSION", "Series Title", 1, []int{3, 4}),
+		// Multi 3-digit shortcut — flipped by extending the 3-digit
+		// shortcut rule with `+` quantifier on the season+episode
+		// group + new buildThreeDigitShortcut Build that scans for
+		// per-iteration `<sep><1-digit><2-digit>` triples.
+		me("Series.Title.103.104.720p.HDTV.X264-DIMENSION", "Series Title", 1, []int{3, 4}),
 		me("The Series S01e01 e02 ShoHD On Demand 1080i DD5 1 ALANiS", "The Series", 1, []int{1, 2}),
 		me("Series.Title.2x04.2x05.720p.BluRay-FUTV", "Series Title", 2, []int{4, 5}),
 		me("2x04x05.720p.BluRay-FUTV", "", 2, []int{4, 5}),
@@ -212,9 +218,11 @@ func multiEpisodeRows() []specRow {
 		me("Series.S01E91-E100", "Series", 1, []int{91, 92, 93, 94, 95, 96, 97, 98, 99, 100}),
 		me("Series.S29E161-E165.PDTV.x264-FQM", "Series", 29, []int{161, 162, 163, 164, 165}),
 		me("Shortland.Series.S22E5363-E5366.HDTV.x264-FiHTV", "Shortland Series", 22, []int{5363, 5364, 5365, 5366}),
-		mex("the.Series.101.102.hdtv-lol", "the Series", 1, []int{1, 2}),
-		mex("Series.10708.hdtv-lol.mp4", "Series", 1, []int{7, 8}),
-		mex("Series.10910.hdtv-lol.mp4", "Series", 1, []int{9, 10}),
+		me("the.Series.101.102.hdtv-lol", "the Series", 1, []int{1, 2}),
+		// Extant 5-digit naming (Parser.cs:438) — flipped by the new
+		// buildExtantMultiEpisode rule.
+		me("Series.10708.hdtv-lol.mp4", "Series", 1, []int{7, 8}),
+		me("Series.10910.hdtv-lol.mp4", "Series", 1, []int{9, 10}),
 		me("World Series of Sonarr - 2010x15 - 2010x16 - HD TV.mkv", "World Series of Sonarr", 2010, []int{15, 16}),
 		me("Series Title Season 01 Episode 05-06 720p", "Series Title", 1, []int{5, 6}),
 		mex("The Series And The Code - S42 Ep10718 - Ep10722", "The Series And The Code", 42, []int{10718, 10719, 10720, 10721, 10722}),
