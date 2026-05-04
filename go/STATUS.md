@@ -2513,6 +2513,74 @@ package tests green; full `-race -p 1` suite skipped (touches
 only autotagging + cross-package import of rootfolders +
 series).
 
+#### 2.26 — Typed-spec loaders (CustomFormats + AutoTagging) ✅ shipped (2026-05-04)
+
+Closes the row → typed loop for both matching engines.
+Persisted rows carry `Specifications` as opaque JSON text;
+the loaders shipped here turn each row into the in-memory
+typed wrapper (`*Format` / `*Tag`) that `Calculate` /
+`ChangesFor` consume.
+
+What ships:
+
+1. **`customformats.LoadFromRow(row *CustomFormat) (*Format, error)`**
+   — converts a single row. Decodes Specifications via
+   UnmarshalSpecs, copies ID / Name / IncludeWhenRenaming /
+   the typed specs slice into a fresh `*Format`. Errors
+   include the row's ID + Name for diagnosis. Nil row →
+   `(nil, nil)`.
+
+2. **`customformats.LoadAll(ctx, repo) ([]*Format, error)`**
+   — bulk loader. Walks `Repo.All`, converts each. First
+   error short-circuits (no per-row partial success); callers
+   that want best-effort can iterate Repo.All themselves.
+
+3. **`autotagging.LoadFromRow(row *AutoTag) (*Tag, error)`**
+   — same shape, AutoTag → typed Tag (with ID, Name,
+   RemoveTagsAutomatically, Tags, typed Specifications).
+
+4. **`autotagging.LoadAll(ctx, repo) ([]*Tag, error)`** —
+   bulk loader for AutoTag rows.
+
+Test coverage in `loader_test.go` files (~4 cases each):
+
+- Nil row → nil result with no error.
+- Single-row decode populates scalars + typed specs (with
+  type-assertion verification on the inner spec type).
+- Malformed JSON → propagates UnmarshalSpecs error.
+- End-to-end LoadAll round-trip: insert a row via Repo,
+  load via LoadAll, verify the loaded typed Format / Tag has
+  its specs decoded into the right Go type.
+
+Both LoadAll round-trip tests use real on-disk SQLite migrated
+to head, exercising the storage + decode path together.
+
+The CustomFormat + AutoTagging engines are now end-to-end
+loadable:
+
+```
+DB row → repo.All → LoadAll → []*Format / []*Tag
+                                  ↓
+                              Calculate / ChangesFor
+                                  ↓
+                              matched results
+                                  ↓
+                              MarshalSpecs → JSON for round-trip
+```
+
+What's still deferred:
+
+- **Service wrappers** with Insert/Update/Delete + cache +
+  event publishing for both packages (mirror the
+  `tags.Service` shape from 2.23). Once these land, the
+  matching engines have a full lifecycle.
+- **The 7 typed adapters** for CustomFormat
+  (`ParseCustomFormat(RemoteEpisode, ...)`, etc.) — each
+  lands when its domain input type does.
+
+Lint clean; package tests green; full `-race -p 1` suite
+skipped (touches only the two engines + datastore in tests).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
