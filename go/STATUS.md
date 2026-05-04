@@ -1216,6 +1216,76 @@ Lint clean (after gofmt re-format of the doc comment); parser
 test suite green (16 tests pass); full `-race -p 1` suite
 skipped (parser-package-internal changes only).
 
+#### 2.13.2 — ReleaseTokens + Languages + FullSeason+Special toggle ✅ shipped (2026-05-04)
+
+Wires the remaining post-match enrichment stages from
+`Parser.ParseTitle:749-757`. ParseTitle output now carries
+ReleaseTokens (the `releaseTitle.Substring(idx)` slice that
+feeds Languages), Languages (from ParseLanguages on
+ReleaseTokens), and the FullSeason+"Special" toggle.
+
+**Spec delta**: pass=196 xfail=4 regression=0 (no movement;
+spec dispatcher doesn't assert on these fields).
+
+What ships in `parse_title.go`:
+
+1. **`computeReleaseTokens(re, m, releaseTitle)`** — mirrors
+   the `lastSeasonEpisodeStringIndex` computation at
+   `Parser.cs:929 + 961 + 994 + 1006 + 1145-1147` plus the
+   `releaseTitle.Substring(idx)` slice at `:1163-1170`. Walks
+   the matched regex's `<title>` / `<episode>` /
+   `<absoluteepisode>` / `<airyear>` / `<airmonth>` /
+   `<airday>` named groups; takes the maximum end position;
+   slices releaseTitle from that index. Returns the full
+   releaseTitle when the index is past releaseTitle's end.
+
+   **Caveat preserved verbatim**: the index is extracted
+   from a simpleTitle match but applied to releaseTitle. When
+   simpleTitle differs in length from releaseTitle (after
+   SimpleTitleRegex strips or SixDigitAirDate inserts) the
+   index is approximate. C# accepts this; the Go port matches
+   byte-for-byte.
+
+2. **FullSeason+"Special" toggle** in enrichFromMatch:
+   `if FullSeason && containsCI(ReleaseTokens, "Special") {
+   FullSeason=false; Special=true }`. Mirrors `Parser.cs:749-753`.
+   Currently latent — no shipped build closure sets FullSeason —
+   but wired so the future season-pack rule slice doesn't need
+   a parallel post-match pass.
+
+3. **`Languages = ParseLanguages(ReleaseTokens)`** in
+   enrichFromMatch. Existing `internal/parser.ParseLanguages`
+   from 2.10c. Every parsed release now carries a non-empty
+   Languages slice (minimum `[Unknown]`).
+
+4. **`containsCI`** local helper — case-insensitive Contains
+   wrapping `strings.ToLower` on both sides.
+
+Test coverage:
+
+- New `TestParseTitle_ReleaseTokensAndLanguages` (3 cases):
+  - ReleaseTokens slice contains the trailing `HDTV` after a
+    title-S-E match.
+  - Languages defaults to `[Unknown]` for an unmarked release
+    (mirrors LanguageParser's non-empty fallback).
+  - Languages picks up `SPANISH` token in trailing tokens.
+- The FullSeason+Special path is wired but not yet exercisable
+  via ParseTitle (no shipped rule sets FullSeason). Will be
+  test-covered when the season-pack rule lands.
+
+What's deferred:
+
+- **GetSeriesTitleInfo** (2.13.3). Year-in-title splitter
+  populating `SeriesTitleInfo.{Title, TitleWithoutYear, Year,
+  AllTitles}`.
+- **ParsePath** (2.13.4). Folder + filename combiner entry-point.
+- **Season-pack rule + FullSeason+Special exercise** (later
+  slice once season-only patterns from C# Parser.cs are ported).
+
+Lint clean; parser test suite green (17 tests pass); full
+`-race -p 1` suite skipped (parser-package-internal changes
+only).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)

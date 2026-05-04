@@ -60,12 +60,24 @@ func ParseTitle(title string) *ParsedEpisodeInfo {
 }
 
 // enrichFromMatch applies the C# post-match enrichment stages from
-// `Parser.ParseTitle:758-775`: Quality, ReleaseGroup with optional
+// `Parser.ParseTitle:749-775`: ReleaseTokens slice, FullSeason+
+// "Special" toggle, Languages, Quality, ReleaseGroup with optional
 // subgroup override, ReleaseHash with bracket-trim and 1280x720
-// reject. Languages / ReleaseTokens / FullSeason+Special toggle ship
-// in a later slice — they need the `lastSeasonEpisodeStringIndex`
-// machinery the build closures don't yet expose.
+// reject. GetSeriesTitleInfo (the year-in-title splitter) ships in
+// a later slice.
 func enrichFromMatch(info *ParsedEpisodeInfo, re *regexp.Regexp, m []int, originalTitle, releaseTitle, simpleTitle string) {
+	info.ReleaseTokens = computeReleaseTokens(re, m, releaseTitle)
+
+	// FullSeason → Special toggle: if a season-pack rule fired and
+	// the trailing tokens contain "Special", reinterpret as a
+	// special. Mirrors `Parser.cs:749-753`.
+	if info.FullSeason && containsCI(info.ReleaseTokens, "Special") {
+		info.FullSeason = false
+		info.Special = true
+	}
+
+	info.Languages = ParseLanguages(info.ReleaseTokens)
+
 	info.Quality = quality.ParseQuality(originalTitle)
 
 	info.ReleaseGroup = ParseReleaseGroup(releaseTitle)
@@ -79,6 +91,53 @@ func enrichFromMatch(info *ParsedEpisodeInfo, re *regexp.Regexp, m []int, origin
 			info.ReleaseHash = h
 		}
 	}
+}
+
+// computeReleaseTokens mirrors the C# computation of
+// `lastSeasonEpisodeStringIndex` at `Parser.cs:929 + 961 + 994 +
+// 1006 + 1145-1147` plus the `releaseTitle.Substring(idx)` slice at
+// `:1163-1170`.
+//
+// The C# code starts from the title group's EndIndex and bumps it
+// up by Math.Max against the END index of the last episode /
+// absoluteEpisode / airyear / airmonth / airday capture. RE2 retains
+// only the last capture for a repeated named group, so the Go port
+// uses the regex's named groups directly — for repeating groups the
+// retained capture IS the last, which is the value the C# pipeline
+// also picks.
+//
+// Important caveat preserved verbatim from C#: the index is
+// extracted from a simpleTitle match but applied to releaseTitle.
+// When simpleTitle differs in length from releaseTitle (because
+// SimpleTitleRegex stripped tokens, or SixDigitAirDate added chars),
+// the index is approximate. C# accepts this approximation; the Go
+// port matches the behaviour byte-for-byte.
+//
+// Returns the full releaseTitle when the computed index is past
+// the releaseTitle's end (mirrors the `else { ReleaseTokens =
+// releaseTitle }` branch at `:1167-1170`).
+func computeReleaseTokens(re *regexp.Regexp, m []int, releaseTitle string) string {
+	idx := -1
+	for _, name := range []string{"title", "episode", "absoluteepisode", "airyear", "airmonth", "airday"} {
+		gIdx := re.SubexpIndex(name)
+		if gIdx <= 0 || 2*gIdx+1 >= len(m) {
+			continue
+		}
+		end := m[2*gIdx+1]
+		if end > idx {
+			idx = end
+		}
+	}
+	if idx >= 0 && idx < len(releaseTitle) {
+		return releaseTitle[idx:]
+	}
+	return releaseTitle
+}
+
+// containsCI reports whether substr appears in s ignoring case.
+// Mirrors C# `string.ContainsIgnoreCase`.
+func containsCI(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
 
 // ParseSeriesName mirrors `Parser.ParseSeriesName` at `Parser.cs:800-812`.

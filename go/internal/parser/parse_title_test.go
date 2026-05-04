@@ -510,3 +510,65 @@ func TestParseTitle_Enrichment(t *testing.T) {
 		}
 	})
 }
+
+// TestParseTitle_ReleaseTokensAndLanguages covers the ReleaseTokens
+// slice + Languages enrichment that ships in 2.13.2. Mirrors the
+// C# `ReleaseTokens = releaseTitle.Substring(idx)` slice + the
+// `Languages = ParseLanguages(ReleaseTokens)` wire.
+func TestParseTitle_ReleaseTokensAndLanguages(t *testing.T) {
+	t.Run("ReleaseTokens slices after the title group", func(t *testing.T) {
+		got := parser.ParseTitle("Series.Title.S01E05.HDTV.XviD-LOL")
+		if got == nil {
+			t.Fatal("ParseTitle returned nil")
+		}
+		if got.ReleaseTokens == "" {
+			t.Errorf("ReleaseTokens empty; expected the trailing tokens after the title group")
+		}
+		// The exact slice is approximate (idx from simpleTitle, applied
+		// to releaseTitle) — assert the trailing tokens are present.
+		if !contains(got.ReleaseTokens, "HDTV") {
+			t.Errorf("ReleaseTokens = %q, want to contain HDTV", got.ReleaseTokens)
+		}
+	})
+
+	t.Run("Languages defaults to Unknown for unmarked English-default release", func(t *testing.T) {
+		got := parser.ParseTitle("Series.Title.S01E05.HDTV.XviD-LOL")
+		if got == nil {
+			t.Fatal("ParseTitle returned nil")
+		}
+		if len(got.Languages) == 0 {
+			t.Fatalf("Languages empty, want at least one entry")
+		}
+		// No language token in the title → ParseLanguages returns
+		// [Unknown] (its non-empty fallback at LanguageParser.cs:206).
+		if got.Languages[0].Name != "Unknown" {
+			t.Errorf("Languages[0].Name = %q, want Unknown", got.Languages[0].Name)
+		}
+	})
+
+	t.Run("Languages picks up an explicit Spanish marker in trailing tokens", func(t *testing.T) {
+		got := parser.ParseTitle("Series.Title.S01E05.SPANISH.HDTV.XviD-LOL")
+		if got == nil {
+			t.Fatal("ParseTitle returned nil")
+		}
+		hasSpanish := false
+		for _, l := range got.Languages {
+			if l.Name == "Spanish" {
+				hasSpanish = true
+				break
+			}
+		}
+		if !hasSpanish {
+			t.Errorf("Languages = %v, want to contain Spanish", got.Languages)
+		}
+	})
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
