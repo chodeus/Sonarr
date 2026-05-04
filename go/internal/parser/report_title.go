@@ -133,6 +133,29 @@ var reportTitleRules = []rgRule{
 		Build: buildNoTitleEpisode,
 	},
 
+	// `Parser.cs:120` — Multi-episode Repeated Nx form, `<title>
+	// <n>x<m> - <n>x<m>`. Catches `Series.Title.2x04.2x05`,
+	// `Series Kings - 2x9-2x10`, `World Series of Sonarr - 2010x15 -
+	// 2010x16`. Listed BEFORE the single Nx rule so multi wins on the
+	// 2+-Nx-block prefix.
+	//
+	// C# original:
+	//
+	//	^(?<title>.+?)(?:(?:[-_\W](?<![()\[!]))+
+	//	(?<season>(?<!\d+)(?:\d{1,2}|\d{4})(?!\d+))
+	//	(?:x{1,2}(?<episode>\d{1,3}(?!\d+)))+){2,}
+	//
+	// `(?<!\d+)` lookbehind on season replaced by constraining the
+	// title's last char to non-digit (`(?P<title>.+?[^\d])`). Episode
+	// digits via the post-match findAllEpisodes scan that handles range
+	// expansion.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?[^\d])(?:[-_. \W]+(?P<season>\d{4}|\d{1,2})x{1,2}\d{1,3}){2,}`,
+		),
+		Build: buildTitleNxMulti,
+	},
+
 	// `Parser.cs:188`-style — Episodes with a title, `<Title> <N>x<NN>`
 	// form. Listed BEFORE the `S<n>E<nn>` rule so the dash/no-S form
 	// is not shadowed by the no-title rule's `[ex]` matcher when a
@@ -189,7 +212,7 @@ var reportTitleRules = []rgRule{
 	// is what matters for the multi-S form.
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?)?(?:[-_. \W]+S(?P<season>\d{4}|\d{1,3})(?:E\d{1,3})+){2,}`,
+			`(?i)^(?P<title>.+?)?(?:[-_. \W]+S(?P<season>\d{4}|\d{1,3})(?:E\d{1,4})+){2,}`,
 		),
 		Build: buildTitleSeasonEpisode,
 	},
@@ -221,7 +244,7 @@ var reportTitleRules = []rgRule{
 	// lookahead and keeps the minimum-length floor).
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?)(?:[-_. \[]+S(?P<season>\d{4}|\d{1,3}))(?:(?:[-_. ]+E\d{1,3})+|(?:E\d{1,3}(?:[-_. ]?E\d{1,3})*(?:[-_. ]?\d{2,3})*))`,
+			`(?i)^(?P<title>.+?)(?:[-_. \[]+S(?P<season>\d{4}|\d{1,3}))(?:(?:[-_. ]+E\d{1,4})+|(?:E\d{1,4}(?:[-_. ]?E\d{1,4})*(?:[-_. ]?\d{2,3})*))`,
 		),
 		Build: buildTitleSeasonEpisode,
 	},
@@ -459,7 +482,7 @@ var reportTitleRules = []rgRule{
 // `Captures` collection's per-iteration values don't transfer
 // directly). See QualityParser slice 2.10c for the equivalent
 // per-pattern fixup.
-var episodeNumberRe = regexp.MustCompile(`(?i)[ex](\d{1,3})|(?:[-_]\s?)(\d{1,3})`)
+var episodeNumberRe = regexp.MustCompile(`(?i)[ex](\d{1,4})|(?:[-_]\s?)(\d{1,4})`)
 
 // findAllEpisodes scans a season+episode region for every episode
 // digit run, returning the integer values in match order. Mirrors the
@@ -706,6 +729,66 @@ func buildAnimeAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEpisode
 	info.AbsoluteEpisodeNumbers = []int{abs}
 	info.ReleaseGroup = subgroup
 	info.ReleaseHash = hashText
+	return info
+}
+
+// nxEpisodeRe matches `x<digits>` (case-insensitive) — the episode
+// marker for `<n>x<m>` Nx forms. Used by `buildTitleNxMulti` so the
+// episode scan doesn't pick up `-<season>` digit runs from the
+// second-iteration prefix that findAllEpisodes' `[-_]\d` arm would
+// otherwise capture.
+var nxEpisodeRe = regexp.MustCompile(`(?i)x(\d{1,3})`)
+
+// buildTitleNxMulti extracts (title, season, episodes) from a
+// `<title> <n>x<m> - <n>x<m>` multi-Nx match. Mirrors the C# multi-Nx
+// rule's behaviour where the season is captured per-iteration (only
+// the last is retained by RE2) and episodes are recovered via a
+// post-match scan over the matched span. Range expansion mirrors
+// `findAllEpisodes`.
+func buildTitleNxMulti(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
+	seasonText, _ := extractGroupSpan(re, m, "season", title)
+	season, ok := ParseNumber(seasonText)
+	if !ok {
+		return nil
+	}
+	titleText, titleEnd := extractGroupSpan(re, m, "title", title)
+	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
+	titleText = strings.TrimSpace(titleText)
+	if titleEnd < 0 {
+		titleEnd = m[0]
+	}
+
+	region := title[titleEnd:m[1]]
+	matches := nxEpisodeRe.FindAllStringSubmatch(region, -1)
+	captured := make([]int, 0, len(matches))
+	for _, mm := range matches {
+		if n, ok := ParseNumber(mm[1]); ok {
+			captured = append(captured, n)
+		}
+	}
+	if len(captured) == 0 {
+		return nil
+	}
+
+	var episodes []int
+	if len(captured) == 1 {
+		episodes = captured
+	} else {
+		first, last := captured[0], captured[len(captured)-1]
+		if first <= last {
+			episodes = make([]int, 0, last-first+1)
+			for n := first; n <= last; n++ {
+				episodes = append(episodes, n)
+			}
+		} else {
+			episodes = captured
+		}
+	}
+
+	info := NewParsedEpisodeInfo()
+	info.SeriesTitle = titleText
+	info.SeasonNumber = season
+	info.EpisodeNumbers = episodes
 	return info
 }
 

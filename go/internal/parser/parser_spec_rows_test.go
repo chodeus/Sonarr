@@ -155,7 +155,9 @@ func singleEpisodeRows() []specRow {
 		se("Series Title!.S2016E14.2016-01-20.avi", "Series Title!", 2016, 14),
 		// XFail still — multi-digit episode in 4-digit-season form needs
 		// the broader `\d{1,4}` episode shape on title+S-E.
-		sex("Anime Title - S2020E1527 [1527] [2020-10-11] - Episode Title", "Anime Title", 2020, 1527),
+		// 4-digit episode in 4-digit-season form — flipped by extending
+		// single-S-E + findAllEpisodes to `\d{1,4}` for episode digits.
+		se("Anime Title - S2020E1527 [1527] [2020-10-11] - Episode Title", "Anime Title", 2020, 1527),
 		se("Anime Title - S2010E994 [0994] [2010-02-28] - Episode Title [x264 720p][AAC 2ch][HS][Shion+GakiDave]", "Anime Title", 2010, 994),
 		se("Series.S006E18.Some.Title.Name-Part.1.1080p.WEB-DL.AAC2.0.H.264-Release", "Series", 6, 18),
 		se("Series.2006.S006E18.Some.Title.Name-Part.1.1080p.WEB-DL.AAC2.0.H.264-Release", "Series 2006", 6, 18),
@@ -194,22 +196,26 @@ func multiEpisodeRows() []specRow {
 		me("Series.S03E01-06.DUAL.BDRip.XviD.AC3.-HELLYWOOD", "Series", 3, []int{1, 2, 3, 4, 5, 6}),
 		mex("Series.Title.103.104.720p.HDTV.X264-DIMENSION", "Series Title", 1, []int{3, 4}),
 		me("The Series S01e01 e02 ShoHD On Demand 1080i DD5 1 ALANiS", "The Series", 1, []int{1, 2}),
-		mex("Series.Title.2x04.2x05.720p.BluRay-FUTV", "Series Title", 2, []int{4, 5}),
+		me("Series.Title.2x04.2x05.720p.BluRay-FUTV", "Series Title", 2, []int{4, 5}),
 		me("2x04x05.720p.BluRay-FUTV", "", 2, []int{4, 5}),
 		// XFail — title + Nx_NN multi-episode form (8x01_02 with
 		// underscore separator). Needs a title-bearing multi-Nx rule;
 		// my Nx-episode rule fires first as single-episode (S8E1).
 		mex("Series's Sonarr - 8x01_02 - Free Falling", "Series's Sonarr", 8, []int{1, 2}),
 		me("8x01_02 - Free Falling", "", 8, []int{1, 2}),
-		mex("Series Kings - 2x9-2x10 - Served Code [SDTV] ", "Series Kings", 2, []int{9, 10}),
-		mex("Series Kings - 2x09-2x10 - Served Code [SDTV] ", "Series Kings", 2, []int{9, 10}),
+		// Multi-Nx repeated forms — flipped by the new multi-Nx rule
+		// (Parser.cs:120) with the buildTitleNxMulti Build that scans
+		// `x<digits>` only (skipping `-<season>` digit runs that the
+		// generic findAllEpisodes would otherwise capture).
+		me("Series Kings - 2x9-2x10 - Served Code [SDTV] ", "Series Kings", 2, []int{9, 10}),
+		me("Series Kings - 2x09-2x10 - Served Code [SDTV] ", "Series Kings", 2, []int{9, 10}),
 		me("Series.S01E91-E100", "Series", 1, []int{91, 92, 93, 94, 95, 96, 97, 98, 99, 100}),
 		me("Series.S29E161-E165.PDTV.x264-FQM", "Series", 29, []int{161, 162, 163, 164, 165}),
-		mex("Shortland.Series.S22E5363-E5366.HDTV.x264-FiHTV", "Shortland Series", 22, []int{5363, 5364, 5365, 5366}),
+		me("Shortland.Series.S22E5363-E5366.HDTV.x264-FiHTV", "Shortland Series", 22, []int{5363, 5364, 5365, 5366}),
 		mex("the.Series.101.102.hdtv-lol", "the Series", 1, []int{1, 2}),
 		mex("Series.10708.hdtv-lol.mp4", "Series", 1, []int{7, 8}),
 		mex("Series.10910.hdtv-lol.mp4", "Series", 1, []int{9, 10}),
-		mex("World Series of Sonarr - 2010x15 - 2010x16 - HD TV.mkv", "World Series of Sonarr", 2010, []int{15, 16}),
+		me("World Series of Sonarr - 2010x15 - 2010x16 - HD TV.mkv", "World Series of Sonarr", 2010, []int{15, 16}),
 		me("Series Title Season 01 Episode 05-06 720p", "Series Title", 1, []int{5, 6}),
 		mex("The Series And The Code - S42 Ep10718 - Ep10722", "The Series And The Code", 42, []int{10718, 10719, 10720, 10721, 10722}),
 		me("Series Title.S6.E1.E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
