@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: typed MediaInfo column on episodefiles.File (separate slice, touches Mapper + every read/write site). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
+Last updated: 2026-05-05 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery — modulo deferred in-memory queue + IExecute<T> dispatch). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: typed MediaInfo column on episodefiles.File (separate slice, touches Mapper + every read/write site). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
 
 ## Where to resume
 
@@ -2788,6 +2788,111 @@ roundtrips, SetFileID auto-forget, and every read+mutation
 pass-through.
 
 ### Phase 3 — Service / Workflow layer ⏳ in progress
+
+#### 3.9 — commands.Service (CommandQueueManager port) ✅ shipped (2026-05-05)
+
+Ports the persistence-side surface of `CommandQueueManager` at
+`src/NzbDrone.Core/Messaging/Commands/CommandQueueManager.cs:38-282`:
+
+- `Push(name, body, priority, trigger)` → `:101-140`. Dedups
+  against existing Queued+Started rows by (Name, Body) equality;
+  returns the existing row when dedup hits, otherwise inserts.
+- `PushMany([]PushItem)` → `:58-99`. Per-row dedup; within-batch
+  duplicates also collapsed. Returns newly-queued rows in input
+  order.
+- `Get / All / GetQueued / GetStarted` → `:156-178`. Read accessors.
+- `Start(c)` → `:190-195`. Sets Status=Started + repo.Start.
+- `Complete(c, message)` → `:197-208`. Defaults Result to
+  Successful when Unknown; stamps EndedAt + Duration; publishes
+  [CommandExecutedEvent].
+- `Fail(c, message, exceptionDetail)` → `:210-217`. Stamps
+  Exception; defaults Result to Unsuccessful when Unknown;
+  publishes CommandExecutedEvent.
+- `Cancel(id)` → `:227-233`. Atomic Queued → Cancelled. Returns
+  `ErrCannotCancel` for non-Queued rows and `ErrNotFound` for
+  missing rows. The C# version manipulates the in-memory queue
+  and throws 409; the Go port does it at the DB layer until the
+  in-memory dispatcher ports.
+- `CleanCommands(cutoff)` → `:235-246`. Wrapper around repo.Trim.
+- `HandleApplicationStarted` → `:276-281`. repo.OrphanStarted +
+  returns queued list so the host can re-push into the (Phase
+  3.10+) in-memory dispatcher.
+
+Events (`internal/commands/events.go`):
+
+- `CommandExecutedEvent` — ports
+  `Messaging/Events/CommandExecutedEvent.cs`. Published by Service
+  after Complete/Fail. In the C# tree this fires from
+  `CommandExecutor`; the Go port collapses both roles into one
+  Service for now (publishing moves with the dispatcher when it
+  splits out in 3.10+).
+
+Body comparison is raw string equality (vs C# `CommandEqualityComparer`
+which compares property values via reflection). Callers must
+produce canonical JSON for the Body — the scheduler / API layer
+naturally do.
+
+Deferred:
+
+- In-memory `CommandQueue` (the C# blocking-consumer enumerator
+  at `:151-154`). Phase 3.10+ ports it as a goroutine-friendly
+  channel-based dispatcher.
+- `IExecute<T>` reflection-based dispatch (`CommandExecutor`).
+- `GetCommand` reflection on the `Push(string commandName)`
+  overload — Go callers wire per-command-type adapters that
+  produce the body JSON directly.
+
+Tests (12 functions × ~30 sub-cases): Push insert + dedup +
+no-dedup-against-completed + empty-name-error, PushMany
+within-batch dedup, Start→Complete with CommandExecutedEvent,
+Complete preserves explicit Result, Fail with stack trace + event,
+Cancel queued / cannot-cancel-started / missing-id, CleanCommands
+cutoff, HandleApplicationStarted orphan + queued list, getter
+pass-through, nil-bus skips publish.
+
+  internal/commands:  ok  (-race)
+  golangci-lint:      0 issues
+
+#### 3.8 — commands enums + repo helpers ✅ shipped (2026-05-05)
+
+Lays the foundation for Phase 3.9. Adds 4 enum types in
+`enums.go`:
+
+- `Status` → 0..6 (Queued/Started/Completed/Failed/Aborted/
+  Cancelled/Orphaned). Persisted on `Commands.Status`.
+- `Result` → 0..3 (Unknown/Successful/Unsuccessful/Indeterminate).
+  Persisted on `Commands.Result`.
+- `Trigger` → 0..2 (Unspecified/Manual/Scheduled). Persisted on
+  `Commands.Trigger`.
+- `Priority` → -1..1 (Low/Normal/High). Note negative Low —
+  dispatcher sorts DESC and depends on the ordering.
+
+All four have `String()` methods + frozen-numbering tests. The
+on-disk numbering matches C# verbatim so legacy rows round-trip.
+
+Adds 7 repo helpers in `repo_helpers.go`, ports of
+`CommandRepository` at `:25-63`:
+
+- `Queued()` → `:50-53`
+- `Started()` → in-flight scan (used by `CommandQueueManager:174-178`)
+- `Trim(cutoff)` → `:25-30`. Cutoff is parameterised vs the C#
+  hard-coded `-1d` so the housekeeper can drive from config.
+- `OrphanStarted()` → `:32-46`. Restart cleanup; flips
+  Status=Started rows to Orphaned with EndedAt=now.
+- `Start(c, started)` → `:55-58`. Targeted UPDATE on (StartedAt,
+  Status). In-place mutation matches C# SetFields semantic.
+- `End(c, ended)` → `:60-63`. Targeted UPDATE on (EndedAt, Status,
+  Duration, Exception).
+- `FindByName(name)` — name-based query for the dedup-on-Push
+  path; returns rows ordered by QueuedAt DESC.
+
+Tests: 5 enum String + frozen-value pin functions + 1 repo-helpers
+suite (× both engines) covering Queued ordering, Started filter,
+FindByName ordering + missing case, Trim cutoff, OrphanStarted
+status flip, Start/End persistence + in-place mutation, ghost-id
+error paths.
+
+  internal/commands:  ok  (-race -p 1)
 
 #### 3.7 — Organizer language tokens (closes 3.6 deferred) ✅ shipped (2026-05-04)
 
