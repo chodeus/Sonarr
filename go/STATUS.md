@@ -1028,10 +1028,17 @@ What ships:
 
 What stays xfail (4 rows after this slice):
 
-- `[Impatience] Series - 0x01 [720p][34073169].mkv` — anime [SubGroup] rule mis-routes; would need anime rule to reject when title contains S/Nx form.
-- `[RlsGrp] Series Title - S01E27 - 24-Hour` — same anime [SubGroup] mis-route + `[RlsGrp] ` prefix that single-S-E retains in title.
-- `Series Title? E11-E12 1080p HDTV AAC H.264-NEXT` — Korean NEXT space-separator variant; title cleanup would need to drop trailing `?`.
-- `kill-roy-was-here-e07-720p` — mini-series vs anime ambiguity (same input shape as the `_e<NN>_` anime row, different expected output; cannot disambiguate without fixture-source context).
+- `[Impatience] Series - 0x01 [720p][34073169].mkv` — anime [SubGroup] rule fires first and produces abs=24 (the `24` in `24-Hour` after the S-E form). Expected: title=`Series`, season=0, episode=1.
+  - **Fix sketch**: in `buildAnimeAbsolute`, after extracting title, check whether the captured title text contains `S\d+E\d+` or `\d+x\d+`. If so, return nil so ParseTitle continues to the next rule. The Title+Nx single rule (with extended `[-_. \[]+` separator from 2.12.13) would then catch `[Impatience] Series - 0x01` as title=`[Impatience] Series`, season=0, episode=1. Trailing `[Impatience]` cleanup (subgroup → release group) is a SimplifyTitle / GetSubGroup concern that lands later — for now leaving `[Impatience]` in the title string is acceptable.
+
+- `[RlsGrp] Series Title - S01E27 - 24-Hour` — same anime [SubGroup] mis-route as above. Single-S-E would otherwise capture the row but the title group retains the `[RlsGrp] ` prefix.
+  - **Fix sketch**: same `buildAnimeAbsolute` reject-on-S-E change unblocks rule fall-through. Then add a PreSubstitution rule that strips `^\[<word>\]\s*` when followed by an S-E form (the leading bracket is a release-group prefix, not an anime subgroup, when the rest of the input is canonical S<n>E<n>). Alternative: handle this in the consumer's GetReleaseGroup pass once it ships — the Go port can then leave the `[RlsGrp]` prefix in the parsed title and let downstream stripping clean it.
+
+- `Series Title? E11-E12 1080p HDTV AAC H.264-NEXT` — Korean NEXT variant with space separators (the existing PreSub rule 1 + 1a use `\.` literal, so this row's space-separated `E11-E12 1080p` doesn't trigger them). After PreSub fails, no current rule produces the expected `(Series Title, 1, [11, 12])`.
+  - **Fix sketch**: add a third PreSub variant `^(.+) E(\d{2,4})-E(\d{2,4}) (.*-(?:F1RST|NEXT))$` → `$1 S01E$2-E$3 $4` that mirrors rule 1a but with space separators. Title cleanup also needs to drop trailing `?` from `Series Title?` — extend the cleanup pass in build* helpers (or just `strings.TrimRight(titleText, "?!")` after the existing `.`/`_` → space replacement). Both changes are local; risk is bounded by re-running the bulk-spec.
+
+- `kill-roy-was-here-e07-720p` — mini-series form (expected season=1, episodes=[7], **not** abs=[7]). Same input shape as the currently-passing `Some_Anime_Show_e66_…` anime row, but with a different expected outcome. Cannot disambiguate from input alone.
+  - **Fix sketch**: the C# fixtures place these in different test files (`MiniSeriesEpisodeParserFixture.cs` for kill-roy, `AbsoluteEpisodeNumberParserFixture.cs` for the anime row), so C# also can't tell them apart from the regex — the fixture itself encodes the disambiguation. Two options: (a) accept this as a known fixture-bug and remove the `kill-roy` row from the spec corpus; (b) introduce a new helper `mini` row that asserts season=1+episode AND title doesn't include any `[<word>]` subgroup token, then teach `buildAnimeTitleAbsolute` to ALSO populate `season=1, episode=abs` so both anime and mini matchers succeed (the current spec uses `Abs` for anime and `Episodes`/`Season` for mini). Option (b) is mechanical but expands the data model's interpretation. Recommend deferring until the consumer pipeline (which has more context) ships in Phase 2.13+.
 
 These four are out-of-scope for fixture-driven slicing — each needs either subtle rule precedence work or per-row context-aware logic. Acceptable to leave xfail; the bulk-spec dispatcher will catch any future regression.
 
