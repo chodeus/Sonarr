@@ -1938,6 +1938,100 @@ Lint clean (after applying De Morgan's per staticcheck
 QF1001); package tests green; full `-race -p 1` suite skipped
 (touches only the new package).
 
+#### 2.19 — CustomFormat persisted-spec marshal/unmarshal ✅ shipped (2026-05-04)
+
+Closes the persistence half of the CustomFormat engine. Ports
+`src/NzbDrone.Core/Datastore/Converters/CustomFormatSpecificationConverter.cs`
+— the System.Text.Json `JsonConverter<List<ICustomFormatSpecification>>`
+that owns the wire format for the `CustomFormat.Specifications`
+text column.
+
+What ships in `customformats/marshal.go`:
+
+1. **`UnmarshalSpecs(data []byte) ([]Specification, error)`** —
+   parses the JSON envelope array into typed `[]Specification`.
+   Mirrors C# `Read`. Empty / nil input → (nil, nil).
+
+2. **`MarshalSpecs(specs []Specification) ([]byte, error)`** —
+   encodes a typed slice back to the canonical wire shape.
+   Mirrors C# `Write`. Round-trip safe: byte-shape matches what
+   System.Text.Json emits modulo whitespace.
+
+3. **Wire shape** (per element of the Specifications array):
+
+   ```json
+   {"type": "<ClassName>", "body": { ...spec fields... }}
+   ```
+
+   `<ClassName>` is the C# class name (e.g.
+   `ReleaseTitleSpecification`, NOT the Go type name).
+   Catalogue at `internal/provider.customFormatSpecTypes` —
+   8 concrete types at HEAD. Migration 205 already rewrote
+   `SeasonPackSpecification` rows to `ReleaseTypeSpecification`,
+   so the old name doesn't need an alias.
+
+4. **Per-spec body shapes**:
+   - `regexSpecBody` (ReleaseTitle/ReleaseGroup): name, negate,
+     required, value (regex pattern string).
+   - `intValueSpecBody` (Resolution/Source/ReleaseType/IndexerFlag):
+     name, negate, required, value (int).
+   - `languageSpecBody`: + exceptLanguage bool.
+   - `sizeSpecBody`: name, negate, required, min, max (floats, GB).
+
+5. **Dispatch via `decodeSpec` / `encodeSpec`** — type-switch
+   replacing the C# `Type.GetType($"NzbDrone.Core.CustomFormats.
+   {typename}")` reflection. Unknown discriminators error with
+   the index + discriminator string for diagnosis. Unknown Go
+   spec types in encodeSpec also error so adding a new spec
+   without updating the dispatch surfaces immediately.
+
+Error paths covered:
+
+- Empty / nil input: `(nil, nil)`.
+- Empty array: zero-length slice, no error.
+- Unknown discriminator: error citing index + type name.
+- Malformed JSON: error from `json.Unmarshal`.
+- Invalid regex pattern (after dispatch): error from
+  `RegexSpec.SetPattern` propagated.
+
+Test coverage in `marshal_test.go` (10 cases):
+
+- Empty inputs (nil + empty bytes + empty array).
+- Single ReleaseTitleSpec round-trip.
+- All 8 catalogued types in a single envelope, each verified
+  for type + key fields.
+- Unknown discriminator → error.
+- Malformed JSON → error.
+- Bad regex pattern → error.
+- 4-spec round-trip (Marshal → Unmarshal byte-equivalence).
+- Marshal of an unknown Go spec type → error (encoder default
+  case).
+
+The CustomFormat engine is now end-to-end:
+
+```
+CustomFormat row → UnmarshalSpecs → []Specification
+                                   ↓
+                   *Format struct (Name + IncludeWhenRenaming + specs)
+                                   ↓
+            Calculate(input, formats) → []*Format (matched, sorted)
+                                   ↓
+                   MarshalSpecs → JSON for round-trip persistence
+```
+
+What's deferred:
+
+- The 7 typed adapters from `CustomFormatCalculationService.cs`
+  (`ParseCustomFormat(RemoteEpisode, ...)` etc.) — each lands
+  with its domain input type.
+- `IncludeCustomFormatWhenRenaming` wiring (renamer/Organizer
+  not ported).
+
+Lint clean (after gofmt re-format + staticcheck S1016
+struct-conversion + unused-var cleanup); package tests green
+(36 tests); full `-race -p 1` suite skipped (touches only the
+new package).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
