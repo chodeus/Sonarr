@@ -164,8 +164,8 @@ func TestApplySimplifyTitle_EndToEnd(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := applySimplifyTitle(tc.in); got != tc.want {
-				t.Errorf("applySimplifyTitle(%q) = %q, want %q", tc.in, got, tc.want)
+			if _, got := applySimplifyTitle(tc.in); got != tc.want {
+				t.Errorf("applySimplifyTitle(%q).simpleTitle = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}

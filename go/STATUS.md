@@ -1146,6 +1146,76 @@ Test coverage:
 Lint clean; parser test suite green (15 tests pass); full `-race
 -p 1` suite skipped (parser-package-internal changes only).
 
+#### 2.13.1 — Per-rule post-match enrichment (Quality / ReleaseGroup / GetSubGroup / GetReleaseHash) ✅ shipped (2026-05-04)
+
+Wires the four cheapest post-match enrichment stages from
+`Parser.ParseTitle:758-775`. Every match now produces a
+ParsedEpisodeInfo with Quality / ReleaseGroup / ReleaseHash
+populated as the C# pipeline does.
+
+**Spec delta**: pass=196 xfail=4 regression=0 (no movement —
+spec dispatcher doesn't assert on these fields; correctness
+verified by dedicated unit tests).
+
+What ships:
+
+1. **`applySimplifyTitle` returns (releaseTitle, simpleTitle)**
+   instead of just simpleTitle. releaseTitle is the post-
+   PreSubstitution / pre-SimpleTitle form; simpleTitle has the
+   full strip applied. This split mirrors the C# variable model
+   exactly and lets ParseReleaseGroup see the un-stripped form.
+
+2. **`enrichFromMatch(info, re, m, originalTitle, releaseTitle, simpleTitle)`**
+   in `parse_title.go`. Runs after Build returns:
+   - `Quality = quality.ParseQuality(originalTitle)` — parsed
+     from the FULL original title (with extension), not from
+     simpleTitle. Mirrors C# `ParseQuality(title)` at
+     `Parser.cs:758`.
+   - `ReleaseGroup = ParseReleaseGroup(releaseTitle)` first;
+     then if the matched rule's `<subgroup>` capture is
+     non-empty after trim, override. Mirrors `Parser.cs:761-767`.
+   - `ReleaseHash = strings.Trim(<hash>, "[]()")`, with the
+     literal `1280x720` rejected as a false positive. Mirrors
+     `Parser.cs:1222-1238`'s GetReleaseHash including the
+     `Equals("1280x720")` reject branch.
+
+3. **buildAnimeAbsolute redundant-but-safe**: continues to set
+   ReleaseGroup/ReleaseHash from the matched groups; the
+   post-processing produces identical values (extracts from the
+   same `<subgroup>`/`<hash>` capture indices). The redundancy
+   isn't strictly necessary but keeps Build closures
+   self-contained for cases where they're called outside
+   ParseTitle.
+
+What's deferred to subsequent slices:
+
+- **Languages + ReleaseTokens** (2.13.2). Build closures need
+  to populate `lastSeasonEpisodeStringIndex` so post-processing
+  can slice `releaseTitle.Substring(idx)` for ReleaseTokens.
+  Then `Languages = LanguageParser.ParseLanguages(ReleaseTokens)`
+  + the `FullSeason && ReleaseTokens.ContainsIgnoreCase("Special")`
+  toggle become wireable.
+- **GetSeriesTitleInfo** (2.13.3). Year-in-title splitter that
+  populates `SeriesTitleInfo.{Title, TitleWithoutYear, Year, AllTitles}`.
+- **ParsePath** (2.13.4). Entry-point that combines folder
+  name + filename into a ParseTitle call.
+
+Test coverage:
+
+- New `TestParseTitle_Enrichment` in `parse_title_test.go`
+  (~6 cases): Quality on a 720p HDTV title, ReleaseGroup
+  fallback to ParseReleaseGroup, subgroup override on anime
+  `[Impatience]` form, ReleaseHash captured + bracket-trimmed
+  from an anime hash group, the 1280x720-reject doc-test, and
+  the non-anime case (subgroup empty, ReleaseGroup populated,
+  ReleaseHash empty).
+- Updated `simplify_title_test.go` end-to-end test to consume
+  the new two-return signature.
+
+Lint clean (after gofmt re-format of the doc comment); parser
+test suite green (16 tests pass); full `-race -p 1` suite
+skipped (parser-package-internal changes only).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)

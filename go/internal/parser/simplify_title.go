@@ -188,19 +188,34 @@ func applyCleanQualityBrackets(title string) string {
 }
 
 // applySimplifyTitle runs the full SimplifyTitle-equivalent cleanup
-// pipeline on a release title. Returns the simpleTitle the
-// ReportTitleRegex rules match against. Mirrors
-// `Parser.ParseTitle:681-734`.
-func applySimplifyTitle(title string) string {
+// pipeline on a release title. Mirrors `Parser.ParseTitle:681-734`.
+//
+// Returns two strings, both in C# semantic terms:
+//
+//   - releaseTitle: the input post-RemoveFileExtension,
+//     post-fancy-bracket-normalise, post-PreSubstitution. Used as
+//     the input to ReleaseGroupParser.ParseReleaseGroup and as the
+//     source for ReleaseTokens slicing.
+//   - simpleTitle: releaseTitle with SimpleTitleRegex / WebsitePrefix /
+//     WebsitePostfix / CleanTorrentSuffix / CleanQualityBrackets /
+//     SixDigitAirDate applied. The string the ReportTitleRegex rules
+//     match against.
+//
+// The reversed-title char-flip happens before extension-stripping
+// since the C# code reverses the extension-less prefix and
+// re-appends the extension. That's then fed into the same
+// extension strip + cleanups path.
+func applySimplifyTitle(title string) (releaseTitle, simpleTitle string) {
 	title = applyReversedTitle(title)
-	s := RemoveFileExtension(title)
-	s = applyFancyBrackets(s)
-	s = applyPreSubstitution(s)
-	s = applySimpleTitle(s)
-	s = ApplyWebsitePrefix(s)
-	s = ApplyWebsitePostfix(s)
-	s = ApplyCleanTorrentSuffix(s)
-	s = applyCleanQualityBrackets(s)
-	s = applySixDigitAirDate(s)
-	return s
+	releaseTitle = RemoveFileExtension(title)
+	releaseTitle = applyFancyBrackets(releaseTitle)
+	releaseTitle = applyPreSubstitution(releaseTitle)
+
+	simpleTitle = applySimpleTitle(releaseTitle)
+	simpleTitle = ApplyWebsitePrefix(simpleTitle)
+	simpleTitle = ApplyWebsitePostfix(simpleTitle)
+	simpleTitle = ApplyCleanTorrentSuffix(simpleTitle)
+	simpleTitle = applyCleanQualityBrackets(simpleTitle)
+	simpleTitle = applySixDigitAirDate(simpleTitle)
+	return releaseTitle, simpleTitle
 }
