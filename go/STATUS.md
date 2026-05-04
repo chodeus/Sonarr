@@ -2646,6 +2646,78 @@ Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
 
+#### 2.28 — CustomFormatService (CRUD wrapper + cache + Add/Delete events) ✅ shipped (2026-05-04)
+
+Symmetric with `autotagging.Service` (2.27). Ports
+`CustomFormatService.cs:1-95`. Wraps the Repo with a typed-
+Format cache, CRUD passthroughs, and lifecycle event publishing.
+
+What ships in `internal/customformats/service.go`:
+
+1. **`CustomFormatAddedEvent` + `CustomFormatDeletedEvent`** —
+   port `Events/CustomFormatAddedEvent.cs` and
+   `Events/CustomFormatDeletedEvent.cs`. Each carries a
+   `*Format` payload so listeners can fan-in / prune
+   references.
+
+2. **`Service` + `NewService(repo, bus)`** — orchestrator.
+
+3. **`All(ctx) []*Format`** — cached typed list. Same
+   RWMutex+invalidate pattern as autotagging.Service.
+
+4. **`GetByID(ctx, id)`** — cached lookup; returns
+   ErrNotFound on missing.
+
+5. **`Insert(ctx, row) (*Format, error)`** — persists,
+   converts via LoadFromRow, invalidates cache, publishes
+   `CustomFormatAddedEvent`.
+
+6. **`Update(ctx, row) error`** — persists, invalidates
+   cache. Mirrors C# semantic where Update does NOT publish
+   a lifecycle event (only Insert and Delete do).
+
+7. **`Delete(ctx, id) error`** — loads the typed Format
+   FIRST, publishes `CustomFormatDeletedEvent` BEFORE the
+   delete, then performs the delete. Mirrors C# `:74-82`
+   ordering so listeners can prune stale references while
+   the row is still queryable.
+
+Test coverage in `service_test.go` (~6 cases):
+
+- Insert publishes CustomFormatAddedEvent with non-nil Format
+  payload.
+- Update does NOT publish (verifies neither Added nor Deleted
+  fire after an Insert+Update sequence; Added counter stays at
+  1, Deleted at 0).
+- Delete publishes CustomFormatDeletedEvent with the correct
+  Format payload BEFORE the row is gone (subsequent GetByID
+  returns ErrNotFound).
+- All caches: a direct-Repo insert that bypasses the Service
+  doesn't appear in subsequent All() calls.
+- Nil row inputs to Insert and Update return errors.
+- GetByID for unknown id returns ErrNotFound.
+
+Tests use real on-disk SQLite migrated to head + sync
+messaging subscribers + atomic counters (or pointer captures
+for payload verification).
+
+What's still deferred (both engines):
+
+- The 7 typed adapters from C# CustomFormatCalculationService
+  (RemoteEpisode / EpisodeFile / Blocklist / EpisodeHistory /
+  LocalEpisode entry-points). Each lands when its domain
+  input type does.
+- `BatchUpdate` / `BatchDelete` — the `List<>` overloads of
+  Update and Delete. Lands when batch domain operations need
+  them.
+
+The two matching engines now have full lifecycle parity:
+typed-spec interface + Calculate/ChangesFor + Marshal/Unmarshal
++ Loader + Service with caching and event publishing.
+
+Lint clean; package tests green (~10 tests now in
+customformats); full `-race -p 1` suite skipped.
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
