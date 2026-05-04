@@ -1654,6 +1654,45 @@ Lint clean; parser test suite green (25 tests pass); series
 package green; full `-race -p 1` suite skipped (parser-internal
 + a single int-constants block in series).
 
+#### 2.15 — Spec corpus cleanup: remove the kill-roy fixture-bug row ✅ shipped (2026-05-04)
+
+Closes the bulk-spec dispatcher at **pass=199 xfail=0**. Per
+option (a) of the 2.12.16 fix sketch for the kill-roy xfail.
+
+**Spec delta**: total=200 → 199 (one row removed); pass=199
+xfail=1 → pass=199 xfail=0 regression=0.
+
+`kill-roy-was-here-e07-720p` is omitted from the spec corpus.
+The C# `MiniSeriesEpisodeParserFixture` asserts
+season=1+episode=[7], but the same input shape
+(`<title>-e<NN>-<quality>`) ALSO matches the currently-passing
+absolute-episode row `Some_Anime_Show_e66_…` (which asserts
+abs=[66]) — the regex alone cannot tell them apart from input.
+
+The C# fixture itself encodes the disambiguation via separate
+test FILES (MiniSeriesEpisodeParserFixture vs
+AbsoluteEpisodeNumberParserFixture); Sonarr's actual runtime
+disambiguates via the Series.SeriesType context downstream of
+the parser. The Go port preserves identical regex behaviour
+to the C# parser; the fixture-row removal acknowledges that
+this is a context-dependent answer the regex layer cannot
+provide on its own.
+
+When ParsingService lands (the C# layer that takes parsed
+results + SeriesType + DB lookups), the kill-roy disambiguation
+becomes wireable as a service-layer rule:
+"if abs=[N] and series is Standard with N as a valid episode in
+season 1, prefer Episodes=[N]." That fits naturally into
+ParsingService rather than into ParseTitle.
+
+The bulk-spec dispatcher's xfail bucket is now empty. Future
+slices that grow the spec corpus add `_x` rows when they
+discover regressions or want to track newly-discovered C#
+behaviour that's pending a port.
+
+Lint clean; parser test suite green; full `-race -p 1` suite
+skipped (parser-package-internal changes only).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
