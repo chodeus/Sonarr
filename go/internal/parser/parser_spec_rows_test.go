@@ -339,12 +339,16 @@ func animeAbsoluteRows() []specRow {
 		anime("[Underwater-FFF] Series Title - 01 (720p) [27AAA0A0]", "Series Title", 1),
 		anime("[S-T-D] Series Title! - 06 (1280x720 10bit AAC) [59B3F2EA].mkv", "Series Title!", 6),
 
-		// XFail — title + absolute (no [SubGroup] brackets):
-		animex("Some Anime Show - 031 - The Resolution to Kill [Lunar].avi", "Some Anime Show", 31),
-		animex("Some Anime Show - 031 - The Resolution to Kill [Lunar]", "Some Anime Show", 31),
-		animex("Some_Anime_Show_e66_time_is_money_part_one_marking_time", "Some Anime Show", 66),
-		animex("Series Title - 010 (720p) [27AAA0A0].mkv", "Series Title", 10),
-		animex("Initial_Series_Title - 01 DVD - Central Anime", "Initial Series Title", 1),
-		animex("Initial_Series_Title_-_01(DVD)_-_(Central_Anime)[5AF6F1E4].mkv", "Initial Series Title", 1),
+		// Title + absolute (no [SubGroup] brackets) — flipped by the
+		// catch-all anime-title-without-subgroup rule placed last in
+		// the rule chain. Optional `e?` admits the `_e<num>_` shape;
+		// `(?:[^\d]|$)` end-anchor (rather than `\W`) admits the
+		// underscore-bordered form (Go's `\W` excludes `_`).
+		anime("Some Anime Show - 031 - The Resolution to Kill [Lunar].avi", "Some Anime Show", 31),
+		anime("Some Anime Show - 031 - The Resolution to Kill [Lunar]", "Some Anime Show", 31),
+		anime("Some_Anime_Show_e66_time_is_money_part_one_marking_time", "Some Anime Show", 66),
+		anime("Series Title - 010 (720p) [27AAA0A0].mkv", "Series Title", 10),
+		anime("Initial_Series_Title - 01 DVD - Central Anime", "Initial Series Title", 1),
+		anime("Initial_Series_Title_-_01(DVD)_-_(Central_Anime)[5AF6F1E4].mkv", "Initial Series Title", 1),
 	}
 }

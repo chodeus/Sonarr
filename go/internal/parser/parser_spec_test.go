@@ -89,6 +89,17 @@ func animex(input, title string, abs int) specRow {
 	return specRow{Input: input, Want: &expected{Title: title, Abs: []int{abs}}, XFail: true}
 }
 
+// Reserve the *x row helpers from being flagged unused once their
+// last xfail row flips to passing — the helper API stays available
+// for future xfail additions without re-introducing the function.
+var (
+	_ = sex
+	_ = mex
+	_ = dailyx
+	_ = minix
+	_ = animex
+)
+
 func TestParserSpec(t *testing.T) {
 	rows := allSpecRows()
 

@@ -496,6 +496,27 @@ var reportTitleRules = []rgRule{
 		),
 		Build: buildSeasonEpisodeKeyword,
 	},
+
+	// `Parser.cs:152` / `:156`-style — Anime title-without-subgroup.
+	// Catches `<title> - <abs> - <text>` and `<title>_e<abs>_<text>`
+	// shapes where there is no leading `[SubGroup]` bracket. Listed
+	// LAST in the rule chain because the lazy `.+?` title plus a
+	// permissive `[-_. ]+e?<2-3 digit>` separator makes this rule a
+	// catch-all for inputs no earlier rule has claimed; placing it
+	// earlier would shadow legitimate S-E and Nx forms whose 2-3
+	// digit run could also be read as an absolute episode.
+	//
+	// The optional `e?` admits the abbreviated `e<num>` episode-marker
+	// shape (`Some_Anime_Show_e66_…`) without forcing a separate rule.
+	// End-anchor uses `(?:[^\d]|$)` rather than `(?:\W|$)` so the
+	// `_<abs>_` form matches — Go's `\W` excludes `_` (word char) and
+	// would reject the underscore-bracketed shape.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?)[-_. ]+e?(?P<absoluteepisode>\d{2,3})(?:[^\d]|$)`,
+		),
+		Build: buildAnimeTitleAbsolute,
+	},
 }
 
 // episodeNumberRe is the post-match scanner for `E\d{2,3}` /
@@ -752,6 +773,27 @@ func buildAnimeAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEpisode
 	info.AbsoluteEpisodeNumbers = []int{abs}
 	info.ReleaseGroup = subgroup
 	info.ReleaseHash = hashText
+	return info
+}
+
+// buildAnimeTitleAbsolute handles the title-without-subgroup anime
+// shape: `<title>` + separator + 2-3 digit absolute episode. Mirrors
+// the C# Parser.cs:152/:156 rules' subset that reads only `title` +
+// `absoluteepisode`.
+func buildAnimeTitleAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
+	titleText, _ := extractGroupSpan(re, m, "title", title)
+	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
+	titleText = strings.TrimSpace(titleText)
+
+	absText, _ := extractGroupSpan(re, m, "absoluteepisode", title)
+	abs, ok := ParseNumber(absText)
+	if !ok {
+		return nil
+	}
+
+	info := NewParsedEpisodeInfo()
+	info.SeriesTitle = titleText
+	info.AbsoluteEpisodeNumbers = []int{abs}
 	return info
 }
 
