@@ -43,9 +43,11 @@ type QualityProfileUpdatedEvent struct {
 // Cache strategy: none. The C# class doesn't cache the `All()` list
 // either; callers go through to the DB on every call.
 type Service struct {
-	repo    *Repo
-	bus     *messaging.Bus
-	formats FormatProvider
+	repo              *Repo
+	bus               *messaging.Bus
+	formats           FormatProvider
+	seriesChecker     SeriesProfileChecker
+	importListChecker ImportListProfileChecker
 }
 
 // NewService binds a Repo + Bus into a QualityProfile Service. Pass

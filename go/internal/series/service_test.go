@@ -7,14 +7,20 @@ import (
 
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
+	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/rootfolders"
 	"sonarr.tv/sonarr/internal/series"
 )
 
-// Compile-time assertion: *series.Service satisfies the
-// rootfolders.SeriesPaths interface. This is the bridge point that
-// lets host wiring replace the RootFolderService stub.
-var _ rootfolders.SeriesPaths = (*series.Service)(nil)
+// Compile-time assertions: *series.Service satisfies the cross-package
+// interfaces that downstream services (RootFolderService,
+// QualityProfileService.Delete) reach for. Pinning these as `var _`
+// declarations means the bridge points compile-fail loudly if a
+// signature drifts.
+var (
+	_ rootfolders.SeriesPaths              = (*series.Service)(nil)
+	_ qualityprofiles.SeriesProfileChecker = (*series.Service)(nil)
+)
 
 func newServiceWithFixtures(t *testing.T, db *datastore.DB) (*series.Service, [2]int) {
 	t.Helper()

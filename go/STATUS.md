@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.50 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (full minus Delete), and Series (read-only + AddSeries/AddMany + UpdateSeries/RemoveAddOptions/DeleteSeries with SeriesEdited/Deleted events — UpdateTags + episode-monitored cascade + bulk Update with IBuildSeriesPaths still deferred); all 5 SeriesService event structs shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, SeriesService.UpdateTags + bulk UpdateSeries, EpisodeService, QualityProfileService.Delete).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.51 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL surface incl. Delete), and Series (read-only + Add/Update/Delete with all 5 events — UpdateTags + episode-monitored cascade + bulk UpdateMany still deferred); cross-package compile-time bridges: *series.Service satisfies rootfolders.SeriesPaths AND qualityprofiles.SeriesProfileChecker; remaining Phase 2 areas: Organizer/FileNameBuilder, SeriesService.UpdateTags integration + bulk UpdateMany, EpisodeService, ImportListFactory port).
 
 ## Where to resume
 
@@ -2645,6 +2645,66 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.51 — QualityProfileService.Delete with in-use validators ✅ shipped (2026-05-04)
+
+Closes the QualityProfileService port to **full** C# parity. Adds:
+
+- `Service.Delete(ctx, id)` — ports
+  `QualityProfileService.cs:65-74`. Validates against both
+  `seriesChecker.AllSeriesQualityProfiles` and
+  `importListChecker.AllImportListQualityProfileIDs`; if any series
+  or import list references the profile, returns
+  `ErrQualityProfileInUse` with the profile name embedded in the
+  error message (mirrors C# `QualityProfileInUseException`).
+- `SeriesProfileChecker` interface — `AllSeriesQualityProfiles(ctx)
+  (map[int]int, error)`. **`*series.Service` satisfies this
+  out of the box** via `series.Service.AllSeriesQualityProfiles`
+  shipped in 2.48; pinned via a compile-time `var _` declaration
+  in `series/service_test.go` alongside the existing
+  `rootfolders.SeriesPaths` bridge.
+- `ImportListProfileChecker` interface —
+  `AllImportListQualityProfileIDs(ctx) ([]int, error)`. Stubbed in
+  tests; production wiring will satisfy this when the
+  ImportListFactory port lands. Until then, fresh installs (no
+  import lists) get a working Delete by passing a no-op stub.
+- `SetSeriesProfileChecker` / `SetImportListProfileChecker` setters
+  — both required before Delete can run; missing-checker calls
+  surface as a clear setup error rather than panicking.
+
+5 tests:
+- `Delete_RemovesUnusedProfile` — happy path: stubs return empty,
+  delete succeeds, post-delete Get → ErrNotFound.
+- `Delete_RejectsInUseBySeries` — series points at p.ID →
+  ErrQualityProfileInUse, profile still present.
+- `Delete_RejectsInUseByImportList` — import list points at p.ID
+  → ErrQualityProfileInUse.
+- `Delete_RequiresBothCheckers` — neither checker wired → setup
+  error.
+- `Delete_ErrorMessageIncludesProfileName` — friendly UX: the
+  profile name "Any" appears in the error string.
+
+Cross-package bridges (compile-time-checked in
+`internal/series/service_test.go`):
+
+```go
+var (
+    _ rootfolders.SeriesPaths              = (*series.Service)(nil)
+    _ qualityprofiles.SeriesProfileChecker = (*series.Service)(nil)
+)
+```
+
+Once the host wires `*series.Service` into both QualityProfileService
+and RootFolderService, three previously-stubbed integration points
+go live without further code changes.
+
+QualityProfileService is now feature-complete relative to the C# class.
+Outstanding follow-up: `*importlists.Service` (when ported) needs to
+satisfy `qualityprofiles.ImportListProfileChecker` — that's a
+1-method bridge.
+
+Tests: SQLite green under `-race`; golangci-lint clean across `./...`.
+Parser spec still 200/200.
 
 #### 2.50 — SeriesService UpdateSeries + RemoveAddOptions + DeleteSeries ✅ shipped (2026-05-04)
 
