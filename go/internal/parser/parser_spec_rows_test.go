@@ -100,9 +100,12 @@ func singleEpisodeRows() []specRow {
 		se("1x04", "", 1, 4),
 		se("1x1", "", 1, 1),
 
-		// XFail — year-prefixed 3-digit form (Series.2009.416 → S4E16):
-		sex("series.2009.416.hdtv-lol", "series 2009", 4, 16),
-		sex("series.six-0.2010.217.hdtv-lol", "series six-0 2010", 2, 17),
+		// Year-prefixed 3-digit form — flipped by removing the `[^\d]`
+		// title constraint from the 3-digit shortcut rule (the `(?<!\d+)`
+		// lookbehind on season is automatically satisfied by the
+		// non-digit separator).
+		se("series.2009.416.hdtv-lol", "series 2009", 4, 16),
+		se("series.six-0.2010.217.hdtv-lol", "series six-0 2010", 2, 17),
 
 		// XFail — title with bracketed-Nx<NN> form:
 		se("Series Title-0 (2010) - 1x05 - Missing Title", "Series Title-0 (2010)", 1, 5),
@@ -207,7 +210,10 @@ func multiEpisodeRows() []specRow {
 		// XFail — title + Nx_NN multi-episode form (8x01_02 with
 		// underscore separator). Needs a title-bearing multi-Nx rule;
 		// my Nx-episode rule fires first as single-episode (S8E1).
-		mex("Series's Sonarr - 8x01_02 - Free Falling", "Series's Sonarr", 8, []int{1, 2}),
+		// Title+Nx multi-trailing form — flipped by extending title+Nx
+		// rule with optional `<extra>` group and updating
+		// buildTitleNxEpisode to scan it.
+		me("Series's Sonarr - 8x01_02 - Free Falling", "Series's Sonarr", 8, []int{1, 2}),
 		me("8x01_02 - Free Falling", "", 8, []int{1, 2}),
 		// Multi-Nx repeated forms — flipped by the new multi-Nx rule
 		// (Parser.cs:120) with the buildTitleNxMulti Build that scans
@@ -225,14 +231,20 @@ func multiEpisodeRows() []specRow {
 		me("Series.10910.hdtv-lol.mp4", "Series", 1, []int{9, 10}),
 		me("World Series of Sonarr - 2010x15 - 2010x16 - HD TV.mkv", "World Series of Sonarr", 2010, []int{15, 16}),
 		me("Series Title Season 01 Episode 05-06 720p", "Series Title", 1, []int{5, 6}),
-		mex("The Series And The Code - S42 Ep10718 - Ep10722", "The Series And The Code", 42, []int{10718, 10719, 10720, 10721, 10722}),
+		// 5-digit `Ep<NNNNN>` multi-episode (Parser.cs:286) — flipped by
+		// the new buildEpFiveDigitMulti rule.
+		me("The Series And The Code - S42 Ep10718 - Ep10722", "The Series And The Code", 42, []int{10718, 10719, 10720, 10721, 10722}),
 		me("Series Title.S6.E1.E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
 		me("Series Title.S6E1-E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
 		me("Series Title.S6E1-S6E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
 		me("Series Title.S6E1E2.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2}),
 		me("Series Title.S6E1-E2-E3.Episode Name.1080p.WEB-DL", "Series Title", 6, []int{1, 2, 3}),
 		me("1x01-x03 - Episode Title.HDTV-720p", "", 1, []int{1, 2, 3}),
-		mex("Series.Title.E07-E08.180612.1080p-NEXT", "Series Title", 1, []int{7, 8}),
+		// `.E<NN>-E<NN>.<6digit-airdate>.<rest>-NEXT` Korean F1RST/NEXT
+		// multi-E variant — flipped by the new PreSub rule 1a that
+		// rewrites multi-E + 6-digit airdate to S01E<NN>-E<NN> form
+		// before rule walking.
+		me("Series.Title.E07-E08.180612.1080p-NEXT", "Series Title", 1, []int{7, 8}),
 		mex("Series Title? E11-E12 1080p HDTV AAC H.264-NEXT", "Series Title", 1, []int{11, 12}),
 		// Bracketed multi-Nx single-bracket — flipped by the new
 		// bracketed-Nx rule with `[-x_. ]*` separator inside the
@@ -269,7 +281,10 @@ func dailyEpisodeRows() []specRow {
 		// The Go port's title+S-E rule fires first and captures S1E13;
 		// fixing requires the hybrid rule + the consumer's airdate
 		// preference logic.
-		dailyx("The Show Series 2015 02 09 WEBRIP s01e13", "The Show Series", "2015-02-09"),
+		// Hybrid airdate+S-E (Parser.cs:161-165) — flipped by the new
+		// hybrid rule placed before single-S-E. Routes through the
+		// daily branch so airdate wins over the trailing `s01e13`.
+		daily("The Show Series 2015 02 09 WEBRIP s01e13", "The Show Series", "2015-02-09"),
 		daily("Tree_Series_2018_06_22_Seth_Meyers_720p_HEVC_x265-MeGusta", "Tree Series", "2018-06-22"),
 
 		// Reversed-date forms (Parser.cs:354 / :358) — flipped by the
@@ -284,10 +299,18 @@ func dailyEpisodeRows() []specRow {
 		// 8-digit YYYYMMDD form — flipped by the dedicated 8-digit
 		// airdate rule below the standard 4-2-2 rule.
 		daily("Series and Title 20201013 Ep7432 [720p WebRip (x264)] [SUBS]", "Series and Title", "2020-10-13"),
-		dailyx("Series Title (1955) - 1954-01-23 05 00 00 - Cottage for Sale.ts", "Series Title (1955)", "1954-01-23"),
+		// Title-with-year-in-parens daily — flipped by changing the
+		// daily airdate rule's title-to-year separator from `\W*` to
+		// `[-_. ]*`. The new class doesn't include `)` so the title
+		// extends through the closing paren before the separator class
+		// kicks in.
+		daily("Series Title (1955) - 1954-01-23 05 00 00 - Cottage for Sale.ts", "Series Title (1955)", "1954-01-23"),
 		daily("Series Title - 30-04-2024 HDTV 1080p H264 AAC", "Series Title", "2024-04-30"),
 		daily("Series.Title.13.02.2025.1080i.HDTV.MPA2.0.H.264", "Series Title", "2025-02-13"),
-		dailyx("Series On TitleClub E76 2024 08 08 1080p WEB H264-RnB96 [TJET]", "Series On TitleClub", "2024-08-08"),
+		// Absolute-episode-then-airdate (Parser.cs:169) — flipped by
+		// the new rule with required trailing `\[<lowercase>\]` (case-
+		// insensitive under `(?i)` so `[TJET]` matches).
+		daily("Series On TitleClub E76 2024 08 08 1080p WEB H264-RnB96 [TJET]", "Series On TitleClub", "2024-08-08"),
 		daily("Series.2025.09.01.The.170.Million.Pound.Diamond.Scam.1080p.HDTV.H264-DEADPOOL'", "Series", "2025-09-01"),
 		// No-title airdate at start (Parser.cs:33) — flipped by the
 		// dedicated no-title-airdate rule placed before the no-title

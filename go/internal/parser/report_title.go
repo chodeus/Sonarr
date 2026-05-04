@@ -186,7 +186,7 @@ var reportTitleRules = []rgRule{
 	// is now where a non-digit chars terminates the title.
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?[^\d])[-_. \[]+(?P<season>\d{1,2})[-_ ]?[ex](?P<episode>\d{1,3})`,
+			`(?i)^(?P<title>.+?[^\d])[-_. \[]+(?P<season>\d{1,2})[-_ ]?[ex](?P<episode>\d{1,3})(?P<extra>(?:[-_]\s?[ex]?\d{2,3})*)`,
 		),
 		Build: buildTitleNxEpisode,
 	},
@@ -231,6 +231,39 @@ var reportTitleRules = []rgRule{
 		Build: buildTitleSeasonEpisode,
 	},
 
+	// `Parser.cs:169` — Episodes with absolute episode number BEFORE
+	// airdate, with trailing bracketed tracker tag. Catches `Series On
+	// TitleClub E76 2024 08 08 1080p WEB H264-RnB96 [TJET]`. The C#
+	// rule's `[a-z]+` for the trailing tag is case-insensitive under
+	// `RegexOptions.IgnoreCase`; the Go port preserves that via `(?i)`.
+	// Listed BEFORE the standard daily airdate so the title doesn't
+	// retain the `E76` prefix.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?)?[-_. ]e\d{2,3}[-_. ](?P<airyear>\d{4})[-_. ]+(?P<airmonth>[0-1][0-9])[-_. ]+(?P<airday>[0-3][0-9]).+?\[[a-z]+\]`,
+		),
+		Build: buildDailyAirdate,
+	},
+
+	// `Parser.cs:161-165` — Hybrid airdate + season+episode form.
+	// `<title> <airdate> <…> s<n>e<m>` is routed through the daily
+	// branch in C#: when both an airdate and a trailing `s\d+e\d+`
+	// token are present, the airdate is canonical and the S-E is
+	// treated as metadata. Catches `The Show Series 2015 02 09 WEBRIP
+	// s01e13`. Listed BEFORE the single-S-E rule so the airdate-plus-
+	// S-E shape isn't first grabbed as a plain S-E with year-spread
+	// title.
+	//
+	// Reuses buildDailyAirdate; the trailing `s?\d{1,2}[ex]\d{1,3}`
+	// is a non-capturing existence check — only the airdate groups
+	// are read by Build.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?)?[-_. ]*(?P<airyear>\d{4})[-_. ]+(?P<airmonth>[0-1][0-9])[-_. ]+(?P<airday>[0-3][0-9]).+?(?:s?\d{1,2}[ex]\d{1,3})`,
+		),
+		Build: buildDailyAirdate,
+	},
+
 	// `Parser.cs:188` — Single SxxExx (or repeating `EXX` after one S).
 	//
 	// The pre-S separator class `[-_. \[]+` admits `[` so bracketed
@@ -261,6 +294,22 @@ var reportTitleRules = []rgRule{
 			`(?i)^(?P<title>.+?)(?:[-_. \[(]+S(?P<season>\d{4}|\d{1,3}))(?:(?:[-_. ]+E\d{1,4})+|(?:E\d{1,4}(?:[-_. ]?E\d{1,4})*(?:[-_. ]?\d{2,3})*))`,
 		),
 		Build: buildTitleSeasonEpisode,
+	},
+
+	// `Parser.cs:286` — 5-digit multi-episode with `Ep<NNNNN>`
+	// keyword. Catches `The Series And The Code - S42 Ep10718 -
+	// Ep10722` → S42 episodes [10718..10722]. Listed AFTER single-S-E
+	// (which fails on this shape because `Ep` isn't a valid `<season>E`
+	// boundary).
+	//
+	// `<extra>` captures one-or-more `[-_. ]+ep\d{5}` iterations; the
+	// Build scans for the per-iteration 5-digit episode and range-
+	// expands first..last to mirror the C# `Enumerable.Range`.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?)[-_. ]+S(?P<season>\d{1,2})(?P<extra>(?:[-_. ]+ep\d{5})+)`,
+		),
+		Build: buildEpFiveDigitMulti,
 	},
 
 	// `Parser.cs:329` — Spanish tracker releases (Temporada / Cap.NN).
@@ -301,7 +350,7 @@ var reportTitleRules = []rgRule{
 	// rather than being misclassified as season=20 episode=10.
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?)?\W*(?P<airyear>\d{4})[-_. ]+(?P<airmonth>[0-1][0-9])[-_. ]+(?P<airday>[0-3][0-9])`,
+			`(?i)^(?P<title>.+?)?[-_. ]*(?P<airyear>\d{4})[-_. ]+(?P<airmonth>[0-1][0-9])[-_. ]+(?P<airday>[0-3][0-9])`,
 		),
 		Build: buildDailyAirdate,
 	},
@@ -433,7 +482,7 @@ var reportTitleRules = []rgRule{
 	// later slice with a more sophisticated title-extraction path.
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?[^\d])(?:[_.\-]+(?P<season>[1-9])(?P<episode>[1-9][0-9]|[0][1-9]))+(?:[_.]|$)`,
+			`(?i)^(?P<title>.+?)(?:[_.\-]+(?P<season>[1-9])(?P<episode>[1-9][0-9]|[0][1-9]))+(?:[_.]|$)`,
 		),
 		Build: buildThreeDigitShortcut,
 	},
@@ -642,10 +691,13 @@ func buildTitleSeasonEpisode(re *regexp.Regexp, m []int, title string) *ParsedEp
 }
 
 // buildTitleNxEpisode handles the `<Title> <N>x<NN>` form where the
-// episode digits are captured directly in a named `episode` group
-// (rather than recovered post-match via findAllEpisodes). Only fires
-// for single episodes; multi-episode `Nx05x06` forms fall through
-// to subsequent slices.
+// episode digits are captured directly in a named `episode` group.
+// If the rule also exposes an `<extra>` named group (the title+Nx
+// rule's optional trailing-multi extension for shapes like `8x01_02`),
+// any `\d{2,3}` runs inside `<extra>` are scanned and range-expanded
+// against the first episode. Other consumers (3-digit / 4-digit
+// shortcuts, Spanish Cap) don't define `<extra>` — extractGroupSpan
+// returns "" and the multi path is a no-op for them.
 func buildTitleNxEpisode(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
 	seasonText, _ := extractGroupSpan(re, m, "season", title)
 	season, ok := ParseNumber(seasonText)
@@ -653,7 +705,7 @@ func buildTitleNxEpisode(re *regexp.Regexp, m []int, title string) *ParsedEpisod
 		return nil
 	}
 	episodeText, _ := extractGroupSpan(re, m, "episode", title)
-	episode, ok := ParseNumber(episodeText)
+	firstEp, ok := ParseNumber(episodeText)
 	if !ok {
 		return nil
 	}
@@ -662,10 +714,34 @@ func buildTitleNxEpisode(re *regexp.Regexp, m []int, title string) *ParsedEpisod
 	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
 	titleText = strings.TrimSpace(titleText)
 
+	captured := []int{firstEp}
+	if extraText, _ := extractGroupSpan(re, m, "extra", title); extraText != "" {
+		for _, raw := range bracketedNxExtraRe.FindAllString(extraText, -1) {
+			if n, ok := ParseNumber(raw); ok {
+				captured = append(captured, n)
+			}
+		}
+	}
+
+	var episodes []int
+	if len(captured) == 1 {
+		episodes = captured
+	} else {
+		first, last := captured[0], captured[len(captured)-1]
+		if first <= last {
+			episodes = make([]int, 0, last-first+1)
+			for n := first; n <= last; n++ {
+				episodes = append(episodes, n)
+			}
+		} else {
+			episodes = captured
+		}
+	}
+
 	info := NewParsedEpisodeInfo()
 	info.SeriesTitle = titleText
 	info.SeasonNumber = season
-	info.EpisodeNumbers = []int{episode}
+	info.EpisodeNumbers = episodes
 	return info
 }
 
@@ -787,6 +863,59 @@ func buildAnimeAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEpisode
 	info.AbsoluteEpisodeNumbers = []int{abs}
 	info.ReleaseGroup = subgroup
 	info.ReleaseHash = hashText
+	return info
+}
+
+// epFiveDigitRe matches each `Ep<5-digit>` iteration inside the
+// `<extra>` group of the 5-digit multi-episode rule. Used by
+// buildEpFiveDigitMulti to recover all per-iteration episode values
+// (Go RE2 retains only the last named-group capture under `+`).
+var epFiveDigitRe = regexp.MustCompile(`(?i)ep(\d{5})`)
+
+// buildEpFiveDigitMulti handles `<title> - S<n> Ep<m> - Ep<m>`
+// (Parser.cs:286). Scans `<extra>` for per-iteration `Ep<5-digit>`
+// matches and range-expands first..last.
+func buildEpFiveDigitMulti(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
+	seasonText, _ := extractGroupSpan(re, m, "season", title)
+	season, ok := ParseNumber(seasonText)
+	if !ok {
+		return nil
+	}
+	extraText, _ := extractGroupSpan(re, m, "extra", title)
+	matches := epFiveDigitRe.FindAllStringSubmatch(extraText, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	captured := make([]int, 0, len(matches))
+	for _, mm := range matches {
+		if n, ok := ParseNumber(mm[1]); ok {
+			captured = append(captured, n)
+		}
+	}
+
+	titleText, _ := extractGroupSpan(re, m, "title", title)
+	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
+	titleText = strings.TrimSpace(titleText)
+
+	var episodes []int
+	if len(captured) == 1 {
+		episodes = captured
+	} else {
+		first, last := captured[0], captured[len(captured)-1]
+		if first <= last {
+			episodes = make([]int, 0, last-first+1)
+			for n := first; n <= last; n++ {
+				episodes = append(episodes, n)
+			}
+		} else {
+			episodes = captured
+		}
+	}
+
+	info := NewParsedEpisodeInfo()
+	info.SeriesTitle = titleText
+	info.SeasonNumber = season
+	info.EpisodeNumbers = episodes
 	return info
 }
 

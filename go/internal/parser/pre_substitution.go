@@ -48,6 +48,20 @@ type preSubstitutionRule struct {
 // double-title basic form), and 14 (Spanish info bracket). Rules
 // 3-13 are deferred — see the package comment above.
 var preSubstitutionRules = []preSubstitutionRule{
+	// Rule 1a (Go-port extension): Korean F1RST/NEXT multi-episode
+	// form with `E<NN>-E<NN>.<6digit-airdate>.<rest>-NEXT`. Listed
+	// BEFORE rule 1 (single-E variant) so multi-E inputs aren't
+	// truncated by rule 1's leftmost-match anchoring on the second E.
+	//
+	// Catches `Series.Title.E07-E08.180612.1080p-NEXT` →
+	// `Series.Title.S01E07-E08.1080p-NEXT`. The post-rewrite shape
+	// then runs through the standard single-S-E rule with multi-E
+	// trailing iteration.
+	{
+		Re:          regexp.MustCompile(`(.+)\.E(\d{2,4})-E(\d{2,4})\.\d{6}\.(.*-(?:F1RST|NEXT))$`),
+		Replacement: `$1.S01E$2-E$3.$4`,
+	},
+
 	// Rule 1 (`ParserCommon.cs:12`): Korean series without season
 	// number, replace with S01Exxx and remove airdate.
 	//
