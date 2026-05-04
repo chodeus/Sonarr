@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.42 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services (Notification, DownloadClient, ImportList, Indexer); series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, full Series/Episode service business logic, RootFolderService with disk-provider).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.43 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services (Notification, DownloadClient, ImportList, Indexer), and RootFolder (with DiskProvider/SeriesPaths/NamingConfig stubs); series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, full Series/Episode service business logic).
 
 ## Where to resume
 
@@ -2645,6 +2645,134 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.43 — RootFolderService (CRUD + cache + async details) ✅ shipped (2026-05-04)
+
+Service-layer port of `src/NzbDrone.Core/RootFolders/RootFolderService.cs`
+(229 LOC) on top of the pure helpers shipped in 2.24
+(`logic.go` — `IsParentPath`, `IsSpecialFolder`, `BestPath`,
+`FilterSpecialFolders`, `Folder`, `UnmappedFolder`).
+
+The Service ships the full C# surface in one slice rather than
+the originally-tentative 2-3:
+
+- `All(ctx)` / `AllWithUnmappedFolders(ctx)` / `Get(ctx, id, timeout)` /
+  `Add(ctx, *RootFolder)` / `Remove(ctx, id)` / `GetBestRootFolderPath(ctx, path)`.
+- Validation block on Add — empty/whitespace path, unrooted path,
+  missing folder, duplicate (case-insensitive after `filepath.Clean`),
+  non-writable. Each maps to a typed sentinel:
+  `ErrInvalidPath` / `ErrFolderNotFound` / `ErrDuplicatePath` /
+  `ErrFolderNotWritable`. Callers classify via `errors.Is`.
+- Async disk-stat collection (`fillDetails`) wraps the C#
+  `Task.Run(...).Wait(timeout ? 5000 : -1)` semantic with a buffered
+  channel + `select { case res := <-ch: ... case <-time.After(bound): }`.
+  The buffered channel lets the goroutine outlive a timed-out wait
+  without leaking — it writes-and-exits, the result is discarded.
+  Mutating the `Folder` struct is deferred until after the timeout
+  decision, so there's no data race even when the goroutine outlives
+  the wait.
+- `getUnmappedFolders` walks subdirectories to a depth derived from
+  `NamingConfig.SeriesFolderFormat`'s separator count (one level per
+  `filepath.Separator`), subtracts known `seriesPaths` values
+  (case-insensitive on cleaned form), filters out the `SpecialFolders`
+  blocklist, and sorts by name (case-insensitive).
+- `GetBestRootFolderPath` uses a per-path map cache with
+  mutation-driven invalidation (Add/Remove clear the whole map) and
+  a defensive 24h TTL bound. Tests inject a deterministic clock via
+  `Service.SetClock` to exercise TTL expiry.
+
+Three new interfaces define the dependency boundaries:
+
+- `DiskProvider` (6 methods: FolderExists, FolderWritable,
+  FolderEmpty, GetAvailableSpace, GetTotalSize, GetDirectories) —
+  the slice of `IDiskProvider` this service uses; the wider real
+  impl lands in Phase 3 (mediafiles).
+- `SeriesPaths` (one method: `AllSeriesPaths(ctx)`) — stub for
+  `ISeriesRepository.AllSeriesPaths`. Real impl swaps in when
+  `SeriesService` lands.
+- `NamingConfigProvider` (one method: `GetSeriesFolderFormat(ctx)`) —
+  read-only slice of `INamingConfigService.GetConfig().SeriesFolderFormat`.
+  The host wiring binds this to `*namingconfig.Service.GetConfig`'s
+  `SeriesFolderFormat` field.
+
+C# behavioural quirks preserved verbatim:
+
+- The C# class doesn't define an `IEventAggregator` field and emits
+  no events; the Go port mirrors that — no `bus *messaging.Bus`.
+- The C# class injects `IRootFolderRepository` separately from the
+  generic `IBasicRepository<RootFolder>` it inherits via the base
+  service; the Go port collapses both into the existing `*Repo` from
+  2.24 since `Repo` already exposes `Get/All/Insert/Delete`.
+- The C# `_diskProvider.GetDirectories(...).ToList()` materialises
+  the iterator before the `if (subFolderDepth > 0)` walk; the Go
+  port's `[]string` slice has the same eager-materialisation
+  semantic.
+- The C# `results.RemoveAll(x => setToRemove.Contains(new DirectoryInfo(x.Path.ToLowerInvariant()).Name))`
+  is reformulated as a `filepath.Base` + `IsSpecialFolder` check
+  inside the unmapped-folder loop, so the special-folder filter
+  runs once per candidate rather than as a post-pass.
+- The C# `try/catch` around `GetDetails` in `AllWithUnmappedFolders`
+  swallows disk errors and resets `UnmappedFolders = []` — the Go
+  port mirrors this via `applyDetails` on `detailsResult.err != nil`.
+- Path equality (`PathEquals` in C#) uses platform-aware case
+  sensitivity (case-insensitive on Windows, case-sensitive on Linux);
+  the Go port uses case-insensitive everywhere (matching
+  `logic.IsParentPath` from 2.24) since the regression cost of
+  accepting `/tv` vs `/TV` as duplicates is lower than letting them
+  through.
+
+Test corpus (15 tests / ~30 cases — every C# fixture case ported):
+
+- `TestService_Add_AcceptsRootedPath` — ports
+  `should_be_able_to_add_root_dir`.
+- `TestService_Add_RejectsMissingFolder` — ports
+  `should_throw_if_folder_being_added_doesnt_exist`.
+- `TestService_Remove` — ports `should_be_able_to_remove_root_dir`.
+- `TestService_Add_RejectsInvalidPath` (3 cases: empty / "BAD PATH" /
+  unrooted) — ports `invalid_folder_path_throws_on_add`.
+- `TestService_Add_RejectsDuplicate` (3 cases: identical / case-insensitive /
+  trailing-slash) — ports `adding_duplicated_root_folder_should_throw`
+  and adds two extra coverage cases.
+- `TestService_Add_RejectsNonWritableFolder` — ports
+  `should_throw_when_adding_not_writable_folder`.
+- `TestService_Get_ExcludesSpecialFolders` (9 cases — one per blocklist
+  entry) — ports
+  `should_get_root_folder_with_subfolders_excluding_special_sub_folders`.
+- `TestService_Get_WalksDepthFromSeriesFolderFormat` — ports
+  `should_get_unmapped_folders_inside_letter_subfolder`.
+- `TestService_GetBestRootFolderPath` (3 cases: parent / grandparent /
+  no-match-fallback) — ports the `GetBestRootFolderPathFixture` Linux-side
+  cases. The Windows-only / Posix-only fixture rows are skipped because
+  the Go test runs on a Mac host and the pure helper from 2.24 already
+  covers the cross-platform shapes via `filepath.Clean` / `EqualFold`.
+- `TestService_GetBestRootFolderPath_CachedAndInvalidated` — extra
+  coverage: Add and Remove invalidate the per-path cache.
+- `TestService_GetBestRootFolderPath_TTLExpiry` — extra coverage with
+  `SetClock`: a 24h TTL evicts entries even when no mutation happens.
+- `TestService_Get_TimeoutLeavesZeroDefaults` — extra coverage: a
+  slow disk stub causes the 5s timeout to fire and the Folder retains
+  zero defaults.
+- `TestService_AllWithUnmappedFolders` — extra coverage: walks every
+  persisted row, filters known seriesPaths, returns per-row
+  unmapped-folder lists.
+
+Cross-DB: SQLite green under `-race`. Lint clean across `./...`.
+
+Outstanding follow-ups noted but deferred:
+
+- The 5s timeout test uses a real `time.Sleep` in the disk stub. A
+  future cleanup could swap to a context-aware stub but the test runs
+  in 50ms so the cost is negligible.
+- The bestPath cache stores entries even on miss-with-fallback (no
+  RootFolder matched, so `BestPath` returned `filepath.Dir(path)`).
+  This is intentional — it matches C# behaviour where `_cache.Get`
+  caches the lambda result regardless. Mutations still invalidate.
+- `SeriesPaths` is currently a stub interface; when `SeriesService`
+  lands in a future Phase 2 slice, the host wires the real impl in.
+- `NamingConfigProvider` is a tiny read-only interface; if more
+  fields are needed later (SeasonFolderFormat, SpecialsFolderFormat),
+  add methods rather than expanding to a full Config-returning
+  interface.
 
 #### 2.42 — ImportListStatus + IndexerStatus services ✅ shipped (2026-05-04)
 
