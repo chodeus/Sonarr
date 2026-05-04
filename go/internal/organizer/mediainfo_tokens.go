@@ -18,22 +18,16 @@ import (
 // at `:653-657`. Existing user patterns containing `{MediaInfo ...}`
 // still parse and render to empty.
 //
-// When `m` is non-nil, the codec / bit-depth / channel / Simple /
-// dynamic-range tokens are wired to real handlers via the
-// `mediainfo.Format*` helpers. The four language tokens
-// (AudioLanguages / AudioLanguagesAll / SubtitleLanguages /
-// SubtitleLanguagesAll) remain stubbed to empty in this slice; their
-// full port requires the C# `Iso639BTMap` + `CultureInfo.TwoLetter
-// ISOLanguageName` lookups (`:747-814`). Adding them is a follow-up
-// slice (~80 LOC); the stubbing here keeps the existing render
-// behaviour for those tokens unchanged.
+// When `m` is non-nil, every token is wired to a real handler via
+// the `mediainfo.Format*` helpers (codec / bit-depth / channel /
+// dynamic-range / Simple / Full) and [FormatLanguagesToken] (the
+// 4 language tokens — Audio/Subtitle ± LanguagesAll).
 //
 // The `Full` token's behaviour matches C# `:688`: it concatenates
-// videoCodec + audioCodec + audioLangs + subtitleLangs. With the
-// language tokens currently empty, `{MediaInfo Full}` renders as
-// `{videoCodec} {audioCodec}` followed by two trailing spaces — the
-// SAME shape `{MediaInfo Simple}` produces, modulo whitespace.
-// Pinned by test.
+// videoCodec + audioCodec + audioLangs + subtitleLangs. The
+// audioLangs token is rendered with `skipEnglishOnly=true`
+// (matches the C# call at `:688`), the subtitleLangs token with
+// `skipEnglishOnly=false`. Both are quoted (`[XX]`) when non-empty.
 //
 // `sceneName` should be the scene-or-file name of the episode file
 // (derived via [SceneOrFileName] or its host equivalent). It's
@@ -85,11 +79,6 @@ func RegisterMediaInfoTokens(handlers map[string]TokenHandler, m *mediainfo.Mode
 	// both codecs are empty. Preserve that for exact parity.
 	simple := videoCodec + " " + audioCodec
 	handlers[NormalizeTokenKey("MediaInfo Simple")] = staticToken(simple)
-	// Full = `{video} {audio}{audioLangs} {subLangs}` — matches the
-	// C# concat at `:688` with the language tokens currently rendering
-	// to empty. Trailing whitespace is intentional and matches C#.
-	full := videoCodec + " " + audioCodec + " "
-	handlers[NormalizeTokenKey("MediaInfo Full")] = staticToken(full)
 
 	// Dynamic-range tokens.
 	handlers[NormalizeTokenKey("MediaInfo VideoDynamicRange")] =
@@ -97,8 +86,28 @@ func RegisterMediaInfoTokens(handlers map[string]TokenHandler, m *mediainfo.Mode
 	handlers[NormalizeTokenKey("MediaInfo VideoDynamicRangeType")] =
 		staticToken(mediainfo.FormatVideoDynamicRangeType(m))
 
-	// Language tokens stubbed (deferred — see top-of-file comment).
-	stubLanguageTokens(handlers)
+	// Language tokens — pull stream language lists once per call,
+	// drive the per-token CustomFormat filter via the handler closure.
+	audioLangs := languagesFromAudioStreams(m.AudioStreams)
+	subtitleLangs := languagesFromSubtitleStreams(m.SubtitleStreams)
+
+	handlers[NormalizeTokenKey("MediaInfo AudioLanguages")] =
+		languageTokenHandler(audioLangs, true) // skipEnglishOnly
+	handlers[NormalizeTokenKey("MediaInfo AudioLanguagesAll")] =
+		languageTokenHandler(audioLangs, false)
+	handlers[NormalizeTokenKey("MediaInfo SubtitleLanguages")] =
+		languageTokenHandler(subtitleLangs, false)
+	handlers[NormalizeTokenKey("MediaInfo SubtitleLanguagesAll")] =
+		languageTokenHandler(subtitleLangs, false)
+
+	// Full token = `{video} {audio}{audioLangs} {subLangs}` — must be
+	// resolved per-call because the language tokens take a CustomFormat
+	// filter from the TokenMatch. Mirrors C# `:688` exactly.
+	handlers[NormalizeTokenKey("MediaInfo Full")] = func(tm TokenMatch) string {
+		audio := FormatLanguagesToken(audioLangs, tm.CustomFormat, true, true)
+		subs := FormatLanguagesToken(subtitleLangs, tm.CustomFormat, false, true)
+		return videoCodec + " " + audioCodec + audio + " " + subs
+	}
 }
 
 // RegisterMediaInfoStubs registers all 14 MediaInfo tokens to empty.
@@ -117,21 +126,6 @@ func RegisterMediaInfoStubs(handlers map[string]TokenHandler) {
 func registerMediaInfoStubs(handlers map[string]TokenHandler) {
 	stub := staticToken("")
 	for _, name := range mediaInfoTokenNames {
-		handlers[NormalizeTokenKey(name)] = stub
-	}
-}
-
-// stubLanguageTokens registers ONLY the four language tokens to empty.
-// Used by RegisterMediaInfoTokens after wiring the codec tokens — the
-// language tokens still need the Iso639 culture-mapping port.
-func stubLanguageTokens(handlers map[string]TokenHandler) {
-	stub := staticToken("")
-	for _, name := range []string{
-		"MediaInfo AudioLanguages",
-		"MediaInfo AudioLanguagesAll",
-		"MediaInfo SubtitleLanguages",
-		"MediaInfo SubtitleLanguagesAll",
-	} {
 		handlers[NormalizeTokenKey(name)] = stub
 	}
 }

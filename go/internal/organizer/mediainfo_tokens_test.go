@@ -68,12 +68,16 @@ func TestRegisterMediaInfoTokens_RealModel(t *testing.T) {
 		"MediaInfo VideoDynamicRange":     "HDR",
 		"MediaInfo VideoDynamicRangeType": "HDR10Plus",
 		"MediaInfo Simple":                "HEVC EAC3 Atmos",
-		"MediaInfo Full":                  "HEVC EAC3 Atmos ", // trailing space matches C# concat
-		// Language tokens still stubbed in this slice.
+		// Language tokens shipped in 3.7. Single English-only audio
+		// stream → AudioLanguages skipped, AudioLanguagesAll = [EN].
 		"MediaInfo AudioLanguages":       "",
-		"MediaInfo AudioLanguagesAll":    "",
+		"MediaInfo AudioLanguagesAll":    "[EN]",
 		"MediaInfo SubtitleLanguages":    "",
 		"MediaInfo SubtitleLanguagesAll": "",
+		// Full token: video + " " + audio + audioLangs + " " + subLangs.
+		// AudioLanguages is empty (English-only skip) so the audioLangs
+		// portion is empty; subLangs is empty (no streams).
+		"MediaInfo Full": "HEVC EAC3 Atmos ",
 	}
 	for name, want := range cases {
 		if got := resolveToken(t, handlers, name); got != want {
