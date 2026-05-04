@@ -572,3 +572,60 @@ func contains(s, substr string) bool {
 	}
 	return false
 }
+
+// TestParseTitle_SeriesTitleInfo ports the C# SeriesTitleInfoFixture
+// (5 cases at SeriesTitleInfoFixture.cs). Asserts the GetSeriesTitleInfo
+// post-processing populates SeriesTitleInfo on the ParseTitle output.
+func TestParseTitle_SeriesTitleInfo(t *testing.T) {
+	t.Run("year=0 when title has no year", func(t *testing.T) {
+		got := parser.ParseTitle("Series.Title.S01E01.pilot.720p.hdtv")
+		if got == nil || got.SeriesTitleInfo == nil {
+			t.Fatal("ParseTitle returned nil or SeriesTitleInfo nil")
+		}
+		if got.SeriesTitleInfo.Year != 0 {
+			t.Errorf("Year = %d, want 0", got.SeriesTitleInfo.Year)
+		}
+	})
+
+	t.Run("Title == TitleWithoutYear when no year", func(t *testing.T) {
+		got := parser.ParseTitle("Series.Title.S01E01.pilot.720p.hdtv")
+		if got == nil || got.SeriesTitleInfo == nil {
+			t.Fatal("ParseTitle returned nil or SeriesTitleInfo nil")
+		}
+		if got.SeriesTitleInfo.Title != got.SeriesTitleInfo.TitleWithoutYear {
+			t.Errorf("Title=%q != TitleWithoutYear=%q",
+				got.SeriesTitleInfo.Title, got.SeriesTitleInfo.TitleWithoutYear)
+		}
+	})
+
+	t.Run("year populated from title with year", func(t *testing.T) {
+		got := parser.ParseTitle("Series.Title.2004.S01E01.pilot.720p.hdtv")
+		if got == nil || got.SeriesTitleInfo == nil {
+			t.Fatal("ParseTitle returned nil or SeriesTitleInfo nil")
+		}
+		if got.SeriesTitleInfo.Year != 2004 {
+			t.Errorf("Year = %d, want 2004", got.SeriesTitleInfo.Year)
+		}
+	})
+
+	t.Run("Title carries the year", func(t *testing.T) {
+		got := parser.ParseTitle("Series.Title.2004.S01E01.pilot.720p.hdtv")
+		if got == nil || got.SeriesTitleInfo == nil {
+			t.Fatal("ParseTitle returned nil or SeriesTitleInfo nil")
+		}
+		if got.SeriesTitleInfo.Title != "Series Title 2004" {
+			t.Errorf("Title = %q, want %q", got.SeriesTitleInfo.Title, "Series Title 2004")
+		}
+	})
+
+	t.Run("TitleWithoutYear strips the year", func(t *testing.T) {
+		got := parser.ParseTitle("Series.Title.2004.S01E01.pilot.720p.hdtv")
+		if got == nil || got.SeriesTitleInfo == nil {
+			t.Fatal("ParseTitle returned nil or SeriesTitleInfo nil")
+		}
+		if got.SeriesTitleInfo.TitleWithoutYear != "Series Title" {
+			t.Errorf("TitleWithoutYear = %q, want %q",
+				got.SeriesTitleInfo.TitleWithoutYear, "Series Title")
+		}
+	})
+}

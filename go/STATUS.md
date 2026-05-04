@@ -1286,6 +1286,67 @@ Lint clean; parser test suite green (17 tests pass); full
 `-race -p 1` suite skipped (parser-package-internal changes
 only).
 
+#### 2.13.3 — GetSeriesTitleInfo (year-in-title + title components) ✅ shipped (2026-05-04)
+
+Ports `Parser.GetSeriesTitleInfo` at `Parser.cs:891-921`. Splits
+the parsed SeriesTitle into `Title` / `TitleWithoutYear` / `Year`
+and (when the title contains paren / pipe / AKA components)
+populates `AllTitles`. Wired into `enrichFromMatch` so every
+ParseTitle output carries a populated SeriesTitleInfo.
+
+**Spec delta**: pass=196 xfail=4 regression=0 (no movement;
+spec dispatcher doesn't assert on SeriesTitleInfo fields).
+
+What ships in `series_title_info.go`:
+
+1. **`yearInTitleRe`** ports `Parser.YearInTitleRegex`
+   (`Parser.cs:533-534`):
+   `^(?P<title>.+?)[-_. ]+?[\(\[]?(?P<year>\d{4})[\]\)]?`.
+   RE2-clean. Anchored at start; lazy title group consumes up to
+   the first separator-then-year token. Bracket characters around
+   the year are optional.
+
+2. **TitleComponents split into 3 separate regexes**. C#'s
+   single-regex `TitleComponentsRegex` has THREE alternatives,
+   each with two `(?<title>...)` groups sharing the same name.
+   RE2 rejects duplicate named groups, so the Go port splits
+   into `titleComponentsParenRe` / `titleComponentsPipeRe` /
+   `titleComponentsAKARe`, each with two bare positional groups.
+   Caller reads `m[1]` and `m[2]`.
+
+3. **`GetSeriesTitleInfo(title) *SeriesTitleInfo`**. Drops the
+   `MatchCollection` argument from the C# signature: the C#
+   version checks the matched ReportTitleRegex's `<title>`
+   captures for multiple values, but RE2 forbids duplicate
+   named groups so a Go ReportTitleRegex rule never produces
+   multiple `<title>` captures. The Go port always falls
+   through to the TitleComponents fallback — the path that
+   actually fires for paren / pipe / AKA forms in real fixtures.
+
+4. **Wired in `enrichFromMatch`** as
+   `info.SeriesTitleInfo = GetSeriesTitleInfo(info.SeriesTitle)`.
+   Every parsed release now carries a non-nil SeriesTitleInfo.
+
+Test coverage:
+
+- New `series_title_info_test.go` covering the GetSeriesTitleInfo
+  helper directly: 4 year-in-title cases (with year, without
+  year, paren-bracketed year, dot-separator year), 4 AllTitles
+  cases (paren / pipe / AKA forms + no-components case).
+- New `TestParseTitle_SeriesTitleInfo` ports the C# 5-case
+  `SeriesTitleInfoFixture` verbatim against the Go ParseTitle
+  output: year=0 fallback, Title==TitleWithoutYear when no year,
+  Year=2004 when present, Title carries the year, TitleWithoutYear
+  strips the year.
+
+What's deferred:
+
+- **ParsePath** (2.13.4). Folder + filename combiner entry-point.
+
+Lint clean; parser test suite green (19 tests pass); full
+`-race -p 1` suite skipped (parser-package-internal changes
+only).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)

@@ -66,6 +66,8 @@ func ParseTitle(title string) *ParsedEpisodeInfo {
 // reject. GetSeriesTitleInfo (the year-in-title splitter) ships in
 // a later slice.
 func enrichFromMatch(info *ParsedEpisodeInfo, re *regexp.Regexp, m []int, originalTitle, releaseTitle, simpleTitle string) {
+	info.SeriesTitleInfo = GetSeriesTitleInfo(info.SeriesTitle)
+
 	info.ReleaseTokens = computeReleaseTokens(re, m, releaseTitle)
 
 	// FullSeason → Special toggle: if a season-pack rule fired and
