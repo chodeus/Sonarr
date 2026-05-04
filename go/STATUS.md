@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.35 — parser pipeline COMPLETE; both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; TagService + AutoTaggingService + CustomFormatService + DelayProfileService + NamingConfigService + CustomFilterService + ImportListExclusionService + QualityDefinitionService + ReleaseProfileService + LifecycleService shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, RemotePathMappingService).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.36 — parser pipeline COMPLETE; both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; TagService + AutoTaggingService + CustomFormatService + DelayProfileService + NamingConfigService + CustomFilterService + ImportListExclusionService + QualityDefinitionService + ReleaseProfileService + LifecycleService shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, RemotePathMappingService).
 
 ## Where to resume
 
@@ -2645,6 +2645,25 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.36 — series.NormalizeTitle (SeriesTitleNormalizer port) ✅ shipped (2026-05-04)
+
+Ports `Tv/SeriesTitleNormalizer.cs:1-22` as `series.NormalizeTitle`.
+Pure function — pre-computed-overrides table (currently 1 entry:
+TVDB 281588 "A to Z" → "a to z" because the standard normalizer
+strips it to ""), otherwise `strings.ToLower(parser.NormalizeTitle(title))`.
+
+Why ship now: tiny, no deps beyond `parser.NormalizeTitle` (already
+shipped). Will be the join key for title-based series matching
+(RSS, scene mappings, manual import) when those surfaces land.
+
+15 verbatim test cases ported from
+`SeriesTitleNormalizerFixture.cs:13-44`: the precomputed override
+case + 14 general cases (leading articles stripped, parentheses
+content preserved, periods removed, hyphenated words concatenated,
+first-word "And" preserved as it's at the start).
+
+Lint clean.
 
 #### 2.35 — LifecycleService (Shutdown/Restart + RestartPending flag) ✅ shipped (2026-05-04)
 
