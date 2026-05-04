@@ -2646,6 +2646,23 @@ Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
 
+#### 2.31 — CustomFilterService (thin CRUD wrapper) ✅ shipped (2026-05-04)
+
+Ports `CustomFilters/CustomFilterService.cs:1-49`. Pure-passthrough
+service: All/Get/Add/Update/Delete with no caching, no events, no
+validation (the C# class is identical).
+
+Why ship a near-identity wrapper: establishes the service-layer
+dependency point so future callers (HTTP handlers, command
+handlers) depend on `*customfilters.Service` rather than the
+concrete `*Repo`. Cross-cutting concerns can layer in later
+without touching every call site. Matches the C# DI topology.
+
+5 service tests covering Add round-trip, All, Update + Delete,
+nil-input errors, Get-missing.
+
+Lint clean.
+
 #### 2.30 — NamingConfigService (singleton GetConfig + Save) ✅ shipped (2026-05-04)
 
 Ports `Organizer/NamingConfigService.cs:1-44`. Wraps the singleton
