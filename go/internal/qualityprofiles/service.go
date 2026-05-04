@@ -20,37 +20,32 @@ type QualityProfileUpdatedEvent struct {
 	ID int
 }
 
-// Service ports `QualityProfileService.cs:27-289` minus the parts that
-// require typed Items / FormatItems wrappers and other still-unported
-// dependencies. What ships in this slice:
+// Service ports `QualityProfileService.cs:27-289`. Surface assembled
+// across multiple slices:
 //
-//   - Add / Update / Get / All / Exists — straight CRUD passthroughs to
-//     the Repo. The `_qualityProfileRepository` calls in the C# class
-//     translate one-to-one onto the existing `*Repo` from
-//     `qualityprofiles.go`.
-//   - QualityProfileUpdatedEvent published on every successful Update.
-//     Mirrors `:62`.
+//   - Add / Update / Get / All / Exists — straight CRUD passthroughs
+//     to the Repo. Update publishes [QualityProfileUpdatedEvent].
+//     (Phase 2.44.)
+//   - GetDefaultProfile / SeedDefaults — typed-Items profile builder
+//     and the 6-profile seed for fresh installs. Both depend on a
+//     [FormatProvider] (set via [Service.SetFormatProvider]).
+//     (Phase 2.46.)
 //
-// What's deferred to a follow-up slice (and noted in STATUS.md):
+// Still deferred:
 //
 //   - Delete with `QualityProfileInUseException` — depends on
 //     ISeriesService.GetAllSeries and IImportListFactory.All; both
-//     services unported (see Phase 2 RemainingAreas).
-//   - GetDefaultProfile / UpdateAllSizeLimits / CustomFormatAdded /
-//     CustomFormatDeleted handlers — all mutate the typed
-//     `Items` / `FormatItems` slices; the on-disk shape ships as opaque
-//     JSON strings until the typed wrappers land in their own slice.
-//   - ApplicationStartedEvent seed of the 6 default profiles
-//     (Any/SD/HD-720p/HD-1080p/Ultra-HD/HD - 720p/1080p) — calls
-//     GetDefaultProfile, so deferred with it.
+//     services unported.
+//   - UpdateAllSizeLimits + CustomFormatAdded/Deleted handlers —
+//     planned for the next slice; the typed wrappers from 2.45 are
+//     the foundation.
 //
-// Cache strategy: none in this slice. The C# class doesn't cache the
-// `All()` list either; callers go through to the DB on every call. When
-// the typed-Items follow-up lands it can introduce a parsed-views cache
-// if profiling justifies it.
+// Cache strategy: none. The C# class doesn't cache the `All()` list
+// either; callers go through to the DB on every call.
 type Service struct {
-	repo *Repo
-	bus  *messaging.Bus
+	repo    *Repo
+	bus     *messaging.Bus
+	formats FormatProvider
 }
 
 // NewService binds a Repo + Bus into a QualityProfile Service. Pass

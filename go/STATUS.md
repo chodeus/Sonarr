@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.45 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services (Notification, DownloadClient, ImportList, Indexer), RootFolder (with DiskProvider/SeriesPaths/NamingConfig stubs), and QualityProfile (CRUD + typed Items/FormatItems wrappers + LookupIndex + CalculateCustomFormatScore — GetDefaultProfile/UpdateAllSizeLimits/handlers/Delete/seed deferred to a follow-up); series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService follow-up (GetDefaultProfile + UpdateAllSizeLimits + CustomFormatAdded/Deleted handlers + ApplicationStarted seed + Delete with in-use validation), full Series/Episode service business logic).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.46 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services (Notification, DownloadClient, ImportList, Indexer), RootFolder (with DiskProvider/SeriesPaths/NamingConfig stubs), and QualityProfile (CRUD + typed Items/FormatItems wrappers + LookupIndex + CalculateCustomFormatScore + GetDefaultProfile + SeedDefaults — UpdateAllSizeLimits/handlers/Delete deferred); series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService follow-up (UpdateAllSizeLimits + CustomFormatAdded/Deleted handlers + Delete with in-use validation), full Series/Episode service business logic).
 
 ## Where to resume
 
@@ -2645,6 +2645,78 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.46 — QualityProfile GetDefaultProfile + SeedDefaults ✅ shipped (2026-05-04)
+
+Builds on 2.45's typed wrappers. Adds the profile-builder + seed
+operations that the C# `QualityProfileService` exposes via
+`GetDefaultProfile` and `Handle(ApplicationStartedEvent)`.
+
+New Service surface:
+
+- `Service.SetFormatProvider(fp FormatProvider)` — attaches the
+  customformats dependency. Required by GetDefaultProfile and
+  SeedDefaults; left nil if neither is exercised. `*customformats.Service`
+  satisfies the interface directly.
+- `Service.GetDefaultProfile(ctx, name, cutoff *Quality, allowed ...Quality)`
+  — ports `QualityProfileService.cs:193-260`. Walks
+  `quality.DefaultDefinitions`, groups by Weight, builds typed
+  `QualityItem`s (singletons or grouped with synthetic Id ≥ 1000).
+  Cutoff resolution: nil yields `quality.Unknown.ID`; a cutoff that
+  belongs to a group is replaced with the synthetic group Id.
+  FormatItems are scaffolded from `FormatProvider.All` with
+  `Score = 0` per format. The returned Profile is unsaved.
+- `Service.SeedDefaults(ctx)` — ports
+  `Handle(ApplicationStartedEvent)` at `:91-157`. No-op if any
+  profile rows exist; else inserts the 6 canonical defaults in C#
+  order: Any / SD / HD-720p / HD-1080p / Ultra-HD / HD - 720p/1080p.
+
+`FormatProvider` interface: one method (`All(ctx) ([]*customformats.Format, error)`)
+matching the slice of `ICustomFormatService` the C# class reaches for
+at `:242`. Tests inject `stubFormats`; production wiring passes
+`*customformats.Service`.
+
+Internal helper: `groupByWeight(defs)` buckets DefaultDefinitions by
+Weight while preserving first-occurrence order (mirrors the C#
+`GroupBy(q => q.Weight)` iteration order at `:195`).
+
+Test corpus (8 tests):
+
+- `GetDefaultProfile_RequiresFormatProvider` — clear error when
+  setter not called.
+- `GetDefaultProfile_AnyShape` — full "Any" allowed list; verifies
+  WEB 480p group built with synthetic Id ≥ 1000 + Allowed=true; a
+  non-allowed singleton (RawHD) ends up in Items but not Allowed.
+- `GetDefaultProfile_CutoffInGroupReplacedWithGroupID` — passing
+  `WEBDL720p` (which belongs to the WEB 720p group) yields a Profile
+  whose Cutoff is the synthetic group Id, not the Quality Id.
+- `GetDefaultProfile_NilCutoffYieldsUnknown` — nil cutoff →
+  `quality.Unknown.ID`.
+- `GetDefaultProfile_FormatItemsScaffold` — every loaded
+  CustomFormat surfaces as a zero-score FormatItem.
+- `SeedDefaults_InsertsSixOnEmpty` — fresh DB → 6 named profiles
+  inserted in C# order.
+- `SeedDefaults_NoOpWhenAnyProfileExists` — pre-existing profile →
+  seed skipped (matches `if (All().Any()) return;`).
+- `SeedDefaults_RequiresFormatProvider` — clear setup error when
+  unset (cannot fail with ErrNotFound from the repo path).
+
+What's still deferred (next slice 2.47):
+
+- `Service.UpdateAllSizeLimits(...QualityProfileSizeLimit)` — needs
+  the typed Items + LookupIndexByID with respectGroupOrder=true to
+  walk every profile and overwrite per-quality MinSize/MaxSize/
+  PreferredSize. Pure logic — no new dependencies.
+- `Service.OnCustomFormatAdded(format)` /
+  `OnCustomFormatDeleted(format)` — typed FormatItems mutation +
+  Update (which already publishes QualityProfileUpdatedEvent). Bus
+  subscription wiring lands at the host; the Service exposes the
+  handler entry-points as plain methods.
+- `Service.Delete(id)` — still blocked on SeriesService and
+  ImportListFactory ports.
+
+Tests: SQLite green under `-race`; golangci-lint clean across `./...`.
+Parser spec still 200/200.
 
 #### 2.45 — QualityProfile typed Items/FormatItems wrappers ✅ shipped (2026-05-04)
 
