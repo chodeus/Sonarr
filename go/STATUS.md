@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.37 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle; series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, full Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, RemotePathMappingService, OsPath helper).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.38 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle; series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped (unblocks RemotePathMappingService); remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, full Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, RemotePathMappingService, EscalationBackOff constants).
 
 ## Where to resume
 
@@ -2645,6 +2645,88 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.38 — OsPath value type (NzbDrone.Common.Disk.OsPath port) ✅ shipped (2026-05-04)
+
+Ports `src/NzbDrone.Common/Disk/OsPath.cs` (513 LOC) as
+`internal/ospath`. Value type wrapping a normalized path string and a
+detected `Kind` (Unknown / Windows / Unix). Independent of the
+runtime OS — a Windows-shaped path can be parsed and manipulated on
+a Unix host, which is the whole point: it's the data type
+RemotePathMappingService uses to juxtapose remote-host paths
+against local paths whose kinds may differ.
+
+Public surface:
+
+- `New(path) OsPath` — auto-detect kind. Empty/zero input yields
+  the zero value (= `Null()`).
+- `NewWithKind(path, kind) OsPath` — caller-supplied kind.
+- `Null() OsPath` — explicit null sentinel; same as the zero value.
+- Accessors: `Kind()`, `IsWindows()`, `IsUnix()`, `IsEmpty()`,
+  `IsRooted()`, `FullPath()`, `String()`,
+  `PathWithoutTrailingSlash()`, `FileName()`, `Name()`.
+- Walks: `Directory()` (parent), `AsDirectory()` (ensure trailing
+  separator).
+- Comparison: `Equals(other)`, `EqualsIgnoreTrailingSlash(other)`,
+  `Contains(other)`. Windows paths compare case-insensitively;
+  Unix case-sensitively; if EITHER side is Windows the comparison
+  becomes case-insensitive (matches the C# operator behaviour).
+- Arithmetic: `Add(other)` ports the C# `+` operator (right-rooted
+  absorbs left, mismatched non-Unknown kinds panic),
+  `AddString(s)`, `Sub(other)` ports the C# `-` operator (relative
+  path from `other` to `p`; both must be rooted; result is always
+  `KindUnknown` because it's a relative path fragment).
+
+Behavioural details preserved verbatim from C#:
+
+- `\\` UNC prefix is rooted; `\\unc` (no second segment) has
+  `Directory().IsEmpty() == true`.
+- `C:` drive root is rooted but has no parent (Directory → Null).
+- Trailing slashes are significant in `Equals`; the
+  `IgnoreTrailingSlash` overload exists for the case where they
+  shouldn't be.
+- Unix path normalization collapses runs of `/` (so
+  `/just/a//test////to` → `/just/a/test/to`).
+- Adding an empty right is a no-op; adding a rooted right discards
+  the left.
+- Subtracting two rooted paths whose first fragments don't match
+  returns the right side as-is (no `..` traversal across roots).
+
+The C# UNC regex
+`(?<unc>^\\\\(?:\?\\UNC\\)?[^\\]+\\[^\\]+)(?:\\|$)` is RE2-clean
+(no lookarounds, no backrefs); ported verbatim with the
+`IgnoreCase` flag inline as `(?i)`. The named group is dropped
+since the only consumer reads the capture by index.
+
+`IsValid` from the C# tree (calls into
+`PathExtensions.IsPathValid`) is intentionally NOT ported — its
+implementation is part of the wider `PathExtensions` port that
+hasn't shipped yet; it'll come with that slice. None of the
+RemotePathMapping consumers need it.
+
+Operator semantics: the C# `+` and `-` overloads throw `Exception`
+/ `ArgumentException` on programmer errors (mismatched kinds for
+`+`, unrooted operands for `-`). The Go port panics on the same
+preconditions — these are caller bugs, not user-facing errors. Two
+extra panic-pinning tests beyond the C# fixture lock the behaviour
+so a future refactor doesn't silently soften it.
+
+Test corpus: 17 tests / 60+ cases. All 14 [Test]/[TestCase] methods
+from `src/NzbDrone.Common.Test/OsPathFixture.cs` ported verbatim
+(auto-detect kind, parent directory, root UNC parent, rooted
+detection, unrooted detection, filename, Windows case-insensitive
+equals, Unix case-sensitive equals, trailing-slash significance,
+combine path, Windows slash normalization, Unix slash
+normalization, double-slash collapse, mixed-slash combine, relative
+path, null-as-empty, Contains). Plus 4 extra tests for Go-port
+invariants (Null/AsDirectory, PathWithoutTrailingSlash on
+drive/Unix roots, Add panic on mismatched kinds, Sub panic on
+unrooted). Lint clean.
+
+What this unblocks: RemotePathMappingService is the next slice now
+that the OsPath value type exists. Future disk-aware code
+(RootFolderService, organizer destination resolution, importer
+path adjudication) will build on the same type.
 
 #### 2.37 — series.ShouldRefresh pure function (ShouldRefreshSeries port) ✅ shipped (2026-05-04)
 
