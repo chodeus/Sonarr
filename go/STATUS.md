@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.34 — parser pipeline COMPLETE; both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; TagService + AutoTaggingService + CustomFormatService + DelayProfileService + NamingConfigService + CustomFilterService + ImportListExclusionService + QualityDefinitionService + ReleaseProfileService shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, RemotePathMappingService, LifecycleService).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.35 — parser pipeline COMPLETE; both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; TagService + AutoTaggingService + CustomFormatService + DelayProfileService + NamingConfigService + CustomFilterService + ImportListExclusionService + QualityDefinitionService + ReleaseProfileService + LifecycleService shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, RemotePathMappingService).
 
 ## Where to resume
 
@@ -2645,6 +2645,37 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.35 — LifecycleService (Shutdown/Restart + RestartPending flag) ✅ shipped (2026-05-04)
+
+Ports `Lifecycle/LifecycleService.cs:1-53` (the plain method
+surface; the `IExecute<ShutdownCommand>` / `IExecute<RestartCommand>`
+handlers land in Phase 3 with the Command bus).
+
+What ships in `internal/lifecycle/service.go`:
+
+- `Service.Shutdown(ctx)` — publishes ApplicationShutdownRequested
+  with Restarting=false.
+- `Service.Restart(ctx)` — sets RestartPending=true (atomic.Bool)
+  THEN publishes ApplicationShutdownRequested with Restarting=true.
+  Order matters: the flag is set BEFORE the publish so subscribers
+  that immediately query it see the correct value (the C# version
+  uses the same ordering).
+- `Service.RestartPending() bool` — read by the host at shutdown
+  to decide whether to chain an updater process. Replaces the C#
+  `IRuntimeInfo.RestartPending` property.
+
+Why ship now: small, no cross-cutting deps (the bus is shipped),
+gives the host a typed surface for "graceful restart" that's
+distinct from raw signal-driven shutdown. HTTP handlers in Phase 5
+will call svc.Restart() / svc.Shutdown() directly.
+
+4 tests: nil-bus errors, Shutdown publishes Restarting=false +
+doesn't set the flag, Restart sets the flag BEFORE the subscriber
+runs (verified via the captured `pendingDuringDeliver` reading),
+post-BeginShutdown Shutdown returns ErrShutdown.
+
+Lint clean.
 
 #### 2.34 — ReleaseProfileService (CRUD + tag/indexer query helpers) ✅ shipped (2026-05-04)
 
