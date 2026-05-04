@@ -2351,6 +2351,93 @@ Lint clean; package tests green; full `-race -p 1` suite
 skipped (touches only tags + messaging usage; messaging
 package itself untouched).
 
+#### 2.24 — RootFolder pure-logic helpers ✅ shipped (2026-05-04)
+
+Ports the dependency-free portion of
+`src/NzbDrone.Core/RootFolders/RootFolderService.cs`. The
+service-layer wrapper (with disk-provider, series-paths
+lookup, namingconfig sub-folder-depth, cache, async
+disk-stat collection) lands when those dependencies arrive.
+
+What ships in `internal/rootfolders/logic.go`:
+
+1. **`UnmappedFolder`** — port of
+   `RootFolders/UnmappedFolder.cs:1-9`. Name + Path +
+   RelativePath. Populated by the future disk-walking pass;
+   defined here so the data shape is stable across the
+   persistence + service-layer boundary.
+
+2. **`Folder`** — in-memory typed sibling of the persisted
+   `RootFolder`. Adds runtime-only fields the C# `RootFolder`
+   carries via disk-provider calls: Accessible, IsEmpty,
+   FreeSpace `*int64`, TotalSpace `*int64`, UnmappedFolders.
+   All zero-valued when the service layer hasn't filled them.
+
+3. **`specialFolderNames`** + **`IsSpecialFolder(name)`** —
+   port the C# `SpecialFolders` HashSet at
+   `RootFolderService.cs:36-47`. 9 lowercased entries
+   ($recycle.bin / system volume information / recycler /
+   lost+found / .appledb / .appledesktop / .appledouble /
+   @eadir / .grab). Case-insensitive lookup.
+
+4. **`IsParentPath(parent, child)`** — ports the C#
+   `string.IsParentPath` extension. Reports whether `parent`
+   is a directory ancestor of `child`. Cleans both via
+   `filepath.Clean` + strips trailing separators; uses
+   `strings.EqualFold` for case-insensitive comparison;
+   rejects self-equal (a path is not its own parent) and
+   substring-but-not-prefix shapes (`/tv` is NOT a parent
+   of `/tvshows`).
+
+5. **`CleanPath(p)`** — ports the C# `string.GetCleanPath()`
+   extension. `filepath.Clean` + strip trailing separators.
+   Empty input returns empty.
+
+6. **`BestPath(path, folders)`** — ports
+   `RootFolderService.GetBestRootFolderPathInternal` at
+   `:215-227`. O(n) walk over folders; longest matching
+   `IsParentPath` wins (mirrors C# `MaxBy(r => r.Path.Length)`);
+   falls back to `filepath.Dir(path)` when no folder matches.
+   Returns the cleaned form (mirrors C# `GetCleanPath()`
+   postprocess).
+
+   The C# 24-hour cache wrapper is deferred to the service-
+   layer slice; pure-function callers can memoise.
+
+7. **`FilterSpecialFolders(folders)`** — ports the C#
+   `results.RemoveAll(...)` pass at `:179`. Returns a new
+   slice with special-folder entries removed (case-insensitive
+   match against the basename of Path). Input not mutated.
+
+Test coverage in `logic_test.go` (~5 cases per helper):
+
+- IsSpecialFolder: case-insensitive matches across all 9
+  special names + a non-special and an empty.
+- IsParentPath: parent + child cases (basic, trailing slash,
+  self-equal, substring-but-not-prefix, sibling, empty
+  inputs, case-insensitive).
+- CleanPath: trailing slash strip + empty input + filepath.Clean
+  collapse-`..`.
+- BestPath: longest-prefix wins, fallback to `filepath.Dir`,
+  only-deeper-folder-matches, empty folders → fallback,
+  longest-path tie-break independent of slice order.
+- FilterSpecialFolders: 5-folder input with 3 specials filtered
+  out; original ordering preserved for survivors.
+
+What's deferred:
+
+- **`RootFolderService`** with disk-provider integration —
+  GetDetails (FolderExists / GetAvailableSpace / GetTotalSize),
+  GetUnmappedFolders (GetDirectories walk + sub-folder-depth
+  expansion), Add/Remove, AllWithUnmappedFolders. Lands when
+  the disk-provider port arrives.
+- **24-hour cache wrapper** for BestPath — lands with the
+  service layer.
+
+Lint clean (after gofmt + 7 gocritic 1-arg `filepath.Join`
+edits in tests); package tests green; full `-race -p 1` suite
+skipped (touches only rootfolders, no cross-package effects).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
