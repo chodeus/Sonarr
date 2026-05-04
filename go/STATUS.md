@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.38 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle; series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped (unblocks RemotePathMappingService); remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, full Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, RemotePathMappingService, EscalationBackOff constants).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.39 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping; series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, full Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, EscalationBackOff constants).
 
 ## Where to resume
 
@@ -2645,6 +2645,95 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.39 — RemotePathMappingService ✅ shipped (2026-05-04)
+
+Ports `RemotePathMappingService.cs:25-189` on top of the existing
+`internal/remotepathmappings` Repo (which has carried the table
+layer since Phase 1). With the OsPath value type from 2.38 in
+place, this slice is straightforward.
+
+Service surface (`internal/remotepathmappings/service.go`):
+
+- `All(ctx)` — typed cache, populates lazily, mutation-driven
+  invalidation. Mirrors C# `:46-49`.
+- `Get(ctx, id)` — direct repo passthrough.
+- `Add(ctx, *Mapping)` — normalizes both paths via
+  `OsPath.AsDirectory().FullPath()` BEFORE validation runs, then
+  validates against the existing set, inserts, invalidates cache.
+  Mirrors C# `:51-65`.
+- `Update(ctx, *Mapping)` — validates against `existing - self` so
+  re-saving an unchanged row doesn't trip the duplicate check;
+  otherwise same as Add. Mirrors C# `:79-90`.
+- `Remove(ctx, id)` — repo delete + cache invalidate.
+- `RemapRemoteToLocal(ctx, host, remotePath)` — walks mappings;
+  case-insensitive host match (`strings.EqualFold`) AND
+  `mappingRemote.Contains(remotePath)`; substitutes the LocalPath
+  prefix for the RemotePath prefix using the C# operator
+  arithmetic `localBase + (remotePath - mappingRemote)` (Go:
+  `localBase.Add(remotePath.Sub(mappingRemote))`). Mirrors C#
+  `:128-157`.
+- `RemapLocalToRemote(ctx, host, localPath)` — symmetric inverse.
+  Mirrors C# `:159-188`.
+
+DiskProvider abstraction: a one-method interface
+(`FolderExists(string) bool`) the Service depends on, so tests
+inject a stub without dragging in a full disk-provider port. The
+real disk provider lands when the wider IDiskProvider port comes
+through (deferred — no current consumer beyond this service).
+
+Validation sentinels (sentinels exposed for `errors.Is`
+classification):
+- `ErrInvalidHost` — empty/whitespace.
+- `ErrInvalidRemotePath` — leading space OR empty.
+- `ErrInvalidLocalPath` — empty OR unrooted.
+- `ErrLocalFolderNotFound` — disk.FolderExists returned false.
+- `ErrDuplicateMapping` — `(Host, RemotePath)` collision.
+
+The C# code throws three distinct exception types
+(ArgumentException / DirectoryNotFoundException /
+InvalidOperationException). The Go port collapses the two
+ArgumentException-throwing remote-path branches into a single
+sentinel since no caller distinguishes; the other three match
+1:1.
+
+Conventions deferred from C# but not required:
+- 10s TTL on the All() cache — every All() goes through the same
+  invalidation path that mutations clear, so the time-bounded
+  fallback never triggers in practice.
+- IDownloadClientRepository constructor argument — DryIoc
+  dependency-graph shim, never read.
+- NLog Trace/Debug logging — no logger plumbing yet.
+- No event publication — the C# class doesn't define an
+  IEventAggregator field and emits no events.
+
+Test corpus (15 tests / 30+ cases, covering the full fixture):
+
+- `Add_AcceptsNewMapping` — ports
+  `should_be_able_to_add_new_mapping` (2 cases). Insert verified
+  via repo round-trip (vs C# Mocker.Verify).
+- `Remove` — ports `should_be_able_to_remove_mapping`.
+- `Add_DuplicateMappingFails` — ports
+  `adding_duplicated_mapping_should_throw` (2 cases). Asserts
+  ErrDuplicateMapping.
+- `RemapRemoteToLocal` — ports `should_remap_remote_to_local` (4
+  cases incl. case-insensitive host match + non-matching prefix
+  passthrough).
+- `RemapLocalToRemote` — ports `should_remap_local_to_remote` (5
+  cases).
+- `Add_FixesWrongSlashes` — ports `should_fix_wrong_slashes_on_add`
+  (3 cases) including UNC + drive-letter forms with mixed slashes.
+- `Add_Validation` — 6 cases for the validation sentinels.
+- `Add_RejectsMissingFolder` — disk stub returns false.
+- `Remap_EmptyPathPassesThrough` — empty-path early-return parity.
+- `Update_ExcludesSelfFromDuplicateCheck` — re-save an unchanged
+  row should succeed.
+- `All_CachesAndInvalidates` — direct repo writes don't invalidate
+  the service cache (loaded=true sticks); a service mutation does.
+
+Cross-DB run: `SONARR_PG_DSN="postgres:///sonarr_spike" go test
+-count=1 -race ./internal/remotepathmappings/...` green; SQLite
+also green. Lint clean. Zero regressions on prior packages.
 
 #### 2.38 — OsPath value type (NzbDrone.Common.Disk.OsPath port) ✅ shipped (2026-05-04)
 
