@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.44 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services (Notification, DownloadClient, ImportList, Indexer), RootFolder (with DiskProvider/SeriesPaths/NamingConfig stubs), and QualityProfile (CRUD-only — typed Items/FormatItems wrappers + Delete/seed/handlers deferred to a follow-up); series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService follow-up (typed Items/FormatItems + GetDefaultProfile + UpdateAllSizeLimits + handlers + ApplicationStarted seed + Delete), full Series/Episode service business logic).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.45 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services (Notification, DownloadClient, ImportList, Indexer), RootFolder (with DiskProvider/SeriesPaths/NamingConfig stubs), and QualityProfile (CRUD + typed Items/FormatItems wrappers + LookupIndex + CalculateCustomFormatScore — GetDefaultProfile/UpdateAllSizeLimits/handlers/Delete/seed deferred to a follow-up); series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService follow-up (GetDefaultProfile + UpdateAllSizeLimits + CustomFormatAdded/Deleted handlers + ApplicationStarted seed + Delete with in-use validation), full Series/Episode service business logic).
 
 ## Where to resume
 
@@ -2645,6 +2645,126 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.45 — QualityProfile typed Items/FormatItems wrappers ✅ shipped (2026-05-04)
+
+Foundation slice for the QualityProfileService follow-up. Adds typed
+parsed views for the embedded JSON columns Items + FormatItems plus
+the lookup helpers downstream consumers need.
+
+New types in `internal/qualityprofiles`:
+
+- `QualityItem` (mirrors `QualityProfileQualityItem.cs`):
+  Id (omit-when-zero), Name, Quality (typed quality.Quality, JSON
+  encodes as int Id per QualityIntConverter), Items (recursive for
+  groups), Allowed, MinSize/MaxSize/PreferredSize (`*float64` for the
+  C# `double?`).
+- `FormatItem` (mirrors `ProfileFormatItem.cs`): FormatID + Score
+  (Format encodes as int per CustomFormatIntConverter — the typed
+  wrapper holds the wire-shape data; full CustomFormat resolution
+  happens at the scoring boundary in Phase 3).
+- `QualityIndex` ports `QualityIndex.cs` with `CompareTo(other,
+  respectGroupOrder)`.
+
+Marshalling parity with the C# wire format (verified by round-trip
+tests):
+
+- `Quality` field encodes as just the integer Id, decodes via
+  `quality.FindByID`. Unknown ids resolve to `quality.Unknown` (the
+  IsGroup signal).
+- `Id` is omitted when zero (mirrors
+  `[JsonIgnore(WhenWritingDefault)]` at
+  `QualityProfileQualityItem.cs:12`).
+- `Items` is always emitted as `[]` (not omitted, not null) for parity
+  with the C# default constructor at `:25`.
+- Group entries: `Quality` zero → resolves to Unknown on decode;
+  `IsGroup()` reports true via `Quality.ID == 0 && len(Items) > 0`.
+
+New helpers (free functions on the package, plus thin Profile method
+shims):
+
+- `ParseItems(s) ([]QualityItem, error)` /
+  `MarshalItems([]QualityItem) (string, error)` — Items column
+  round-trip; empty/null surfaces as non-nil empty slice.
+- `ParseFormatItems(s) ([]FormatItem, error)` /
+  `MarshalFormatItems` — FormatItems equivalent.
+- `(*Profile).ParsedItems() / SetItems(items)` and `ParsedFormatItems
+  / SetFormatItems` — convenience wrappers for the common parse →
+  mutate → write-back pattern handlers will use.
+- `LookupIndex(items, q, respectGroupOrder) (QualityIndex, bool)` —
+  `(QualityIndex, bool)` variant of the C# `GetIndex`. Returns
+  `found=false` instead of conflating "not found" with "found at
+  position 0" (the C# version's zero-value ambiguity is preserved
+  separately via `GetIndex(items, q, respectGroupOrder) QualityIndex`
+  for parity).
+- `LookupIndexByID(items, id, respectGroupOrder)` — int-id variant
+  mirroring the C# overload at `:58-89`. Lookup priority: direct
+  quality match → group ID match → group-member quality match.
+- `CalculateCustomFormatScore(items, presentFormatIDs map[int]bool) int` —
+  ports `QualityProfile.CalculateCustomFormatScore(formats)` at
+  `:91-94`. Uses a set rather than a slice for O(1) presence; same
+  result as the C# `formats.Contains(x.Format)` semantic.
+
+Test corpus (15 tests, ~30 assertions):
+
+- `MarshalUsesIntQuality` — `Quality` encodes as int 1 not the full
+  Quality object; `id` omitted when zero; `items` emitted as `[]`.
+- `GroupRoundTrip` — Id 1000 + Name + nested Items survive
+  serialize/deserialize; decoded Quality is Unknown (the IsGroup
+  signal); `IsGroup()` reports true.
+- `QualityRoundTrip` — typed Quality.Id round-trips via int.
+- `SizeFieldsRoundTrip` — `*float64` for MinSize/MaxSize/PreferredSize
+  preserves zero-vs-nil distinction across the boundary.
+- `FormatItem.EncodesFormatAsInt` — `{"format":42,"score":100}` wire
+  shape; round-trips byte-for-byte.
+- `ParseItems_EmptyAndNullSurfaces` — empty/null/`[]` input produces
+  non-nil empty slice.
+- `ParsedItems_RoundTripsViaProfile` — Profile.SetItems →
+  Profile.ParsedItems preserves group + quality entries.
+- `ParsedFormatItems_RoundTripsViaProfile` — same for FormatItems.
+- `LookupIndex_DirectQuality` — top-level quality match.
+- `LookupIndex_GroupedQuality` (2 sub-cases) — respectGroupOrder
+  on/off return the right (top, group) tuple.
+- `LookupIndex_MissingQuality` — found=false on miss.
+- `LookupIndexByID_GroupIDMatch` — group lookup by group ID.
+- `CalculateCustomFormatScore` (5 sub-cases) — none/one/two/all
+  present + unknown ID ignored.
+- `QualityIndex.CompareTo` — Index-then-GroupIndex ordering;
+  respectGroupOrder=false collapses GroupIndex.
+- `GetQualities` — quality entry returns single-element slice; group
+  entry returns each nested quality.
+
+What this slice unblocks (deferred to a follow-up):
+
+- `Service.GetDefaultProfile(name, cutoff, allowed...)` — needs
+  typed Items + customformats.Service.All; both available now.
+- `Service.UpdateAllSizeLimits(...QualityProfileSizeLimit)` — needs
+  typed Items + LookupIndexByID with respectGroupOrder=true (just
+  shipped).
+- `Service.Handle(CustomFormatAddedEvent)` /
+  `Handle(CustomFormatDeletedEvent)` — needs typed FormatItems +
+  Set/Get round-trip (just shipped).
+- `Service.Handle(ApplicationStartedEvent)` seed — needs
+  GetDefaultProfile.
+- `Service.Delete(id)` — needs SeriesService + ImportListFactory
+  in-use validators (still unported).
+
+Outstanding follow-up notes:
+
+- The `quality.Quality` zero value (Id=0) is ambiguous with "no
+  quality set" (group entry). This is fine because `IsGroup()` checks
+  both ID == 0 AND len(Items) > 0; a quality entry with Id=0
+  accidentally would still be flagged non-group if Items is empty.
+  Don't add a "quality entry without quality" shape; it's invalid in
+  C# too.
+- `LookupIndex` and `GetIndex` coexist; new code should prefer
+  `LookupIndex` for the explicit found-bool. The plain `GetIndex` is
+  retained for line-aligned port parity with the C# `GetIndex`.
+- The `CompareTo` returns -1/0/1 (Go convention) rather than the
+  C# `int.CompareTo` which can return any negative/positive int; for
+  the ordering use cases this is equivalent.
+
+Tests: SQLite green under `-race`; golangci-lint clean across `./...`.
 
 #### 2.44 — QualityProfileService (CRUD + UpdatedEvent) ✅ shipped (2026-05-04)
 
