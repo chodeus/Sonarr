@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.14 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.14 adds the catch-all anime-title-without-subgroup rule (placed last in the rule chain) flipping all 6 anime-without-subgroup rows; spec at end of 2.12.14 is **pass=183 xfail=17 regression=0** out of 200.).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.15 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.15 adds bracketed multi-Nx rule + extends single-S-E separator to admit `(` for parenthesised multi-S-E; spec at end of 2.12.15 is **pass=188 xfail=12 regression=0** out of 200.).
 
 ## Where to resume
 
@@ -976,6 +976,29 @@ What stays xfail (17 rows after this slice):
 - **Multi-Nx single-bracket multi-trailing forms (`8x01_02`)** (1 row).
 - **`Ep10718`-style 5-digit-episode S-E** (1 row).
 - **3-digit forms with year-shape title (`series.2009.416`)** (~2 rows).
+- **`E07-E08.180612.1080p-NEXT` PreSubstitution variants** (~2 rows).
+- **Various assorted** — `[Impatience]` anime mis-routing, `[RlsGrp]` prefix, `kill-roy-was-here-e07-720p` mini-series.
+
+Lint clean; parser test suite green; full `-race -p 1` suite skipped (parser-package-internal changes only).
+
+#### 2.12.15 — Bracketed multi-Nx + parenthesised multi-S-E ✅ shipped (2026-05-04)
+
+Two clusters layered together.
+
+**Spec delta**: pass=183 → 188 (+5); xfail=17 → 12 (-5); regression=0.
+
+What ships:
+
+1. **Bracketed multi-Nx single-bracket rule** (+3 rows). New rule `^<title>[-_. ]+\[<season>\d{1,2}x<episode>\d{1,3}<extra>(?:[-x_. ]*\d{1,3})*\]` placed BEFORE the Title+Nx single rule so multi-bracket-Nx wins over single. Catches `Series Title - [02x01x02]`, `[02x01-x02]`, `[02x01-02]`. New `buildBracketedNx` Build extracts first episode from the explicit group + scans `<extra>` for additional digit runs + range-expands. The `[-x_. ]*` separator inside the bracket (vs `[-x_. ]?` single-char) is what allows `-x02` (two non-digit chars between episodes).
+
+2. **Parenthesised multi-S-E** (+2 rows). Single-S-E rule's pre-S separator class extended from `[-_. \[]+` to `[-_. \[(]+`. Catches `Series Title (S15E06-08) City Sushi`, `Series Title (S05E06-08 of 24) City Sushi`. The trailing `) City Sushi` and `of 24)` are harmless: Arm B's trailing iterations stop at the natural digit-run boundary (`)` is not in any iteration's separator class), so the match span doesn't extend through trailing junk.
+
+What stays xfail (12 rows after this slice):
+
+- **Title-with-airdate composite shapes** (~3 rows: `Series Title (1955) - 1954-01-23 …`, `Series On TitleClub E76 2024 08 08 …`, `The Show Series 2015 02 09 WEBRIP s01e13`).
+- **Multi-Nx single-bracket multi-trailing forms (`8x01_02`)** (1 row).
+- **`Ep10718`-style 5-digit-episode S-E** (1 row).
+- **3-digit forms with year-shape title (`series.2009.416`, `series.six-0.2010.217`)** (~2 rows).
 - **`E07-E08.180612.1080p-NEXT` PreSubstitution variants** (~2 rows).
 - **Various assorted** — `[Impatience]` anime mis-routing, `[RlsGrp]` prefix, `kill-roy-was-here-e07-720p` mini-series.
 
