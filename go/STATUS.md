@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — parser pipeline COMPLETE; both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; TagService + AutoTaggingService + CustomFormatService + DelayProfileService shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, ReleaseProfileService orchestrator, QualityProfile services, Series/Episode service business logic, RootFolderService with disk-provider).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.33 — parser pipeline COMPLETE; both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; TagService + AutoTaggingService + CustomFormatService + DelayProfileService + NamingConfigService + CustomFilterService + ImportListExclusionService + QualityDefinitionService shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, ReleaseProfileService orchestrator, QualityProfileService, Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, RemotePathMappingService, LifecycleService).
 
 ## Where to resume
 
