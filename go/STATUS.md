@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model + formatter + organizer wiring 3.4-3.6 shipped. Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: language tokens (4 of 14 still stubbed in 3.6 — needs GetLanguagesToken with Iso639BTMap + ISO 2-letter culture mapping, ~80 LOC follow-up); typed MediaInfo column on episodefiles.File (separate slice, touches Mapper + every read/write site). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: typed MediaInfo column on episodefiles.File (separate slice, touches Mapper + every read/write site). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
 
 ## Where to resume
 
@@ -2788,6 +2788,62 @@ roundtrips, SetFileID auto-forget, and every read+mutation
 pass-through.
 
 ### Phase 3 — Service / Workflow layer ⏳ in progress
+
+#### 3.7 — Organizer language tokens (closes 3.6 deferred) ✅ shipped (2026-05-04)
+
+Closes the 4 deferred language tokens from 3.6
+(AudioLanguages / AudioLanguagesAll / SubtitleLanguages /
+SubtitleLanguagesAll) and wires the Full token's language portion.
+
+`internal/organizer/language_tokens.go` adds:
+
+- `FormatLanguagesToken(codes, filter, skipEnglishOnly, quoted) string` →
+  `FileNameBuilder.GetLanguagesToken` at `:747-814`. Walks the
+  language code list, normalises each to a 2-letter UPPERCASE ISO
+  639-1 code, dedupes, applies filter, joins with `+`.
+  - Filter `X+Y+Z` → intersect with [X,Y,Z]
+  - Filter `-X-Y-Z` → exclude X, Y, Z
+  - Filter ending in `+` with anything excluded → append `--`
+    wildcard (matches C# `:794-797` exactly)
+  - skipEnglishOnly + result == ["EN"] → empty
+  - quoted + non-empty → wrap in `[...]`
+  - "und" / whitespace / unresolvable codes silently dropped
+    (mirrors C# `try { ... } catch { }` swallow at `:760-773`)
+
+- `normalizeIsoToken` — uses existing `language.FindIso` which
+  already applies the `iso639BTMap` (B→T) for 3-letter codes
+  internally. The C# version uses `new
+  CultureInfo(token).TwoLetterISOLanguageName`; the Go port goes
+  through our own ISO registry (53 entries — same coverage for
+  the codes MediaInfo emits).
+
+- `dedupeStrings / exceptStrings / intersectStrings` helpers —
+  small Go ports of the C# LINQ Distinct / Except / Intersect
+  used by GetLanguagesToken.
+
+`RegisterMediaInfoTokens` now wires real handlers for all 14
+MediaInfo tokens. The 4 language tokens use the
+`languageTokenHandler(langs, skipEnglishOnly)` closure pattern so
+the per-call `TokenMatch.CustomFormat` field drives the filter
+without re-walking the codes. The `Full` token resolves per-call
+because its language portions also need the CustomFormat.
+
+C# duplication preserved: `:683-684` defines both
+SubtitleLanguages and SubtitleLanguagesAll with
+`skipEnglishOnly=false`. The Go port matches this duplication —
+pinned by test, flagged in the comment.
+
+Tests (5 functions × ~30 sub-cases): basic + filter
+intersect/exclude/wildcard + trailing-+ no-exclude no-wildcard +
+whitespace trim + unknown drop + BT-map (ger→DE) +
+dedupe-preserves-order + und drop + multi-stream language wiring +
+skipEnglishOnly only-AudioLanguages-skipped semantics + Full token
+golden render with EN+JA audio + EN subs + Full token
+CustomFormat-driven filter exclusion + intersection.
+
+  internal/organizer:  ok  (-race)
+  internal/language:   ok  (regression)
+  golangci-lint:       0 issues
 
 #### 3.6 — Organizer MediaInfo token wiring ✅ shipped (2026-05-04)
 
