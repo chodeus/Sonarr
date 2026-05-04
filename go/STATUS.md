@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.55 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade), and ImportLists (read-only); Organizer/FileNameBuilder kicked off — pure title helpers + CleanFileName/CleanFolderName + ColonReplacementFormat/MultiEpisodeStyle enums shipped (2.55); remaining Organizer work: token replacement engine (2.56), series/season/episode token resolvers (2.57-2.58), quality/media-info/custom-format tokens (2.59), full BuildFileName orchestration (2.60); other Phase 2 areas: EpisodeService, episode-monitored cascade in UpdateSeries, ImportListService write surface).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.56 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade), and ImportLists (read-only); Organizer/FileNameBuilder underway — pure title helpers (2.55) and token replacement engine + TokenMatch/TokenHandler/FormatNumber (2.56) shipped; remaining Organizer work: series/season/episode token resolvers (2.57-2.58), quality/media-info/custom-format tokens (2.59), full BuildFileName orchestration (2.60); other Phase 2 areas: EpisodeService, episode-monitored cascade in UpdateSeries, ImportListService write surface).
 
 ## Where to resume
 
@@ -2645,6 +2645,67 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.56 — Organizer token replacement engine ✅ shipped (2026-05-04)
+
+Second slice of the Organizer port. Adds the `{Token:format}`
+replacement engine that the per-token resolvers will plug into. Pure
+function — no service deps.
+
+`internal/organizer/tokens.go`:
+
+- `titleRegex` — ports `FileNameBuilder.TitleRegex` at `:48-49`. Two
+  alternatives: escaped braces (`{{` / `}}`) or full token form
+  (`\{prefix token (:format)? suffix\}`). RE2 named groups use the
+  Go `(?P<name>...)` syntax. The C# `(?<![- ])` lookbehind that
+  prevents `:00-` from being captured as `customFormat=00-` is
+  not supported by RE2; the Go port post-processes by trimming
+  trailing `-` / ` ` from the captured customFormat.
+- `TokenMatch` struct — `{Prefix, Separator, Suffix, Token,
+  CustomFormat}`. `DefaultValue(default)` ports the `:1246-1256`
+  helper (returns `default` when neither prefix nor suffix is set;
+  empty otherwise).
+- `TokenHandler` type — `func(TokenMatch) string`.
+- `ReplaceTokens(pattern, handlers, opts, escape)` — ports `:836-839`
+  via Go's `Regexp.ReplaceAllStringFunc`. Lookup is case-insensitive
+  on token names; the handler-fallback for unknown tokens drops to
+  empty string (matches C# `GetValueOrDefault` at `:874`).
+- `FormatNumber(value, format)` — minimal port of the integer
+  zero-pad subset of `value.ToString(format)` used by the
+  episode/season number tokens. `"00"` → 2-digit zero-pad, `""` /
+  `"0"` → bare decimal. Wider .NET format-string surface (dates,
+  decimals) is unused by FileNameBuilder integer tokens.
+
+Replacement post-processing (mirrors C# `:884-912`):
+
+1. Trim whitespace.
+2. Case-fold: all-lower-or-non-letter token name → lowercase
+   replacement; all-upper-or-non-letter → uppercase.
+3. Replace internal spaces with the captured separator (e.g.
+   `{Series.Title}` with replacement `My Show` → `My.Show`).
+4. Apply `CleanFileName(replacement, opts)`.
+5. If non-empty, wrap with prefix + suffix.
+6. If `escape=true`, double up `{`/`}` in the replacement so a
+   downstream ReplaceTokens pass treats them as escaped.
+
+15 test cases:
+- pass-through, prefix/suffix wrapping, prefix/suffix dropped on
+  empty replacement, lower-case fold, upper-case fold, separator
+  applied to internal spaces, escaped braces (`{{` / `}}`),
+  unknown-token drop, custom-format passed to handler, trailing-
+  dash trim from custom-format (RE2 divergence pin),
+  CleanFileName applied (`?` → `!`), escape doubles braces in
+  replacement, escape preserves `{{` literally,
+  FormatNumber across 8 sub-cases, TokenMatch.DefaultValue across
+  4 sub-cases.
+
+Cleanup pass on a downstream consumer: the empty-replacement guard
+at line 902-905 of the C# leaves whitespace artifacts (`x  y` with
+the matched token consumed). The Go port mirrors this verbatim;
+the calling pattern at 2.57+ will strip these via a final
+TrimSeparators sweep.
+
+Tests: green under `-race`; golangci-lint clean.
 
 #### 2.55 — Organizer pure title helpers + CleanFileName/CleanFolderName ✅ shipped (2026-05-04)
 
