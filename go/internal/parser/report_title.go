@@ -156,6 +156,20 @@ var reportTitleRules = []rgRule{
 		Build: buildTitleNxMulti,
 	},
 
+	// Bracketed multi-Nx single-bracket form. Catches `<title> -
+	// [<n>x<m>x<m>]`, `<title> - [<n>x<m>-x<m>]`, `<title> -
+	// [<n>x<m>-<m>]`. Listed BEFORE the Title+Nx single rule so
+	// multi-bracket-Nx wins over the single-Nx interpretation that
+	// would only capture the first episode. Single bracketed-Nx forms
+	// like `Title [1x05]` still produce a single-episode result via
+	// this rule (extra group matches empty); behaviour is preserved.
+	{
+		Re: regexp.MustCompile(
+			`(?i)^(?P<title>.+?[^\d])[-_. ]+\[(?P<season>\d{1,2})x(?P<episode>\d{1,3})(?P<extra>(?:[-x_. ]*\d{1,3})*)\]`,
+		),
+		Build: buildBracketedNx,
+	},
+
 	// `Parser.cs:188`-style — Episodes with a title, `<Title> <N>x<NN>`
 	// form. Listed BEFORE the `S<n>E<nn>` rule so the dash/no-S form
 	// is not shadowed by the no-title rule's `[ex]` matcher when a
@@ -244,7 +258,7 @@ var reportTitleRules = []rgRule{
 	// lookahead and keeps the minimum-length floor).
 	{
 		Re: regexp.MustCompile(
-			`(?i)^(?P<title>.+?)(?:[-_. \[]+S(?P<season>\d{4}|\d{1,3}))(?:(?:[-_. ]+E\d{1,4})+|(?:E\d{1,4}(?:[-_. ]?E\d{1,4})*(?:[-_. ]?\d{2,3})*))`,
+			`(?i)^(?P<title>.+?)(?:[-_. \[(]+S(?P<season>\d{4}|\d{1,3}))(?:(?:[-_. ]+E\d{1,4})+|(?:E\d{1,4}(?:[-_. ]?E\d{1,4})*(?:[-_. ]?\d{2,3})*))`,
 		),
 		Build: buildTitleSeasonEpisode,
 	},
@@ -773,6 +787,62 @@ func buildAnimeAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEpisode
 	info.AbsoluteEpisodeNumbers = []int{abs}
 	info.ReleaseGroup = subgroup
 	info.ReleaseHash = hashText
+	return info
+}
+
+// bracketedNxExtraRe matches each trailing `\d{1,3}` digit run inside
+// the `<extra>` group of the bracketed multi-Nx rule. The optional
+// `[-x_. ]?` separator may consume `x` (the second-iteration prefix
+// in `[02x01x02]`), `-` (`[02x01-x02]`), or be empty.
+var bracketedNxExtraRe = regexp.MustCompile(`(\d{1,3})`)
+
+// buildBracketedNx handles the bracketed `[<n>x<m>...m...]` shape.
+// First episode comes from the explicit `<episode>` group; additional
+// episodes come from scanning `<extra>` for digit runs. Range expansion
+// mirrors `findAllEpisodes`.
+func buildBracketedNx(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
+	seasonText, _ := extractGroupSpan(re, m, "season", title)
+	season, ok := ParseNumber(seasonText)
+	if !ok {
+		return nil
+	}
+	episodeText, _ := extractGroupSpan(re, m, "episode", title)
+	firstEp, ok := ParseNumber(episodeText)
+	if !ok {
+		return nil
+	}
+
+	titleText, _ := extractGroupSpan(re, m, "title", title)
+	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
+	titleText = strings.TrimSpace(titleText)
+
+	captured := []int{firstEp}
+	extraText, _ := extractGroupSpan(re, m, "extra", title)
+	for _, raw := range bracketedNxExtraRe.FindAllString(extraText, -1) {
+		if n, ok := ParseNumber(raw); ok {
+			captured = append(captured, n)
+		}
+	}
+
+	var episodes []int
+	if len(captured) == 1 {
+		episodes = captured
+	} else {
+		first, last := captured[0], captured[len(captured)-1]
+		if first <= last {
+			episodes = make([]int, 0, last-first+1)
+			for n := first; n <= last; n++ {
+				episodes = append(episodes, n)
+			}
+		} else {
+			episodes = captured
+		}
+	}
+
+	info := NewParsedEpisodeInfo()
+	info.SeriesTitle = titleText
+	info.SeasonNumber = season
+	info.EpisodeNumbers = episodes
 	return info
 }
 

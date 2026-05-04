@@ -234,11 +234,18 @@ func multiEpisodeRows() []specRow {
 		me("1x01-x03 - Episode Title.HDTV-720p", "", 1, []int{1, 2, 3}),
 		mex("Series.Title.E07-E08.180612.1080p-NEXT", "Series Title", 1, []int{7, 8}),
 		mex("Series Title? E11-E12 1080p HDTV AAC H.264-NEXT", "Series Title", 1, []int{11, 12}),
-		mex("Series Title - [02x01x02] - Episode 1", "Series Title", 2, []int{1, 2}),
-		mex("Series Title - [02x01-x02] - Episode 1", "Series Title", 2, []int{1, 2}),
-		mex("Series Title - [02x01-02] - Episode 1", "Series Title", 2, []int{1, 2}),
-		mex("Series Title (S15E06-08) City Sushi", "Series Title", 15, []int{6, 7, 8}),
-		mex("Series Title (S05E06-08 of 24) City Sushi", "Series Title", 5, []int{6, 7, 8}),
+		// Bracketed multi-Nx single-bracket — flipped by the new
+		// bracketed-Nx rule with `[-x_. ]*` separator inside the
+		// bracket (allows `-x` 2-char gap between episodes).
+		me("Series Title - [02x01x02] - Episode 1", "Series Title", 2, []int{1, 2}),
+		me("Series Title - [02x01-x02] - Episode 1", "Series Title", 2, []int{1, 2}),
+		me("Series Title - [02x01-02] - Episode 1", "Series Title", 2, []int{1, 2}),
+		// Parenthesised multi-S-E — flipped by extending single-S-E's
+		// pre-S separator class to admit `(`. Trailing `) City Sushi`
+		// (and `of 24)`) is harmless since the existing Arm B trailing
+		// iterations stop before `(`/`)` on natural digit-run boundaries.
+		me("Series Title (S15E06-08) City Sushi", "Series Title", 15, []int{6, 7, 8}),
+		me("Series Title (S05E06-08 of 24) City Sushi", "Series Title", 5, []int{6, 7, 8}),
 		me("Series.S101E01-E02.Some.Title.Name.1080p.WEB-DL.AAC2.0.H.264-Release", "Series", 101, []int{1, 2}),
 	}
 }
