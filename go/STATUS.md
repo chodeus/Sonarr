@@ -1465,6 +1465,82 @@ Lint clean; parser test suite green (21 tests pass); full
 `-race -p 1` suite skipped (parser-package-internal changes
 only).
 
+#### 2.13.4b — ParsePath strategies 2 & 3 (SeasonFolder + SimpleEpisodeNumber) ✅ shipped (2026-05-04)
+
+Completes ParsePath. Adds the two deferred strategies from
+`Parser.ParsePath:574-622`: the season-folder + simple-episode-
+number combination (when filename is `<NN> <title>.ext` inside
+a `Season <N>` folder) and the numeric-only-filename narrowing.
+
+**Spec delta**: pass=198 xfail=2 regression=0 (no movement;
+ParsePath has its own test suite). 5 new strategy-2 PathParser
+fixture rows pass; 2 new multi-episode rows pass.
+
+What ships in `parse_path.go`:
+
+1. **`seasonFolderRe`** ports `Parser.SeasonFolderRegex` at
+   `Parser.cs:544`:
+   `^(?:S|Season|Saison|Series|Stagione)[-_. ]*(?P<season>\d{1,4})(?:[_. ]+|$)`
+   — case-insensitive. The C# `(?<!\d+)` lookbehind is
+   automatically satisfied (anchored after `[-_. ]*`, preceded
+   by non-digit). The first `(?!\d+)` is enforced by greedy
+   `\d{1,4}` matching. The second `(?!\d+)` (after trailing
+   separator) is enforced as a post-match check on the byte at
+   `m[1]`.
+
+2. **`parseSeasonFolder(folder) (string, bool)`** returns the
+   season-number STRING (preserving leading zeros — the C# code
+   stitches it back into the synthetic title verbatim).
+
+3. **`simpleEpisodeNumberRe`** ports
+   `Parser.SimpleEpisodeNumberRegex` at `Parser.cs:545`. Two
+   RE2 reformulations:
+   - Duplicate `<episode>` named groups → renamed to
+     `episode1` / `episode2`. Consumer derives `first` from
+     `episode1`, `last` from `episode2` (or `first` when
+     `episode2` didn't capture). Mirrors C# `Captures.First()`
+     / `.Last()` semantics.
+   - 3 `(?<!\d+)` lookbehinds + 3 `(?!\d+)` lookaheads: all
+     but ONE become automatically enforced by surrounding
+     context (each digit-run is bounded by `[ex-]` / `[_. ]` /
+     `$`, none of which are digits). The trailing
+     `(?<remaining>.+)` arm with its `(?!\d+)` lookahead is
+     rewritten as `[_. ](?P<remaining>[^\d].*)` so the captured
+     remaining starts with a non-digit byte.
+
+4. **`parseSimpleEpisodeNumber(name)`** returns
+   `(first, last, remaining, ok)`. When the optional second
+   episode group is absent, `last == first`.
+
+5. **ParsePath strategies 2 + 3 wired in C# control-flow order**:
+   - Strategy 2: filename matches SimpleEpisodeNumberRegex AND
+     parent matches SeasonFolderRegex AND (strategy-1 result is
+     nil OR mini OR has absolute episodes) → build synthetic
+     `S<season>E<first>(-E<last>)? <remaining>` and re-parse.
+   - Strategy 3: filename-without-ext is a pure integer →
+     parse the directory name; if its abs/episode list contains
+     the integer, narrow to that single value.
+   - Strategies 4 + 5 fall through unchanged.
+
+Test coverage:
+
+- New `TestParsePath_SeasonFolderEpisodeNumberCombo` (5 cases)
+  drawn from `PathParserFixture.cs` rows: `Season 01 / 01
+  Pilot.mkv`, `Season 1 / 02 Honor Thy Father.m4v`, `Season 2
+  - Total Series Action / 01. Total Series Action...`, etc.
+- New `TestParsePath_MultiEpisode` (2 cases) covers the multi-
+  episode block at PathParserFixture.cs:51-52.
+
+What's NOT ported:
+
+- The C# `// TODO: Skip for anime specials` comment at
+  `Parser.cs:625`. Currently a no-op; ports cleanly when
+  anime-special handling lands.
+
+Lint clean (after gofmt re-format); parser test suite green
+(23 tests pass); full `-race -p 1` suite skipped (parser-
+package-internal changes only).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
