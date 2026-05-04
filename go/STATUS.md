@@ -2581,6 +2581,71 @@ What's still deferred:
 Lint clean; package tests green; full `-race -p 1` suite
 skipped (touches only the two engines + datastore in tests).
 
+#### 2.27 — AutoTaggingService (CRUD wrapper + cache + AutoTagsUpdatedEvent) ✅ shipped (2026-05-04)
+
+Ports `AutoTaggingService.cs:1-138` (excluding GetTagChanges,
+which has its own pure-function port at `changes.go:ChangesFor`
+from 2.25). Wraps the Repo with a typed-Tag cache, CRUD
+passthroughs, and event publishing.
+
+What ships in `internal/autotagging/service.go`:
+
+1. **`Service` + `NewService(repo, bus)`** — orchestrator.
+   `bus` may be nil to skip publishing.
+
+2. **`All(ctx) []*Tag`** — cached typed-Tag list. Mirrors the
+   C# `_cache.Get("all", () => _repository.All().ToDictionary(m => m.Id))`
+   helper. Cache populates on first read, clears on every
+   mutation. Concurrency-safe via RWMutex.
+
+3. **`GetByID(ctx, id) (*Tag, error)`** — cached lookup.
+   Returns ErrNotFound on missing (the C# `[id]` indexer
+   throws on missing; Go surfaces it cleanly).
+
+4. **`Insert(ctx, row *AutoTag) (*Tag, error)`** — persists,
+   converts via LoadFromRow, invalidates cache, publishes
+   AutoTagsUpdatedEvent. Returns the typed Tag with the
+   repo-assigned ID.
+
+5. **`Update(ctx, row *AutoTag)` / `Delete(ctx, id)`** —
+   passthroughs to Repo with cache invalidation + event
+   publishing.
+
+6. **`AllForTag(ctx, tagID) []*Tag`** — filters cached AutoTags
+   whose `Tags` slice contains `tagID`. Mirrors C# `:88-92`.
+
+Test coverage in `service_test.go` (~8 cases):
+
+- Insert decodes specs into typed slice + publishes event.
+- All caches: a direct-Repo insert that bypasses the Service
+  doesn't appear in subsequent All() calls (until invalidation).
+- Update through Service refreshes the cache (subsequent
+  GetByID returns the updated value).
+- Delete invalidates: subsequent GetByID returns ErrNotFound.
+- AllForTag returns the matching subset; unknown tag returns
+  empty.
+- GetByID for unknown id returns ErrNotFound.
+- Nil row inputs to Insert and Update return errors.
+
+Tests use real on-disk SQLite migrated to head; the messaging
+bus is wired with a sync subscriber and an atomic counter
+verifies event publishing.
+
+What's still deferred:
+
+- A `ChangesFor(ctx, series, rootFolders)` shim on the Service
+  that loads All() and delegates to the pure
+  `autotagging.ChangesFor`. Lands when RootFolderService is
+  available so the rootFolders argument can be derived.
+- The C# `RootFolderService` dependency in
+  AutoTaggingService.GetTagChanges; the Go port keeps the
+  pure function's explicit `rootFolders []rootfolders.Folder`
+  arg so callers can wire any source.
+
+Lint clean; package tests green (~12 tests now in autotagging);
+full `-race -p 1` suite skipped (touches only autotagging +
+its test helper that uses datastore + messaging).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
