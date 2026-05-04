@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 COMPLETE modulo MediaInfoFormatter; Phase 3 STARTED — mediafiles foundation shipped: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason. Remaining Phase 2 areas: MediaInfoFormatter (~300 LOC, defer to later Phase 3 slice with MediaInfoModel struct port), ImportListService write surface (Phase 4 territory). Next Phase 3 territory: MediaInfoFormatter; DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model + formatter + organizer wiring 3.4-3.6 shipped. Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: language tokens (4 of 14 still stubbed in 3.6 — needs GetLanguagesToken with Iso639BTMap + ISO 2-letter culture mapping, ~80 LOC follow-up); typed MediaInfo column on episodefiles.File (separate slice, touches Mapper + every read/write site). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
 
 ## Where to resume
 
@@ -2788,6 +2788,168 @@ roundtrips, SetFileID auto-forget, and every read+mutation
 pass-through.
 
 ### Phase 3 — Service / Workflow layer ⏳ in progress
+
+#### 3.6 — Organizer MediaInfo token wiring ✅ shipped (2026-05-04)
+
+Replaces the empty-stub `RegisterMediaInfoStubs` (from 2.59) with a
+real `RegisterMediaInfoTokens(handlers, m *mediainfo.Model, sceneName)`
+that drives 10 of the 14 `{MediaInfo *}` tokens via the
+`mediainfo.Format*` helpers shipped in 3.5.
+
+Tokens wired:
+
+- `Video` / `VideoCodec` — `mediainfo.FormatVideoCodec`
+- `VideoBitDepth` — `m.VideoBitDepth` with C# default of "8" when 0
+- `Audio` / `AudioCodec` — `mediainfo.FormatAudioCodec(PrimaryAudioStream, sceneName)`
+- `AudioChannels` — F1-formatted via `mediainfo.FormatAudioChannels`
+- `Simple` — `{videoCodec} {audioCodec}` (no trim, matches C#)
+- `Full` — `{videoCodec} {audioCodec} ` (trailing space; preserves
+  the C# concat shape with the language tokens currently empty)
+- `VideoDynamicRange` / `VideoDynamicRangeType` —
+  `mediainfo.FormatVideoDynamicRange / Type`
+
+`BuildOptions` adds a `MediaInfo *mediainfo.Model` field. Callers
+parse `episodefiles.File.MediaInfo` (the JSON column) into a typed
+model and pass it via opts before calling BuildFileName /
+BuildFilePath. Nil tolerated → matches C# short-circuit.
+
+`SceneOrFileName(file)` ports `EpisodeFile.GetSceneOrFileName()` at
+`MediaFiles/EpisodeFile.cs:35-55`. Priority chain: SceneName →
+filepath.Base(RelativePath) sans ext → filepath.Base(OriginalFilePath)
+sans ext → "". The Go port substitutes OriginalFilePath for the
+C# absolute Path field (which the Go port doesn't persist).
+
+What's NOT in this slice (deferred follow-ups):
+
+- 4 language tokens (AudioLanguages / AudioLanguagesAll /
+  SubtitleLanguages / SubtitleLanguagesAll) remain stubbed to
+  empty. Their full port needs `GetLanguagesToken` with Iso639BTMap
+  + 2-letter ISO mapping (`FileNameBuilder.cs:747-814`) — ~80 LOC
+  follow-up; current behaviour for these tokens is unchanged.
+- Typed serialisation of the EpisodeFiles.MediaInfo column. Repo
+  Mapper still scans/binds it as raw string; the host parses it
+  into `*mediainfo.Model` lazily when it needs the typed shape.
+  Conversion to a typed column is a separate slice.
+
+`RegisterMediaInfoStubs` is retained but marked deprecated;
+backwards-compat smoke test pins that the deprecated entry point
+still registers every token to empty.
+
+Tests (6 functions × ~25 sub-cases): nil-Model matches stubs,
+real-Model golden expectations across 10 tokens (HEVC + EAC3 Atmos +
+HDR10Plus fixture), default VideoBitDepth=8 fallback, empty
+AudioChannels, no-audio-streams Simple-with-trailing-space,
+SceneOrFileName priority chain.
+
+  internal/organizer:  ok
+
+#### 3.5 — MediaInfoFormatter port ✅ shipped (2026-05-04)
+
+Ports `MediaInfoFormatter` at
+`src/NzbDrone.Core/MediaFiles/MediaInfo/MediaInfoFormatter.cs:11-326`.
+Pure logic; no I/O.
+
+Surface in `internal/mediainfo/formatter.go`:
+
+- `FormatAudioCodec(stream, sceneName) string` → :32-154
+  - 12 codec branches (TrueHD/FLAC/DTS/EAC3/AC3/AAC/MP3/MP2/Opus/
+    Vorbis/WMA/PCM)
+  - CodecID-driven Atmos detection (thd+ → TrueHD Atmos, ec+3 →
+    EAC3 Atmos)
+  - Profile-driven variants (DTS-X / DTS-HD MA / xHE-AAC etc.)
+  - PCM via pcm_*/adpcm_* prefix detection
+  - Default fallback returns the original Format (C# Sentry warning
+    on unknowns dropped — no Sentry plumbing yet)
+
+- `FormatVideoCodec(model, sceneName) string` → :156-269
+  - h264/hevc → scene-name-driven branding via getSceneNameMatch
+    (AVC/x264/h264 vs HEVC/x265/h265, last token as default)
+  - MPEG-4 family → XviD vs DivX based on codecID, including
+    DIV3/DX50 + case-insensitive XVID/DIVX matching
+  - Codec list: VC1, AV1, VP6/7/8/9, WMV1/2/3
+  - Suppressed (returns ""): qtrle/rpza/rv*/cinepak/rawvideo/
+    msvideo1/empty-mpeg4
+
+- `FormatVideoDynamicRange(model) string` → :303-306
+  Returns "HDR" iff any non-None HDR format, "" otherwise.
+
+- `FormatVideoDynamicRangeType(model) string` → :308-324
+  Maps each HdrFormat to its UI string (DV / DV HDR10 / HDR10 /
+  HDR10Plus / HLG / PQ / etc.)
+
+- `FormatAudioChannels(stream) float64` → :20-30 + :271-285
+  ChannelPositions prefix takes precedence (e.g. "5.1") over the
+  integer Channels field. Returns float64 (C# decimal — Go port
+  drops the precision since downstream tokens just %.1f-format
+  the result).
+
+Helpers:
+
+- `getSceneNameMatch` — strips file extension via
+  `parser.RemoveFileExtension`, walks tokens for case-insensitive
+  substring match, falls back to last token.
+- `positionRegex` (RE2-compatible): `^(\d\.\d)`. .NET-style named
+  group rewritten as positional capture.
+
+Tests (8 functions × ~80 sub-cases) — direct verbatim ports of
+the 4 fixtures under
+`src/NzbDrone.Core.Test/MediaFiles/MediaInfo/MediaInfoFormatterTests/`:
+FormatAudioCodecFixture (32) + default fallback,
+FormatVideoCodecFixture (32 + 6 fallbacks + default),
+FormatVideoDynamicRangeFixture (8), FormatVideoDynamicRangeTypeFixture
+(11), FormatAudioChannels (6 + nil), DTS profile fallback, hevc
+empty-scene last-token regression.
+
+  internal/mediainfo:  ok
+
+#### 3.4 — mediainfo data model ✅ shipped (2026-05-04)
+
+Ports four colocated types from `MediaFiles/MediaInfo/`:
+
+- `MediaInfoModel` → `Model` struct
+- `MediaInfoAudioStreamModel` → `AudioStream`
+- `MediaInfoSubtitleStreamModel` → `SubtitleStream`
+- `HdrFormat` enum (11 values)
+
+Wire-format details pinned by tests:
+
+- **EDOC-Q16**: VideoCodecID JSON tag is the literal `videoCodecID`
+  (only first character lowercased — STJ camelCase rule on
+  consecutive capitals). Tests verify both write-side (literal
+  output) and read-side (case-insensitive on both casings,
+  matching STJ PropertyNameCaseInsensitive=true / Go encoding/json
+  default).
+- VideoColourPrimaries keeps the British spelling.
+- RunTime serialises via `datastore.STDuration` → C# TimeSpan
+  `[d.]hh:mm:ss[.fffffff]` shape.
+- HdrFormat MarshalJSON emits camelCase strings; UnmarshalJSON
+  accepts both string AND integer forms (matches STJ
+  `allowIntegerValues=true`). Unknown values fall through to
+  HdrNone — no panics on dirty data.
+- HdrFormat numeric values pinned by test: enum reordering would
+  break wire compat with persisted rows.
+
+Computed properties:
+
+- `PrimaryAudioStream()` returns a *copy* of `AudioStreams[0]` to
+  match C#'s reference-type-but-no-mutation contract; nil-safe on
+  both nil-receiver and empty-slice paths.
+
+What's NOT in this slice:
+
+- `Title` field (C# `[JsonIgnore]`) — omitted from the struct since
+  it's never persisted.
+- Pre-225 flat-shape backwards compat (audioFormat / audioCodecID /
+  audioChannels / etc.). Catalogue notes these may exist in legacy
+  user DBs (EDOC-Q17). Defer to migration audit.
+
+Tests (8 functions × ~15 sub-cases): String + frozen numbering,
+Marshal + Unmarshal round-trip, full-shape round-trip, videoCodecID
+casing pin, PrimaryAudioStream nil/empty/single/multi + copy
+semantics, nullable Forced bool, omitempty trims zero-value struct
+to "{}".
+
+  internal/mediainfo:  ok
 
 #### 3.3 — episodes.Service mediafiles event handlers ✅ shipped (2026-05-04)
 
