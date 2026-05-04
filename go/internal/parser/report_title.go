@@ -642,6 +642,29 @@ func findAllEpisodes(region string) []int {
 	return expanded
 }
 
+// requestInfoRe ports `Parser.RequestInfoRegex` at `Parser.cs:547`:
+// strips a leading `[...]+` bracketed-tag prefix (or sequence of
+// them) from an extracted series name. Used by cleanSeriesName.
+//
+// RE2-clean.
+var requestInfoRe = regexp.MustCompile(`^(?:\[.+?\])+`)
+
+// cleanSeriesName ports the C# series-name normalisation in
+// `ParseMatchCollection` at `Parser.cs:924-925`:
+//
+//	seriesName.Replace('.', ' ').Replace('_', ' ');
+//	RequestInfoRegex.Replace(seriesName, "").Trim(' ');
+//
+// Used by every build closure that extracts a `<title>` group.
+// The trim drops leading/trailing spaces that the RequestInfoRegex
+// strip can leave behind (e.g. `[Impatience] Series` →
+// ` Series` → `Series`).
+func cleanSeriesName(s string) string {
+	s = strings.ReplaceAll(strings.ReplaceAll(s, ".", " "), "_", " ")
+	s = requestInfoRe.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
+}
+
 // extractGroupSpan returns (text, end) of the named group, or
 // ("", -1) if absent. Used by Build functions to pull out captured
 // substrings + their end position for downstream "scan from here"
@@ -666,8 +689,7 @@ func buildTitleSeasonEpisode(re *regexp.Regexp, m []int, title string) *ParsedEp
 	}
 
 	titleText, titleEnd := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	titleText = cleanSeriesName(titleText)
 	if titleEnd < 0 {
 		titleEnd = m[0]
 	}
@@ -711,8 +733,7 @@ func buildTitleNxEpisode(re *regexp.Regexp, m []int, title string) *ParsedEpisod
 	}
 
 	titleText, _ := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	titleText = cleanSeriesName(titleText)
 
 	captured := []int{firstEp}
 	if extraText, _ := extractGroupSpan(re, m, "extra", title); extraText != "" {
@@ -784,8 +805,7 @@ func buildDailyAirdate(re *regexp.Regexp, m []int, title string) *ParsedEpisodeI
 	dayText, _ := extractGroupSpan(re, m, "airday", title)
 
 	titleText, _ := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	titleText = cleanSeriesName(titleText)
 
 	info := NewParsedEpisodeInfo()
 	info.SeriesTitle = titleText
@@ -797,8 +817,7 @@ func buildDailyAirdate(re *regexp.Regexp, m []int, title string) *ParsedEpisodeI
 // `<Title>.<Year>.E<NN>` form. season=1, IsMiniSeries=true.
 func buildMiniSeriesYearE(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
 	titleText, _ := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	titleText = cleanSeriesName(titleText)
 
 	episodeText, _ := extractGroupSpan(re, m, "episode", title)
 	episode, ok := ParseNumber(episodeText)
@@ -820,8 +839,7 @@ func buildMiniSeriesYearE(re *regexp.Regexp, m []int, title string) *ParsedEpiso
 // classification path in ParseMatchCollection.
 func buildMiniSeriesPart(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
 	titleText, _ := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	titleText = cleanSeriesName(titleText)
 
 	episodeText, _ := extractGroupSpan(re, m, "episode", title)
 	episode, ok := ParseNumber(episodeText)
@@ -847,8 +865,19 @@ func buildAnimeAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEpisode
 	subgroup = strings.TrimSpace(subgroup)
 
 	titleText, _ := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	// Reject the anime-[SubGroup] match when the captured title
+	// text contains an S<n>E<n> or N<x>N form — those releases
+	// should be parsed as standard S-E or Nx forms by later rules,
+	// with the leading `[Subgroup]` stripped from the title via
+	// `cleanSeriesName`'s RequestInfoRegex pass. Without this guard,
+	// the lazy `<title>.+?` wraps the S-E form and the anime regex
+	// instead grabs a trailing 2-3 digit number as the
+	// absoluteepisode (e.g. `[RlsGrp] Series Title - S01E27 -
+	// 24-Hour` → abs=24).
+	if animeRejectSERe.MatchString(titleText) {
+		return nil
+	}
+	titleText = cleanSeriesName(titleText)
 
 	absText, _ := extractGroupSpan(re, m, "absoluteepisode", title)
 	abs, ok := ParseNumber(absText)
@@ -865,6 +894,12 @@ func buildAnimeAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEpisode
 	info.ReleaseHash = hashText
 	return info
 }
+
+// animeRejectSERe is used by buildAnimeAbsolute to reject anime
+// [SubGroup] matches whose `<title>` capture contains a standard
+// S<n>E<n> or N<x>N season-episode form. Those releases should
+// fall through to the title-S-E or title-Nx rules. RE2-clean.
+var animeRejectSERe = regexp.MustCompile(`(?i)S\d+E\d+|\d+x\d+`)
 
 // epFiveDigitRe matches each `Ep<5-digit>` iteration inside the
 // `<extra>` group of the 5-digit multi-episode rule. Used by
@@ -894,8 +929,7 @@ func buildEpFiveDigitMulti(re *regexp.Regexp, m []int, title string) *ParsedEpis
 	}
 
 	titleText, _ := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	titleText = cleanSeriesName(titleText)
 
 	var episodes []int
 	if len(captured) == 1 {
@@ -942,8 +976,7 @@ func buildBracketedNx(re *regexp.Regexp, m []int, title string) *ParsedEpisodeIn
 	}
 
 	titleText, _ := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	titleText = cleanSeriesName(titleText)
 
 	captured := []int{firstEp}
 	extraText, _ := extractGroupSpan(re, m, "extra", title)
@@ -981,8 +1014,7 @@ func buildBracketedNx(re *regexp.Regexp, m []int, title string) *ParsedEpisodeIn
 // `absoluteepisode`.
 func buildAnimeTitleAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
 	titleText, _ := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	titleText = cleanSeriesName(titleText)
 
 	absText, _ := extractGroupSpan(re, m, "absoluteepisode", title)
 	abs, ok := ParseNumber(absText)
@@ -1016,8 +1048,7 @@ func buildExtantMultiEpisode(re *regexp.Regexp, m []int, title string) *ParsedEp
 	}
 
 	titleText, _ := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	titleText = cleanSeriesName(titleText)
 
 	var episodes []int
 	if ep1 <= ep2 {
@@ -1049,8 +1080,7 @@ var threeDigitShortcutRe = regexp.MustCompile(`[_.\-]+([1-9])([1-9][0-9]|[0][1-9
 // iterations contribute episodes, range-expanded first..last.
 func buildThreeDigitShortcut(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
 	titleText, titleEnd := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	titleText = cleanSeriesName(titleText)
 	if titleEnd < 0 {
 		titleEnd = m[0]
 	}
@@ -1115,8 +1145,7 @@ func buildTitleNxMulti(re *regexp.Regexp, m []int, title string) *ParsedEpisodeI
 		return nil
 	}
 	titleText, titleEnd := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	titleText = cleanSeriesName(titleText)
 	if titleEnd < 0 {
 		titleEnd = m[0]
 	}
@@ -1198,8 +1227,7 @@ func buildReversedAirdate(re *regexp.Regexp, m []int, title string) *ParsedEpiso
 	}
 
 	titleText, _ := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	titleText = cleanSeriesName(titleText)
 
 	info := NewParsedEpisodeInfo()
 	info.SeriesTitle = titleText
@@ -1230,8 +1258,7 @@ func buildSeasonEpisodeKeyword(re *regexp.Regexp, m []int, title string) *Parsed
 	}
 
 	titleText, _ := extractGroupSpan(re, m, "title", title)
-	titleText = strings.ReplaceAll(strings.ReplaceAll(titleText, ".", " "), "_", " ")
-	titleText = strings.TrimSpace(titleText)
+	titleText = cleanSeriesName(titleText)
 
 	captured := []int{firstEp}
 	extraText, _ := extractGroupSpan(re, m, "extra", title)

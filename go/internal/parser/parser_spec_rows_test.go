@@ -115,9 +115,9 @@ func singleEpisodeRows() []specRow {
 		se("Series (2009) - [06x16] - Room 147.mp4", "Series (2009)", 6, 16),
 		se("Series Title [1x05] Episode Title", "Series Title", 1, 5),
 		se("Series Title [S01E05] Episode Title", "Series Title", 1, 5),
-		sex("[Impatience] Series - 0x01 [720p][34073169].mkv", "Series", 0, 1),
+		se("[Impatience] Series - 0x01 [720p][34073169].mkv", "Series", 0, 1),
 		se("Series Title - [02x01] - Episode 1", "Series Title", 2, 1),
-		sex("[RlsGrp] Series Title - S01E27 - 24-Hour", "Series Title", 1, 27),
+		se("[RlsGrp] Series Title - S01E27 - 24-Hour", "Series Title", 1, 27),
 
 		// `S<n>.E<nn>` with separator before E (passing via title+S-E
 		// rule's Arm A `[-_. ]+E\d{2,3}`):

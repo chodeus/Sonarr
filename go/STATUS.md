@@ -1400,6 +1400,71 @@ Lint clean; parser test suite green (21 tests pass); full
 `-race -p 1` suite skipped (parser-package-internal changes
 only).
 
+#### 2.13.5 — RequestInfoRegex title cleanup + buildAnimeAbsolute reject-on-S-E ✅ shipped (2026-05-04)
+
+Two layered fixes that flip both `[Subgroup] ...`-prefixed
+xfails from 2.12.16. Spec moves from 196/4 to **198/2**.
+
+**Spec delta**: pass=196 → 198 (+2); xfail=4 → 2 (-2);
+regression=0.
+
+What ships:
+
+1. **`cleanSeriesName(s)` helper** in `report_title.go`. Ports
+   the C# series-name normalisation in `ParseMatchCollection`
+   at `Parser.cs:924-925`:
+
+   ```csharp
+   var seriesName = matchCollection[0].Groups["title"].Value
+       .Replace('.', ' ').Replace('_', ' ');
+   seriesName = RequestInfoRegex.Replace(seriesName, "").Trim(' ');
+   ```
+
+   The Go version replaces 14 inline copies of
+   `strings.ReplaceAll(., ' ').ReplaceAll(_, ' ').TrimSpace`
+   across all build closures with a single helper that ALSO
+   strips a leading `^(?:\[.+?\])+` (RequestInfoRegex). Without
+   this strip, `[Impatience] Series` flowed through as the
+   parsed SeriesTitle instead of `Series`.
+
+2. **`requestInfoRe`** ports `Parser.RequestInfoRegex` at
+   `Parser.cs:547`. RE2-clean: `^(?:\[.+?\])+`.
+
+3. **`buildAnimeAbsolute` reject-on-S-E**. Adds a guard against
+   anime-[SubGroup] matches whose `<title>` capture contains a
+   standard `S\d+E\d+` or `\d+x\d+` form. Without this, a
+   release like `[RlsGrp] Series Title - S01E27 - 24-Hour`
+   matches the anime regex with title=`Series Title - S01E27`
+   and abs=24 (the `24` from `24-Hour`). The reject lets the
+   match fall through to the title-S-E rule, which (combined
+   with the cleanSeriesName RequestInfoRegex strip) produces
+   the correct title=`Series Title`, season=1, episode=27.
+
+4. **`animeRejectSERe`** new RE2-clean regex `(?i)S\d+E\d+|\d+x\d+`.
+
+Spec rows flipped from `sex` to `se`:
+
+- `[Impatience] Series - 0x01 [720p][34073169].mkv` →
+  title=Series, season=0, episode=1.
+- `[RlsGrp] Series Title - S01E27 - 24-Hour` → title=Series Title,
+  season=1, episode=27.
+
+What stays xfail (2 rows after this slice):
+
+- `Series Title? E11-E12 1080p HDTV AAC H.264-NEXT` — Korean
+  NEXT variant with space separators (PreSub rule 1+1a use
+  `\.` literal). Fix sketch unchanged from 2.12.16: add a third
+  PreSub variant with space separators + extend cleanup to
+  trim trailing `?!` from titles.
+- `kill-roy-was-here-e07-720p` — mini-series form expected
+  season=1 episodes=[7], not abs=[7]. Fix sketch unchanged: same
+  shape as the currently-passing anime row, so disambiguation
+  must come from a downstream consumer with broader context.
+
+Lint clean; parser test suite green (21 tests pass); full
+`-race -p 1` suite skipped (parser-package-internal changes
+only).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
