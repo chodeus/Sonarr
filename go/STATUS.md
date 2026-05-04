@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.58 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade), and ImportLists (read-only); Organizer/FileNameBuilder underway — pure title helpers (2.55), token replacement engine (2.56), series/season tokens + folder builders (2.57), episode tokens + numbering + Truncate + AirDate + MultiEpisodeStyle handling for both season-episode and absolute formats (2.58); remaining Organizer work: quality/media-info/custom-format/episode-title tokens (2.59), full BuildFileName orchestration (2.60); other Phase 2 areas: EpisodeService, episode-monitored cascade, ImportListService write surface).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.59 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade), and ImportLists (read-only); Organizer/FileNameBuilder underway — pure title helpers (2.55), token replacement engine (2.56), series/season folders (2.57), episode numbering + AirDate + Truncate (2.58), episode-title + episode-file + quality + custom-format + media-info-stub tokens (2.59); remaining Organizer work: full BuildFileName/BuildFilePath orchestration + RequiresEpisodeTitle (2.60); other Phase 2 areas: EpisodeService, MediaInfoFormatter port, ImportListService write surface).
 
 ## Where to resume
 
@@ -2645,6 +2645,79 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.59 — Organizer episode-title + episode-file + quality + custom-format tokens ✅ shipped (2026-05-04)
+
+Fifth Organizer slice. Adds the remaining token resolvers needed
+before the final BuildFileName orchestration (2.60). Four new files:
+
+`title_tokens.go`:
+- `multiPartCleanupRegex` — strips `(1)`/`(2)`/`Part 1`/`Pt. 2`
+  trailing markers from episode titles. Mirrors `:78`.
+- `CleanupEpisodeTitle(title)` — `:1085-1089`.
+- `GetEpisodeTitles(eps)` — `:1016-1039`. Single-ep returns one
+  trimmed title; multi-ep dedups + cleans, falls back to raw
+  titles when cleanup blanks everything.
+- `GetEpisodeTitle(titles, separator, maxLength, formatter)` —
+  `:1041-1083`. Joined-fits / first+last+ellipsis / first+ellipsis
+  / single-fits / truncate-and-ellipsis cascade. Multi-byte aware
+  via `[]rune` length.
+- `AddEpisodeTitleTokens(handlers, eps, maxLength)` /
+  `AddEpisodeTitlePlaceholderTokens(handlers)` — `:618-622` and
+  `:612-616`. The placeholder variant is used by the length
+  pre-flight pass (next slice).
+- `RegisterEpisodeFileTokens(handlers, *episodefiles.File, useCurrentFilenameAsFallback)` —
+  `:624-630` plus the `getOriginalTitle`/`getOriginalFileName`
+  helpers at `:1116-1139`. Registers `{Original Title}`,
+  `{Original Filename}`, `{Release Group}` (with `Sonarr` default
+  via TokenMatch.DefaultValue), `{Release Hash}`. Nil-file path
+  registers no-op handlers.
+
+`quality_tokens.go`:
+- `QualityTitleResolver` interface — `GetQualityTitle(q quality.Quality) (string, bool)`.
+  `*qualitydefinitions.Service` will satisfy this with a thin
+  adapter at the host boundary.
+- `RegisterQualityTokens(handlers, *Series, quality.Model, resolver)`
+  — `:632-642`. Title (resolver-driven, falls back to
+  `Quality.Name` when nil/missing), Proper (anime → `vN`,
+  non-anime → `Proper`), Real (`Revision.Real > 0` → `REAL`),
+  Full (joins non-empty parts with single space).
+- `joinNonEmpty` collapses double-space artifacts that the C#
+  `string.Format` would emit on empty parts.
+
+`custom_format_tokens.go`:
+- `RegisterCustomFormatTokens(handlers, []*customformats.Format)` —
+  `:696-714`. `{Custom Formats}` filtered by
+  IncludeCustomFormatWhenRenaming + optional `:filter` (with `-`
+  prefix for excludes). `{Custom Format}` looks up by
+  TokenMatch.CustomFormat name; emits empty when no IncludeRenaming
+  match.
+
+`mediainfo_tokens.go`:
+- `RegisterMediaInfoStubs(handlers)` — registers all 14 MediaInfo
+  tokens to return empty string. Full MediaInfoFormatter port
+  (~300 LOC across codec/channel/dynamic-range derivation +
+  language fallback) lands later. Stubbing here keeps user
+  patterns parsing without errors.
+
+Test corpus (~28 cases across 4 test files):
+
+`title_tokens_test.go` (10 tests): CleanupEpisodeTitle 6 sub-cases,
+GetEpisodeTitles single + multi+dedup, GetEpisodeTitle 4 paths
+including formatter shortening, RegisterEpisodeFileTokens basic +
+ReleaseGroup default + nil-file + filename-fallback, the two
+EpisodeTitle registrar variants.
+
+`quality_tokens_test.go`: 5 quality test paths
+(basic/Proper/anime-vN/Real/Full-joins-all) + 5 custom-format
+filter cases + media-info-stub bulk verification.
+
+What's deferred to 2.60: the BuildFileName + BuildFilePath
+orchestration, the GetLengthWithoutEpisodeTitle pre-flight,
+RequiresEpisodeTitle, RequiresAbsoluteEpisodeNumber, and the
+length-budget allocation between tokens.
+
+Tests: green under `-race`; golangci-lint clean.
 
 #### 2.58 — Organizer episode tokens + numbering + Truncate ✅ shipped (2026-05-04)
 
