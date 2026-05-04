@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.43 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services (Notification, DownloadClient, ImportList, Indexer), and RootFolder (with DiskProvider/SeriesPaths/NamingConfig stubs); series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, full Series/Episode service business logic).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.44 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services (Notification, DownloadClient, ImportList, Indexer), RootFolder (with DiskProvider/SeriesPaths/NamingConfig stubs), and QualityProfile (CRUD-only — typed Items/FormatItems wrappers + Delete/seed/handlers deferred to a follow-up); series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService follow-up (typed Items/FormatItems + GetDefaultProfile + UpdateAllSizeLimits + handlers + ApplicationStarted seed + Delete), full Series/Episode service business logic).
 
 ## Where to resume
 
@@ -2645,6 +2645,70 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.44 — QualityProfileService (CRUD + UpdatedEvent) ✅ shipped (2026-05-04)
+
+First half of the QualityProfileService port (`Profiles/Qualities/QualityProfileService.cs`,
+290 LOC). The Service ships the CRUD passthroughs that don't require
+typed `Items` / `FormatItems` wrappers or yet-unported dependencies:
+
+- `Add(ctx, *Profile) (*Profile, error)` — straight Insert; no event
+  (matches the C# `Add` at `:54-57`, which doesn't publish either).
+- `Update(ctx, *Profile) error` — Update + publish
+  `QualityProfileUpdatedEvent{ID}` mirroring C# `:59-63`.
+- `Get(ctx, id)` / `All(ctx)` — straight passthroughs.
+- `Exists(ctx, id) (bool, error)` — surfaces via Get + ErrNotFound
+  classification since `*repo.Repository[T]` doesn't yet expose a
+  generic Exists. Drops the row data once the existence is confirmed.
+
+`QualityProfileUpdatedEvent` is the typed Go equivalent of
+`Profiles/Qualities/QualityProfileUpdatedEvent.cs:1-7` — single `ID`
+payload per the C# constructor signature. Listeners care about the
+profile change to invalidate caches (PendingReleaseService is the
+canonical consumer); they don't need the full Profile.
+
+Tests (8 cases): Add persists, Add(nil) rejects, Update publishes
+exactly once and only on Update (Add is silent), Update(nil) rejects,
+Update with `bus = nil` skips publish without panicking, All returns
+every row, Get round-trips, Get(missing) returns ErrNotFound, Exists
+true/false by ID.
+
+What's deferred to a follow-up Phase 2 slice (typed wrappers + the
+operations that need them):
+
+- `GetDefaultProfile(name, cutoff, allowed...)` — generates a Profile
+  with `Items` derived from `Quality.DefaultQualityDefinitions`
+  groupings and `FormatItems` from `customformats.Service.All`.
+  Needs typed `QualityProfileQualityItem` (with optional grouping
+  via nested `Items[]`) and typed `ProfileFormatItem`.
+- `UpdateAllSizeLimits(sizeLimits ...QualityProfileSizeLimit)` —
+  walks every profile's typed Items, finds the matching quality (or
+  group entry), and overwrites Min/Max/PreferredSize. Needs the
+  typed `Items` wrapper + a `GetIndex(quality, respectGroupOrder)`
+  helper.
+- `Handle(CustomFormatAddedEvent)` — prepends a zero-score
+  `ProfileFormatItem` to every profile's FormatItems. Needs the
+  typed FormatItems wrapper.
+- `Handle(CustomFormatDeletedEvent)` — filters the deleted format
+  out of every profile's FormatItems and zeroes the
+  Min/Cutoff/Upgrade format scores when the list goes empty.
+- `Handle(ApplicationStartedEvent)` — seeds the 6 default profiles
+  (Any / SD / HD-720p / HD-1080p / Ultra-HD / HD - 720p/1080p) by
+  calling `AddDefaultProfile` (which is a thin wrapper over
+  `GetDefaultProfile` + `Add`). Deferred with GetDefaultProfile.
+- `Delete(id)` — checks `seriesService.GetAllSeries()` and
+  `importListFactory.All()` for in-use references; throws
+  `QualityProfileInUseException` when either matches. Both
+  dependencies are unported (SeriesService + ImportListFactory).
+  When they land, the Delete path can ship together with their
+  in-use validators (analogous to the
+  `remotepathmappings.DiskProvider` interface boundary pattern).
+
+Cache strategy: none — the C# class doesn't cache the All() list
+either. The follow-up slice can introduce a parsed-views cache
+(typed `Items[]` / `FormatItems[]` lists) if profiling justifies it.
+
+Tests: SQLite green under `-race`; golangci-lint clean.
 
 #### 2.43 — RootFolderService (CRUD + cache + async details) ✅ shipped (2026-05-04)
 
