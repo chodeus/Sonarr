@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.48 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (full minus Delete), and Series read-only surface (Get/Find*/All*/AllForTag/SeriesPathExists — *series.Service satisfies rootfolders.SeriesPaths interface; mutation-side AddSeries/UpdateSeries/DeleteSeries deferred); pure helpers for RootFolder/DelayProfile/series.NormalizeTitle/series.ShouldRefresh; OsPath value type; TermMatcher complete; remaining Phase 2 areas: Organizer/FileNameBuilder, SeriesService mutation methods (AddSeries/UpdateSeries/DeleteSeries/UpdateTags + bulk), EpisodeService, QualityProfileService.Delete with in-use validation).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.49 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (full minus Delete), and Series (read-only + AddSeries/AddMany with SeriesAddedEvent/SeriesImportedEvent — UpdateSeries/UpdateTags/DeleteSeries deferred to 2.50-2.52); all 5 SeriesService event structs (SeriesAdded/Imported/Edited/BulkEdited/Deleted) shipped up-front; pure helpers for RootFolder/DelayProfile/series.NormalizeTitle/ShouldRefresh; OsPath value type; remaining Phase 2 areas: Organizer/FileNameBuilder, SeriesService mutation finishes (UpdateSeries/UpdateTags/DeleteSeries), EpisodeService, QualityProfileService.Delete).
 
 ## Where to resume
 
@@ -2645,6 +2645,43 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.49 — SeriesService AddSeries / AddMany ✅ shipped (2026-05-04)
+
+First mutation slice for SeriesService. Adds:
+
+- `Service.AddSeries(ctx, *Series) (*Series, error)` — ports
+  `SeriesService.cs:73-79`. Inserts the row, re-fetches the
+  persisted shape (mirrors C# `GetSeries(newSeries.Id)`) and
+  publishes [SeriesAddedEvent].
+- `Service.AddMany(ctx, []*Series) ([]*Series, error)` — ports
+  `:81-87`. Per-row Insert (the generic `*repo.Repository` doesn't
+  yet expose bulk insert; transactional sugar deferred).
+  Publishes a single [SeriesImportedEvent] carrying every assigned
+  ID — mirrors the C# semantic.
+
+Event payload structs (in `internal/series/events.go` — all five
+SeriesService events ported up-front so follow-up slices can publish
+without churn):
+
+- `SeriesAddedEvent{Series}` — single inserted row.
+- `SeriesImportedEvent{SeriesIDs}` — bulk-inserted IDs only.
+- `SeriesEditedEvent{Series, OldSeries, EpisodesChanged}` — diff
+  payload for the Update path.
+- `SeriesBulkEditedEvent{Series}` — bulk-edit fan-out.
+- `SeriesDeletedEvent{Series, DeleteFiles, AddImportListExclusion}` —
+  carries the user-supplied flags.
+
+5 tests:
+- `AddSeries_PublishesSeriesAddedEvent` — single insert + event with
+  the assigned ID.
+- `AddSeries_RejectsNil`.
+- `AddSeries_NilBusSkipsPublish`.
+- `AddMany_PublishesSeriesImportedEvent` — three rows inserted, one
+  event with three IDs.
+- `AddMany_EmptyListNoOp` — nil/empty list → no insert, no event.
+
+Tests: SQLite green under `-race`; golangci-lint clean.
 
 #### 2.48 — Series repo query helpers + read-only Service ✅ shipped (2026-05-04)
 
