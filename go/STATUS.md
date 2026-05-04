@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.15 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.15 adds bracketed multi-Nx rule + extends single-S-E separator to admit `(` for parenthesised multi-S-E; spec at end of 2.12.15 is **pass=188 xfail=12 regression=0** out of 200.).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.16 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.16 layers eight long-tail clusters (year-shape title 3-digit, Nx multi-trailing, Ep<5digit> multi, hybrid airdate+S-E, paren-year-title daily, abs-then-airdate, multi-E NEXT PreSub) into one slice; spec at end of 2.12.16 is **pass=196 xfail=4 regression=0** out of 200.).
 
 ## Where to resume
 
@@ -1001,6 +1001,39 @@ What stays xfail (12 rows after this slice):
 - **3-digit forms with year-shape title (`series.2009.416`, `series.six-0.2010.217`)** (~2 rows).
 - **`E07-E08.180612.1080p-NEXT` PreSubstitution variants** (~2 rows).
 - **Various assorted** — `[Impatience]` anime mis-routing, `[RlsGrp]` prefix, `kill-roy-was-here-e07-720p` mini-series.
+
+Lint clean; parser test suite green; full `-race -p 1` suite skipped (parser-package-internal changes only).
+
+#### 2.12.16 — Long-tail cluster sweep ✅ shipped (2026-05-04)
+
+Eight small fixes layered together. Bulk-spec dispatcher confirmed 0 regressions throughout.
+
+**Spec delta**: pass=188 → 196 (+8); xfail=12 → 4 (-8); regression=0.
+
+What ships:
+
+1. **Year-shape title in 3-digit shortcut** (+2 rows). Removed the `[^\d]` constraint from the 3-digit shortcut rule's title group. The `(?<!\d+)` lookbehind on season is automatically satisfied by the non-digit `[_.\-]+` separator that already stands between title and season. Catches `series.2009.416.hdtv-lol` and `series.six-0.2010.217.hdtv-lol`.
+
+2. **Title+Nx multi-trailing form** (+1 row). Title+Nx single rule extended with optional `<extra>(?:[-_]\s?[ex]?\d{2,3})*` group; `buildTitleNxEpisode` now scans `<extra>` for additional 2-3 digit episodes and range-expands. The 2-digit minimum on extras prevents over-eager slurping. Catches `Series's Sonarr - 8x01_02 - Free Falling`.
+
+3. **5-digit `Ep<NNNNN>` multi-episode (Parser.cs:286)** (+1 row). New rule `^<title>[-_. ]+S<n><extra>(?:[-_. ]+ep\d{5})+`. New `buildEpFiveDigitMulti` scans `<extra>` for per-iteration `Ep<5-digit>` matches. Catches `The Series And The Code - S42 Ep10718 - Ep10722` → range [10718..10722].
+
+4. **Hybrid airdate+S-E (Parser.cs:161-165)** (+1 row). New rule placed BEFORE single-S-E. When both an airdate AND a trailing `s\d+e\d+` are present, route through the daily branch (airdate canonical, S-E ignored). Trailing `s?\d{1,2}[ex]\d{1,3}` is a non-capturing existence anchor. Catches `The Show Series 2015 02 09 WEBRIP s01e13`.
+
+5. **Paren-year-title daily** (+1 row). Daily airdate rule's title-to-year separator changed from `\W*` to `[-_. ]*`. `\W` is too greedy — it consumes `)`, leaving titles like `Series Title (1955` (missing closing paren). The narrower `[-_. ]*` class doesn't include parens, so the title group extends through `(YEAR)` before the separator kicks in. Same change applied to the hybrid airdate+S-E rule for consistency. Catches `Series Title (1955) - 1954-01-23 05 00 00 - Cottage for Sale.ts`.
+
+6. **Absolute-episode-then-airdate (Parser.cs:169)** (+1 row). New rule with required trailing `\[<lowercase>\]` bracketed tracker tag — the C# `[a-z]+` is case-insensitive under `RegexOptions.IgnoreCase`, the Go port preserves that via `(?i)`. Catches `Series On TitleClub E76 2024 08 08 1080p WEB H264-RnB96 [TJET]`.
+
+7. **Multi-E NEXT PreSub variant** (+1 row). New PreSub rule 1a (placed BEFORE the existing single-E rule 1) handles `<title>.E<NN>-E<NN>.<6digit>.<rest>-NEXT` shape. Without rule 1a, the existing rule 1 anchors on the second E only, mangling the title. Catches `Series.Title.E07-E08.180612.1080p-NEXT`.
+
+What stays xfail (4 rows after this slice):
+
+- `[Impatience] Series - 0x01 [720p][34073169].mkv` — anime [SubGroup] rule mis-routes; would need anime rule to reject when title contains S/Nx form.
+- `[RlsGrp] Series Title - S01E27 - 24-Hour` — same anime [SubGroup] mis-route + `[RlsGrp] ` prefix that single-S-E retains in title.
+- `Series Title? E11-E12 1080p HDTV AAC H.264-NEXT` — Korean NEXT space-separator variant; title cleanup would need to drop trailing `?`.
+- `kill-roy-was-here-e07-720p` — mini-series vs anime ambiguity (same input shape as the `_e<NN>_` anime row, different expected output; cannot disambiguate without fixture-source context).
+
+These four are out-of-scope for fixture-driven slicing — each needs either subtle rule precedence work or per-row context-aware logic. Acceptable to leave xfail; the bulk-spec dispatcher will catch any future regression.
 
 Lint clean; parser test suite green; full `-race -p 1` suite skipped (parser-package-internal changes only).
 
