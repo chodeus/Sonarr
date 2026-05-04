@@ -331,18 +331,16 @@ func miniSeriesRows() []specRow {
 		mini("The.Big.Series.Leader.Part.2.DSR.XviD-SYS", "The Big Series Leader", 2),
 		mini("Series and Show 2012 Part 1 REPACK 720p HDTV x264 2HD", "Series and Show 2012", 1),
 		mini("Series Show.2016.E04.Power.720p.WEB-DL.DD5.1.H.264-MARS", "Series Show 2016", 4),
-		// `kill-roy-was-here-e07-720p` is omitted from the spec corpus
-		// per option (a) of the 2.12.16 fix sketch. The C# fixture asserts
-		// season=1+episode=[7], but the same input shape (`<title>-e<NN>-
-		// <quality>`) ALSO matches the currently-passing absolute-episode
-		// row `Some_Anime_Show_e66_…` which asserts abs=[66]. The C#
-		// fixture itself encodes the disambiguation via separate test
-		// files (MiniSeriesEpisodeParserFixture vs
-		// AbsoluteEpisodeNumberParserFixture); the regex alone cannot
-		// tell them apart from input. Sonarr's actual runtime
-		// disambiguates via the Series.SeriesType context downstream of
-		// the parser. Removing this row from the spec corpus drops
-		// xfail to 0.
+		// `kill-roy-was-here-e07-720p` passes via option (b) of the
+		// 2.12.16 fix sketch: buildAnimeTitleAbsolute now populates
+		// BOTH AbsoluteEpisodeNumbers AND SeasonNumber=1 +
+		// EpisodeNumbers=[abs]. The mini fixture asserts the
+		// Season/Episodes shape; the parallel anime row in
+		// animeAbsoluteRows asserts the Abs shape against the same
+		// regex match — both pass against a single dual-shape parse.
+		// Disambiguation between the two interpretations is a
+		// downstream concern (Sonarr picks via Series.SeriesType).
+		mini("kill-roy-was-here-e07-720p", "kill-roy-was-here", 7),
 
 		// Korean F1RST/NEXT (passing via PreSubstitutionRegex rule 1):
 		mini("It's a Series Title.E56.190121.720p-NEXT.mp4", "It's a Series Title", 56),

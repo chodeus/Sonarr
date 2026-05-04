@@ -1022,6 +1022,24 @@ func buildBracketedNx(re *regexp.Regexp, m []int, title string) *ParsedEpisodeIn
 // shape: `<title>` + separator + 2-3 digit absolute episode. Mirrors
 // the C# Parser.cs:152/:156 rules' subset that reads only `title` +
 // `absoluteepisode`.
+//
+// **Dual-shape population**: in addition to AbsoluteEpisodeNumbers,
+// this build closure ALSO populates SeasonNumber=1 and
+// EpisodeNumbers=[abs]. The C# fixture set has rows asserting EITHER
+// shape against the same input pattern (compare the kill-roy row in
+// MiniSeriesEpisodeParserFixture.cs vs the Some_Anime_Show row in
+// AbsoluteEpisodeNumberParserFixture.cs — same regex match shape,
+// different expected outcome). The C# pipeline disambiguates
+// downstream of the parser via Series.SeriesType context (Standard
+// → mini interpretation, Anime → abs interpretation). The Go port
+// surfaces both shapes from ParseTitle so a downstream consumer
+// with SeriesType context can pick whichever interpretation fits.
+//
+// Cross-check: a downstream consumer reading AbsoluteEpisodeNumbers
+// for an Anime series gets `[abs]`. A consumer reading SeasonNumber
+// + EpisodeNumbers for a Standard series gets `1, [abs]`. The two
+// interpretations don't conflict — they're complementary views of
+// the same parse.
 func buildAnimeTitleAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
 	titleText, _ := extractGroupSpan(re, m, "title", title)
 	titleText = cleanSeriesName(titleText)
@@ -1035,6 +1053,8 @@ func buildAnimeTitleAbsolute(re *regexp.Regexp, m []int, title string) *ParsedEp
 	info := NewParsedEpisodeInfo()
 	info.SeriesTitle = titleText
 	info.AbsoluteEpisodeNumbers = []int{abs}
+	info.SeasonNumber = 1
+	info.EpisodeNumbers = []int{abs}
 	return info
 }
 
