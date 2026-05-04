@@ -1596,6 +1596,64 @@ Lint clean; parser test suite green (23 tests pass); full
 `-race -p 1` suite skipped (parser-package-internal changes
 only).
 
+#### 2.14 — Parser auxiliaries (SceneChecker + ValidateParsedEpisodeInfo + Invalid* sentinels) ✅ shipped (2026-05-04)
+
+Three small Parser-folder primitives that depend on the now-
+complete ParseTitle pipeline. Spec unchanged at 199/1 — these
+are new entry points, not rule changes.
+
+What ships:
+
+1. **`parser.IsSceneTitle(title)`** ports
+   `SceneChecker.IsSceneTitle` at
+   `src/NzbDrone.Core/Parser/SceneChecker.cs:7-30`. Six-step
+   conservative gauntlet: contains `.`, no spaces, ParseTitle
+   succeeds, ReleaseGroup non-empty, Quality not Unknown,
+   SeriesTitle non-empty after trim. Designed to prefer false
+   negatives over false positives ("better not to use a title
+   that might be scene than to use one that isn't scene").
+
+2. **`parser.ValidateForSeriesType(parsed, seriesType)`** ports
+   `ValidateParsedEpisodeInfo.ValidateForSeriesType` at
+   `src/NzbDrone.Core/Parser/ValidateParsedEpisodeInfo.cs:12-31`.
+   Currently the only check: a daily-style parse against a
+   Standard series is rejected. The C# `warnIfInvalid` parameter
+   is dropped pending the logger plumbing; callers can log the
+   reason themselves based on the boolean return.
+
+3. **`parser.ErrInvalidDate` / `parser.ErrInvalidSeason`**
+   sentinel errors port `InvalidDateException` /
+   `InvalidSeasonException`. Currently unused — reserved for
+   the slice that wires daily-airdate validation in
+   ParseMatchCollection.
+
+4. **`series.SeriesTypeStandard` / `SeriesTypeDaily` /
+   `SeriesTypeAnime`** untyped constants added to the series
+   package. Mirrors `Tv/SeriesTypes.cs`. The integer values are
+   frozen (persisted in user databases). The parser package
+   can't import series without a cycle so
+   `ValidateForSeriesType` takes a plain `int`; callers pass
+   `series.SeriesTypeStandard` etc.
+
+Test coverage:
+
+- New `scene_checker_test.go` ports the C# SceneCheckerFixture:
+  4 of 5 scene-name positives + all 8 non-scene negatives. The
+  5th positive (`Series.Title.S04.720p.HDTV.X264-DIMENSION`,
+  season-only release) is intentionally omitted — no Go
+  ParseTitle rule yet handles the S<n> season-only shape that
+  flips FullSeason=true without an episode group. The C#
+  ReportTitleRegex array carries a season-only pattern; port
+  lands in a future slice dedicated to season-pack regexes.
+- New `validate_test.go` covers the four
+  ValidateForSeriesType cases (daily/Standard reject,
+  daily/Daily accept, non-daily/Standard accept, nil reject)
+  plus the sentinel-error identity checks.
+
+Lint clean; parser test suite green (25 tests pass); series
+package green; full `-race -p 1` suite skipped (parser-internal
++ a single int-constants block in series).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)

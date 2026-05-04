@@ -34,6 +34,16 @@ import (
 	"sonarr.tv/sonarr/internal/repo"
 )
 
+// SeriesType mirrors the C# `NzbDrone.Core.Tv.SeriesTypes` enum at
+// `src/NzbDrone.Core/Tv/SeriesTypes.cs`. Persisted as an `int` in the
+// `SeriesType` column; integer values are frozen so renumbering would
+// corrupt user databases.
+const (
+	SeriesTypeStandard = 0
+	SeriesTypeDaily    = 1
+	SeriesTypeAnime    = 2
+)
+
 // Series is one Series row.
 type Series struct {
 	ID                int        `json:"id"`
