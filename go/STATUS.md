@@ -1693,6 +1693,91 @@ behaviour that's pending a port.
 Lint clean; parser test suite green; full `-race -p 1` suite
 skipped (parser-package-internal changes only).
 
+#### 2.16 — IndexerFlags + first CustomFormat specs (ReleaseTitle, ReleaseGroup) ✅ shipped (2026-05-04)
+
+First slice of the CustomFormat matching engine. Ports the
+spec-interface infrastructure plus the two simplest specs.
+
+What ships:
+
+1. **`parser.IndexerFlags`** ports the C# `[Flags] enum` at
+   `src/NzbDrone.Core/Parser/Model/IndexerFlags.cs`. 9
+   bit-values frozen by user-DB persistence:
+   `Freeleech`/`Halfleech`/`DoubleUpload`/`Internal`/`Scene`/
+   `Freeleech75`/`Freeleech25`/`Nuked`/`Subtitles`. Plus
+   `(f IndexerFlags) HasFlag(flag IndexerFlags) bool` mirroring
+   the C# `Enum.HasFlag` semantic for `[Flags]` enums.
+
+2. **`customformats.CustomFormatInput`** ports
+   `CustomFormatInput.cs:8-46`. Bundles every field a
+   Specification.IsSatisfiedBy needs: `*parser.ParsedEpisodeInfo`,
+   `*series.Series`, `int64 Size`, `parser.IndexerFlags`,
+   `[]language.Language`, `string Filename`, `parser.ReleaseType`.
+
+3. **`customformats.Specification` interface** ports
+   `ICustomFormatSpecification.cs:5-19`:
+   `Order() int`, `ImplementationName() string`,
+   `IsSatisfiedBy(CustomFormatInput) bool`. Validation /
+   FieldDefinition / Clone are deferred — neither has a use site
+   yet in the Go port (validation lands when REST endpoints
+   ship; Clone is C#-MemberwiseClone idiom for in-flight copies
+   that the Go port can do via struct literals).
+
+4. **`customformats.BaseSpecification`** mirrors
+   `CustomFormatSpecificationBase.cs:5-37`. Embed by-value into
+   typed specs to inherit the `Name`/`Negate`/`Required` fields
+   plus an `applyNegate(match bool) bool` helper. C# does
+   Negate-application via abstract-base virtual dispatch; the
+   Go port factors it out because Go has no inherited
+   virtual-method dispatch.
+
+5. **`customformats.RegexSpec`** mirrors
+   `RegexSpecificationBase.cs:17-53`. Holds raw pattern + a
+   compiled `*regexp.Regexp`. `SetPattern(pattern) error`
+   compiles with `(?i)` (case-insensitive) — mirrors
+   `RegexOptions.Compiled | RegexOptions.IgnoreCase`. Empty
+   pattern clears the compiled regex (matches nothing —
+   mirrors the C# `MatchString` early-return when
+   `_regex == null`).
+
+6. **`customformats.ReleaseTitleSpec`** ports
+   `Specifications/ReleaseTitleSpecification.cs`. Order=1.
+   `IsSatisfiedBy` matches the regex against
+   `EpisodeInfo.ReleaseTitle` OR `Filename` — either-side match
+   counts. Mirrors the C# short-circuit
+   `MatchString(input.EpisodeInfo?.ReleaseTitle) || MatchString(input.Filename)`.
+
+7. **`customformats.ReleaseGroupSpec`** ports
+   `Specifications/ReleaseGroupSpecification.cs`. Order=9.
+   `IsSatisfiedBy` matches against `EpisodeInfo.ReleaseGroup`.
+
+What's deferred:
+
+- **Resolution / Source / Language / ReleaseType / Size /
+  IndexerFlag specs** — each a small port; defer only because
+  each pulls a separate dependency (Resolution from quality,
+  Language from language, etc.).
+- **Persisted-spec deserialisation** — turning the
+  `Specifications` text column into a typed `[]Specification`
+  slice via the JSON discriminator catalogue
+  (`internal/provider.FamilyCustomFormatSpec`). Lands when
+  `CustomFormatService` is ported.
+
+Test coverage:
+
+- 14 cases in `spec_test.go`: ReleaseTitleSpec match-on-title,
+  match-on-filename, no-match, Negate inverts both directions,
+  nil EpisodeInfo with Filename-only input; ReleaseGroupSpec
+  match / no-match / nil EpisodeInfo; RegexSpec invalid-
+  pattern, empty-pattern, case-insensitive; Order +
+  ImplementationName for both specs; interface conformance
+  compile-time guard.
+
+Lint clean; new package tests green; parser package tests
+green (still 199/0 spec); full `-race -p 1` suite skipped
+(touches only the new package + a single int-enum block in
+parser).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
