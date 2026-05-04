@@ -2032,6 +2032,95 @@ struct-conversion + unused-var cleanup); package tests green
 (36 tests); full `-race -p 1` suite skipped (touches only the
 new package).
 
+#### 2.20 — AutoTagging matching engine (11 specs + Calculate + Marshal) ✅ shipped (2026-05-04)
+
+Structurally parallel to the CustomFormat engine: 11 typed
+specs that operate on a Series, a Calculate algorithm, and
+JSON marshal/unmarshal for the persisted `Specifications`
+column.
+
+What ships:
+
+1. **`series.SeriesStatus*`** constants — ports
+   `Tv/SeriesStatusType.cs`. 4 frozen integer values:
+   Deleted=-1, Continuing=0, Ended=1, Upcoming=2.
+
+2. **`autotagging.Input`** — bundle of context every
+   Specification.IsSatisfiedBy needs. Diverges from the C#
+   `IsSatisfiedBy(Series)` signature so the Go port can carry
+   `RootFolderPath` (a derived field the C# AutoTaggingService
+   pre-populates onto Series.RootFolderPath getter) without
+   polluting the `series.Series` storage struct.
+
+3. **All 11 specs** in `autotagging/spec.go`:
+   - `MonitoredSpec` (Order=1) — `Series.Monitored`.
+   - `QualityProfileSpec` (Order=1) — exact match against
+     `Series.QualityProfileID` (nil → no match).
+   - `SeriesTypeSpec` (Order=2) — exact match against
+     `Series.SeriesType`.
+   - `StatusSpec` (Order=1) — exact match against `Series.Status`.
+     C# field is `Status` (not `Value`); preserved verbatim
+     for round-trip JSON parity with persisted rows.
+   - `TagSpec` (Order=1) — `Series.Tags.Contains(Value)`.
+   - `YearSpec` (Order=1) — inclusive range against
+     `Series.Year` (nil → no match).
+   - `GenreSpec` (Order=1) — case-insensitive any-match
+     against the parsed `Series.Genres` JSON array. Genres
+     parsed each call (typed wrapper deferred to a future
+     series-services slice).
+   - `NetworkSpec` (Order=1) — case-insensitive any-match
+     against `Series.Network`.
+   - `OriginalCountrySpec` (Order=1) — case-insensitive
+     any-match against `Series.OriginalCountry`.
+   - `OriginalLanguageSpec` (Order=1) — exact int match
+     against `Series.OriginalLanguage`.
+   - `RootFolderSpec` (Order=1) — path-equals against
+     `Input.RootFolderPath` (NOT a Series field). Path-equals
+     is case-insensitive equality after stripping trailing
+     `/` or `\`; mirrors C# `PathExtensions.PathEquals`.
+
+4. **`Calculate(input, tags) []*Tag`** — same per-type-group
+   matching algorithm as CustomFormats. Walks every AutoTag,
+   groups its specs by Go type, computes each group's
+   DidMatch (no Required failed AND at least one satisfied),
+   keeps the AutoTag if every group matches. Returns survivors
+   sorted by Name.
+
+5. **Marshal / Unmarshal** in `autotagging/marshal.go`. Same
+   `[{"type": "...", "body": {...}}]` envelope as
+   CustomFormat. 11-way dispatch for both directions.
+
+6. **`autotagging.Tag`** struct — in-memory typed sibling of
+   the persisted `AutoTag` (storage form lives in
+   autotagging.go). Carries Name + RemoveTagsAutomatically +
+   persisted Tags + a typed `[]Specification` slice.
+
+Test coverage:
+
+- `spec_test.go` (15 cases): per-spec match/no-match plus
+  edge cases (nil Series, nil Year/QualityProfileID,
+  case-insensitive matches, empty Genres JSON, invalid
+  Genres JSON), Negate inversion, interface conformance for
+  all 11 specs, end-to-end Calculate (both-match / one-fails
+  / type-grouping / required-failed / sorts-by-name).
+- `marshal_test.go` (4 cases): all-11-types unmarshal with
+  field verification, empty-input nil-return, unknown-
+  discriminator error, 4-spec round-trip.
+
+What's deferred:
+
+- `RemoveTagsAutomatically` wiring — needs the AutoTaggingService
+  layer that watches series-CRUD events and applies tag
+  changes. Lands when the service-bus + series CRUD events
+  are wired together.
+- `AutoTaggingChanges` model + `AutoTagsUpdatedEvent` — both
+  lifecycle events deferred alongside the service.
+
+Lint clean (after adding 33 method-doc comments per revive
+exported-method rule); package tests green; full `-race -p 1`
+suite skipped (touches only autotagging + a single int-const
+block in series).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)

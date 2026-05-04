@@ -44,6 +44,16 @@ const (
 	SeriesTypeAnime    = 2
 )
 
+// SeriesStatus mirrors the C# `NzbDrone.Core.Tv.SeriesStatusType`
+// enum at `src/NzbDrone.Core/Tv/SeriesStatusType.cs`. Persisted as
+// `int` in the `Status` column; integer values are frozen.
+const (
+	SeriesStatusDeleted    = -1
+	SeriesStatusContinuing = 0
+	SeriesStatusEnded      = 1
+	SeriesStatusUpcoming   = 2
+)
+
 // Series is one Series row.
 type Series struct {
 	ID                int        `json:"id"`
