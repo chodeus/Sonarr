@@ -8,7 +8,15 @@ import (
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/series"
 )
+
+// Compile-time bridge: `*episodes.Service` satisfies
+// `series.EpisodeMonitorCascade`. Pins the bridge point used by the
+// SeriesService UpdateSeries season-monitored cascade in 2.64 — the
+// host wires `episodesSvc` into `seriesSvc.SetEpisodeMonitorCascade`
+// without source coupling.
+var _ series.EpisodeMonitorCascade = (*episodes.Service)(nil)
 
 func newServiceForTest(t *testing.T, db *datastore.DB) (*episodes.Service, *episodes.Repo) {
 	t.Helper()

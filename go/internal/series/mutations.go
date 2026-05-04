@@ -2,11 +2,64 @@ package series
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"sonarr.tv/sonarr/internal/messaging"
 )
+
+// EpisodeMonitorCascade is the slice of `IEpisodeService` the C#
+// SeriesService reaches for at `SeriesService.cs:217` —
+// `_episodeService.SetEpisodeMonitoredBySeason(series.Id,
+// season.SeasonNumber, season.Monitored)`.
+//
+// Defining the dependency here, where it's CONSUMED, lets episodes
+// import series (which it already does for SeriesEditedEvent / etc.)
+// while still being callable from series.UpdateSeries — the host wires
+// `*episodes.Service` (which has `SetEpisodeMonitoredBySeason`) into
+// the series service via [Service.SetEpisodeMonitorCascade].
+//
+// Returning the row count from the cascade isn't strictly necessary
+// (the C# version doesn't propagate it), but it lets the caller
+// surface "actually changed" vs "no-op" when telemetry needs it.
+type EpisodeMonitorCascade interface {
+	SetEpisodeMonitoredBySeason(ctx context.Context, seriesID, seasonNumber int, monitored bool) (int64, error)
+}
+
+// SetEpisodeMonitorCascade attaches the cascade used by
+// [Service.UpdateSeries]. When unset, UpdateSeries skips the
+// episode-monitored cascade entirely (matches the C# DI graph where
+// the cascade is mandatory; the Go port treats it as optional so
+// tests and migrations don't need a stub).
+func (s *Service) SetEpisodeMonitorCascade(c EpisodeMonitorCascade) {
+	s.episodes = c
+}
+
+// seasonMonitor is the minimal Season-shape used to compare
+// monitored-state between stored and new series rows. Mirrors the
+// `seasonNumber` + `monitored` fields of `NzbDrone.Core.Tv.Season`;
+// other fields (Images, etc.) are ignored — any field not in this
+// struct passes through the JSON round-trip via `json.RawMessage` in
+// the caller (we deserialize only what we need to compare).
+type seasonMonitor struct {
+	SeasonNumber int  `json:"seasonNumber"`
+	Monitored    bool `json:"monitored"`
+}
+
+// decodeSeasons unmarshals a Series.Seasons JSON blob into the
+// monitor-comparison shape. Empty / whitespace-only input is treated
+// as zero seasons (matches C# `null Seasons` collection iteration).
+func decodeSeasons(blob string) ([]seasonMonitor, error) {
+	if blob == "" {
+		return nil, nil
+	}
+	var out []seasonMonitor
+	if err := json.Unmarshal([]byte(blob), &out); err != nil {
+		return nil, fmt.Errorf("series: decode Seasons JSON: %w", err)
+	}
+	return out, nil
+}
 
 // AddSeries ports `SeriesService.AddSeries(Series newSeries)` at
 // `SeriesService.cs:73-79`. Inserts the row, re-loads the persisted
@@ -133,28 +186,33 @@ type UpdateOptions struct {
 }
 
 // UpdateSeries ports `SeriesService.UpdateSeries(Series, bool, bool)` at
-// `SeriesService.cs:203-234` — minus the still-deferred side effects:
+// `SeriesService.cs:203-234`.
 //
-//   - Episode-monitored cascade (the season loop calling
-//     `_episodeService.SetEpisodeMonitoredBySeason`) is NOT applied
-//     in this slice; lands when EpisodeService ports. The
-//     `EpisodesChanged` flag in the published event is currently
-//     always false.
-//   - UpdateTags (the autotagging delta-application) is NOT applied
-//     either; lands in the next slice that wires the autotagging
-//     and rootfolders providers.
+// Order of operations (line-aligned with C#):
 //
-// What the slice DOES do, faithfully:
+//  1. Load stored series (`:205`).
+//  2. If cascade enabled AND an [EpisodeMonitorCascade] is wired:
+//     for each Season in `ns.Seasons`, find the matching stored
+//     Season and call `episodes.SetEpisodeMonitoredBySeason` when
+//     the Monitored flag changed. Track whether any cascade hit
+//     applied actual row changes — surfaces via the published
+//     `SeriesEditedEvent.EpisodesChanged` flag (`:209-221`).
+//  3. Restore `AddOptions` from stored (`:224`).
+//  4. Apply auto-tagging delta in place (`:225`).
+//  5. Persist via repo (`:227`).
+//  6. If publishing enabled, fire SeriesEditedEvent (`:229-232`).
 //
-//  1. Re-fetch the stored row (so the caller can't mutate AddOptions).
-//  2. Force-restore `AddOptions` from the stored row (mirrors `:224`).
-//  3. Update via the repo.
-//  4. If `!SkipPublishUpdatedEvent`, publish [SeriesEditedEvent]
-//     with the (new, old, episodesChanged: false) payload.
+// Cascade tolerances:
 //
-// Returns the updated row (re-loaded from the DB, not the input
-// pointer — matches the C# `_seriesRepository.Update(series)` return
-// shape).
+//   - When [SetEpisodeMonitorCascade] is NOT wired, the season loop
+//     is skipped silently; EpisodesChanged stays false. Tests and
+//     migrations can omit the cascade.
+//   - Empty/missing Seasons JSON in either side is treated as zero
+//     seasons (no error).
+//   - JSON-decode failures on the Seasons column are returned —
+//     fail-closed rather than silently skip the cascade.
+//
+// Returns the updated row (re-loaded from the DB).
 func (s *Service) UpdateSeries(ctx context.Context, ns *Series, opts UpdateOptions) (*Series, error) {
 	if ns == nil {
 		return nil, errors.New("series: cannot update nil series")
@@ -163,6 +221,39 @@ func (s *Service) UpdateSeries(ctx context.Context, ns *Series, opts UpdateOptio
 	if err != nil {
 		return nil, fmt.Errorf("series: UpdateSeries: load stored: %w", err)
 	}
+
+	episodesChanged := false
+	if !opts.SkipEpisodeMonitoredCascade && s.episodes != nil {
+		newSeasons, err := decodeSeasons(ns.Seasons)
+		if err != nil {
+			return nil, fmt.Errorf("series: UpdateSeries: new seasons: %w", err)
+		}
+		storedSeasons, err := decodeSeasons(stored.Seasons)
+		if err != nil {
+			return nil, fmt.Errorf("series: UpdateSeries: stored seasons: %w", err)
+		}
+		// Index stored seasons by SeasonNumber for the C# `SingleOrDefault` lookup.
+		storedByNum := make(map[int]seasonMonitor, len(storedSeasons))
+		for _, sn := range storedSeasons {
+			storedByNum[sn.SeasonNumber] = sn
+		}
+		for _, sn := range newSeasons {
+			storedSn, ok := storedByNum[sn.SeasonNumber]
+			if !ok || storedSn.Monitored == sn.Monitored {
+				continue
+			}
+			if _, err := s.episodes.SetEpisodeMonitoredBySeason(ctx, ns.ID, sn.SeasonNumber, sn.Monitored); err != nil {
+				return nil, fmt.Errorf("series: UpdateSeries: cascade season=%d: %w", sn.SeasonNumber, err)
+			}
+			// The C# version unconditionally sets `episodeMonitoredChanged = true`
+			// once any season's flag toggles, regardless of whether the
+			// cascade actually flipped any episode rows. Match that — the
+			// EpisodesChanged signal is "the user toggled a season",
+			// not "the cascade changed at least one row".
+			episodesChanged = true
+		}
+	}
+
 	// AddOptions is never updated through this path — preserve the
 	// stored value verbatim. Mirrors C# `:224`
 	// (`series.AddOptions = storedSeries.AddOptions;`).
@@ -186,7 +277,7 @@ func (s *Service) UpdateSeries(ctx context.Context, ns *Series, opts UpdateOptio
 		_ = messaging.Publish(ctx, s.bus, SeriesEditedEvent{
 			Series:          updated,
 			OldSeries:       stored,
-			EpisodesChanged: false,
+			EpisodesChanged: episodesChanged,
 		})
 	}
 	return updated, nil

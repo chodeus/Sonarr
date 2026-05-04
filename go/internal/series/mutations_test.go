@@ -168,7 +168,7 @@ func TestService_UpdateSeries_PublishesEditedEvent(t *testing.T) {
 		t.Errorf("event diff: new=%q old=%q", ev.Series.Title, ev.OldSeries.Title)
 	}
 	if ev.EpisodesChanged {
-		t.Errorf("EpisodesChanged should be false this slice (deferred)")
+		t.Errorf("EpisodesChanged should be false: no cascade wired and Seasons unchanged")
 	}
 }
 
@@ -561,5 +561,153 @@ func TestService_AddMany_EmptyListNoOp(t *testing.T) {
 	}
 	if fired.Load() != 0 {
 		t.Errorf("empty AddMany should not publish; got %d events", fired.Load())
+	}
+}
+
+// fakeEpisodeCascade records Set calls — used by the cascade tests
+// without dragging the episodes package into the series test deps.
+type fakeEpisodeCascade struct {
+	calls   []cascadeCall
+	rowsRet int64
+	errRet  error
+}
+
+type cascadeCall struct {
+	seriesID  int
+	season    int
+	monitored bool
+}
+
+func (f *fakeEpisodeCascade) SetEpisodeMonitoredBySeason(_ context.Context, seriesID, seasonNumber int, monitored bool) (int64, error) {
+	f.calls = append(f.calls, cascadeCall{seriesID, seasonNumber, monitored})
+	if f.errRet != nil {
+		return 0, f.errRet
+	}
+	return f.rowsRet, nil
+}
+
+func TestService_UpdateSeries_CascadesSeasonMonitor(t *testing.T) {
+	t.Parallel()
+	svc, bus := newServiceWithBus(t)
+	row := sampleSeries(1, "X")
+	row.Seasons = `[{"seasonNumber":1,"monitored":true},{"seasonNumber":2,"monitored":true}]`
+	added, err := svc.AddSeries(t.Context(), row)
+	if err != nil {
+		t.Fatalf("AddSeries: %v", err)
+	}
+
+	cascade := &fakeEpisodeCascade{rowsRet: 5}
+	svc.SetEpisodeMonitorCascade(cascade)
+
+	// Subscribe to capture EpisodesChanged.
+	var lastEv atomic.Pointer[series.SeriesEditedEvent]
+	messaging.Subscribe(bus, "test.cascade.edited",
+		func(_ context.Context, ev series.SeriesEditedEvent) error {
+			cp := ev
+			lastEv.Store(&cp)
+			return nil
+		})
+
+	// Toggle season 2 off, leave season 1 on.
+	added.Seasons = `[{"seasonNumber":1,"monitored":true},{"seasonNumber":2,"monitored":false}]`
+	if _, err := svc.UpdateSeries(t.Context(), added, series.UpdateOptions{}); err != nil {
+		t.Fatalf("UpdateSeries: %v", err)
+	}
+
+	if len(cascade.calls) != 1 {
+		t.Fatalf("cascade calls: got %d, want 1: %+v", len(cascade.calls), cascade.calls)
+	}
+	want := cascadeCall{seriesID: added.ID, season: 2, monitored: false}
+	if cascade.calls[0] != want {
+		t.Errorf("cascade call: got %+v, want %+v", cascade.calls[0], want)
+	}
+
+	ev := lastEv.Load()
+	if ev == nil {
+		t.Fatalf("nil event")
+	}
+	if !ev.EpisodesChanged {
+		t.Errorf("EpisodesChanged: got false, want true")
+	}
+}
+
+func TestService_UpdateSeries_NoCascadeWhenSkipFlag(t *testing.T) {
+	t.Parallel()
+	svc, _ := newServiceWithBus(t)
+	row := sampleSeries(1, "X")
+	row.Seasons = `[{"seasonNumber":1,"monitored":true}]`
+	added, err := svc.AddSeries(t.Context(), row)
+	if err != nil {
+		t.Fatalf("AddSeries: %v", err)
+	}
+	cascade := &fakeEpisodeCascade{}
+	svc.SetEpisodeMonitorCascade(cascade)
+
+	added.Seasons = `[{"seasonNumber":1,"monitored":false}]`
+	if _, err := svc.UpdateSeries(t.Context(), added, series.UpdateOptions{SkipEpisodeMonitoredCascade: true}); err != nil {
+		t.Fatalf("UpdateSeries: %v", err)
+	}
+	if len(cascade.calls) != 0 {
+		t.Errorf("SkipEpisodeMonitoredCascade ignored; calls=%+v", cascade.calls)
+	}
+}
+
+func TestService_UpdateSeries_NoCascadeWhenSeasonMatches(t *testing.T) {
+	t.Parallel()
+	svc, _ := newServiceWithBus(t)
+	row := sampleSeries(1, "X")
+	row.Seasons = `[{"seasonNumber":1,"monitored":true},{"seasonNumber":2,"monitored":false}]`
+	added, err := svc.AddSeries(t.Context(), row)
+	if err != nil {
+		t.Fatalf("AddSeries: %v", err)
+	}
+	cascade := &fakeEpisodeCascade{}
+	svc.SetEpisodeMonitorCascade(cascade)
+
+	// Persist the same Seasons JSON — no flag changes anywhere.
+	if _, err := svc.UpdateSeries(t.Context(), added, series.UpdateOptions{}); err != nil {
+		t.Fatalf("UpdateSeries: %v", err)
+	}
+	if len(cascade.calls) != 0 {
+		t.Errorf("unexpected cascade calls: %+v", cascade.calls)
+	}
+}
+
+func TestService_UpdateSeries_NoCascadeWhenNotWired(t *testing.T) {
+	t.Parallel()
+	svc, _ := newServiceWithBus(t)
+	row := sampleSeries(1, "X")
+	row.Seasons = `[{"seasonNumber":1,"monitored":true}]`
+	added, err := svc.AddSeries(t.Context(), row)
+	if err != nil {
+		t.Fatalf("AddSeries: %v", err)
+	}
+	added.Seasons = `[{"seasonNumber":1,"monitored":false}]`
+	// Cascade unset; UpdateSeries should silently succeed.
+	if _, err := svc.UpdateSeries(t.Context(), added, series.UpdateOptions{}); err != nil {
+		t.Fatalf("UpdateSeries: %v", err)
+	}
+}
+
+func TestService_UpdateSeries_CascadeNewSeasonIgnored(t *testing.T) {
+	t.Parallel()
+	svc, _ := newServiceWithBus(t)
+	row := sampleSeries(1, "X")
+	row.Seasons = `[{"seasonNumber":1,"monitored":true}]`
+	added, err := svc.AddSeries(t.Context(), row)
+	if err != nil {
+		t.Fatalf("AddSeries: %v", err)
+	}
+	cascade := &fakeEpisodeCascade{}
+	svc.SetEpisodeMonitorCascade(cascade)
+
+	// Caller adds a season-2 entry with no stored counterpart — C# uses
+	// SingleOrDefault and falls through; the Go port should match.
+	added.Seasons = `[{"seasonNumber":1,"monitored":true},{"seasonNumber":2,"monitored":false}]`
+	if _, err := svc.UpdateSeries(t.Context(), added, series.UpdateOptions{}); err != nil {
+		t.Fatalf("UpdateSeries: %v", err)
+	}
+	if len(cascade.calls) != 0 {
+		t.Errorf("new-season cascade should be skipped: %+v", cascade.calls)
 	}
 }
