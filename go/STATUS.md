@@ -1778,6 +1778,82 @@ green (still 199/0 spec); full `-race -p 1` suite skipped
 (touches only the new package + a single int-enum block in
 parser).
 
+#### 2.17 — Remaining 6 CustomFormat specs (Resolution / Source / ReleaseType / Size / IndexerFlag / Language) ✅ shipped (2026-05-04)
+
+Completes the CustomFormat matching engine's spec set. All 8
+spec types from `src/NzbDrone.Core/CustomFormats/Specifications/`
+are now ported.
+
+What ships, all in `internal/customformats/spec_*.go`:
+
+1. **`ResolutionSpec`** (Order=6) — exact-match against
+   `EpisodeInfo.Quality.Quality.Resolution`. Defaults to
+   ResolutionUnknown when EpisodeInfo is nil (mirrors C# null-
+   coalescing).
+
+2. **`SourceSpec`** (Order=5) — exact-match against
+   `EpisodeInfo.Quality.Quality.Source` (cast to QualitySource).
+   Defaults to SourceUnknown when EpisodeInfo is nil.
+
+3. **`ReleaseTypeSpec`** (Order=10) — exact-match against
+   `input.ReleaseType`. Mirrors C#'s post-rename
+   `ReleaseTypeSpecification` (formerly `SeasonPackSpecification`,
+   renamed in migration 205).
+
+4. **`SizeSpec`** (Order=8) — `Size > Min*GB && Size <= Max*GB`.
+   Note the asymmetric `>` vs `<=` bounds preserved verbatim
+   from C#: a size of exactly Min GB does NOT match; a size of
+   exactly Max GB DOES match. `bytesPerGB = 1024^3` (binary GB
+   per Sonarr convention, NOT decimal SI gigabytes).
+
+5. **`IndexerFlagSpec`** (Order=4) — bit-test via
+   `parser.IndexerFlags.HasFlag` (mirrors C# `Enum.HasFlag`).
+
+6. **`LanguageSpec`** (Order=3) — the most nuanced. Two
+   configurable axes plus an Original-language fallback:
+   - `ExceptLanguage` flips the comparison from "contains"
+     to "contains anything OTHER than".
+   - When `Value == Language.Original.Id` AND
+     `input.Series != nil` AND `Series.OriginalLanguage` isn't
+     Unknown, the comparison swaps to the series's original
+     language.
+   - LanguageSpec OVERRIDES the BaseSpecification.applyNegate
+     flow because the C# Negate path has subtly different
+     nil-fallback semantics. C# quirk preserved verbatim:
+     `nil Languages` always returns false, even with Negate=true.
+
+Test coverage:
+
+- 23 cases in `spec_remaining_test.go`:
+  - Resolution: match / no-match / nil-EpisodeInfo defaults to
+    Unknown / Order / ImplementationName.
+  - Source: match / no-match / Order.
+  - ReleaseType: match / no-match / Order.
+  - Size: 5-row table covering below-min / at-min (rejected) /
+    in-range / at-max (accepted) / above-max.
+  - IndexerFlag: bit-set match / bit-not-set / empty-flags-no-match.
+  - Language: contains match / not-contains no-match / nil-
+    Languages always false (with and without Negate) /
+    ExceptLanguage match-and-no-match / Negate flips / Original-
+    language fallback fires when Series.OriginalLanguage is set /
+    Original-language fallback skipped when Series.OriginalLanguage
+    is Unknown.
+- Compile-time interface conformance guard for all 6 new specs.
+
+What's deferred (full CustomFormat engine):
+
+- **`CustomFormatCalculationService`** ports
+  `src/NzbDrone.Core/CustomFormats/CustomFormatCalculationService.cs`
+  (213 lines). The orchestrator that runs every active CustomFormat
+  against an input + accumulates matches. Lands when ParsingService
+  arrives.
+- **Persisted-spec deserialisation** — turning the
+  `CustomFormat.Specifications` text column into a typed
+  `[]Specification` slice via the JSON discriminator catalogue.
+
+Lint clean; package tests green; full `-race -p 1` suite skipped
+(touches only the new package).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
