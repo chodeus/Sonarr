@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.49 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (full minus Delete), and Series (read-only + AddSeries/AddMany with SeriesAddedEvent/SeriesImportedEvent — UpdateSeries/UpdateTags/DeleteSeries deferred to 2.50-2.52); all 5 SeriesService event structs (SeriesAdded/Imported/Edited/BulkEdited/Deleted) shipped up-front; pure helpers for RootFolder/DelayProfile/series.NormalizeTitle/ShouldRefresh; OsPath value type; remaining Phase 2 areas: Organizer/FileNameBuilder, SeriesService mutation finishes (UpdateSeries/UpdateTags/DeleteSeries), EpisodeService, QualityProfileService.Delete).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.50 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (full minus Delete), and Series (read-only + AddSeries/AddMany + UpdateSeries/RemoveAddOptions/DeleteSeries with SeriesEdited/Deleted events — UpdateTags + episode-monitored cascade + bulk Update with IBuildSeriesPaths still deferred); all 5 SeriesService event structs shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, SeriesService.UpdateTags + bulk UpdateSeries, EpisodeService, QualityProfileService.Delete).
 
 ## Where to resume
 
@@ -2645,6 +2645,59 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.50 — SeriesService UpdateSeries + RemoveAddOptions + DeleteSeries ✅ shipped (2026-05-04)
+
+Closes the SeriesService mutation surface for Phase 2 (modulo
+UpdateTags + bulk UpdateMany, which need autotagging/IBuildSeriesPaths
+plumbing — see deferments below). Adds:
+
+- `Service.UpdateSeries(ctx, *Series, UpdateOptions) (*Series, error)`
+  — ports `SeriesService.cs:203-234` minus the still-deferred side
+  effects. Loads stored row → preserves `AddOptions` from stored
+  (mirrors `:224`) → persists → re-fetches → publishes
+  [SeriesEditedEvent] (unless suppressed).
+- `Service.RemoveAddOptions(ctx, seriesID)` — ports
+  `:270-273`. The C# version uses `_seriesRepository.SetFields(...)`
+  to update only the `AddOptions` column; the Go port approximates
+  with a Get + targeted modify + Update (no SetFields helper on
+  the generic repo yet).
+- `Service.DeleteSeries(ctx, seriesIDs, deleteFiles, addExclusion)`
+  — ports `:163-168`. Loads each row before deleting (so the event
+  carries the deleted Series), per-id Delete loop, single
+  [SeriesDeletedEvent] with the user flags.
+
+`UpdateOptions` struct exposes the C# `updateEpisodesToMatchSeason`
++ `publishUpdatedEvent` flags as `SkipEpisodeMonitoredCascade` +
+`SkipPublishUpdatedEvent` (zero value = C# defaults).
+
+Deferred from this slice (each its own follow-up):
+
+- **Episode-monitored cascade** in UpdateSeries — the season-loop
+  at `:209-221` calling `_episodeService.SetEpisodeMonitoredBySeason`.
+  Lands when EpisodeService ports. Currently the published
+  `SeriesEditedEvent.EpisodesChanged` is always `false`.
+- **UpdateTags integration** in UpdateSeries — the
+  `_autoTaggingService.GetTagChanges(series)` delta-application at
+  `:225` + `:275-311`. Lands when an autotagging.Service +
+  rootfolders.Service provider pair are wired into series.Service.
+- **Bulk UpdateSeries(list, useExistingRelativeFolder)** —
+  `:236-263`. Uses `IBuildSeriesPaths.BuildPath`; lands with the
+  path-builder port.
+
+7 new tests:
+- `UpdateSeries_PublishesEditedEvent` — diff payload (new+old
+  Series both populated, EpisodesChanged false this slice).
+- `UpdateSeries_SkipPublish` — flag suppresses event.
+- `UpdateSeries_PreservesAddOptions` — caller-supplied AddOptions
+  ignored; stored value preserved.
+- `UpdateSeries_RejectsNil`.
+- `RemoveAddOptions` — round-trip clears AddOptions.
+- `DeleteSeries_PublishesEvent` — 3-id delete (one missing) → 2
+  rows in event payload, flags carried.
+- `DeleteSeries_EmptyListNoOp` — nil list → no event.
+
+Tests: SQLite green under `-race`; golangci-lint clean across `./...`.
 
 #### 2.49 — SeriesService AddSeries / AddMany ✅ shipped (2026-05-04)
 
