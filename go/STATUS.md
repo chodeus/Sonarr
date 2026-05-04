@@ -1044,6 +1044,108 @@ These four are out-of-scope for fixture-driven slicing — each needs either sub
 
 Lint clean; parser test suite green; full `-race -p 1` suite skipped (parser-package-internal changes only).
 
+#### 2.13.0 — SimplifyTitle pipeline integration ✅ shipped (2026-05-04)
+
+First slice past Parser.ParseTitle's per-rule layer. Wires the
+title-cleanup passes that run BEFORE the ReportTitleRegex rule walk
+into ParseTitle in C# call order. Mirrors `Parser.ParseTitle` lines
+681-734 verbatim.
+
+**Spec delta**: pass=196 xfail=4 regression=0 newly-passing=0 (no
+movement — none of the four xfails depend on the cleanups, but the
+foundation is now in place for downstream slices to build on).
+
+What ships in `internal/parser/simplify_title.go`:
+
+1. **`reversedTitleRe`** — ports `Parser.ReversedTitleRegex` at
+   `Parser.cs:513`. Detects releases whose extension-less portion
+   has been character-reversed via the distinctive `p027` /
+   `p0801` / `<NN>E-?<NN>S` token. RE2-clean.
+
+2. **`simpleTitleRe`** — ports `Parser.SimpleTitleRegex` at
+   `Parser.cs:521-523`. Strips resolution / codec / DD5.1 /
+   dimension / bit-depth tokens. Two RE2 reformulations vs the C#
+   literal:
+   - `(?<![a-f0-9])` negative lookbehind on the bit-depth arm
+     (rejects matches preceded by a hex digit, e.g. `DEADBEEF8bit`)
+     applied as a post-match filter against `s[m[0]-1]`.
+   - `b(?![a-z0-9])` negative lookahead inside the bit-depth arm
+     (rejects standalone `b` followed by alphanumeric) applied as a
+     post-match filter against `s[bdEnd]`.
+   The bit-depth alternative is wrapped in a named `bd` capture
+   group so the filter can detect when that branch fired vs the
+   resolution / codec / dimension arms (which have no lookarounds).
+   The C# arm `(b(?![a-z0-9])|bit)` is re-ordered to `(bit|b)` in
+   the Go port — without this, `10 bit` would match as `10 b` and
+   the post-match lookahead-equivalent filter would reject the
+   whole match rather than falling back to `bit`. With `bit|b`, the
+   regex engine prefers the longer arm directly.
+
+3. **`cleanQualityBracketsRe`** — ports
+   `Parser.CleanQualityBracketsRegex` at `Parser.cs:530-531`.
+   Matches a trailing `[a-z0-9 ._-]+` bracket; the strip is gated
+   by `quality.ParseQualityName` so only brackets whose content
+   parses as a recognised quality (e.g. `[HDTV-720p]`) get
+   removed. `[DarkData]` and `[34073169]`-style hash brackets are
+   preserved. RE2-clean.
+
+4. **`fancyBracketReplacer`** — `strings.NewReplacer` mapping
+   CJK-fullwidth `【` / `】` to ASCII `[` / `]`. Mirrors
+   `Parser.cs:693`'s two `Replace` calls.
+
+5. **`applySimplifyTitle(title) string`** — the integrated
+   pipeline. C# call order:
+   1. `applyReversedTitle` (token-triggered char-reverse of the
+      extension-less prefix).
+   2. `RemoveFileExtension`.
+   3. `applyFancyBrackets`.
+   4. `applyPreSubstitution` (existing, from 2.11c).
+   5. `applySimpleTitle`.
+   6. `ApplyWebsitePrefix` / `ApplyWebsitePostfix` /
+      `ApplyCleanTorrentSuffix` (existing, from 2.11a).
+   7. `applyCleanQualityBrackets`.
+   8. `applySixDigitAirDate` (existing, from 2.12.0).
+
+ParseTitle's body collapses to four lines: validate, simplify, walk
+rules, return first non-nil result. The pre-strip-extension and the
+two-stage PreSub/SixDigitAirDate apply that previously lived in
+ParseTitle move into applySimplifyTitle; behaviour is identical
+because the helper composition matches C# call order.
+
+What's deferred to subsequent slices:
+
+- **Per-rule post-match enrichment**: `Languages =
+  LanguageParser.ParseLanguages(ReleaseTokens)`, `Quality =
+  QualityParser.ParseQuality(title)`, `ReleaseGroup =
+  ReleaseGroupParser.ParseReleaseGroup(releaseTitle)` then
+  overridden by `GetSubGroup`, `ReleaseHash = GetReleaseHash`.
+- **`FullSeason + "Special" → Special=true` toggle**.
+- **`GetSeriesTitleInfo`** (year-in-title splitter populating
+  `SeriesTitleInfo`).
+- **`ReleaseTokens` derivation** (the `releaseTitle.Substring
+  (lastSeasonEpisodeStringIndex)` slice that feeds ParseLanguages).
+  The build closures in `report_title.go` would need to start
+  populating the index for ReleaseTokens to be derivable.
+- **`ParsePath` entry-point**.
+
+Test coverage:
+
+- New `simplify_title_test.go` with focused tests for
+  applyFancyBrackets (3 cases), applyReversedTitle (4 cases
+  including the C# fixture's `yrucreM-462...` and `yrucreM-LN...`
+  rows + the negative `Backup_72023S02-12.mkv` case),
+  applySimpleTitle (~25 cases covering every alternative arm plus
+  the two bit-depth lookaround filters with hex-prefix rejects /
+  alpha-suffix rejects / end-of-string accepts / longer-arm-wins
+  ordering), applyCleanQualityBrackets (5 cases for quality-gated
+  strip vs preserve), applySimplifyTitle end-to-end (3 smoke
+  cases).
+- Bulk spec dispatcher unchanged (pass=196 xfail=4); no rule
+  behaviour changed.
+
+Lint clean; parser test suite green (15 tests pass); full `-race
+-p 1` suite skipped (parser-package-internal changes only).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)

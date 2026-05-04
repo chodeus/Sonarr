@@ -4,16 +4,26 @@ import (
 	"strings"
 )
 
-// ParseTitle is the first slice of the C# `Parser.ParseTitle` pipeline
-// at `Parser.cs:670-797`. Returns a *ParsedEpisodeInfo on the first
-// rule that produces a non-nil result; returns nil otherwise.
+// ParseTitle ports `Parser.ParseTitle` at `Parser.cs:670-797`.
+// Returns a *ParsedEpisodeInfo on the first rule that produces a
+// non-nil result; returns nil otherwise.
 //
-// What's shipped in this slice: the rule-walking shell + the four
-// reportTitleRules ported in 2.12.1. The C# pipeline's downstream
-// stages (SimplifyTitle, language detection, quality detection,
-// release-group detection, year-in-title parsing, daily/anime
-// branches) are deferred — ParseTitle currently sets only
-// SeriesTitle / SeasonNumber / EpisodeNumbers / ReleaseTitle.
+// Pipeline (mirrors C# order):
+//
+//  1. ValidateBeforeParsing.
+//  2. applySimplifyTitle — full SimplifyTitle cleanup pass
+//     (ReversedTitleRegex, RemoveFileExtension, 【】→[],
+//     PreSubstitutionRegex, SimpleTitleRegex, WebsitePrefix /
+//     WebsitePostfix / CleanTorrentSuffix, CleanQualityBracketsRegex,
+//     SixDigitAirDate).
+//  3. Walk reportTitleRules; first non-nil result wins.
+//
+// The post-match enrichment stages from C# (Languages, Quality,
+// ReleaseGroup, ReleaseHash, GetSubGroup, GetSeriesTitleInfo,
+// FullSeason+Special toggle) are deferred to subsequent slices —
+// ParseTitle currently sets only SeriesTitle / SeasonNumber /
+// EpisodeNumbers / ReleaseTitle plus whatever the matched build
+// closure populates.
 //
 // Returns nil when ValidateBeforeParsing rejects the input or no
 // rule's regex matches.
@@ -23,38 +33,14 @@ func ParseTitle(title string) *ParsedEpisodeInfo {
 	}
 
 	title = strings.TrimSpace(title)
-
-	// Strip the file extension before regex matching — mirrors
-	// `Parser.cs:1193` `var titleWithoutExtension =
-	// FileExtensions.RemoveFileExtension(title)`. (The C# code does
-	// the strip inside ValidateBeforeParsing for the hash-rejection
-	// pass and again as a side-effect of the SimplifyTitle path; the
-	// Go port pre-strips here so all rule regexes see consistent input.)
-	titleNoExt := RemoveFileExtension(title)
-
-	// Apply PreSubstitutionRegex (the same rules ReleaseGroupParser
-	// uses). Mirrors the C# pattern of "the foreach + TryReplace +
-	// break" applied to ParseTitle's input so Korean F1RST/NEXT
-	// titles like `It's a Series Title.E56.190121.720p-NEXT.mp4` get
-	// reshaped to `It's a Series Title.S01E56.720p-NEXT.mp4` before
-	// the ReportTitleRegex rules run. The C# tree applies this
-	// implicitly via the SimplifyTitle path; the Go port wires it in
-	// here pending the full SimplifyTitle pipeline.
-	titleNoExt = applyPreSubstitution(titleNoExt)
-
-	// Mirrors `Parser.cs:720-733`: rewrite a separator-bracketed
-	// 6-digit YYMMDD substring to `20YY.MM.DD` so the standard 4-2-2
-	// airdate rule can fire. C# applies this AFTER SimplifyTitle (which
-	// includes PreSubstitutionRegex) and BEFORE ReportTitleRegex; the
-	// Go port matches that ordering.
-	titleNoExt = applySixDigitAirDate(titleNoExt)
+	simpleTitle := applySimplifyTitle(title)
 
 	for _, rule := range reportTitleRules {
-		m := rule.Re.FindStringSubmatchIndex(titleNoExt)
+		m := rule.Re.FindStringSubmatchIndex(simpleTitle)
 		if m == nil {
 			continue
 		}
-		info := rule.Build(rule.Re, m, titleNoExt)
+		info := rule.Build(rule.Re, m, simpleTitle)
 		if info == nil {
 			continue
 		}
