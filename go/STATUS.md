@@ -2283,6 +2283,74 @@ What's deferred:
 Lint clean; package tests green; full `-race -p 1` suite
 skipped (touches only delayprofiles, no cross-package effects).
 
+#### 2.23 — TagService (CRUD wrapper + TagsUpdatedEvent) ✅ shipped (2026-05-04)
+
+Ports the dependency-light surface of
+`src/NzbDrone.Core/Tags/TagService.cs`. Wraps the Tags Repo
+with domain rules and event publishing.
+
+What ships in `internal/tags/service.go`:
+
+1. **`TagsUpdatedEvent`** — port of
+   `Tags/TagsUpdatedEvent.cs:1-7`. Empty struct published by
+   the Service after Add / Update operations.
+
+2. **`Service` + `NewService(repo, bus)`** — the orchestrator.
+   `bus` may be nil to skip publishing (useful for tests /
+   migrations that run pre-bus).
+
+3. **`GetByID` / `GetByLabel` / `GetByIDs`** — repo
+   passthroughs. `GetByIDs` skips missing entries instead of
+   erroring (mirrors C# `Get(IEnumerable<int>)` LINQ semantics).
+
+4. **`GetByString`** ports `TagService.GetTag(string)` ergonomics
+   at `:71-81`. All-digit input → `GetByID` (parsed as int);
+   otherwise → `GetByLabel`. Mirrors C# `tag.All(char.IsDigit)`.
+
+5. **`All(ctx)`** — sorted by Label ascending. Mirrors C#
+   `OrderBy(t => t.Label)`.
+
+6. **`Add(ctx, tag)`** ports `TagService.Add(Tag)` at `:158-173`:
+   - Existing-by-label lookup FIRST. If a row matches, return
+     it without inserting (and without publishing the event).
+   - Otherwise lowercase the label, insert, publish
+     `TagsUpdatedEvent`.
+
+7. **`Update(ctx, tag)`** ports `Update(Tag)` at `:175-183`:
+   lowercase label, persist, publish.
+
+What's deferred:
+
+- **`Details(int)` / `Details()`** — fan-outs across
+  DelayProfile, ImportList, Notification, ReleaseProfile,
+  Series, Indexer, AutoTag, DownloadClient services. Each
+  lands when the corresponding service ports its `AllForTag`
+  query helper.
+- **`Delete(int)`** — depends on `Details()` for the in-use
+  rejection.
+
+Test coverage in `service_test.go` (~10 cases):
+
+- Add lowercases the label and dedupes by existing label.
+- Update lowercases on each call.
+- GetByString routes all-digits to GetByID and non-digit to
+  GetByLabel.
+- GetByIDs silently skips missing IDs.
+- All sorts by Label ascending.
+- Bus integration: Add and Update each publish exactly one
+  TagsUpdatedEvent; the dedupe path of Add does NOT publish.
+- nil tag inputs to Add and Update return errors.
+- GetByID for an unknown ID returns ErrNotFound.
+
+Tests use a real on-disk SQLite migrated to head — exercises
+the storage layer + service layer end-to-end. The `messaging`
+bus is wired with a sync subscriber; event delivery is
+verified via an `atomic.Int32` counter.
+
+Lint clean; package tests green; full `-race -p 1` suite
+skipped (touches only tags + messaging usage; messaging
+package itself untouched).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
