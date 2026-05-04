@@ -12,6 +12,7 @@ import (
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/mediainfo"
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -85,6 +86,14 @@ type BuildOptions struct {
 	// Resolver/dependency injections (all optional — nil ⇒ stub):
 	QualityResolver QualityTitleResolver
 	CustomFormats   []*customformats.Format
+
+	// MediaInfo, when non-nil, drives the {MediaInfo ...} token
+	// resolvers. Callers parse `episodefiles.File.MediaInfo` (the
+	// embedded JSON column) into a `*mediainfo.Model` and pass it
+	// here. Nil ⇒ all MediaInfo tokens render to empty (matches the
+	// C# `if (episodeFile.MediaInfo == null) return;` short-circuit
+	// at `FileNameBuilder.cs:653-657`).
+	MediaInfo *mediainfo.Model
 
 	// MaxPath bounds the overall path; defaults to MaxFilePathLength
 	// when zero.
@@ -317,7 +326,7 @@ func buildOneComponent(splitPattern string, eps []episodes.Episode, s *series.Se
 	AddEpisodeTitlePlaceholderTokens(handlers)
 	RegisterEpisodeFileTokens(handlers, file, opts.UseCurrentFilenameAsFallback)
 	registerQualityTokensFromOpts(handlers, s, file, opts)
-	RegisterMediaInfoStubs(handlers)
+	RegisterMediaInfoTokens(handlers, opts.MediaInfo, SceneOrFileName(file))
 	RegisterCustomFormatTokens(handlers, opts.CustomFormats)
 
 	// First pass: replace tokens with escape=true so the pre-flight
