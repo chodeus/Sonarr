@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.51 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL surface incl. Delete), and Series (read-only + Add/Update/Delete with all 5 events — UpdateTags + episode-monitored cascade + bulk UpdateMany still deferred); cross-package compile-time bridges: *series.Service satisfies rootfolders.SeriesPaths AND qualityprofiles.SeriesProfileChecker; remaining Phase 2 areas: Organizer/FileNameBuilder, SeriesService.UpdateTags integration + bulk UpdateMany, EpisodeService, ImportListFactory port).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.52 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL incl. Delete), and Series (read-only + Add/Update/Delete with all 5 events + UpdateTags integrated into UpdateSeries via TagChangeProvider — episode-monitored cascade + bulk UpdateMany still deferred); cross-package compile-time bridges: *series.Service satisfies rootfolders.SeriesPaths AND qualityprofiles.SeriesProfileChecker; remaining Phase 2 areas: Organizer/FileNameBuilder, SeriesService bulk UpdateMany + episode-monitored cascade, EpisodeService, ImportListFactory port).
 
 ## Where to resume
 
@@ -2645,6 +2645,50 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.52 — SeriesService UpdateTags + UpdateSeries integration ✅ shipped (2026-05-04)
+
+Wires the auto-tagging delta into the series mutation path. Adds:
+
+- `TagChangeProvider` interface in `internal/series` —
+  `GetTagChanges(ctx, *Series) (toAdd, toRemove map[int]struct{}, err)`.
+  Returning the delta sets directly avoids a series ↔ autotagging
+  import cycle (autotagging already imports series).
+- `Service.SetTagChangeProvider(p)` setter — host wires this with
+  a closure that calls `autotagging.ChangesFor(series, autoTags,
+  rootFolders)` and returns the resulting maps.
+- `Service.UpdateTags(ctx, *Series) (changed bool, err error)` —
+  ports `:275-311`. Walks toRemove (filters series.Tags),
+  walks toAdd (skipping already-present tags), reports whether any
+  net change happened.
+- `Service.UpdateSeries` now calls `UpdateTags` internally before
+  persistence (mirrors C# `:225` `UpdateTags(series);`). Bool
+  result is dropped — the C# version uses it only for logging.
+
+When no provider is wired (tests, migrations), UpdateTags is a
+silent no-op rather than an error — a deliberate softening of the
+C# DI graph's mandatory dependency.
+
+4 new tests:
+- `UpdateTags_AppliesDelta` — mixed add/remove with overlap (existing
+  tag in toAdd is skipped; absent tag in toRemove is no-op);
+  verifies the resulting Tags slice byte-for-byte.
+- `UpdateTags_NoProviderIsNoOp` — Tags untouched when provider unset.
+- `UpdateTags_NoChange` — provider supplies a delta that's already
+  in the desired state → changed=false.
+- `UpdateSeries_AppliesAutoTaggingDelta` — integration: provider
+  adds tag 42; UpdateSeries persists it.
+
+Implementation note: avoiding the autotagging import cycle was
+non-obvious. The chosen interface returns map-sets rather than the
+typed `autotagging.AutoTaggingChanges` struct so series doesn't
+need to import autotagging. The host's adapter — which lives in
+the wiring layer outside `internal/series` — calls
+`autotagging.ChangesFor(s, autoTags, rootFolders)` and returns
+`changes.TagsToAdd, changes.TagsToRemove`. Future autotagging API
+shifts won't ripple into the series package.
+
+Tests: SQLite green under `-race`; golangci-lint clean across `./...`.
 
 #### 2.51 — QualityProfileService.Delete with in-use validators ✅ shipped (2026-05-04)
 

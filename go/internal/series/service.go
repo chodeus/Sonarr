@@ -49,8 +49,9 @@ import (
 // No cache: the C# class doesn't cache anything either. Lookups go
 // straight to the repo; All() is uncached.
 type Service struct {
-	repo *Repo
-	bus  *messaging.Bus
+	repo        *Repo
+	bus         *messaging.Bus
+	tagProvider TagChangeProvider
 }
 
 // NewService binds a Repo + Bus into a Series Service. Pass `bus = nil`

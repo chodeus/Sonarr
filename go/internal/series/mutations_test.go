@@ -247,6 +247,129 @@ func TestService_RemoveAddOptions(t *testing.T) {
 	}
 }
 
+// fakeTagProvider implements TagChangeProvider with a fixed delta.
+type fakeTagProvider struct {
+	add    map[int]struct{}
+	remove map[int]struct{}
+	err    error
+}
+
+func (f *fakeTagProvider) GetTagChanges(_ context.Context, _ *series.Series) (map[int]struct{}, map[int]struct{}, error) {
+	if f.err != nil {
+		return nil, nil, f.err
+	}
+	return f.add, f.remove, nil
+}
+
+func TestService_UpdateTags_AppliesDelta(t *testing.T) {
+	t.Parallel()
+	svc, _ := newServiceWithBus(t)
+	provider := &fakeTagProvider{
+		add:    map[int]struct{}{2: {}, 5: {}}, // 2 already present; only 5 should be added
+		remove: map[int]struct{}{1: {}},        // 1 removed; 7 absent so no-op
+	}
+	svc.SetTagChangeProvider(provider)
+
+	row := sampleSeries(1, "X")
+	row.Tags = []int{1, 2, 7}
+	added, err := svc.AddSeries(t.Context(), row)
+	if err != nil {
+		t.Fatalf("AddSeries: %v", err)
+	}
+
+	changed, err := svc.UpdateTags(t.Context(), added)
+	if err != nil {
+		t.Fatalf("UpdateTags: %v", err)
+	}
+	if !changed {
+		t.Errorf("expected changed=true (1 removed, 5 added)")
+	}
+	expected := map[int]bool{2: true, 5: true, 7: true}
+	for _, tag := range added.Tags {
+		if !expected[tag] {
+			t.Errorf("unexpected tag %d in result", tag)
+		}
+		delete(expected, tag)
+	}
+	for tag := range expected {
+		t.Errorf("missing tag %d from result", tag)
+	}
+}
+
+func TestService_UpdateTags_NoProviderIsNoOp(t *testing.T) {
+	t.Parallel()
+	svc, _ := newServiceWithBus(t)
+	row := sampleSeries(1, "X")
+	row.Tags = []int{1, 2, 3}
+	added, err := svc.AddSeries(t.Context(), row)
+	if err != nil {
+		t.Fatalf("AddSeries: %v", err)
+	}
+	changed, err := svc.UpdateTags(t.Context(), added)
+	if err != nil {
+		t.Fatalf("UpdateTags: %v", err)
+	}
+	if changed {
+		t.Errorf("expected changed=false when no provider wired")
+	}
+	if len(added.Tags) != 3 {
+		t.Errorf("Tags mutated unexpectedly: %v", added.Tags)
+	}
+}
+
+func TestService_UpdateTags_NoChange(t *testing.T) {
+	t.Parallel()
+	svc, _ := newServiceWithBus(t)
+	provider := &fakeTagProvider{
+		add:    map[int]struct{}{1: {}},  // already present
+		remove: map[int]struct{}{99: {}}, // not present
+	}
+	svc.SetTagChangeProvider(provider)
+
+	row := sampleSeries(1, "X")
+	row.Tags = []int{1, 2}
+	added, _ := svc.AddSeries(t.Context(), row)
+
+	changed, err := svc.UpdateTags(t.Context(), added)
+	if err != nil {
+		t.Fatalf("UpdateTags: %v", err)
+	}
+	if changed {
+		t.Errorf("expected changed=false (no actual delta)")
+	}
+}
+
+// UpdateSeries integrates UpdateTags: when the provider supplies a
+// delta, the persisted Tags reflect it.
+func TestService_UpdateSeries_AppliesAutoTaggingDelta(t *testing.T) {
+	t.Parallel()
+	svc, _ := newServiceWithBus(t)
+	provider := &fakeTagProvider{add: map[int]struct{}{42: {}}}
+	svc.SetTagChangeProvider(provider)
+
+	row := sampleSeries(1, "X")
+	added, err := svc.AddSeries(t.Context(), row)
+	if err != nil {
+		t.Fatalf("AddSeries: %v", err)
+	}
+
+	added.Title = "X2"
+	updated, err := svc.UpdateSeries(t.Context(), added, series.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("UpdateSeries: %v", err)
+	}
+	found := false
+	for _, tag := range updated.Tags {
+		if tag == 42 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("auto-tagging delta not applied: Tags=%v", updated.Tags)
+	}
+}
+
 func TestService_DeleteSeries_PublishesEvent(t *testing.T) {
 	t.Parallel()
 	svc, bus := newServiceWithBus(t)

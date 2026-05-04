@@ -34,6 +34,88 @@ func (s *Service) AddSeries(ctx context.Context, ns *Series) (*Series, error) {
 	return stored, nil
 }
 
+// TagChangeProvider is the slice of `IAutoTaggingService` the C#
+// SeriesService reaches for at `:281` (`_autoTaggingService.GetTagChanges(series)`).
+//
+// Returning `(toAdd, toRemove map[int]struct{}, err)` matches the
+// `AutoTaggingChanges` shape exposed by the autotagging package
+// without dragging in autotagging or rootfolders as series-package
+// imports (which would create a series ↔ autotagging cycle —
+// autotagging already imports series).
+//
+// The host wires this with a closure adapter that:
+//
+//  1. Calls autotagging.Service.All(ctx) for the AutoTags.
+//  2. Calls a RootFolderProvider for the rootfolders.Folder list.
+//  3. Calls autotagging.ChangesFor(series, autoTags, rootFolders).
+//  4. Returns the resulting TagsToAdd/TagsToRemove sets.
+type TagChangeProvider interface {
+	GetTagChanges(ctx context.Context, s *Series) (toAdd, toRemove map[int]struct{}, err error)
+}
+
+// SetTagChangeProvider attaches the provider used by [Service.UpdateTags]
+// (and, by extension, [Service.UpdateSeries] which calls UpdateTags
+// per `:225`). When unset, UpdateTags is a no-op (matches the C# DI
+// graph where the provider is mandatory; the Go port treats it as
+// optional so tests and migrations don't need a stub).
+func (s *Service) SetTagChangeProvider(p TagChangeProvider) {
+	s.tagProvider = p
+}
+
+// UpdateTags ports `SeriesService.UpdateTags(Series series)` at
+// `:275-311`. Computes the auto-tagging delta for `series`, applies
+// it in place to `series.Tags`, and returns `(changed, err)`.
+//
+// `changed=true` is returned iff at least one tag was added or
+// removed — mirrors the C# `tagsAdded.Any() || tagsRemoved.Any()`
+// guard at `:301`.
+//
+// If no [TagChangeProvider] is set, returns `(false, nil)` —
+// matches the "no-op when DI didn't wire it" tolerance.
+func (s *Service) UpdateTags(ctx context.Context, series *Series) (bool, error) {
+	if series == nil {
+		return false, errors.New("series: cannot UpdateTags on nil series")
+	}
+	if s.tagProvider == nil {
+		return false, nil
+	}
+	toAdd, toRemove, err := s.tagProvider.GetTagChanges(ctx, series)
+	if err != nil {
+		return false, fmt.Errorf("series: UpdateTags: %w", err)
+	}
+
+	existing := make(map[int]bool, len(series.Tags))
+	for _, t := range series.Tags {
+		existing[t] = true
+	}
+
+	changed := false
+	// Apply removals first (mirrors C# `:283-290`).
+	if len(toRemove) > 0 {
+		next := make([]int, 0, len(series.Tags))
+		for _, t := range series.Tags {
+			if _, drop := toRemove[t]; drop {
+				changed = true
+				delete(existing, t)
+				continue
+			}
+			next = append(next, t)
+		}
+		series.Tags = next
+	}
+	// Apply additions (mirrors C# `:292-299`). Only adds tags that
+	// aren't already present.
+	for tag := range toAdd {
+		if existing[tag] {
+			continue
+		}
+		series.Tags = append(series.Tags, tag)
+		existing[tag] = true
+		changed = true
+	}
+	return changed, nil
+}
+
 // UpdateOptions encapsulates the optional flags `SeriesService.UpdateSeries`
 // takes in C# (`updateEpisodesToMatchSeason`, `publishUpdatedEvent`).
 // Zero value = the C# defaults: episode-monitored cascade ON,
@@ -85,6 +167,13 @@ func (s *Service) UpdateSeries(ctx context.Context, ns *Series, opts UpdateOptio
 	// stored value verbatim. Mirrors C# `:224`
 	// (`series.AddOptions = storedSeries.AddOptions;`).
 	ns.AddOptions = stored.AddOptions
+
+	// Apply auto-tagging delta in-place when a provider is wired.
+	// Mirrors C# `:225` (`UpdateTags(series);`). The bool result is
+	// dropped here — the C# version uses it only for logging.
+	if _, err := s.UpdateTags(ctx, ns); err != nil {
+		return nil, fmt.Errorf("series: UpdateSeries: tags: %w", err)
+	}
 
 	if err := s.repo.Update(ctx, ns); err != nil {
 		return nil, fmt.Errorf("series: UpdateSeries: persist: %w", err)
