@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.11 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.11 adds reversed-date rules (month-day-year + day-month-year) plus a `\d{1,3}` extension for season/episode in the title-bearing S-E rules with split-arm trailing iteration to avoid `.N-NN.PM` slurp; spec at end of 2.12.11 is **pass=164 xfail=36 regression=0** out of 200.).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.12 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.12 adds multi-Nx repeated rule (with `buildTitleNxMulti` Build that scans `x<digits>` only) + extends single-S-E + findAllEpisodes to `\d{1,4}` for 4-digit episodes; spec at end of 2.12.12 is **pass=170 xfail=30 regression=0** out of 200.).
 
 ## Where to resume
 
@@ -886,6 +886,34 @@ What stays xfail (36 rows after this slice):
 - Various assorted forms each requiring a dedicated C# rule port — see `parser_spec_rows_test.go` for the per-row xfail comments.
 
 Lint clean (`golangci-lint run ./internal/parser/...` 0 issues); parser test suite green; full `-race -p 1` suite skipped this slice (no API changes; only parser-package internal regex tables and helpers were touched, and parser is downstream of every other package).
+
+#### 2.12.12 — Multi-Nx repeated + 4-digit episode in S-E ✅ shipped (2026-05-04)
+
+Two related clusters layered into one slice.
+
+**Spec delta**: pass=164 → 170 (+6); xfail=36 → 30 (-6); regression=0.
+
+What ships:
+
+1. **Multi-Nx repeated rule (Parser.cs:120)** (+4 rows). Catches `<title>.<n>x<m>.<n>x<m>` shapes: `Series.Title.2x04.2x05`, `Series Kings - 2x9-2x10` / `2x09-2x10`, `World Series of Sonarr - 2010x15 - 2010x16`. Listed BEFORE the single-Nx title rule so multi wins on the 2+-Nx-block prefix; safe because single-Nx rule's `\d{1,2}|\d{4}` season + first-Nx-only structure means multi rule with `{2,}` only fires when 2+ Nx blocks exist. New `buildTitleNxMulti` Build scans the matched span via a dedicated `nxEpisodeRe = (?i)x(\d{1,3})` — picking up only `x<digits>` markers. The generic `findAllEpisodes` would have polluted the result with `-<season>` digit runs from the second-iteration prefix (e.g. `-2x10` would have captured both `2` and `10`).
+
+2. **4-digit episode in single-S-E + findAllEpisodes** (+2 rows). Extends single-S-E's first E and Arm B1 (E-required iterations) from `\d{1,3}` to `\d{1,4}`; multi-S-E inner E from `\d{1,3}` to `\d{1,4}`; `episodeNumberRe` from `\d{1,3}` to `\d{1,4}`. Catches `Anime Title - S2020E1527`, `Shortland.Series.S22E5363-E5366`. Arm B2 (digits-only) deliberately stays at `\d{2,3}` — the 2-digit-minimum on that arm is what protects `Series.S01E04.2-45.PM` from being slurped as a multi-episode range, and `\d{2,3}` already covers the legitimate `S01E91-E100` / `S29E161-E165` cases via E-required Arm B1. Multi-S-E rule's inner E extension is a corollary; no fixture exercises it directly but mirrors the C# Parser.cs:117 rule's `\d{1,3}` (which is already 1-3 in C# vs my Go's previous 2-3).
+
+What stays xfail (30 rows after this slice):
+
+- **Anime title-without-subgroup** (~6 rows). `<title> - <abs>` shape, no `[Group]` brackets.
+- **Bracketed multi-Nx (`[02x01x02]`, `[02x01-x02]`, `[02x01-02]`)** (~3 rows). One-bracket multi-x form — different from the multi-Nx-repeated `<n>x<m>.<n>x<m>` shape.
+- **Parenthesised multi-S-E (`(S15E06-08)`, `(S05E06-08 of 24)`)** (~2 rows). Need Parser.cs:255 rule.
+- **Title-with-airdate composite shapes** (~2 rows).
+- **Hybrid airdate+season+episode** (1 row).
+- **Multi-Nx single-bracket multi-trailing forms (`8x01_02`)** (1 row).
+- **3-digit shortcut multi (`103.104`, `101.102`)** (~2 rows).
+- **5-digit `10708`, `10910` (Extant naming)** (~2 rows).
+- **3-digit forms with year-shape title (`series.2009.416`)** (~2 rows).
+- **`E07-E08.180612.1080p-NEXT` PreSubstitution variants** (~2 rows).
+- **Various assorted** — `[Impatience]` anime mis-routing, `[1x05]` bracketed-Nx single, etc.
+
+Lint clean; parser test suite green; full `-race -p 1` suite skipped (parser-package-internal changes only).
 
 ### Phase 1 — Foundations ✅ done
 
