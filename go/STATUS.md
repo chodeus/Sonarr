@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.16 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.16 layers eight long-tail clusters (year-shape title 3-digit, Nx multi-trailing, Ep<5digit> multi, hybrid airdate+S-E, paren-year-title daily, abs-then-airdate, multi-E NEXT PreSub) into one slice; spec at end of 2.12.16 is **pass=196 xfail=4 regression=0** out of 200.).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — parser pipeline COMPLETE; both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; TagService + AutoTaggingService + CustomFormatService + DelayProfileService shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, ReleaseProfileService orchestrator, QualityProfile services, Series/Episode service business logic, RootFolderService with disk-provider).
 
 ## Where to resume
 
@@ -2645,6 +2645,111 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.29 — DelayProfileService (Add/Update/Delete/Reorder + BestForTagsCache) ✅ shipped (2026-05-04)
+
+Ports `Profiles/Delay/DelayProfileService.cs:1-167` on top of the
+pure helpers from 2.22 and the Repo from Phase 1. Wraps the Repo
+with the BestForTags memo (mirrors C# `_bestForTagsCache`), the
+auto-Order assignment on Add, the renumber-survivors pass on
+Delete, and the explicit Reorder helper.
+
+What ships in `internal/delayprofiles/service.go`:
+
+1. **`Service` + `NewService(repo)`** — orchestrator. No bus
+   parameter: the C# `DelayProfileService` does NOT publish any
+   events on Add/Update/Delete/Reorder (verified: no
+   `_eventAggregator` field, no `PublishEvent` calls in the C#
+   class). Faithful port.
+
+2. **`Add(ctx, profile)`** — assigns `profile.Order = Repo.Count()`
+   so new rows land at the tail of existing-profile sequence
+   (the migration-070-seeded default profile retains its Order
+   = INT_MAX and falls AFTER any newly added profile), inserts,
+   clears the BestForTags memo. Returns the profile pointer
+   with its repo-assigned ID.
+
+3. **`Update(ctx, profile)`** / **`Get(ctx, id)`** /
+   **`All(ctx)`** — straight passthroughs. Update clears the
+   memo; All is uncached (the C# version is a thin
+   `_repo.All().ToList()`).
+
+4. **`Delete(ctx, id)`** — repo delete, then walks survivors in
+   Order and renumbers them 1..N (skipping default Id=1, which
+   keeps INT_MAX), persists the renumbered set, clears the memo.
+   Mirrors C# `:50-68`.
+
+5. **`AllForTag(ctx, tagID)`** / **`AllForTags(ctx, tagIDs)`** —
+   load + filter via the pure helpers from 2.22.
+
+6. **`BestForTags(ctx, tagIDs)`** — memoised via in-process
+   `bestByTags` map keyed by the sorted tagIDs (matches the C#
+   `"-1,2,3"` key shape, with sorting added so callers passing
+   the same set in different orders share a slot). Cleared on
+   every mutation. Returns ErrNotFound when no candidate matches
+   (the C# `.First()` would throw; the Go port returns the
+   sentinel for callers to handle cleanly).
+
+7. **`Reorder(ctx, id, afterID)`** — load all, run pure
+   `ComputeReorder` from 2.22, persist only the rows whose Order
+   actually changed (skips no-op UPDATEs), return the freshly-
+   reloaded set ordered by Order. Pass `afterID = nil` to move to
+   the front. Unknown `id` is a silent no-op (C# `:113-115` `//
+   TODO: This should throw` preserved verbatim).
+
+Supporting addition in `delayprofiles.go`:
+
+- **`Repo.Count(ctx) int`** — `SELECT COUNT(*) FROM
+  "DelayProfiles"`. Used by Service.Add to assign the next Order.
+
+What's deferred:
+
+- **30-second TTL on `bestByTags`** — the C# cache uses
+  `TimeSpan.FromSeconds(30)` as a fallback bound, but in
+  practice every Add/Update/Delete/Reorder clears it. The Go
+  port relies on mutation-driven invalidation alone; if a need
+  for TTL-bounded growth surfaces (e.g. pathological tag-set
+  cardinality from external callers), revisit.
+- **Atomic transaction around the renumber loops** in Delete
+  and Reorder. The C# version uses `_repo.UpdateMany(all)`
+  which is also N statements under Dapper but with an implicit
+  Marr.Data tx. The Go port does sequential Update calls; if
+  one fails mid-loop the rows are left partially renumbered
+  (same risk shape as C# under tx-less paths). Lifting into a
+  `sql.Tx` is straightforward when bulk-mutation patterns
+  layer in across other services.
+
+Test coverage in `service_test.go` (12 cases, all SQLite —
+the cross-engine repo coverage is in `delayprofiles_test.go`):
+
+- Add: assigns Order = Count and persists; nil errors.
+- Update: nil errors.
+- Get: ErrNotFound on missing.
+- Delete: renumbers survivors 1..N, default profile retains
+  INT_MAX.
+- AllForTag: matches by exact tag membership; unknown returns
+  empty.
+- AllForTags: includes profiles with empty Tags as catch-alls
+  (verified the migration-seeded default + an explicit empty
+  insert + an intersect-match all return).
+- BestForTags: picks the lowest-Order match; falls back to the
+  empty-tag default profile when nothing matches; caches
+  results (a direct-Repo insert that bypasses Service mutation
+  hooks does NOT clear the memo); cache invalidates on Service
+  Update; no-match returns ErrNotFound.
+- Reorder: moves a profile after another, preserves default-
+  profile INT_MAX Order, return slice is sorted ascending;
+  unknown id is a no-op.
+
+Lint clean (gofmt + golangci-lint 0 issues); package tests
+green (15 tests now in delayprofiles); full `-race -p 1` suite
+skipped (touches only delayprofiles, datastore for tests).
+
+Both matching engines (CustomFormat + AutoTagging) and both
+profile-domain services with persistence (Tag + DelayProfile)
+now have a full lifecycle: typed-spec interface (where
+applicable) + pure helpers + Service with caching and
+mutation discipline.
 
 #### 2.28 — CustomFormatService (CRUD wrapper + cache + Add/Delete events) ✅ shipped (2026-05-04)
 

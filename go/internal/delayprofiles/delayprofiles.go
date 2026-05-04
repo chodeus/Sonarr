@@ -24,6 +24,7 @@
 package delayprofiles
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -115,6 +116,17 @@ func NewRepo(db *datastore.DB) (*Repo, error) {
 		return nil, err
 	}
 	return &Repo{Repository: r}, nil
+}
+
+// Count returns the number of persisted DelayProfile rows. Mirrors the
+// C# `IDelayProfileRepository.Count()` used by `DelayProfileService.Add`
+// to assign the next Order value.
+func (r *Repo) Count(ctx context.Context) (int, error) {
+	var n int
+	if err := r.DB().SQL.QueryRowContext(ctx, `SELECT COUNT(*) FROM "DelayProfiles"`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("delayprofiles: count: %w", err)
+	}
+	return n, nil
 }
 
 // nullableInt converts a *int into a value the database/sql layer
