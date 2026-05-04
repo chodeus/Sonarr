@@ -2646,6 +2646,97 @@ Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
 
+#### 2.33 — quality.DefaultDefinitions + QualityDefinitionService ✅ shipped (2026-05-04)
+
+Two-part slice that closes the loop on the QualityDefinitions
+table.
+
+Part 1 — `quality.DefaultDefinitions` data:
+
+Adds `quality/defaults.go` with the canonical 22-entry default-
+definition table (Title + Weight + GroupName per Quality), mirroring
+`Quality.cs:158-179`. Title comes from `Quality.Name`
+(`QualityDefinition.cs:25`). Size fields (MinSize/MaxSize/
+PreferredSize) are deliberately NOT carried — migration 207 moved
+them off QualityDefinition and onto QualityProfile.Items.
+
+API:
+
+- `DefaultDefinition` struct.
+- `DefaultDefinitions() []DefaultDefinition` — fresh copy in canonical
+  order.
+- `DefaultDefinitionFor(quality) (DefaultDefinition, bool)` — lookup.
+
+5 tests including:
+- 22-entry count check.
+- Weights match the existing `QualityWeight` table (catches drift
+  between the two sources).
+- Titles equal Quality.Name.
+- 4 GroupName clusters with paired Weights (so the upgrade path
+  doesn't flip between visually-equivalent sources).
+
+Part 2 — `qualitydefinitions.Service`:
+
+Ports `QualityDefinitionService.cs:1-133` — CRUD over the persisted
+(Id, Quality, Title) row decorated at read time with Weight +
+GroupName from the default table.
+
+What ships in `internal/qualitydefinitions/service.go`:
+
+1. **`Decorated`** — runtime-decorated read shape (ID + Quality +
+   Title from persistence; Weight + GroupName from defaults).
+
+2. **`Service` + `NewService(repo)` / `NewServiceWithTTL(repo, ttl)`**.
+   Default TTL = 5s (matches C# `_cache.Get(... TimeSpan.FromSeconds(5))`).
+
+3. **`All(ctx)`** — cached typed-Decorated list, ordered by Weight
+   ASC. Cache cleared on every mutation.
+
+4. **`GetByID(ctx, id)`** / **`Get(ctx, quality)`** — single
+   Decorated lookups; ErrNotFound on missing.
+
+5. **`Update(ctx, def)`** — persists Title (the only configurable
+   field), invalidates cache.
+
+6. **`EnsureDefaults(ctx)`** — ports the
+   `Handle(ApplicationStartedEvent) → InsertMissingDefinitions`
+   flow. For each entry in `quality.DefaultDefinitions`: if no
+   row exists for that Quality, insert one with the default Title;
+   if a persisted row's Quality is no longer in the default table,
+   delete it as orphan. Idempotent. The Go host invokes this on
+   ApplicationStartedEvent to mirror the C# trigger semantic.
+
+7. **`ResetTitles(ctx, resetTitles)`** — ports
+   `Execute(ResetQualityDefinitionsCommand)`. When true, restores
+   every row's Title to the default; when false, no-op (the C#
+   version still issues UpdateMany with existing Titles, an
+   effective no-op write — Go elides it).
+
+What's deferred:
+- `UpdateMany(ctx, defs)` — explicit bulk update. Service.Update
+  in a loop suffices for now; bulk SQL lands when other services
+  need it.
+- Wiring the Service into the host's ApplicationStartedEvent
+  handler — done at host integration time (Phase 5 prep).
+
+Test coverage in `service_test.go` (10 cases):
+
+- EnsureDefaults seeds all 22 qualities; idempotent.
+- EnsureDefaults deletes orphans (rows whose Quality isn't in the
+  default table).
+- All ordered by Weight ASC.
+- All decorates rows with Weight + GroupName from defaults.
+- GetByID / Get round-trip + ErrNotFound on missing.
+- Update persists Title and invalidates the cache.
+- Update(nil) errors.
+- ResetTitles(true) restores defaults; ResetTitles(false) is no-op.
+- All caches: a direct-Repo insert that bypasses Service mutation
+  hooks is NOT visible in subsequent All() until TTL expiry or
+  invalidation.
+
+Lint clean (gofmt + golangci-lint 0 issues); package tests green
+(15 tests now in qualitydefinitions, 9 in quality).
+
 #### 2.32 — ImportListExclusionService (CRUD + DeleteMany + FindByTvdbID) ✅ shipped (2026-05-04)
 
 Ports `ImportLists/Exclusions/ImportListExclusionService.cs:1-98`
