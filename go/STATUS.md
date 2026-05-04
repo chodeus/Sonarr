@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-05 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery — modulo deferred in-memory queue + IExecute<T> dispatch). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: typed MediaInfo column on episodefiles.File (separate slice, touches Mapper + every read/write site). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
+Last updated: 2026-05-05 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery — modulo deferred in-memory queue + IExecute<T> dispatch) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: typed MediaInfo column on episodefiles.File (separate slice, touches Mapper + every read/write site). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
 
 ## Where to resume
 
@@ -2788,6 +2788,93 @@ roundtrips, SetFileID auto-forget, and every read+mutation
 pass-through.
 
 ### Phase 3 — Service / Workflow layer ⏳ in progress
+
+#### 3.10 — scheduledtasks.Service (TaskManager port) ✅ shipped (2026-05-05)
+
+Ports `NzbDrone.Core.Jobs.TaskManager` at
+`src/NzbDrone.Core/Jobs/TaskManager.cs:1-236` plus the two missing
+`ScheduledTaskRepository` helpers
+(`src/NzbDrone.Core/Jobs/ScheduledTaskRepository.cs:29-37`).
+
+Repo helpers (`internal/scheduledtasks/repo_helpers.go`):
+
+- `SetLastExecutionTime(ctx, id, executionTime, startTime)` →
+  `:29-37`. Targeted UPDATE on (LastExecution, LastStartTime). Forces
+  UTC on both timestamps. Returns `ErrNotFound` for missing ids.
+- `Upsert(ctx, *Task)` — INSERT or UPDATE keyed by the TypeName
+  UNIQUE constraint (the C# `BasicRepository.Upsert` is keyed by Id;
+  the Go-port helper looks up by TypeName since the only caller
+  reconciles defaults against the persisted set by name). On insert
+  the assigned Id is written back to the input.
+
+Service (`internal/scheduledtasks/service.go`):
+
+- `Service` struct: repo + injectable clock + `sync.RWMutex`-protected
+  `map[string]*Task` cache (matches the C# `ICached<ScheduledTask>` at
+  `TaskManager.cs:36`).
+- `RegisterDefaults(ctx, []*Task)` → `Handle(ApplicationStartedEvent)`
+  at `:65-166`. Reconcile loop:
+  - `repo.All` snapshot.
+  - delete every persisted row whose TypeName isn't in `defaults`
+    (C# `:140-147`).
+  - for each default: reuse the existing Id + LastExecution +
+    LastStartTime when the row already exists; for fresh rows,
+    LastExecution = clock-now (C# `:158`). Upsert and store a copy
+    in the cache.
+  - The cache is replaced atomically once the reconcile completes.
+  Validation rejects nil entries / empty TypeName / duplicate
+  TypeName.
+- `GetPending(ctx) []Task` → `:46-51`. Cache filter on (Interval > 0
+  AND LastExecution + Interval < now). Returns a fresh copy.
+- `GetAll(ctx) []Task` → `:53-56`. Cache values copy.
+- `GetNextExecution(ctx, typeName) (time.Time, error)` → `:58-63`.
+  Cache lookup; returns `ErrNotFound` when typeName isn't registered
+  (the C# version NREs on `_cache.Find`'s nil result).
+- `HandleCommandExecuted(ctx, ev commands.CommandExecutedEvent)` →
+  `Handle(CommandExecutedEvent)` at `:202-220`. Looks up by
+  `ev.Command.Name` (which the host wires to equal the TypeName key
+  used in RegisterDefaults). When the cache hits AND the optional
+  `shouldUpdate` predicate (settable via
+  `Service.SetShouldUpdatePredicate`) approves, calls
+  `repo.SetLastExecutionTime(id, now, ev.Command.StartedAt)` and
+  refreshes the cache entry's LastExecution + LastStartTime
+  in-place.
+  Silent-skips when the command is unregistered, the predicate
+  rejects, or `ev.Command.StartedAt` is nil (the C# would NRE on
+  the latter).
+
+The C# `UpdateScheduledTask` boolean property on Command bodies
+(`:206`) is replaced by the host-supplied predicate — when unset
+the default treats every registered TypeName as
+update-on-executed, which matches the C# default for the 11
+scheduled commands (all set `UpdateScheduledTask = true`).
+
+Deferred:
+
+- The 11 hard-coded default tasks at `:67-135`
+  (`RefreshMonitoredDownloadsCommand`, `MessagingCleanupCommand`,
+  `ApplicationUpdateCheckCommand`, `UpdateSceneMappingCommand`,
+  `CheckHealthCommand`, `RefreshSeriesCommand`, `HousekeepingCommand`,
+  `CleanUpRecycleBinCommand`, `ImportListSyncCommand`, `BackupCommand`,
+  `RssSyncCommand`). Most of those Command types don't exist in the
+  Go port yet; the host wires whichever subset has shipped via
+  `Service.RegisterDefaults` at boot.
+- `GetBackupInterval` / `GetRssSyncInterval` (`:168-200`) — depend
+  on `ConfigService` (Phase 4 territory).
+- `HandleAsync(ConfigSavedEvent)` (`:222-235`) — depends on the two
+  interval getters; ports alongside them.
+
+Tests: 1 helpers suite (× both engines, ~6 sub-cases covering
+SetLastExecutionTime UTC-coercion, ErrNotFound, Upsert insert+update
+paths, Upsert input validation) + 8 service tests (NewService nil
+guard, RegisterDefaults fresh seed, RegisterDefaults reconcile
+preserves Id+LastExecution+LastStartTime, RegisterDefaults bad-input
+rejects, GetPending dueness filter, GetNextExecution cached lookup +
+ErrNotFound, HandleCommandExecuted persist+cache update, predicate
+gate rejection, nil-safety on missing Command / nil StartedAt).
+
+  internal/scheduledtasks:  ok  (-race -p 1)
+  golangci-lint:            0 issues
 
 #### 3.9 — commands.Service (CommandQueueManager port) ✅ shipped (2026-05-05)
 
