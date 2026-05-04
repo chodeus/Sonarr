@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.33 — parser pipeline COMPLETE; both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; TagService + AutoTaggingService + CustomFormatService + DelayProfileService + NamingConfigService + CustomFilterService + ImportListExclusionService + QualityDefinitionService shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, ReleaseProfileService orchestrator, QualityProfileService, Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, RemotePathMappingService, LifecycleService).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.34 — parser pipeline COMPLETE; both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; TagService + AutoTaggingService + CustomFormatService + DelayProfileService + NamingConfigService + CustomFilterService + ImportListExclusionService + QualityDefinitionService + ReleaseProfileService shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, Series/Episode service business logic, RootFolderService with disk-provider, ProviderStatusServiceBase + 4 derivatives, RemotePathMappingService, LifecycleService).
 
 ## Where to resume
 
@@ -2645,6 +2645,46 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.34 — ReleaseProfileService (CRUD + tag/indexer query helpers) ✅ shipped (2026-05-04)
+
+Ports `Profiles/Releases/ReleaseProfileService.cs:1-79`. CRUD
+passthroughs + four tag/indexer query helpers. No events, no
+caching (faithful to C# — the C# class also re-reads on every
+query).
+
+What ships in `internal/releaseprofiles/service.go`:
+
+- All / Get / Add / Update / Delete — passthroughs.
+- AllForTag(tagID) — profiles whose Tags contains tagID.
+- AllExcludedForTag(tagID) — profiles whose ExcludedTags contains
+  tagID.
+- AllForTags(tagIDs) — composite: Tags-intersect OR (Tags-empty AND
+  ExcludedTags-doesn't-intersect). Preserves a C# operator-
+  precedence quirk where the exclusion check is only applied to the
+  empty-tags branch (likely a latent bug in the C# expression
+  `A || B && C` which parses as `A || (B && C)` without
+  parentheses); documented inline.
+- EnabledForTags(tagIDs, indexerID) — AllForTags filtered to
+  Enabled profiles whose IndexerIDs contains indexerID OR is empty
+  (catch-all for all indexers).
+
+What's deferred:
+
+- DecisionEngine integration that consumes these query helpers to
+  evaluate releases.
+- The TermMatcher cache (shipped in 2.21) is a separate concern;
+  consumers wire the matcher alongside this service.
+
+Test coverage in `service_test.go` (8 cases): Add round-trip,
+AllForTag (incl. unknown returns empty), AllExcludedForTag,
+AllForTags happy paths (intersect + empty catch-all + excluded-
+filtered + non-intersecting tags), the operator-precedence quirk
+explicit pin, EnabledForTags (Enabled filter + IndexerIDs match
+incl. empty catch-all + different-indexer rejection), Update +
+Delete, nil-input errors.
+
+Lint clean.
 
 #### 2.33 — quality.DefaultDefinitions + QualityDefinitionService ✅ shipped (2026-05-04)
 
