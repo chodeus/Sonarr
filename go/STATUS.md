@@ -1347,6 +1347,59 @@ Lint clean; parser test suite green (19 tests pass); full
 `-race -p 1` suite skipped (parser-package-internal changes
 only).
 
+#### 2.13.4a — ParsePath entry-point (basic strategies) ✅ shipped (2026-05-04)
+
+First slice of `Parser.ParsePath` at `Parser.cs:569-640`. Ships
+the three lookbehind-free strategies (1, 4, 5) which together
+handle the common case where the filename, the dir+filename
+combination, or the dir+extension combination produces a
+parseable title. Strategies 2 and 3 (season-folder + simple-
+episode-number combo, numeric-only-filename narrowing) are
+deferred to 2.13.4b — both rely on regexes with negative
+lookbehinds + duplicate named groups that need RE2
+reformulation.
+
+**Spec delta**: pass=196 xfail=4 regression=0 (separate test
+suite; doesn't affect the bulk-spec dispatcher).
+
+What ships in `parse_path.go`:
+
+- `ParsePath(path string) *ParsedEpisodeInfo` —
+  platform-aware via `path/filepath`. Strategies attempted in
+  C# control-flow order:
+  1. `ParseTitle(filepath.Base(path))`.
+  2. *(deferred)* SeasonFolder + SimpleEpisodeNumber combo.
+  3. *(deferred)* Numeric-only-filename narrowing.
+  4. `ParseTitle(dirName + " " + fileName)`.
+  5. `ParseTitle(dirName + ext)`.
+
+  Returns nil when every attempted strategy fails.
+
+Test coverage in `parse_path_test.go`:
+
+- 4 strategy-1 / strategy-4 cases drawn from
+  `PathParserFixture.cs` rows that don't depend on the
+  deferred strategies: filename-with-SE in `Season 3`,
+  Specials S00E16, Nx-E shorthand `Series.4x05`, and the
+  hash-filename + dir-with-SE strategy-4 case.
+- 1 strategy-5-only case: a 40-char hash filename whose
+  containing directory carries the full S-E.
+- All tests use `filepath.Join` for platform portability.
+
+What's still deferred:
+
+- **2.13.4b**: SeasonFolderRegex + SimpleEpisodeNumberRegex
+  port (both have `(?<!\d+)` lookbehind + `(?!\d+)` lookahead +
+  `SimpleEpisodeNumberRegex` has duplicate `<episode>` named
+  groups requiring RE2 rewrite). Once those land, the
+  `Season 01 / 01 Pilot.mkv`-style fixture rows become
+  parseable via the season-folder + episode-number combo
+  strategy.
+
+Lint clean; parser test suite green (21 tests pass); full
+`-race -p 1` suite skipped (parser-package-internal changes
+only).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
