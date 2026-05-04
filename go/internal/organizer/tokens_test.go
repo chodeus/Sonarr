@@ -1,7 +1,6 @@
 package organizer_test
 
 import (
-	"strings"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/organizer"
@@ -11,7 +10,7 @@ func handlers(m map[string]string) map[string]organizer.TokenHandler {
 	out := make(map[string]organizer.TokenHandler, len(m))
 	for k, v := range m {
 		v := v
-		out[strings.ToLower(k)] = func(tm organizer.TokenMatch) string { return v }
+		out[organizer.NormalizeTokenKey(k)] = func(tm organizer.TokenMatch) string { return v }
 	}
 	return out
 }
@@ -132,7 +131,7 @@ func TestReplaceTokens_CustomFormatPassedToHandler(t *testing.T) {
 	t.Parallel()
 	var captured string
 	h := map[string]organizer.TokenHandler{
-		"episode": func(tm organizer.TokenMatch) string {
+		organizer.NormalizeTokenKey("episode"): func(tm organizer.TokenMatch) string {
 			captured = tm.CustomFormat
 			return "01"
 		},
@@ -154,7 +153,7 @@ func TestReplaceTokens_TrailingDashTrimmedFromCustomFormat(t *testing.T) {
 	t.Parallel()
 	var captured string
 	h := map[string]organizer.TokenHandler{
-		"episode": func(tm organizer.TokenMatch) string {
+		organizer.NormalizeTokenKey("episode"): func(tm organizer.TokenMatch) string {
 			captured = tm.CustomFormat
 			return ""
 		},

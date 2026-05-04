@@ -73,6 +73,28 @@ func (t TokenMatch) DefaultValue(defaultValue string) string {
 // used at `:836`.
 type TokenHandler func(TokenMatch) string
 
+// NormalizeTokenKey ports
+// `FileNameBuilderTokenEqualityComparer.SimplifyToken` at
+// `FileNameBuilderTokenEqualityComparer.cs:26-29`. Strips every
+// non-letter and non-digit (the C# `\s|_|\W` regex), lowercases the
+// rest. Lets a single handler key (e.g. `seriestitle`) match
+// user-written variants `{Series Title}`, `{Series.Title}`,
+// `{Series_Title}`, `{series-title}`, etc.
+//
+// Apply to handler-map keys at registration time AND to the token
+// captured from the user's pattern at lookup time so both sides
+// collapse to the same canonical form.
+func NormalizeTokenKey(key string) string {
+	var sb strings.Builder
+	sb.Grow(len(key))
+	for _, r := range key {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			sb.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return sb.String()
+}
+
 // ReplaceTokens runs the token-replacement pass over `pattern`.
 // Mirrors `FileNameBuilder.ReplaceTokens(pattern, handlers, namingConfig, escape)`
 // at `:836-839`.
@@ -145,7 +167,7 @@ func replaceTokenRaw(match string, handlers map[string]TokenHandler, opts CleanN
 		tm.CustomFormat = ""
 	}
 
-	handler, ok := handlers[strings.ToLower(tm.Token)]
+	handler, ok := handlers[NormalizeTokenKey(tm.Token)]
 	if !ok {
 		// No handler → drop the token entirely (matches C#
 		// `tokenHandlers.GetValueOrDefault(..., m => string.Empty)` at

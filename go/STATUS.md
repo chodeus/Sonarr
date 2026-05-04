@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.56 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade), and ImportLists (read-only); Organizer/FileNameBuilder underway — pure title helpers (2.55) and token replacement engine + TokenMatch/TokenHandler/FormatNumber (2.56) shipped; remaining Organizer work: series/season/episode token resolvers (2.57-2.58), quality/media-info/custom-format tokens (2.59), full BuildFileName orchestration (2.60); other Phase 2 areas: EpisodeService, episode-monitored cascade in UpdateSeries, ImportListService write surface).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.57 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade), and ImportLists (read-only); Organizer/FileNameBuilder underway — pure title helpers (2.55), token replacement engine (2.56), series/season tokens + GetSeriesFolder + GetSeasonFolder + BuildSeasonPath (2.57) shipped; remaining Organizer work: episode tokens + numbering (2.58), quality/media-info/custom-format tokens (2.59), full BuildFileName orchestration (2.60); other Phase 2 areas: EpisodeService, episode-monitored cascade in UpdateSeries, ImportListService write surface).
 
 ## Where to resume
 
@@ -2645,6 +2645,67 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.57 — Organizer series/season tokens + folder builders ✅ shipped (2026-05-04)
+
+Third Organizer slice. Adds the series-level token resolvers and the
+series/season folder builders. First slice that crosses package
+boundaries — imports `internal/series` for the typed `*series.Series`
+shape.
+
+`internal/organizer/series_tokens.go`:
+
+- `NormalizeTokenKey(key)` (in `tokens.go` — shipped retroactively)
+  ports `FileNameBuilderTokenEqualityComparer.SimplifyToken` at
+  `:26-29`. Strips non-letter/non-digit chars, lowercases. Handler
+  registration and pattern lookup both go through this so
+  `{Series Title}`, `{Series.Title}`, `{Series_Title}`,
+  `{series-title}` all collapse to `seriestitle` and match the
+  same handler.
+- `RegisterSeriesTokens(handlers, *Series)` — ports
+  `AddSeriesTokens` at `:451-467`. Registers all 14 series-title
+  variants: Title, CleanTitle, TitleYear, CleanTitleYear,
+  TitleWithoutYear, CleanTitleWithoutYear, TitleThe, CleanTitleThe,
+  TitleTheYear, CleanTitleTheYear, TitleTheWithoutYear,
+  CleanTitleTheWithoutYear, TitleFirstCharacter, Year. `{Series Year}`
+  emits empty when `Year == nil` (preferred over the C# `0`).
+- `RegisterIDTokens(handlers, *Series)` — ports `AddIdTokens` at
+  `:716-722`. ImdbId / TvdbId / TvMazeId / TmdbId. TvMazeId and
+  TmdbId emit empty when value ≤ 0; TvdbId is unconditional.
+- `RegisterSeasonTokens(handlers, seasonNumber)` — ports
+  `AddSeasonTokens` at `:595-598`. Honours `{Season:00}` zero-pad
+  via [FormatNumber] from 2.56.
+- `ReplaceReservedDeviceNames(input)` — ports `:1153-1157`. Windows
+  reserved device-name guard via the regex from `:86`.
+- `FolderOptions` struct — bundles SeriesFolderFormat /
+  SeasonFolderFormat / SpecialsFolderFormat / CleanNameOptions so
+  callers don't drag in the full namingconfig.Config.
+- `GetSeriesFolder(*Series, FolderOptions)` — ports
+  `GetSeriesFolder` at `:258-277`. ReplaceTokens →
+  CleanFolderName → ReplaceReservedDeviceNames → `{ellipsis}` →
+  `...` literal substitution.
+- `GetSeasonFolder(*Series, seasonNumber, FolderOptions)` — ports
+  `:279-300`. Adds Season tokens; uses `SpecialsFolderFormat` when
+  `seasonNumber == 0`, else `SeasonFolderFormat`.
+- `BuildSeasonPath(*Series, seasonNumber, FolderOptions)` — ports
+  `:242-256`. Joins series.Path with the season folder when
+  series.SeasonFolder=true; otherwise returns series.Path.
+
+13 test functions / ~30 cases:
+- All 14 series tokens emit expected strings.
+- nil Year → empty `{Series Year}`, plain title for `{Series TitleYear}`.
+- ID tokens with normal and zero values.
+- Season tokens with `:00`, `:0000`, no format.
+- ReplaceReservedDeviceNames across 8 reserved-name and safe-name
+  cases.
+- GetSeriesFolder with `{Series Title}`, `{Series TitleYear}`, and
+  separator variants `{Series.Title}` / `{Series_Title}` /
+  `{Series-Title}`.
+- GetSeasonFolder regular / specials / with embedded series tokens.
+- BuildSeasonPath with and without SeasonFolder.
+- GetSeriesFolder with reserved device name in the title.
+
+Tests: green under `-race`; golangci-lint clean.
 
 #### 2.56 — Organizer token replacement engine ✅ shipped (2026-05-04)
 
