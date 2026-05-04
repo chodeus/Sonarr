@@ -2210,6 +2210,79 @@ Lint clean (no revive issues — Service/Matcher methods all have
 doc comments inline); package tests green; full `-race -p 1`
 suite skipped (parser-package-internal changes only).
 
+#### 2.22 — DelayProfile pure-logic helpers ✅ shipped (2026-05-04)
+
+Ports the dependency-free portion of
+`src/NzbDrone.Core/Profiles/Delay/DelayProfileService.cs`. The
+service-layer wrapper (with its repo + cache + event publishing)
+lands when DecisionEngine arrives — the helpers here are the
+parts that operate on a `[]Profile` slice with no dependencies,
+which are also the parts the future service-layer code will
+delegate to.
+
+What ships in `internal/delayprofiles/logic.go`:
+
+1. **`AllForTag(profiles, tagID) []Profile`** — mirrors
+   `DelayProfileService.AllForTag(tagId)`. Subset of profiles
+   whose `Tags` contains `tagID`. Order preserved.
+
+2. **`AllForTags(profiles, tagIDs) []Profile`** — mirrors
+   `AllForTags`. Subset whose `Tags` intersects `tagIDs` OR
+   whose `Tags` is empty (the empty-tag profile is the
+   catch-all default that applies to series with no tag
+   overlap). Uses a map-set for O(n+m) intersection.
+
+3. **`BestForTags(profiles, tagIDs) (Profile, bool)`** — mirrors
+   `FetchBestForTags`. The "best" profile is the lowest-Order
+   one whose tags intersect `tagIDs` OR whose tags are empty.
+   Returns `(Profile{}, false)` when no candidate matches —
+   the C# version uses `.First()` which throws on empty; the
+   Go port surfaces empty as `ok=false` so callers decide.
+   The C# 30-second `_bestForTagsCache` wrapper is deferred
+   to the service-layer slice; callers that want caching today
+   can memoise on top of this pure function.
+
+4. **`ComputeReorder(profiles, id, afterID *int) []Profile`** —
+   ports the in-memory half of `Reorder(id, afterId)`. Updates
+   `Profile.Order` values across the supplied slice; returns
+   the slice sorted by new Order ascending. The persistence
+   half (`_repo.UpdateMany(all)`) is the caller's
+   responsibility. The C# `Id == 1 → continue` skip is
+   preserved verbatim — the default profile (Id=1) is pinned
+   at its original Order and never reshuffled.
+
+   `afterID == nil` moves to the front; non-nil moves the
+   profile so it sits immediately after the named profile.
+   Unknown `id` returns the input unchanged (mirrors the C#
+   `// TODO: This should throw` comment that signals the
+   silent-no-op behaviour was intentional pending the throw).
+
+5. **`getAfterOrder(moving, after)`** — small helper porting
+   the corresponding C# private method.
+
+Test coverage in `logic_test.go` (~10 cases):
+
+- AllForTag: positive match + unknown-tag empty result.
+- AllForTags: empty-Tags catch-all always included even when
+  tagIDs is non-empty (the key C# semantic).
+- BestForTags: lowest-Order tag-match wins; no tag match
+  falls through to catch-all; empty profiles returns
+  ok=false; no catch-all + no tag match returns ok=false.
+- ComputeReorder: move-to-front (afterID=nil), move-after
+  named profile, unknown-id returns unchanged, default
+  profile (Id=1) is pinned.
+
+What's deferred:
+
+- **`DelayProfileService`** wrapper with repo + 30s cache +
+  `TagsUpdatedEvent` publishing. Lands when DecisionEngine
+  arrives.
+- **`DelayProfileTagInUseValidator`** — depends on Series /
+  AutoTag services for tag-in-use detection.
+
+Lint clean; package tests green; full `-race -p 1` suite
+skipped (touches only delayprofiles, no cross-package effects).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
