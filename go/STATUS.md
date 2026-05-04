@@ -2646,6 +2646,49 @@ Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
 
+#### 2.30 — NamingConfigService (singleton GetConfig + Save) ✅ shipped (2026-05-04)
+
+Ports `Organizer/NamingConfigService.cs:1-44`. Wraps the singleton
+NamingConfig row with seed-on-empty Get and Insert-or-Update Save.
+
+Why this slice now: small, no cross-cutting deps (no events, no
+external services), exercises the singleton-with-lazy-seed pattern
+that other services may layer onto later (config, hostconfig).
+
+What ships in `internal/namingconfig/service.go`:
+
+1. **`Service` + `NewService(repo)`** — orchestrator. No bus
+   parameter (faithful port; the C# class has no event publishing).
+
+2. **`GetConfig(ctx)`** — returns the single row, inserting
+   `Default()` if the table is empty. Mirrors the C# double-check-
+   locked seed path at `:18-37`: first read uncontended; on empty,
+   take the seed mutex, re-read, insert default, return. Concurrent
+   first callers race the lock once and then see the seeded row;
+   exactly one row is created.
+
+3. **`Save(ctx, config)`** — Insert if `config.ID == 0`, else
+   Update. Mirrors the C# `_repository.Upsert(namingConfig)`
+   semantic. Update path propagates ErrNotFound when the ID
+   doesn't exist (the C# version's Marr.Data Upsert silently
+   inserts; the Go port surfaces the typo case to callers).
+
+Test coverage in `service_test.go` (7 cases):
+
+- GetConfig seeds Default() into an empty table; post-state is
+  exactly one row.
+- GetConfig is idempotent: two calls return the same ID, no
+  duplicate seeding.
+- Concurrent first-call: 8 goroutines each invoking GetConfig
+  on a fresh DB end up with exactly one row and all see the same
+  ID — verifies the seed mutex prevents the double-insert race.
+- Save inserts when ID == 0 and populates ID after.
+- Save with a known ID updates in place; row count stays 1.
+- Save(nil) errors.
+- Save with an unknown non-zero ID propagates ErrNotFound.
+
+Lint clean (gofmt + golangci-lint 0 issues); package tests green.
+
 #### 2.29 — DelayProfileService (Add/Update/Delete/Reorder + BestForTagsCache) ✅ shipped (2026-05-04)
 
 Ports `Profiles/Delay/DelayProfileService.cs:1-167` on top of the
