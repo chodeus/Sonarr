@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 LARGELY COMPLETE — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade), ImportLists (read-only), and Organizer/FileNameBuilder (FULL: pure title helpers 2.55, token replacement engine 2.56, series/season folders 2.57, episode numbering 2.58, episode-title/file/quality/CF tokens 2.59, BuildFileName/BuildFilePath/RequiresEpisodeTitle/RequiresAbsoluteEpisodeNumber orchestration 2.60); remaining Phase 2 areas: MediaInfoFormatter (~300 LOC, currently stubbed), EpisodeService (foundation for episode-monitored cascade), ImportListService write surface, episode-monitored cascade in UpdateSeries).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 LARGELY COMPLETE — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL — episode-monitored cascade landed in 2.64), ImportLists (read-only), Organizer/FileNameBuilder (FULL minus MediaInfoFormatter), and Episodes (FULL — repo queries 2.61, mutations 2.62, Service 2.63, season-cascade bridge into series.Service 2.64). Remaining Phase 2 areas: MediaInfoFormatter (~300 LOC, currently stubbed; defer to Phase 3 mediafiles), ImportListService write surface (Phase 4 territory), Phase 3 EpisodeFile* / SeriesScanned event-handler wiring on episodes.Service.
 
 ## Where to resume
 
@@ -2645,6 +2645,196 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.61 — Episode repo query helpers ✅ shipped (2026-05-04)
+
+`internal/episodes/queries.go` ports the read surface of
+`EpisodeRepository` at `src/NzbDrone.Core/Tv/EpisodeRepository.cs`:
+
+- `Find(seriesID, season, episode)` → `:53-57` (ErrNotFound on miss).
+- `FindByAbsolute(seriesID, abs)` → `:59-63`.
+- `FindByAirDate(seriesID, date)` → `:65-68` — returns []Episode
+  because date is not unique (specials + regular share dates).
+- `AllBySeriesIDs([]int)` → `:80-83` with empty-input short-circuit.
+- `AllByFileID(fileID)` → `:90-93` (multi-episode files map to two+
+  episodes).
+- `AllBySceneSeason(seriesID, sceneSeason)` → `:85-88`.
+- `FindBySceneNumbering(s,e)` and `FindBySceneAbsolute(abs)` →
+  `:143-151` (both return list — anime double-bills).
+- `EpisodesBetweenDates(start,end,unmon,specials)` → `:153-170`.
+  C# JOINs on Series for `Series.Monitored` filter; Go port uses an
+  EXISTS subquery to avoid coupling this method to the series package.
+- `EpisodesWithFiles(seriesID)` → `:95-108` — INNER JOIN on
+  EpisodeFiles. The C# version projects EpisodeFile via
+  QueryJoined; the Go port leaves `episode.EpisodeFile` unset until
+  Phase 3 mediafiles ships the typed wrapper. The JOIN is there to
+  filter only.
+- `GetMany(ids)` → BasicRepository.Get(ids) used by EpisodeService:68.
+
+Engine-portable boolean handling via `sqlBoolTrue(engine)` —
+SQLite stores BOOLEAN as INTEGER 0/1 so `Monitored = 1`; Postgres
+uses `TRUE`. Pinned by the engine-parameterised tests.
+
+Tests: 7 query helpers exercised against both engines (SQLite +
+Postgres) via a single seeded fixture (8 episodes across 3 seasons
++ 1 special + 1 orphan-series row + 2 out-of-window rows). The
+unmonitored/specials filter matrix verifies all 4 flag
+combinations for EpisodesBetweenDates. EpisodesWithFiles +
+AllByFileID share the same EpisodeFile fixture seeded via
+episodefiles.NewRepo; the EXISTS-subquery path is exercised by
+seeding only one of two referenced series rows and verifying the
+orphan is filtered out.
+
+#### 2.62 — Episode mutation primitives ✅ shipped (2026-05-04)
+
+`internal/episodes/mutations.go` ports the write-side of
+`EpisodeRepository`:
+
+- `SetMonitoredFlat(e, monitored)` → `:172-178` — single-row
+  targeted UPDATE on Monitored only; mutates the input pointer in
+  place.
+- `SetMonitoredBySeason(seriesID, season, monitored) (int64, error)` →
+  `:180-187` — bulk UPDATE with the C# `"Monitored" != monitored`
+  guard so rowsAffected reflects only actual flips. Surfaces upstream
+  as the `EpisodesChanged` signal in the SeriesService cascade
+  (2.64).
+- `SetMonitoredByIDs(ids, monitored) (int64, error)` → `:189-193`
+  collapses C# per-row SetFields into a single
+  `UPDATE ... WHERE Id IN (...)`. Empty input is a no-op.
+- `SetFileID(e, fileID)` → `:195-202`.
+- `ClearFileID(e, unmonitor)` → `:204-212` writes NULL into
+  EpisodeFileId, NOT the C# magic-zero sentinel. The schema column is
+  nullable; downstream consumers treat IS NULL and = 0 identically
+  in every existing query (no equality-against-zero callers in the
+  Phase 2 surface).
+- `UpdateLastSearchTime(list) (int64, error)` → the SetFields path
+  used by EpisodeService:199-202. Per-row UPDATE in a loop (no
+  transaction; matches the C# Dapper batching's observable
+  semantics).
+- `InsertMany / UpdateMany / DeleteMany` — bulk per-row wrappers
+  used by EpisodeService:211-224. DeleteMany tolerates ErrNotFound
+  for idempotency (useful in the SeriesDeletedEvent fan-out).
+
+Tests: 7 mutation paths exercised against both engines; covers
+in-place pointer mutation, persistence verification, no-op
+detection (the SetMonitoredBySeason guard), idempotent DeleteMany,
+empty-list short-circuits, ErrNotFound propagation.
+
+#### 2.63 — episodes.Service surface ✅ shipped (2026-05-04)
+
+`internal/episodes/service.go` ports `EpisodeService` at
+`src/NzbDrone.Core/Tv/EpisodeService.cs:44-329`. The full
+`IEpisodeService` interface lands here:
+
+- `GetEpisode / GetEpisodes` → `:63-71`.
+- `FindEpisode` (3 variants: by season+episode, by absolute, by
+  air date+part) → `:73-96`, `:226-259`. The air-date disambiguator
+  surfaces `ErrMultipleEpisodesSameAirDate` instead of the C#
+  `InvalidOperationException`.
+- `FindEpisodesBy{SceneNumbering,SceneAbsolute}` → `:83-91`.
+- `GetEpisodesBy{Series,MultipleSeries,Season,SceneSeason}` →
+  `:98-116`.
+- `FindEpisodeByTitle` → `:118-154`. Full ranking algorithm: walks
+  every episode in the (seriesID, seasonNumber); for each candidate
+  computes two ranking entries (one against
+  `parser.NormalizeEpisodeTitle(release)`, one against
+  `parser.CleanSeriesTitle(parser.NormalizeEpisodeTitle(release))`);
+  filters out empty-title and pos<0 entries; sorts ascending by
+  position then descending by length; returns the top match or
+  ErrNotFound.
+- `EpisodesWithFiles / GetEpisodesByFileID / EpisodesBetweenDates`
+  → `:156-209`. `EpisodesBetweenDates` UTC-converts both bounds at
+  the call boundary (matches C# `start.ToUniversalTime()`).
+- `SetEpisodeMonitored / SetMonitored / SetEpisodeMonitoredBySeason`
+  → `:176-192`. The season-bulk variant returns the row count for
+  upstream cascade telemetry.
+- `UpdateEpisode / UpdateEpisodes / UpdateMany / UpdateLastSearchTime`
+  → `:171-202`.
+- `InsertMany / DeleteMany` → `:211-224`.
+- `SetFileID / ClearFileID` — service-level wrappers around the
+  repo helpers, used by the (deferred) Phase 3
+  EpisodeFile{Added,Deleted}Event handlers.
+
+Cache plumbing for the C# `_cache` field
+(`ICached<HashSet<int>>` keyed by series-id-as-string, used by the
+EpisodeFileDeletedEvent + SeriesScannedEvent missing-from-disk
+auto-unmonitor):
+
+- `RememberMissingFromDisk(seriesID, episodeID)`.
+- `DrainMissingFromDisk(seriesID) []int` — drains and clears the
+  pending set; returns sorted ints for deterministic test output.
+- `SetFileID` auto-forgets the episode (mirrors C# `:294-302`).
+- `sync.Mutex` matches C# `lock(_cache)`.
+
+Deferred to Phase 3 (mediafiles):
+
+- `Handle(EpisodeFileAddedEvent)` / `Handle(EpisodeFileDeletedEvent)`
+  — the events live in mediafiles.
+- `HandleAsync(SeriesScannedEvent)` — same.
+- `HandleAsync(SeriesDeletedEvent)` listener wiring.
+- `AutoUnmonitorPreviouslyDownloadedEpisodes` config flag — the
+  `AutoUnmonitorMissingProvider` interface is wired but the
+  config-service port is Phase 4 territory; tests treat unset as
+  `false`.
+
+No package-level events published by the Service — matches C#.
+Downstream listeners react to SeriesEditedEvent /
+EpisodeFile{Added,Deleted}Event from neighbouring packages.
+
+Tests: 5 test functions × 22 sub-cases. Coverage includes the
+full title-matching algorithm, the air-date disambiguator
+(0/1/many+specials/many+part variants), missing-from-disk cache
+roundtrips, SetFileID auto-forget, and every read+mutation
+pass-through.
+
+#### 2.64 — SeriesService episode-monitored cascade ✅ shipped (2026-05-04)
+
+Closes the SeriesService UpdateSeries cascade deferred since 2.50.
+
+`internal/series/mutations.go` adds an `EpisodeMonitorCascade`
+interface (consumer-side definition) with a single method:
+
+  `SetEpisodeMonitoredBySeason(ctx, seriesID, season, monitored) (rows, err)`
+
+`*episodes.Service` satisfies it; pinned by a compile-time
+`var _ series.EpisodeMonitorCascade = (*episodes.Service)(nil)` in
+`internal/episodes/service_test.go:18`. The host wires the
+concrete service via `Service.SetEpisodeMonitorCascade` — no
+series→episodes import; the dep flows the safe direction
+(episodes → series already exists for SeriesEditedEvent / etc.).
+
+`UpdateSeries` now mirrors C# `SeriesService.cs:209-221` exactly:
+
+1. Decode `Series.Seasons` JSON (both stored and new sides) into
+   minimal `{SeasonNumber, Monitored}` structs.
+2. For each season in the new shape, look up the stored counterpart
+   by `SeasonNumber`. If found AND its `Monitored` flag changed,
+   call `cascade.SetEpisodeMonitoredBySeason` and flip the
+   `episodesChanged` tracking bool.
+3. Mirror the C# semantic: `episodesChanged` is set on the
+   SEASON-level toggle, not on the cascade row count. Matches the
+   "user toggled a season" intent of the EpisodesChanged signal.
+4. Skip cascade entirely when `SkipEpisodeMonitoredCascade` is set
+   (matches C# `updateEpisodesToMatchSeason = false`) or when no
+   cascade is wired (tolerant for tests/migrations).
+5. Newly-added seasons (no stored counterpart) are silently
+   skipped to match the C# `SingleOrDefault` short-circuit.
+
+`SeriesEditedEvent.EpisodesChanged` now carries the real value
+(previously hardcoded `false`).
+
+The Seasons JSON decoder is a minimal `{seasonNumber, monitored}`
+shape — other Season fields (Images, etc.) pass through untouched
+because the caller-supplied Seasons JSON is persisted verbatim.
+
+Tests added (5 cascade scenarios in series/mutations_test.go):
+cascade-fires-on-flip, SkipEpisodeMonitoredCascade-suppresses,
+no-cascade-when-seasons-unchanged, no-cascade-when-not-wired,
+new-season-no-counterpart-ignored. The pre-existing UpdateSeries
+test was updated to drop the "deferred" comment.
+
+  internal/series + internal/episodes:  ok
+  internal/qualityprofiles + rootfolders + importlists: ok
 
 #### 2.60 — Organizer BuildFileName / BuildFilePath orchestration ✅ shipped (2026-05-04)
 
