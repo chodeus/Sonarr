@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 LARGELY COMPLETE — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL — episode-monitored cascade landed in 2.64), ImportLists (read-only), Organizer/FileNameBuilder (FULL minus MediaInfoFormatter), and Episodes (FULL — repo queries 2.61, mutations 2.62, Service 2.63, season-cascade bridge into series.Service 2.64). Remaining Phase 2 areas: MediaInfoFormatter (~300 LOC, currently stubbed; defer to Phase 3 mediafiles), ImportListService write surface (Phase 4 territory), Phase 3 EpisodeFile* / SeriesScanned event-handler wiring on episodes.Service.
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 COMPLETE modulo MediaInfoFormatter; Phase 3 STARTED — mediafiles foundation shipped: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason. Remaining Phase 2 areas: MediaInfoFormatter (~300 LOC, defer to later Phase 3 slice with MediaInfoModel struct port), ImportListService write surface (Phase 4 territory). Next Phase 3 territory: MediaInfoFormatter; DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
 
 ## Where to resume
 
@@ -2786,6 +2786,181 @@ full title-matching algorithm, the air-date disambiguator
 (0/1/many+specials/many+part variants), missing-from-disk cache
 roundtrips, SetFileID auto-forget, and every read+mutation
 pass-through.
+
+### Phase 3 — Service / Workflow layer ⏳ in progress
+
+#### 3.3 — episodes.Service mediafiles event handlers ✅ shipped (2026-05-04)
+
+Closes the deferred Handle{EpisodeFileAdded,EpisodeFileDeleted}
+handlers from 2.63. The episodes package can't import episodefiles
+(would cycle: episodefiles imports episodes for the EpisodeProvider
+interface), so a local `episodes.FileDeleteReason` enum mirrors
+`episodefiles.DeleteMediaFileReason` value-for-value. Tests on both
+sides pin the numbering — if either side reorders, the host-adapter
+mapping breaks loudly.
+
+Public surface added in `internal/episodes/handlers.go`:
+
+- `HandleEpisodeFileAdded(ctx, fileID, linkedEpisodes []Episode)` →
+  `EpisodeService.cs:288-306`. SetFileID per linked episode + drain
+  from missing-from-disk cache. First-error wins.
+- `HandleEpisodeFileDeleted(ctx, fileID, linkedEpisodes, reason)` →
+  `:261-286`. Decision matrix mirrors C# `:267-271`:
+  - Reason ∈ {Upgrade, ManualOverride}: preserve Monitored.
+  - Reason == MissingFromDisk + AutoUnmonitor flag: cache for next
+    scan (no immediate Monitored flip).
+  - Other reason + AutoUnmonitor: ClearFileID(unmonitor=true).
+  - Otherwise: ClearFileID(unmonitor=false).
+  Tolerates ErrNotFound on already-deleted episode rows (e.g.
+  after a SeriesDeletedEvent fanout race).
+- `HandleSeriesScanned(ctx, seriesID)` → `:314-327`. Drains the
+  missing-from-disk cache for the series and bulk-unmonitors any
+  episodes still in it. Idempotent on empty cache.
+
+The host's bus listener wires it up at the boundary:
+
+```
+bus.Subscribe("episodes.fileAdded", func(ev episodefiles.EpisodeFileAddedEvent) error {
+    return episodesSvc.HandleEpisodeFileAdded(
+        ctx, ev.EpisodeFile.ID, ev.LinkedEpisodes)
+})
+bus.Subscribe("episodes.fileDeleted", func(ev episodefiles.EpisodeFileDeletedEvent) error {
+    return episodesSvc.HandleEpisodeFileDeleted(
+        ctx, ev.EpisodeFile.ID, ev.LinkedEpisodes,
+        episodes.FileDeleteReason(ev.Reason))
+})
+```
+
+The `episodes.FileDeleteReason(ev.Reason)` cast works because both
+sides pin identical numbering; tests on both sides verify.
+
+Tests (5 functions × 7+ sub-cases) — String + frozen-numbering pin,
+HandleAdded binds files + drains cache + nil-input no-op, HandleDeleted
+policy matrix across 7 scenarios (5 reasons × 2 AutoUnmonitor states),
+ErrNotFound tolerance, HandleSeriesScanned drains+unmonitors only
+cached episodes.
+
+  internal/episodes:  ok  (-race)
+  golangci-lint:      0 issues
+
+#### 3.2 — episodefiles.Service (MediaFileService port) ✅ shipped (2026-05-04)
+
+Ports `MediaFileService` at
+`src/NzbDrone.Core/MediaFiles/MediaFileService.cs:31-134`:
+
+- `Add(file)` → `:43-48` — Insert + publish EpisodeFileAddedEvent
+  (with linked episodes resolved via the EpisodeProvider).
+- `Update(file)` / `UpdateMany([]*file)` → `:50-58`. No event
+  published — matches C#. Per-row UPDATE in a loop because the
+  generic Repo doesn't yet expose a transactional bulk helper
+  (same approximation as series.UpdateMany).
+- `Delete(file, reason)` → `:60-68` — resolves linked episodes +
+  parent Series via the provider interfaces BEFORE the row is
+  deleted (so the FK doesn't drop the data we need for the event
+  payload), then publishes EpisodeFileDeletedEvent with reason.
+- 7 read accessors: `GetFile / GetFiles / GetFilesBy{Series,
+  SeriesIDs, Season} / GetFilesWithoutMediaInfo /
+  GetFilesWithRelativePath` → `:70-109`.
+- `FilterExistingFiles(candidates, *series.Series)` → `:108-130`.
+  Walks candidates and removes any that already correspond to a
+  persisted EpisodeFile under the same Series. Path comparison via
+  `filepath.Clean` to normalise separator/trailing-slash variance
+  — matches the C# `PathEqualityComparer` Unix behaviour; the
+  case-fold-on-Windows quirk is intentionally NOT replicated.
+- `HandleSeriesDeleted(ctx, ev)` → `:131-134` — bus-listener entry
+  point for SeriesDeletedEvent fanout. Calls DeleteForSeries.
+  Note: the C# version doesn't publish per-file
+  EpisodeFileDeletedEvent for the bulk drop; the Go port matches —
+  downstream consumers (extras, subtitles cleanup) wire their own
+  SeriesDeletedEvent listeners independently.
+
+Cross-package interface bridges (consumer-side definitions in
+`internal/episodefiles/service.go`, pinned by compile-time
+`var _` checks in service_test.go):
+
+- `EpisodeProvider` — `*episodes.Service.GetEpisodesByFileID`
+- `SeriesProvider`  — `*series.Service.GetSeries`
+
+Both are optional (nil tolerated): when wired they populate the
+`LinkedEpisodes` + `Series` fields on EpisodeFile{Added,Deleted}Event
+before publishing — replacing the C# `LazyLoaded<T>` Dapper
+navigation properties with explicit eager loading.
+
+What's deferred:
+
+- Path materialization on EpisodeFileDeletedEvent (the C# version
+  sets `episodeFile.Path = Path.Combine(Series.Path, RelativePath)`
+  before publishing). The Go port surfaces both `Series` and
+  `EpisodeFile` separately on the event so listeners can compute
+  it themselves.
+
+Tests (8 functions × ~20 sub-cases): Add+publish, no-provider
+nil-LinkedEpisodes, Delete+publish with all 3 fields populated,
+nil-bus skip, FilterExistingFiles golden+empty+nil-series,
+HandleSeriesDeleted bulk drop, getter+update pass-through,
+NewService(nil) error.
+
+  internal/episodefiles:  ok  (-race)
+
+#### 3.1 — episodefiles repo query helpers ✅ shipped (2026-05-04)
+
+Ports the read surface of `MediaFileRepository` at
+`src/NzbDrone.Core/MediaFiles/MediaFileRepository.cs`:
+
+- `AllBySeriesIDs([]int)` → `:33-36`.
+- `AllBySeason(seriesID, sn)` → `:38-41`.
+- `GetMany([]int)` → `BasicRepository.Get(ids)` used by
+  MediaFileService:88.
+- `AllWithoutMediaInfo()` → `:43-46`. Uses SQL `IS NULL` filter
+  rather than checking the scanned-empty-string post-Scan
+  (`nullableStringEmpty` round-trips "" and NULL to the same Go
+  value); the DB-level filter is the authoritative source.
+- `AllWithRelativePath(seriesID, relativePath)` → `:48-52`.
+- `DeleteForSeries([]int)` → `:54-56` — bulk DELETE returning
+  rowsAffected. Empty input is a no-op (0, nil).
+
+All multi-id helpers short-circuit empty input to match the C#
+`Contains` no-match semantic.
+
+Tests: 6 query helpers × both engines via a single seeded fixture
+(4 files spanning 2 series/2 seasons + 1 duplicate-relpath + 1
+NULL-MediaInfo row). DeleteForSeries verifies rowsAffected
+correctness and the empty-input no-op path.
+
+  internal/episodefiles:  ok  (-race -p 1)
+
+#### 3.0 — MediaFiles event types + DeleteMediaFileReason ✅ shipped (2026-05-04)
+
+First Phase 3 commit. Adds the event types every Phase 3 mediafiles
+slice will need:
+
+- `DeleteMediaFileReason` int enum (MissingFromDisk, Manual,
+  Upgrade, NoLinkedEpisodes, ManualOverride) — ports
+  `MediaFiles/DeleteMediaFileReason.cs`. Not persisted, but
+  numbering pinned by test for event-bus stability AND for the
+  episodes-side `FileDeleteReason` cross-package mirror (3.3).
+- `EpisodeFileAddedEvent` — ports
+  `MediaFiles/Events/EpisodeFileAddedEvent.cs`. Carries the File
+  plus an explicit `LinkedEpisodes []episodes.Episode` slice
+  (replaces the C# `LazyLoaded<List<Episode>>` Dapper navigation
+  property; producers populate before publish).
+- `EpisodeFileDeletedEvent` — ports
+  `MediaFiles/Events/EpisodeFileDeletedEvent.cs`. File + reason +
+  LinkedEpisodes + Series (the latter so listeners can rebuild
+  Path = Series.Path + RelativePath without a re-fetch).
+- `EpisodeFileRenamedEvent` — ports
+  `MediaFiles/Events/EpisodeFileRenamedEvent.cs`. Series + File +
+  OriginalPath. Reserved for the rename-service slice.
+
+Notes on dependency direction: episodes and series are upstream
+packages from the episodefiles perspective (no cycle — neither
+imports episodefiles in production code). The event payloads can
+carry typed pointers/slices without trouble.
+
+Tests: 2 functions exercising `String()` across all 5 reasons + 1
+unknown plus the frozen-numbering pin.
+
+  internal/episodefiles:  ok
 
 #### 2.64 — SeriesService episode-monitored cascade ✅ shipped (2026-05-04)
 
