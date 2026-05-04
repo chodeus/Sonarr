@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.41 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, NotificationStatus, DownloadClientStatus; series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; EscalationBackOff constants + ApplySuccess/ApplyFailure pure logic shipped + 2 of 4 ProviderStatus typed services live (NotificationStatus, DownloadClientStatus); remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, full Series/Episode service business logic, RootFolderService with disk-provider, ImportListStatus + IndexerStatus services).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.42 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services (Notification, DownloadClient, ImportList, Indexer); series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService, full Series/Episode service business logic, RootFolderService with disk-provider).
 
 ## Where to resume
 
@@ -2645,6 +2645,49 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.42 — ImportListStatus + IndexerStatus services ✅ shipped (2026-05-04)
+
+Closes the ProviderStatus typed-derivative quartet started in
+2.41. Both Services follow the notificationstatus pattern
+verbatim — same Service shape, same C# parity behaviours, same
+pure-logic helpers in `internal/providerstatus`. The only
+per-package differences are:
+
+- importliststatus: extra `LastInfoSync *time.Time` and
+  `HasRemovedItemSinceLastClean bool` columns. Neither
+  participates in the back-off logic; both are set by the
+  import-list runner on a separate code path. The Service
+  preserves them across Upsert.
+- indexerstatus: extra `LastRssSyncReleaseInfo string` (embedded
+  JSON for the most-recent RSS sync snapshot). Untouched by the
+  back-off logic; preserved across Upsert.
+
+Each gets its own typed `StatusChangedEvent{ProviderID, Status}`
+published on every successful mutation, mirroring the per-package
+pattern from 2.41.
+
+Test corpus (5 wiring tests per package + 1 type-specific
+round-trip test):
+
+- `importliststatus/service_test.go` — 5 wiring tests +
+  `TypeSpecificColumnsSurvive` which seeds a row with
+  LastInfoSync + HasRemovedItemSinceLastClean and verifies they
+  round-trip through the RecordFailure path untouched.
+- `indexerstatus/service_test.go` — 5 wiring tests +
+  `LastRssSyncReleaseInfoSurvives` which seeds a row with
+  LastRssSyncReleaseInfo JSON and verifies it round-trips.
+
+Cross-DB: SQLite + Postgres both green under `-race`. Lint clean.
+
+The 4 ProviderStatus services are now feature-complete relative
+to the C# class hierarchy. Outstanding follow-up: the C#
+`ProviderDeletedEvent<TProvider>` IHandleAsync wiring isn't
+exposed via the bus yet — each Service has `OnProviderDeleted`
+as a plain method instead. The bus subscription will be added
+when the per-provider lifecycle (Indexers / DownloadClients /
+Notifications / ImportLists service ports) lands and the
+relevant `ProviderDeletedEvent` types exist.
 
 #### 2.41 — ProviderStatus base logic + Notification/DownloadClient services ✅ shipped (2026-05-04)
 
