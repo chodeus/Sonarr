@@ -71,7 +71,25 @@ func (t TokenMatch) DefaultValue(defaultValue string) string {
 // text for the token, or the empty string when the token has no
 // meaningful value. Mirrors the C# `Func<TokenMatch, string>` signature
 // used at `:836`.
+//
+// Returning [TokenPreserve] (instead of an empty string) tells
+// [ReplaceTokens] to leave the original `{Token}` text in place — the
+// equivalent of the C# `m => null` placeholder semantic at `:614-615`
+// + `:878-882`. Use this when registering placeholder handlers that a
+// later pass will overwrite.
 type TokenHandler func(TokenMatch) string
+
+// TokenPreserve is the sentinel return value a [TokenHandler] returns
+// to keep the original `{Token}` text in the rendered output.
+//
+// Mirrors the C# `null` return from `AddEpisodeTitlePlaceholderTokens`
+// (`:612-616`) plus the `if (replacementText == null) return match.Value`
+// pass-through at `:878-882`. Carrying it as a sentinel string keeps
+// the TokenHandler signature unchanged across the package.
+//
+// The sentinel uses NUL chars so it never collides with a legitimate
+// rendered value (filenames may not contain NUL on any supported OS).
+const TokenPreserve = "\x00\x00organizer-preserve\x00\x00"
 
 // NormalizeTokenKey ports
 // `FileNameBuilderTokenEqualityComparer.SimplifyToken` at
@@ -176,6 +194,13 @@ func replaceTokenRaw(match string, handlers map[string]TokenHandler, opts CleanN
 	}
 
 	replacement := handler(tm)
+
+	// Sentinel: handler asks to preserve the original token. Used by
+	// placeholder registrations (e.g. AddEpisodeTitlePlaceholderTokens)
+	// where a later pass will overwrite the registration.
+	if replacement == TokenPreserve {
+		return match
+	}
 
 	// Case-folding: if the user wrote `{series title}` (all-lower or
 	// non-letter), force the replacement to lowercase. If `{SERIES TITLE}`

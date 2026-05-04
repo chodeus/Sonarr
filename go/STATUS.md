@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.59 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade), and ImportLists (read-only); Organizer/FileNameBuilder underway — pure title helpers (2.55), token replacement engine (2.56), series/season folders (2.57), episode numbering + AirDate + Truncate (2.58), episode-title + episode-file + quality + custom-format + media-info-stub tokens (2.59); remaining Organizer work: full BuildFileName/BuildFilePath orchestration + RequiresEpisodeTitle (2.60); other Phase 2 areas: EpisodeService, MediaInfoFormatter port, ImportListService write surface).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 LARGELY COMPLETE — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade), ImportLists (read-only), and Organizer/FileNameBuilder (FULL: pure title helpers 2.55, token replacement engine 2.56, series/season folders 2.57, episode numbering 2.58, episode-title/file/quality/CF tokens 2.59, BuildFileName/BuildFilePath/RequiresEpisodeTitle/RequiresAbsoluteEpisodeNumber orchestration 2.60); remaining Phase 2 areas: MediaInfoFormatter (~300 LOC, currently stubbed), EpisodeService (foundation for episode-monitored cascade), ImportListService write surface, episode-monitored cascade in UpdateSeries).
 
 ## Where to resume
 
@@ -2645,6 +2645,107 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.60 — Organizer BuildFileName / BuildFilePath orchestration ✅ shipped (2026-05-04)
+
+Final Organizer slice. Wires together every prior slice (2.55-2.59)
+into the public BuildFileName / BuildFilePath / RequiresEpisodeTitle /
+RequiresAbsoluteEpisodeNumber surface. The 1278-LOC C# FileNameBuilder
+is now feature-complete in Go, modulo the MediaInfoFormatter port
+(~300 LOC, currently stubbed with empty-handler tokens).
+
+`internal/organizer/build.go`:
+
+- `BuildOptions` struct — all-in-one bag the orchestration needs.
+  Inlines the relevant NamingConfig fields + a QualityResolver +
+  the customformats list + UseCurrentFilenameAsFallback flag.
+  Pure-function inputs; no service-DI ambiguity.
+- `BuildFileName(eps, series, file, ext, opts) (string, error)` —
+  ports `:136-224`. Pattern selection per series type, episode
+  sort, path-separator-driven component split, two-pass token
+  replacement (placeholder pass measures length budget; second pass
+  renders the actual title), final cleanup pass.
+- `BuildFilePath(eps, series, file, ext, opts) (string, error)` —
+  `:231-240`. Joins BuildSeasonPath + BuildFileName.
+- `RequiresEpisodeTitle(series, eps, opts) bool` — `:399-436`.
+  Picks per-type pattern, returns whether `{Episode Title}` /
+  `{Episode CleanTitle}` is present.
+- `RequiresAbsoluteEpisodeNumber(opts) bool` — `:438-449`. Whether
+  `{absolute}` is in the AnimeEpisodeFormat.
+- `pickPattern` — picks the right per-series-type format with
+  fallback semantics (Daily falls back to Standard for S00 specials;
+  Anime falls back to Standard when episodes lack absolute and
+  AnimeEpisodeFormat requires it).
+- `splitOnPathSep` — splits on `/` and `\\`, drops empty segments.
+- `buildOneComponent` — the inner per-segment loop. Registers all
+  token classes (series, ID, episode-numbering, episode-title
+  placeholder, episode-file, quality, media-info stubs, custom
+  format), runs first-pass with escape=true, computes the
+  remaining length budget for the episode title via
+  `getLengthWithoutEpisodeTitle`, runs second-pass with the actual
+  episode-title tokens registered, applies the final cleanup
+  (run-collapse, trim separators, ellipsis substitution, reserved
+  device-name protection).
+- `getLengthWithoutEpisodeTitle` — `:1141-1151`. Re-runs
+  ReplaceTokens with empty episode-title handlers + `{ellipsis}` →
+  `...` to measure the remainder.
+- `registerQualityTokensFromOpts` — parses the file's Quality JSON
+  via `quality.Model.UnmarshalJSON` (fail-soft to empty Model on
+  parse error) and threads it to `RegisterQualityTokens`.
+
+The first-pass / second-pass token-replacement dance was tricky.
+The C# version uses a `null`-returning placeholder handler which
+the inner ReplaceToken at `:878-882` interprets as "preserve the
+original token text". Naïvely returning empty string in Go erased
+the placeholder, so the second pass had no `{Episode Title}` to
+replace. Fixed by introducing a `TokenPreserve` sentinel string
+(in `tokens.go`) — a NUL-prefixed magic value that ReplaceToken
+treats as "skip me, leave original". `AddEpisodeTitlePlaceholderTokens`
+returns this; the second pass overwrites the handler with the real
+title resolver.
+
+`fileNameRunCollapse` final pass collapses adjacent `-` / ` ` /
+`.` / `_` runs. RE2 doesn't support backreferences (the C# `(.)\\1+`
+shape) so the Go port iterates per separator char.
+
+13 test functions / ~16 cases:
+
+- `BuildFileName_RenameEpisodesFalse` — original filename returned.
+- `BuildFileName_StandardEpisode` — `Show - S01E01 - Pilot.mkv`.
+- `BuildFileName_MultiEpisodeExtend` — duplicate-title dedup +
+  `S01E01-02` range.
+- `BuildFileName_DailyFormat` — `2020-05-04` → `2020 05 04`.
+- `BuildFileName_AnimeFormat` — absolute number rendered.
+- `BuildFileName_PathSeparatorSplitsComponents` — `/` in pattern
+  produces multi-segment output.
+- `BuildFileName_RejectsEmptyFormatForType` —
+  ErrNamingFormatRequired propagation.
+- `BuildFilePath_JoinsSeasonPath` — full path with season folder.
+- `BuildFilePath_RejectsEmptyExtension` — required-arg guard.
+- `RequiresEpisodeTitle_True` / `_False` / `_RenameOff` — three
+  paths.
+- `RequiresAbsoluteEpisodeNumber` — yes + no.
+- `BuildFileName_IllegalCharactersInTitleSurvive` — `?` →
+  `!`, `: ` → ` - `.
+- `BuildFileName_AnimeWithoutAbsoluteFallsBackToStandard` — anime
+  without absolute number → Standard format.
+
+What's deferred:
+- **MediaInfoFormatter port** (~300 LOC). Currently stubbed via
+  RegisterMediaInfoStubs — patterns containing `{MediaInfo ...}`
+  parse and render to empty. Full port reads codec / channel /
+  dynamic-range data from MediaInfo.dll output; lands as Phase 3
+  with the MediaInfo provider port. Substantial but orthogonal.
+- **Custom-format calculator integration**. The C# version derives
+  the matching-CustomFormats list automatically via
+  `_formatCalculator.ParseCustomFormat(file, series)` when the
+  caller doesn't supply it. The Go port requires the caller to
+  supply `BuildOptions.CustomFormats` directly — the host wires
+  this via `customformats.Service.MatchingFormats(file, series)`
+  before invoking BuildFileName.
+
+Tests: green under `-race`; golangci-lint clean across `./...`.
+Parser spec still 200/200.
 
 #### 2.59 — Organizer episode-title + episode-file + quality + custom-format tokens ✅ shipped (2026-05-04)
 

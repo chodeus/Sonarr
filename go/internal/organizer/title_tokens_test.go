@@ -168,14 +168,27 @@ func TestAddEpisodeTitleTokens_RegistersBothVariants(t *testing.T) {
 	}
 }
 
-func TestAddEpisodeTitlePlaceholderTokens_EmitEmpty(t *testing.T) {
+func TestAddEpisodeTitlePlaceholderTokens_PreserveSentinel(t *testing.T) {
 	t.Parallel()
 	handlers := map[string]organizer.TokenHandler{}
 	organizer.AddEpisodeTitlePlaceholderTokens(handlers)
 	for _, name := range []string{"Episode Title", "Episode CleanTitle"} {
 		got := handlers[organizer.NormalizeTokenKey(name)](organizer.TokenMatch{})
-		if got != "" {
-			t.Errorf("%s: got %q want empty", name, got)
+		if got != organizer.TokenPreserve {
+			t.Errorf("%s: got %q want TokenPreserve", name, got)
 		}
+	}
+}
+
+func TestReplaceTokens_PreserveSentinelKeepsToken(t *testing.T) {
+	t.Parallel()
+	handlers := map[string]organizer.TokenHandler{
+		organizer.NormalizeTokenKey("Episode Title"): func(organizer.TokenMatch) string {
+			return organizer.TokenPreserve
+		},
+	}
+	got := organizer.ReplaceTokens("S01E01 {Episode Title} END", handlers, organizer.DefaultCleanNameOptions(), false)
+	if got != "S01E01 {Episode Title} END" {
+		t.Errorf("got %q want token preserved", got)
 	}
 }

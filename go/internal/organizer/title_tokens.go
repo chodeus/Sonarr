@@ -162,12 +162,17 @@ func AddEpisodeTitleTokens(handlers map[string]TokenHandler, eps []episodes.Epis
 }
 
 // AddEpisodeTitlePlaceholderTokens ports `:612-616`. Registers
-// `{Episode Title}` / `{Episode CleanTitle}` to return the empty
-// string — used by the length-pre-flight pass that measures the
-// pattern length without the episode title.
+// `{Episode Title}` / `{Episode CleanTitle}` to return [TokenPreserve]
+// so the first ReplaceTokens pass leaves the original token in
+// place. The second pass (after AddEpisodeTitleTokens overwrites the
+// handler) renders the actual title with the correct length budget.
+//
+// Without TokenPreserve, the first pass would erase the token and
+// the second pass would have nothing to substitute — leading to the
+// "episode title missing from filename" symptom.
 func AddEpisodeTitlePlaceholderTokens(handlers map[string]TokenHandler) {
-	handlers[NormalizeTokenKey("Episode Title")] = func(TokenMatch) string { return "" }
-	handlers[NormalizeTokenKey("Episode CleanTitle")] = func(TokenMatch) string { return "" }
+	handlers[NormalizeTokenKey("Episode Title")] = func(TokenMatch) string { return TokenPreserve }
+	handlers[NormalizeTokenKey("Episode CleanTitle")] = func(TokenMatch) string { return TokenPreserve }
 }
 
 // RegisterEpisodeFileTokens ports `AddEpisodeFileTokens` at
