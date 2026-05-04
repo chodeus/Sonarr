@@ -62,6 +62,18 @@ var preSubstitutionRules = []preSubstitutionRule{
 		Replacement: `$1.S01E$2-E$3.$4`,
 	},
 
+	// Rule 1b (Go-port extension): space-separated NEXT multi-
+	// episode variant with NO airdate. Mirrors rule 1a but with ` `
+	// separators and no `\d{6}` airdate group. Catches
+	// `Series Title? E11-E12 1080p HDTV AAC H.264-NEXT` →
+	// `Series Title? S01E11-E12 1080p HDTV AAC H.264-NEXT`.
+	// Trailing `?` cleanup (`cleanSeriesName` TrimRight) strips the
+	// `?` from the post-rewrite captured title.
+	{
+		Re:          regexp.MustCompile(`^(.+) E(\d{2,4})-E(\d{2,4}) (.*-(?:F1RST|NEXT))$`),
+		Replacement: `$1 S01E$2-E$3 $4`,
+	},
+
 	// Rule 1 (`ParserCommon.cs:12`): Korean series without season
 	// number, replace with S01Exxx and remove airdate.
 	//

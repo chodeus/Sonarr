@@ -245,7 +245,7 @@ func multiEpisodeRows() []specRow {
 		// rewrites multi-E + 6-digit airdate to S01E<NN>-E<NN> form
 		// before rule walking.
 		me("Series.Title.E07-E08.180612.1080p-NEXT", "Series Title", 1, []int{7, 8}),
-		mex("Series Title? E11-E12 1080p HDTV AAC H.264-NEXT", "Series Title", 1, []int{11, 12}),
+		me("Series Title? E11-E12 1080p HDTV AAC H.264-NEXT", "Series Title", 1, []int{11, 12}),
 		// Bracketed multi-Nx single-bracket — flipped by the new
 		// bracketed-Nx rule with `[-x_. ]*` separator inside the
 		// bracket (allows `-x` 2-char gap between episodes).

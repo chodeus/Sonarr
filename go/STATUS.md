@@ -1541,6 +1541,61 @@ Lint clean (after gofmt re-format); parser test suite green
 (23 tests pass); full `-race -p 1` suite skipped (parser-
 package-internal changes only).
 
+#### 2.13.6 — Korean NEXT space-separator multi-E variant + trailing-? title trim ✅ shipped (2026-05-04)
+
+Flips the third-to-last xfail. Spec moves from 198/2 to **199/1**.
+
+**Spec delta**: pass=198 → 199 (+1); xfail=2 → 1 (-1);
+regression=0.
+
+What ships:
+
+1. **PreSub rule 1b** (Go-port extension) in
+   `pre_substitution.go` — listed BETWEEN rule 1a and rule 1.
+   Mirrors rule 1a (`E<NN>-E<NN>.<6digit-airdate>.<rest>-NEXT`)
+   but with SPACE separators and NO airdate group:
+
+   ```
+   ^(.+) E(\d{2,4})-E(\d{2,4}) (.*-(?:F1RST|NEXT))$
+   → $1 S01E$2-E$3 $4
+   ```
+
+   Catches `Series Title? E11-E12 1080p HDTV AAC H.264-NEXT` →
+   `Series Title? S01E11-E12 1080p HDTV AAC H.264-NEXT`. The
+   post-rewrite shape parses via the standard title-S-E rule
+   with multi-E trailing iteration.
+
+2. **`cleanSeriesName` trailing-`?` trim**. After the existing
+   `strings.TrimSpace`, adds a `strings.TrimRight(s, "?")` pass
+   so `Series Title?` becomes `Series Title`. Trailing `!` is
+   intentionally preserved verbatim — fixture rows like
+   `The Series Title! - S01E01-02-03` (multi-episode 67) and
+   `Series Title! (2013) - S04E44-E45` keep the `!`.
+
+Spec row flipped from `mex` to `me`:
+- `Series Title? E11-E12 1080p HDTV AAC H.264-NEXT` →
+  title=Series Title, season=1, episodes=[11,12].
+
+What stays xfail (1 row after this slice):
+
+- `kill-roy-was-here-e07-720p` — mini-series form expected
+  season=1 episodes=[7], NOT abs=[7]. Same input shape as the
+  currently-passing `Some_Anime_Show_e66_…` anime row but
+  with a different expected outcome. The C# fixtures place
+  these in different test FILES (mini vs absolute), so even
+  C# can't disambiguate from input alone — the fixture itself
+  encodes the answer. Two options per the original fix sketch:
+  (a) accept as known fixture-bug and remove from the spec
+  corpus, or (b) teach `buildAnimeTitleAbsolute` to ALSO
+  populate season=1+episode so both anime and mini matchers
+  succeed. Option (b) is mechanical but expands the data-
+  model interpretation; recommend deferring until a
+  downstream consumer with broader context lands.
+
+Lint clean; parser test suite green (23 tests pass); full
+`-race -p 1` suite skipped (parser-package-internal changes
+only).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)

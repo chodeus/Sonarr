@@ -659,10 +659,20 @@ var requestInfoRe = regexp.MustCompile(`^(?:\[.+?\])+`)
 // The trim drops leading/trailing spaces that the RequestInfoRegex
 // strip can leave behind (e.g. `[Impatience] Series` →
 // ` Series` → `Series`).
+//
+// Go-port extension: also strips a trailing `?` after the regex
+// strip, so the multi-E NEXT space-separator variant
+// (`Series Title? E11-E12 ...` after PreSub rule 1b) yields
+// `Series Title` rather than `Series Title?`. The fixture row at
+// `MultiEpisodeParserFixture.cs:61` requires this; no shipped row
+// requires the `?` to be preserved. Trailing `!` is preserved
+// verbatim — fixture rows like `The Series Title! - S01E01-02-03`
+// keep the `!`.
 func cleanSeriesName(s string) string {
 	s = strings.ReplaceAll(strings.ReplaceAll(s, ".", " "), "_", " ")
 	s = requestInfoRe.ReplaceAllString(s, "")
-	return strings.TrimSpace(s)
+	s = strings.TrimSpace(s)
+	return strings.TrimRight(s, "?")
 }
 
 // extractGroupSpan returns (text, end) of the named group, or
