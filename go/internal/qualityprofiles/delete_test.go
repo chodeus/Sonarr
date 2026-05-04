@@ -36,7 +36,7 @@ type stubImportListChecker struct {
 	err error
 }
 
-func (s *stubImportListChecker) AllImportListQualityProfileIDs(context.Context) ([]int, error) {
+func (s *stubImportListChecker) AllQualityProfileIDs(context.Context) ([]int, error) {
 	if s.err != nil {
 		return nil, s.err
 	}

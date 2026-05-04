@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.52 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL incl. Delete), and Series (read-only + Add/Update/Delete with all 5 events + UpdateTags integrated into UpdateSeries via TagChangeProvider — episode-monitored cascade + bulk UpdateMany still deferred); cross-package compile-time bridges: *series.Service satisfies rootfolders.SeriesPaths AND qualityprofiles.SeriesProfileChecker; remaining Phase 2 areas: Organizer/FileNameBuilder, SeriesService bulk UpdateMany + episode-monitored cascade, EpisodeService, ImportListFactory port).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.53 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (read-only + Add/Update/Delete with all 5 events + UpdateTags integration), and ImportLists (read-only Service satisfying qualityprofiles.ImportListProfileChecker); cross-package compile-time bridges: *series.Service satisfies rootfolders.SeriesPaths + qualityprofiles.SeriesProfileChecker; *importlists.Service satisfies qualityprofiles.ImportListProfileChecker; remaining Phase 2 areas: Organizer/FileNameBuilder (largest), SeriesService bulk UpdateMany + episode-monitored cascade, EpisodeService, ImportListService write surface).
 
 ## Where to resume
 
@@ -2645,6 +2645,41 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.53 — ImportLists read-only Service (closes QP Delete bridge) ✅ shipped (2026-05-04)
+
+Closes the cross-package wiring loop for QualityProfileService.Delete.
+Adds:
+
+- `Repo.AllQualityProfileIDs(ctx) ([]int, error)` —
+  `SELECT QualityProfileId FROM ImportLists`. Minimal projection;
+  doesn't inflate the full ImportListDefinition typed view.
+- `Service` (read-only) — `*importlists.Service` exposing
+  `All(ctx)` and `AllQualityProfileIDs(ctx)` over the existing
+  Repo. **Satisfies `qualityprofiles.ImportListProfileChecker`**
+  (renamed from the longer `AllImportListQualityProfileIDs` to the
+  cleaner `AllQualityProfileIDs` — the variable name on the caller
+  side already disambiguates).
+
+Compile-time pinning in `importlists/service_test.go`:
+
+```go
+var _ qualityprofiles.ImportListProfileChecker = (*importlists.Service)(nil)
+```
+
+Three tests:
+- `AllQualityProfileIDs_Empty` — fresh DB returns `[]int{}`.
+- `AllQualityProfileIDs_ReturnsEachRow` — 4 inserts (with
+  duplicates) → 4-element slice; sort-stable verification.
+- `All_RoundTripsRows` — Insert → All retrieves the row with
+  scalar fields preserved.
+
+The Phase 4 ImportListService port will extend this with
+Create/Update/Delete + per-Implementation runner wiring; the
+read-only surface lands now to unblock QualityProfile Delete in
+production wiring.
+
+Tests: SQLite green under `-race`; golangci-lint clean across `./...`.
 
 #### 2.52 — SeriesService UpdateTags + UpdateSeries integration ✅ shipped (2026-05-04)
 

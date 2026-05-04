@@ -30,7 +30,7 @@ type SeriesProfileChecker interface {
 // (returns empty / nil) — fresh installs have no import lists, so
 // this is functionally correct for the bootstrap flow.
 type ImportListProfileChecker interface {
-	AllImportListQualityProfileIDs(ctx context.Context) ([]int, error)
+	AllQualityProfileIDs(ctx context.Context) ([]int, error)
 }
 
 // ErrQualityProfileInUse maps to C# `QualityProfileInUseException`
@@ -82,7 +82,7 @@ func (s *Service) Delete(ctx context.Context, id int) error {
 		}
 	}
 
-	importListAssigned, err := s.importListChecker.AllImportListQualityProfileIDs(ctx)
+	importListAssigned, err := s.importListChecker.AllQualityProfileIDs(ctx)
 	if err != nil {
 		return fmt.Errorf("qualityprofiles: Delete: load import-list profiles: %w", err)
 	}
