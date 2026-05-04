@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.47 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end with typed specs + Calculate/ChangesFor + Marshal/Loader + Service; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services (Notification, DownloadClient, ImportList, Indexer), RootFolder (with DiskProvider/SeriesPaths/NamingConfig stubs), and QualityProfile (full surface minus Delete: CRUD + typed Items/FormatItems wrappers + LookupIndex + CalculateCustomFormatScore + GetDefaultProfile + SeedDefaults + UpdateAllSizeLimits + CustomFormatAdded/Deleted handlers); series.NormalizeTitle + series.ShouldRefresh pure helpers shipped; TermMatcher complete; pure helpers for RootFolder/DelayProfile shipped; OsPath value type shipped; remaining Phase 2 areas: Organizer/FileNameBuilder, QualityProfileService.Delete with in-use validation (blocked on SeriesService + ImportListFactory ports), full Series/Episode service business logic).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.48 — parser pipeline COMPLETE (spec **pass=200 xfail=0 regression=0** out of 200); both matching engines (CustomFormat + AutoTagging) end-to-end; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (full minus Delete), and Series read-only surface (Get/Find*/All*/AllForTag/SeriesPathExists — *series.Service satisfies rootfolders.SeriesPaths interface; mutation-side AddSeries/UpdateSeries/DeleteSeries deferred); pure helpers for RootFolder/DelayProfile/series.NormalizeTitle/series.ShouldRefresh; OsPath value type; TermMatcher complete; remaining Phase 2 areas: Organizer/FileNameBuilder, SeriesService mutation methods (AddSeries/UpdateSeries/DeleteSeries/UpdateTags + bulk), EpisodeService, QualityProfileService.Delete with in-use validation).
 
 ## Where to resume
 
@@ -2645,6 +2645,88 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.48 — Series repo query helpers + read-only Service ✅ shipped (2026-05-04)
+
+Foundation slice for SeriesService. Adds the persistence-layer query
+methods the C# `SeriesRepository` exposes on `ISeriesRepository`,
+plus a read-only `*series.Service` that satisfies the
+`rootfolders.SeriesPaths` interface as a compile-time assertion.
+
+Repo additions (`internal/series/queries.go`, ports
+`SeriesRepository.cs`):
+
+- `FindByTvRageID(ctx, id)` / `FindByImdbID(ctx, id)` /
+  `FindByPath(ctx, path)` — single-row SingleOrDefault lookups; miss
+  → ErrNotFound.
+- `FindByTitle(ctx, cleanTitle)` /
+  `FindByTitleAndYear(ctx, cleanTitle, year)` — match by lowercased
+  CleanTitle; multi-row → `ErrMultipleSeriesFound` (the C# port of
+  `MultipleSeriesFoundException`).
+- `FindByTitleInexact(ctx, cleanTitle)` — engine-aware substring
+  match: SQLite uses `instr(?, "CleanTitle") > 0`; Postgres uses
+  `strpos(?, "CleanTitle") > 0`.
+- `SeriesPathExists(ctx, path)` — `SELECT COUNT(1) … WHERE Path = ?`.
+- `AllSeriesPaths(ctx) (map[int]string, error)` — `Id → Path`.
+- `AllSeriesTvdbIDs(ctx) ([]int, error)` — raw column read.
+- `AllSeriesTags(ctx) (map[int][]int, error)` — `WHERE Tags IS NOT NULL`,
+  parses the embedded-JSON Tags column.
+- `AllSeriesQualityProfiles(ctx) (map[int]int, error)` — NULL
+  QualityProfileId rows surface as 0 in the map (matches C#
+  default-int unmarshalling).
+
+Internal helpers `firstWhere(ctx, clause, args...)` /
+`queryWhere(ctx, clause, args...)` / `singleOrThrow(rows)` factor out
+the shared SELECT shape so each FindBy* method is one line.
+
+Service layer (`internal/series/service.go`, ports `SeriesService.cs`
+read-only methods):
+
+- Lookups: `GetSeries(id)` / `GetMany(ids)` / `GetAllSeries()` /
+  `FindByTvdbID` / `FindByTvRageID` / `FindByImdbID` / `FindByPath` /
+  `FindByTitle` (with `parser.CleanSeriesTitle` applied) /
+  `FindByTitleAndYear` /
+  `FindByTitleInexact` (full longest-leftmost match port from C#
+  `:109-151`).
+- Bulk: `AllSeriesPaths` / `AllSeriesTvdbIDs` / `AllSeriesTags` /
+  `AllSeriesQualityProfiles` / `AllForTag` / `SeriesPathExists`.
+
+`*series.Service` satisfies `rootfolders.SeriesPaths` via a one-line
+compile-time check in `service_test.go`:
+
+```go
+var _ rootfolders.SeriesPaths = (*series.Service)(nil)
+```
+
+Once the host wiring is in place, the RootFolderService stub can be
+swapped for the real Service without further code changes.
+
+Test corpus (~22 tests):
+
+- 12 repo-level tests in `queries_test.go` — every Find* path
+  including the multi-row throw, the engine-aware
+  `FindByTitleInexact` (SQLite + Postgres both exercised), the
+  bulk-list helpers, and the NULL-coerce semantic for QualityProfileId.
+- 10 service-level tests in `service_test.go` — read-through to repo
+  methods, parser-clean-title application on FindByTitle*, the
+  longest-leftmost match scoring (Mandalorian beats "The" when both
+  start at position 0 in the input).
+
+Deferred to follow-ups (each its own slice):
+
+- `2.49` — AddSeries / AddMany with SeriesAddedEvent + SeriesImportedEvent.
+- `2.50` — UpdateSeries (single + bulk) + UpdateTags + RemoveAddOptions
+  + IBuildSeriesPaths interface stub.
+- `2.51` — DeleteSeries + SeriesDeletedEvent.
+- `2.52+` — EpisodeService + the 5 lifecycle events for episodes.
+
+Once SeriesService.GetAllSeries lands as a public method (it already
+exists), QualityProfileService.Delete can ship with an in-use
+validator interface (depends on SeriesService.GetAllSeries +
+ImportListFactory.All).
+
+Tests: SQLite + Postgres green under `-race`; golangci-lint clean
+across `./...`. Parser spec still 200/200.
 
 #### 2.47 — QualityProfile UpdateAllSizeLimits + CustomFormat handlers ✅ shipped (2026-05-04)
 
