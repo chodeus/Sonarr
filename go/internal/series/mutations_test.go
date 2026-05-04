@@ -370,6 +370,121 @@ func TestService_UpdateSeries_AppliesAutoTaggingDelta(t *testing.T) {
 	}
 }
 
+// fakePathBuilder implements SeriesPathBuilder by appending a fixed
+// suffix to the RootFolderPath. Lets tests verify the per-row rebuild
+// fired without needing the real Organizer port.
+type fakePathBuilder struct {
+	useExistingFlagSeen bool
+}
+
+func (f *fakePathBuilder) BuildPath(_ context.Context, s *series.Series, useExistingRelativeFolder bool) (string, error) {
+	f.useExistingFlagSeen = useExistingRelativeFolder
+	return s.RootFolderPath + "/built-" + s.Title, nil
+}
+
+func TestService_UpdateMany_RebuildsPathsAndPublishesBulkEvent(t *testing.T) {
+	t.Parallel()
+	svc, bus := newServiceWithBus(t)
+	pb := &fakePathBuilder{}
+	svc.SetSeriesPathBuilder(pb)
+
+	a, _ := svc.AddSeries(t.Context(), sampleSeries(1, "A"))
+	b, _ := svc.AddSeries(t.Context(), sampleSeries(2, "B"))
+	a.RootFolderPath = "/tv"
+	b.RootFolderPath = "/tv"
+	a.Title = "A"
+	b.Title = "B"
+
+	var got atomic.Int32
+	var lastEv atomic.Pointer[series.SeriesBulkEditedEvent]
+	messaging.Subscribe(bus, "test.series.bulk-edited",
+		func(_ context.Context, ev series.SeriesBulkEditedEvent) error {
+			got.Add(1)
+			cp := ev
+			lastEv.Store(&cp)
+			return nil
+		})
+
+	out, err := svc.UpdateMany(t.Context(), []*series.Series{a, b}, true)
+	if err != nil {
+		t.Fatalf("UpdateMany: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("UpdateMany: returned len=%d", len(out))
+	}
+	if a.Path != "/tv/built-A" {
+		t.Errorf("a.Path=%q want /tv/built-A", a.Path)
+	}
+	if b.Path != "/tv/built-B" {
+		t.Errorf("b.Path=%q want /tv/built-B", b.Path)
+	}
+	if !pb.useExistingFlagSeen {
+		t.Errorf("useExistingRelativeFolder=true should propagate to builder")
+	}
+	if got.Load() != 1 {
+		t.Errorf("expected 1 bulk-edited event, got %d", got.Load())
+	}
+	ev := lastEv.Load()
+	if ev == nil || len(ev.Series) != 2 {
+		t.Errorf("event payload: %+v", ev)
+	}
+}
+
+func TestService_UpdateMany_NoBuilderSkipsRebuild(t *testing.T) {
+	t.Parallel()
+	svc, _ := newServiceWithBus(t)
+
+	a, _ := svc.AddSeries(t.Context(), sampleSeries(1, "A"))
+	a.RootFolderPath = "/tv"
+	originalPath := a.Path
+
+	if _, err := svc.UpdateMany(t.Context(), []*series.Series{a}, false); err != nil {
+		t.Fatalf("UpdateMany: %v", err)
+	}
+	if a.Path != originalPath {
+		t.Errorf("Path mutated without builder: %q → %q", originalPath, a.Path)
+	}
+}
+
+func TestService_UpdateMany_EmptyRootFolderSkipsRebuild(t *testing.T) {
+	t.Parallel()
+	svc, _ := newServiceWithBus(t)
+	svc.SetSeriesPathBuilder(&fakePathBuilder{})
+
+	a, _ := svc.AddSeries(t.Context(), sampleSeries(1, "A"))
+	originalPath := a.Path
+	// RootFolderPath is empty, so the builder shouldn't run.
+
+	if _, err := svc.UpdateMany(t.Context(), []*series.Series{a}, false); err != nil {
+		t.Fatalf("UpdateMany: %v", err)
+	}
+	if a.Path != originalPath {
+		t.Errorf("empty RootFolderPath should skip rebuild: %q → %q", originalPath, a.Path)
+	}
+}
+
+func TestService_UpdateMany_EmptyListNoOp(t *testing.T) {
+	t.Parallel()
+	svc, bus := newServiceWithBus(t)
+	var fired atomic.Int32
+	messaging.Subscribe(bus, "test.series.bulk-edited.empty",
+		func(_ context.Context, _ series.SeriesBulkEditedEvent) error {
+			fired.Add(1)
+			return nil
+		})
+
+	out, err := svc.UpdateMany(t.Context(), nil, false)
+	if err != nil {
+		t.Errorf("UpdateMany(nil): %v", err)
+	}
+	if out != nil {
+		t.Errorf("expected nil out, got %v", out)
+	}
+	if fired.Load() != 0 {
+		t.Errorf("empty UpdateMany shouldn't publish; got %d events", fired.Load())
+	}
+}
+
 func TestService_DeleteSeries_PublishesEvent(t *testing.T) {
 	t.Parallel()
 	svc, bus := newServiceWithBus(t)

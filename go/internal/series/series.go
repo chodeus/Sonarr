@@ -97,6 +97,14 @@ type Series struct {
 	MalIDs            []int      `json:"malIds"`
 	AniListIDs        []int      `json:"aniListIds"`
 	OriginalCountry   string     `json:"originalCountry,omitempty"`
+
+	// RootFolderPath is a runtime-only field — not persisted in the
+	// Series table. The C# `Series` class carries it as a regular
+	// property but `TableMapping` doesn't bind it to a column; the
+	// import / add-series flow sets it, and the bulk-update path uses
+	// it (via `SeriesPathBuilder.BuildPath`) to recompute `Path`.
+	// Unbound from the Bind/Scan path at the mapper level.
+	RootFolderPath string `json:"rootFolderPath,omitempty"`
 }
 
 // ErrNotFound is returned when no row matches.

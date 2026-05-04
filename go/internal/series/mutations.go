@@ -213,6 +213,78 @@ func (s *Service) RemoveAddOptions(ctx context.Context, seriesID int) error {
 	return nil
 }
 
+// SeriesPathBuilder is the slice of `IBuildSeriesPaths` the C#
+// SeriesService reaches for in the bulk-update path at `:246`. Mirrors
+// `_seriesPathBuilder.BuildPath(series, useExistingRelativeFolder)`.
+//
+// `series.RootFolderPath` is the input; the builder produces an
+// absolute Path by combining the root folder with a series-specific
+// folder name (typically derived from `naming_config.SeriesFolderFormat`
+// applied to the series + year). The full implementation lands with
+// the Organizer/FileNameBuilder port; until then, callers can pass
+// nil — UpdateMany then skips the per-row path rebuild and just
+// persists the caller-supplied Path verbatim.
+type SeriesPathBuilder interface {
+	BuildPath(ctx context.Context, s *Series, useExistingRelativeFolder bool) (string, error)
+}
+
+// SetSeriesPathBuilder attaches the builder used by [Service.UpdateMany].
+// When unset, UpdateMany skips path rebuilding (matches C#
+// `if (!s.RootFolderPath.IsNullOrWhiteSpace()) ... else ...`
+// short-circuit).
+func (s *Service) SetSeriesPathBuilder(b SeriesPathBuilder) {
+	s.pathBuilder = b
+}
+
+// UpdateMany ports `SeriesService.UpdateSeries(List<Series>, bool)` at
+// `SeriesService.cs:236-263`. For each series:
+//
+//  1. If `s.RootFolderPath` is non-empty AND a [SeriesPathBuilder] is
+//     wired, rebuild `s.Path` via the builder. Mirrors C# `:244-252`.
+//  2. Apply auto-tagging delta in place via [Service.UpdateTags].
+//  3. Persist via per-row Repo.Update (the generic Repo doesn't
+//     expose UpdateMany; per-row in a loop is functionally
+//     equivalent without the C# transaction).
+//
+// Publishes a single [SeriesBulkEditedEvent] carrying the updated
+// list — mirrors the C# single-event-per-bulk semantic at `:260`.
+//
+// Implementation note: the C# `UpdateMany` is transactional (single
+// SQL batch); the Go port issues per-row Updates because the generic
+// Repo doesn't yet expose a transactional bulk helper. Worth
+// revisiting when migrations 1.x bulk-update workloads land.
+func (s *Service) UpdateMany(ctx context.Context, list []*Series, useExistingRelativeFolder bool) ([]*Series, error) {
+	if len(list) == 0 {
+		return nil, nil
+	}
+	for _, ns := range list {
+		if ns == nil {
+			return nil, errors.New("series: UpdateMany: encountered nil series")
+		}
+		if ns.RootFolderPath != "" && s.pathBuilder != nil {
+			path, err := s.pathBuilder.BuildPath(ctx, ns, useExistingRelativeFolder)
+			if err != nil {
+				return nil, fmt.Errorf("series: UpdateMany: BuildPath %q: %w", ns.Title, err)
+			}
+			ns.Path = path
+		}
+		if _, err := s.UpdateTags(ctx, ns); err != nil {
+			return nil, fmt.Errorf("series: UpdateMany: tags %q: %w", ns.Title, err)
+		}
+		if err := s.repo.Update(ctx, ns); err != nil {
+			return nil, fmt.Errorf("series: UpdateMany: persist %q: %w", ns.Title, err)
+		}
+	}
+	if s.bus != nil {
+		out := make([]Series, 0, len(list))
+		for _, ns := range list {
+			out = append(out, *ns)
+		}
+		_ = messaging.Publish(ctx, s.bus, SeriesBulkEditedEvent{Series: out})
+	}
+	return list, nil
+}
+
 // DeleteSeries ports `SeriesService.DeleteSeries(List<int>, bool, bool)`
 // at `SeriesService.cs:163-168`. Loads each series before delete (so
 // the published event carries the deleted rows), then deletes via

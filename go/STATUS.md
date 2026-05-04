@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.53 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (read-only + Add/Update/Delete with all 5 events + UpdateTags integration), and ImportLists (read-only Service satisfying qualityprofiles.ImportListProfileChecker); cross-package compile-time bridges: *series.Service satisfies rootfolders.SeriesPaths + qualityprofiles.SeriesProfileChecker; *importlists.Service satisfies qualityprofiles.ImportListProfileChecker; remaining Phase 2 areas: Organizer/FileNameBuilder (largest), SeriesService bulk UpdateMany + episode-monitored cascade, EpisodeService, ImportListService write surface).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.54 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade — read-only + Add/Update/Delete + UpdateTags + bulk UpdateMany with optional SeriesPathBuilder; all 5 events fire), and ImportLists (read-only); cross-package compile-time bridges fully wired (*series.Service ↔ rootfolders.SeriesPaths + qualityprofiles.SeriesProfileChecker; *importlists.Service ↔ qualityprofiles.ImportListProfileChecker); remaining Phase 2 areas: Organizer/FileNameBuilder (largest, 5-8 slices), EpisodeService, episode-monitored cascade in UpdateSeries, ImportListService write surface).
 
 ## Where to resume
 
@@ -2645,6 +2645,48 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.54 — SeriesService bulk UpdateMany ✅ shipped (2026-05-04)
+
+Closes the SeriesService mutation surface (modulo the
+episode-monitored cascade, blocked on EpisodeService). Adds:
+
+- `SeriesPathBuilder` interface — `BuildPath(ctx, *Series, useExistingRelativeFolder) (string, error)`.
+  Slice of the C# `IBuildSeriesPaths`. Optional dep — when nil,
+  UpdateMany skips the per-row path rebuild.
+- `Service.SetSeriesPathBuilder(b)` setter.
+- `Service.UpdateMany(ctx, []*Series, useExistingRelativeFolder)` —
+  ports `SeriesService.cs:236-263`. Per-row: rebuild Path via the
+  builder if RootFolderPath is set + builder wired; apply UpdateTags
+  delta; persist via per-row Repo.Update. Single
+  [SeriesBulkEditedEvent] published carrying the updated list.
+- `Series.RootFolderPath` runtime field — added to the in-memory
+  Series struct as a non-persisted property (the C# version
+  carries it in-memory too; not bound in `Bind`/`Scan` of the
+  mapper).
+
+4 tests:
+- `UpdateMany_RebuildsPathsAndPublishesBulkEvent` — fakePathBuilder
+  returns "/tv/built-{Title}"; both rows get rebuilt; one bulk event
+  with both rows; `useExistingRelativeFolder` flag propagates.
+- `UpdateMany_NoBuilderSkipsRebuild` — no builder wired → Path
+  preserved unchanged.
+- `UpdateMany_EmptyRootFolderSkipsRebuild` — RootFolderPath empty
+  → builder isn't invoked.
+- `UpdateMany_EmptyListNoOp` — nil/empty list → no event.
+
+Implementation note: per-row Update in a loop instead of
+transactional UpdateMany, mirroring the AddMany pattern from 2.49.
+The generic `*repo.Repository` doesn't expose a transactional bulk
+helper; revisit when high-volume migration workloads land.
+
+The episode-monitored cascade in `Service.UpdateSeries` (the
+`updateEpisodesToMatchSeason` path at C# `:209-221` calling
+`_episodeService.SetEpisodeMonitoredBySeason`) remains deferred —
+needs EpisodeService.
+
+Tests: SQLite green under `-race`; golangci-lint clean across `./...`.
+Parser spec still 200/200.
 
 #### 2.53 — ImportLists read-only Service (closes QP Delete bridge) ✅ shipped (2026-05-04)
 

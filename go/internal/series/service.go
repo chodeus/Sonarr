@@ -52,6 +52,7 @@ type Service struct {
 	repo        *Repo
 	bus         *messaging.Bus
 	tagProvider TagChangeProvider
+	pathBuilder SeriesPathBuilder
 }
 
 // NewService binds a Repo + Bus into a Series Service. Pass `bus = nil`
