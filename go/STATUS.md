@@ -2438,6 +2438,81 @@ Lint clean (after gofmt + 7 gocritic 1-arg `filepath.Join`
 edits in tests); package tests green; full `-race -p 1` suite
 skipped (touches only rootfolders, no cross-package effects).
 
+#### 2.25 — AutoTagging changes (ChangesFor + AutoTagsUpdatedEvent) ✅ shipped (2026-05-04)
+
+Ports `AutoTaggingService.GetTagChanges(Series)` at
+`AutoTaggingService.cs:91-138` as a pure function. The
+service-layer wrapper (with cache + repo + event publishing
+on Insert/Update/Delete) is deferred to a follow-up slice that
+also wires the typed-spec deserialisation on row load.
+
+What ships in `internal/autotagging/changes.go`:
+
+1. **`AutoTaggingChanges`** — port of
+   `AutoTaggingChanges.cs:1-15`. Map-set `TagsToAdd` /
+   `TagsToRemove` so duplicate tags from multiple matching
+   AutoTags collapse to a single entry.
+
+2. **`AutoTagsUpdatedEvent`** — port of
+   `AutoTagsUpdatedEvent.cs:1-7`. Empty struct, fired by the
+   future Insert/Update/Delete service plumbing.
+
+3. **`NewAutoTaggingChanges()`** — convenience constructor
+   that pre-allocates the map-sets.
+
+4. **`ChangesFor(series, autoTags, rootFolders) AutoTaggingChanges`** —
+   the heart of the C# `GetTagChanges` algorithm. Pure
+   function; no service-layer dependencies. Computes
+   `Series.RootFolderPath` via `rootfolders.BestPath` (the
+   helper shipped in 2.24), then walks every AutoTag:
+   - All groups match → tags in `autoTag.Tags` not already on
+     the series go to `TagsToAdd`.
+   - Not-all-match AND `RemoveTagsAutomatically=true` →
+     all tags in `autoTag.Tags` go to `TagsToRemove`.
+
+   Empty `autoTags` short-circuits to an empty changes set
+   (mirrors C# `if (autoTags.Empty()) return changes;`).
+
+5. **C# vacuous-truth quirk preserved**: an AutoTag with no
+   specifications has `All(false)` evaluating to `true` over
+   an empty enumerable. So such a tag always matches and its
+   tags are always scheduled for addition. Mirrors C#
+   verbatim.
+
+Test coverage in `changes_test.go` (8 cases):
+
+- Empty autoTags → empty changes.
+- Match adds new tags, doesn't re-add ones already on series.
+- RemoveTagsAutomatically=false → no removals on mismatch.
+- RemoveTagsAutomatically=true → all autoTag.Tags scheduled
+  for removal on mismatch (regardless of series.Tags).
+- RootFolderPath plumbing: a RootFolderSpec configured for
+  `/tv/anime` matches a series under `/tv/anime/X` (deeper
+  root wins via BestPath) but NOT a series directly under
+  `/tv` (BestPath picks `/tv` instead).
+- Nil series → empty changes.
+- Empty Specifications → always matches (vacuous truth).
+- Duplicate-tag de-duplication across multiple matching
+  AutoTags.
+
+What's deferred:
+
+- **AutoTaggingService wrapper** — `Insert/Update/Delete`
+  with cache invalidation + AutoTagsUpdatedEvent publishing.
+  Lands when the service-layer slice arrives (will mirror
+  the `tags.Service` shape from 2.23).
+- **Typed-spec loading** — `LoadAll(ctx) ([]*Tag, error)`
+  that converts persisted `AutoTag` rows (with raw JSON
+  Specifications) to typed `*Tag` values. Lands with the
+  Service.
+- **`GetById(id)` cached lookup** — straight passthrough
+  pending the Service.
+
+Lint clean (after gofmt collapsed nested doc-comment bullets);
+package tests green; full `-race -p 1` suite skipped (touches
+only autotagging + cross-package import of rootfolders +
+series).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
