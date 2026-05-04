@@ -2121,6 +2121,95 @@ exported-method rule); package tests green; full `-race -p 1`
 suite skipped (touches only autotagging + a single int-const
 block in series).
 
+#### 2.21 — TermMatcher (PerlRegexFactory + matchers + cached service) ✅ shipped (2026-05-04)
+
+Ports `src/NzbDrone.Core/Profiles/Releases/TermMatchers/` plus
+`PerlRegexFactory.cs` and `TermMatcherService.cs`. Used by the
+ReleaseProfile machinery to test whether a release title
+satisfies a Required / Ignored term. Each term is either a
+plain substring (case-insensitive) or a Perl-style regex
+literal (`/pattern/imsxn`).
+
+What ships in `internal/releaseprofiles/term_matcher.go`:
+
+1. **`TermMatcher` interface** — `IsMatch(value) bool` +
+   `MatchingTerm(value) string`. Mirrors `ITermMatcher.cs`.
+
+2. **`caseInsensitiveMatcher`** ports
+   `CaseInsensitiveTermMatcher.cs`. Substring-contains after
+   lowercasing both sides. `MatchingTerm` returns the ORIGINAL
+   (un-lowercased) term on match — mirrors the C# `_originalTerm`
+   field that stashes the input pre-ToLowerInvariant.
+
+3. **`regexMatcher`** ports `RegexTermMatcher.cs`. Wraps a
+   compiled `*regexp.Regexp`.
+
+4. **`perlRegexShapeRe`** + **`tryParsePerlRegex(term)`** port
+   `PerlRegexFactory.cs:11-22`. The `/pattern/modifiers`
+   wrapper detector. Returns `(re, looksPerl, err)` so callers
+   can distinguish "not a Perl regex literal" from "Perl literal
+   that failed to compile".
+
+5. **`perlModifiersToInline(modifiers)`** ports
+   `PerlRegexFactory.GetOptions:30-58`. C#-to-Go-RE2 modifier
+   mapping:
+   - `i` / `m` / `s` → Go RE2 `(?ims)` inline flags. Supported.
+   - `x` (IgnorePatternWhitespace) → unsupported by Go RE2.
+     Returns an error.
+   - `n` (ExplicitCapture) → unsupported by Go RE2. Returns
+     an error.
+   - Unknown modifiers → error.
+
+6. **`MatcherFor(term)`** ports
+   `TermMatcherService.CreateMatcherInternal:34-43`.
+   Dispatches: regex matcher when the term parses as a Perl
+   literal AND compiles successfully; case-insensitive
+   substring otherwise. Compile errors and unsupported-
+   modifier errors silently fall back to the case-insensitive
+   matcher (mirrors C# behaviour where `TryCreateRegex`
+   returning false fell through to the substring branch).
+
+7. **`MatcherService`** + **`NewMatcherService()`** port
+   `TermMatcherService.cs:11-46`. Concurrent-safe cache
+   (`sync.Map`-backed) mapping term-string → TermMatcher so
+   each term's regex compile cost is paid at most once.
+   The C# version uses `ICached<ITermMatcher>` with a 24-hour
+   TTL; the Go port uses an unbounded process-lifetime cache
+   (terms come from persisted ReleaseProfile rows, bounded
+   set, changes only on user edit).
+
+Test coverage in `term_matcher_test.go` (~10 cases):
+
+- caseInsensitiveMatcher: positive substring match,
+  case-insensitivity, no-match, MatchingTerm returns original
+  cased term, MatchingTerm on no-match returns empty.
+- regexMatcher via `MatcherFor`: Perl-syntax positive match
+  with separator + dot, case-insensitive `/i` modifier match,
+  no-match negative.
+- Fallback paths: malformed Perl regex (`/(unclosed/`) falls
+  back to case-insensitive; unsupported `x` modifier falls
+  back; non-Perl plain term produces case-insensitive
+  directly.
+- `perlModifiersToInline` table covering `""`, `i`, `m`, `s`,
+  `ims` (all OK) plus `x`, `n`, unknown (all error).
+- MatcherService cache: same matcher returned across calls,
+  IsMatch/MatchingTerm wrappers delegate, distinct terms
+  cached separately.
+
+What's deferred:
+
+- **`ReleaseProfileService`** — the orchestrator that loads
+  active ReleaseProfile rows, runs Required/Ignored term
+  matching against parsed releases, and decides accept/reject.
+  Lands when DecisionEngine (Phase 3) arrives.
+- **`AllForTag` / `AllExcludedForTag`** — the cross-cutting
+  query helpers TagService.Details consumes. Lands with
+  TagService.
+
+Lint clean (no revive issues — Service/Matcher methods all have
+doc comments inline); package tests green; full `-race -p 1`
+suite skipped (parser-package-internal changes only).
+
 ### Phase 1 — Foundations ✅ done
 
 #### 1.0 — Datastore foundations ✅ shipped (2026-05-02)
