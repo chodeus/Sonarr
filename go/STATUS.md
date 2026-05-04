@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.57 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade), and ImportLists (read-only); Organizer/FileNameBuilder underway — pure title helpers (2.55), token replacement engine (2.56), series/season tokens + GetSeriesFolder + GetSeasonFolder + BuildSeasonPath (2.57) shipped; remaining Organizer work: episode tokens + numbering (2.58), quality/media-info/custom-format tokens (2.59), full BuildFileName orchestration (2.60); other Phase 2 areas: EpisodeService, episode-monitored cascade in UpdateSeries, ImportListService write surface).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway through 2.58 — parser spec 200/200; service layer shipped for Tag, AutoTagging, CustomFormat, DelayProfile, NamingConfig, CustomFilter, ImportListExclusion, QualityDefinition, ReleaseProfile, Lifecycle, RemotePathMapping, ALL 4 ProviderStatus services, RootFolder, QualityProfile (FULL), Series (FULL minus episode-monitored cascade), and ImportLists (read-only); Organizer/FileNameBuilder underway — pure title helpers (2.55), token replacement engine (2.56), series/season tokens + folder builders (2.57), episode tokens + numbering + Truncate + AirDate + MultiEpisodeStyle handling for both season-episode and absolute formats (2.58); remaining Organizer work: quality/media-info/custom-format/episode-title tokens (2.59), full BuildFileName orchestration (2.60); other Phase 2 areas: EpisodeService, episode-monitored cascade, ImportListService write surface).
 
 ## Where to resume
 
@@ -2645,6 +2645,78 @@ What's still deferred:
 Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
+
+#### 2.58 — Organizer episode tokens + numbering + Truncate ✅ shipped (2026-05-04)
+
+Fourth Organizer slice. Adds the season-episode and absolute-episode
+numbering tokens, all 6 MultiEpisodeStyle expansion paths, the
+{Air Date} token, and the Truncate helper used by length-formatted
+tokens.
+
+`internal/organizer/episode_tokens.go`:
+
+- `SeriesType` enum (Standard / Daily / Anime) — matches C#
+  `SeriesTypes` integer Ids.
+- `EpisodeFormat` / `AbsoluteEpisodeFormat` structs — port the
+  per-token-shape helpers from C# `EpisodeFormat.cs` /
+  `AbsoluteEpisodeFormat.cs`.
+- `episodeRegex` / `seasonRegex` / `absoluteEpisodeRegex` /
+  `seasonEpisodePatternRegex` / `absoluteEpisodePatternRegex` — port
+  the C# regex literals at `:51-64`.
+- `ExtractEpisodeFormats(pattern)` — finds every distinct
+  season-episode shape (DistinctBy SeasonEpisodePattern, matches
+  `:471`).
+- `ExtractAbsoluteEpisodeFormats(pattern)` — same for absolute
+  patterns. Default separator `-` when none captured (matches
+  `:988`).
+- `ReplaceNumberToken(token, value)` — strips brace wrapping +
+  `:format`, formats `value` per the format string. Mirrors
+  `:960-969`.
+- `ReplaceSeasonTokens(pattern, seasonNumber)` — `:955-958`.
+- `FormatNumberTokens(basePattern, formatPattern, eps)` —
+  `:915-927`. Concatenates one render per episode; first uses
+  `basePattern`, rest use `formatPattern`.
+- `FormatAbsoluteNumberTokens` — same for absolute numbers.
+- `FormatRangeNumberTokens` — folds episode list to first+last
+  before delegating. Used by Range / PrefixedRange paths.
+- `AddSeasonEpisodeNumberingTokens(pattern, handlers, eps, multiEp)` —
+  ports `:469-530`. Walks each season-episode shape, expands per
+  MultiEpisodeStyle (Extend / Duplicate / Repeat / Scene / Range /
+  PrefixedRange), replaces the original shape with a synthetic
+  `{Season EpisodeN}` placeholder, registers a handler returning
+  the rendered pattern. Also registers `{Episode}` (for multi-ep:
+  emits `start-end` with the format applied to both ends).
+- `AddAbsoluteNumberingTokens(pattern, handlers, series, eps, multiEp, seriesType)` —
+  ports `:532-593`. The anime-only counterpart. For non-anime or
+  any episode missing AbsoluteEpisodeNumber, the absolute pattern
+  is stripped from `pattern` (matches `:539-543`).
+- `AddEpisodeTokens(handlers, eps)` — registers `{Air Date}`. Empty
+  AirDate emits `Unknown`; otherwise `YYYY-MM-DD` becomes
+  `YYYY MM DD`.
+- `Truncate(input, formatter)` — ports `:1207-1227`. Empty input →
+  empty; non-int formatter or formatter==0 → input unchanged;
+  positive formatter → keep first (formatter-3) chars, append
+  `{ellipsis}`; negative formatter → keep last chars, prepend
+  `{ellipsis}`. Multi-byte aware (`[]rune` iteration).
+
+15 test functions covering: ReplaceNumberToken with `:00`/`:000`/no
+format; ExtractEpisodeFormats + ExtractAbsoluteEpisodeFormats;
+FormatNumberTokens single/multi/Extend; FormatRangeNumberTokens
+folds 4 episodes to first+last; AddSeasonEpisodeNumberingTokens
+Extend/Range with placeholder substitution; multi-episode
+`{Episode}` registration; AddAbsoluteNumberingTokens
+non-anime-strip / anime-render / anime-missing-absolute-strip;
+{Air Date} present and missing; Truncate across 6 sub-cases.
+
+What's deferred (last numbering bits, lands with episode-title in 2.59):
+- `AddEpisodeTitleTokens` / `AddEpisodeTitlePlaceholderTokens` —
+  needs `GetEpisodeTitle` + `GetEpisodeTitles` + `CleanupEpisodeTitle`
+  + multi-byte-aware Truncate. ~50 LOC of helpers.
+- `RegisterEpisodeFileTokens` (`{Original Title}`, `{Original Filename}`,
+  `{Release Group}`, `{Release Hash}`) — needs the `episodefiles`
+  package types (already ported, just need to wire).
+
+Tests: green under `-race`; golangci-lint clean.
 
 #### 2.57 — Organizer series/season tokens + folder builders ✅ shipped (2026-05-04)
 
