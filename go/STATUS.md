@@ -2646,6 +2646,32 @@ Lint clean; package tests green (~12 tests now in autotagging);
 full `-race -p 1` suite skipped (touches only autotagging +
 its test helper that uses datastore + messaging).
 
+#### 2.32 — ImportListExclusionService (CRUD + DeleteMany + FindByTvdbID) ✅ shipped (2026-05-04)
+
+Ports `ImportLists/Exclusions/ImportListExclusionService.cs:1-98`
+excluding the SeriesDeletedEvent handler (deferred until Series
+ships) and the Paged() shim (deferred until PagingSpec lands).
+
+Surface in `internal/importlistexclusions/service.go`:
+
+- All / Get / Add / Update / Delete — passthroughs.
+- DeleteMany(ids) — sequential repo.Delete loop, tolerant to
+  ErrNotFound for individual IDs (matches C# Marr.Data
+  DeleteMany silent-skip semantic).
+- FindByTvdbID(tvdbID) — passthrough to repo.GetByTvdbID,
+  surfaces ErrNotFound on missing.
+
+7 service tests covering add+find round-trip, All ordering by
+Title (mapper-defined), Update, DeleteMany missing-tolerance,
+nil-input errors, Get-missing.
+
+What's deferred:
+- HandleAsync(SeriesDeletedEvent) — auto-add-exclusion-on-delete.
+  Lands when Series + SeriesDeletedEvent arrive.
+- Paged(PagingSpec) — lands with PagingSpec.
+
+Lint clean.
+
 #### 2.31 — CustomFilterService (thin CRUD wrapper) ✅ shipped (2026-05-04)
 
 Ports `CustomFilters/CustomFilterService.cs:1-49`. Pure-passthrough
