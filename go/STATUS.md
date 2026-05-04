@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.13 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.13 adds bracketed-Nx separator extension + multi-3-digit shortcut + Extant 5-digit `<title>.<season><ep1><ep2>` rule; spec at end of 2.12.13 is **pass=177 xfail=23 regression=0** out of 200.).
+Last updated: 2026-05-04 (Phase 1 done; Phase 2 underway — QualityParser COMPLETE; LanguageParser COMPLETE; ReleaseGroupParser COMPLETE; Parser.ParseTitle slices 2.12.0–2.12.14 shipped including the bulk fixture spec (`parser_spec_test.go` + `parser_spec_rows_test.go`). 2.12.14 adds the catch-all anime-title-without-subgroup rule (placed last in the rule chain) flipping all 6 anime-without-subgroup rows; spec at end of 2.12.14 is **pass=183 xfail=17 regression=0** out of 200.).
 
 ## Where to resume
 
@@ -936,6 +936,43 @@ What stays xfail (23 rows after this slice):
 - **Parenthesised multi-S-E (`(S15E06-08)`, `(S05E06-08 of 24)`)** (~2 rows).
 - **Title-with-airdate composite shapes** (~2 rows: `Series Title (1955) - 1954-01-23 …`, `Series On TitleClub E76 2024 08 08 …`).
 - **Hybrid airdate+season+episode** (1 row: Parser.cs:161).
+- **Multi-Nx single-bracket multi-trailing forms (`8x01_02`)** (1 row).
+- **`Ep10718`-style 5-digit-episode S-E** (1 row).
+- **3-digit forms with year-shape title (`series.2009.416`)** (~2 rows).
+- **`E07-E08.180612.1080p-NEXT` PreSubstitution variants** (~2 rows).
+- **Various assorted** — `[Impatience]` anime mis-routing, `[RlsGrp]` prefix, `kill-roy-was-here-e07-720p` mini-series.
+
+Lint clean; parser test suite green; full `-race -p 1` suite skipped (parser-package-internal changes only).
+
+#### 2.12.14 — Anime title-without-subgroup catch-all ✅ shipped (2026-05-04)
+
+A single rule that handles the longest-running xfail bucket — 6 of the 23 remaining xfails were anime title-without-subgroup forms.
+
+**Spec delta**: pass=177 → 183 (+6); xfail=23 → 17 (-6); regression=0.
+
+What ships:
+
+- New `^<title>[-_. ]+e?<absoluteepisode>\d{2,3}(?:[^\d]|$)` rule (mirrors the C# Parser.cs:152 / :156 subset that reads only title + absoluteepisode). Optional `e?` admits the abbreviated `_e<num>_` shape (`Some_Anime_Show_e66_…`) without forcing a separate rule. Catches all 6 fixture variants:
+  - `Some Anime Show - 031 - The Resolution to Kill [Lunar].avi`
+  - `Some Anime Show - 031 - The Resolution to Kill [Lunar]`
+  - `Some_Anime_Show_e66_time_is_money_part_one_marking_time`
+  - `Series Title - 010 (720p) [27AAA0A0].mkv`
+  - `Initial_Series_Title - 01 DVD - Central Anime`
+  - `Initial_Series_Title_-_01(DVD)_-_(Central_Anime)[5AF6F1E4].mkv`
+
+  End-anchor uses `(?:[^\d]|$)` rather than `(?:\W|$)` because Go's `\W` excludes `_` (it's a word char) — without the `[^\d]` form, the underscore-bordered `_e66_` shape would be rejected.
+
+- Listed LAST in the rule chain. The lazy `.+?` title plus permissive `[-_. ]+e?<2-3 digit>` separator makes this rule a catch-all for inputs no earlier rule has claimed. Placing it earlier would shadow legitimate S-E and Nx forms whose 2-3 digit run could also be read as an absolute episode (e.g. `Series.With.Title.S02E15` would mis-match as title=`Series.With.Title.S02`, abs=15).
+
+- New `buildAnimeTitleAbsolute` Build extracts title (`.`/`_` → space, trim) and the 2-3 digit absolute episode.
+
+- Preemptively reserved the unused `*x` row helpers (`sex`, `mex`, `dailyx`, `minix`, `animex`) via `var _ = …` references so future passes don't trip the linter once a row-helper's last xfail row flips to passing.
+
+What stays xfail (17 rows after this slice):
+
+- **Bracketed multi-Nx (`[02x01x02]`, `[02x01-x02]`, `[02x01-02]`)** (~3 rows).
+- **Parenthesised multi-S-E (`(S15E06-08)`, `(S05E06-08 of 24)`)** (~2 rows).
+- **Title-with-airdate composite shapes** (~3 rows: `Series Title (1955) - 1954-01-23 …`, `Series On TitleClub E76 2024 08 08 …`, `The Show Series 2015 02 09 WEBRIP s01e13`).
 - **Multi-Nx single-bracket multi-trailing forms (`8x01_02`)** (1 row).
 - **`Ep10718`-style 5-digit-episode S-E** (1 row).
 - **3-digit forms with year-shape title (`series.2009.416`)** (~2 rows).
