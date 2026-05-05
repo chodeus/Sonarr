@@ -50,6 +50,7 @@ import (
 	"sonarr.tv/sonarr/internal/lifecycle"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 func main() {
@@ -208,6 +209,22 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("housekeeping orphanMetadata: %w", err)
 	}
+	addlNaming, err := housekeeping.NewCleanupAdditionalNamingSpecs(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping addlNaming: %w", err)
+	}
+	addlUsers, err := housekeeping.NewCleanupAdditionalUsers(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping addlUsers: %w", err)
+	}
+	seriesRepo, err := series.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("housekeeping series repo: %w", err)
+	}
+	updateClean, err := housekeeping.NewUpdateCleanTitleForSeries(seriesRepo, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping updateClean: %w", err)
+	}
 	houseSvc, err := housekeeping.NewService([]housekeeping.Task{
 		fixFuture,
 		orphanEpisodes,
@@ -222,6 +239,9 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		orphanExtra,
 		orphanSubtitle,
 		orphanMetadata,
+		addlNaming,
+		addlUsers,
+		updateClean,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping service: %w", err)
