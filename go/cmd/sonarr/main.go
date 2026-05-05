@@ -225,6 +225,22 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("housekeeping updateClean: %w", err)
 	}
+	fixIndexerStatus, err := housekeeping.NewFixFutureIndexerStatusTimes(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping fixIndexerStatus: %w", err)
+	}
+	fixDownloadClientStatus, err := housekeeping.NewFixFutureDownloadClientStatusTimes(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping fixDownloadClientStatus: %w", err)
+	}
+	fixImportListStatus, err := housekeeping.NewFixFutureImportListStatusTimes(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping fixImportListStatus: %w", err)
+	}
+	fixNotificationStatus, err := housekeeping.NewFixFutureNotificationStatusTimes(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping fixNotificationStatus: %w", err)
+	}
 	houseSvc, err := housekeeping.NewService([]housekeeping.Task{
 		fixFuture,
 		orphanEpisodes,
@@ -242,6 +258,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		addlNaming,
 		addlUsers,
 		updateClean,
+		fixIndexerStatus,
+		fixDownloadClientStatus,
+		fixImportListStatus,
+		fixNotificationStatus,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping service: %w", err)

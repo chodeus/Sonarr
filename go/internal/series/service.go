@@ -13,13 +13,7 @@ import (
 // Service ports `NzbDrone.Core.Tv.SeriesService` at
 // `src/NzbDrone.Core/Tv/SeriesService.cs`.
 //
-// This slice ships the read-only surface — the lookup/search helpers
-// and the bulk-list accessors — which is enough to unblock
-// RootFolderService's [SeriesPaths] stub (via [Service.AllSeriesPaths])
-// and provide the foundation for the mutation-side methods landing in
-// follow-up slices.
-//
-// What ships in 2.48:
+// Read surface (this file):
 //
 //   - GetSeries / GetMany / GetAllSeries — id-keyed lookups.
 //   - FindByTvdbID / FindByTvRageID / FindByImdbID / FindByPath —
@@ -34,17 +28,21 @@ import (
 //     downstream services.
 //   - SeriesPathExists — the duplicate-add guard.
 //
-// What's deferred to follow-up slices:
+// Write surface (in [mutations.go]):
 //
-//   - AddSeries / AddMany — needs SeriesAddedEvent +
-//     SeriesImportedEvent (lifecycle events; the bus is already wired).
-//   - UpdateSeries (single + bulk) — needs SeriesEditedEvent +
-//     SeriesBulkEditedEvent + IBuildSeriesPaths.
-//   - DeleteSeries — needs SeriesDeletedEvent.
-//   - UpdateTags — needs the autotagging.Service.GetTagChanges
-//     plumbing.
-//   - RemoveAddOptions — needs the SetFields helper on the generic
-//     Repo.
+//   - AddSeries / AddMany — publish SeriesAddedEvent +
+//     SeriesImportedEvent (Phase 2.49).
+//   - UpdateSeries / UpdateMany — publish SeriesEditedEvent +
+//     SeriesBulkEditedEvent; uses [SeriesPathBuilder] +
+//     [EpisodeMonitorCascade] bridges (Phase 2.50 / 2.52 / 2.54).
+//   - DeleteSeries — publish SeriesDeletedEvent (Phase 2.50).
+//   - UpdateTags — uses [TagChangeProvider] bridge (Phase 2.52).
+//   - RemoveAddOptions — Get + targeted-update approximation of the
+//     C# SetFields helper (Phase 2.50).
+//
+// Closes Phase 2 SeriesService porting modulo the
+// IBuildSeriesPaths/autotagging bridges (interfaces here, real
+// implementations in their respective Phase 3+ subsystems).
 //
 // No cache: the C# class doesn't cache anything either. Lookups go
 // straight to the repo; All() is uncached.
