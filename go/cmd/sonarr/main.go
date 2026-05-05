@@ -176,12 +176,32 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("housekeeping orphanBlocklist: %w", err)
 	}
+	orphanIndexerStatus, err := housekeeping.NewCleanupOrphanedIndexerStatus(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping orphanIndexerStatus: %w", err)
+	}
+	orphanDownloadClientStatus, err := housekeeping.NewCleanupOrphanedDownloadClientStatus(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping orphanDownloadClientStatus: %w", err)
+	}
+	orphanImportListStatus, err := housekeeping.NewCleanupOrphanedImportListStatus(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping orphanImportListStatus: %w", err)
+	}
+	orphanNotificationStatus, err := housekeeping.NewCleanupOrphanedNotificationStatus(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping orphanNotificationStatus: %w", err)
+	}
 	houseSvc, err := housekeeping.NewService([]housekeeping.Task{
 		fixFuture,
 		orphanEpisodes,
 		orphanFiles,
 		orphanHistory,
 		orphanBlocklist,
+		orphanIndexerStatus,
+		orphanDownloadClientStatus,
+		orphanImportListStatus,
+		orphanNotificationStatus,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping service: %w", err)

@@ -189,3 +189,43 @@ func NewCleanupOrphanedBlocklist(db *datastore.DB, log *slog.Logger) (Task, erro
 		{child: "Blocklist", fk: "SeriesId", parent: "Series"},
 	})
 }
+
+// NewCleanupOrphanedIndexerStatus ports
+// `Housekeepers/CleanupOrphanedIndexerStatus.cs:1-26`. Drops
+// IndexerStatus rows whose ProviderId no longer points at an
+// Indexers row.
+func NewCleanupOrphanedIndexerStatus(db *datastore.DB, log *slog.Logger) (Task, error) {
+	return newOrphanCleanupTask("CleanupOrphanedIndexerStatus", db, log, []orphanPair{
+		{child: "IndexerStatus", fk: "ProviderId", parent: "Indexers"},
+	})
+}
+
+// NewCleanupOrphanedDownloadClientStatus ports
+// `Housekeepers/CleanupOrphanedDownloadClientStatus.cs:1-27`. Drops
+// DownloadClientStatus rows whose ProviderId no longer points at a
+// DownloadClients row.
+func NewCleanupOrphanedDownloadClientStatus(db *datastore.DB, log *slog.Logger) (Task, error) {
+	return newOrphanCleanupTask("CleanupOrphanedDownloadClientStatus", db, log, []orphanPair{
+		{child: "DownloadClientStatus", fk: "ProviderId", parent: "DownloadClients"},
+	})
+}
+
+// NewCleanupOrphanedImportListStatus ports
+// `Housekeepers/CleanupOrphanedImportListStatus.cs:1-26`. Drops
+// ImportListStatus rows whose ProviderId no longer points at an
+// ImportLists row.
+func NewCleanupOrphanedImportListStatus(db *datastore.DB, log *slog.Logger) (Task, error) {
+	return newOrphanCleanupTask("CleanupOrphanedImportListStatus", db, log, []orphanPair{
+		{child: "ImportListStatus", fk: "ProviderId", parent: "ImportLists"},
+	})
+}
+
+// NewCleanupOrphanedNotificationStatus ports
+// `Housekeepers/CleanupOrphanedNotificationStatus.cs:1-27`. Drops
+// NotificationStatus rows whose ProviderId no longer points at a
+// Notifications row.
+func NewCleanupOrphanedNotificationStatus(db *datastore.DB, log *slog.Logger) (Task, error) {
+	return newOrphanCleanupTask("CleanupOrphanedNotificationStatus", db, log, []orphanPair{
+		{child: "NotificationStatus", fk: "ProviderId", parent: "Notifications"},
+	})
+}
