@@ -229,3 +229,145 @@ func NewCleanupOrphanedNotificationStatus(db *datastore.DB, log *slog.Logger) (T
 		{child: "NotificationStatus", fk: "ProviderId", parent: "Notifications"},
 	})
 }
+
+// NewCleanupOrphanedPendingReleases ports
+// `Housekeepers/CleanupOrphanedPendingReleases.cs:1-26`. Drops
+// PendingReleases rows whose SeriesId no longer points at a Series.
+func NewCleanupOrphanedPendingReleases(db *datastore.DB, log *slog.Logger) (Task, error) {
+	return newOrphanCleanupTask("CleanupOrphanedPendingReleases", db, log, []orphanPair{
+		{child: "PendingReleases", fk: "SeriesId", parent: "Series"},
+	})
+}
+
+// fileRefTask is the shape used by the three "media-companion file"
+// housekeepers (`CleanupOrphanedExtraFiles`, `CleanupOrphanedSubtitleFiles`,
+// `CleanupOrphanedMetadataFiles`). Each runs three passes:
+//
+//  1. Delete rows whose SeriesId is dangling (standard
+//     LEFT-JOIN-WHERE-NULL).
+//  2. Delete rows where `EpisodeFileId > 0` AND the EpisodeFile is
+//     gone (LEFT JOIN through EpisodeFiles, with the > 0 predicate
+//     so unlinked rows aren't swept here).
+//  3. Delete unlinked rows — the C# tree picks the predicate
+//     (`EpisodeFileId = 0` for ExtraFiles/SubtitleFiles, additional
+//     `Type IN (2,5)` for MetadataFiles).
+//
+// `extraUnlinkedPredicate` lets MetadataFiles add the `Type IN (2,5)`
+// filter without a separate Task type; pass empty for the other two.
+type fileRefTask struct {
+	name                   string
+	table                  string
+	db                     *datastore.DB
+	log                    *slog.Logger
+	extraUnlinkedPredicate string
+}
+
+// Name implements Task.
+func (t *fileRefTask) Name() string { return t.name }
+
+// Clean implements Task. Runs the three-pass cleanup.
+func (t *fileRefTask) Clean(ctx context.Context) error {
+	// Pass 1 — series orphan.
+	n, err := deleteOrphansLeftJoin(ctx, t.db, t.table, "SeriesId", "Series")
+	if err != nil {
+		return err
+	}
+	t.logIfRows(ctx, "series-orphan", n)
+
+	// Pass 2 — EpisodeFile orphan with `EpisodeFileId > 0` predicate.
+	pass2 := fmt.Sprintf(
+		`DELETE FROM %q WHERE "Id" IN (
+			SELECT %q."Id" FROM %q
+			LEFT OUTER JOIN "EpisodeFiles" ON %q."EpisodeFileId" = "EpisodeFiles"."Id"
+			WHERE %q."EpisodeFileId" > 0 AND "EpisodeFiles"."Id" IS NULL)`,
+		t.table, t.table, t.table, t.table, t.table,
+	)
+	res, err := t.db.SQL.ExecContext(ctx, pass2)
+	if err != nil {
+		return fmt.Errorf("housekeeping: %s pass2: %w", t.name, err)
+	}
+	if n, err = res.RowsAffected(); err != nil {
+		return fmt.Errorf("housekeeping: %s pass2 rowsAffected: %w", t.name, err)
+	}
+	t.logIfRows(ctx, "episodefile-orphan", n)
+
+	// Pass 3 — unlinked rows (EpisodeFileId = 0, plus optional
+	// per-Task predicate like `Type IN (2,5)` for MetadataFiles).
+	pass3 := fmt.Sprintf(`DELETE FROM %q WHERE "EpisodeFileId" = 0`, t.table)
+	if t.extraUnlinkedPredicate != "" {
+		pass3 += " AND " + t.extraUnlinkedPredicate
+	}
+	res, err = t.db.SQL.ExecContext(ctx, pass3)
+	if err != nil {
+		return fmt.Errorf("housekeeping: %s pass3: %w", t.name, err)
+	}
+	if n, err = res.RowsAffected(); err != nil {
+		return fmt.Errorf("housekeeping: %s pass3 rowsAffected: %w", t.name, err)
+	}
+	t.logIfRows(ctx, "unlinked", n)
+
+	return nil
+}
+
+func (t *fileRefTask) logIfRows(ctx context.Context, pass string, n int64) {
+	if n > 0 {
+		t.log.LogAttrs(ctx, slog.LevelInfo,
+			"housekeeping: deleted file-ref rows",
+			slog.String("task", t.name),
+			slog.String("pass", pass),
+			slog.Int64("rows", n))
+	}
+}
+
+// NewCleanupOrphanedExtraFiles ports
+// `Housekeepers/CleanupOrphanedExtraFiles.cs:1-58`. Three-pass DELETE
+// across ExtraFiles: series-orphan, episodefile-orphan (where
+// EpisodeFileId > 0 AND the EpisodeFile is gone), and unlinked
+// (EpisodeFileId = 0).
+func NewCleanupOrphanedExtraFiles(db *datastore.DB, log *slog.Logger) (Task, error) {
+	if db == nil {
+		return nil, ErrNilDB
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &fileRefTask{name: "CleanupOrphanedExtraFiles", table: "ExtraFiles", db: db, log: log}, nil
+}
+
+// NewCleanupOrphanedSubtitleFiles ports
+// `Housekeepers/CleanupOrphanedSubtitleFiles.cs:1-58`. Same three-pass
+// shape as ExtraFiles, against `SubtitleFiles`.
+func NewCleanupOrphanedSubtitleFiles(db *datastore.DB, log *slog.Logger) (Task, error) {
+	if db == nil {
+		return nil, ErrNilDB
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &fileRefTask{name: "CleanupOrphanedSubtitleFiles", table: "SubtitleFiles", db: db, log: log}, nil
+}
+
+// NewCleanupOrphanedMetadataFiles ports
+// `Housekeepers/CleanupOrphanedMetadataFiles.cs:1-58`. Same three-pass
+// shape as ExtraFiles, against `MetadataFiles`, with the additional
+// `Type IN (2, 5)` predicate on the unlinked-rows pass — those values
+// match the C# `MetadataType.EpisodeImage` (2) and
+// `MetadataType.EpisodeMetadata` (5), the two episode-scoped metadata
+// types for which a zero EpisodeFileId is a corruption signal. Type 1
+// (SeriesImage), 3 (SeriesMetadata), 4 (SeasonImage) are series-scoped
+// and legitimately store EpisodeFileId = 0.
+func NewCleanupOrphanedMetadataFiles(db *datastore.DB, log *slog.Logger) (Task, error) {
+	if db == nil {
+		return nil, ErrNilDB
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &fileRefTask{
+		name:                   "CleanupOrphanedMetadataFiles",
+		table:                  "MetadataFiles",
+		db:                     db,
+		log:                    log,
+		extraUnlinkedPredicate: `"Type" IN (2, 5)`,
+	}, nil
+}

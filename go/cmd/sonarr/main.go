@@ -192,6 +192,22 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("housekeeping orphanNotificationStatus: %w", err)
 	}
+	orphanPending, err := housekeeping.NewCleanupOrphanedPendingReleases(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping orphanPending: %w", err)
+	}
+	orphanExtra, err := housekeeping.NewCleanupOrphanedExtraFiles(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping orphanExtra: %w", err)
+	}
+	orphanSubtitle, err := housekeeping.NewCleanupOrphanedSubtitleFiles(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping orphanSubtitle: %w", err)
+	}
+	orphanMetadata, err := housekeeping.NewCleanupOrphanedMetadataFiles(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping orphanMetadata: %w", err)
+	}
 	houseSvc, err := housekeeping.NewService([]housekeeping.Task{
 		fixFuture,
 		orphanEpisodes,
@@ -202,6 +218,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		orphanDownloadClientStatus,
 		orphanImportListStatus,
 		orphanNotificationStatus,
+		orphanPending,
+		orphanExtra,
+		orphanSubtitle,
+		orphanMetadata,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping service: %w", err)
