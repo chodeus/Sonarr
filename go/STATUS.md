@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-06 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler) + commands in-memory Queue + Dispatcher 3.11 (CommandQueue + CommandExecutor port: cond-blocked TryGet with priority/disk/long-running/exclusive gating, single-worker Dispatcher.Run with handler registry + panic-recovered Execute, Service.SetQueue wires Push/PushMany/Cancel into the in-memory queue — modulo deferred per-handler concurrency + cancellation propagation into running handlers) + scheduledtasks.Scheduler ticker 3.12 (Scheduler.cs port: 30s time.Ticker drives Tick → tasks.GetPending → commands.Push at TriggerScheduled/PriorityLow with body="{}"; closes the bridge between the 3.10 task cache and the 3.11 command queue) + first IExecute<T> handler + cmd/sonarr boot wiring 3.13 (CleanupCommandMessagingService port: handlers package with MessagingCleanup handler calling Service.CleanCommands(now-24h); handlers.RegisterAll + handlers.DefaultScheduledTasks helpers wire registry + scheduledtasks defaults in one place; cmd/sonarr boot now spins up commands.Service + Queue + Dispatcher + scheduledtasks.Service + Scheduler with HandleApplicationStarted recovery + CommandExecutedEvent subscription, dispatcher + scheduler goroutines drained on shutdown via workerCancel + queue.Close before bus.BeginShutdown — convention pinned: Commands.Name + ScheduledTasks.TypeName + registry key all use the C# Command.Name short form ("MessagingCleanup"), not Type.FullName) + typed MediaInfo column 3.14 (episodefiles.File.MediaInfo: string → *mediainfo.Model; mapper marshalMediaInfo/unmarshalMediaInfo round-trip nil ↔ NULL preserves the AllWithoutMediaInfo IS NULL filter; closes the explicit Phase 3 follow-up) + episodefiles.CleanupService 3.15 (MediaFileTableCleanupService port: two-phase Clean(parent, filesOnDisk) drops EpisodeFile rows missing-from-disk OR with no linked episodes, then clears Episode.EpisodeFileID for any episode pointing at a now-removed/never-existed file; goes through the public Service surface so EpisodeFileDeletedEvent fires for every cleanup-deleted file) + housekeeping skeleton + Housekeeping handler 3.16 (new internal/housekeeping package with Task interface, Service.Clean orchestrator with per-task error swallowing, first concrete task FixFutureRunScheduledTasks clamping ScheduledTasks.LastExecution > now back to now; second IExecute<T> port via Housekeeping handler; handlers.Deps struct introduced so RegisterAll's call site is stable as new dep services land; cmd/sonarr boot wires housekeeping.Service) + four orphan-cleanup housekeepers 3.17 (CleanupOrphanedEpisodes/EpisodeFiles/HistoryItems/Blocklist; shared deleteOrphansLeftJoin helper for the LEFT-OUTER-JOIN-WHERE-NULL pattern; both engines verified) + four orphan-status housekeepers 3.18 (CleanupOrphanedIndexerStatus/DownloadClientStatus/ImportListStatus/NotificationStatus; each one struct-literal reusing 3.17's helper) + four more orphan housekeepers 3.19 (PendingReleases [single-pair] + ExtraFiles/SubtitleFiles/MetadataFiles [three-pass each via fileRefTask helper handling SeriesId-orphan + EpisodeFileId>0-orphan + unlinked passes; MetadataFiles adds Type IN (2,5) predicate to scope unlinked sweep to episode-scoped types only]) + three more housekeepers 3.20 (CleanupAdditionalNamingSpecs/CleanupAdditionalUsers via new singletonTableTask helper + UpdateCleanTitleForSeries which iterates Series.All and rewrites CleanTitle when parser.CleanSeriesTitle drifted) + FixFutureProviderStatusTimes family 3.21 (shared FixFutureProviderStatusTimes scaffold parameterised on (name, table) + 4 thin constructors for IndexerStatus/DownloadClientStatus/ImportListStatus/NotificationStatus; clamps DisabledTill / InitialFailure / MostRecentFailure to bounds derived from providerstatus.BackOffPeriodSeconds[EscalationLevel]; defensive EscalationLevel index clamp guards rogue rows; cmd/sonarr now wires 20 housekeepers; also closes the stale series.Service doc comment that still listed write methods as deferred) + CleanupUnusedTags housekeeper 3.22 (sweeps Tags rows whose Id isn't referenced by any of the 8 owner tables' Tags JSON-int-array column OR by an autotagging TagSpecification.Value; nil-autotagging-Repo tolerated for the 8-table-only path; empty-in-use-set falls back to DELETE FROM "Tags"; cmd/sonarr now wires 21 housekeepers + autotagging.Repo) + CleanupQualityProfileFormatItems housekeeper 3.23 (reconciles each QualityProfile.FormatItems against the live CustomFormats catalogue; drops phantom FormatIDs, prepends missing CFs at Score=0, resets MinFormatScore/CutoffFormatScore/MinUpgradeFormatScore to 0/0/1 when result is empty; set-based diff so score-only edits are preserved; cmd/sonarr now wires 22 housekeepers + qualityprofiles.Repo + customformats.Repo) + CheckHealth handler stub 3.24 (third IExecute<T> port: stub Execute logs and returns nil while real HealthCheckService awaits its own Phase 3 slice; Deps grows Log field; DefaultScheduledTasks adds CheckHealth at Interval=360min per Jobs/TaskManager.cs:96-99) + four more IExecute<T> handler stubs 3.25-3.28 (RefreshSeries Interval=720min, RefreshMonitoredDownloads Interval=1min, Backup Interval=BackupIntervalDefault=10080min, CleanUpRecycleBin Interval=1440min; all stubs log and return nil; DefaultScheduledTasks now has 8 entries; no new deps in Deps struct; 4 tests each mirroring CheckHealth pattern; both engines green) + decisionengine data model 3.30 (first slice of the per-release scoring pipeline; new `internal/decisionengine` package ports the load-bearing data shapes — RejectionKind enum [renamed from C# RejectionType to dodge Go's reflect.Type idiom], SpecPriority enum with all 4 named constants [Default=Parsing=Database=0, Disk=1], UpgradeableRejectReason 8-entry enum, ReleaseSourceType 6-entry enum, RejectionReason 75-entry enum [wire-stable order against the v3 React frontend's per-int lookup; each entry carries a doc comment naming its originating C# Specification], Rejection value type [collapsing the C# `Rejection<T>` generic onto its single instantiation], SpecDecision with Accept singleton + Reject factory + RejectTemporary doc-parity alias, Decision struct with Subject `any` placeholder for the not-yet-ported RemoteEpisode + Approved/TemporarilyRejected/Rejected derived predicates [pinned-by-test mixed-rejection demotion gotcha + defensive slice copy in NewRejectedDecision]; 13 test functions; both engines green; lint clean; Subject + Specification interface + 30+ concrete specs land in subsequent slices once parser.ReleaseInfo + ParsedEpisodeInfo are ported) + healthcheck framework + 2 sample checks 3.29 (closes the 3.24 stub: new `internal/healthcheck` package ports `HealthCheckService.cs` orchestrator — Result/Reason enums + HealthCheck value type with wiki-fragment derivation, Check + EventDrivenCheck interfaces replacing C# `[CheckOn(typeof(X))]` with per-check `EventTriggers()`, FailedEvent/RestoredEvent/CompleteEvent domain events, Service with Run(ctx, Trigger) + HandleApplicationStarted + HandleAnyEvent + Subscribe(bus) + Results, in-memory result cache keyed by Check.Name with Failed/Restored transitions, 5s debouncer via time.AfterFunc, 15-min startup grace period with post-grace sweep that re-publishes existing failures with IsInStartupGracePeriod=false, panic-recovered `runOne`, duplicate-name + nil-check constructor guards; two concrete checks AppDataLocationCheck [via ospath.Contains/Equals] + ApiKeyValidationCheck [bound to ConfigFileSavedEvent — redundant ApplicationStarted [CheckOn] omitted because the global IEvent handler explicitly skips it]; CheckHealth handler swaps from logger-stub to NewCheckHealth(svc) parsing optional `{"trigger":"manual"}` from body with Scheduled as the default; Deps grows HealthCheck field; cmd/sonarr boot constructs healthSvc + Subscribe(bus) before RegisterAll; 24 test functions across 4 files; both engines green). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: (typed MediaInfo column closed in 3.14). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring. All 7 IExecute<T> stubs ship — 6 still stubbed (MessagingCleanup, Housekeeping, RefreshSeries, RefreshMonitoredDownloads, Backup, CleanUpRecycleBin) + 1 now real (CheckHealth, closed in 3.29 with the healthcheck framework + 2 concrete checks). TaskManager.cs has 11 scheduled tasks total with RssSync and ApplicationUpdateCheck/UpdateSceneMapping still missing stubs (those depend on indexer/update-check subsystems). Next heavier subsystems on deck: more healthcheck checks as their deps become available, DiskScanService (needs a real DiskProvider beyond ospath), decisionengine (per-release scoring — large but no new external deps), mediacover, queue service.
+Last updated: 2026-05-06 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler) + commands in-memory Queue + Dispatcher 3.11 (CommandQueue + CommandExecutor port: cond-blocked TryGet with priority/disk/long-running/exclusive gating, single-worker Dispatcher.Run with handler registry + panic-recovered Execute, Service.SetQueue wires Push/PushMany/Cancel into the in-memory queue — modulo deferred per-handler concurrency + cancellation propagation into running handlers) + scheduledtasks.Scheduler ticker 3.12 (Scheduler.cs port: 30s time.Ticker drives Tick → tasks.GetPending → commands.Push at TriggerScheduled/PriorityLow with body="{}"; closes the bridge between the 3.10 task cache and the 3.11 command queue) + first IExecute<T> handler + cmd/sonarr boot wiring 3.13 (CleanupCommandMessagingService port: handlers package with MessagingCleanup handler calling Service.CleanCommands(now-24h); handlers.RegisterAll + handlers.DefaultScheduledTasks helpers wire registry + scheduledtasks defaults in one place; cmd/sonarr boot now spins up commands.Service + Queue + Dispatcher + scheduledtasks.Service + Scheduler with HandleApplicationStarted recovery + CommandExecutedEvent subscription, dispatcher + scheduler goroutines drained on shutdown via workerCancel + queue.Close before bus.BeginShutdown — convention pinned: Commands.Name + ScheduledTasks.TypeName + registry key all use the C# Command.Name short form ("MessagingCleanup"), not Type.FullName) + typed MediaInfo column 3.14 (episodefiles.File.MediaInfo: string → *mediainfo.Model; mapper marshalMediaInfo/unmarshalMediaInfo round-trip nil ↔ NULL preserves the AllWithoutMediaInfo IS NULL filter; closes the explicit Phase 3 follow-up) + episodefiles.CleanupService 3.15 (MediaFileTableCleanupService port: two-phase Clean(parent, filesOnDisk) drops EpisodeFile rows missing-from-disk OR with no linked episodes, then clears Episode.EpisodeFileID for any episode pointing at a now-removed/never-existed file; goes through the public Service surface so EpisodeFileDeletedEvent fires for every cleanup-deleted file) + housekeeping skeleton + Housekeeping handler 3.16 (new internal/housekeeping package with Task interface, Service.Clean orchestrator with per-task error swallowing, first concrete task FixFutureRunScheduledTasks clamping ScheduledTasks.LastExecution > now back to now; second IExecute<T> port via Housekeeping handler; handlers.Deps struct introduced so RegisterAll's call site is stable as new dep services land; cmd/sonarr boot wires housekeeping.Service) + four orphan-cleanup housekeepers 3.17 (CleanupOrphanedEpisodes/EpisodeFiles/HistoryItems/Blocklist; shared deleteOrphansLeftJoin helper for the LEFT-OUTER-JOIN-WHERE-NULL pattern; both engines verified) + four orphan-status housekeepers 3.18 (CleanupOrphanedIndexerStatus/DownloadClientStatus/ImportListStatus/NotificationStatus; each one struct-literal reusing 3.17's helper) + four more orphan housekeepers 3.19 (PendingReleases [single-pair] + ExtraFiles/SubtitleFiles/MetadataFiles [three-pass each via fileRefTask helper handling SeriesId-orphan + EpisodeFileId>0-orphan + unlinked passes; MetadataFiles adds Type IN (2,5) predicate to scope unlinked sweep to episode-scoped types only]) + three more housekeepers 3.20 (CleanupAdditionalNamingSpecs/CleanupAdditionalUsers via new singletonTableTask helper + UpdateCleanTitleForSeries which iterates Series.All and rewrites CleanTitle when parser.CleanSeriesTitle drifted) + FixFutureProviderStatusTimes family 3.21 (shared FixFutureProviderStatusTimes scaffold parameterised on (name, table) + 4 thin constructors for IndexerStatus/DownloadClientStatus/ImportListStatus/NotificationStatus; clamps DisabledTill / InitialFailure / MostRecentFailure to bounds derived from providerstatus.BackOffPeriodSeconds[EscalationLevel]; defensive EscalationLevel index clamp guards rogue rows; cmd/sonarr now wires 20 housekeepers; also closes the stale series.Service doc comment that still listed write methods as deferred) + CleanupUnusedTags housekeeper 3.22 (sweeps Tags rows whose Id isn't referenced by any of the 8 owner tables' Tags JSON-int-array column OR by an autotagging TagSpecification.Value; nil-autotagging-Repo tolerated for the 8-table-only path; empty-in-use-set falls back to DELETE FROM "Tags"; cmd/sonarr now wires 21 housekeepers + autotagging.Repo) + CleanupQualityProfileFormatItems housekeeper 3.23 (reconciles each QualityProfile.FormatItems against the live CustomFormats catalogue; drops phantom FormatIDs, prepends missing CFs at Score=0, resets MinFormatScore/CutoffFormatScore/MinUpgradeFormatScore to 0/0/1 when result is empty; set-based diff so score-only edits are preserved; cmd/sonarr now wires 22 housekeepers + qualityprofiles.Repo + customformats.Repo) + CheckHealth handler stub 3.24 (third IExecute<T> port: stub Execute logs and returns nil while real HealthCheckService awaits its own Phase 3 slice; Deps grows Log field; DefaultScheduledTasks adds CheckHealth at Interval=360min per Jobs/TaskManager.cs:96-99) + four more IExecute<T> handler stubs 3.25-3.28 (RefreshSeries Interval=720min, RefreshMonitoredDownloads Interval=1min, Backup Interval=BackupIntervalDefault=10080min, CleanUpRecycleBin Interval=1440min; all stubs log and return nil; DefaultScheduledTasks now has 8 entries; no new deps in Deps struct; 4 tests each mirroring CheckHealth pattern; both engines green) + decisionengine Subject + Specification + ReleaseInfo/TorrentInfo + cross-domain enums 3.31 (lands the `Subject` shape [C# RemoteEpisode equivalent — renamed because the type carries parsed release + matched series + episodes + custom formats not just "an episode that lives somewhere remote"] + `Specification` interface [Name/Kind/Priority/IsSatisfiedBy(ctx,subject,info)] + `ReleaseDecisionInformation` cross-spec context with PushedRelease/SearchCriteria factories. New cross-domain types: `indexers.DownloadProtocol` enum [Unknown/Usenet/Torrent], `pendingreleases.Reason` enum [Delay/DownloadClientUnavailable/Fallback], `series.MatchType` + `series.FindResult` [enum lives in series rather than parser to avoid parser→series cycle], `downloadclients.TorrentSeedConfiguration` with DefaultTorrentSeedConfiguration package var. `parser.ReleaseInfo` + `parser.TorrentInfo` [22-field ReleaseInfo + Age/AgeHours/AgeMinutes/String helpers; TorrentInfo embeds ReleaseInfo by value; AsTorrentInfo replaces C# `release as TorrentInfo` cast pattern; static GetSeeders/GetPeers helpers preserved]. Subject.NewSubject defensive zero-length-not-nil slice init; IsRecentEpisode(now) parameterised clock for test determinism; Subject.String type-switches over Release for log-line shape; 16 new test functions across 5 packages; both engines green; lint clean) + decisionengine data model 3.30 (first slice of the per-release scoring pipeline; new `internal/decisionengine` package ports the load-bearing data shapes — RejectionKind enum [renamed from C# RejectionType to dodge Go's reflect.Type idiom], SpecPriority enum with all 4 named constants [Default=Parsing=Database=0, Disk=1], UpgradeableRejectReason 8-entry enum, ReleaseSourceType 6-entry enum, RejectionReason 75-entry enum [wire-stable order against the v3 React frontend's per-int lookup; each entry carries a doc comment naming its originating C# Specification], Rejection value type [collapsing the C# `Rejection<T>` generic onto its single instantiation], SpecDecision with Accept singleton + Reject factory + RejectTemporary doc-parity alias, Decision struct with Subject `any` placeholder for the not-yet-ported RemoteEpisode + Approved/TemporarilyRejected/Rejected derived predicates [pinned-by-test mixed-rejection demotion gotcha + defensive slice copy in NewRejectedDecision]; 13 test functions; both engines green; lint clean; Subject + Specification interface + 30+ concrete specs land in subsequent slices once parser.ReleaseInfo + ParsedEpisodeInfo are ported) + healthcheck framework + 2 sample checks 3.29 (closes the 3.24 stub: new `internal/healthcheck` package ports `HealthCheckService.cs` orchestrator — Result/Reason enums + HealthCheck value type with wiki-fragment derivation, Check + EventDrivenCheck interfaces replacing C# `[CheckOn(typeof(X))]` with per-check `EventTriggers()`, FailedEvent/RestoredEvent/CompleteEvent domain events, Service with Run(ctx, Trigger) + HandleApplicationStarted + HandleAnyEvent + Subscribe(bus) + Results, in-memory result cache keyed by Check.Name with Failed/Restored transitions, 5s debouncer via time.AfterFunc, 15-min startup grace period with post-grace sweep that re-publishes existing failures with IsInStartupGracePeriod=false, panic-recovered `runOne`, duplicate-name + nil-check constructor guards; two concrete checks AppDataLocationCheck [via ospath.Contains/Equals] + ApiKeyValidationCheck [bound to ConfigFileSavedEvent — redundant ApplicationStarted [CheckOn] omitted because the global IEvent handler explicitly skips it]; CheckHealth handler swaps from logger-stub to NewCheckHealth(svc) parsing optional `{"trigger":"manual"}` from body with Scheduled as the default; Deps grows HealthCheck field; cmd/sonarr boot constructs healthSvc + Subscribe(bus) before RegisterAll; 24 test functions across 4 files; both engines green). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: (typed MediaInfo column closed in 3.14). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring. All 7 IExecute<T> stubs ship — 6 still stubbed (MessagingCleanup, Housekeeping, RefreshSeries, RefreshMonitoredDownloads, Backup, CleanUpRecycleBin) + 1 now real (CheckHealth, closed in 3.29 with the healthcheck framework + 2 concrete checks). TaskManager.cs has 11 scheduled tasks total with RssSync and ApplicationUpdateCheck/UpdateSceneMapping still missing stubs (those depend on indexer/update-check subsystems). Next heavier subsystems on deck: more healthcheck checks as their deps become available, DiskScanService (needs a real DiskProvider beyond ospath), decisionengine (per-release scoring — large but no new external deps), mediacover, queue service.
 
 ## Where to resume
 
@@ -2788,6 +2788,153 @@ roundtrips, SetFileID auto-forget, and every read+mutation
 pass-through.
 
 ### Phase 3 — Service / Workflow layer ⏳ in progress
+
+#### 3.31 — decisionengine Subject + Specification interface + ReleaseInfo/TorrentInfo + cross-domain enums ✅ shipped (2026-05-06)
+
+Second slice of the decisionengine port. Lands the `Subject` shape
+(C# `RemoteEpisode` equivalent) plus the `Specification` interface
+that future spec ports will satisfy. With this slice the orchestrator
++ the 30+ concrete specs become straight-up code work — every domain
+type they read is now Go-side.
+
+Cross-domain enums + value types added to neighbouring packages so
+they can be referenced without circular imports:
+
+- **`indexers.DownloadProtocol`** — port of
+  `Indexers/DownloadProtocol.cs:1-9`. 3-entry enum (Unknown / Usenet
+  / Torrent). Wire-stable through the v3 API; lower-case `String()`
+  mirrors the project convention.
+- **`pendingreleases.Reason`** — port of
+  `Download/Pending/PendingReleaseReason.cs:1-9`. 3-entry enum
+  (Delay / DownloadClientUnavailable / Fallback). The pendingreleases
+  repo's existing `Reason int` column is unchanged — this enum gives
+  it a typed-constant surface.
+- **`series.MatchType` + `series.FindResult`** — port of
+  `Parser/Model/FindSeriesResult.cs:5-23`. Lives in `internal/series`
+  rather than the C# tree's `Parser/Model/` because series already
+  imports parser — putting the type in parser would close a cycle.
+  The Go-port name drops the redundant `Series` prefix on the enum
+  (the package is series; a `series.SeriesMatchType` doc would
+  stutter).
+- **`downloadclients.TorrentSeedConfiguration`** — port of
+  `Download/Clients/TorrentSeedConfiguration.cs:1-12`. Two
+  pointer-fields (`Ratio *float64`, `SeedTime *time.Duration`); nil
+  means "fall back to the client's default". The C# `DefaultConfiguration`
+  static is exposed as the package-level `DefaultTorrentSeedConfiguration`
+  value so callers wanting "no override" don't have to allocate.
+
+Parser model — `parser.ReleaseInfo` + `parser.TorrentInfo`:
+
+- Port of `Parser/Model/ReleaseInfo.cs:1-114` and
+  `TorrentInfo.cs:1-52`. ReleaseInfo carries 22 fields (Guid, Title,
+  Size, Download/Info/Comment URLs, IndexerID, IndexerPriority,
+  SeasonSearchMaximumSingleEpisodeAge, DownloadProtocol, TvdbID,
+  TvRageID, ImdbID, PublishDate, Origin/Source/Container/Codec/Resolution,
+  Languages, IndexerFlags, PendingReleaseReason).
+  `IndexerFlags` + `PendingReleaseReason` carry `json:"-"` to mirror
+  the C# `[JsonIgnore]` so they don't leak into the v3 wire surface.
+- `Age()` / `AgeHours()` / `AgeMinutes()` derived helpers — read
+  `time.Since(PublishDate)` at call time exactly as the C# getters at
+  `:49-83` do.
+- `String()` mirrors the C# default ToString shape:
+  `[<publishDate>] <title> [<size>]`.
+- TorrentInfo embeds ReleaseInfo by value; `MagnetURL`, `InfoHash`,
+  `Seeders *int`, `Peers *int` (pointers to mirror C# `int?`
+  nullable). The C# inheritance pattern → Go composition.
+- `AsTorrentInfo(release any) *TorrentInfo` is the Go-shape
+  replacement for the C# `release as TorrentInfo` cast. The static
+  `GetSeeders` / `GetPeers` C# helpers port verbatim through this.
+
+decisionengine — `Subject`, `Specification`, `ReleaseDecisionInformation`:
+
+- **`Subject`** — port of `Parser/Model/RemoteEpisode.cs:1-56`.
+  Renamed from "RemoteEpisode" because (a) the type carries the
+  parsed release plus matched series + episodes + custom formats,
+  not just "an episode that lives somewhere remote"; (b) the
+  Specification signature reads naturally as "IsSatisfiedBy(Subject,
+  ...)"; (c) the C# name pre-dates multi-episode + season-pack support
+  and would propagate a misnomer through the whole decisionengine
+  surface. Fields:
+    - `Release any` — typed as `any` (not `*ReleaseInfo`) so call
+      sites pass either `*ReleaseInfo` or `*TorrentInfo` without an
+      interface cast. `parser.AsTorrentInfo(s.Release)` accesses
+      torrent-only fields.
+    - `ParsedEpisodeInfo *parser.ParsedEpisodeInfo` (already shipped).
+    - `SceneMapping *scenemappings.Mapping` — already-shipped type;
+      nil when canonical match.
+    - `MappedSeasonNumber int` — post-scene-translation season.
+    - `Series *series.Series`, `Episodes []episodes.Episode`,
+      `CustomFormats []customformats.CustomFormat`,
+      `Languages []language.Language`, `SeriesMatchType series.MatchType`,
+      `ReleaseSource decisionengine.ReleaseSourceType`.
+    - `EpisodeRequested bool`, `DownloadAllowed bool`.
+    - `SeedConfiguration *downloadclients.TorrentSeedConfiguration` —
+      nil for non-torrent Subjects.
+    - `CustomFormatScore int` — precomputed from
+      `qualityprofiles.CalculateCustomFormatScore` (already shipped).
+- **`NewSubject()`** — defensive constructor: Episodes / CustomFormats
+  / Languages allocated zero-length-not-nil so spec implementations
+  don't have to nil-check.
+- **`IsRecentEpisode(now)`** — port of `RemoteEpisode.cs:36-39`.
+  True iff any episode aired within the last 14 days. `now` is
+  parameterised so tests can pin a deterministic clock; production
+  passes `time.Now().UTC()`. Skips episodes with nil `AirDateUtc`.
+- **`String()`** — reads `Release.Title` via the type-switch over
+  `*ReleaseInfo` / `*TorrentInfo`. Falls back to `<no release>` when
+  Release is nil.
+- **`Specification` interface** — port of
+  `Specifications/IDownloadDecisionEngineSpecification.cs:1-12`. Four
+  methods: `Name() string`, `Kind() RejectionKind`,
+  `Priority() SpecPriority`, `IsSatisfiedBy(ctx, subject, info) SpecDecision`.
+  Adds `ctx context.Context` to the C# signature so the orchestrator
+  can route per-Subject cancellation.
+- **`ReleaseDecisionInformation`** — port of
+  `DecisionEngine/ReleaseDecisionInformation.cs:1-19`. Carries the
+  cross-spec context. Three constructors:
+  `NewReleaseDecisionInformation()` (defaults), `NewPushedRelease()`
+  (manual API push), `NewSearchInformation(criteria)` (search-driven).
+  `SearchCriteria` typed as `any` until SearchCriteriaBase is ported
+  in its own slice.
+
+What's queued next on the decisionengine track:
+
+1. **`UpgradableSpecification` port** — uses already-shipped
+   `quality.Compare`, `qualityprofiles.GetIndex`,
+   `qualityprofiles.CalculateCustomFormatScore`. Needs an injected
+   `DownloadPropersAndRepacks` config accessor (config service is
+   already shipped at `internal/config`).
+2. **First easy concrete specs** — RawDiskSpecification,
+   NotSampleSpecification, MaximumSizeSpecification,
+   AcceptableSizeSpecification (small, no external deps beyond what's
+   shipped).
+3. **DownloadDecisionMaker orchestrator** — runs every Specification
+   against a list of candidate releases, fans out into a Decision list.
+4. **DownloadDecisionComparer** — upgrade-vs-current-disk-state
+   comparator.
+
+Test coverage (16 new test functions across 5 packages):
+
+- `internal/parser/release_info_test.go` — Age helpers (clock-driven),
+  String shape, full-field round-trip, TorrentInfo embed, AsTorrentInfo
+  type-switch, GetSeeders/GetPeers nil-handling.
+- `internal/decisionengine/subject_test.go` — NewSubject zero-length
+  invariant, IsRecentEpisode boundary cases (10/30 days, multi-episode
+  any-recent, nil air dates), String type-switch, Specification
+  interface compile-check, ReleaseDecisionInformation factories.
+- `internal/series/find_series_result_test.go` — MatchType ordinals,
+  NewFindResult round-trip, nil-Series tolerance.
+- `internal/indexers/protocol_test.go` — DownloadProtocol ordinals +
+  String round-trip.
+- `internal/pendingreleases/reason_test.go` — Reason ordinals +
+  String round-trip.
+- `internal/downloadclients/torrent_seed_config_test.go` — Default
+  nil fields + field round-trip.
+
+```
+focused test set (decisionengine, parser, indexers, pendingreleases,
+                  series, downloadclients): ok  (-race -p 1, both engines)
+golangci-lint:                              0 issues
+```
 
 #### 3.30 — decisionengine data model (enums + Rejection + SpecDecision + Decision) ✅ shipped (2026-05-06)
 
