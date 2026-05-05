@@ -45,7 +45,7 @@ func TestMessagingCleanup_ScheduledFireThrough(t *testing.T) {
 	queue := commands.NewQueue(registry.Properties)
 	queue.SetClock(func() time.Time { return t0 })
 	cmdSvc.SetQueue(queue)
-	if err := handlers.RegisterAll(registry, cmdSvc); err != nil {
+	if err := handlers.RegisterAll(registry, allDeps(t, cmdSvc)); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	disp, err := commands.NewDispatcher(cmdSvc, queue, registry, slog.Default())
@@ -199,7 +199,7 @@ func TestBootRecovery_RePushesQueuedRows(t *testing.T) {
 	queue := commands.NewQueue(registry.Properties)
 	queue.SetClock(func() time.Time { return t0 })
 	cmdSvc.SetQueue(queue)
-	if err := handlers.RegisterAll(registry, cmdSvc); err != nil {
+	if err := handlers.RegisterAll(registry, allDeps(t, cmdSvc)); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	disp, err := commands.NewDispatcher(cmdSvc, queue, registry, slog.Default())

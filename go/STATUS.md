@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-05 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler) + commands in-memory Queue + Dispatcher 3.11 (CommandQueue + CommandExecutor port: cond-blocked TryGet with priority/disk/long-running/exclusive gating, single-worker Dispatcher.Run with handler registry + panic-recovered Execute, Service.SetQueue wires Push/PushMany/Cancel into the in-memory queue — modulo deferred per-handler concurrency + cancellation propagation into running handlers) + scheduledtasks.Scheduler ticker 3.12 (Scheduler.cs port: 30s time.Ticker drives Tick → tasks.GetPending → commands.Push at TriggerScheduled/PriorityLow with body="{}"; closes the bridge between the 3.10 task cache and the 3.11 command queue) + first IExecute<T> handler + cmd/sonarr boot wiring 3.13 (CleanupCommandMessagingService port: handlers package with MessagingCleanup handler calling Service.CleanCommands(now-24h); handlers.RegisterAll + handlers.DefaultScheduledTasks helpers wire registry + scheduledtasks defaults in one place; cmd/sonarr boot now spins up commands.Service + Queue + Dispatcher + scheduledtasks.Service + Scheduler with HandleApplicationStarted recovery + CommandExecutedEvent subscription, dispatcher + scheduler goroutines drained on shutdown via workerCancel + queue.Close before bus.BeginShutdown — convention pinned: Commands.Name + ScheduledTasks.TypeName + registry key all use the C# Command.Name short form ("MessagingCleanup"), not Type.FullName) + typed MediaInfo column 3.14 (episodefiles.File.MediaInfo: string → *mediainfo.Model; mapper marshalMediaInfo/unmarshalMediaInfo round-trip nil ↔ NULL preserves the AllWithoutMediaInfo IS NULL filter; closes the explicit Phase 3 follow-up) + episodefiles.CleanupService 3.15 (MediaFileTableCleanupService port: two-phase Clean(parent, filesOnDisk) drops EpisodeFile rows missing-from-disk OR with no linked episodes, then clears Episode.EpisodeFileID for any episode pointing at a now-removed/never-existed file; goes through the public Service surface so EpisodeFileDeletedEvent fires for every cleanup-deleted file). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: (typed MediaInfo column closed in 3.14). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
+Last updated: 2026-05-05 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler) + commands in-memory Queue + Dispatcher 3.11 (CommandQueue + CommandExecutor port: cond-blocked TryGet with priority/disk/long-running/exclusive gating, single-worker Dispatcher.Run with handler registry + panic-recovered Execute, Service.SetQueue wires Push/PushMany/Cancel into the in-memory queue — modulo deferred per-handler concurrency + cancellation propagation into running handlers) + scheduledtasks.Scheduler ticker 3.12 (Scheduler.cs port: 30s time.Ticker drives Tick → tasks.GetPending → commands.Push at TriggerScheduled/PriorityLow with body="{}"; closes the bridge between the 3.10 task cache and the 3.11 command queue) + first IExecute<T> handler + cmd/sonarr boot wiring 3.13 (CleanupCommandMessagingService port: handlers package with MessagingCleanup handler calling Service.CleanCommands(now-24h); handlers.RegisterAll + handlers.DefaultScheduledTasks helpers wire registry + scheduledtasks defaults in one place; cmd/sonarr boot now spins up commands.Service + Queue + Dispatcher + scheduledtasks.Service + Scheduler with HandleApplicationStarted recovery + CommandExecutedEvent subscription, dispatcher + scheduler goroutines drained on shutdown via workerCancel + queue.Close before bus.BeginShutdown — convention pinned: Commands.Name + ScheduledTasks.TypeName + registry key all use the C# Command.Name short form ("MessagingCleanup"), not Type.FullName) + typed MediaInfo column 3.14 (episodefiles.File.MediaInfo: string → *mediainfo.Model; mapper marshalMediaInfo/unmarshalMediaInfo round-trip nil ↔ NULL preserves the AllWithoutMediaInfo IS NULL filter; closes the explicit Phase 3 follow-up) + episodefiles.CleanupService 3.15 (MediaFileTableCleanupService port: two-phase Clean(parent, filesOnDisk) drops EpisodeFile rows missing-from-disk OR with no linked episodes, then clears Episode.EpisodeFileID for any episode pointing at a now-removed/never-existed file; goes through the public Service surface so EpisodeFileDeletedEvent fires for every cleanup-deleted file) + housekeeping skeleton + Housekeeping handler 3.16 (new internal/housekeeping package with Task interface, Service.Clean orchestrator with per-task error swallowing, first concrete task FixFutureRunScheduledTasks clamping ScheduledTasks.LastExecution > now back to now; second IExecute<T> port via Housekeeping handler; handlers.Deps struct introduced so RegisterAll's call site is stable as new dep services land; cmd/sonarr boot wires housekeeping.Service). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: (typed MediaInfo column closed in 3.14). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
 
 ## Where to resume
 
@@ -2788,6 +2788,95 @@ roundtrips, SetFileID auto-forget, and every read+mutation
 pass-through.
 
 ### Phase 3 — Service / Workflow layer ⏳ in progress
+
+#### 3.16 — housekeeping package skeleton + Housekeeping handler ✅ shipped (2026-05-05)
+
+Second IExecute<T> handler. Ports
+`NzbDrone.Core.Housekeeping.HousekeepingService.Execute(HousekeepingCommand)`
+plus the smallest concrete IHousekeepingTask
+(`FixFutureRunScheduledTasks`) so the registry → dispatcher → handler
+→ housekeeping.Service.Clean → task.Clean round-trip is real, not a
+stub.
+
+`internal/housekeeping/` (new package):
+
+- `Task` interface — Go shape of the C# `IHousekeepingTask` at
+  `IHousekeepingTask.cs`. Adds `ctx` for cancellation and an `error`
+  return for logging. `Name() string` exposes the type-name surface
+  the C# version reads via `task.GetType().Name`.
+- `Service` orchestrator — `NewService(tasks, log)` validates non-nil
+  tasks at construction; `Clean(ctx)` runs every task in registration
+  order, logs per-task failures, returns the first error wrapped in a
+  task-name prefix so the dispatcher can record it on
+  `Commands.Exception`. The C# version returns void; the Go port
+  surfaces the first error so housekeeping problems are observable to
+  operators.
+- `FixFutureRunScheduledTasks` — ports
+  `src/NzbDrone.Core/Housekeeping/Housekeepers/FixFutureRunScheduledTasks.cs:1-35`.
+  Single UPDATE on `ScheduledTasks` rows whose `LastExecution > now`,
+  clamping them back to now. Why it exists: a clock that runs ahead
+  then jumps back can leave LastExecution in the future, and the
+  scheduler's `LastExecution + Interval < now` gate then masks the
+  task as "not due yet" forever. Injectable clock for deterministic
+  tests.
+
+`internal/commands/handlers/housekeeping.go`:
+
+- `Housekeeping` handler. Body ignored; `Execute(ctx, _)` calls
+  `housekeeping.Service.Clean(ctx)` and surfaces the first error.
+- `HousekeepingName = "Housekeeping"` — registry key + ScheduledTasks.TypeName,
+  short-form per the 3.13 convention.
+
+`internal/commands/handlers/handlers.go`:
+
+- `Deps` struct introduced to bundle cross-handler services
+  (`Commands`, `Housekeeping`). Adding a new dep here keeps
+  `RegisterAll`'s call site stable and avoids the long-positional-arg
+  drift that 5+ handlers would hit.
+- `RegisterAll(registry, Deps)` validates each dep is non-nil; the
+  signature is now `RegisterAll(*CommandRegistry, Deps) error`.
+- `DefaultScheduledTasks()` adds `{TypeName: "Housekeeping",
+  Interval: 24*60}` matching the C# `TaskManager.cs:108` default.
+
+`cmd/sonarr/main.go`:
+
+- Pre-builds `housekeeping.Service` with `[FixFutureRunScheduledTasks]`
+  before the registry. Tasks list grows here as more housekeepers
+  port; the orchestrator stays minimal.
+- `handlers.RegisterAll(registry, handlers.Deps{Commands, Housekeeping})`
+  — host-side wiring is one named struct, easy to extend.
+
+Tests (housekeeping package, 5 + 4 functions):
+
+- Service: nil-task rejected at construction, Clean runs all tasks
+  in order, per-task failure doesn't halt the loop, first error wins
+  the return, empty task list is a no-op.
+- FixFutureRunScheduledTasks: nil-DB rejected, clamping behaviour
+  verified against both engines (future row → now; past row
+  unchanged), Name() pin, no-op when no future rows, ctx cancel
+  surfaces an error from ExecContext.
+
+Existing handler tests updated for the new RegisterAll signature via
+`allDeps(t, svc)` test helper that pairs the service with an empty
+housekeeping.Service — the dispatcher tests don't actually invoke
+the housekeeper.
+
+Deferred (called out for future slices):
+
+- ~25 remaining C# housekeepers (`CleanupOrphaned*`,
+  `CleanupAdditional*`, `Trim*`, `FixFuture*` for other tables).
+  Each is a one-screen SQL statement; ports as a new Task in
+  this package once the housekeeper's target table is genuinely
+  reconciliation-stale at runtime.
+- `IMainDatabase.Vacuum()` — the C# `HousekeepingService.Clean`
+  finishes with a `_mainDb.Vacuum()` call. The Go port's datastore
+  layer doesn't expose VACUUM yet; will become a dedicated `Task`
+  once the wiring lands.
+
+  internal/housekeeping:        ok  (-race -p 1, both engines)
+  internal/commands/handlers:   ok  (-race)
+  full ./... suite:             ok  (-race -p 1, both engines)
+  golangci-lint:                0 issues
 
 #### 3.15 — episodefiles.CleanupService (MediaFileTableCleanupService port) ✅ shipped (2026-05-05)
 

@@ -29,30 +29,47 @@ import (
 	"errors"
 
 	"sonarr.tv/sonarr/internal/commands"
+	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 )
 
+// Deps bundles the cross-cutting services the handler set wires
+// against. Adding a new dep here keeps the host's RegisterAll call
+// stable; existing handlers that don't need the new service simply
+// ignore it. A pointer-bag struct is more honest than a long
+// positional argument list once we're past three handlers.
+type Deps struct {
+	Commands     *commands.Service
+	Housekeeping *housekeeping.Service
+}
+
 // RegisterAll wires every shipped handler into `registry`. The host
-// calls this once at boot, after `commands.NewService` and before
-// `commands.NewDispatcher`.
+// calls this once at boot, after the dependency services have been
+// constructed and before `commands.NewDispatcher`.
 //
 // New handlers append a `registry.Register(...)` line here so the
 // host's wiring stays in one place; the alternative — host-side
 // per-handler imports — would force every cmd/* binary to track the
 // handler set explicitly.
 //
-// Returns an error if `svc` is nil; nil handlers panic at registration
-// per the registry's contract (boot-time setup error, not a runtime
-// condition).
-func RegisterAll(registry *commands.CommandRegistry, svc *commands.Service) error {
+// Returns an error if any required dep is nil; nil handlers panic at
+// registration per the registry's contract (boot-time setup error,
+// not a runtime condition).
+func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	if registry == nil {
 		return errors.New("handlers: RegisterAll: nil registry")
 	}
-	if svc == nil {
-		return errors.New("handlers: RegisterAll: nil service")
+	if deps.Commands == nil {
+		return errors.New("handlers: RegisterAll: nil Deps.Commands")
+	}
+	if deps.Housekeeping == nil {
+		return errors.New("handlers: RegisterAll: nil Deps.Housekeeping")
 	}
 	registry.Register(MessagingCleanupName, commands.CommandSpec{
-		Handler: NewMessagingCleanup(svc),
+		Handler: NewMessagingCleanup(deps.Commands),
+	})
+	registry.Register(HousekeepingName, commands.CommandSpec{
+		Handler: NewHousekeeping(deps.Housekeeping),
 	})
 	return nil
 }
@@ -73,6 +90,12 @@ func DefaultScheduledTasks() []*scheduledtasks.Task {
 			TypeName: MessagingCleanupName,
 			// Matches `TaskManager.cs:79` — `Interval = 5` (minutes).
 			Interval: 5,
+		},
+		{
+			TypeName: HousekeepingName,
+			// Matches `TaskManager.cs:108` — `Interval = 24 * 60`
+			// (24h in minutes).
+			Interval: 24 * 60,
 		},
 	}
 }

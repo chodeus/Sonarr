@@ -11,8 +11,28 @@ import (
 	"sonarr.tv/sonarr/internal/commands/handlers"
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
+	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/messaging"
 )
+
+// emptyHouseSvc returns a housekeeping.Service with zero tasks.
+// Sufficient for tests that only need RegisterAll to wire the
+// Housekeeping handler without invoking it.
+func emptyHouseSvc(t *testing.T) *housekeeping.Service {
+	t.Helper()
+	svc, err := housekeeping.NewService(nil, slog.Default())
+	if err != nil {
+		t.Fatalf("housekeeping.NewService: %v", err)
+	}
+	return svc
+}
+
+// allDeps builds a Deps wired against the supplied commands.Service
+// and an empty housekeeping.Service.
+func allDeps(t *testing.T, svc *commands.Service) handlers.Deps {
+	t.Helper()
+	return handlers.Deps{Commands: svc, Housekeeping: emptyHouseSvc(t)}
+}
 
 // cleanupHarness wires a real Service + Repo over a fresh test DB so
 // tests can both push commands through the public surface AND seed
@@ -122,12 +142,15 @@ func TestMessagingCleanup_Execute_CutoffMatchesC1Day(t *testing.T) {
 
 func TestRegisterAll_NilGuards(t *testing.T) {
 	t.Parallel()
-	if err := handlers.RegisterAll(nil, nil); err == nil {
-		t.Errorf("RegisterAll(nil, nil): want error")
+	if err := handlers.RegisterAll(nil, handlers.Deps{}); err == nil {
+		t.Errorf("RegisterAll(nil registry): want error")
 	}
 	r := commands.NewRegistry()
-	if err := handlers.RegisterAll(r, nil); err == nil {
-		t.Errorf("RegisterAll(reg, nil): want error")
+	if err := handlers.RegisterAll(r, handlers.Deps{}); err == nil {
+		t.Errorf("RegisterAll(empty Deps): want error")
+	}
+	if err := handlers.RegisterAll(r, handlers.Deps{Commands: nil, Housekeeping: emptyHouseSvc(t)}); err == nil {
+		t.Errorf("RegisterAll(nil Commands): want error")
 	}
 }
 
@@ -136,11 +159,14 @@ func TestRegisterAll_RegistersMessagingCleanup(t *testing.T) {
 	t0 := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
 	h := newCleanupHarness(t, t0)
 	r := commands.NewRegistry()
-	if err := handlers.RegisterAll(r, h.svc); err != nil {
+	if err := handlers.RegisterAll(r, allDeps(t, h.svc)); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	if _, ok := r.Lookup(handlers.MessagingCleanupName); !ok {
 		t.Errorf("Registry.Lookup(%q): not registered", handlers.MessagingCleanupName)
+	}
+	if _, ok := r.Lookup(handlers.HousekeepingName); !ok {
+		t.Errorf("Registry.Lookup(%q): not registered", handlers.HousekeepingName)
 	}
 }
 
@@ -178,7 +204,7 @@ func newDispatchHarness(t *testing.T, t0 time.Time) *dispatchHarness {
 	queue.SetClock(func() time.Time { return t0 })
 	c.svc.SetQueue(queue)
 
-	if err := handlers.RegisterAll(registry, c.svc); err != nil {
+	if err := handlers.RegisterAll(registry, allDeps(t, c.svc)); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	disp, err := commands.NewDispatcher(c.svc, queue, registry, slog.Default())

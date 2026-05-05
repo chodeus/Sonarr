@@ -45,6 +45,7 @@ import (
 	"sonarr.tv/sonarr/internal/commands/handlers"
 	"sonarr.tv/sonarr/internal/configfile"
 	"sonarr.tv/sonarr/internal/datastore"
+	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/instrumentation"
 	"sonarr.tv/sonarr/internal/lifecycle"
 	"sonarr.tv/sonarr/internal/messaging"
@@ -151,10 +152,25 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("commands service: %w", err)
 	}
+	// Housekeeping service — pre-built so the Housekeeping handler
+	// can register against it. Tasks list grows as housekeepers port;
+	// for now FixFutureRunScheduledTasks is the only one wired.
+	fixFuture, err := housekeeping.NewFixFutureRunScheduledTasks(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping fixFuture: %w", err)
+	}
+	houseSvc, err := housekeeping.NewService([]housekeeping.Task{fixFuture}, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping service: %w", err)
+	}
+
 	registry := commands.NewRegistry()
 	queue := commands.NewQueue(registry.Properties)
 	cmdSvc.SetQueue(queue)
-	if err := handlers.RegisterAll(registry, cmdSvc); err != nil {
+	if err := handlers.RegisterAll(registry, handlers.Deps{
+		Commands:     cmdSvc,
+		Housekeeping: houseSvc,
+	}); err != nil {
 		return fmt.Errorf("commands handlers: %w", err)
 	}
 	dispatcher, err := commands.NewDispatcher(cmdSvc, queue, registry, logger)
