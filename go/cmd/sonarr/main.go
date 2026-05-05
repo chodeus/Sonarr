@@ -153,13 +153,36 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("commands service: %w", err)
 	}
 	// Housekeeping service — pre-built so the Housekeeping handler
-	// can register against it. Tasks list grows as housekeepers port;
-	// for now FixFutureRunScheduledTasks is the only one wired.
+	// can register against it. Each Task gets its own constructor so
+	// nil-deps surface at boot, not at first run. New housekeepers
+	// append to the [task] slice below.
 	fixFuture, err := housekeeping.NewFixFutureRunScheduledTasks(db, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping fixFuture: %w", err)
 	}
-	houseSvc, err := housekeeping.NewService([]housekeeping.Task{fixFuture}, logger)
+	orphanEpisodes, err := housekeeping.NewCleanupOrphanedEpisodes(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping orphanEpisodes: %w", err)
+	}
+	orphanFiles, err := housekeeping.NewCleanupOrphanedEpisodeFiles(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping orphanFiles: %w", err)
+	}
+	orphanHistory, err := housekeeping.NewCleanupOrphanedHistoryItems(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping orphanHistory: %w", err)
+	}
+	orphanBlocklist, err := housekeeping.NewCleanupOrphanedBlocklist(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping orphanBlocklist: %w", err)
+	}
+	houseSvc, err := housekeeping.NewService([]housekeeping.Task{
+		fixFuture,
+		orphanEpisodes,
+		orphanFiles,
+		orphanHistory,
+		orphanBlocklist,
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping service: %w", err)
 	}
