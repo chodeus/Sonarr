@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-05 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler) + commands in-memory Queue + Dispatcher 3.11 (CommandQueue + CommandExecutor port: cond-blocked TryGet with priority/disk/long-running/exclusive gating, single-worker Dispatcher.Run with handler registry + panic-recovered Execute, Service.SetQueue wires Push/PushMany/Cancel into the in-memory queue — modulo deferred per-handler concurrency + cancellation propagation into running handlers) + scheduledtasks.Scheduler ticker 3.12 (Scheduler.cs port: 30s time.Ticker drives Tick → tasks.GetPending → commands.Push at TriggerScheduled/PriorityLow with body="{}"; closes the bridge between the 3.10 task cache and the 3.11 command queue). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: typed MediaInfo column on episodefiles.File (separate slice, touches Mapper + every read/write site). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
+Last updated: 2026-05-05 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler) + commands in-memory Queue + Dispatcher 3.11 (CommandQueue + CommandExecutor port: cond-blocked TryGet with priority/disk/long-running/exclusive gating, single-worker Dispatcher.Run with handler registry + panic-recovered Execute, Service.SetQueue wires Push/PushMany/Cancel into the in-memory queue — modulo deferred per-handler concurrency + cancellation propagation into running handlers) + scheduledtasks.Scheduler ticker 3.12 (Scheduler.cs port: 30s time.Ticker drives Tick → tasks.GetPending → commands.Push at TriggerScheduled/PriorityLow with body="{}"; closes the bridge between the 3.10 task cache and the 3.11 command queue) + first IExecute<T> handler + cmd/sonarr boot wiring 3.13 (CleanupCommandMessagingService port: handlers package with MessagingCleanup handler calling Service.CleanCommands(now-24h); handlers.RegisterAll + handlers.DefaultScheduledTasks helpers wire registry + scheduledtasks defaults in one place; cmd/sonarr boot now spins up commands.Service + Queue + Dispatcher + scheduledtasks.Service + Scheduler with HandleApplicationStarted recovery + CommandExecutedEvent subscription, dispatcher + scheduler goroutines drained on shutdown via workerCancel + queue.Close before bus.BeginShutdown — convention pinned: Commands.Name + ScheduledTasks.TypeName + registry key all use the C# Command.Name short form ("MessagingCleanup"), not Type.FullName). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: typed MediaInfo column on episodefiles.File (separate slice, touches Mapper + every read/write site). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
 
 ## Where to resume
 
@@ -2788,6 +2788,134 @@ roundtrips, SetFileID auto-forget, and every read+mutation
 pass-through.
 
 ### Phase 3 — Service / Workflow layer ⏳ in progress
+
+#### 3.13 — first IExecute<T> handler + cmd/sonarr boot wiring ✅ shipped (2026-05-05)
+
+First end-to-end demo of the scheduled-command pipeline. Two
+tightly-coupled sub-slices in one commit:
+
+- **3.13a** — MessagingCleanup handler. Ports
+  `src/NzbDrone.Core/Messaging/Commands/CleanupCommandMessagingService.cs:1-17`,
+  the IExecute<MessagingCleanupCommand> implementation that just calls
+  `IManageCommandQueue.CleanCommands()` and exits.
+- **3.13b** — `cmd/sonarr` boot wiring. Bring up
+  `commands.Service` + `Queue` + `Dispatcher` and
+  `scheduledtasks.Service` + `Scheduler`, run boot recovery, subscribe
+  the bus listener, kick off both goroutines, and tear them down
+  cleanly on signal.
+
+`internal/commands/handlers/` (new sub-package; never imported by the
+core `commands` package — handlers grow domain dependencies that would
+cycle through the core):
+
+- `messagingcleanup.go` — `MessagingCleanup` Handler. `Execute(ctx, _)`
+  computes `cutoff = now - 24h` and calls `Service.CleanCommands(ctx,
+  cutoff)`. `MessagingCleanupRetention = 24 * time.Hour` mirrors C#
+  `CommandQueueManager.cs:240` `_repo.Trim(DateTime.UtcNow.AddDays(-1))`.
+  Body is ignored — the C# `MessagingCleanupCommand` is a bare `Command`
+  subclass with no fields. Injectable clock for deterministic tests.
+- `handlers.go` — `RegisterAll(registry, svc)` wires every shipped
+  handler into a `commands.CommandRegistry` in one place; the host
+  imports the package for its side-effect-free helper rather than
+  importing each handler. `DefaultScheduledTasks() []*scheduledtasks.Task`
+  returns the seed list for handlers that run on a periodic interval —
+  for now just `{TypeName: "MessagingCleanup", Interval: 5}` (the C#
+  `TaskManager.cs:79` value).
+
+Naming convention pinned (this slice was the first to need a real
+choice):
+
+- The string used as `Commands.Name`, `ScheduledTasks.TypeName`, AND
+  the `CommandRegistry` key is the C# `Command.Name` short form —
+  `Type.Name.Replace("Command", "")` (e.g. `"MessagingCleanup"`,
+  `"RefreshSeries"`, `"Backup"`). Matches the C# JSON API surface
+  (`POST /api/v3/command` body `{"name":"MessagingCleanup"}`) and the
+  scheduled-task display name. The C# tree persists
+  `ScheduledTasks.TypeName` as the assembly-qualified `Type.FullName`
+  ("NzbDrone.Core.Messaging.Commands.MessagingCleanupCommand"); the Go
+  port collapses both representations to the short form. Existing C#
+  Sonarr databases upgrade fine: any FullName-style row not in the
+  Go-port default set is deleted as an orphan by
+  `scheduledtasks.Service.RegisterDefaults`, then re-inserted under the
+  short name on the next boot.
+
+`cmd/sonarr/main.go` boot wiring:
+
+- After `datastore.Migrate` and before `ApplicationStartedEvent`:
+  - Build `commands.NewRepo` → `commands.NewService` (with the same
+    `bus`).
+  - Build `commands.NewRegistry` + `commands.NewQueue(registry.Properties)`
+    + `cmdSvc.SetQueue(queue)` so `Push`/`PushMany`/`Cancel` enqueue
+    into the in-memory queue.
+  - Call `handlers.RegisterAll(registry, cmdSvc)` to register every
+    shipped handler.
+  - Build `commands.NewDispatcher`.
+  - Build `scheduledtasks.NewRepo` → `scheduledtasks.NewService`.
+  - `taskSvc.RegisterDefaults(ctx, handlers.DefaultScheduledTasks())`
+    reconciles persisted rows against the seed list (deletes orphans,
+    upserts defaults, populates the cache).
+  - `messaging.Subscribe(bus, "scheduledtasks.HandleCommandExecuted",
+    taskSvc.HandleCommandExecuted)` so successful command runs stamp
+    LastExecution back into the cache.
+  - Build `scheduledtasks.NewScheduler`.
+- Boot recovery: `cmdSvc.HandleApplicationStarted(ctx)` flips leftover
+  Started rows to Orphaned and returns the surviving Queued list. The
+  list is wrapped to `[]*Command` and fed into `queue.AddMany` so the
+  dispatcher picks them up immediately.
+- Goroutines: dispatcher and scheduler each run on their own
+  goroutine. A `workerCtx`/`workerCancel` pair scoped to the lifetime
+  of `serve` and a `sync.WaitGroup` ensures shutdown blocks on both
+  exits.
+- Shutdown order: cancel `workerCtx` → `queue.Close()` (defensive;
+  `Run` already returns on ctx cancel) → `workers.Wait()` → publish
+  `ApplicationShutdownRequested` → `bus.BeginShutdown` → `bus.Wait`.
+  Stopping the workers BEFORE draining the bus lets any in-flight
+  `CommandExecutedEvent` published from `Service.Complete` flow through
+  to the (still-live) bus subscribers.
+
+Tests (`internal/commands/handlers/messagingcleanup_test.go` + `scheduled_test.go`):
+
+- Handler unit tests: aged-row deletion (cutoff = now - 24h with
+  injected clock; -30h is deleted, -12h survives), no-op on empty,
+  cutoff boundary check (row at exactly -24h survives because Trim
+  uses strict `<`, row at -24h-1ns is deleted).
+- Registry tests: nil-guards, MessagingCleanup is registered after
+  `RegisterAll`, `DefaultScheduledTasks` includes
+  `{TypeName: "MessagingCleanup", Interval: 5}`.
+- Dispatch round-trip: push a MessagingCleanup command through the
+  full Queue → Dispatcher → handler → Service.Complete pipe; verify
+  status transitions to Completed and a pre-seeded aged row is
+  actually deleted.
+- Scheduler fire-through: pre-seed a stale ScheduledTasks row for
+  MessagingCleanup with LastExecution = t0 - 2h, run one
+  `Scheduler.Tick`, verify the resulting Commands row reaches
+  Completed AND that the bus-driven `HandleCommandExecuted` advances
+  `GetNextExecution(MessagingCleanup)` to `t0 + 5min`.
+- Boot recovery integration: pre-seed Queued + Started rows, run
+  `HandleApplicationStarted`, feed the queued list into `queue.AddMany`,
+  verify the dispatcher drains the queued row to Completed while the
+  Started row stays Orphaned.
+
+Deferred (called out for future slices):
+
+- Per-task priority override on the Scheduler (PriorityLow default
+  still applies to every scheduled task).
+- Per-task body shape with LastExecutionTime + LastStartTime — the
+  C# Scheduler push instantiates a default Command subclass and stamps
+  those onto it; not needed for MessagingCleanup. Drives the body
+  shape change when the first handler that reads them ports (likely
+  `BackupCommand`).
+- Per-handler concurrency (the C# `THREAD_LIMIT = 3` worker pool).
+  Single-worker dispatcher is fine for the current handler set.
+- Cancellation propagation from `Service.Cancel` into a running
+  handler — the queue's `RemoveIfQueued` covers Queued rows; Started
+  rows still run to completion.
+
+  internal/commands/handlers:    ok  (-race)
+  internal/commands:             ok  (-race -p 1, both engines)
+  internal/scheduledtasks:       ok  (-race -p 1, both engines)
+  cmd/sonarr:                    builds clean
+  golangci-lint:                 0 issues
 
 #### 3.12 — scheduledtasks Scheduler ticker ✅ shipped (2026-05-05)
 

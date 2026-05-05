@@ -1,0 +1,78 @@
+// Package handlers wires concrete IExecute<T> ports into the
+// commands.CommandRegistry. One file per command type; this file
+// holds the cross-handler RegisterAll helper the host calls at boot.
+//
+// The package lives under internal/commands so handlers stay
+// adjacent to the registry they target, but is a sibling sub-package
+// so the core commands package never imports handler code (which
+// would create a cycle once handlers grow domain dependencies like
+// series/episodefiles services).
+//
+// Naming convention (settled in Phase 3.13):
+//
+//   - The string used as `Commands.Name`, `ScheduledTasks.TypeName`,
+//     and `CommandRegistry` key is the C# `Command.Name` short form —
+//     `Type.Name.Replace("Command", "")` — e.g. `MessagingCleanup`,
+//     `RefreshSeries`, `Backup`. This matches the C# JSON API surface
+//     (`POST /api/v3/command` body `{"name":"MessagingCleanup"}`) and
+//     the scheduled-task display name. The C# tree persists
+//     `ScheduledTasks.TypeName` as the assembly-qualified `Type.FullName`
+//     ("NzbDrone.Core.Messaging.Commands.MessagingCleanupCommand"); the
+//     Go port collapses both representations to the short form. Existing
+//     C# Sonarr databases upgrade fine: any FullName-style row not in
+//     the Go-port default set is deleted as an orphan by
+//     `scheduledtasks.Service.RegisterDefaults`, then re-inserted under
+//     the short name on the next boot.
+package handlers
+
+import (
+	"errors"
+
+	"sonarr.tv/sonarr/internal/commands"
+	"sonarr.tv/sonarr/internal/scheduledtasks"
+)
+
+// RegisterAll wires every shipped handler into `registry`. The host
+// calls this once at boot, after `commands.NewService` and before
+// `commands.NewDispatcher`.
+//
+// New handlers append a `registry.Register(...)` line here so the
+// host's wiring stays in one place; the alternative — host-side
+// per-handler imports — would force every cmd/* binary to track the
+// handler set explicitly.
+//
+// Returns an error if `svc` is nil; nil handlers panic at registration
+// per the registry's contract (boot-time setup error, not a runtime
+// condition).
+func RegisterAll(registry *commands.CommandRegistry, svc *commands.Service) error {
+	if registry == nil {
+		return errors.New("handlers: RegisterAll: nil registry")
+	}
+	if svc == nil {
+		return errors.New("handlers: RegisterAll: nil service")
+	}
+	registry.Register(MessagingCleanupName, commands.CommandSpec{
+		Handler: NewMessagingCleanup(svc),
+	})
+	return nil
+}
+
+// DefaultScheduledTasks returns the seed `[]*scheduledtasks.Task` for
+// every shipped handler that runs on a periodic interval. The host
+// passes the result to `scheduledtasks.Service.RegisterDefaults` at
+// boot — handlers that don't appear here are still registered in the
+// command dispatcher and remain reachable via manual API push, but
+// the scheduler never fires them.
+//
+// Intervals are in MINUTES, matching the C# `ScheduledTask.Interval`
+// column. The values mirror the C# `TaskManager.cs:67-135` defaults
+// for handlers that have ports.
+func DefaultScheduledTasks() []*scheduledtasks.Task {
+	return []*scheduledtasks.Task{
+		{
+			TypeName: MessagingCleanupName,
+			// Matches `TaskManager.cs:79` — `Interval = 5` (minutes).
+			Interval: 5,
+		},
+	}
+}

@@ -35,16 +35,20 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"sonarr.tv/sonarr/internal/appenv"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/buildinfo"
+	"sonarr.tv/sonarr/internal/commands"
+	"sonarr.tv/sonarr/internal/commands/handlers"
 	"sonarr.tv/sonarr/internal/configfile"
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/instrumentation"
 	"sonarr.tv/sonarr/internal/lifecycle"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/scheduledtasks"
 )
 
 func main() {
@@ -133,6 +137,88 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		"schemaVersion", version,
 		"instance", instanceName)
 
+	// Commands + scheduled-tasks wiring (Phase 3.13). Build the
+	// service stack before the ApplicationStartedEvent fan-out so
+	// boot recovery (orphan detection + queued re-push) runs against
+	// a fresh queue. The scheduler subscribes via HandleCommandExecuted
+	// so a Tick → Push → Dispatch → Complete round-trip flows back into
+	// the LastExecution stamp.
+	cmdRepo, err := commands.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("commands repo: %w", err)
+	}
+	cmdSvc, err := commands.NewService(cmdRepo, bus)
+	if err != nil {
+		return fmt.Errorf("commands service: %w", err)
+	}
+	registry := commands.NewRegistry()
+	queue := commands.NewQueue(registry.Properties)
+	cmdSvc.SetQueue(queue)
+	if err := handlers.RegisterAll(registry, cmdSvc); err != nil {
+		return fmt.Errorf("commands handlers: %w", err)
+	}
+	dispatcher, err := commands.NewDispatcher(cmdSvc, queue, registry, logger)
+	if err != nil {
+		return fmt.Errorf("commands dispatcher: %w", err)
+	}
+
+	taskRepo, err := scheduledtasks.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("scheduledtasks repo: %w", err)
+	}
+	taskSvc, err := scheduledtasks.NewService(taskRepo)
+	if err != nil {
+		return fmt.Errorf("scheduledtasks service: %w", err)
+	}
+	if err := taskSvc.RegisterDefaults(ctx, handlers.DefaultScheduledTasks()); err != nil {
+		return fmt.Errorf("scheduledtasks RegisterDefaults: %w", err)
+	}
+	messaging.Subscribe(bus, "scheduledtasks.HandleCommandExecuted",
+		taskSvc.HandleCommandExecuted)
+
+	scheduler, err := scheduledtasks.NewScheduler(taskSvc, cmdSvc, logger)
+	if err != nil {
+		return fmt.Errorf("scheduledtasks scheduler: %w", err)
+	}
+
+	// Boot recovery: orphan any leftover Started rows from the
+	// previous (crashed) run and re-feed every Queued row into the
+	// in-memory queue so the dispatcher can pick them up.
+	orphaned, queuedAtBoot, err := cmdSvc.HandleApplicationStarted(ctx)
+	if err != nil {
+		return fmt.Errorf("commands boot recovery: %w", err)
+	}
+	if len(queuedAtBoot) > 0 {
+		ptrs := make([]*commands.Command, len(queuedAtBoot))
+		for i := range queuedAtBoot {
+			row := queuedAtBoot[i]
+			ptrs[i] = &row
+		}
+		queue.AddMany(ptrs)
+	}
+	logger.Info("commands boot recovery",
+		"orphaned", orphaned,
+		"requeued", len(queuedAtBoot))
+
+	// Bring up the dispatcher + scheduler goroutines. Both exit
+	// cleanly on ctx cancellation; we wait for both via wg below.
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	defer workerCancel()
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		if err := dispatcher.Run(workerCtx); err != nil {
+			logger.Warn("commands dispatcher exited with error", "err", err)
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		if err := scheduler.Run(workerCtx); err != nil {
+			logger.Warn("scheduledtasks scheduler exited with error", "err", err)
+		}
+	}()
+
 	// Bus is hot — fan out the start signal so subscribers (auth
 	// service seed, future health checks, etc.) can do their lazy
 	// init.
@@ -141,7 +227,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	logger.Info("daemon ready", "version", buildinfo.Version,
-		"hint", "HTTP server / SignalR / scheduler arrive in Phase 5")
+		"hint", "HTTP server / SignalR arrive in Phase 5")
 	<-ctx.Done()
 
 	// Shutdown sequence — publish the signal BEFORE BeginShutdown
@@ -151,6 +237,13 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		!errors.Is(err, messaging.ErrShutdown) {
 		logger.Warn("publish ApplicationShutdownRequested failed", "err", err)
 	}
+	// Stop the dispatcher + scheduler before draining the bus so any
+	// in-flight CommandExecutedEvent publishes flow through to the
+	// (still-live) bus subscribers. Close() is defensive — Run already
+	// exits on ctx cancel.
+	workerCancel()
+	queue.Close()
+	workers.Wait()
 	bus.BeginShutdown()
 	bus.Wait()
 	return ctx.Err()
