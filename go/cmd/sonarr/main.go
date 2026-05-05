@@ -40,6 +40,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/appenv"
 	"sonarr.tv/sonarr/internal/auth"
+	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/buildinfo"
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/commands/handlers"
@@ -241,6 +242,14 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("housekeeping fixNotificationStatus: %w", err)
 	}
+	autoTagRepo, err := autotagging.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("housekeeping autotagging repo: %w", err)
+	}
+	cleanupTags, err := housekeeping.NewCleanupUnusedTags(db, autoTagRepo, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping cleanupTags: %w", err)
+	}
 	houseSvc, err := housekeeping.NewService([]housekeeping.Task{
 		fixFuture,
 		orphanEpisodes,
@@ -262,6 +271,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		fixDownloadClientStatus,
 		fixImportListStatus,
 		fixNotificationStatus,
+		cleanupTags,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping service: %w", err)
