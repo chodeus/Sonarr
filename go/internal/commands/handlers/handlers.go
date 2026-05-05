@@ -81,6 +81,18 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	registry.Register(CheckHealthName, commands.CommandSpec{
 		Handler: NewCheckHealth(deps.Log),
 	})
+	registry.Register(RefreshSeriesName, commands.CommandSpec{
+		Handler: NewRefreshSeries(deps.Log),
+	})
+	registry.Register(RefreshMonitoredDownloadsName, commands.CommandSpec{
+		Handler: NewRefreshMonitoredDownloads(deps.Log),
+	})
+	registry.Register(BackupName, commands.CommandSpec{
+		Handler: NewBackup(deps.Log),
+	})
+	registry.Register(CleanUpRecycleBinName, commands.CommandSpec{
+		Handler: NewCleanUpRecycleBin(deps.Log),
+	})
 	return nil
 }
 
@@ -112,6 +124,33 @@ func DefaultScheduledTasks() []*scheduledtasks.Task {
 			// Matches `TaskManager.cs:96-99` — `Interval = 6 * 60`
 			// (6h in minutes).
 			Interval: 6 * 60,
+		},
+		{
+			TypeName: RefreshSeriesName,
+			// Matches `TaskManager.cs:101-104` — `Interval = 12 * 60`
+			// (12h in minutes).
+			Interval: 12 * 60,
+		},
+		{
+			TypeName: RefreshMonitoredDownloadsName,
+			// Matches `TaskManager.cs:71` — `Interval = 1` (every minute).
+			// The C# entry also sets Priority = CommandPriority.High; the
+			// Go Scheduler currently pushes all tasks at PriorityLow —
+			// per-task priority override is deferred.
+			Interval: 1,
+		},
+		{
+			TypeName: BackupName,
+			// Seed with the 7-day default (BackupIntervalDefault).
+			// When the real ConfigService lands, HandleAsync(ConfigSavedEvent)
+			// will update this row live, matching TaskManager.cs:126-128.
+			Interval: BackupIntervalDefault,
+		},
+		{
+			TypeName: CleanUpRecycleBinName,
+			// Matches `TaskManager.cs:108-113` — `Interval = 24 * 60`
+			// (24h in minutes).
+			Interval: 24 * 60,
 		},
 	}
 }
