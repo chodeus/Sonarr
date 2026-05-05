@@ -11,8 +11,10 @@
 //
 // Three columns hold opaque embedded JSON: Quality (QualityModel),
 // MediaInfo (MediaInfoModel — the rich ffprobe-like blob), and Languages
-// (`[]int` per the catalogue's language-int-form). Quality + MediaInfo
-// are stored as raw `string` until Phase 2 ports the typed wrappers.
+// (`[]int` per the catalogue's language-int-form). Quality is still
+// stored as raw `string` until Phase 4 ports the typed wrapper;
+// MediaInfo became typed in Phase 3.14 — `*mediainfo.Model` round-trips
+// through the embedded-doc helpers at the SQL boundary.
 //
 // The C# class also has Path (computed from RelativePath + Series.Path)
 // and LazyLoaded<List<Episode>> + LazyLoaded<Series> for navigation —
@@ -27,26 +29,33 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/datastore"
+	"sonarr.tv/sonarr/internal/mediainfo"
 	"sonarr.tv/sonarr/internal/repo"
 )
 
 // File is one EpisodeFiles row.
+//
+// MediaInfo is `*mediainfo.Model` — a non-nil pointer carries a
+// recorded ffprobe pass; nil means "no MediaInfo recorded yet". The
+// Mapper round-trips nil ↔ NULL through the SQL boundary so
+// `AllWithoutMediaInfo` (which filters on `MediaInfo IS NULL`)
+// continues to match the rows the C# tree calls "missing MediaInfo".
 type File struct {
-	ID               int       `json:"id"`
-	SeriesID         int       `json:"seriesId"`
-	Quality          string    `json:"quality"`
-	Size             int64     `json:"size"`
-	DateAdded        time.Time `json:"dateAdded"`
-	SeasonNumber     int       `json:"seasonNumber"`
-	SceneName        string    `json:"sceneName,omitempty"`
-	ReleaseGroup     string    `json:"releaseGroup,omitempty"`
-	MediaInfo        string    `json:"mediaInfo,omitempty"`
-	RelativePath     string    `json:"relativePath,omitempty"`
-	OriginalFilePath string    `json:"originalFilePath,omitempty"`
-	Languages        []int     `json:"languages"`
-	IndexerFlags     int       `json:"indexerFlags"`
-	ReleaseType      int       `json:"releaseType"`
-	ReleaseHash      string    `json:"releaseHash,omitempty"`
+	ID               int              `json:"id"`
+	SeriesID         int              `json:"seriesId"`
+	Quality          string           `json:"quality"`
+	Size             int64            `json:"size"`
+	DateAdded        time.Time        `json:"dateAdded"`
+	SeasonNumber     int              `json:"seasonNumber"`
+	SceneName        string           `json:"sceneName,omitempty"`
+	ReleaseGroup     string           `json:"releaseGroup,omitempty"`
+	MediaInfo        *mediainfo.Model `json:"mediaInfo,omitempty"`
+	RelativePath     string           `json:"relativePath,omitempty"`
+	OriginalFilePath string           `json:"originalFilePath,omitempty"`
+	Languages        []int            `json:"languages"`
+	IndexerFlags     int              `json:"indexerFlags"`
+	ReleaseType      int              `json:"releaseType"`
+	ReleaseHash      string           `json:"releaseHash,omitempty"`
 }
 
 // ErrNotFound is returned when no row matches.
@@ -68,13 +77,21 @@ var mapper = repo.Mapper[File]{
 	},
 	OrderBy: "Id",
 	Bind: func(f *File) []any {
+		mediaInfo, err := marshalMediaInfo(f.MediaInfo)
+		if err != nil {
+			// Bind has no error return; surface as a sentinel string the
+			// repo will fail on. This is unreachable in practice (the
+			// MediaInfo struct is closed and well-formed), but a panic
+			// would be worse.
+			mediaInfo = sql.NullString{String: `<marshal-error: ` + err.Error() + `>`, Valid: true}
+		}
 		return []any{
 			f.SeriesID,
 			defaultJSON(f.Quality, "{}"),
 			f.Size, f.DateAdded.UTC(), f.SeasonNumber,
 			nullableStringEmpty(f.SceneName),
 			nullableStringEmpty(f.ReleaseGroup),
-			nullableStringEmpty(f.MediaInfo),
+			mediaInfo,
 			nullableStringEmpty(f.RelativePath),
 			nullableStringEmpty(f.OriginalFilePath),
 			marshalInts(f.Languages),
@@ -95,7 +112,11 @@ var mapper = repo.Mapper[File]{
 		f.DateAdded = f.DateAdded.UTC()
 		f.SceneName = sceneName.String
 		f.ReleaseGroup = releaseGroup.String
-		f.MediaInfo = mediaInfo.String
+		parsedMediaInfo, err := unmarshalMediaInfo(mediaInfo)
+		if err != nil {
+			return err
+		}
+		f.MediaInfo = parsedMediaInfo
 		f.RelativePath = relativePath.String
 		f.OriginalFilePath = originalFilePath.String
 		f.ReleaseHash = releaseHash.String
@@ -165,4 +186,34 @@ func marshalInts(xs []int) string {
 		return `<marshal-error: ` + err.Error() + `>`
 	}
 	return out
+}
+
+// marshalMediaInfo serialises *mediainfo.Model for the MediaInfo
+// column. Nil pointer → SQL NULL (matches the C# `MediaInfo == null`
+// semantic that AllWithoutMediaInfo uses to find rows needing a
+// ffprobe pass).
+func marshalMediaInfo(m *mediainfo.Model) (sql.NullString, error) {
+	if m == nil {
+		return sql.NullString{}, nil
+	}
+	s, err := datastore.MarshalEmbedded(m)
+	if err != nil {
+		return sql.NullString{}, fmt.Errorf("marshal MediaInfo: %w", err)
+	}
+	return sql.NullString{String: s, Valid: true}, nil
+}
+
+// unmarshalMediaInfo parses the MediaInfo column. NULL → nil pointer;
+// non-NULL → fresh *mediainfo.Model. Empty string is treated as nil
+// to match how legacy rows that stored "" instead of NULL upgrade
+// (the C# bridge handles both as default(MediaInfoModel)).
+func unmarshalMediaInfo(s sql.NullString) (*mediainfo.Model, error) {
+	if !s.Valid || s.String == "" {
+		return nil, nil
+	}
+	var m mediainfo.Model
+	if err := datastore.UnmarshalEmbedded(s.String, &m); err != nil {
+		return nil, fmt.Errorf("unmarshal MediaInfo: %w", err)
+	}
+	return &m, nil
 }

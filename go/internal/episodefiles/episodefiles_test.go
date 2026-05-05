@@ -9,6 +9,7 @@ import (
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
 	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/mediainfo"
 )
 
 func runRepoSuite(t *testing.T, db *datastore.DB) {
@@ -28,6 +29,17 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 
 	now := time.Date(2026, 5, 2, 14, 30, 0, 0, time.UTC)
 
+	mediaInfo := &mediainfo.Model{
+		ContainerFormat: "Matroska",
+		VideoFormat:     "AVC",
+		VideoCodecID:    "V_MPEG4/ISO/AVC",
+		VideoBitrate:    8_000_000,
+		Width:           1920,
+		Height:          1080,
+		AudioStreams: []mediainfo.AudioStream{
+			{Format: "AAC", Channels: 2, Language: "eng"},
+		},
+	}
 	full := &episodefiles.File{
 		SeriesID:         50,
 		Quality:          `{"quality":{"id":7,"name":"WEBDL-1080p"},"revision":{"version":1}}`,
@@ -36,7 +48,7 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 		SeasonNumber:     1,
 		SceneName:        "Foo.S01E01.1080p.WEB-DL.RARBG",
 		ReleaseGroup:     "RARBG",
-		MediaInfo:        `{"videoCodec":"x264","audioCodec":"AAC"}`,
+		MediaInfo:        mediaInfo,
 		RelativePath:     "Season 1/Foo.S01E01.mkv",
 		OriginalFilePath: "Foo.S01E01.1080p.WEB-DL.x264-RARBG.mkv",
 		Languages:        []int{1, 2},
@@ -77,8 +89,11 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 	if got.SceneName != full.SceneName {
 		t.Errorf("SceneName: %q", got.SceneName)
 	}
-	if got.MediaInfo != full.MediaInfo {
-		t.Errorf("MediaInfo: %q", got.MediaInfo)
+	if got.MediaInfo == nil {
+		t.Fatalf("MediaInfo: nil, want round-tripped struct")
+	}
+	if !reflect.DeepEqual(got.MediaInfo, mediaInfo) {
+		t.Errorf("MediaInfo: %+v, want %+v", got.MediaInfo, mediaInfo)
 	}
 	if !reflect.DeepEqual(got.Languages, []int{1, 2}) {
 		t.Errorf("Languages: %v", got.Languages)
@@ -91,7 +106,7 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 	if err != nil {
 		t.Fatalf("Get sparse: %v", err)
 	}
-	if gotSparse.SceneName != "" || gotSparse.MediaInfo != "" || gotSparse.RelativePath != "" {
+	if gotSparse.SceneName != "" || gotSparse.MediaInfo != nil || gotSparse.RelativePath != "" {
 		t.Errorf("sparse nullables: %+v", gotSparse)
 	}
 	if gotSparse.Quality != "{}" {

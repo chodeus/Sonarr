@@ -7,6 +7,7 @@ import (
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
 	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/mediainfo"
 )
 
 func runQueriesSuite(t *testing.T, db *datastore.DB) {
@@ -19,13 +20,16 @@ func runQueriesSuite(t *testing.T, db *datastore.DB) {
 	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
 
 	// Seed: 2 files in series 1, 1 file in series 2, 1 file with NULL
-	// MediaInfo (the empty string in our model maps to NULL via
-	// nullableStringEmpty in the existing mapper).
+	// MediaInfo. Nil *mediainfo.Model maps to SQL NULL via the
+	// mapper's marshalMediaInfo helper.
+	mi1 := &mediainfo.Model{ContainerFormat: "Matroska", Width: 1280, Height: 720}
+	mi2 := &mediainfo.Model{ContainerFormat: "Matroska", Width: 1920, Height: 1080}
+	mi3 := &mediainfo.Model{ContainerFormat: "MPEG-4", VideoFormat: "AVC"}
 	seeds := []episodefiles.File{
-		{SeriesID: 1, SeasonNumber: 1, RelativePath: "s1.mkv", Quality: "{}", Size: 100, DateAdded: now, MediaInfo: `{"v":1}`, Languages: []int{1}},
-		{SeriesID: 1, SeasonNumber: 2, RelativePath: "s2.mkv", Quality: "{}", Size: 200, DateAdded: now, MediaInfo: `{"v":2}`, Languages: []int{1}},
+		{SeriesID: 1, SeasonNumber: 1, RelativePath: "s1.mkv", Quality: "{}", Size: 100, DateAdded: now, MediaInfo: mi1, Languages: []int{1}},
+		{SeriesID: 1, SeasonNumber: 2, RelativePath: "s2.mkv", Quality: "{}", Size: 200, DateAdded: now, MediaInfo: mi2, Languages: []int{1}},
 		{SeriesID: 1, SeasonNumber: 1, RelativePath: "s1.mkv", Quality: "{}", Size: 110, DateAdded: now, Languages: []int{1}}, // duplicate relpath, no MediaInfo
-		{SeriesID: 2, SeasonNumber: 1, RelativePath: "x.mkv", Quality: "{}", Size: 300, DateAdded: now, MediaInfo: `{"v":3}`, Languages: []int{1}},
+		{SeriesID: 2, SeasonNumber: 1, RelativePath: "x.mkv", Quality: "{}", Size: 300, DateAdded: now, MediaInfo: mi3, Languages: []int{1}},
 	}
 	for i := range seeds {
 		if _, err := r.Insert(t.Context(), &seeds[i]); err != nil {
