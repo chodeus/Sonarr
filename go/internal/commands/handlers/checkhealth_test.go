@@ -1,41 +1,121 @@
 package handlers_test
 
 import (
-	"bytes"
+	"context"
 	"log/slog"
-	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/commands/handlers"
+	"sonarr.tv/sonarr/internal/healthcheck"
 )
 
 var checkHealthFixedTime = time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 
-func TestCheckHealth_Execute_LogsAndReturnsNil(t *testing.T) {
-	t.Parallel()
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	h := handlers.NewCheckHealth(logger)
+// trackingCheck is the test fixture for verifying that
+// CheckHealth.Execute reaches a registered Check via the orchestrator.
+// Records the most-recent ctx, lets us flip whether it participates
+// in the schedule batch, and counts invocations atomically.
+type trackingCheck struct {
+	name     string
+	startup  bool
+	schedule bool
+	calls    atomic.Int64
+}
 
-	if err := h.Execute(t.Context(), `{"some":"body"}`); err != nil {
-		t.Fatalf("Execute: %v", err)
+func (c *trackingCheck) Name() string          { return c.name }
+func (c *trackingCheck) CheckOnStartup() bool  { return c.startup }
+func (c *trackingCheck) CheckOnSchedule() bool { return c.schedule }
+func (c *trackingCheck) Run(_ context.Context) healthcheck.HealthCheck {
+	c.calls.Add(1)
+	return healthcheck.OK(c.name)
+}
+
+func newHealthSvcWithChecks(t *testing.T, checks []healthcheck.Check) *healthcheck.Service {
+	t.Helper()
+	svc, err := healthcheck.NewService(checks, nil, slog.New(slog.DiscardHandler),
+		healthcheck.WithDebounce(0))
+	if err != nil {
+		t.Fatalf("healthcheck.NewService: %v", err)
 	}
-	logged := buf.String()
-	if !strings.Contains(logged, "healthcheck: stub Execute") {
-		t.Errorf("expected stub log line; got: %q", logged)
-	}
-	if !strings.Contains(logged, "command=CheckHealth") {
-		t.Errorf("expected command=CheckHealth attr; got: %q", logged)
+	return svc
+}
+
+// TestCheckHealth_NewWithNilService_Errors pins the constructor's
+// nil-guard. The handler is meaningless without a service, and a
+// panic at first dispatch would surface as a goroutine crash.
+func TestCheckHealth_NewWithNilService_Errors(t *testing.T) {
+	t.Parallel()
+	if _, err := handlers.NewCheckHealth(nil); err == nil {
+		t.Errorf("NewCheckHealth(nil): expected error, got nil")
 	}
 }
 
-func TestCheckHealth_NewWithNilLogger_Defaults(t *testing.T) {
+// TestCheckHealth_DefaultBodyRunsScheduledChecks pins the default
+// trigger interpretation: empty / "{}" body → TriggerScheduled.
+// Mirrors the C# `:139` `Trigger == Manual ? all : scheduled`
+// branch with Unspecified falling onto scheduled.
+func TestCheckHealth_DefaultBodyRunsScheduledChecks(t *testing.T) {
 	t.Parallel()
-	h := handlers.NewCheckHealth(nil)
-	if err := h.Execute(t.Context(), ""); err != nil {
-		t.Errorf("Execute with default logger: %v", err)
+	scheduledOnly := &trackingCheck{name: "S", schedule: true}
+	startupOnly := &trackingCheck{name: "U", startup: true}
+	svc := newHealthSvcWithChecks(t, []healthcheck.Check{scheduledOnly, startupOnly})
+	h, err := handlers.NewCheckHealth(svc)
+	if err != nil {
+		t.Fatalf("NewCheckHealth: %v", err)
+	}
+	if err := h.Execute(t.Context(), "{}"); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if scheduledOnly.calls.Load() != 1 {
+		t.Errorf("scheduled call count = %d, want 1", scheduledOnly.calls.Load())
+	}
+	if startupOnly.calls.Load() != 0 {
+		t.Errorf("startup-only call count = %d, want 0 (default trigger is Scheduled)", startupOnly.calls.Load())
+	}
+}
+
+// TestCheckHealth_ManualBodyRunsAllChecks pins the explicit
+// {"trigger":"manual"} form — runs every registered check.
+func TestCheckHealth_ManualBodyRunsAllChecks(t *testing.T) {
+	t.Parallel()
+	scheduledOnly := &trackingCheck{name: "S", schedule: true}
+	startupOnly := &trackingCheck{name: "U", startup: true}
+	svc := newHealthSvcWithChecks(t, []healthcheck.Check{scheduledOnly, startupOnly})
+	h, err := handlers.NewCheckHealth(svc)
+	if err != nil {
+		t.Fatalf("NewCheckHealth: %v", err)
+	}
+	if err := h.Execute(t.Context(), `{"trigger":"manual"}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if scheduledOnly.calls.Load() != 1 {
+		t.Errorf("scheduled call count = %d, want 1", scheduledOnly.calls.Load())
+	}
+	if startupOnly.calls.Load() != 1 {
+		t.Errorf("startup-only call count = %d, want 1 (manual trigger runs all)", startupOnly.calls.Load())
+	}
+}
+
+// TestCheckHealth_GarbageBodyDefaultsToScheduled — defensive default
+// against bad input. Mirrors C# CommandTrigger.Unspecified →
+// scheduled-only.
+func TestCheckHealth_GarbageBodyDefaultsToScheduled(t *testing.T) {
+	t.Parallel()
+	scheduledOnly := &trackingCheck{name: "S", schedule: true}
+	startupOnly := &trackingCheck{name: "U", startup: true}
+	svc := newHealthSvcWithChecks(t, []healthcheck.Check{scheduledOnly, startupOnly})
+	h, _ := handlers.NewCheckHealth(svc)
+	if err := h.Execute(t.Context(), "not json"); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if scheduledOnly.calls.Load() != 1 {
+		t.Errorf("scheduled call count = %d, want 1", scheduledOnly.calls.Load())
+	}
+	if startupOnly.calls.Load() != 0 {
+		t.Errorf("startup-only call count = %d, want 0", startupOnly.calls.Load())
 	}
 }
 
@@ -45,13 +125,11 @@ func TestCheckHealth_NewWithNilLogger_Defaults(t *testing.T) {
 func TestCheckHealth_RegisteredInRegistry(t *testing.T) {
 	t.Parallel()
 	registry := commands.NewRegistry()
-
-	// Construct a minimal Deps with the empty house service helper from
-	// messagingcleanup_test.go.
 	cmdSvc := newCleanupHarness(t, checkHealthFixedTime).svc
 	deps := handlers.Deps{
 		Commands:     cmdSvc,
 		Housekeeping: emptyHouseSvc(t),
+		HealthCheck:  emptyHealthSvc(t),
 		Log:          slog.Default(),
 	}
 	if err := handlers.RegisterAll(registry, deps); err != nil {

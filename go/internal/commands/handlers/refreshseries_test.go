@@ -46,6 +46,7 @@ func TestRefreshSeries_RegisteredInRegistry(t *testing.T) {
 	deps := handlers.Deps{
 		Commands:     cmdSvc,
 		Housekeeping: emptyHouseSvc(t),
+		HealthCheck:  emptyHealthSvc(t),
 		Log:          slog.Default(),
 	}
 	if err := handlers.RegisterAll(registry, deps); err != nil {

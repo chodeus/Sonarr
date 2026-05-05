@@ -30,6 +30,7 @@ import (
 	"log/slog"
 
 	"sonarr.tv/sonarr/internal/commands"
+	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 )
@@ -47,6 +48,7 @@ import (
 type Deps struct {
 	Commands     *commands.Service
 	Housekeeping *housekeeping.Service
+	HealthCheck  *healthcheck.Service
 	Log          *slog.Logger
 }
 
@@ -72,6 +74,13 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	if deps.Housekeeping == nil {
 		return errors.New("handlers: RegisterAll: nil Deps.Housekeeping")
 	}
+	if deps.HealthCheck == nil {
+		return errors.New("handlers: RegisterAll: nil Deps.HealthCheck")
+	}
+	checkHealth, err := NewCheckHealth(deps.HealthCheck)
+	if err != nil {
+		return err
+	}
 	registry.Register(MessagingCleanupName, commands.CommandSpec{
 		Handler: NewMessagingCleanup(deps.Commands),
 	})
@@ -79,7 +88,7 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 		Handler: NewHousekeeping(deps.Housekeeping),
 	})
 	registry.Register(CheckHealthName, commands.CommandSpec{
-		Handler: NewCheckHealth(deps.Log),
+		Handler: checkHealth,
 	})
 	registry.Register(RefreshSeriesName, commands.CommandSpec{
 		Handler: NewRefreshSeries(deps.Log),

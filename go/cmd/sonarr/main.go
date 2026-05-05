@@ -47,6 +47,7 @@ import (
 	"sonarr.tv/sonarr/internal/configfile"
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/datastore"
+	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/instrumentation"
 	"sonarr.tv/sonarr/internal/lifecycle"
@@ -292,12 +293,30 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("housekeeping service: %w", err)
 	}
 
+	// Health-check service. Phase 3.29 closes the 3.24 stub by wiring
+	// the real orchestrator with two concrete checks (AppDataLocation
+	// + ApiKeyValidation). Additional checks land alongside their
+	// dependent subsystems in subsequent slices.
+	apiKeyCheck, err := healthcheck.NewApiKeyValidationCheck(cfg)
+	if err != nil {
+		return fmt.Errorf("healthcheck apiKey: %w", err)
+	}
+	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
+		healthcheck.NewAppDataLocationCheck(folder),
+		apiKeyCheck,
+	}, bus, logger)
+	if err != nil {
+		return fmt.Errorf("healthcheck service: %w", err)
+	}
+	healthSvc.Subscribe(bus)
+
 	registry := commands.NewRegistry()
 	queue := commands.NewQueue(registry.Properties)
 	cmdSvc.SetQueue(queue)
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:     cmdSvc,
 		Housekeeping: houseSvc,
+		HealthCheck:  healthSvc,
 		Log:          logger,
 	}); err != nil {
 		return fmt.Errorf("commands handlers: %w", err)

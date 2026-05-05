@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-06 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler) + commands in-memory Queue + Dispatcher 3.11 (CommandQueue + CommandExecutor port: cond-blocked TryGet with priority/disk/long-running/exclusive gating, single-worker Dispatcher.Run with handler registry + panic-recovered Execute, Service.SetQueue wires Push/PushMany/Cancel into the in-memory queue — modulo deferred per-handler concurrency + cancellation propagation into running handlers) + scheduledtasks.Scheduler ticker 3.12 (Scheduler.cs port: 30s time.Ticker drives Tick → tasks.GetPending → commands.Push at TriggerScheduled/PriorityLow with body="{}"; closes the bridge between the 3.10 task cache and the 3.11 command queue) + first IExecute<T> handler + cmd/sonarr boot wiring 3.13 (CleanupCommandMessagingService port: handlers package with MessagingCleanup handler calling Service.CleanCommands(now-24h); handlers.RegisterAll + handlers.DefaultScheduledTasks helpers wire registry + scheduledtasks defaults in one place; cmd/sonarr boot now spins up commands.Service + Queue + Dispatcher + scheduledtasks.Service + Scheduler with HandleApplicationStarted recovery + CommandExecutedEvent subscription, dispatcher + scheduler goroutines drained on shutdown via workerCancel + queue.Close before bus.BeginShutdown — convention pinned: Commands.Name + ScheduledTasks.TypeName + registry key all use the C# Command.Name short form ("MessagingCleanup"), not Type.FullName) + typed MediaInfo column 3.14 (episodefiles.File.MediaInfo: string → *mediainfo.Model; mapper marshalMediaInfo/unmarshalMediaInfo round-trip nil ↔ NULL preserves the AllWithoutMediaInfo IS NULL filter; closes the explicit Phase 3 follow-up) + episodefiles.CleanupService 3.15 (MediaFileTableCleanupService port: two-phase Clean(parent, filesOnDisk) drops EpisodeFile rows missing-from-disk OR with no linked episodes, then clears Episode.EpisodeFileID for any episode pointing at a now-removed/never-existed file; goes through the public Service surface so EpisodeFileDeletedEvent fires for every cleanup-deleted file) + housekeeping skeleton + Housekeeping handler 3.16 (new internal/housekeeping package with Task interface, Service.Clean orchestrator with per-task error swallowing, first concrete task FixFutureRunScheduledTasks clamping ScheduledTasks.LastExecution > now back to now; second IExecute<T> port via Housekeeping handler; handlers.Deps struct introduced so RegisterAll's call site is stable as new dep services land; cmd/sonarr boot wires housekeeping.Service) + four orphan-cleanup housekeepers 3.17 (CleanupOrphanedEpisodes/EpisodeFiles/HistoryItems/Blocklist; shared deleteOrphansLeftJoin helper for the LEFT-OUTER-JOIN-WHERE-NULL pattern; both engines verified) + four orphan-status housekeepers 3.18 (CleanupOrphanedIndexerStatus/DownloadClientStatus/ImportListStatus/NotificationStatus; each one struct-literal reusing 3.17's helper) + four more orphan housekeepers 3.19 (PendingReleases [single-pair] + ExtraFiles/SubtitleFiles/MetadataFiles [three-pass each via fileRefTask helper handling SeriesId-orphan + EpisodeFileId>0-orphan + unlinked passes; MetadataFiles adds Type IN (2,5) predicate to scope unlinked sweep to episode-scoped types only]) + three more housekeepers 3.20 (CleanupAdditionalNamingSpecs/CleanupAdditionalUsers via new singletonTableTask helper + UpdateCleanTitleForSeries which iterates Series.All and rewrites CleanTitle when parser.CleanSeriesTitle drifted) + FixFutureProviderStatusTimes family 3.21 (shared FixFutureProviderStatusTimes scaffold parameterised on (name, table) + 4 thin constructors for IndexerStatus/DownloadClientStatus/ImportListStatus/NotificationStatus; clamps DisabledTill / InitialFailure / MostRecentFailure to bounds derived from providerstatus.BackOffPeriodSeconds[EscalationLevel]; defensive EscalationLevel index clamp guards rogue rows; cmd/sonarr now wires 20 housekeepers; also closes the stale series.Service doc comment that still listed write methods as deferred) + CleanupUnusedTags housekeeper 3.22 (sweeps Tags rows whose Id isn't referenced by any of the 8 owner tables' Tags JSON-int-array column OR by an autotagging TagSpecification.Value; nil-autotagging-Repo tolerated for the 8-table-only path; empty-in-use-set falls back to DELETE FROM "Tags"; cmd/sonarr now wires 21 housekeepers + autotagging.Repo) + CleanupQualityProfileFormatItems housekeeper 3.23 (reconciles each QualityProfile.FormatItems against the live CustomFormats catalogue; drops phantom FormatIDs, prepends missing CFs at Score=0, resets MinFormatScore/CutoffFormatScore/MinUpgradeFormatScore to 0/0/1 when result is empty; set-based diff so score-only edits are preserved; cmd/sonarr now wires 22 housekeepers + qualityprofiles.Repo + customformats.Repo) + CheckHealth handler stub 3.24 (third IExecute<T> port: stub Execute logs and returns nil while real HealthCheckService awaits its own Phase 3 slice; Deps grows Log field; DefaultScheduledTasks adds CheckHealth at Interval=360min per Jobs/TaskManager.cs:96-99) + four more IExecute<T> handler stubs 3.25-3.28 (RefreshSeries Interval=720min, RefreshMonitoredDownloads Interval=1min, Backup Interval=BackupIntervalDefault=10080min, CleanUpRecycleBin Interval=1440min; all stubs log and return nil; DefaultScheduledTasks now has 8 entries; no new deps in Deps struct; 4 tests each mirroring CheckHealth pattern; both engines green). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: (typed MediaInfo column closed in 3.14). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring. SMALL FALLBACK CANDIDATES NOW EXHAUSTED — all 7 IExecute<T> stubs shipped (MessagingCleanup, Housekeeping, CheckHealth, RefreshSeries, RefreshMonitoredDownloads, Backup, CleanUpRecycleBin); TaskManager.cs has 11 scheduled tasks total with RssSync and ApplicationUpdateCheck/UpdateSceneMapping still missing stubs (those depend on indexer/update-check subsystems).
+Last updated: 2026-05-06 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler) + commands in-memory Queue + Dispatcher 3.11 (CommandQueue + CommandExecutor port: cond-blocked TryGet with priority/disk/long-running/exclusive gating, single-worker Dispatcher.Run with handler registry + panic-recovered Execute, Service.SetQueue wires Push/PushMany/Cancel into the in-memory queue — modulo deferred per-handler concurrency + cancellation propagation into running handlers) + scheduledtasks.Scheduler ticker 3.12 (Scheduler.cs port: 30s time.Ticker drives Tick → tasks.GetPending → commands.Push at TriggerScheduled/PriorityLow with body="{}"; closes the bridge between the 3.10 task cache and the 3.11 command queue) + first IExecute<T> handler + cmd/sonarr boot wiring 3.13 (CleanupCommandMessagingService port: handlers package with MessagingCleanup handler calling Service.CleanCommands(now-24h); handlers.RegisterAll + handlers.DefaultScheduledTasks helpers wire registry + scheduledtasks defaults in one place; cmd/sonarr boot now spins up commands.Service + Queue + Dispatcher + scheduledtasks.Service + Scheduler with HandleApplicationStarted recovery + CommandExecutedEvent subscription, dispatcher + scheduler goroutines drained on shutdown via workerCancel + queue.Close before bus.BeginShutdown — convention pinned: Commands.Name + ScheduledTasks.TypeName + registry key all use the C# Command.Name short form ("MessagingCleanup"), not Type.FullName) + typed MediaInfo column 3.14 (episodefiles.File.MediaInfo: string → *mediainfo.Model; mapper marshalMediaInfo/unmarshalMediaInfo round-trip nil ↔ NULL preserves the AllWithoutMediaInfo IS NULL filter; closes the explicit Phase 3 follow-up) + episodefiles.CleanupService 3.15 (MediaFileTableCleanupService port: two-phase Clean(parent, filesOnDisk) drops EpisodeFile rows missing-from-disk OR with no linked episodes, then clears Episode.EpisodeFileID for any episode pointing at a now-removed/never-existed file; goes through the public Service surface so EpisodeFileDeletedEvent fires for every cleanup-deleted file) + housekeeping skeleton + Housekeeping handler 3.16 (new internal/housekeeping package with Task interface, Service.Clean orchestrator with per-task error swallowing, first concrete task FixFutureRunScheduledTasks clamping ScheduledTasks.LastExecution > now back to now; second IExecute<T> port via Housekeeping handler; handlers.Deps struct introduced so RegisterAll's call site is stable as new dep services land; cmd/sonarr boot wires housekeeping.Service) + four orphan-cleanup housekeepers 3.17 (CleanupOrphanedEpisodes/EpisodeFiles/HistoryItems/Blocklist; shared deleteOrphansLeftJoin helper for the LEFT-OUTER-JOIN-WHERE-NULL pattern; both engines verified) + four orphan-status housekeepers 3.18 (CleanupOrphanedIndexerStatus/DownloadClientStatus/ImportListStatus/NotificationStatus; each one struct-literal reusing 3.17's helper) + four more orphan housekeepers 3.19 (PendingReleases [single-pair] + ExtraFiles/SubtitleFiles/MetadataFiles [three-pass each via fileRefTask helper handling SeriesId-orphan + EpisodeFileId>0-orphan + unlinked passes; MetadataFiles adds Type IN (2,5) predicate to scope unlinked sweep to episode-scoped types only]) + three more housekeepers 3.20 (CleanupAdditionalNamingSpecs/CleanupAdditionalUsers via new singletonTableTask helper + UpdateCleanTitleForSeries which iterates Series.All and rewrites CleanTitle when parser.CleanSeriesTitle drifted) + FixFutureProviderStatusTimes family 3.21 (shared FixFutureProviderStatusTimes scaffold parameterised on (name, table) + 4 thin constructors for IndexerStatus/DownloadClientStatus/ImportListStatus/NotificationStatus; clamps DisabledTill / InitialFailure / MostRecentFailure to bounds derived from providerstatus.BackOffPeriodSeconds[EscalationLevel]; defensive EscalationLevel index clamp guards rogue rows; cmd/sonarr now wires 20 housekeepers; also closes the stale series.Service doc comment that still listed write methods as deferred) + CleanupUnusedTags housekeeper 3.22 (sweeps Tags rows whose Id isn't referenced by any of the 8 owner tables' Tags JSON-int-array column OR by an autotagging TagSpecification.Value; nil-autotagging-Repo tolerated for the 8-table-only path; empty-in-use-set falls back to DELETE FROM "Tags"; cmd/sonarr now wires 21 housekeepers + autotagging.Repo) + CleanupQualityProfileFormatItems housekeeper 3.23 (reconciles each QualityProfile.FormatItems against the live CustomFormats catalogue; drops phantom FormatIDs, prepends missing CFs at Score=0, resets MinFormatScore/CutoffFormatScore/MinUpgradeFormatScore to 0/0/1 when result is empty; set-based diff so score-only edits are preserved; cmd/sonarr now wires 22 housekeepers + qualityprofiles.Repo + customformats.Repo) + CheckHealth handler stub 3.24 (third IExecute<T> port: stub Execute logs and returns nil while real HealthCheckService awaits its own Phase 3 slice; Deps grows Log field; DefaultScheduledTasks adds CheckHealth at Interval=360min per Jobs/TaskManager.cs:96-99) + four more IExecute<T> handler stubs 3.25-3.28 (RefreshSeries Interval=720min, RefreshMonitoredDownloads Interval=1min, Backup Interval=BackupIntervalDefault=10080min, CleanUpRecycleBin Interval=1440min; all stubs log and return nil; DefaultScheduledTasks now has 8 entries; no new deps in Deps struct; 4 tests each mirroring CheckHealth pattern; both engines green) + healthcheck framework + 2 sample checks 3.29 (closes the 3.24 stub: new `internal/healthcheck` package ports `HealthCheckService.cs` orchestrator — Result/Reason enums + HealthCheck value type with wiki-fragment derivation, Check + EventDrivenCheck interfaces replacing C# `[CheckOn(typeof(X))]` with per-check `EventTriggers()`, FailedEvent/RestoredEvent/CompleteEvent domain events, Service with Run(ctx, Trigger) + HandleApplicationStarted + HandleAnyEvent + Subscribe(bus) + Results, in-memory result cache keyed by Check.Name with Failed/Restored transitions, 5s debouncer via time.AfterFunc, 15-min startup grace period with post-grace sweep that re-publishes existing failures with IsInStartupGracePeriod=false, panic-recovered `runOne`, duplicate-name + nil-check constructor guards; two concrete checks AppDataLocationCheck [via ospath.Contains/Equals] + ApiKeyValidationCheck [bound to ConfigFileSavedEvent — redundant ApplicationStarted [CheckOn] omitted because the global IEvent handler explicitly skips it]; CheckHealth handler swaps from logger-stub to NewCheckHealth(svc) parsing optional `{"trigger":"manual"}` from body with Scheduled as the default; Deps grows HealthCheck field; cmd/sonarr boot constructs healthSvc + Subscribe(bus) before RegisterAll; 24 test functions across 4 files; both engines green). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: (typed MediaInfo column closed in 3.14). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring. All 7 IExecute<T> stubs ship — 6 still stubbed (MessagingCleanup, Housekeeping, RefreshSeries, RefreshMonitoredDownloads, Backup, CleanUpRecycleBin) + 1 now real (CheckHealth, closed in 3.29 with the healthcheck framework + 2 concrete checks). TaskManager.cs has 11 scheduled tasks total with RssSync and ApplicationUpdateCheck/UpdateSceneMapping still missing stubs (those depend on indexer/update-check subsystems). Next heavier subsystems on deck: more healthcheck checks as their deps become available, DiskScanService (needs a real DiskProvider beyond ospath), decisionengine (per-release scoring — large but no new external deps), mediacover, queue service.
 
 ## Where to resume
 
@@ -2788,6 +2788,170 @@ roundtrips, SetFileID auto-forget, and every read+mutation
 pass-through.
 
 ### Phase 3 — Service / Workflow layer ⏳ in progress
+
+#### 3.29 — healthcheck framework + 2 sample checks (closes 3.24 stub) ✅ shipped (2026-05-06)
+
+First "heavier" Phase 3 subsystem after the small-fallback exhaustion at
+3.28. Closes the 3.24 stub by porting the real
+`NzbDrone.Core.HealthCheck.HealthCheckService` orchestrator plus two
+dependency-light concrete checks. The remaining ~20 C# checks land
+alongside their dependent subsystems in subsequent slices (each will be
+a thin add: a `*_check.go` file + a constructor + a `cmd/sonarr` line).
+
+New package `internal/healthcheck`:
+
+- **`HealthCheck` value type + `Result`/`Reason` enums** — port of
+  `src/NzbDrone.Core/HealthCheck/HealthCheck.cs:1-119`. The
+  `cleanFragmentRegex` ↔ wiki-fragment derivation pipeline ports
+  verbatim, including the three-form fragment input (empty / `#anchor`
+  / `page#anchor`). The 60-entry `Reason` enum is pinned in C#
+  declaration order — wire-stable because the int value flows through
+  the future v3 JSON API; new entries MUST append to the bottom.
+- **`Check` interface** = `IProvideHealthCheck` port: `Name()`,
+  `Run(ctx) HealthCheck`, `CheckOnStartup() bool`, `CheckOnSchedule() bool`.
+  C#'s `[CheckOn(typeof(X))]` attribute pattern is replaced by an
+  optional `EventDrivenCheck` interface returning a slice of
+  `EventTrigger{EventType, Condition, Filter}`. Reflection-driven
+  attribute discovery isn't a Go idiom; per-check `EventTriggers()`
+  is the closest equivalent and removes the runtime cost of the
+  one-time `_eventDrivenHealthChecks` index build.
+- **Domain events** — `FailedEvent`, `RestoredEvent`, `CompleteEvent`
+  ports the three event types at
+  `HealthCheckFailedEvent/RestoredEvent/CompleteEvent.cs`. None are
+  Lifecycle (they fire in normal operation, not just shutdown).
+- **`Service` orchestrator** — port of
+  `HealthCheckService.cs:21-231`, collapsing the three C# IHandle
+  interfaces (`IExecute<CheckHealthCommand>`,
+  `IHandleAsync<ApplicationStartedEvent>`, `IHandleAsync<IEvent>`)
+  onto a small Go API:
+    - `Run(ctx, Trigger)` — IExecute port. `TriggerManual` runs all
+      checks; `TriggerScheduled` runs the `CheckOnSchedule()=true`
+      subset. Mirrors `:139`.
+    - `HandleApplicationStarted(ctx)` — startup-batch port. Drains
+      the `CheckOnStartup()=true` subset.
+    - `HandleAnyEvent(ctx, evt)` — global subscriber port. Skips
+      `ApplicationStartedEvent` and `CompleteEvent` (mirrors `:167`),
+      runs the post-grace sweep when applicable, then dispatches
+      event-driven bindings via `reflect.TypeOf(evt)` lookup.
+    - `Subscribe(bus)` — wires both async handlers in one call
+      (`messaging.SubscribeAsync` for ApplicationStarted +
+      `messaging.SubscribeAllAsync` for the global sub).
+    - `Results()` — IHealthCheckService.Results port. Returns a
+      fresh slice each call.
+- **Result cache + transitions** — keyed by `Check.Name()` (the C#
+  uses `Source.Name`). On Run drain: `ResultOK` removes the row +
+  publishes `RestoredEvent` if there was a previous failing entry;
+  non-OK adds the row + publishes `FailedEvent` IFF there was no
+  previous entry. Mirrors `:107-127`. `CompleteEvent` always fires
+  at the end of a drain.
+- **Debouncer** — `time.AfterFunc` over a 5-second window
+  (`DefaultDebounce`). `WithDebounce(0)` short-circuits to a synchronous
+  drain (used by every test). The C# `_debounce.Pause()` is mirrored
+  by an `inProcessing` atomic so a fresh schedule from inside a drain
+  doesn't reschedule.
+- **Startup grace period** — 15 min (`DefaultGracePeriod`, mirrors
+  `:59`). The first `HandleAnyEvent` after the grace window expires
+  runs a `postGraceSweep`: re-runs startup checks synchronously
+  (bypassing the debouncer), then re-publishes `FailedEvent` for
+  every still-cached failure with `IsInStartupGracePeriod=false` so
+  notification subscribers learn about failures that landed during
+  the window. Mirrors `:175-202`.
+- **Panic recovery in `runOne`** — the C# tree leans on the host's
+  top-level handler; in Go a panicking check would crash the
+  bus's async goroutine. Recover, log, treat as `ResultOK`.
+- **Constructor guards** — duplicate `Check.Name()` rejected at
+  construction (the result cache uses Name as its key, so duplicates
+  silently lose results to last-writer-wins). Nil checks rejected
+  upfront.
+
+Concrete checks (both already-shipped-deps; bigger ones await their
+subsystems):
+
+- **`AppDataLocationCheck`** — port of
+  `Checks/AppDataLocationCheck.cs:1-32`. Warns when AppData equals
+  or lives under Startup. Uses `internal/ospath.OsPath.Contains` +
+  `Equals` for the IsParentPath / PathEquals branches.
+- **`ApiKeyValidationCheck`** — port of
+  `Checks/ApiKeyValidationCheck.cs:1-43`. Warns when the configured
+  API key is shorter than 20 chars. Implements `EventDrivenCheck`
+  with `EventTrigger{EventType: reflect.TypeOf(configfile.ConfigFileSavedEvent{})}`.
+  The C# version also carries `[CheckOn(ApplicationStartedEvent)]`
+  but this is redundant in both the C# tree and the Go port (the
+  global IEvent handler explicitly skips ApplicationStartedEvent —
+  its dedicated handler runs the startup-checks batch via
+  `CheckOnStartup()=true` instead). Omitted in the Go port. CFG-Q5
+  consolidation will eventually replace `ConfigFileSavedEvent` +
+  `ConfigSavedEvent` with one event; this binding follows that.
+
+CheckHealth handler — closes the stub:
+
+- `handlers.NewCheckHealth(svc *healthcheck.Service)` replaces the
+  3.24 logger-stub form. Returns an error if svc is nil — the
+  handler is meaningless without one.
+- `Execute(ctx, body string)` parses the body's optional `trigger`
+  field. Empty / `{}` body → `TriggerScheduled` (the scheduler
+  default; mirrors C# `CommandTrigger.Unspecified` falling onto the
+  scheduled-only branch at `:139`). `{"trigger":"manual"}` →
+  `TriggerManual`. Garbage body defaults to Scheduled (defensive).
+- `handlers.Deps` grows a `HealthCheck *healthcheck.Service` field;
+  `RegisterAll` adds the nil-guard. The 3.24 `Log *slog.Logger`
+  field stays — still used by the four other stubs (RefreshSeries,
+  RefreshMonitoredDownloads, Backup, CleanUpRecycleBin).
+
+Boot wiring (`cmd/sonarr/main.go`):
+
+```
+apiKeyCheck, _ := healthcheck.NewApiKeyValidationCheck(cfg)
+healthSvc, _ := healthcheck.NewService([]healthcheck.Check{
+    healthcheck.NewAppDataLocationCheck(folder),
+    apiKeyCheck,
+}, bus, logger)
+healthSvc.Subscribe(bus)
+```
+
+Constructor sits before `handlers.RegisterAll` so the service is
+ready when the registry is wired. `Subscribe(bus)` is one call —
+the service handles both the startup-batch subscription and the
+global IEvent subscription internally.
+
+Test coverage (24 test functions across 4 files; both engines green):
+
+- `healthcheck_test.go` — wiki-fragment derivation (3 forms),
+  `Reason` ordinal pins (entries 0/26/53), `Result.String()` round-trip.
+- `service_test.go` — Manual-vs-Scheduled trigger split, result
+  cache transitions (set on fail, clear on pass), Failed/Restored/
+  Complete bus fan-out, ApplicationStarted batch, event-driven
+  dispatch, filter predicate, `CheckOnFailedOnly` condition gate,
+  ApplicationStarted/Complete short-circuit in HandleAnyEvent,
+  post-grace sweep with re-publish, duplicate-name + nil-check
+  constructor guards, panic recovery in `runOne`, `Subscribe`
+  end-to-end.
+- `appdata_location_test.go` — three relationships (parent,
+  equal, disjoint) + defaults pin.
+- `api_key_validation_test.go` — nil-provider rejection, short-key
+  Warning, long-key OK, EventTriggers shape pin.
+- `commands/handlers/checkhealth_test.go` — nil-svc rejection,
+  default-body Scheduled, `{"trigger":"manual"}` Manual, garbage
+  body defaults Scheduled, registry-wire pin, 6-hour interval pin.
+
+What's deferred to subsequent slices:
+
+- The remaining ~20 C# checks. Sequencing prefers checks whose
+  deps are already ported: `RootFolderCheck` (rootfolders.Service +
+  series.Service paths + a real DiskProvider — DiskProvider is
+  Phase 4-ish), `ProxyCheck` (HTTP client), `IndexerRssCheck`
+  (indexer subsystem, Phase 4), `UpdateCheck` (update-check
+  subsystem). Each lands in its own thin slice.
+- HTTP API for `/api/v3/health` — Phase 5 territory. The
+  orchestrator already exposes `Service.Results()` so the future
+  handler is a one-liner.
+
+```
+internal/healthcheck:           ok  (-race -p 1, both engines)
+internal/commands/handlers:     ok  (-race -p 1, both engines)
+full ./... suite:               ok  (-race -p 1, both engines)
+golangci-lint:                  0 issues
+```
 
 #### 3.24 — CheckHealth handler stub (third IExecute<T>) ✅ shipped (2026-05-06)
 

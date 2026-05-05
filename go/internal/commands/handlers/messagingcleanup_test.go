@@ -11,6 +11,7 @@ import (
 	"sonarr.tv/sonarr/internal/commands/handlers"
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
+	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/messaging"
 )
@@ -27,11 +28,29 @@ func emptyHouseSvc(t *testing.T) *housekeeping.Service {
 	return svc
 }
 
+// emptyHealthSvc returns a healthcheck.Service with zero checks.
+// Sufficient for tests that only need RegisterAll to wire the
+// CheckHealth handler without invoking it. Zero debounce so any
+// event-driven enqueues drain synchronously.
+func emptyHealthSvc(t *testing.T) *healthcheck.Service {
+	t.Helper()
+	svc, err := healthcheck.NewService(nil, nil, slog.Default(),
+		healthcheck.WithDebounce(0))
+	if err != nil {
+		t.Fatalf("healthcheck.NewService: %v", err)
+	}
+	return svc
+}
+
 // allDeps builds a Deps wired against the supplied commands.Service
-// and an empty housekeeping.Service.
+// and empty housekeeping + healthcheck services.
 func allDeps(t *testing.T, svc *commands.Service) handlers.Deps {
 	t.Helper()
-	return handlers.Deps{Commands: svc, Housekeeping: emptyHouseSvc(t)}
+	return handlers.Deps{
+		Commands:     svc,
+		Housekeeping: emptyHouseSvc(t),
+		HealthCheck:  emptyHealthSvc(t),
+	}
 }
 
 // cleanupHarness wires a real Service + Repo over a fresh test DB so
