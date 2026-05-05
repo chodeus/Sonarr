@@ -27,6 +27,7 @@ package handlers
 
 import (
 	"errors"
+	"log/slog"
 
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/housekeeping"
@@ -38,9 +39,15 @@ import (
 // stable; existing handlers that don't need the new service simply
 // ignore it. A pointer-bag struct is more honest than a long
 // positional argument list once we're past three handlers.
+//
+// Log is used by stub-shaped handlers (e.g. CheckHealth) that don't
+// have a real service to delegate to yet — they log the fired event
+// at info level so operators can see scheduler ticks land. Nil
+// defaults to slog.Default at handler construction time.
 type Deps struct {
 	Commands     *commands.Service
 	Housekeeping *housekeeping.Service
+	Log          *slog.Logger
 }
 
 // RegisterAll wires every shipped handler into `registry`. The host
@@ -71,6 +78,9 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	registry.Register(HousekeepingName, commands.CommandSpec{
 		Handler: NewHousekeeping(deps.Housekeeping),
 	})
+	registry.Register(CheckHealthName, commands.CommandSpec{
+		Handler: NewCheckHealth(deps.Log),
+	})
 	return nil
 }
 
@@ -96,6 +106,12 @@ func DefaultScheduledTasks() []*scheduledtasks.Task {
 			// Matches `TaskManager.cs:108` — `Interval = 24 * 60`
 			// (24h in minutes).
 			Interval: 24 * 60,
+		},
+		{
+			TypeName: CheckHealthName,
+			// Matches `TaskManager.cs:96-99` — `Interval = 6 * 60`
+			// (6h in minutes).
+			Interval: 6 * 60,
 		},
 	}
 }

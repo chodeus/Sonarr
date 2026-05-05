@@ -45,11 +45,13 @@ import (
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/commands/handlers"
 	"sonarr.tv/sonarr/internal/configfile"
+	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/instrumentation"
 	"sonarr.tv/sonarr/internal/lifecycle"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -250,6 +252,18 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("housekeeping cleanupTags: %w", err)
 	}
+	qpRepo, err := qualityprofiles.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("housekeeping qualityprofiles repo: %w", err)
+	}
+	cfRepo, err := customformats.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("housekeeping customformats repo: %w", err)
+	}
+	cleanupQPFormat, err := housekeeping.NewCleanupQualityProfileFormatItems(qpRepo, cfRepo, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping cleanupQPFormat: %w", err)
+	}
 	houseSvc, err := housekeeping.NewService([]housekeeping.Task{
 		fixFuture,
 		orphanEpisodes,
@@ -272,6 +286,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		fixImportListStatus,
 		fixNotificationStatus,
 		cleanupTags,
+		cleanupQPFormat,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping service: %w", err)
@@ -283,6 +298,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:     cmdSvc,
 		Housekeeping: houseSvc,
+		Log:          logger,
 	}); err != nil {
 		return fmt.Errorf("commands handlers: %w", err)
 	}

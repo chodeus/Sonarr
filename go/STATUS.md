@@ -2,7 +2,7 @@
 
 This file is the hand-off pointer between sessions. It is the **first thing a new session should read** when continuing the C#→Go port. The strategic plan lives at `~/.claude/plans/curried-discovering-meadow.md`; this file tracks where execution actually stopped.
 
-Last updated: 2026-05-06 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler) + commands in-memory Queue + Dispatcher 3.11 (CommandQueue + CommandExecutor port: cond-blocked TryGet with priority/disk/long-running/exclusive gating, single-worker Dispatcher.Run with handler registry + panic-recovered Execute, Service.SetQueue wires Push/PushMany/Cancel into the in-memory queue — modulo deferred per-handler concurrency + cancellation propagation into running handlers) + scheduledtasks.Scheduler ticker 3.12 (Scheduler.cs port: 30s time.Ticker drives Tick → tasks.GetPending → commands.Push at TriggerScheduled/PriorityLow with body="{}"; closes the bridge between the 3.10 task cache and the 3.11 command queue) + first IExecute<T> handler + cmd/sonarr boot wiring 3.13 (CleanupCommandMessagingService port: handlers package with MessagingCleanup handler calling Service.CleanCommands(now-24h); handlers.RegisterAll + handlers.DefaultScheduledTasks helpers wire registry + scheduledtasks defaults in one place; cmd/sonarr boot now spins up commands.Service + Queue + Dispatcher + scheduledtasks.Service + Scheduler with HandleApplicationStarted recovery + CommandExecutedEvent subscription, dispatcher + scheduler goroutines drained on shutdown via workerCancel + queue.Close before bus.BeginShutdown — convention pinned: Commands.Name + ScheduledTasks.TypeName + registry key all use the C# Command.Name short form ("MessagingCleanup"), not Type.FullName) + typed MediaInfo column 3.14 (episodefiles.File.MediaInfo: string → *mediainfo.Model; mapper marshalMediaInfo/unmarshalMediaInfo round-trip nil ↔ NULL preserves the AllWithoutMediaInfo IS NULL filter; closes the explicit Phase 3 follow-up) + episodefiles.CleanupService 3.15 (MediaFileTableCleanupService port: two-phase Clean(parent, filesOnDisk) drops EpisodeFile rows missing-from-disk OR with no linked episodes, then clears Episode.EpisodeFileID for any episode pointing at a now-removed/never-existed file; goes through the public Service surface so EpisodeFileDeletedEvent fires for every cleanup-deleted file) + housekeeping skeleton + Housekeeping handler 3.16 (new internal/housekeeping package with Task interface, Service.Clean orchestrator with per-task error swallowing, first concrete task FixFutureRunScheduledTasks clamping ScheduledTasks.LastExecution > now back to now; second IExecute<T> port via Housekeeping handler; handlers.Deps struct introduced so RegisterAll's call site is stable as new dep services land; cmd/sonarr boot wires housekeeping.Service) + four orphan-cleanup housekeepers 3.17 (CleanupOrphanedEpisodes/EpisodeFiles/HistoryItems/Blocklist; shared deleteOrphansLeftJoin helper for the LEFT-OUTER-JOIN-WHERE-NULL pattern; both engines verified) + four orphan-status housekeepers 3.18 (CleanupOrphanedIndexerStatus/DownloadClientStatus/ImportListStatus/NotificationStatus; each one struct-literal reusing 3.17's helper) + four more orphan housekeepers 3.19 (PendingReleases [single-pair] + ExtraFiles/SubtitleFiles/MetadataFiles [three-pass each via fileRefTask helper handling SeriesId-orphan + EpisodeFileId>0-orphan + unlinked passes; MetadataFiles adds Type IN (2,5) predicate to scope unlinked sweep to episode-scoped types only]) + three more housekeepers 3.20 (CleanupAdditionalNamingSpecs/CleanupAdditionalUsers via new singletonTableTask helper + UpdateCleanTitleForSeries which iterates Series.All and rewrites CleanTitle when parser.CleanSeriesTitle drifted) + FixFutureProviderStatusTimes family 3.21 (shared FixFutureProviderStatusTimes scaffold parameterised on (name, table) + 4 thin constructors for IndexerStatus/DownloadClientStatus/ImportListStatus/NotificationStatus; clamps DisabledTill / InitialFailure / MostRecentFailure to bounds derived from providerstatus.BackOffPeriodSeconds[EscalationLevel]; defensive EscalationLevel index clamp guards rogue rows; cmd/sonarr now wires 20 housekeepers; also closes the stale series.Service doc comment that still listed write methods as deferred) + CleanupUnusedTags housekeeper 3.22 (sweeps Tags rows whose Id isn't referenced by any of the 8 owner tables' Tags JSON-int-array column OR by an autotagging TagSpecification.Value; nil-autotagging-Repo tolerated for the 8-table-only path; empty-in-use-set falls back to DELETE FROM "Tags"; cmd/sonarr now wires 21 housekeepers + autotagging.Repo). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: (typed MediaInfo column closed in 3.14). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
+Last updated: 2026-05-06 (Phase 1 done; Phase 2 COMPLETE; Phase 3 STARTED — mediafiles foundation 3.0-3.3 + mediainfo data model 3.4 + formatter 3.5 + Organizer MediaInfo wiring 3.6 + Organizer language tokens 3.7 (closes 3.6 deferred — all 14 MediaInfo tokens now have real handlers) + commands enums + repo helpers 3.8 + commands.Service 3.9 (CommandQueueManager port: Push/PushMany with dedup, Start/Complete/Fail with CommandExecutedEvent publishing, Cancel, CleanCommands, HandleApplicationStarted boot recovery) + scheduledtasks.Service 3.10 (TaskManager port: SetLastExecutionTime + Upsert repo helpers, RegisterDefaults reconcile loop with cache seeding, GetPending/GetAll/GetNextExecution cache reads, HandleCommandExecuted with host-supplied predicate gate — modulo deferred 11 hardcoded defaults + Backup/RssSync intervals + ConfigSavedEvent handler) + commands in-memory Queue + Dispatcher 3.11 (CommandQueue + CommandExecutor port: cond-blocked TryGet with priority/disk/long-running/exclusive gating, single-worker Dispatcher.Run with handler registry + panic-recovered Execute, Service.SetQueue wires Push/PushMany/Cancel into the in-memory queue — modulo deferred per-handler concurrency + cancellation propagation into running handlers) + scheduledtasks.Scheduler ticker 3.12 (Scheduler.cs port: 30s time.Ticker drives Tick → tasks.GetPending → commands.Push at TriggerScheduled/PriorityLow with body="{}"; closes the bridge between the 3.10 task cache and the 3.11 command queue) + first IExecute<T> handler + cmd/sonarr boot wiring 3.13 (CleanupCommandMessagingService port: handlers package with MessagingCleanup handler calling Service.CleanCommands(now-24h); handlers.RegisterAll + handlers.DefaultScheduledTasks helpers wire registry + scheduledtasks defaults in one place; cmd/sonarr boot now spins up commands.Service + Queue + Dispatcher + scheduledtasks.Service + Scheduler with HandleApplicationStarted recovery + CommandExecutedEvent subscription, dispatcher + scheduler goroutines drained on shutdown via workerCancel + queue.Close before bus.BeginShutdown — convention pinned: Commands.Name + ScheduledTasks.TypeName + registry key all use the C# Command.Name short form ("MessagingCleanup"), not Type.FullName) + typed MediaInfo column 3.14 (episodefiles.File.MediaInfo: string → *mediainfo.Model; mapper marshalMediaInfo/unmarshalMediaInfo round-trip nil ↔ NULL preserves the AllWithoutMediaInfo IS NULL filter; closes the explicit Phase 3 follow-up) + episodefiles.CleanupService 3.15 (MediaFileTableCleanupService port: two-phase Clean(parent, filesOnDisk) drops EpisodeFile rows missing-from-disk OR with no linked episodes, then clears Episode.EpisodeFileID for any episode pointing at a now-removed/never-existed file; goes through the public Service surface so EpisodeFileDeletedEvent fires for every cleanup-deleted file) + housekeeping skeleton + Housekeeping handler 3.16 (new internal/housekeeping package with Task interface, Service.Clean orchestrator with per-task error swallowing, first concrete task FixFutureRunScheduledTasks clamping ScheduledTasks.LastExecution > now back to now; second IExecute<T> port via Housekeeping handler; handlers.Deps struct introduced so RegisterAll's call site is stable as new dep services land; cmd/sonarr boot wires housekeeping.Service) + four orphan-cleanup housekeepers 3.17 (CleanupOrphanedEpisodes/EpisodeFiles/HistoryItems/Blocklist; shared deleteOrphansLeftJoin helper for the LEFT-OUTER-JOIN-WHERE-NULL pattern; both engines verified) + four orphan-status housekeepers 3.18 (CleanupOrphanedIndexerStatus/DownloadClientStatus/ImportListStatus/NotificationStatus; each one struct-literal reusing 3.17's helper) + four more orphan housekeepers 3.19 (PendingReleases [single-pair] + ExtraFiles/SubtitleFiles/MetadataFiles [three-pass each via fileRefTask helper handling SeriesId-orphan + EpisodeFileId>0-orphan + unlinked passes; MetadataFiles adds Type IN (2,5) predicate to scope unlinked sweep to episode-scoped types only]) + three more housekeepers 3.20 (CleanupAdditionalNamingSpecs/CleanupAdditionalUsers via new singletonTableTask helper + UpdateCleanTitleForSeries which iterates Series.All and rewrites CleanTitle when parser.CleanSeriesTitle drifted) + FixFutureProviderStatusTimes family 3.21 (shared FixFutureProviderStatusTimes scaffold parameterised on (name, table) + 4 thin constructors for IndexerStatus/DownloadClientStatus/ImportListStatus/NotificationStatus; clamps DisabledTill / InitialFailure / MostRecentFailure to bounds derived from providerstatus.BackOffPeriodSeconds[EscalationLevel]; defensive EscalationLevel index clamp guards rogue rows; cmd/sonarr now wires 20 housekeepers; also closes the stale series.Service doc comment that still listed write methods as deferred) + CleanupUnusedTags housekeeper 3.22 (sweeps Tags rows whose Id isn't referenced by any of the 8 owner tables' Tags JSON-int-array column OR by an autotagging TagSpecification.Value; nil-autotagging-Repo tolerated for the 8-table-only path; empty-in-use-set falls back to DELETE FROM "Tags"; cmd/sonarr now wires 21 housekeepers + autotagging.Repo) + CleanupQualityProfileFormatItems housekeeper 3.23 (reconciles each QualityProfile.FormatItems against the live CustomFormats catalogue; drops phantom FormatIDs, prepends missing CFs at Score=0, resets MinFormatScore/CutoffFormatScore/MinUpgradeFormatScore to 0/0/1 when result is empty; set-based diff so score-only edits are preserved; cmd/sonarr now wires 22 housekeepers + qualityprofiles.Repo + customformats.Repo) + CheckHealth handler stub 3.24 (third IExecute<T> port: stub Execute logs and returns nil while real HealthCheckService awaits its own Phase 3 slice; Deps grows Log field; DefaultScheduledTasks adds CheckHealth at Interval=360min per Jobs/TaskManager.cs:96-99). Phase 3 deliverables to date: event types + DeleteMediaFileReason 3.0; episodefiles repo query helpers 3.1; episodefiles.Service 3.2 (MediaFileService port: Add/Update/Delete + 7 read accessors + FilterExistingFiles + HandleSeriesDeleted bus listener); episodes.Service event handlers 3.3 — HandleEpisodeFileAdded/Deleted/SeriesScanned closing the deferred 2.63 handlers via local FileDeleteReason enum mirroring episodefiles.DeleteMediaFileReason; mediainfo data model 3.4 (Model + AudioStream + SubtitleStream + HdrFormat enum with STJ-compatible JSON shape, EDOC-Q16 videoCodecID casing pinned); MediaInfoFormatter 3.5 (FormatVideo/AudioCodec + dynamic-range + AudioChannels — 4 fixtures × 80 cases ported); Organizer MediaInfo token wiring 3.6 (RegisterMediaInfoTokens replaces stubs; BuildOptions.MediaInfo plumbed through; codec/bit-depth/channel/dynamic-range/Simple tokens wired); Organizer language tokens 3.7 (FormatLanguagesToken ports GetLanguagesToken with filter syntax, BT-map via existing language.FindIso, skipEnglishOnly, quoted; AudioLanguages/AudioLanguagesAll/SubtitleLanguages/SubtitleLanguagesAll wired; Full token concatenates all parts with CustomFormat-driven per-call filter). Remaining Phase 2 areas: ImportListService write surface (Phase 4 territory). Remaining Phase 3 follow-ups: (typed MediaInfo column closed in 3.14). Next major Phase 3 territory: DiskScanService; DownloadedEpisodesImportService; decisionengine; Command bus + IExecute<T> wiring.
 
 ## Where to resume
 
@@ -2788,6 +2788,118 @@ roundtrips, SetFileID auto-forget, and every read+mutation
 pass-through.
 
 ### Phase 3 — Service / Workflow layer ⏳ in progress
+
+#### 3.24 — CheckHealth handler stub (third IExecute<T>) ✅ shipped (2026-05-06)
+
+Third `IExecute<T>` handler. The real `HealthCheckService` is the
+next-tier 230-LOC subsystem with 20+ check implementations + a
+debouncer + an ApplicationStarted grace period (deferred to its own
+Phase 3 slice). This slot ships only the stub so:
+
+- The third handler exists, proving the registry +
+  scheduledtasks defaults pattern accepts new handlers without
+  touching the dispatcher core.
+- The 6-hour scheduled-task entry materialises in the
+  `ScheduledTasks` table at boot (mirrors `Jobs/TaskManager.cs:96-99`
+  `Interval = 6 * 60`). When the real service lands the row is
+  already there — switching to a real `Execute` is a pure code
+  change.
+- Operators who push `CheckHealth` via the API get a structured
+  "stub fired" log line instead of a "Unknown command" rejection.
+
+Implementation:
+
+- **`CheckHealthName = "CheckHealth"`** — registry key +
+  `Commands.Name` + `ScheduledTasks.TypeName`. Mirrors C#
+  `Command.Name` short form (`CheckHealthCommand` → `CheckHealth`).
+- **`CheckHealth.Execute(ctx, _)`** logs `"healthcheck: stub
+  Execute"` at info level with `command=CheckHealth` attr; returns
+  nil. Body parsing is deferred until the real service needs the
+  `CommandTrigger` field (Manual vs Scheduled) to gate which check
+  set runs.
+- **`handlers.Deps`** grows a new `Log *slog.Logger` field. Stub
+  handlers that don't have a real service to delegate to use this
+  for "fired" log lines; the host plumbs `logger` in. Nil defaults
+  to `slog.Default` at handler construction time.
+- **`RegisterAll`** adds the third `registry.Register`.
+- **`DefaultScheduledTasks`** adds the third entry with `Interval =
+  6 * 60`.
+
+Test coverage:
+- Execute logs the stub line + returns nil (asserts the canonical
+  attr `command=CheckHealth` is present).
+- Nil-logger constructor falls back to `slog.Default`.
+- `RegisterAll` wires the handler under `CheckHealthName` —
+  catches a regression in the registry-key convention.
+- `DefaultScheduledTasks` includes CheckHealth with Interval=360
+  minutes — pins the C# `TaskManager.cs:96-99` value.
+
+  internal/commands/handlers:   ok  (-race -p 1, both engines)
+  full ./... suite:             ok  (-race -p 1, both engines)
+  golangci-lint:                0 issues
+
+#### 3.23 — CleanupQualityProfileFormatItems housekeeper ✅ shipped (2026-05-06)
+
+Ports `Housekeepers/CleanupQualityProfileFormatItems.cs:1-77`.
+Reconciles each QualityProfile's `FormatItems` JSON list against the
+live CustomFormats catalogue. The decision engine assumes the per-
+profile FormatItems list mirrors every CustomFormat one-to-one (with
+a Score field per spec); profiles drift out of sync when CustomFormats
+are added or deleted between sessions.
+
+Reconciliation rules (line-aligned with C#):
+
+- Drop FormatItems whose FormatID no longer matches a live
+  CustomFormat.
+- Prepend a `Score=0` FormatItem for any CustomFormat the profile is
+  currently missing.
+- If the resulting list ends up empty, reset `MinFormatScore=0`,
+  `CutoffFormatScore=0`, `MinUpgradeFormatScore=1` (matches C#
+  `:65-69`).
+- Set-based diff (`ids.Except(prev).Any() || prev.Except(ids).Any()`)
+  decides whether to write — score-only changes are user-edited
+  state and must NOT trigger a write.
+
+Implementation notes:
+
+- **Insert order** preserves the C# `Insert(0, ...)` semantics: the
+  Go port uses slice prepend, iterating `cfRepo.All` (Id ASC). Final
+  list has missing IDs in DESCENDING order at the front, matching
+  .NET Dictionary insertion-order iteration. The decision engine
+  doesn't depend on FormatItems order, but matching the C# wire
+  shape minimises diff churn against existing user databases.
+- **Defensive corruption guard**: drops items with `FormatID == 0`
+  (CustomFormat IDs are auto-incremented from 1; 0 is impossible
+  state) and dedups within `kept` (so a corrupted dup-FormatID
+  profile gets cleaned up rather than write back the dup).
+- **No SetFields helper**: the generic `Repo.Update` overwrites every
+  column. Acceptable because housekeeping runs in a controlled
+  context (single-threaded scheduler tick); the C# `SetFields` was
+  about per-column UPDATE noise reduction, not correctness.
+
+`cmd/sonarr/main.go` extends to 22 housekeepers and now constructs
+both `*qualityprofiles.Repo` and `*customformats.Repo` upstream of
+the housekeeper-list build.
+
+Test coverage:
+- Both-engines drifted-profile path: phantom IDs dropped, missing
+  CFs prepended at Score=0, kept-CF score preserved (42 → 42), score
+  knobs untouched on non-empty result.
+- Both-engines in-sync profile: byte-for-byte FormatItems unchanged
+  (no spurious update).
+- Empty-after-cleanup path: when every FormatItem points at phantom
+  IDs and no live CFs exist, FormatItems collapses to `[]` AND score
+  knobs reset to 0/0/1.
+- Score-only-edit guard: profile with correct FormatID set + custom
+  Score=42 + custom score knobs all stay untouched (set diff
+  short-circuits the update).
+- Idempotency rerun confirms the second run is a no-op.
+- Context-cancel surfaces from QueryContext.
+- Nil-arg constructor errors with helpful messages.
+
+  internal/housekeeping:        ok  (-race -p 1, both engines)
+  full ./... suite:             ok  (-race -p 1, both engines)
+  golangci-lint:                0 issues
 
 #### 3.22 — CleanupUnusedTags housekeeper ✅ shipped (2026-05-06)
 
