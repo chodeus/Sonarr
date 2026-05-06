@@ -29,6 +29,16 @@ type SearchCriteria struct {
 	// Episodes is the list of episodes the search asked for. May span
 	// multiple seasons.
 	Episodes []episodes.Episode
+	// UserInvokedSearch is true when the user pressed "Search all
+	// monitored episodes" / "Search this season" — the orchestrator
+	// uses it to derive `ReleaseSourceUserInvokedSearch`. Mirrors C#
+	// `SearchCriteriaBase.UserInvokedSearch`.
+	UserInvokedSearch bool
+	// InteractiveSearch is true when the user opened the per-episode
+	// release list manually — the orchestrator routes this to
+	// `ReleaseSourceInteractiveSearch`. Mirrors C#
+	// `SearchCriteriaBase.InteractiveSearch`.
+	InteractiveSearch bool
 }
 
 // SeasonPackOnlySpecification rejects single-episode releases for a
