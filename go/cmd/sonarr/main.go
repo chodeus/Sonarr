@@ -44,6 +44,7 @@ import (
 	"sonarr.tv/sonarr/internal/buildinfo"
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/commands/handlers"
+	"sonarr.tv/sonarr/internal/config"
 	"sonarr.tv/sonarr/internal/configfile"
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/datastore"
@@ -344,9 +345,25 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("episodefiles cleanup service: %w", err)
 	}
+	// Config table provider (Phase 3.53). First mediafiles boot stub
+	// to drop — the typed Provider lazily caches every Config row and
+	// invalidates on ConfigSavedEvent so getters stay fresh as the
+	// rest of the IConfigService surface ports.
+	configRepo, err := config.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("config repo: %w", err)
+	}
+	configProv, err := config.NewProvider(configRepo, bus)
+	if err != nil {
+		return fmt.Errorf("config provider: %w", err)
+	}
+	if err := configProv.Load(ctx); err != nil {
+		return fmt.Errorf("config provider load: %w", err)
+	}
+	configProv.Subscribe(bus)
 	mediafilesSvc, err := mediafiles.NewService(
 		stubDiskProvider{},
-		stubMediaFilesConfig{},
+		configProv,
 		stubRootFolderResolver{},
 		seriesSvc,
 		episodeFilesSvc,

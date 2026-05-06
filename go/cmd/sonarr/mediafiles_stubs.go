@@ -19,20 +19,6 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 )
 
-// stubMediaFilesConfig returns the C# `IConfigService` defaults from
-// `Configuration/ConfigService.cs` (CreateEmptySeriesFolders=false,
-// DeleteEmptyFolders=false, SetPermissionsLinux=false,
-// ChmodFolder="755", ChownGroup=""). Replace when the
-// `IConfigService` Go port lands and the real Config table accessor
-// is wired.
-type stubMediaFilesConfig struct{}
-
-func (stubMediaFilesConfig) CreateEmptySeriesFolders() bool { return false }
-func (stubMediaFilesConfig) DeleteEmptyFolders() bool       { return false }
-func (stubMediaFilesConfig) SetPermissionsLinux() bool      { return false }
-func (stubMediaFilesConfig) ChmodFolder() string            { return "755" }
-func (stubMediaFilesConfig) ChownGroup() string             { return "" }
-
 // stubDiskProvider answers every probe with a non-existent / empty /
 // no-error response. The Scan code path runs to completion against
 // it but performs no disk writes — the missing-folder + missing-root
@@ -95,7 +81,6 @@ func (stubUpdateMediaInfo) Update(_ context.Context, _ *episodefiles.File, _ *se
 // the boot site rather than as a `*mediafiles.Service` constructor
 // failure at runtime.
 var (
-	_ mediafiles.Config                 = stubMediaFilesConfig{}
 	_ mediafiles.DiskProvider           = stubDiskProvider{}
 	_ mediafiles.RootFolderResolver     = stubRootFolderResolver{}
 	_ mediafiles.ImportDecisionMaker    = stubImportDecisionMaker{}
