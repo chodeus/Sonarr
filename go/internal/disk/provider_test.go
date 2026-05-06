@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"testing"
+	"time"
 
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/mediafiles"
@@ -378,4 +379,53 @@ func equalStringSlice(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestProvider_FileGetLastWrite(t *testing.T) {
+	t.Parallel()
+	p := newProvider()
+	tmp := t.TempDir()
+
+	path := filepath.Join(tmp, "f.txt")
+	if err := os.WriteFile(path, []byte("hi"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got, err := p.FileGetLastWrite(path)
+	if err != nil {
+		t.Fatalf("FileGetLastWrite: %v", err)
+	}
+	if got.IsZero() {
+		t.Errorf("FileGetLastWrite returned zero time")
+	}
+	// mtime should be within a reasonable window of "now".
+	if delta := time.Since(got); delta < 0 || delta > time.Minute {
+		t.Errorf("mtime delta = %v, want within 1m of now", delta)
+	}
+
+	// Missing file → wrapped fs.ErrNotExist.
+	if _, err := p.FileGetLastWrite(filepath.Join(tmp, "nope")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing file: err = %v, want fs.ErrNotExist", err)
+	}
+}
+
+func TestProvider_GetAvailableSpace(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("GetAvailableSpace not implemented on Windows in this slice")
+	}
+	p := newProvider()
+	tmp := t.TempDir()
+	got, err := p.GetAvailableSpace(tmp)
+	if err != nil {
+		t.Fatalf("GetAvailableSpace: %v", err)
+	}
+	if got <= 0 {
+		t.Errorf("GetAvailableSpace = %d, want > 0 (this filesystem must have some space)", got)
+	}
+
+	// Missing path → error (statfs fails).
+	if _, err := p.GetAvailableSpace(filepath.Join(tmp, "nope")); err == nil {
+		t.Errorf("missing path: want error")
+	}
 }

@@ -3,14 +3,20 @@ package episodeimport_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/datastore"
+	"sonarr.tv/sonarr/internal/decisionengine"
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/mediainfo"
 	"sonarr.tv/sonarr/internal/parser"
+	"sonarr.tv/sonarr/internal/quality"
+	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -757,4 +763,554 @@ func TestParseEpisodeTitleRequiredType(t *testing.T) {
 			t.Errorf("round-trip %v: got %v", v, got)
 		}
 	}
+}
+
+// --- FreeSpaceSpecification ----------------------------------------
+
+type stubFreeSpaceConfig struct {
+	skip  bool
+	minMB int
+}
+
+func (s stubFreeSpaceConfig) SkipFreeSpaceCheckWhenImporting() bool { return s.skip }
+func (s stubFreeSpaceConfig) MinimumFreeSpaceWhenImporting() int    { return s.minMB }
+
+type stubAvailableSpace struct {
+	free int64
+	err  error
+	last string
+}
+
+func (s *stubAvailableSpace) GetAvailableSpace(path string) (int64, error) {
+	s.last = path
+	return s.free, s.err
+}
+
+func TestFreeSpaceSpecification(t *testing.T) {
+	t.Parallel()
+	mk := func(t *testing.T, cfg episodeimport.FreeSpaceConfig, dp episodeimport.AvailableSpaceProvider) *episodeimport.FreeSpaceSpecification {
+		t.Helper()
+		spec, err := episodeimport.NewFreeSpaceSpecification(cfg, dp, nil)
+		if err != nil {
+			t.Fatalf("NewFreeSpaceSpecification: %v", err)
+		}
+		return spec
+	}
+
+	t.Run("nil deps rejected at construction", func(t *testing.T) {
+		if _, err := episodeimport.NewFreeSpaceSpecification(nil, &stubAvailableSpace{}, nil); err == nil {
+			t.Errorf("expected nil-cfg error")
+		}
+		if _, err := episodeimport.NewFreeSpaceSpecification(stubFreeSpaceConfig{}, nil, nil); err == nil {
+			t.Errorf("expected nil-disk error")
+		}
+	})
+
+	t.Run("Skip toggle accepts", func(t *testing.T) {
+		dp := &stubAvailableSpace{free: 0}
+		spec := mk(t, stubFreeSpaceConfig{skip: true}, dp)
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{Path: "/tv/x"}
+		le.Size = 1 << 40
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("Skip=true: want Accept")
+		}
+		if dp.last != "" {
+			t.Errorf("disk should not have been queried")
+		}
+	})
+
+	t.Run("ExistingFile accepts", func(t *testing.T) {
+		spec := mk(t, stubFreeSpaceConfig{minMB: 100}, &stubAvailableSpace{free: 0})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{Path: "/tv/x"}
+		le.ExistingFile = true
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("ExistingFile: want Accept")
+		}
+	})
+
+	t.Run("nil Series.Path accepts defensively", func(t *testing.T) {
+		spec := mk(t, stubFreeSpaceConfig{minMB: 100}, &stubAvailableSpace{free: 0})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("empty Series.Path: want Accept")
+		}
+	})
+
+	t.Run("disk error accepts defensively", func(t *testing.T) {
+		spec := mk(t, stubFreeSpaceConfig{minMB: 100}, &stubAvailableSpace{err: errors.New("boom")})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{Path: "/tv/x"}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("disk err: want Accept (defensive)")
+		}
+	})
+
+	t.Run("not enough free space rejects", func(t *testing.T) {
+		// 50MB free, file is 60MB, threshold = 60MB+100MB → 160MB; reject.
+		dp := &stubAvailableSpace{free: 50 << 20}
+		spec := mk(t, stubFreeSpaceConfig{minMB: 100}, dp)
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{Path: "/tv/x"}
+		le.Size = 60 << 20
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("low free space: want Reject")
+		}
+		if d.Reason() != episodeimport.ImportRejectionMinimumFreeSpace {
+			t.Errorf("Reason = %v", d.Reason())
+		}
+	})
+
+	t.Run("enough free space accepts", func(t *testing.T) {
+		// 200MB free, 60MB file + 100MB min → 160MB threshold. 200>160 → accept.
+		dp := &stubAvailableSpace{free: 200 << 20}
+		spec := mk(t, stubFreeSpaceConfig{minMB: 100}, dp)
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{Path: "/tv/x"}
+		le.Size = 60 << 20
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("ample free space: want Accept")
+		}
+	})
+
+	if got := mk(t, stubFreeSpaceConfig{}, &stubAvailableSpace{}).Name(); got != "FreeSpaceSpecification" {
+		t.Errorf("Name() = %q", got)
+	}
+}
+
+// --- MatchesGrabSpecification --------------------------------------
+
+func TestMatchesGrabSpecification(t *testing.T) {
+	t.Parallel()
+	spec := episodeimport.NewMatchesGrabSpecification(nil)
+
+	if got := spec.Name(); got != "MatchesGrabSpecification" {
+		t.Errorf("Name() = %q", got)
+	}
+
+	t.Run("ExistingFile accepts", func(t *testing.T) {
+		le := episodeimport.NewLocalEpisode()
+		le.ExistingFile = true
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("ExistingFile: want Accept")
+		}
+	})
+
+	t.Run("nil Release accepts", func(t *testing.T) {
+		le := episodeimport.NewLocalEpisode()
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("nil Release: want Accept")
+		}
+	})
+
+	t.Run("empty EpisodeIDs accepts", func(t *testing.T) {
+		le := episodeimport.NewLocalEpisode()
+		le.Release = &episodeimport.GrabbedReleaseInfo{Title: "x", EpisodeIDs: []int{}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("empty EpisodeIDs: want Accept")
+		}
+	})
+
+	t.Run("all candidates expected accepts", func(t *testing.T) {
+		le := episodeimport.NewLocalEpisode()
+		le.Release = &episodeimport.GrabbedReleaseInfo{Title: "x", EpisodeIDs: []int{1, 2, 3}}
+		le.Episodes = []episodes.Episode{{ID: 1}, {ID: 2}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("subset match: want Accept")
+		}
+	})
+
+	t.Run("one unexpected episode rejects with singular form", func(t *testing.T) {
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/x.mkv"
+		le.Release = &episodeimport.GrabbedReleaseInfo{Title: "MyShow.S01.E01.mkv", EpisodeIDs: []int{1}}
+		le.Episodes = []episodes.Episode{
+			{ID: 1, SeasonNumber: 1, EpisodeNumber: 1},
+			{ID: 2, SeasonNumber: 1, EpisodeNumber: 5},
+		}
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("unexpected episode: want Reject")
+		}
+		if d.Reason() != episodeimport.ImportRejectionEpisodeNotFoundInRelease {
+			t.Errorf("Reason = %v", d.Reason())
+		}
+		// "1x05" form expected, singular phrasing.
+		if got := d.Message(); got == "" || !contains(got, "Episode 1x05") {
+			t.Errorf("Message=%q (want singular Episode form)", got)
+		}
+	})
+
+	t.Run("multiple unexpected episodes use plural form", func(t *testing.T) {
+		le := episodeimport.NewLocalEpisode()
+		le.Release = &episodeimport.GrabbedReleaseInfo{Title: "rel", EpisodeIDs: []int{1}}
+		le.Episodes = []episodes.Episode{
+			{ID: 2, SeasonNumber: 1, EpisodeNumber: 5},
+			{ID: 3, SeasonNumber: 1, EpisodeNumber: 6},
+		}
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("multiple unexpected: want Reject")
+		}
+		if got := d.Message(); !contains(got, "Episodes 1x05, 1x06") {
+			t.Errorf("Message=%q (want plural form)", got)
+		}
+	})
+}
+
+// --- NotUnpackingSpecification --------------------------------------
+
+type stubUnpackingConfig struct {
+	folders string
+}
+
+func (s stubUnpackingConfig) DownloadClientWorkingFolders() string { return s.folders }
+
+type stubFileLastWrite struct {
+	mtime time.Time
+	err   error
+}
+
+func (s stubFileLastWrite) FileGetLastWrite(_ string) (time.Time, error) {
+	return s.mtime, s.err
+}
+
+func TestNotUnpackingSpecification(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2025, 1, 10, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+
+	mk := func(t *testing.T, cfg episodeimport.UnpackingConfig, disk episodeimport.FileLastWriteProvider, isWindows bool) *episodeimport.NotUnpackingSpecification {
+		t.Helper()
+		spec, err := episodeimport.NewNotUnpackingSpecification(cfg, disk, clock, nil)
+		if err != nil {
+			t.Fatalf("NewNotUnpackingSpecification: %v", err)
+		}
+		spec.SetWindowsForTest(isWindows)
+		return spec
+	}
+
+	t.Run("nil deps rejected at construction", func(t *testing.T) {
+		if _, err := episodeimport.NewNotUnpackingSpecification(nil, stubFileLastWrite{}, nil, nil); err == nil {
+			t.Errorf("expected nil-cfg error")
+		}
+		if _, err := episodeimport.NewNotUnpackingSpecification(stubUnpackingConfig{}, nil, nil, nil); err == nil {
+			t.Errorf("expected nil-disk error")
+		}
+	})
+
+	t.Run("ExistingFile accepts", func(t *testing.T) {
+		spec := mk(t, stubUnpackingConfig{folders: "_UNPACK_"}, stubFileLastWrite{}, false)
+		le := episodeimport.NewLocalEpisode()
+		le.ExistingFile = true
+		le.Path = filepath.Join("/tv", "_UNPACK_x", "f.mkv")
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("ExistingFile: want Accept")
+		}
+	})
+
+	t.Run("no prefix match accepts", func(t *testing.T) {
+		spec := mk(t, stubUnpackingConfig{folders: "_UNPACK_|_FAILED_"}, stubFileLastWrite{}, false)
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/normal/MyShow.S01E01.mkv"
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("no prefix match: want Accept")
+		}
+	})
+
+	t.Run("non-windows + prefix match rejects immediately", func(t *testing.T) {
+		spec := mk(t, stubUnpackingConfig{folders: "_UNPACK_|_FAILED_"}, stubFileLastWrite{}, false)
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/_UNPACK_show/foo.mkv"
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("non-windows prefix match: want Reject")
+		}
+		if d.Reason() != episodeimport.ImportRejectionUnpacking {
+			t.Errorf("Reason = %v", d.Reason())
+		}
+	})
+
+	t.Run("windows + recent mtime rejects", func(t *testing.T) {
+		recent := now.Add(-2 * time.Minute)
+		spec := mk(t, stubUnpackingConfig{folders: "_UNPACK_"}, stubFileLastWrite{mtime: recent}, true)
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/_UNPACK_show/foo.mkv"
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("windows recent mtime: want Reject")
+		}
+	})
+
+	t.Run("windows + old mtime accepts", func(t *testing.T) {
+		old := now.Add(-1 * time.Hour)
+		spec := mk(t, stubUnpackingConfig{folders: "_UNPACK_"}, stubFileLastWrite{mtime: old}, true)
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/_UNPACK_show/foo.mkv"
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("windows old mtime: want Accept")
+		}
+	})
+
+	t.Run("windows + stat error rejects", func(t *testing.T) {
+		spec := mk(t, stubUnpackingConfig{folders: "_UNPACK_"}, stubFileLastWrite{err: errors.New("missing")}, true)
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/_UNPACK_show/foo.mkv"
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("stat error on windows: want Reject")
+		}
+	})
+
+	if got := mk(t, stubUnpackingConfig{}, stubFileLastWrite{}, false).Name(); got != "NotUnpackingSpecification" {
+		t.Errorf("Name() = %q", got)
+	}
+}
+
+// --- UpgradeSpecification ------------------------------------------
+
+type stubUpgradeConfig struct {
+	mode quality.ProperDownloadType
+}
+
+func (s stubUpgradeConfig) DownloadPropersAndRepacks() quality.ProperDownloadType { return s.mode }
+
+type stubProfileResolver struct {
+	view *decisionengine.ProfileView
+	err  error
+}
+
+func (s *stubProfileResolver) GetProfileViewBySeriesID(_ context.Context, _ int) (*decisionengine.ProfileView, error) {
+	return s.view, s.err
+}
+
+type stubFileResolver struct {
+	files map[int]*episodefiles.File
+	err   error
+}
+
+func (s *stubFileResolver) GetByID(_ context.Context, id int) (*episodefiles.File, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.files[id], nil
+}
+
+type stubFormatCalculator struct {
+	out []customformats.CustomFormat
+	err error
+}
+
+func (s *stubFormatCalculator) ParseCustomFormat(_ context.Context, _ *episodefiles.File) ([]customformats.CustomFormat, error) {
+	return s.out, s.err
+}
+
+// makeProfileView builds a ProfileView with quality items so the
+// quality-comparator returns sensible orderings. Two qualities:
+// HDTV-720p (id=4), WEBDL-1080p (id=8) — both Allowed; WEBDL is
+// "higher" because it's later in the list.
+func makeProfileView(t *testing.T) *decisionengine.ProfileView {
+	t.Helper()
+	hd, _ := quality.FindByID(4)
+	wd, _ := quality.FindByID(8)
+	prof := &qualityprofiles.Profile{
+		Name:           "test",
+		UpgradeAllowed: true,
+		Cutoff:         8,
+	}
+	view := &decisionengine.ProfileView{
+		Profile: prof,
+		Items: []qualityprofiles.QualityItem{
+			{Quality: hd, Allowed: true},
+			{Quality: wd, Allowed: true},
+		},
+		FormatItems: nil,
+	}
+	return view
+}
+
+func TestUpgradeSpecification(t *testing.T) {
+	t.Parallel()
+
+	view := makeProfileView(t)
+	mk := func(t *testing.T, cfg episodeimport.UpgradeConfig, pr episodeimport.UpgradeQualityProfileResolver, fr episodeimport.EpisodeFileResolver, fc episodeimport.CustomFormatCalculator) *episodeimport.UpgradeSpecification {
+		t.Helper()
+		spec, err := episodeimport.NewUpgradeSpecification(cfg, pr, fr, fc, nil)
+		if err != nil {
+			t.Fatalf("NewUpgradeSpecification: %v", err)
+		}
+		return spec
+	}
+
+	t.Run("nil deps rejected at construction", func(t *testing.T) {
+		good := stubUpgradeConfig{}
+		gpr := &stubProfileResolver{view: view}
+		gfr := &stubFileResolver{}
+		gfc := &stubFormatCalculator{}
+		if _, err := episodeimport.NewUpgradeSpecification(nil, gpr, gfr, gfc, nil); err == nil {
+			t.Errorf("nil cfg")
+		}
+		if _, err := episodeimport.NewUpgradeSpecification(good, nil, gfr, gfc, nil); err == nil {
+			t.Errorf("nil profileResolver")
+		}
+		if _, err := episodeimport.NewUpgradeSpecification(good, gpr, nil, gfc, nil); err == nil {
+			t.Errorf("nil fileResolver")
+		}
+		if _, err := episodeimport.NewUpgradeSpecification(good, gpr, gfr, nil, nil); err == nil {
+			t.Errorf("nil formatCalculator")
+		}
+	})
+
+	t.Run("no episodes accepts", func(t *testing.T) {
+		spec := mk(t,
+			stubUpgradeConfig{mode: quality.ProperPreferAndUpgrade},
+			&stubProfileResolver{view: view},
+			&stubFileResolver{},
+			&stubFormatCalculator{})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{ID: 1}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("no episodes: want Accept")
+		}
+	})
+
+	t.Run("episode without file accepts", func(t *testing.T) {
+		spec := mk(t,
+			stubUpgradeConfig{mode: quality.ProperPreferAndUpgrade},
+			&stubProfileResolver{view: view},
+			&stubFileResolver{},
+			&stubFormatCalculator{})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{ID: 1}
+		le.Episodes = []episodes.Episode{{ID: 1}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("episode w/o file: want Accept")
+		}
+	})
+
+	t.Run("profile resolver error accepts defensively", func(t *testing.T) {
+		spec := mk(t,
+			stubUpgradeConfig{},
+			&stubProfileResolver{err: errors.New("boom")},
+			&stubFileResolver{},
+			&stubFormatCalculator{})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{ID: 1}
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(7)}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("profile err: want Accept (defensive)")
+		}
+	})
+
+	t.Run("candidate quality < existing rejects NotQualityUpgrade", func(t *testing.T) {
+		// Existing file: WEBDL-1080p; candidate: HDTV-720p
+		fr := &stubFileResolver{files: map[int]*episodefiles.File{
+			7: {ID: 7, Quality: `{"quality":8,"revision":{"version":1}}`},
+		}}
+		spec := mk(t,
+			stubUpgradeConfig{},
+			&stubProfileResolver{view: view},
+			fr,
+			&stubFormatCalculator{})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{ID: 1}
+		hd, _ := quality.FindByID(4)
+		le.Quality = quality.NewModel(hd)
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(7)}}
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("downgrade quality: want Reject")
+		}
+		if d.Reason() != episodeimport.ImportRejectionNotQualityUpgrade {
+			t.Errorf("Reason = %v", d.Reason())
+		}
+	})
+
+	t.Run("same quality + propers ON + new revision < existing rejects NotRevisionUpgrade", func(t *testing.T) {
+		fr := &stubFileResolver{files: map[int]*episodefiles.File{
+			7: {ID: 7, Quality: `{"quality":8,"revision":{"version":2}}`},
+		}}
+		spec := mk(t,
+			stubUpgradeConfig{mode: quality.ProperPreferAndUpgrade},
+			&stubProfileResolver{view: view},
+			fr,
+			&stubFormatCalculator{})
+		wd, _ := quality.FindByID(8)
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{ID: 1}
+		le.Quality = quality.NewModelWithRevision(wd, quality.Revision{Version: 1})
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(7)}}
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("revision downgrade: want Reject")
+		}
+		if d.Reason() != episodeimport.ImportRejectionNotRevisionUpgrade {
+			t.Errorf("Reason = %v", d.Reason())
+		}
+	})
+
+	t.Run("same quality + propers DoNotPrefer skips revision check", func(t *testing.T) {
+		fr := &stubFileResolver{files: map[int]*episodefiles.File{
+			7: {ID: 7, Quality: `{"quality":8,"revision":{"version":2}}`},
+		}}
+		spec := mk(t,
+			stubUpgradeConfig{mode: quality.ProperDoNotPrefer},
+			&stubProfileResolver{view: view},
+			fr,
+			&stubFormatCalculator{})
+		wd, _ := quality.FindByID(8)
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{ID: 1}
+		le.Quality = quality.NewModelWithRevision(wd, quality.Revision{Version: 1})
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(7)}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("DoNotPrefer + worse revision: want Accept")
+		}
+	})
+
+	t.Run("upgrade quality accepts", func(t *testing.T) {
+		// Existing HDTV-720p (id=4); candidate WEBDL-1080p (id=8) → upgrade.
+		fr := &stubFileResolver{files: map[int]*episodefiles.File{
+			7: {ID: 7, Quality: `{"quality":4,"revision":{"version":1}}`},
+		}}
+		spec := mk(t,
+			stubUpgradeConfig{},
+			&stubProfileResolver{view: view},
+			fr,
+			&stubFormatCalculator{})
+		wd, _ := quality.FindByID(8)
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{ID: 1}
+		le.Quality = quality.NewModel(wd)
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(7)}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("real upgrade: want Accept")
+		}
+	})
+
+	if got := mk(t,
+		stubUpgradeConfig{},
+		&stubProfileResolver{view: view},
+		&stubFileResolver{},
+		&stubFormatCalculator{}).Name(); got != "UpgradeSpecification" {
+		t.Errorf("Name() = %q", got)
+	}
+}
+
+// contains is a minimal substring helper for table-driven message
+// assertions; avoids pulling strings into the import block of tests
+// that don't otherwise need it.
+func contains(haystack, needle string) bool {
+	if needle == "" {
+		return true
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
 }

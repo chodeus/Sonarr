@@ -1,5 +1,7 @@
 package quality
 
+import "strings"
+
 // ProperDownloadType mirrors the C# enum at
 // `src/NzbDrone.Core/Qualities/ProperDownloadTypes.cs:1-9`. Captures
 // the user's preference for proper / repack revisions of an existing
@@ -42,4 +44,26 @@ func (p ProperDownloadType) String() string {
 		return "do-not-prefer"
 	}
 	return "unknown"
+}
+
+// ParseProperDownloadType resolves a persisted enum identifier
+// (case-insensitive) back to the typed value. Recognises both the C#
+// `Enum.ToString()` form (`"PreferAndUpgrade"`, `"DoNotUpgrade"`,
+// `"DoNotPrefer"`) used by `Configuration/ConfigService.cs:130-136` AND
+// the kebab-case form used by [ProperDownloadType.String]. Numeric
+// strings (`"0"`, `"1"`, `"2"`) round-trip the ordinal.
+//
+// Empty / unrecognised input returns [ProperPreferAndUpgrade] —
+// matches C# `GetValueEnum(..., PreferAndUpgrade)` default.
+func ParseProperDownloadType(s string) ProperDownloadType {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "preferandupgrade", "prefer-and-upgrade", "0":
+		return ProperPreferAndUpgrade
+	case "donotupgrade", "do-not-upgrade", "1":
+		return ProperDoNotUpgrade
+	case "donotprefer", "do-not-prefer", "2":
+		return ProperDoNotPrefer
+	default:
+		return ProperPreferAndUpgrade
+	}
 }

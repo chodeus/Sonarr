@@ -2,13 +2,22 @@ package episodeimport
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
+	"sonarr.tv/sonarr/internal/customformats"
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/downloadclients"
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/quality"
+	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -657,6 +666,565 @@ func (s *EpisodeTitleSpecification) IsSatisfiedBy(le *LocalEpisode, _ *downloadc
 	return AcceptImportSpec()
 }
 
+// FreeSpaceConfig is the slice of [config.Provider] the
+// [FreeSpaceSpecification] reaches for. Two getters: the on/off
+// toggle and the threshold (in megabytes — matches C# storage at
+// `Configuration/ConfigService.cs:202-207`).
+type FreeSpaceConfig interface {
+	SkipFreeSpaceCheckWhenImporting() bool
+	MinimumFreeSpaceWhenImporting() int
+}
+
+// AvailableSpaceProvider is the slice of [disk.Provider] the
+// [FreeSpaceSpecification] reaches for. `GetAvailableSpace` returns
+// `(int64, error)` — the spec treats any error as "couldn't
+// determine, accept defensively" (matches C# `!HasValue` arm at
+// `Specifications/FreeSpaceSpecification.cs:38-42`).
+type AvailableSpaceProvider interface {
+	GetAvailableSpace(path string) (int64, error)
+}
+
+// FreeSpaceSpecification ports
+// `Specifications/FreeSpaceSpecification.cs:11-67`.
+//
+// Skip arms:
+//
+//   - SkipFreeSpaceCheckWhenImporting → Accept.
+//   - LocalEpisode.ExistingFile → Accept.
+//   - GetAvailableSpace returns error OR Series.Path is empty →
+//     Accept (defensive: don't bounce a batch on a transient stat
+//     failure, matching C# `!freeSpace.HasValue` and the catch-all
+//     `try/catch` at `:55-62`).
+//
+// Reject when free space < (file size + minimum-free-space-MB).
+// `MinimumFreeSpaceWhenImporting` is in megabytes; the spec
+// multiplies by 1<<20 before the compare.
+type FreeSpaceSpecification struct {
+	cfg  FreeSpaceConfig
+	disk AvailableSpaceProvider
+	log  *slog.Logger
+}
+
+// NewFreeSpaceSpecification binds the two deps + logger. Returns an
+// error on either nil dep.
+func NewFreeSpaceSpecification(cfg FreeSpaceConfig, disk AvailableSpaceProvider, log *slog.Logger) (*FreeSpaceSpecification, error) {
+	if cfg == nil {
+		return nil, errors.New("episodeimport: NewFreeSpaceSpecification: nil FreeSpaceConfig")
+	}
+	if disk == nil {
+		return nil, errors.New("episodeimport: NewFreeSpaceSpecification: nil AvailableSpaceProvider")
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &FreeSpaceSpecification{cfg: cfg, disk: disk, log: log}, nil
+}
+
+// Name returns the C# class name verbatim.
+func (s *FreeSpaceSpecification) Name() string { return "FreeSpaceSpecification" }
+
+// IsSatisfiedBy mirrors `:22-65`.
+func (s *FreeSpaceSpecification) IsSatisfiedBy(le *LocalEpisode, _ *downloadclients.Item) *ImportSpecDecision {
+	if le == nil {
+		return AcceptImportSpec()
+	}
+	if s.cfg.SkipFreeSpaceCheckWhenImporting() {
+		s.log.Debug("episodeimport: free-space check disabled by config; skipping",
+			"path", le.Path)
+		return AcceptImportSpec()
+	}
+	if le.ExistingFile {
+		s.log.Debug("episodeimport: existing episode; skipping free-space check",
+			"path", le.Path)
+		return AcceptImportSpec()
+	}
+	if le.Series == nil || strings.TrimSpace(le.Series.Path) == "" {
+		s.log.Debug("episodeimport: no series path; skipping free-space check",
+			"path", le.Path)
+		return AcceptImportSpec()
+	}
+	// C# `Directory.GetParent(Series.Path).FullName` — Go equivalent
+	// is `filepath.Dir`. The .Path stays absolute through normal
+	// usage; the parent-of-parent corner case (root-level series
+	// folder) collapses to the same root so `GetAvailableSpace` still
+	// resolves a real mount.
+	parent := filepath.Dir(le.Series.Path)
+	free, err := s.disk.GetAvailableSpace(parent)
+	if err != nil {
+		s.log.Debug("episodeimport: free-space check failed; accepting defensively",
+			"path", parent, "err", err)
+		return AcceptImportSpec()
+	}
+	threshold := le.Size + int64(s.cfg.MinimumFreeSpaceWhenImporting())*(1<<20)
+	if free < threshold {
+		s.log.Warn("episodeimport: not enough free space to import",
+			"path", le.Path, "free", free, "size", le.Size,
+			"minMB", s.cfg.MinimumFreeSpaceWhenImporting())
+		return RejectImportSpec(ImportRejectionMinimumFreeSpace, "Not enough free space")
+	}
+	return AcceptImportSpec()
+}
+
+// MatchesGrabSpecification ports
+// `Specifications/MatchesGrabSpecification.cs:11-58`.
+//
+// Skip arms (priority order):
+//
+//   - LocalEpisode.ExistingFile → Accept (library rescan flow).
+//   - LocalEpisode.Release nil OR Release.EpisodeIDs empty → Accept
+//     (no grabbed-release constraint on this candidate).
+//
+// Otherwise: any candidate Episode whose ID isn't in EpisodeIDs is
+// "unexpected"; reject with EpisodeNotFoundInRelease and a message
+// listing the unexpected episodes (`SxxEyy` form) + grabbed title.
+type MatchesGrabSpecification struct {
+	log *slog.Logger
+}
+
+// NewMatchesGrabSpecification binds a logger.
+func NewMatchesGrabSpecification(log *slog.Logger) *MatchesGrabSpecification {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &MatchesGrabSpecification{log: log}
+}
+
+// Name returns the C# class name verbatim.
+func (s *MatchesGrabSpecification) Name() string { return "MatchesGrabSpecification" }
+
+// IsSatisfiedBy mirrors `:21-50`.
+func (s *MatchesGrabSpecification) IsSatisfiedBy(le *LocalEpisode, _ *downloadclients.Item) *ImportSpecDecision {
+	if le == nil || le.ExistingFile {
+		return AcceptImportSpec()
+	}
+	if le.Release == nil || len(le.Release.EpisodeIDs) == 0 {
+		return AcceptImportSpec()
+	}
+	expectedIDs := make(map[int]struct{}, len(le.Release.EpisodeIDs))
+	for _, id := range le.Release.EpisodeIDs {
+		expectedIDs[id] = struct{}{}
+	}
+	var unexpected []episodes.Episode
+	for _, e := range le.Episodes {
+		if _, ok := expectedIDs[e.ID]; !ok {
+			unexpected = append(unexpected, e)
+		}
+	}
+	if len(unexpected) == 0 {
+		return AcceptImportSpec()
+	}
+	formatted := formatEpisodeShortIDs(unexpected)
+	s.log.Debug("episodeimport: unexpected episodes in file",
+		"path", le.Path, "unexpected", formatted)
+	if len(unexpected) == 1 {
+		return RejectImportSpec(ImportRejectionEpisodeNotFoundInRelease,
+			"Episode %s was not found in the grabbed release: %s", formatted, le.Release.Title)
+	}
+	return RejectImportSpec(ImportRejectionEpisodeNotFoundInRelease,
+		"Episodes %s were not found in the grabbed release: %s", formatted, le.Release.Title)
+}
+
+// formatEpisodeShortIDs renders a list of episodes as
+// `S01E02, S01E03` for the rejection message. Mirrors C#
+// `MatchesGrabSpecification.FormatEpisode` at `:53-56`
+// (`{SeasonNumber}x{EpisodeNumber:00}` — note the `x` separator,
+// not `S..E..`).
+func formatEpisodeShortIDs(eps []episodes.Episode) string {
+	parts := make([]string, len(eps))
+	for i, e := range eps {
+		parts[i] = fmt.Sprintf("%dx%02d", e.SeasonNumber, e.EpisodeNumber)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// UnpackingConfig is the slice of [config.Provider] the
+// [NotUnpackingSpecification] reaches for. The stored value is a
+// `|`-separated prefix list (default `"_UNPACK_|_FAILED_"`).
+type UnpackingConfig interface {
+	DownloadClientWorkingFolders() string
+}
+
+// FileLastWriteProvider is the slice of [disk.Provider] the
+// [NotUnpackingSpecification] reaches for on Windows. Returns the
+// candidate file's last-modified time; the spec treats a recent mtime
+// (within 5 minutes) as "still being unpacked".
+type FileLastWriteProvider interface {
+	FileGetLastWrite(path string) (time.Time, error)
+}
+
+// NotUnpackingSpecification ports
+// `Specifications/NotUnpackingSpecification.cs:12-65`.
+//
+// Walks the candidate file's parent chain looking for any directory
+// whose name starts with a configured working-folder prefix
+// (`_UNPACK_`, `_FAILED_`, …). When a match is found:
+//
+//   - On non-Windows: reject Unpacking immediately. The C# version
+//     assumes unpackers atomic-rename the final file out of the
+//     prefix dir on POSIX, so any candidate whose ancestor chain
+//     STILL contains a prefix dir is in flight.
+//   - On Windows: also check `FileGetLastWrite` — if the file's
+//     mtime is within 5 minutes of now the unpacker is likely still
+//     writing. Older mtimes accept (the unpacker may have died
+//     leaving the dir behind).
+//
+// Skip arm: ExistingFile → Accept (library rescan flow).
+type NotUnpackingSpecification struct {
+	cfg   UnpackingConfig
+	disk  FileLastWriteProvider
+	clock func() time.Time
+	log   *slog.Logger
+
+	// isWindows is captured at construction so tests can pin both
+	// branches deterministically. Production wiring uses
+	// `runtime.GOOS == "windows"`.
+	isWindows bool
+}
+
+// NewNotUnpackingSpecification binds the deps + clock. Returns an
+// error on either nil dep. clock defaults to [time.Now]; isWindows
+// defaults to `runtime.GOOS == "windows"`.
+func NewNotUnpackingSpecification(cfg UnpackingConfig, disk FileLastWriteProvider, clock func() time.Time, log *slog.Logger) (*NotUnpackingSpecification, error) {
+	if cfg == nil {
+		return nil, errors.New("episodeimport: NewNotUnpackingSpecification: nil UnpackingConfig")
+	}
+	if disk == nil {
+		return nil, errors.New("episodeimport: NewNotUnpackingSpecification: nil FileLastWriteProvider")
+	}
+	if clock == nil {
+		clock = time.Now
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &NotUnpackingSpecification{
+		cfg:       cfg,
+		disk:      disk,
+		clock:     clock,
+		log:       log,
+		isWindows: runtime.GOOS == "windows",
+	}, nil
+}
+
+// SetWindowsForTest overrides the OS-detection result. Test-only —
+// production code never calls this. The flag drives the
+// FileGetLastWrite-vs-immediate-reject branch in [IsSatisfiedBy].
+func (s *NotUnpackingSpecification) SetWindowsForTest(v bool) { s.isWindows = v }
+
+// Name returns the C# class name verbatim.
+func (s *NotUnpackingSpecification) Name() string { return "NotUnpackingSpecification" }
+
+// IsSatisfiedBy mirrors `:21-63`.
+func (s *NotUnpackingSpecification) IsSatisfiedBy(le *LocalEpisode, _ *downloadclients.Item) *ImportSpecDecision {
+	if le == nil {
+		return AcceptImportSpec()
+	}
+	if le.ExistingFile {
+		s.log.Debug("episodeimport: existing file in series folder; skipping unpacking check",
+			"path", le.Path)
+		return AcceptImportSpec()
+	}
+	prefixes := strings.Split(s.cfg.DownloadClientWorkingFolders(), "|")
+	for _, prefix := range prefixes {
+		if strings.TrimSpace(prefix) == "" {
+			continue
+		}
+		// Walk the parent chain — `filepath.Dir` returns its arg
+		// when at the root (e.g. "/"), so we stop on a fixed-point.
+		parent := filepath.Dir(le.Path)
+		for {
+			base := filepath.Base(parent)
+			if strings.HasPrefix(base, prefix) {
+				if !s.isWindows {
+					s.log.Debug("episodeimport: file is still being unpacked",
+						"path", le.Path, "matchedDir", parent)
+					return RejectImportSpec(ImportRejectionUnpacking,
+						"File is still being unpacked")
+				}
+				mtime, err := s.disk.FileGetLastWrite(le.Path)
+				if err != nil {
+					// Stat failure on Windows path — propagate as
+					// reject too: the C# version implicitly does the
+					// same since FileGetLastWrite throws on missing
+					// file.
+					s.log.Debug("episodeimport: FileGetLastWrite failed during unpacking check; rejecting",
+						"path", le.Path, "err", err)
+					return RejectImportSpec(ImportRejectionUnpacking,
+						"File is still being unpacked")
+				}
+				if mtime.After(s.clock().UTC().Add(-5 * time.Minute)) {
+					s.log.Debug("episodeimport: file appears to be unpacking still",
+						"path", le.Path, "mtime", mtime)
+					return RejectImportSpec(ImportRejectionUnpacking,
+						"File is still being unpacked")
+				}
+				break
+			}
+			next := filepath.Dir(parent)
+			if next == parent {
+				break
+			}
+			parent = next
+		}
+	}
+	return AcceptImportSpec()
+}
+
+// UpgradeQualityProfileResolver is the slice of the
+// `series.Series.QualityProfile` lazy-load the C# spec dereferences
+// at `Specifications/UpgradeSpecification.cs:30`. The Go-port
+// `series.Series` carries `QualityProfileID`; this resolver hands
+// back the parsed [decisionengine.ProfileView] (Items + FormatItems
+// already parsed) keyed by series ID.
+type UpgradeQualityProfileResolver interface {
+	GetProfileViewBySeriesID(ctx context.Context, seriesID int) (*decisionengine.ProfileView, error)
+}
+
+// EpisodeFileResolver is the slice of `IEpisodeFileService.Get` the
+// C# spec dereferences via the `Episode.EpisodeFile.Value` lazy-load
+// at `:32`. Returns the persisted EpisodeFile by ID. nil result with
+// nil error means "row not found" — the spec treats that as the
+// `episodeFile == null` continue-arm at C# `:34-38`.
+type EpisodeFileResolver interface {
+	GetByID(ctx context.Context, id int) (*episodefiles.File, error)
+}
+
+// CustomFormatCalculator is the slice of
+// `ICustomFormatCalculationService.ParseCustomFormat(EpisodeFile, …)`
+// the spec calls at C# `:62`. Production wiring composes the
+// existing [internal/customformats] machinery against the
+// EpisodeFile — for now the spec accepts the dependency as a
+// callback so the wiring slice can swap in the real calculation
+// later.
+type CustomFormatCalculator interface {
+	ParseCustomFormat(ctx context.Context, file *episodefiles.File) ([]customformats.CustomFormat, error)
+}
+
+// UpgradeConfig is the slice of [config.Provider] the
+// [UpgradeSpecification] reaches for — the user's
+// proper/repack preference.
+type UpgradeConfig interface {
+	DownloadPropersAndRepacks() quality.ProperDownloadType
+}
+
+// UpgradeSpecification ports
+// `Specifications/UpgradeSpecification.cs:13-104`.
+//
+// Per-existing-EpisodeFile-on-disk veto pass:
+//
+//   - For each candidate episode with EpisodeFileID > 0 (i.e. there's
+//     already a file on disk for this episode):
+//   - Resolve the EpisodeFile. nil → continue (C# trace + skip).
+//   - Quality compare: candidate < existing → reject NotQualityUpgrade.
+//   - Same quality + propers ON + new revision < existing →
+//     reject NotRevisionUpgrade.
+//   - Same quality + new format score < existing format score:
+//   - If the pre-rename score WOULD have improved →
+//     reject NotCustomFormatUpgradeAfterRename.
+//   - Otherwise → reject NotCustomFormatUpgrade.
+//
+// All rejection messages mirror the C# format-string shape so log
+// lines match the C# tree.
+//
+// Slice 5 ships the spec wired against narrow interfaces; production
+// adapters land alongside the orchestrator slice (7) so the
+// ProfileView-per-batch caching layer can sit between this spec and
+// the [decisionengine.NewProfileView] call.
+type UpgradeSpecification struct {
+	cfg              UpgradeConfig
+	profileResolver  UpgradeQualityProfileResolver
+	fileResolver     EpisodeFileResolver
+	formatCalculator CustomFormatCalculator
+	log              *slog.Logger
+}
+
+// NewUpgradeSpecification binds the four deps + logger. Returns an
+// error on any nil dep — every dep is essential to the spec's
+// reasoning.
+func NewUpgradeSpecification(
+	cfg UpgradeConfig,
+	profileResolver UpgradeQualityProfileResolver,
+	fileResolver EpisodeFileResolver,
+	formatCalculator CustomFormatCalculator,
+	log *slog.Logger,
+) (*UpgradeSpecification, error) {
+	if cfg == nil {
+		return nil, errors.New("episodeimport: NewUpgradeSpecification: nil UpgradeConfig")
+	}
+	if profileResolver == nil {
+		return nil, errors.New("episodeimport: NewUpgradeSpecification: nil UpgradeQualityProfileResolver")
+	}
+	if fileResolver == nil {
+		return nil, errors.New("episodeimport: NewUpgradeSpecification: nil EpisodeFileResolver")
+	}
+	if formatCalculator == nil {
+		return nil, errors.New("episodeimport: NewUpgradeSpecification: nil CustomFormatCalculator")
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &UpgradeSpecification{
+		cfg:              cfg,
+		profileResolver:  profileResolver,
+		fileResolver:     fileResolver,
+		formatCalculator: formatCalculator,
+		log:              log,
+	}, nil
+}
+
+// Name returns the C# class name verbatim.
+func (s *UpgradeSpecification) Name() string { return "UpgradeSpecification" }
+
+// IsSatisfiedBy mirrors `:23-102`. Lookup errors translate to Accept
+// + a Warn log so a transient DB outage doesn't bounce every
+// candidate file in a batch (defensive posture matching the
+// SameEpisodes / EpisodeTitle specs).
+func (s *UpgradeSpecification) IsSatisfiedBy(le *LocalEpisode, _ *downloadclients.Item) *ImportSpecDecision {
+	if le == nil || le.Series == nil {
+		return AcceptImportSpec()
+	}
+	view, err := s.profileResolver.GetProfileViewBySeriesID(context.Background(), le.Series.ID)
+	if err != nil || view == nil {
+		s.log.Warn("episodeimport: UpgradeSpec profile lookup failed; accepting defensively",
+			"path", le.Path, "seriesId", le.Series.ID, "err", err)
+		return AcceptImportSpec()
+	}
+	downloadPropers := s.cfg.DownloadPropersAndRepacks()
+
+	for _, e := range le.Episodes {
+		if e.EpisodeFileID == nil || *e.EpisodeFileID == 0 {
+			continue
+		}
+		file, err := s.fileResolver.GetByID(context.Background(), *e.EpisodeFileID)
+		if err != nil {
+			s.log.Warn("episodeimport: UpgradeSpec EpisodeFile lookup failed; accepting defensively",
+				"path", le.Path, "episodeFileId", *e.EpisodeFileID, "err", err)
+			return AcceptImportSpec()
+		}
+		if file == nil {
+			s.log.Debug("episodeimport: UpgradeSpec — episodeFile row not found; continuing",
+				"episodeId", e.ID, "episodeFileId", *e.EpisodeFileID)
+			continue
+		}
+
+		fileQuality, err := decodeEpisodeFileQuality(file)
+		if err != nil {
+			s.log.Warn("episodeimport: UpgradeSpec EpisodeFile.Quality decode failed; accepting defensively",
+				"path", le.Path, "episodeFileId", file.ID, "err", err)
+			return AcceptImportSpec()
+		}
+
+		qualityCompare := decisionengine.CompareQualityModels(view.Items, le.Quality, fileQuality, false)
+		// CompareQualityModels also factors in revisions; we need
+		// the pure-quality compare for the C# `qualityCompare<0`
+		// arm, then a separate revision compare for the
+		// propers-and-repacks arm. Re-derive both from the
+		// constituents.
+		qualityOnlyCompare := decisionengine.CompareQualityModels(
+			view.Items,
+			quality.Model{Quality: le.Quality.Quality},
+			quality.Model{Quality: fileQuality.Quality},
+			false,
+		)
+		_ = qualityCompare // CompareQualityModels with revisions left for future use; unused below.
+
+		if qualityOnlyCompare < 0 {
+			s.log.Debug("episodeimport: file isn't a quality upgrade for all episodes",
+				"path", le.Path, "existing", fileQuality.Quality, "new", le.Quality.Quality)
+			return RejectImportSpec(ImportRejectionNotQualityUpgrade,
+				"Not an upgrade for existing episode file(s). Existing quality: %s. New Quality %s.",
+				fileQuality.Quality, le.Quality.Quality)
+		}
+
+		if qualityOnlyCompare == 0 &&
+			downloadPropers != quality.ProperDoNotPrefer &&
+			le.Quality.Revision.Compare(fileQuality.Revision) < 0 {
+			s.log.Debug("episodeimport: file isn't a quality revision upgrade",
+				"path", le.Path, "existing", fileQuality.Revision, "new", le.Quality.Revision)
+			return RejectImportSpec(ImportRejectionNotRevisionUpgrade,
+				"Not a quality revision upgrade for existing episode file(s)")
+		}
+
+		currentFormats, err := s.formatCalculator.ParseCustomFormat(context.Background(), file)
+		if err != nil {
+			s.log.Warn("episodeimport: UpgradeSpec ParseCustomFormat failed; accepting defensively",
+				"path", le.Path, "err", err)
+			return AcceptImportSpec()
+		}
+		currentFormatScore := scoreCustomFormatsForUpgrade(view, currentFormats)
+		newFormatScore := le.CustomFormatScore
+		newBeforeRenameScore := le.OriginalFileNameCustomFormatScore
+
+		if qualityOnlyCompare == 0 && newFormatScore < currentFormatScore {
+			s.log.Debug("episodeimport: new item's custom formats do not improve",
+				"path", le.Path, "newScore", newFormatScore, "currentScore", currentFormatScore)
+			if newBeforeRenameScore > currentFormatScore {
+				return RejectImportSpec(ImportRejectionNotCustomFormatUpgradeAfterRename,
+					"Not a Custom Format upgrade for existing episode file(s). AfterRename: [%s] (%d) do not improve on Existing: [%s] (%d) even though BeforeRename: [%s] (%d) did.",
+					formatNames(le.CustomFormats), newFormatScore,
+					formatNames(currentFormats), currentFormatScore,
+					formatNames(le.OriginalFileNameCustomFormats), newBeforeRenameScore)
+			}
+			return RejectImportSpec(ImportRejectionNotCustomFormatUpgrade,
+				"Not a Custom Format upgrade for existing episode file(s). New: [%s] (%d) do not improve on Existing: [%s] (%d)",
+				formatNames(le.CustomFormats), newFormatScore,
+				formatNames(currentFormats), currentFormatScore)
+		}
+	}
+	return AcceptImportSpec()
+}
+
+// formatNames renders a custom-format list as
+// `Name1, Name2` for inclusion in rejection messages. Mirrors the
+// C# `IEnumerable<CustomFormat>.ConcatToString()` helper at
+// `NzbDrone.Common/Extensions/IEnumerableExtensions.cs` (which
+// defaults to `", "` separator). Empty slice → empty string.
+func formatNames(formats []customformats.CustomFormat) string {
+	if len(formats) == 0 {
+		return ""
+	}
+	parts := make([]string, len(formats))
+	for i, f := range formats {
+		parts[i] = f.Name
+	}
+	return strings.Join(parts, ", ")
+}
+
+// decodeEpisodeFileQuality unmarshals the embedded JSON Quality
+// column on an EpisodeFile row into a typed [quality.Model]. Empty /
+// `"{}"` Quality strings are valid input and decode to a zero
+// Model — the upgrade comparator handles zero-quality as
+// "lower than anything" via the registry's Unknown lookup.
+func decodeEpisodeFileQuality(file *episodefiles.File) (quality.Model, error) {
+	if file == nil || strings.TrimSpace(file.Quality) == "" || file.Quality == "{}" {
+		return quality.Model{}, nil
+	}
+	var m quality.Model
+	if err := json.Unmarshal([]byte(file.Quality), &m); err != nil {
+		return quality.Model{}, fmt.Errorf("episodeimport: decode EpisodeFile.Quality: %w", err)
+	}
+	return m, nil
+}
+
+// scoreCustomFormatsForUpgrade computes the cached profile-score for a
+// list of CustomFormats. Mirrors the C#
+// `qualityProfile.CalculateCustomFormatScore(formats)` pattern via
+// the existing Go-port [qualityprofiles.CalculateCustomFormatScore]
+// helper (which expects a `present-id → bool` set).
+func scoreCustomFormatsForUpgrade(view *decisionengine.ProfileView, formats []customformats.CustomFormat) int {
+	if view == nil {
+		return 0
+	}
+	if len(formats) == 0 {
+		return qualityprofiles.CalculateCustomFormatScore(view.FormatItems, nil)
+	}
+	present := make(map[int]bool, len(formats))
+	for _, f := range formats {
+		present[f.ID] = true
+	}
+	return qualityprofiles.CalculateCustomFormatScore(view.FormatItems, present)
+}
+
 // Compile-time interface satisfaction guards. A signature drift on
 // Specification surfaces here at the package boundary rather than at
 // the orchestrator's per-spec dispatch site.
@@ -669,4 +1237,8 @@ var (
 	_ Specification = (*NotSampleSpecification)(nil)
 	_ Specification = (*AbsoluteEpisodeNumberSpecification)(nil)
 	_ Specification = (*EpisodeTitleSpecification)(nil)
+	_ Specification = (*FreeSpaceSpecification)(nil)
+	_ Specification = (*MatchesGrabSpecification)(nil)
+	_ Specification = (*NotUnpackingSpecification)(nil)
+	_ Specification = (*UpgradeSpecification)(nil)
 )

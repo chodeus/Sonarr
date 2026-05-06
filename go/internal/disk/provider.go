@@ -33,6 +33,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Provider is the concrete filesystem implementation.
@@ -231,4 +232,38 @@ func (p *Provider) GetFileSize(path string) (int64, error) {
 		return 0, fmt.Errorf("disk: GetFileSize(%q): is a directory", path)
 	}
 	return st.Size(), nil
+}
+
+// FileGetLastWrite returns the file's last-modified time. Mirrors C#
+// `IDiskProvider.FileGetLastWrite(string)` at
+// `Common/Disk/IDiskProvider.cs` — used by
+// [internal/episodeimport.NotUnpackingSpecification] to detect files
+// that are still being unpacked (recent mtime → likely in flight).
+//
+// Returns the wrapped os.Stat error so callers can classify
+// (`errors.Is(err, fs.ErrNotExist)` etc).
+func (p *Provider) FileGetLastWrite(path string) (time.Time, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("disk: FileGetLastWrite(%q): %w", path, err)
+	}
+	return st.ModTime(), nil
+}
+
+// GetAvailableSpace returns the free space on the filesystem hosting
+// `path`, in bytes. Mirrors C# `IDiskProvider.GetAvailableSpace(string)`
+// at `Common/Disk/IDiskProvider.cs`.
+//
+// The C# return is `long?` — null on a path-not-found / permission
+// error. The Go port returns `(int64, error)` so the rootfolders
+// caller (and import-side FreeSpaceSpecification) can `if err == nil`
+// and treat any error as "couldn't determine, accept defensively"
+// (matching C# `!freeSpace.HasValue`).
+//
+// Implementation lives in build-tag-split files
+// (`provider_unix.go` / `provider_windows.go`) so the native syscall
+// path is selected at compile time. The dispatcher here delegates to
+// `availableSpace`.
+func (p *Provider) GetAvailableSpace(path string) (int64, error) {
+	return availableSpace(path)
 }

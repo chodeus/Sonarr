@@ -26,11 +26,12 @@
 //     Pinning the helper here would freeze details that don't
 //     actually settle until the writer ports.
 //
-//   - GrabbedReleaseInfo type — the C# class derives from history
-//     rows. Lives in the history subsystem; ports alongside that.
-//     Slice 1 uses `any` for [LocalEpisode.Release] so call sites
-//     compile and downstream slices can substitute the real type
-//     without churning every spec.
+//   - GrabbedReleaseInfo derivation — the C# class is constructed
+//     from `List<EpisodeHistory>`. Slice 5 lands the value-type field
+//     shape (Title / EpisodeIDs / Size / Indexer / IndexerFlags /
+//     ReleaseType) so [MatchesGrabSpecification] compiles against a
+//     real type; the history-driven derivation ports alongside the
+//     history subsystem (writer slice 8 wires the construction).
 //
 // Note on per-release vs per-import rejections: the existing
 // `internal/decisionengine` package ports the per-release scoring
@@ -254,6 +255,51 @@ func (m ImportMode) String() string {
 	default:
 		return fmt.Sprintf("ImportMode(%d)", int(m))
 	}
+}
+
+// GrabbedReleaseInfo is the resolved grabbed-release shape attached
+// to [LocalEpisode.Release] for download-client-driven imports.
+// Mirrors `src/NzbDrone.Core/Parser/Model/GrabbedReleaseInfo.cs:8-37`.
+//
+// In the C# tree the constructor walks a `List<EpisodeHistory>` to
+// derive every field. The Go port carries a plain value type — the
+// derivation lives in the history subsystem (slices that haven't
+// ported yet) and the writer slice (8) wires the construction.
+//
+// Slice 5 (this slice) ships only the field shape:
+// [MatchesGrabSpecification] is the sole consumer at this point and
+// reaches for `Title` + `EpisodeIDs` only. The remaining fields
+// (`Indexer`, `Size`, `IndexerFlags`, `ReleaseType`) are stubbed for
+// the writer slice's typed access — they're zero-valued until
+// history ports.
+type GrabbedReleaseInfo struct {
+	// Title is the on-wire release title from the originating grab.
+	// Used by [MatchesGrabSpecification] in the rejection message.
+	Title string
+
+	// Indexer is the indexer name the grab came from. Filled by the
+	// history-driven constructor (deferred); zero-string until then.
+	Indexer string
+
+	// Size is the byte count reported by the indexer. Filled by the
+	// history-driven constructor; 0 until then.
+	Size int64
+
+	// IndexerFlags is the per-release flag set carried over from the
+	// originating grab. Filled by the history-driven constructor;
+	// zero-value until then.
+	IndexerFlags parser.IndexerFlags
+
+	// ReleaseType is the parsed release type from the originating
+	// grab. Filled by the history-driven constructor; zero-value
+	// until then.
+	ReleaseType parser.ReleaseType
+
+	// EpisodeIDs is the distinct list of episode IDs the grab
+	// covered. [MatchesGrabSpecification] checks each candidate
+	// episode is in this list. Empty until the writer-slice wiring
+	// lands; the spec treats empty as "no constraint, accept".
+	EpisodeIDs []int
 }
 
 // EpisodeTitleRequiredType mirrors the C# enum at
@@ -684,13 +730,13 @@ type LocalEpisode struct {
 	// OriginalFileNameCustomFormats.
 	OriginalFileNameCustomFormatScore int
 
-	// Release is the resolved grabbed-release info from history
-	// (GrabbedReleaseInfo in C#). nil when the import isn't
-	// download-client-driven. The Go port defers the full type
-	// port to the history subsystem; this slice carries `any` so
-	// call sites compile and downstream slices can substitute the
-	// real type without churning every spec.
-	Release any
+	// Release is the resolved grabbed-release info from history.
+	// nil when the import isn't download-client-driven (manual
+	// import, library rescan). Slice 5 ships the [GrabbedReleaseInfo]
+	// field shape so [MatchesGrabSpecification] compiles against a
+	// real type; the value-derivation lives in the history subsystem
+	// + writer slice (8) which haven't ported yet.
+	Release *GrabbedReleaseInfo
 
 	// ScriptImported is true when an external import script
 	// claimed responsibility for this file (the script-import

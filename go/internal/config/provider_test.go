@@ -11,6 +11,7 @@ import (
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/quality"
 )
 
 // providerFixture builds a config.Provider over a fresh DB + bus,
@@ -73,6 +74,57 @@ func TestProvider_EpisodeTitleRequired_RoundTrip(t *testing.T) {
 		if got := prov.EpisodeTitleRequired(); got != v {
 			t.Errorf("after Set(%q) = %q", v, got)
 		}
+	}
+}
+
+func TestProvider_ImportSpecGetters_Defaults(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	prov, _, _ := providerFixture(t, db)
+
+	if got := prov.DownloadPropersAndRepacks(); got != quality.ProperPreferAndUpgrade {
+		t.Errorf("DownloadPropersAndRepacks default = %v, want PreferAndUpgrade", got)
+	}
+	if got := prov.MinimumFreeSpaceWhenImporting(); got != 100 {
+		t.Errorf("MinimumFreeSpaceWhenImporting default = %d, want 100", got)
+	}
+	if got := prov.SkipFreeSpaceCheckWhenImporting(); got != false {
+		t.Errorf("SkipFreeSpaceCheckWhenImporting default = %v, want false", got)
+	}
+	if got := prov.DownloadClientWorkingFolders(); got != "_UNPACK_|_FAILED_" {
+		t.Errorf("DownloadClientWorkingFolders default = %q", got)
+	}
+}
+
+func TestProvider_ImportSpecGetters_RoundTrip(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	prov, _, _ := providerFixture(t, db)
+
+	ctx := t.Context()
+	if err := prov.SetDownloadPropersAndRepacks(ctx, quality.ProperDoNotPrefer); err != nil {
+		t.Fatalf("SetDownloadPropersAndRepacks: %v", err)
+	}
+	if got := prov.DownloadPropersAndRepacks(); got != quality.ProperDoNotPrefer {
+		t.Errorf("DownloadPropersAndRepacks = %v, want DoNotPrefer", got)
+	}
+	if err := prov.SetMinimumFreeSpaceWhenImporting(ctx, 250); err != nil {
+		t.Fatalf("SetMinimumFreeSpaceWhenImporting: %v", err)
+	}
+	if got := prov.MinimumFreeSpaceWhenImporting(); got != 250 {
+		t.Errorf("MinimumFreeSpaceWhenImporting = %d, want 250", got)
+	}
+	if err := prov.SetSkipFreeSpaceCheckWhenImporting(ctx, true); err != nil {
+		t.Fatalf("SetSkipFreeSpaceCheckWhenImporting: %v", err)
+	}
+	if got := prov.SkipFreeSpaceCheckWhenImporting(); !got {
+		t.Errorf("SkipFreeSpaceCheckWhenImporting = false, want true")
+	}
+	if err := prov.SetDownloadClientWorkingFolders(ctx, "_INCOMING_|_INPROGRESS_"); err != nil {
+		t.Fatalf("SetDownloadClientWorkingFolders: %v", err)
+	}
+	if got := prov.DownloadClientWorkingFolders(); got != "_INCOMING_|_INPROGRESS_" {
+		t.Errorf("DownloadClientWorkingFolders = %q", got)
 	}
 }
 

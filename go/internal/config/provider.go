@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/quality"
 )
 
 // ConfigSavedEvent is published by Provider's typed setters when a
@@ -139,6 +140,12 @@ func (p *Provider) getString(key, def string) string {
 // and "0"/"false"/"no" as false (case-insensitive, whitespace-trimmed)
 // — matches the configfile.Provider.Bool surface and the historic
 // hand-edited config files that use "yes" / "no".
+//
+// def keeps a parameter shape for future getters whose C# default is
+// `true`. Today every public getter passes false; that's coincidence,
+// not invariant — so the parameter stays.
+//
+//nolint:unparam // def is a forward-looking parameter; see godoc.
 func (p *Provider) getBool(key string, def bool) bool {
 	s := p.getString(key, "")
 	if s == "" {
@@ -279,5 +286,81 @@ func (p *Provider) EpisodeTitleRequired() string {
 // validate (matches C# `SetValue` posture).
 func (p *Provider) SetEpisodeTitleRequired(ctx context.Context, v string) error {
 	_, err := p.setString(ctx, "EpisodeTitleRequired", v)
+	return err
+}
+
+// getInt parses the cached value as int, falling back to def for
+// missing/empty/unparseable entries.
+func (p *Provider) getInt(key string, def int) int {
+	s := p.getString(key, "")
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func (p *Provider) setInt(ctx context.Context, key string, v int) (bool, error) {
+	return p.setString(ctx, key, strconv.Itoa(v))
+}
+
+// DownloadPropersAndRepacks mirrors `ConfigService.cs:130-136`. Returns
+// the parsed user preference; default is [quality.ProperPreferAndUpgrade]
+// per C# `:134`. Recognises both the C# enum-identifier form
+// (`"PreferAndUpgrade"`) and the Go kebab-case form
+// (`"prefer-and-upgrade"`) — see [quality.ParseProperDownloadType].
+func (p *Provider) DownloadPropersAndRepacks() quality.ProperDownloadType {
+	return quality.ParseProperDownloadType(p.getString("DownloadPropersAndRepacks", "PreferAndUpgrade"))
+}
+
+// SetDownloadPropersAndRepacks writes the new value, publishing
+// ConfigSavedEvent on change.
+func (p *Provider) SetDownloadPropersAndRepacks(ctx context.Context, v quality.ProperDownloadType) error {
+	_, err := p.setString(ctx, "DownloadPropersAndRepacks", v.String())
+	return err
+}
+
+// MinimumFreeSpaceWhenImporting mirrors `ConfigService.cs:202-207`. The
+// stored unit is megabytes; default 100 per C# `:204`.
+func (p *Provider) MinimumFreeSpaceWhenImporting() int {
+	return p.getInt("MinimumFreeSpaceWhenImporting", 100)
+}
+
+// SetMinimumFreeSpaceWhenImporting writes the new value, publishing
+// ConfigSavedEvent on change.
+func (p *Provider) SetMinimumFreeSpaceWhenImporting(ctx context.Context, v int) error {
+	_, err := p.setInt(ctx, "MinimumFreeSpaceWhenImporting", v)
+	return err
+}
+
+// SkipFreeSpaceCheckWhenImporting mirrors `ConfigService.cs:195-200`.
+// Default false at `:197`.
+func (p *Provider) SkipFreeSpaceCheckWhenImporting() bool {
+	return p.getBool("SkipFreeSpaceCheckWhenImporting", false)
+}
+
+// SetSkipFreeSpaceCheckWhenImporting writes the new value, publishing
+// ConfigSavedEvent on change.
+func (p *Provider) SetSkipFreeSpaceCheckWhenImporting(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "SkipFreeSpaceCheckWhenImporting", v)
+	return err
+}
+
+// DownloadClientWorkingFolders mirrors `ConfigService.cs:181-186`. The
+// stored value is a `|`-separated list of unpack-prefixes; default
+// `"_UNPACK_|_FAILED_"` per C# `:183`. Callers split on `|` themselves
+// (see `Specifications/NotUnpackingSpecification.cs:34`); the Go
+// [internal/episodeimport.NotUnpackingSpecification] does the same.
+func (p *Provider) DownloadClientWorkingFolders() string {
+	return p.getString("DownloadClientWorkingFolders", "_UNPACK_|_FAILED_")
+}
+
+// SetDownloadClientWorkingFolders writes the new value, publishing
+// ConfigSavedEvent on change.
+func (p *Provider) SetDownloadClientWorkingFolders(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "DownloadClientWorkingFolders", v)
 	return err
 }
