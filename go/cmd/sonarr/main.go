@@ -47,10 +47,13 @@ import (
 	"sonarr.tv/sonarr/internal/configfile"
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/datastore"
+	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/instrumentation"
 	"sonarr.tv/sonarr/internal/lifecycle"
+	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
@@ -310,6 +313,54 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 	healthSvc.Subscribe(bus)
 
+	// mediafiles.Service wiring (Phase 3.52). The Service is
+	// constructed with concrete impls for series / episodefiles /
+	// episodefiles cleanup; the not-yet-ported subsystems (Config
+	// table, IDiskProvider, RootFolderService, EpisodeImport,
+	// MediaInfo updater) ride on stub impls in mediafiles_stubs.go
+	// so the dispatcher surface compiles end-to-end. Each stub is
+	// drop-in replaceable as its real port lands.
+	seriesSvc, err := series.NewService(seriesRepo, bus)
+	if err != nil {
+		return fmt.Errorf("series service: %w", err)
+	}
+	episodesRepo, err := episodes.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("episodes repo: %w", err)
+	}
+	episodesSvc, err := episodes.NewService(episodesRepo, bus)
+	if err != nil {
+		return fmt.Errorf("episodes service: %w", err)
+	}
+	episodeFilesRepo, err := episodefiles.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("episodefiles repo: %w", err)
+	}
+	episodeFilesSvc, err := episodefiles.NewService(episodeFilesRepo, bus)
+	if err != nil {
+		return fmt.Errorf("episodefiles service: %w", err)
+	}
+	mediaFileCleanupSvc, err := episodefiles.NewCleanupService(episodeFilesSvc, episodesSvc, logger)
+	if err != nil {
+		return fmt.Errorf("episodefiles cleanup service: %w", err)
+	}
+	mediafilesSvc, err := mediafiles.NewService(
+		stubDiskProvider{},
+		stubMediaFilesConfig{},
+		stubRootFolderResolver{},
+		seriesSvc,
+		episodeFilesSvc,
+		mediaFileCleanupSvc,
+		stubImportDecisionMaker{},
+		stubImportApprovedEpisodes{},
+		stubUpdateMediaInfo{},
+		bus,
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("mediafiles service: %w", err)
+	}
+
 	registry := commands.NewRegistry()
 	queue := commands.NewQueue(registry.Properties)
 	cmdSvc.SetQueue(queue)
@@ -317,6 +368,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		Commands:     cmdSvc,
 		Housekeeping: houseSvc,
 		HealthCheck:  healthSvc,
+		RescanSeries: mediafilesSvc,
 		Log:          logger,
 	}); err != nil {
 		return fmt.Errorf("commands handlers: %w", err)

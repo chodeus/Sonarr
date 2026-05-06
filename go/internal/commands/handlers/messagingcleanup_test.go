@@ -13,6 +13,7 @@ import (
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/housekeeping"
+	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/messaging"
 )
 
@@ -42,15 +43,27 @@ func emptyHealthSvc(t *testing.T) *healthcheck.Service {
 	return svc
 }
 
-// allDeps builds a Deps wired against the supplied commands.Service
-// and empty housekeeping + healthcheck services.
+// allDeps builds a Deps wired against the supplied commands.Service,
+// empty housekeeping + healthcheck services, and a no-op RescanSeries
+// scanner (every test that needs real rescan behaviour overrides
+// the field directly).
 func allDeps(t *testing.T, svc *commands.Service) handlers.Deps {
 	t.Helper()
 	return handlers.Deps{
 		Commands:     svc,
 		Housekeeping: emptyHouseSvc(t),
 		HealthCheck:  emptyHealthSvc(t),
+		RescanSeries: noopRescanScanner{},
 	}
+}
+
+// noopRescanScanner satisfies handlers.RescanSeriesScanner with a
+// no-op Execute. Sufficient for RegisterAll-only tests that don't
+// dispatch RescanSeries.
+type noopRescanScanner struct{}
+
+func (noopRescanScanner) Execute(_ context.Context, _ mediafiles.RescanSeriesCommand) error {
+	return nil
 }
 
 // cleanupHarness wires a real Service + Repo over a fresh test DB so

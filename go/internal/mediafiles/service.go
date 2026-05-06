@@ -249,6 +249,44 @@ func (s *Service) Scan(ctx context.Context, ser *series.Series) error {
 	return s.completedScanning(ctx, ser, possibleExtraFiles)
 }
 
+// Execute ports `DiskScanService.Execute(RescanSeriesCommand)` at
+// `:301-317`. Two-branch dispatch: a populated SeriesID scopes the
+// rescan to a single series; nil iterates every series via
+// [SeriesGetter.GetAllSeries] and calls [Service.Scan] per row.
+//
+// Per-series Scan errors propagate immediately — same posture as the
+// C# foreach which doesn't catch. The IExecute<T> handler in
+// `internal/commands/handlers/rescanseries.go` calls this method
+// directly; the body parsing for the wire JSON shape lives there.
+//
+// `series N not found` is the Go-port substitute for the C# behaviour
+// at `:305` where `_seriesService.GetSeries` throws `ModelNotFoundException`
+// — the Go SeriesGetter returns a wrapped `series.ErrNotFound` instead;
+// either way the command surfaces an error rather than silently
+// skipping.
+func (s *Service) Execute(ctx context.Context, cmd RescanSeriesCommand) error {
+	if cmd.SeriesID != nil {
+		ser, err := s.seriesGet.GetSeries(ctx, *cmd.SeriesID)
+		if err != nil {
+			return fmt.Errorf("mediafiles: Execute: GetSeries(%d): %w", *cmd.SeriesID, err)
+		}
+		if ser == nil {
+			return fmt.Errorf("mediafiles: Execute: series %d not found", *cmd.SeriesID)
+		}
+		return s.Scan(ctx, ser)
+	}
+	all, err := s.seriesGet.GetAllSeries(ctx)
+	if err != nil {
+		return fmt.Errorf("mediafiles: Execute: GetAllSeries: %w", err)
+	}
+	for i := range all {
+		if err := s.Scan(ctx, &all[i]); err != nil {
+			return fmt.Errorf("mediafiles: Execute: Scan(seriesId=%d): %w", all[i].ID, err)
+		}
+	}
+	return nil
+}
+
 // reconcileSizes ports the size-update loop at `:147-172`. For each
 // persisted file: re-stat, skip if size unchanged; otherwise ask
 // UpdateMediaInfo to refresh the row, queueing for a bare size-only

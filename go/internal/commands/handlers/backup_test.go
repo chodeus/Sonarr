@@ -47,6 +47,7 @@ func TestBackup_RegisteredInRegistry(t *testing.T) {
 		Commands:     cmdSvc,
 		Housekeeping: emptyHouseSvc(t),
 		HealthCheck:  emptyHealthSvc(t),
+		RescanSeries: noopRescanScanner{},
 		Log:          slog.Default(),
 	}
 	if err := handlers.RegisterAll(registry, deps); err != nil {

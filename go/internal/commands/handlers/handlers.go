@@ -49,7 +49,19 @@ type Deps struct {
 	Commands     *commands.Service
 	Housekeeping *housekeeping.Service
 	HealthCheck  *healthcheck.Service
-	Log          *slog.Logger
+
+	// RescanSeries wires the IExecute<RescanSeriesCommand> handler
+	// into the dispatcher. Defined as the narrow [RescanSeriesScanner]
+	// interface so the test suite can pass a stub without constructing
+	// a fully-wired *mediafiles.Service. Production binds to the
+	// concrete Service at boot via Go's structural typing.
+	//
+	// Nil is rejected by RegisterAll — there's no sensible stub
+	// fallback for "rescan disk" the way there is for some other
+	// handlers (a stub would silently no-op every API rescan).
+	RescanSeries RescanSeriesScanner
+
+	Log *slog.Logger
 }
 
 // RegisterAll wires every shipped handler into `registry`. The host
@@ -77,7 +89,14 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	if deps.HealthCheck == nil {
 		return errors.New("handlers: RegisterAll: nil Deps.HealthCheck")
 	}
+	if deps.RescanSeries == nil {
+		return errors.New("handlers: RegisterAll: nil Deps.RescanSeries")
+	}
 	checkHealth, err := NewCheckHealth(deps.HealthCheck)
+	if err != nil {
+		return err
+	}
+	rescanSeries, err := NewRescanSeries(deps.RescanSeries, deps.Log)
 	if err != nil {
 		return err
 	}
@@ -101,6 +120,9 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	})
 	registry.Register(CleanUpRecycleBinName, commands.CommandSpec{
 		Handler: NewCleanUpRecycleBin(deps.Log),
+	})
+	registry.Register(RescanSeriesName, commands.CommandSpec{
+		Handler: rescanSeries,
 	})
 	return nil
 }

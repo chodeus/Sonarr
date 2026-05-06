@@ -979,3 +979,132 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// TestExecute_PopulatedSeriesID pins the single-series branch — looks
+// up via GetSeries and runs Scan once.
+func TestExecute_PopulatedSeriesID(t *testing.T) {
+	s := newStubs()
+	bus, capb := newCaptureBus(t)
+	svc := s.build(t, bus)
+	ser := &series.Series{ID: 42, Title: "Found", Path: "/data/Found"}
+	s.seriesGet.getByID[42] = ser
+	s.rootFolders.bestPath = "/data"
+	s.disk.folderExistsByPath["/data/Found"] = true
+
+	id := 42
+	if err := svc.Execute(context.Background(), RescanSeriesCommand{SeriesID: &id}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(s.seriesGet.getCalls) != 1 || s.seriesGet.getCalls[0] != 42 {
+		t.Fatalf("expected GetSeries(42); got %v", s.seriesGet.getCalls)
+	}
+	if s.seriesGet.allCalls != 0 {
+		t.Fatalf("expected no GetAllSeries; got %d", s.seriesGet.allCalls)
+	}
+	if len(capb.scanned) != 1 {
+		t.Fatalf("expected 1 scanned event; got %+v", capb.scanned)
+	}
+}
+
+// TestExecute_NilSeriesID pins the all-series branch — iterates
+// GetAllSeries and calls Scan per row in input order.
+func TestExecute_NilSeriesID(t *testing.T) {
+	s := newStubs()
+	bus, capb := newCaptureBus(t)
+	svc := s.build(t, bus)
+	s.seriesGet.all = []series.Series{
+		{ID: 1, Title: "A", Path: "/data/A"},
+		{ID: 2, Title: "B", Path: "/data/B"},
+		{ID: 3, Title: "C", Path: "/data/C"},
+	}
+	s.rootFolders.bestPath = "/data"
+	s.disk.folderExistsByPath["/data/A"] = true
+	s.disk.folderExistsByPath["/data/B"] = true
+	s.disk.folderExistsByPath["/data/C"] = true
+
+	if err := svc.Execute(context.Background(), RescanSeriesCommand{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if s.seriesGet.allCalls != 1 {
+		t.Fatalf("expected 1 GetAllSeries; got %d", s.seriesGet.allCalls)
+	}
+	if len(s.seriesGet.getCalls) != 0 {
+		t.Fatalf("expected no GetSeries; got %v", s.seriesGet.getCalls)
+	}
+	if len(capb.scanned) != 3 {
+		t.Fatalf("expected 3 scanned events; got %d", len(capb.scanned))
+	}
+	for i, want := range []int{1, 2, 3} {
+		if capb.scanned[i].Series.ID != want {
+			t.Fatalf("scanned[%d].ID: got %d want %d", i, capb.scanned[i].Series.ID, want)
+		}
+	}
+}
+
+// TestExecute_NotFoundReturnsError pins the not-found path: GetSeries
+// returns nil → Execute returns a wrapped error rather than silently
+// no-op'ing. The C# tree throws ModelNotFoundException; Go surfaces
+// the equivalent at this boundary.
+func TestExecute_NotFoundReturnsError(t *testing.T) {
+	s := newStubs()
+	svc := s.build(t, nil)
+	id := 999
+	err := svc.Execute(context.Background(), RescanSeriesCommand{SeriesID: &id})
+	if err == nil {
+		t.Fatal("expected error for missing series")
+	}
+	if !contains(err.Error(), "999") {
+		t.Fatalf("err must mention id 999; got %q", err.Error())
+	}
+}
+
+// TestExecute_GetSeriesError pins error propagation from the lookup.
+func TestExecute_GetSeriesError(t *testing.T) {
+	s := newStubs()
+	svc := s.build(t, nil)
+	wantErr := errors.New("repo offline")
+	s.seriesGet.getErr = wantErr
+	id := 1
+	err := svc.Execute(context.Background(), RescanSeriesCommand{SeriesID: &id})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected wrapped %v; got %v", wantErr, err)
+	}
+}
+
+// TestExecute_GetAllSeriesError pins error propagation from the
+// nil-SeriesID iteration branch.
+func TestExecute_GetAllSeriesError(t *testing.T) {
+	s := newStubs()
+	svc := s.build(t, nil)
+	wantErr := errors.New("repo offline")
+	s.seriesGet.allErr = wantErr
+	err := svc.Execute(context.Background(), RescanSeriesCommand{})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected wrapped %v; got %v", wantErr, err)
+	}
+}
+
+// TestExecute_PerSeriesScanErrorStopsBatch pins the C# foreach posture:
+// a Scan error on series K aborts the iteration; subsequent series
+// are not scanned.
+func TestExecute_PerSeriesScanErrorStopsBatch(t *testing.T) {
+	s := newStubs()
+	svc := s.build(t, nil)
+	s.seriesGet.all = []series.Series{
+		{ID: 1, Path: "/data/A"},
+		{ID: 2, Path: "/data/B"},
+		{ID: 3, Path: "/data/C"},
+	}
+	wantErr := errors.New("root resolve boom")
+	// The first Scan succeeds (rootFolders.GetBestRootFolderPath returns ""+nil),
+	// but we'll wire the rootFolders error to fire on the second call.
+	s.rootFolders.err = wantErr // every call fails
+
+	err := svc.Execute(context.Background(), RescanSeriesCommand{})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected first-Scan error; got %v", err)
+	}
+	if !contains(err.Error(), "seriesId=1") {
+		t.Fatalf("error should name the failing series; got %q", err.Error())
+	}
+}
