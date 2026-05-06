@@ -20,8 +20,12 @@
 //   - The C# `PrimaryAudioStream` is a getter-only computed property
 //     that STJ skips on serialise. The Go port mirrors this with a
 //     method (not a field) so the zero value isn't emitted.
-//   - `Title` is `[JsonIgnore]` in C# and never persisted; the Go
-//     port omits it from the struct entirely.
+//   - `Title` is `[JsonIgnore]` in C# and never persisted. The Go
+//     port carries the field with `json:"-"` so live MediaInfo
+//     extraction (see [internal/episodeimport.AugmentQualityFromMediaInfo]
+//     which reads it to recover a release-tag source from the
+//     MediaInfo title string) has access to it without bloating the
+//     persisted EpisodeFile.MediaInfo column.
 //   - `AudioStreams` and `SubtitleStreams` were added in migration 225
 //     (`225_mediainfo_multiple_streams.cs`); pre-225 rows lacked them.
 //     Both fields use `omitempty` so empty/nil slices don't bloat
@@ -199,6 +203,7 @@ type Model struct {
 	AudioStreams                 []AudioStream        `json:"audioStreams,omitempty"`
 	SubtitleStreams              []SubtitleStream     `json:"subtitleStreams,omitempty"`
 	ScanType                     string               `json:"scanType,omitempty"`
+	Title                        string               `json:"-"`
 }
 
 // PrimaryAudioStream returns the first audio stream, or nil when

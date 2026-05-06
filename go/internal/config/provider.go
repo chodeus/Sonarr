@@ -140,12 +140,6 @@ func (p *Provider) getString(key, def string) string {
 // and "0"/"false"/"no" as false (case-insensitive, whitespace-trimmed)
 // — matches the configfile.Provider.Bool surface and the historic
 // hand-edited config files that use "yes" / "no".
-//
-// def keeps a parameter shape for future getters whose C# default is
-// `true`. Today every public getter passes false; that's coincidence,
-// not invariant — so the parameter stays.
-//
-//nolint:unparam // def is a forward-looking parameter; see godoc.
 func (p *Provider) getBool(key string, def bool) bool {
 	s := p.getString(key, "")
 	if s == "" {
@@ -362,5 +356,27 @@ func (p *Provider) DownloadClientWorkingFolders() string {
 // ConfigSavedEvent on change.
 func (p *Provider) SetDownloadClientWorkingFolders(ctx context.Context, v string) error {
 	_, err := p.setString(ctx, "DownloadClientWorkingFolders", v)
+	return err
+}
+
+// EnableMediaInfo mirrors `ConfigService.cs:216-221`. Drives the
+// AggregationService.Augment pass: when false, MediaInfo extraction
+// is skipped for files that already live in the library
+// (ExistingFile=true).
+//
+// Default true at C# `:218` — note this is the only config getter in
+// this slice that defaults to true; the existing
+// `getBool(key, def bool) bool` helper accepts the def parameter
+// (the suppressed-unparam comment at its call site documents the
+// forward-looking shape; this addition is the first real default-true
+// caller).
+func (p *Provider) EnableMediaInfo() bool {
+	return p.getBool("EnableMediaInfo", true)
+}
+
+// SetEnableMediaInfo writes the new value, publishing ConfigSavedEvent
+// on change.
+func (p *Provider) SetEnableMediaInfo(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "EnableMediaInfo", v)
 	return err
 }

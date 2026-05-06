@@ -96,6 +96,24 @@ func TestProvider_ImportSpecGetters_Defaults(t *testing.T) {
 	}
 }
 
+func TestProvider_EnableMediaInfo_DefaultTrue(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	prov, _, _ := providerFixture(t, db)
+
+	if !prov.EnableMediaInfo() {
+		t.Errorf("EnableMediaInfo default = false, want true")
+	}
+
+	ctx := t.Context()
+	if err := prov.SetEnableMediaInfo(ctx, false); err != nil {
+		t.Fatalf("SetEnableMediaInfo: %v", err)
+	}
+	if prov.EnableMediaInfo() {
+		t.Errorf("EnableMediaInfo after Set(false) = true")
+	}
+}
+
 func TestProvider_ImportSpecGetters_RoundTrip(t *testing.T) {
 	t.Parallel()
 	db := datastoretest.OpenSQLite(t)
