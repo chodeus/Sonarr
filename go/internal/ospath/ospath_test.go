@@ -1,6 +1,9 @@
 package ospath
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // Verbatim port of `src/NzbDrone.Common.Test/OsPathFixture.cs`. Each
 // test below names the [Test] / [TestCase] method it ports so future
@@ -374,4 +377,161 @@ func TestSubUnrootedPanics(t *testing.T) {
 		}
 	}()
 	_ = New(`relative\path`).Sub(New(`C:\rooted`))
+}
+
+// Pins the contract for the package-level [Ext] helper. Both `/` and
+// `\` are recognised as separators so a single helper covers Unix and
+// Windows-shaped inputs identically.
+func TestExt(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"foo", ""},
+		{"foo.mkv", ".mkv"},
+		{"foo.tar.gz", ".gz"},
+		{"foo.", "."},
+		{".bashrc", ".bashrc"},
+		{"/tv/series/season 1/episode.mp4", ".mp4"},
+		{"/tv/series.with.dots/episode", ""},
+		{`C:\tv\series\episode.mkv`, ".mkv"},
+		{`C:\tv\series.dotted\episode`, ""},
+		{"/tv/series/", ""},
+		{`C:\tv\series\`, ""},
+		{`/tv/.hidden/file`, ""},
+		{`/tv/.hidden/file.mkv`, ".mkv"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := Ext(tc.in); got != tc.want {
+				t.Fatalf("Ext(%q): got %q want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// Pins the contract for the package-level [Base] helper. Mirrors
+// .NET 7+ `Path.GetFileName` semantics: a trailing separator yields
+// the empty string.
+func TestBase(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"foo", "foo"},
+		{"foo.mkv", "foo.mkv"},
+		{"/tv/series/episode.mkv", "episode.mkv"},
+		{`C:\tv\series\episode.mkv`, "episode.mkv"},
+		{"/tv/series", "series"},
+		{"/tv/series/", ""},
+		{`C:\tv\series\`, ""},
+		{"/", ""},
+		{`\\share\folder\file.txt`, "file.txt"},
+		{"mixed/sep\\file.mkv", "file.mkv"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := Base(tc.in); got != tc.want {
+				t.Fatalf("Base(%q): got %q want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// Pins the contract for the package-level [IsParent] helper.
+// Strict-ancestry: a path is NOT a parent of itself. Case-insensitive
+// when either side is Windows-shaped.
+func TestIsParent(t *testing.T) {
+	cases := []struct {
+		name   string
+		parent string
+		child  string
+		want   bool
+	}{
+		{"unix immediate child", "/tv/series", "/tv/series/season 1", true},
+		{"unix grandchild", "/tv/series", "/tv/series/season 1/episode.mkv", true},
+		{"unix sibling", "/tv/series", "/tv/other/file", false},
+		{"unix prefix-not-ancestor", "/tv/foo", "/tv/foobar/file", false},
+		{"unix exact equality", "/tv/series", "/tv/series", false},
+		{"unix trailing slash on parent", "/tv/series/", "/tv/series/episode.mkv", true},
+		{"unix trailing slash on child", "/tv/series", "/tv/series/episode.mkv/", true},
+
+		{"windows immediate child", `C:\tv\series`, `C:\tv\series\episode.mkv`, true},
+		{"windows case-insensitive parent", `C:\TV\Series`, `c:\tv\series\episode.mkv`, true},
+		{"windows case-sensitive prefix-not-ancestor", `C:\tv\foo`, `C:\tv\foobar\file`, false},
+		{"windows different drive", `C:\tv`, `D:\tv\episode.mkv`, false},
+		{"windows UNC", `\\nas\tv`, `\\nas\tv\series\episode.mkv`, true},
+
+		{"mismatched shapes (unix parent, windows child)", "/tv/series", `C:\tv\series\episode.mkv`, false},
+
+		{"empty parent", "", "/tv/series/episode.mkv", false},
+		{"empty child", "/tv/series", "", false},
+		{"both empty", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsParent(tc.parent, tc.child); got != tc.want {
+				t.Fatalf("IsParent(%q, %q): got %v want %v", tc.parent, tc.child, got, tc.want)
+			}
+		})
+	}
+}
+
+// Pins the contract for the package-level [Relative] helper.
+func TestRelative(t *testing.T) {
+	cases := []struct {
+		name   string
+		parent string
+		child  string
+		want   string
+	}{
+		{"unix immediate", "/tv/series", "/tv/series/episode.mkv", "episode.mkv"},
+		{"unix nested", "/tv/series", "/tv/series/season 1/episode.mkv", "season 1/episode.mkv"},
+		{"unix trailing-slash parent", "/tv/series/", "/tv/series/season 1/episode.mkv", "season 1/episode.mkv"},
+		{"unix trailing-slash child", "/tv/series", "/tv/series/episode.mkv/", "episode.mkv"},
+
+		{"windows immediate", `C:\tv\series`, `C:\tv\series\episode.mkv`, "episode.mkv"},
+		{"windows case-different parent", `C:\TV\Series`, `C:\tv\series\season 1\ep.mkv`, `season 1\ep.mkv`},
+		{"windows UNC", `\\nas\tv`, `\\nas\tv\series\episode.mkv`, `series\episode.mkv`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Relative(tc.parent, tc.child)
+			if err != nil {
+				t.Fatalf("Relative(%q, %q): unexpected error %v", tc.parent, tc.child, err)
+			}
+			if got != tc.want {
+				t.Fatalf("Relative(%q, %q): got %q want %q", tc.parent, tc.child, got, tc.want)
+			}
+		})
+	}
+}
+
+// Pins the error path: not-a-parent produces [ErrNotParent].
+func TestRelativeNotParent(t *testing.T) {
+	cases := []struct {
+		name   string
+		parent string
+		child  string
+	}{
+		{"sibling", "/tv/series", "/tv/other/file"},
+		{"prefix-not-ancestor", "/tv/foo", "/tv/foobar/file"},
+		{"equal paths", "/tv/series", "/tv/series"},
+		{"empty parent", "", "/tv/series/episode.mkv"},
+		{"empty child", "/tv/series", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Relative(tc.parent, tc.child)
+			if err == nil {
+				t.Fatalf("Relative(%q, %q): want error, got %q", tc.parent, tc.child, got)
+			}
+			if !errors.Is(err, ErrNotParent) {
+				t.Fatalf("Relative(%q, %q): error not wrapping ErrNotParent: %v", tc.parent, tc.child, err)
+			}
+			if got != "" {
+				t.Fatalf("Relative(%q, %q): want empty string on error, got %q", tc.parent, tc.child, got)
+			}
+		})
+	}
 }

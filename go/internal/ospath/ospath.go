@@ -12,6 +12,7 @@
 package ospath
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -434,4 +435,91 @@ func (p OsPath) Sub(other OsPath) OsPath {
 		sep = `\`
 	}
 	return NewWithKind(strings.Join(parts, sep), KindUnknown)
+}
+
+// Ext returns the file-name extension (including the leading dot) of
+// the supplied path, mirroring `System.IO.Path.GetExtension` on the
+// .NET side. Both `/` and `\` are recognised as separators so the
+// behaviour is identical regardless of which platform shape the path
+// uses — matching the cross-shape posture of the rest of this package.
+//
+// Returns the empty string when the trailing path component contains
+// no dot. A trailing dot yields "."; a leading-dot file like
+// `.bashrc` is treated as the whole name being the extension, mirroring
+// .NET's `Path.GetExtension(".bashrc") == ".bashrc"`.
+func Ext(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		c := path[i]
+		if c == '/' || c == '\\' {
+			return ""
+		}
+		if c == '.' {
+			return path[i:]
+		}
+	}
+	return ""
+}
+
+// Base returns the trailing component of the supplied path, mirroring
+// `System.IO.Path.GetFileName` on .NET 7+. Both `/` and `\` are
+// recognised as separators. A trailing separator yields the empty
+// string; a path with no separator is returned verbatim.
+func Base(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' || path[i] == '\\' {
+			return path[i+1:]
+		}
+	}
+	return path
+}
+
+// ErrNotParent is returned by [Relative] when the supplied parent
+// path is not actually an ancestor of the supplied child path.
+// Mirrors the `NotParentException` sentinel raised by
+// `NzbDrone.Common.Extensions.PathExtensions.GetRelativePath` at
+// `PathExtensions.cs:85-92`.
+var ErrNotParent = errors.New("ospath: not a parent path")
+
+// IsParent reports whether `parent` is a strict ancestor of `child`.
+// Returns false if the two paths are equal, if either side is
+// malformed, or if they live on different platform shapes. Walks the
+// `child` ancestry via [OsPath.Directory], comparing each ancestor to
+// `parent` using case-insensitive trailing-slash-tolerant equality
+// (case-insensitive only when either side is Windows-shaped, matching
+// the C# `OsPath.Equals(_, ignoreTrailingSlash: true)` contract).
+//
+// Mirrors `NzbDrone.Common.Extensions.PathExtensions.IsParentPath` at
+// `PathExtensions.cs:123-139` verbatim — including the "a path is not
+// its own parent" semantic (an exact-equal pair returns false because
+// the loop walks `child.Directory`, never comparing `child` to
+// `parent` directly).
+func IsParent(parent, child string) bool {
+	p := New(parent)
+	c := New(child)
+	for {
+		d := c.Directory()
+		if d.IsEmpty() {
+			return false
+		}
+		if d.EqualsIgnoreTrailingSlash(p) {
+			return true
+		}
+		c = d
+	}
+}
+
+// Relative returns the path of `child` expressed relative to its
+// ancestor `parent`. Mirrors
+// `NzbDrone.Common.Extensions.PathExtensions.GetRelativePath` at
+// `PathExtensions.cs:85-93`: substring after parent's length with
+// leading/trailing platform separators trimmed.
+//
+// Returns [ErrNotParent] (wrapped via fmt) when [IsParent] reports
+// the relationship doesn't hold — Go-port substitute for the C#
+// `NotParentException` throw.
+func Relative(parent, child string) (string, error) {
+	if !IsParent(parent, child) {
+		return "", fmt.Errorf("%w: %q is not a child of %q", ErrNotParent, child, parent)
+	}
+	return strings.Trim(child[len(parent):], `\/`), nil
 }
