@@ -11,6 +11,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/mediainfo"
 	"sonarr.tv/sonarr/internal/parser"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 func ptrInt(v int) *int { return &v }
@@ -338,5 +339,422 @@ func TestHasAudioTrackSpecification(t *testing.T) {
 	le.MediaInfo.AudioStreams = []mediainfo.AudioStream{{Format: "AC3"}}
 	if d := spec.IsSatisfiedBy(le, nil); !d.Accepted() {
 		t.Errorf("non-empty AudioStreams: want Accept")
+	}
+}
+
+// --- NotSampleSpecification ----------------------------------------
+
+// stubSampleChecker returns a fixed verdict and counts calls.
+type stubSampleChecker struct {
+	verdict episodeimport.DetectSampleResult
+	calls   int
+}
+
+func (s *stubSampleChecker) IsSample(_ context.Context, _ *episodeimport.LocalEpisode) episodeimport.DetectSampleResult {
+	s.calls++
+	return s.verdict
+}
+
+func TestNotSampleSpecification(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil LocalEpisode accepts", func(t *testing.T) {
+		spec := episodeimport.NewNotSampleSpecification(&stubSampleChecker{verdict: episodeimport.DetectSampleSample}, nil)
+		if !spec.IsSatisfiedBy(nil, nil).Accepted() {
+			t.Errorf("nil LocalEpisode: want Accept")
+		}
+	})
+
+	t.Run("ExistingFile skips detector", func(t *testing.T) {
+		det := &stubSampleChecker{verdict: episodeimport.DetectSampleSample}
+		spec := episodeimport.NewNotSampleSpecification(det, nil)
+		le := episodeimport.NewLocalEpisode()
+		le.ExistingFile = true
+		le.Path = "/tv/x.mkv"
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("ExistingFile=true: want Accept")
+		}
+		if det.calls != 0 {
+			t.Errorf("detector called %d times for ExistingFile; want 0", det.calls)
+		}
+	})
+
+	t.Run("nil detector accepts", func(t *testing.T) {
+		spec := episodeimport.NewNotSampleSpecification(nil, nil)
+		le := episodeimport.NewLocalEpisode()
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("nil detector: want Accept")
+		}
+	})
+
+	t.Run("Sample rejects with Sample reason", func(t *testing.T) {
+		spec := episodeimport.NewNotSampleSpecification(&stubSampleChecker{verdict: episodeimport.DetectSampleSample}, nil)
+		le := episodeimport.NewLocalEpisode()
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("Sample verdict: want Reject")
+		}
+		if d.Reason() != episodeimport.ImportRejectionSample {
+			t.Errorf("Reason = %v, want Sample", d.Reason())
+		}
+	})
+
+	t.Run("Indeterminate rejects with SampleIndeterminate reason", func(t *testing.T) {
+		spec := episodeimport.NewNotSampleSpecification(&stubSampleChecker{verdict: episodeimport.DetectSampleIndeterminate}, nil)
+		le := episodeimport.NewLocalEpisode()
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("Indeterminate verdict: want Reject")
+		}
+		if d.Reason() != episodeimport.ImportRejectionSampleIndeterminate {
+			t.Errorf("Reason = %v, want SampleIndeterminate", d.Reason())
+		}
+	})
+
+	t.Run("NotSample accepts", func(t *testing.T) {
+		spec := episodeimport.NewNotSampleSpecification(&stubSampleChecker{verdict: episodeimport.DetectSampleNotSample}, nil)
+		le := episodeimport.NewLocalEpisode()
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("NotSample verdict: want Accept")
+		}
+	})
+
+	if got := episodeimport.NewNotSampleSpecification(nil, nil).Name(); got != "NotSampleSpecification" {
+		t.Errorf("Name() = %q", got)
+	}
+}
+
+// --- AbsoluteEpisodeNumberSpecification ----------------------------
+
+// stubFileNamer is a static [episodeimport.FileNamer] for tests.
+type stubFileNamer struct {
+	requiresAbsolute bool
+	requiresTitle    bool
+}
+
+func (s stubFileNamer) RequiresAbsoluteEpisodeNumber() bool { return s.requiresAbsolute }
+
+func (s stubFileNamer) RequiresEpisodeTitle(_ *series.Series, _ []episodes.Episode) bool {
+	return s.requiresTitle
+}
+
+func TestAbsoluteEpisodeNumberSpecification(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2025, 1, 10, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	mkSpec := func(t *testing.T, namer episodeimport.FileNamer) *episodeimport.AbsoluteEpisodeNumberSpecification {
+		t.Helper()
+		spec, err := episodeimport.NewAbsoluteEpisodeNumberSpecification(namer, clock, nil)
+		if err != nil {
+			t.Fatalf("NewAbsoluteEpisodeNumberSpecification: %v", err)
+		}
+		return spec
+	}
+
+	t.Run("nil namer rejected at construction", func(t *testing.T) {
+		if _, err := episodeimport.NewAbsoluteEpisodeNumberSpecification(nil, nil, nil); err == nil {
+			t.Errorf("expected error for nil namer")
+		}
+	})
+
+	t.Run("non-anime accepts", func(t *testing.T) {
+		spec := mkSpec(t, stubFileNamer{requiresAbsolute: true})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{SeriesType: series.SeriesTypeStandard}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("standard series: want Accept")
+		}
+	})
+
+	t.Run("pattern does not require absolute accepts", func(t *testing.T) {
+		spec := mkSpec(t, stubFileNamer{requiresAbsolute: false})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{SeriesType: series.SeriesTypeAnime}
+		le.Episodes = []episodes.Episode{{ID: 1}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("pattern not requiring absolute: want Accept")
+		}
+	})
+
+	t.Run("episode aired > 1d ago is skipped", func(t *testing.T) {
+		spec := mkSpec(t, stubFileNamer{requiresAbsolute: true})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{SeriesType: series.SeriesTypeAnime}
+		old := now.AddDate(0, 0, -3)
+		le.Episodes = []episodes.Episode{{ID: 1, AirDateUtc: &old, AbsoluteEpisodeNumber: nil}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("old episode without absolute: want Accept")
+		}
+	})
+
+	t.Run("recent episode missing absolute rejects", func(t *testing.T) {
+		spec := mkSpec(t, stubFileNamer{requiresAbsolute: true})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{SeriesType: series.SeriesTypeAnime}
+		recent := now.Add(-1 * time.Hour)
+		le.Episodes = []episodes.Episode{{ID: 1, AirDateUtc: &recent, AbsoluteEpisodeNumber: nil}}
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("recent + missing absolute: want Reject")
+		}
+		if d.Reason() != episodeimport.ImportRejectionMissingAbsoluteEpisodeNumber {
+			t.Errorf("Reason = %v", d.Reason())
+		}
+	})
+
+	t.Run("recent episode with absolute accepts", func(t *testing.T) {
+		spec := mkSpec(t, stubFileNamer{requiresAbsolute: true})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{SeriesType: series.SeriesTypeAnime}
+		recent := now.Add(-1 * time.Hour)
+		le.Episodes = []episodes.Episode{{ID: 1, AirDateUtc: &recent, AbsoluteEpisodeNumber: ptrInt(42)}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("recent with absolute: want Accept")
+		}
+	})
+
+	t.Run("nil AirDateUtc treated as recent (no skip)", func(t *testing.T) {
+		spec := mkSpec(t, stubFileNamer{requiresAbsolute: true})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{SeriesType: series.SeriesTypeAnime}
+		le.Episodes = []episodes.Episode{{ID: 1, AirDateUtc: nil, AbsoluteEpisodeNumber: nil}}
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("nil AirDateUtc + missing absolute: want Reject")
+		}
+	})
+
+	if got := mkSpec(t, stubFileNamer{}).Name(); got != "AbsoluteEpisodeNumberSpecification" {
+		t.Errorf("Name() = %q", got)
+	}
+}
+
+// --- EpisodeTitleSpecification --------------------------------------
+
+// stubEpisodeTitleConfig is a static [episodeimport.EpisodeTitleConfig].
+type stubEpisodeTitleConfig struct {
+	v episodeimport.EpisodeTitleRequiredType
+}
+
+func (s stubEpisodeTitleConfig) EpisodeTitleRequired() episodeimport.EpisodeTitleRequiredType {
+	return s.v
+}
+
+// stubEpisodeFinderBySeason is a canned [episodeimport.EpisodeFinderBySeason].
+type stubEpisodeFinderBySeason struct {
+	episodes                       []episodes.Episode
+	err                            error
+	calls                          int
+	lastSeriesID, lastSeasonNumber int
+}
+
+func (s *stubEpisodeFinderBySeason) GetEpisodesBySeason(_ context.Context, seriesID, seasonNumber int) ([]episodes.Episode, error) {
+	s.calls++
+	s.lastSeriesID, s.lastSeasonNumber = seriesID, seasonNumber
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.episodes, nil
+}
+
+func TestEpisodeTitleSpecification(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2025, 1, 10, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+
+	mk := func(t *testing.T, cfg episodeimport.EpisodeTitleConfig, namer episodeimport.FileNamer, finder episodeimport.EpisodeFinderBySeason) *episodeimport.EpisodeTitleSpecification {
+		t.Helper()
+		spec, err := episodeimport.NewEpisodeTitleSpecification(cfg, namer, finder, clock, nil)
+		if err != nil {
+			t.Fatalf("NewEpisodeTitleSpecification: %v", err)
+		}
+		return spec
+	}
+
+	t.Run("nil deps rejected at construction", func(t *testing.T) {
+		if _, err := episodeimport.NewEpisodeTitleSpecification(nil, stubFileNamer{}, &stubEpisodeFinderBySeason{}, nil, nil); err == nil {
+			t.Errorf("expected nil-cfg error")
+		}
+		if _, err := episodeimport.NewEpisodeTitleSpecification(stubEpisodeTitleConfig{}, nil, &stubEpisodeFinderBySeason{}, nil, nil); err == nil {
+			t.Errorf("expected nil-namer error")
+		}
+		if _, err := episodeimport.NewEpisodeTitleSpecification(stubEpisodeTitleConfig{}, stubFileNamer{}, nil, nil, nil); err == nil {
+			t.Errorf("expected nil-finder error")
+		}
+	})
+
+	t.Run("ExistingFile accepts", func(t *testing.T) {
+		spec := mk(t, stubEpisodeTitleConfig{v: episodeimport.EpisodeTitleRequiredAlways}, stubFileNamer{requiresTitle: true}, &stubEpisodeFinderBySeason{})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{}
+		le.ExistingFile = true
+		le.Episodes = []episodes.Episode{{ID: 1}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("ExistingFile: want Accept")
+		}
+	})
+
+	t.Run("Never accepts even when title missing", func(t *testing.T) {
+		spec := mk(t, stubEpisodeTitleConfig{v: episodeimport.EpisodeTitleRequiredNever}, stubFileNamer{requiresTitle: true}, &stubEpisodeFinderBySeason{})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{}
+		recent := now.Add(-1 * time.Hour)
+		le.Episodes = []episodes.Episode{{ID: 1, AirDateUtc: &recent, Title: ""}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("Never: want Accept")
+		}
+	})
+
+	t.Run("pattern does not require title accepts", func(t *testing.T) {
+		spec := mk(t, stubEpisodeTitleConfig{v: episodeimport.EpisodeTitleRequiredAlways}, stubFileNamer{requiresTitle: false}, &stubEpisodeFinderBySeason{})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{}
+		recent := now.Add(-1 * time.Hour)
+		le.Episodes = []episodes.Episode{{ID: 1, AirDateUtc: &recent, Title: ""}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("pattern not requiring title: want Accept")
+		}
+	})
+
+	t.Run("Always rejects recent missing title", func(t *testing.T) {
+		spec := mk(t, stubEpisodeTitleConfig{v: episodeimport.EpisodeTitleRequiredAlways}, stubFileNamer{requiresTitle: true}, &stubEpisodeFinderBySeason{})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{}
+		recent := now.Add(-1 * time.Hour)
+		le.Episodes = []episodes.Episode{{ID: 1, AirDateUtc: &recent, Title: ""}}
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("missing title: want Reject")
+		}
+		if d.Reason() != episodeimport.ImportRejectionTitleMissing {
+			t.Errorf("Reason = %v, want TitleMissing", d.Reason())
+		}
+	})
+
+	t.Run("Always rejects recent TBA title", func(t *testing.T) {
+		spec := mk(t, stubEpisodeTitleConfig{v: episodeimport.EpisodeTitleRequiredAlways}, stubFileNamer{requiresTitle: true}, &stubEpisodeFinderBySeason{})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{}
+		recent := now.Add(-1 * time.Hour)
+		le.Episodes = []episodes.Episode{{ID: 1, AirDateUtc: &recent, Title: "TBA"}}
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("TBA: want Reject")
+		}
+		if d.Reason() != episodeimport.ImportRejectionTitleTba {
+			t.Errorf("Reason = %v, want TitleTba", d.Reason())
+		}
+	})
+
+	t.Run("aired > 48h ago is skipped", func(t *testing.T) {
+		spec := mk(t, stubEpisodeTitleConfig{v: episodeimport.EpisodeTitleRequiredAlways}, stubFileNamer{requiresTitle: true}, &stubEpisodeFinderBySeason{})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{}
+		old := now.Add(-72 * time.Hour)
+		le.Episodes = []episodes.Episode{{ID: 1, AirDateUtc: &old, Title: ""}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("old empty title: want Accept")
+		}
+	})
+
+	t.Run("BulkSeasonReleases skips when same-day count < 4", func(t *testing.T) {
+		air := now.Add(-1 * time.Hour)
+		// finder returns 3 same-day episodes — below the bulk threshold.
+		finder := &stubEpisodeFinderBySeason{episodes: []episodes.Episode{
+			{ID: 10, AirDateUtc: &air}, {ID: 11, AirDateUtc: &air}, {ID: 12, AirDateUtc: &air},
+		}}
+		spec := mk(t, stubEpisodeTitleConfig{v: episodeimport.EpisodeTitleRequiredBulkSeasonReleases}, stubFileNamer{requiresTitle: true}, finder)
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{}
+		le.Episodes = []episodes.Episode{
+			{ID: 1, SeriesID: 7, EpisodeNumber: 3, AirDateUtc: &air, Title: ""},
+			{ID: 2, SeriesID: 7, EpisodeNumber: 4, AirDateUtc: &air, Title: ""},
+		}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("bulk threshold not met: want Accept")
+		}
+		// Verify C# faithfulness: EpisodeNumber passed as seasonNumber.
+		if finder.lastSeriesID != 7 || finder.lastSeasonNumber != 3 {
+			t.Errorf("GetEpisodesBySeason called with (%d,%d); want (7,3) [first.EpisodeNumber]",
+				finder.lastSeriesID, finder.lastSeasonNumber)
+		}
+	})
+
+	t.Run("BulkSeasonReleases rejects when same-day count >= 4", func(t *testing.T) {
+		air := now.Add(-1 * time.Hour)
+		finder := &stubEpisodeFinderBySeason{episodes: []episodes.Episode{
+			{ID: 10, AirDateUtc: &air}, {ID: 11, AirDateUtc: &air},
+			{ID: 12, AirDateUtc: &air}, {ID: 13, AirDateUtc: &air},
+		}}
+		spec := mk(t, stubEpisodeTitleConfig{v: episodeimport.EpisodeTitleRequiredBulkSeasonReleases}, stubFileNamer{requiresTitle: true}, finder)
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{}
+		le.Episodes = []episodes.Episode{
+			{ID: 1, SeriesID: 7, AirDateUtc: &air, Title: ""},
+		}
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() {
+			t.Errorf("bulk threshold met + empty title: want Reject")
+		}
+		if d.Reason() != episodeimport.ImportRejectionTitleMissing {
+			t.Errorf("Reason = %v", d.Reason())
+		}
+	})
+
+	t.Run("BulkSeasonReleases finder error accepts defensively", func(t *testing.T) {
+		air := now.Add(-1 * time.Hour)
+		finder := &stubEpisodeFinderBySeason{err: errors.New("boom")}
+		spec := mk(t, stubEpisodeTitleConfig{v: episodeimport.EpisodeTitleRequiredBulkSeasonReleases}, stubFileNamer{requiresTitle: true}, finder)
+		le := episodeimport.NewLocalEpisode()
+		le.Series = &series.Series{}
+		le.Episodes = []episodes.Episode{{ID: 1, SeriesID: 7, AirDateUtc: &air, Title: ""}}
+		if !spec.IsSatisfiedBy(le, nil).Accepted() {
+			t.Errorf("finder error: want Accept (defensive)")
+		}
+	})
+
+	if got := mk(t, stubEpisodeTitleConfig{}, stubFileNamer{}, &stubEpisodeFinderBySeason{}).Name(); got != "EpisodeTitleSpecification" {
+		t.Errorf("Name() = %q", got)
+	}
+}
+
+// --- EpisodeTitleRequiredType parser -------------------------------
+
+func TestParseEpisodeTitleRequiredType(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   string
+		want episodeimport.EpisodeTitleRequiredType
+	}{
+		{"", episodeimport.EpisodeTitleRequiredAlways},
+		{"Always", episodeimport.EpisodeTitleRequiredAlways},
+		{"always", episodeimport.EpisodeTitleRequiredAlways},
+		{"  ALWAYS  ", episodeimport.EpisodeTitleRequiredAlways},
+		{"BulkSeasonReleases", episodeimport.EpisodeTitleRequiredBulkSeasonReleases},
+		{"bulkseasonreleases", episodeimport.EpisodeTitleRequiredBulkSeasonReleases},
+		{"Never", episodeimport.EpisodeTitleRequiredNever},
+		{"never", episodeimport.EpisodeTitleRequiredNever},
+		{"0", episodeimport.EpisodeTitleRequiredAlways},
+		{"1", episodeimport.EpisodeTitleRequiredBulkSeasonReleases},
+		{"2", episodeimport.EpisodeTitleRequiredNever},
+		{"garbage", episodeimport.EpisodeTitleRequiredAlways},
+	}
+	for _, tc := range cases {
+		if got := episodeimport.ParseEpisodeTitleRequiredType(tc.in); got != tc.want {
+			t.Errorf("Parse(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+
+	// String round-trip.
+	for _, v := range []episodeimport.EpisodeTitleRequiredType{
+		episodeimport.EpisodeTitleRequiredAlways,
+		episodeimport.EpisodeTitleRequiredBulkSeasonReleases,
+		episodeimport.EpisodeTitleRequiredNever,
+	} {
+		if got := episodeimport.ParseEpisodeTitleRequiredType(v.String()); got != v {
+			t.Errorf("round-trip %v: got %v", v, got)
+		}
 	}
 }

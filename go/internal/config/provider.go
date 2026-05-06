@@ -257,3 +257,27 @@ func (p *Provider) SetChownGroup(ctx context.Context, v string) error {
 	_, err := p.setString(ctx, "ChownGroup", v)
 	return err
 }
+
+// EpisodeTitleRequired mirrors `ConfigService.cs:258-263`. Returns the
+// raw stored enum identifier — defaults to `"Always"` when the row is
+// missing OR empty (matches C# `GetValueEnum(..., Always)`).
+//
+// Callers in [internal/episodeimport] resolve to a typed
+// [episodeimport.EpisodeTitleRequiredType] via
+// `episodeimport.ParseEpisodeTitleRequiredType`. Returning the raw
+// string here keeps the config package free of the
+// `MediaFiles/EpisodeImport` import that defines the enum (C# leaks
+// the type by reference; the Go port pushes parsing one layer up to
+// preserve the dependency tree).
+func (p *Provider) EpisodeTitleRequired() string {
+	return p.getString("EpisodeTitleRequired", "Always")
+}
+
+// SetEpisodeTitleRequired writes the new enum identifier, publishing
+// ConfigSavedEvent on change. Caller should pass one of `"Always"`,
+// `"BulkSeasonReleases"`, or `"Never"` — the persistence layer doesn't
+// validate (matches C# `SetValue` posture).
+func (p *Provider) SetEpisodeTitleRequired(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "EpisodeTitleRequired", v)
+	return err
+}

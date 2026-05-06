@@ -2,10 +2,14 @@ package episodeimport
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 // FullSeasonSpecification ports
@@ -314,6 +318,345 @@ func (s *HasAudioTrackSpecification) IsSatisfiedBy(le *LocalEpisode, _ *download
 	return AcceptImportSpec()
 }
 
+// SampleChecker is the slice of [SampleDetector] the
+// [NotSampleSpecification] reaches for — `IsSample(ctx, *LocalEpisode)`
+// returning a tri-state. Pulled out as a narrow interface so the spec
+// is testable without binding the full SampleDetector ceremony in
+// every fixture. Production wiring binds `*SampleDetector` directly.
+type SampleChecker interface {
+	IsSample(ctx context.Context, le *LocalEpisode) DetectSampleResult
+}
+
+// NotSampleSpecification ports
+// `Specifications/NotSampleSpecification.cs:8-49`.
+//
+// Skips the sample check for files already living in the library
+// (ExistingFile=true) and for files without a configured detector.
+// Otherwise consults [SampleChecker] and rejects Sample /
+// SampleIndeterminate verdicts.
+//
+// Like [SameEpisodesImportSpecification], this spec uses
+// [context.Background] internally — the orchestrator's
+// [Specification.IsSatisfiedBy] surface is ctx-less; slice 7 (the
+// orchestrator port) plumbs ctx through end-to-end.
+type NotSampleSpecification struct {
+	detector SampleChecker
+	log      *slog.Logger
+}
+
+// NewNotSampleSpecification binds a [SampleChecker] + logger. nil
+// detector is allowed — the spec then accepts every candidate (matches
+// the pre-aggregation case where SampleDetector hasn't been wired
+// yet).
+func NewNotSampleSpecification(detector SampleChecker, log *slog.Logger) *NotSampleSpecification {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &NotSampleSpecification{detector: detector, log: log}
+}
+
+// Name returns the C# class name verbatim.
+func (s *NotSampleSpecification) Name() string { return "NotSampleSpecification" }
+
+// IsSatisfiedBy mirrors `:20-47`. Defensive accept on nil
+// LocalEpisode (the orchestrator never feeds nil but the spec must
+// behave the same as the rest of the batch).
+//
+// The C# version catches `InvalidSeasonException` and logs+accepts;
+// the Go [SampleDetector.IsSample] internalises the multi-season
+// short-circuit (returns Indeterminate) so no equivalent try/catch
+// is needed here.
+func (s *NotSampleSpecification) IsSatisfiedBy(le *LocalEpisode, _ *downloadclients.Item) *ImportSpecDecision {
+	if le == nil {
+		return AcceptImportSpec()
+	}
+	if le.ExistingFile {
+		s.log.Debug("episodeimport: existing file, skipping sample check", "path", le.Path)
+		return AcceptImportSpec()
+	}
+	if s.detector == nil {
+		s.log.Debug("episodeimport: no sample detector wired; skipping sample check",
+			"path", le.Path)
+		return AcceptImportSpec()
+	}
+	switch s.detector.IsSample(context.Background(), le) {
+	case DetectSampleSample:
+		return RejectImportSpec(ImportRejectionSample, "Sample")
+	case DetectSampleIndeterminate:
+		return RejectImportSpec(ImportRejectionSampleIndeterminate,
+			"Unable to determine if file is a sample")
+	}
+	return AcceptImportSpec()
+}
+
+// FileNamer is the slice of `IBuildFileNames` the absolute / episode-
+// title specs reach for. Implementations are typically backed by the
+// active naming-config row + the [organizer] free functions
+// (`organizer.RequiresAbsoluteEpisodeNumber`,
+// `organizer.RequiresEpisodeTitle`).
+//
+// Mirrors the relevant subset of C# `IBuildFileNames` at
+// `Organizer/FileNameBuilder.cs:21-31`. Production wiring composes a
+// thin adapter over [namingconfig.Service] — the adapter loads the
+// active config row once per import batch and forwards into the
+// organizer helpers. Specs themselves stay stateless.
+type FileNamer interface {
+	// RequiresAbsoluteEpisodeNumber returns true when the active
+	// AnimeEpisodeFormat needs `{absolute}`.
+	RequiresAbsoluteEpisodeNumber() bool
+
+	// RequiresEpisodeTitle returns true when the active per-series-type
+	// pattern includes an `{Episode Title}` / `{Episode CleanTitle}`
+	// token. Series + episodes select which pattern applies (see
+	// `organizer.RequiresEpisodeTitle`).
+	RequiresEpisodeTitle(s *series.Series, eps []episodes.Episode) bool
+}
+
+// AbsoluteEpisodeNumberSpecification ports
+// `Specifications/AbsoluteEpisodeNumberSpecification.cs:11-58`.
+//
+// Rejects an anime import when the active naming pattern requires the
+// absolute-episode-number token AND any matched episode is recently
+// aired (within 1 day) without an absolute episode number.
+//
+// Skip arms (ordered):
+//
+//   - Series.SeriesType ≠ Anime → Accept (the pattern's anime-only
+//     token doesn't apply).
+//   - !FileNamer.RequiresAbsoluteEpisodeNumber() → Accept (user's
+//     pattern doesn't reference {absolute}).
+//   - Episode aired > 1 day ago → continue (TheTVDB sometimes lags
+//     for non-anime episodes; the C# test fixture matches).
+//   - AbsoluteEpisodeNumber=nil + within window → Reject.
+type AbsoluteEpisodeNumberSpecification struct {
+	namer FileNamer
+	clock func() time.Time
+	log   *slog.Logger
+}
+
+// NewAbsoluteEpisodeNumberSpecification binds a [FileNamer]. Returns
+// an error on nil namer — the spec can't make a decision without it.
+//
+// clock is the time source used by the "aired > 1 day ago" arm; nil
+// defaults to [time.Now]. Tests override to pin a deterministic
+// reference point.
+func NewAbsoluteEpisodeNumberSpecification(namer FileNamer, clock func() time.Time, log *slog.Logger) (*AbsoluteEpisodeNumberSpecification, error) {
+	if namer == nil {
+		return nil, errors.New("episodeimport: NewAbsoluteEpisodeNumberSpecification: nil FileNamer")
+	}
+	if clock == nil {
+		clock = time.Now
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &AbsoluteEpisodeNumberSpecification{namer: namer, clock: clock, log: log}, nil
+}
+
+// Name returns the C# class name verbatim.
+func (s *AbsoluteEpisodeNumberSpecification) Name() string {
+	return "AbsoluteEpisodeNumberSpecification"
+}
+
+// IsSatisfiedBy mirrors `:22-56`.
+func (s *AbsoluteEpisodeNumberSpecification) IsSatisfiedBy(le *LocalEpisode, _ *downloadclients.Item) *ImportSpecDecision {
+	if le == nil || le.Series == nil {
+		return AcceptImportSpec()
+	}
+	if le.Series.SeriesType != series.SeriesTypeAnime {
+		s.log.Debug("episodeimport: series is not anime; skipping absolute-episode-number check",
+			"path", le.Path)
+		return AcceptImportSpec()
+	}
+	if !s.namer.RequiresAbsoluteEpisodeNumber() {
+		s.log.Debug("episodeimport: file-name format does not require absolute episode number; skipping",
+			"path", le.Path)
+		return AcceptImportSpec()
+	}
+	cutoff := s.clock().UTC().AddDate(0, 0, -1)
+	for _, e := range le.Episodes {
+		if e.AirDateUtc != nil && e.AirDateUtc.Before(cutoff) {
+			s.log.Debug("episodeimport: episode aired more than 1 day ago",
+				"episodeId", e.ID)
+			continue
+		}
+		if e.AbsoluteEpisodeNumber == nil {
+			s.log.Debug("episodeimport: episode missing absolute episode number and recently aired",
+				"path", le.Path, "episodeId", e.ID)
+			return RejectImportSpec(ImportRejectionMissingAbsoluteEpisodeNumber,
+				"Episode does not have an absolute episode number and recently aired")
+		}
+	}
+	return AcceptImportSpec()
+}
+
+// EpisodeTitleConfig is the slice of [config.Provider] the
+// [EpisodeTitleSpecification] reaches for. Returns the typed enum so
+// the spec doesn't re-parse on every call. Production wiring composes
+// `func() EpisodeTitleRequiredType { return ParseEpisodeTitleRequiredType(p.EpisodeTitleRequired()) }`.
+type EpisodeTitleConfig interface {
+	EpisodeTitleRequired() EpisodeTitleRequiredType
+}
+
+// EpisodeFinderBySeason is the slice of `IEpisodeService` the
+// [EpisodeTitleSpecification] reaches for —
+// `GetEpisodesBySeason(seriesId, seasonNumber)`. Pulled out as a
+// narrow interface so the spec is testable without a real
+// `*episodes.Service`.
+type EpisodeFinderBySeason interface {
+	GetEpisodesBySeason(ctx context.Context, seriesID, seasonNumber int) ([]episodes.Episode, error)
+}
+
+// EpisodeTitleSpecification ports
+// `Specifications/EpisodeTitleSpecification.cs:13-97`.
+//
+// Rejects an import when the active naming pattern needs the episode
+// title AND a matched episode is recently aired (within 48h) without
+// a real title (or with a literal "TBA" title).
+//
+// Skip arms (ordered):
+//
+//   - LocalEpisode.ExistingFile=true → Accept (library rescan flow).
+//   - EpisodeTitleRequired=Never → Accept.
+//   - !FileNamer.RequiresEpisodeTitle(series, eps) → Accept.
+//   - EpisodeTitleRequired=BulkSeasonReleases AND
+//     all-episodes-aired-on-the-same-day AND
+//     <4 episodes air on that day in the season → Accept (this is a
+//     non-bulk release).
+//   - per-episode: airDate < now-48h → continue.
+//   - per-episode: title="" → Reject TitleMissing.
+//   - per-episode: title="TBA" → Reject TitleTba.
+//
+// C# faithfulness note: the C# call at
+// `EpisodeTitleSpecification.cs:55` is
+// `_episodeService.GetEpisodesBySeason(firstEpisode.SeriesId,
+// firstEpisode.EpisodeNumber)` — passing EpisodeNumber where the
+// signature expects seasonNumber. The Go port mirrors this verbatim
+// (passing the candidate's first episode's EpisodeNumber as the
+// seasonNumber argument) so behaviour matches the C# tree exactly,
+// even though it looks like a long-standing typo. Changing it here
+// would silently diverge from the C# spec under test parity.
+type EpisodeTitleSpecification struct {
+	cfg    EpisodeTitleConfig
+	namer  FileNamer
+	finder EpisodeFinderBySeason
+	clock  func() time.Time
+	log    *slog.Logger
+}
+
+// NewEpisodeTitleSpecification binds the three deps + clock + logger.
+// Returns an error on any nil dep — the spec can't make a meaningful
+// decision without all three.
+//
+// clock defaults to [time.Now] when nil.
+func NewEpisodeTitleSpecification(cfg EpisodeTitleConfig, namer FileNamer, finder EpisodeFinderBySeason, clock func() time.Time, log *slog.Logger) (*EpisodeTitleSpecification, error) {
+	if cfg == nil {
+		return nil, errors.New("episodeimport: NewEpisodeTitleSpecification: nil EpisodeTitleConfig")
+	}
+	if namer == nil {
+		return nil, errors.New("episodeimport: NewEpisodeTitleSpecification: nil FileNamer")
+	}
+	if finder == nil {
+		return nil, errors.New("episodeimport: NewEpisodeTitleSpecification: nil EpisodeFinderBySeason")
+	}
+	if clock == nil {
+		clock = time.Now
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &EpisodeTitleSpecification{cfg: cfg, namer: namer, finder: finder, clock: clock, log: log}, nil
+}
+
+// Name returns the C# class name verbatim.
+func (s *EpisodeTitleSpecification) Name() string { return "EpisodeTitleSpecification" }
+
+// IsSatisfiedBy mirrors `:31-95`. Lookup errors from the season-finder
+// translate to Accept (defensive: a transient DB outage shouldn't
+// reject every candidate file in a batch).
+func (s *EpisodeTitleSpecification) IsSatisfiedBy(le *LocalEpisode, _ *downloadclients.Item) *ImportSpecDecision {
+	if le == nil || le.Series == nil || len(le.Episodes) == 0 {
+		return AcceptImportSpec()
+	}
+	if le.ExistingFile {
+		s.log.Debug("episodeimport: existing file in series folder; skipping episode-title check",
+			"path", le.Path)
+		return AcceptImportSpec()
+	}
+
+	required := s.cfg.EpisodeTitleRequired()
+	if required == EpisodeTitleRequiredNever {
+		s.log.Debug("episodeimport: EpisodeTitleRequired=Never; skipping check",
+			"path", le.Path)
+		return AcceptImportSpec()
+	}
+	if !s.namer.RequiresEpisodeTitle(le.Series, le.Episodes) {
+		s.log.Debug("episodeimport: file-name format does not require episode title; skipping",
+			"path", le.Path)
+		return AcceptImportSpec()
+	}
+
+	first := le.Episodes[0]
+	if required == EpisodeTitleRequiredBulkSeasonReleases && first.AirDateUtc != nil {
+		// All candidate episodes air on the same day as the first.
+		allSameDay := true
+		for _, e := range le.Episodes {
+			if e.AirDateUtc != nil && !e.AirDateUtc.Equal(*first.AirDateUtc) {
+				allSameDay = false
+				break
+			}
+		}
+		if allSameDay {
+			// C# passes EpisodeNumber as the seasonNumber arg — mirror
+			// verbatim. See type-level note above.
+			seasonEps, err := s.finder.GetEpisodesBySeason(context.Background(), first.SeriesID, first.EpisodeNumber)
+			if err != nil {
+				s.log.Warn("episodeimport: GetEpisodesBySeason failed; accepting defensively",
+					"path", le.Path, "err", err)
+				return AcceptImportSpec()
+			}
+			sameDayCount := 0
+			for _, e := range seasonEps {
+				if e.AirDateUtc == nil || e.AirDateUtc.Equal(*first.AirDateUtc) {
+					sameDayCount++
+				}
+			}
+			if sameDayCount < 4 {
+				s.log.Debug("episodeimport: bulk-season threshold not met; skipping check",
+					"path", le.Path, "sameDayCount", sameDayCount)
+				return AcceptImportSpec()
+			}
+		}
+	}
+
+	cutoff := s.clock().UTC().Add(-48 * time.Hour)
+	for _, e := range le.Episodes {
+		if e.AirDateUtc != nil && e.AirDateUtc.Before(cutoff) {
+			s.log.Debug("episodeimport: episode aired more than 48 hours ago",
+				"episodeId", e.ID)
+			continue
+		}
+		title := strings.TrimSpace(e.Title)
+		if title == "" {
+			s.log.Debug("episodeimport: episode has no title and recently aired",
+				"path", le.Path, "episodeId", e.ID)
+			return RejectImportSpec(ImportRejectionTitleMissing,
+				"Episode does not have a title and recently aired")
+		}
+		// C# uses `title.Equals("TBA")` (case-sensitive, no trim) at
+		// `:87`. Mirror exactly — `e.Title == "TBA"` would diverge if
+		// the field had whitespace, which the C# version would also
+		// pass through.
+		if e.Title == "TBA" {
+			s.log.Debug("episodeimport: episode has TBA title and recently aired",
+				"path", le.Path, "episodeId", e.ID)
+			return RejectImportSpec(ImportRejectionTitleTba,
+				"Episode has a TBA title and recently aired")
+		}
+	}
+	return AcceptImportSpec()
+}
+
 // Compile-time interface satisfaction guards. A signature drift on
 // Specification surfaces here at the package boundary rather than at
 // the orchestrator's per-spec dispatch site.
@@ -323,4 +666,7 @@ var (
 	_ Specification = (*SameEpisodesImportSpecification)(nil)
 	_ Specification = (*UnverifiedSceneNumberingSpecification)(nil)
 	_ Specification = (*HasAudioTrackSpecification)(nil)
+	_ Specification = (*NotSampleSpecification)(nil)
+	_ Specification = (*AbsoluteEpisodeNumberSpecification)(nil)
+	_ Specification = (*EpisodeTitleSpecification)(nil)
 )

@@ -256,6 +256,68 @@ func (m ImportMode) String() string {
 	}
 }
 
+// EpisodeTitleRequiredType mirrors the C# enum at
+// `src/NzbDrone.Core/MediaFiles/EpisodeImport/EpisodeTitleRequiredType.cs:3-8`.
+// Drives [EpisodeTitleSpecification]'s "skip / always reject / only
+// reject for bulk-season releases" gating. The persisted form is the
+// enum identifier (`"Always"` / `"BulkSeasonReleases"` / `"Never"`),
+// matching C# `GetValueEnum` storage at
+// `Configuration/ConfigService.cs:494-496`.
+type EpisodeTitleRequiredType int
+
+// EpisodeTitleRequiredType values. Numeric order frozen — the API
+// surface serialises this as int.
+const (
+	// EpisodeTitleRequiredAlways — every recently-aired episode
+	// without a title rejects the import.
+	EpisodeTitleRequiredAlways EpisodeTitleRequiredType = 0
+
+	// EpisodeTitleRequiredBulkSeasonReleases — only reject when the
+	// import looks like a same-day bulk-season release. Single-file
+	// imports for individual episodes pass.
+	EpisodeTitleRequiredBulkSeasonReleases EpisodeTitleRequiredType = 1
+
+	// EpisodeTitleRequiredNever — disable the spec entirely.
+	EpisodeTitleRequiredNever EpisodeTitleRequiredType = 2
+)
+
+// String returns the C# enum-identifier form. Matches the persisted
+// shape used by [ParseEpisodeTitleRequiredType] for round-trips.
+func (t EpisodeTitleRequiredType) String() string {
+	switch t {
+	case EpisodeTitleRequiredAlways:
+		return "Always"
+	case EpisodeTitleRequiredBulkSeasonReleases:
+		return "BulkSeasonReleases"
+	case EpisodeTitleRequiredNever:
+		return "Never"
+	default:
+		return fmt.Sprintf("EpisodeTitleRequiredType(%d)", int(t))
+	}
+}
+
+// ParseEpisodeTitleRequiredType resolves a persisted enum-identifier
+// (case-insensitive) back to the typed value. Mirrors the C# `Enum.Parse`
+// path at `Configuration/ConfigService.cs:494-496` (the GetValueEnum
+// helper passes `ignoreCase=true`).
+//
+// An empty string OR an unrecognised value returns
+// [EpisodeTitleRequiredAlways] — matches the C# default at
+// `ConfigService.cs:260` (`GetValueEnum("EpisodeTitleRequired",
+// EpisodeTitleRequiredType.Always)`).
+func ParseEpisodeTitleRequiredType(s string) EpisodeTitleRequiredType {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "always", "0":
+		return EpisodeTitleRequiredAlways
+	case "bulkseasonreleases", "1":
+		return EpisodeTitleRequiredBulkSeasonReleases
+	case "never", "2":
+		return EpisodeTitleRequiredNever
+	default:
+		return EpisodeTitleRequiredAlways
+	}
+}
+
 // ImportRejection is one named reason a file failed an import spec.
 // Mirrors `ImportRejection.cs:5-11`. Same shape as
 // [decisionengine.Rejection] (Reason, Message, Kind) but typed for

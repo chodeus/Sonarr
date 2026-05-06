@@ -55,6 +55,25 @@ func TestProvider_DefaultsWhenMissing(t *testing.T) {
 	if got := prov.ChownGroup(); got != "" {
 		t.Errorf("ChownGroup default = %q, want \"\"", got)
 	}
+	if got := prov.EpisodeTitleRequired(); got != "Always" {
+		t.Errorf("EpisodeTitleRequired default = %q, want Always", got)
+	}
+}
+
+func TestProvider_EpisodeTitleRequired_RoundTrip(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	prov, _, _ := providerFixture(t, db)
+
+	ctx := t.Context()
+	for _, v := range []string{"Always", "BulkSeasonReleases", "Never"} {
+		if err := prov.SetEpisodeTitleRequired(ctx, v); err != nil {
+			t.Fatalf("SetEpisodeTitleRequired(%q): %v", v, err)
+		}
+		if got := prov.EpisodeTitleRequired(); got != v {
+			t.Errorf("after Set(%q) = %q", v, got)
+		}
+	}
 }
 
 func TestProvider_SetThenGet(t *testing.T) {
