@@ -1,0 +1,234 @@
+// Package disk is the Go port of `NzbDrone.Common.Disk.IDiskProvider`
+// — the concrete filesystem accessor the rest of Sonarr uses to read,
+// write, walk, and inspect on-disk paths. Phase 3 lands the slice
+// DiskScanService needs (8 methods); the wider IDiskProvider surface
+// (mounts, copy/move, hardlinks, symlink resolution, cross-device
+// fallback) ports in subsequent slices as their callers reach Phase 3.
+//
+// # Platform shape
+//
+// Go's `os` and `path/filepath` already abstract the cross-platform
+// path concerns the C# tree handles via `OsPath` and `PathExtensions`.
+// Callers pass the path shape that's appropriate for the running OS;
+// this package does not transcode separators. The OsPath helpers in
+// `internal/ospath` remain available for callers that need to reason
+// about both shapes (e.g. import/move workflows that drag a Windows
+// path through a Linux daemon).
+//
+// # SetPermissions is platform-aware
+//
+// The Linux build enables real chmod(2)+chown(2). On macOS / Windows
+// SetPermissions is a debug-logged no-op — matches the C# tree's
+// runtime-OS branch at `DiskProviderBase.cs` and the Mono-only
+// `Mono/Disk/DiskProvider.cs:69-114` chmod/chown impl, except that the
+// Go port runs the no-op at compile-time via build tags rather than
+// at runtime. The visible behaviour to a caller is identical:
+// SetPermissions returns nil and the on-disk perms are unchanged on
+// non-Linux, exactly as the C# WindowsDiskProvider override does.
+package disk
+
+import (
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"os"
+	"path/filepath"
+)
+
+// Provider is the concrete filesystem implementation.
+//
+// Goroutine-safe — every method does its own I/O without touching
+// shared state. The single Provider value is shared process-wide
+// because there's no per-call configuration to thread.
+type Provider struct {
+	log *slog.Logger
+}
+
+// NewProvider constructs a Provider. log is used for the per-method
+// best-effort warnings (RemoveEmptySubfolders per-subdir failures,
+// non-Linux SetPermissions skip notice). Pass slog.Default() if you
+// don't have a per-process logger.
+func NewProvider(log *slog.Logger) *Provider {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Provider{log: log}
+}
+
+// FolderExists ports `DiskProviderBase.cs:95-99`. Returns false on
+// any stat error — non-existent path, permission denied, or the path
+// pointing at a regular file. The C# version throws on a malformed
+// path; the Go port leans on os.Stat's error which the caller treats
+// as "no folder" uniformly.
+func (p *Provider) FolderExists(path string) bool {
+	st, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return st.IsDir()
+}
+
+// FolderEmpty ports `DiskProviderBase.cs:146-151`. Returns true only
+// when ReadDir succeeds AND yields zero entries. A read error
+// (missing folder, EACCES) returns false — DiskScanService gates
+// FolderEmpty behind FolderExists so a "missing folder mid-scan"
+// race lands in the safer post-condition (don't run a destructive
+// DeleteFolder).
+func (p *Provider) FolderEmpty(path string) bool {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+	return len(entries) == 0
+}
+
+// GetFiles ports `DiskProviderBase.cs:164-174`. Returns absolute
+// paths of every regular file under path; recursive=true descends.
+// Inaccessible subdirectories during the walk are silently skipped
+// (the callback returns nil on err) — matches the C# `IgnoreInaccessible`
+// EnumerationOptions setting. Returns a nil-safe empty slice on a
+// successful walk that found no files; errors from the initial stat
+// propagate wrapped.
+func (p *Provider) GetFiles(path string, recursive bool) ([]string, error) {
+	if !recursive {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return nil, fmt.Errorf("disk: GetFiles(%q): %w", path, err)
+		}
+		out := make([]string, 0, len(entries))
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			out = append(out, filepath.Join(path, e.Name()))
+		}
+		return out, nil
+	}
+	if st, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("disk: GetFiles(%q, recursive): %w", path, err)
+	} else if !st.IsDir() {
+		return nil, fmt.Errorf("disk: GetFiles(%q, recursive): not a directory", path)
+	}
+	out := []string{}
+	err := filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// Skip inaccessible entries silently (C# IgnoreInaccessible).
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		out = append(out, p)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("disk: GetFiles(%q, recursive): %w", path, err)
+	}
+	return out, nil
+}
+
+// CreateFolder ports `DiskProviderBase.cs:215-219`. Idempotent —
+// the C# `Directory.CreateDirectory` is a no-op for an existing
+// folder, and `os.MkdirAll` matches that behaviour. New folders are
+// created with mode 0755; the optional SetPermissions call after
+// CreateFolder rewrites the perms when SetPermissionsLinux is set.
+func (p *Provider) CreateFolder(path string) error {
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return fmt.Errorf("disk: CreateFolder(%q): %w", path, err)
+	}
+	return nil
+}
+
+// RemoveEmptySubfolders ports `DiskProviderBase.cs:533-552` —
+// depth-first sweep that deletes every subdirectory of path whose
+// post-recursion contents are empty. The top-level path itself is
+// not deleted (DiskScanService pairs this with a FolderEmpty +
+// DeleteFolder for that). Per-subdir errors are logged via
+// slog.Warn and swallowed so the sweep continues, matching the C#
+// per-iteration try/catch at `:543-549`.
+func (p *Provider) RemoveEmptySubfolders(path string) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("disk: RemoveEmptySubfolders(%q): %w", path, err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		sub := filepath.Join(path, e.Name())
+		if err := p.RemoveEmptySubfolders(sub); err != nil {
+			p.log.Warn("disk: failed to descend into directory", "path", sub, "err", err)
+			continue
+		}
+		subEntries, err := os.ReadDir(sub)
+		if err != nil {
+			p.log.Warn("disk: failed to re-read directory after sweep", "path", sub, "err", err)
+			continue
+		}
+		if len(subEntries) == 0 {
+			if err := os.Remove(sub); err != nil {
+				p.log.Warn("disk: failed to remove empty directory", "path", sub, "err", err)
+			}
+		}
+	}
+	return nil
+}
+
+// DeleteFolder ports `DiskProviderBase.cs:306-332`. recursive=true
+// removes path and everything under it; recursive=false errors if
+// path is non-empty. The C# version retries up to 3 times with 3s
+// sleeps to dodge Windows AV/indexer holds — the Go port skips that
+// retry loop because:
+//
+//   - Linux/macOS targets do not exhibit the post-Empty race the C#
+//     workaround addresses.
+//   - The retry would mask real errors (a network mount that loses
+//     connectivity mid-delete).
+//   - When Windows-as-a-first-class-target lands, this is the place
+//     to add the same retry shape behind a build tag.
+func (p *Provider) DeleteFolder(path string, recursive bool) error {
+	if recursive {
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("disk: DeleteFolder(%q, recursive): %w", path, err)
+		}
+		return nil
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("disk: DeleteFolder(%q): %w", path, err)
+	}
+	return nil
+}
+
+// SetPermissions ports the C# tree's two-stage SetPermissions call
+// (`Mono/Disk/DiskProvider.cs:69-114` for the Linux body, the no-op
+// Windows override). Linux performs chmod(2) + (when group is
+// non-empty) chown(2) by group name; macOS / Windows / other-GOOS
+// builds debug-log and return nil.
+//
+// mask must be an octal string ("755", "0755", "2755"); 3-char masks
+// preserve setuid/setgid/sticky bits from the existing inode (mirrors
+// the C# `mask.Length < 4` branch). 4-char masks set the high bits
+// verbatim. Empty mask returns an error.
+//
+// chown sets gid only — uid stays untouched. Mirrors C#
+// `Syscall.chown(path, -1, groupId)` at `:108`.
+func (p *Provider) SetPermissions(path, mask, group string) error {
+	return p.setPermissions(path, mask, group)
+}
+
+// GetFileSize ports `DiskProviderBase.cs:183-213`. Symlinks are
+// followed via os.Stat (Go's default), matching the C#
+// `fi.ResolveLinkTarget(true)` branch. Missing files surface as a
+// wrapped error rather than the C# `FileNotFoundException` panic.
+// Directories surface as an error so the size-update loop doesn't
+// silently treat a stale row as a 4KB directory inode.
+func (p *Provider) GetFileSize(path string) (int64, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return 0, fmt.Errorf("disk: GetFileSize(%q): %w", path, err)
+	}
+	if st.IsDir() {
+		return 0, fmt.Errorf("disk: GetFileSize(%q): is a directory", path)
+	}
+	return st.Size(), nil
+}

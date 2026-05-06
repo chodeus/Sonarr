@@ -48,6 +48,7 @@ import (
 	"sonarr.tv/sonarr/internal/configfile"
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/datastore"
+	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/healthcheck"
@@ -361,8 +362,13 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("config provider load: %w", err)
 	}
 	configProv.Subscribe(bus)
+	// Disk provider (Phase 3.54). Concrete os/filepath-backed impl of
+	// the 8-method mediafiles.DiskProvider surface; SetPermissions is
+	// platform-aware via build tags (chmod+chown on Linux, no-op on
+	// other GOOS). Drops the second mediafiles boot stub.
+	diskProv := disk.NewProvider(logger)
 	mediafilesSvc, err := mediafiles.NewService(
-		stubDiskProvider{},
+		diskProv,
 		configProv,
 		stubRootFolderResolver{},
 		seriesSvc,

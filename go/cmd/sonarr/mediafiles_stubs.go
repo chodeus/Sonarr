@@ -19,22 +19,6 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 )
 
-// stubDiskProvider answers every probe with a non-existent / empty /
-// no-error response. The Scan code path runs to completion against
-// it but performs no disk writes — the missing-folder + missing-root
-// branch publishes [mediafiles.SeriesScanSkippedReasonRootFolderDoesNotExist]
-// and returns. Replace when the real `IDiskProvider` Go port lands.
-type stubDiskProvider struct{}
-
-func (stubDiskProvider) FolderExists(string) bool                    { return false }
-func (stubDiskProvider) FolderEmpty(string) bool                     { return true }
-func (stubDiskProvider) GetFiles(string, bool) ([]string, error)     { return nil, nil }
-func (stubDiskProvider) CreateFolder(string) error                   { return nil }
-func (stubDiskProvider) RemoveEmptySubfolders(string) error          { return nil }
-func (stubDiskProvider) DeleteFolder(string, bool) error             { return nil }
-func (stubDiskProvider) SetPermissions(string, string, string) error { return nil }
-func (stubDiskProvider) GetFileSize(string) (int64, error)           { return 0, nil }
-
 // stubRootFolderResolver returns the input path unchanged with a nil
 // error. The C# tree's `RootFolderService.GetBestRootFolderPath`
 // walks the configured roots and returns the longest matching
@@ -81,7 +65,6 @@ func (stubUpdateMediaInfo) Update(_ context.Context, _ *episodefiles.File, _ *se
 // the boot site rather than as a `*mediafiles.Service` constructor
 // failure at runtime.
 var (
-	_ mediafiles.DiskProvider           = stubDiskProvider{}
 	_ mediafiles.RootFolderResolver     = stubRootFolderResolver{}
 	_ mediafiles.ImportDecisionMaker    = stubImportDecisionMaker{}
 	_ mediafiles.ImportApprovedEpisodes = stubImportApprovedEpisodes{}
