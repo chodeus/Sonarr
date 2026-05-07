@@ -49,6 +49,7 @@ import (
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/disk"
+	"sonarr.tv/sonarr/internal/downloadedimport"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/healthcheck"
@@ -57,6 +58,7 @@ import (
 	"sonarr.tv/sonarr/internal/lifecycle"
 	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 	"sonarr.tv/sonarr/internal/series"
@@ -384,6 +386,73 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("mediafiles service: %w", err)
 	}
 
+	// parsingservice.Service wiring (Phase 3.82). Slice 3.81 closed
+	// the [Service.GetSeriesFromTitle] gap that the
+	// downloadedimport.SeriesParser narrow interface reaches for; this
+	// is the first production binding of the parsing service, wired
+	// minimally — episodes finder is the real episodes.Service, scene
+	// mappings + series finder + parsed-info builder are left as their
+	// noop/default fallbacks since the EpisodeImport orchestrator
+	// hasn't lifted yet. The series finder upgrade to the real
+	// *series.Service is included so GetSeriesFromTitle resolves
+	// against the live catalog.
+	parsingSvc, err := parsingservice.NewService(episodesSvc, nil, nil, seriesSvc, logger)
+	if err != nil {
+		return fmt.Errorf("parsingservice: %w", err)
+	}
+
+	// downloadedimport.Service wiring (Phase 3.82) — the production
+	// caller that satisfies the slice-3.80 [handlers.Deps.DownloadedEpisodesScan]
+	// processor slot. Composes:
+	//
+	//   - DiskOps          ← *disk.Provider via [downloadedImportDiskOps]
+	//                        (no-op IsFileLocked until disk-pkg port).
+	//   - DiskScanner      ← [downloadedImportDiskScanner] over
+	//                        mediafiles.GetVideoFiles + FilterPaths.
+	//   - SeriesPathChecker ← [downloadedImportSeriesPaths] over
+	//                        *series.Service (ctx-adapter).
+	//   - SeriesParser     ← [downloadedImportSeriesParser] over
+	//                        *parsingservice.Service (ctx-adapter).
+	//   - ImportDecider    ← stubImportDecider (returns nil decisions
+	//                        until episodeimport.ImportDecisionMaker
+	//                        is wired at boot).
+	//   - ImportRunner     ← stubImportRunner (no-op import until
+	//                        episodeimport.ImportApprovedEpisodes is
+	//                        wired at boot).
+	//   - SampleDetector   ← stubSampleDetector (always NotSample
+	//                        until episodeimport.SampleDetector is
+	//                        wired at boot — needs a real
+	//                        VideoRuntimeReader).
+	//   - ConfigReader     ← *config.Provider (UserRejectedExtensions
+	//                        added in slice 3.82).
+	//
+	// API command path becomes reachable end-to-end:
+	// POST /api/v3/command {"name":"DownloadedEpisodesScan"} →
+	// handlers.DownloadedEpisodesScan → downloadedimport.Service.ProcessPath.
+	// Decision-making + import-running still no-op; the path/folder
+	// rejection ladder (DangerousFile / ExecutableFile / ArchiveFile /
+	// UserRejectedExtensions / video-extension filtering / multi-season
+	// gate) IS exercised against real disk + parser state.
+	dimpDisk := downloadedImportDiskOps{Provider: diskProv}
+	dimpSvc := downloadedimport.NewService(
+		dimpDisk,
+		downloadedImportDiskScanner{disk: diskProv, log: logger},
+		downloadedImportSeriesPaths{svc: seriesSvc, log: logger},
+		downloadedImportSeriesParser{svc: parsingSvc, log: logger},
+		stubImportDecider{},
+		stubImportRunner{},
+		stubSampleDetector{},
+		configProv,
+		logger,
+	)
+	if dimpSvc == nil {
+		// NewService returns nil iff any required dep is nil. Every
+		// dep here is non-nil at construction so this is a
+		// belt-and-braces guard against an interface refactor that
+		// adds a new required method without updating this site.
+		return fmt.Errorf("downloadedimport service: nil — required dep regressed")
+	}
+
 	registry := commands.NewRegistry()
 	queue := commands.NewQueue(registry.Properties)
 	cmdSvc.SetQueue(queue)
@@ -392,7 +461,20 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		Housekeeping: houseSvc,
 		HealthCheck:  healthSvc,
 		RescanSeries: mediafilesSvc,
-		Log:          logger,
+		DownloadedEpisodesScan: handlers.DownloadedEpisodesScanDeps{
+			// Processor REQUIRED — slice 3.80 contract: nil Processor
+			// → handler not registered. We always wire the real
+			// downloadedimport.Service here so the API surface is
+			// always live; the upstream stubs are inside the service
+			// itself, not at the handler boundary.
+			Processor: dimpSvc,
+			// Finder / Verifier / Reporter remain nil — those slots
+			// gate on the trackeddownloads.Service / completed-download
+			// lifecycle / ICommandResultReporter ports respectively.
+			// Each is documented optional at slice-3.80's handler
+			// definition; the handler tolerates nil for all three.
+		},
+		Log: logger,
 	}); err != nil {
 		return fmt.Errorf("commands handlers: %w", err)
 	}

@@ -283,6 +283,17 @@ func (p *Provider) SetEpisodeTitleRequired(ctx context.Context, v string) error 
 	return err
 }
 
+// UserRejectedExtensions mirrors `ConfigService.cs:265-269`. Default
+// "" — empty disables the user filter (matches C# `string.Empty`).
+//
+// Read by [downloadedimport.ConfigReader] (slice 3.79c) — the
+// orchestrator's per-file extension-rejection ladder consults this
+// list AFTER the dangerous / executable / archive checks at C#
+// `DownloadedEpisodesImportService.cs:301-321`.
+func (p *Provider) UserRejectedExtensions() string {
+	return p.getString("UserRejectedExtensions", "")
+}
+
 // getInt parses the cached value as int, falling back to def for
 // missing/empty/unparseable entries.
 func (p *Provider) getInt(key string, def int) int {
