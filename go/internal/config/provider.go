@@ -380,3 +380,19 @@ func (p *Provider) SetEnableMediaInfo(ctx context.Context, v bool) error {
 	_, err := p.setBool(ctx, "EnableMediaInfo", v)
 	return err
 }
+
+// RecycleBin mirrors `ConfigService.cs:100-104`. Default "" at
+// `:102`. Empty value disables the recycle-bin feature — the
+// recyclebin.Service [DeleteFile] method falls through to a hard
+// delete, matching the C# `string.IsNullOrWhiteSpace` arm at
+// `RecycleBinProvider.cs:46-51`.
+func (p *Provider) RecycleBin() string {
+	return p.getString("RecycleBin", "")
+}
+
+// SetRecycleBin writes the new value, publishing ConfigSavedEvent
+// on change.
+func (p *Provider) SetRecycleBin(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "RecycleBin", v)
+	return err
+}
