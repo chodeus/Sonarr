@@ -465,15 +465,32 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("aggregation service: %w", err)
 	}
+	// Per-spec wiring (Phase 3.86). Five zero-dep specs (each takes
+	// only a logger) populate the ImportDecisionMaker's specs slice.
+	// Each Specification implements
+	// `IsSatisfiedBy(le, dci) *ImportSpecDecision` and `Name() string`;
+	// the orchestrator walks the list per file and collects rejections.
+	//
+	// Specs with heavier dep chains (SameEpisodes / AbsoluteEpisodeNumber
+	// / EpisodeTitle / FreeSpace / NotUnpacking / Upgrade / NotSample)
+	// port over subsequent slices as their narrow interfaces' real
+	// production bindings come online.
+	importDecisionSpecs := []episodeimport.Specification{
+		episodeimport.NewFullSeasonSpecification(logger),
+		episodeimport.NewSplitEpisodeSpecification(logger),
+		episodeimport.NewUnverifiedSceneNumberingSpecification(logger),
+		episodeimport.NewHasAudioTrackSpecification(logger),
+		episodeimport.NewMatchesGrabSpecification(logger),
+	}
 	importDecisionMaker, err := episodeimport.NewImportDecisionMaker(
-		nil,             // specs — empty until per-spec dep chains are wired
-		episodeFilesSvc, // filter — FilterExistingFiles
-		aggregationSvc,  // aggregator — slice-3.60 AggregationService (empty aggregators above)
-		diskProv,        // disk — GetFileSize
-		sampleDetector,  // sampler — slice-3.55 + 3.84 SampleDetector
-		nil,             // pathParser — nil → defaults to parser.ParsePath
-		nil,             // tracked — no trackeddownloads.Service yet
-		nil,             // formats — no LocalEpisodeCustomFormatCalculator yet
+		importDecisionSpecs, // specs — slice-3.86: 5 zero-dep specs wired
+		episodeFilesSvc,     // filter — FilterExistingFiles
+		aggregationSvc,      // aggregator — slice-3.60 AggregationService (empty aggregators above)
+		diskProv,            // disk — GetFileSize
+		sampleDetector,      // sampler — slice-3.55 + 3.84 SampleDetector
+		nil,                 // pathParser — nil → defaults to parser.ParsePath
+		nil,                 // tracked — no trackeddownloads.Service yet
+		nil,                 // formats — no LocalEpisodeCustomFormatCalculator yet
 		logger,
 	)
 	if err != nil {
