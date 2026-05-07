@@ -296,6 +296,53 @@ func NewService(
 // threshold that switches "delete folder" to "manual cleanup".
 const rarFileSizeThresholdBytes int64 = 10 * 1024 * 1024
 
+// dangerousExtensions ports `FileExtensions.cs:33-42` — the
+// case-insensitive set of file extensions that trigger a
+// DangerousFile rejection. Stored lowercase with a leading dot;
+// callers compare via lowerExt(filepath.Ext(name)).
+var dangerousExtensions = map[string]struct{}{
+	".arj":  {},
+	".lnk":  {},
+	".lzh":  {},
+	".ps1":  {},
+	".scr":  {},
+	".vbs":  {},
+	".zipx": {},
+}
+
+// executableExtensions ports `FileExtensions.cs:43-49` — the
+// case-insensitive set of file extensions that trigger an
+// ExecutableFile rejection. Same shape as [dangerousExtensions].
+var executableExtensions = map[string]struct{}{
+	".bat": {},
+	".cmd": {},
+	".exe": {},
+	".sh":  {},
+}
+
+// archiveExtensions ports `FileExtensions.cs:18-32` — the
+// case-insensitive set of archive extensions that trigger an
+// ArchiveFile rejection inside CheckEmptyResultForIssue (C# `:388`).
+// Same shape as [dangerousExtensions].
+//
+// Note: ".tar.bz2" / ".tar.gz" in the C# set are full multi-dot
+// suffixes that filepath.Ext can't recover (it returns just ".bz2"
+// / ".gz"). The Go port stores both forms — the bare suffix from
+// filepath.Ext is what gets matched. ".bz2" / ".gz" already cover
+// the tar variants from the rejection-rule perspective.
+var archiveExtensions = map[string]struct{}{
+	".7z":   {},
+	".bz2":  {},
+	".gz":   {},
+	".r00":  {},
+	".rar":  {},
+	".tar":  {},
+	".tb2":  {},
+	".tbz2": {},
+	".tgz":  {},
+	".zip":  {},
+}
+
 // --- public methods ----------------------------------------------
 
 // ProcessPath ports `DownloadedEpisodesImportService.cs:80-110`.
@@ -420,31 +467,181 @@ func (s *Service) ProcessRootFolder(_ string) ([]*episodeimport.ImportResult, er
 
 // --- private dispatchers (deferred bodies) ------------------------
 
-// processFolder mirrors C# `:159-175` (no-series overload). Deferred
-// to slice 3.79b. Currently returns the C# UnknownSeries rejection
-// shape so the ProcessPath dispatcher's no-series → folder route
-// produces a stable result while the body ports.
-func (s *Service) processFolder(path string, _ episodeimport.ImportMode, _ *downloadclients.Item) []*episodeimport.ImportResult {
+// processFolder mirrors C# `:159-175` (no-series overload). Discovers
+// the series via [SeriesParser.GetSeriesFromTitle] applied to the
+// _UNPACK_/_FAILED_-stripped folder name; nil series →
+// UnknownSeriesResult. Otherwise dispatches to the typed overload.
+func (s *Service) processFolder(path string, mode episodeimport.ImportMode, dci *downloadclients.Item) []*episodeimport.ImportResult {
 	cleanedUpName := cleanedUpFolderName(filepath.Base(path))
 	ser := s.parser.GetSeriesFromTitle(cleanedUpName)
 	if ser == nil {
 		s.log.Debug("downloadedimport: unknown series", "name", cleanedUpName)
 		return []*episodeimport.ImportResult{unknownSeriesResult("Unknown Series", "")}
 	}
-	// Body deferred to 3.79b — for now route to the typed overload
-	// stub which surfaces the deferred state via the result errors
-	// list.
-	return s.processFolderWithSeries(path, episodeimport.ImportModeAuto, ser, nil)
+	return s.processFolderWithSeries(path, mode, ser, dci)
 }
 
-// processFolderWithSeries mirrors C# `:177-245`. Deferred to slice
-// 3.79b. Returns a single-element slice with a deferred-port error so
-// callers can detect the missing implementation.
-func (s *Service) processFolderWithSeries(_ string, _ episodeimport.ImportMode, _ *series.Series, _ *downloadclients.Item) []*episodeimport.ImportResult {
-	dec := episodeimport.NewImportDecision(nil)
-	return []*episodeimport.ImportResult{
-		episodeimport.NewSkippedImportResult(dec, "downloadedimport: processFolder not yet ported (slice 3.79b)"),
+// processFolderWithSeries mirrors C# `:177-245`. The folder-route
+// flow with a known series — guards the existing-library path,
+// runs IsFileLocked + multi-season checks, dispatches into the
+// EpisodeImport pipeline, and optionally deletes the folder after a
+// Move-mode import succeeds.
+//
+// Behaviour, in order:
+//
+//  1. SeriesPathExists guard (`:179-186`) — if the path is mapped to
+//     an existing series folder, refuse to process and return a
+//     SeriesFolder rejection. Mirrors C# warn-log + early return.
+//
+//  2. folderInfo = parser.ParseTitle(folderName) (`:188`).
+//     downloadClientItemInfo = parser.ParseTitle(dci.Title) when
+//     dci != nil (`:190`).
+//
+//  3. videoFiles = scanner.FilterPaths(path, scanner.GetVideoFiles(path))
+//     (`:189`). The C# call passes recursive=false implicitly via
+//     GetVideoFiles's default — the Go port defaults the same.
+//
+//  4. When dci == nil (manual import), iterate videoFiles and call
+//     IsFileLocked on each. First locked → FileIsLockedResult and
+//     bail (`:192-204`). When dci != nil the C# tree skips this
+//     check because the download client guarantees the file is
+//     no-longer-being-written-to.
+//
+//  5. Multi-season check (`:206-214`) — if downloadClientItemInfo
+//     has IsMultiSeason=true, refuse with a MultiSeason rejection.
+//
+//  6. decisions = decider.GetImportDecisions(videoFiles, ser, dci,
+//     downloadClientItemInfo, folderInfo, true) (`:216`).
+//
+//  7. importResults = runner.Import(decisions, true, dci, mode)
+//     (`:217`).
+//
+//  8. Auto-mode resolution (`:219-222`) — when mode is Auto, resolve
+//     to Move when dci is nil OR dci.CanMoveFiles, else Copy.
+//
+//  9. Post-import folder-delete branch (`:224-238`) — when the
+//     resolved mode is Move AND any importResult has Imported AND
+//     ShouldDeleteFolder returns true, call DeleteFolder(path,
+//     recursive=true). DeleteFolder errors log at debug and don't
+//     propagate (matches C# `:230-237` IOException catch).
+//
+//  10. Empty-results check (`:239-241`) — when no importResults
+//     came back, append CheckEmptyResultForIssue's rejection
+//     (or skip if it returns nil).
+//
+// Returns a non-nil slice (possibly empty when both the import
+// pipeline and CheckEmptyResultForIssue produce nothing).
+func (s *Service) processFolderWithSeries(path string, mode episodeimport.ImportMode, ser *series.Series, dci *downloadclients.Item) []*episodeimport.ImportResult {
+	if s.seriesPaths.SeriesPathExists(path) {
+		s.log.Warn("downloadedimport: unable to process folder mapped to an existing series", "path", path)
+		return []*episodeimport.ImportResult{
+			rejectionResult(episodeimport.ImportRejectionSeriesFolder, "Import path is mapped to a series folder"),
+		}
 	}
+
+	folderInfo := parser.ParseTitle(filepath.Base(path))
+
+	videoFiles := s.scanner.FilterPaths(path, s.scanner.GetVideoFiles(path, false))
+
+	var dciInfo *parser.ParsedEpisodeInfo
+	if dci != nil {
+		dciInfo = parser.ParseTitle(dci.Title)
+	}
+
+	if dci == nil {
+		for _, vf := range videoFiles {
+			if s.disk.IsFileLocked(vf) {
+				return []*episodeimport.ImportResult{fileIsLockedResult(s.log, vf)}
+			}
+		}
+	}
+
+	if dciInfo != nil && dciInfo.IsMultiSeason {
+		s.log.Debug("downloadedimport: download client item marked multi-season, skipping",
+			"path", path)
+		return []*episodeimport.ImportResult{
+			rejectionResult(episodeimport.ImportRejectionMultiSeason, "Multi-season download, unable to import automatically"),
+		}
+	}
+
+	decisions := s.decider.GetImportDecisions(videoFiles, ser, dci, dciInfo, folderInfo, true)
+	importResults := s.runner.Import(decisions, true, dci, mode)
+	if importResults == nil {
+		importResults = []*episodeimport.ImportResult{}
+	}
+
+	resolvedMode := mode
+	if resolvedMode == episodeimport.ImportModeAuto {
+		if dci == nil || dci.CanMoveFiles {
+			resolvedMode = episodeimport.ImportModeMove
+		} else {
+			resolvedMode = episodeimport.ImportModeCopy
+		}
+	}
+
+	hasImported := false
+	for _, r := range importResults {
+		if r != nil && r.ResultType() == episodeimport.ImportResultImported {
+			hasImported = true
+			break
+		}
+	}
+
+	if resolvedMode == episodeimport.ImportModeMove && hasImported && s.ShouldDeleteFolder(path, ser) {
+		s.log.Debug("downloadedimport: deleting folder after importing valid files", "path", path)
+		if err := s.disk.DeleteFolder(path, true); err != nil {
+			s.log.Debug("downloadedimport: unable to delete folder after importing",
+				"path", path, "err", err)
+		}
+	} else if len(importResults) == 0 {
+		if extra := s.checkEmptyResultForIssue(path); extra != nil {
+			importResults = append(importResults, extra)
+		}
+	}
+
+	return importResults
+}
+
+// checkEmptyResultForIssue ports `:374-394`. Scans the folder
+// (recursive) for dangerous / executable / archive extensions and
+// returns a single rejection ImportResult naming the first
+// extension class that matched — DangerousFile > ExecutableFile >
+// ArchiveFile (mirrors C# fall-through order at `:378-390`).
+//
+// Returns nil when no flagged extension was found OR when
+// disk.GetFiles errors. Mirrors C# returning null on success and
+// implicit "any" enumerator-empty.
+func (s *Service) checkEmptyResultForIssue(folder string) *episodeimport.ImportResult {
+	files, err := s.disk.GetFiles(folder, true)
+	if err != nil {
+		s.log.Debug("downloadedimport: checkEmptyResultForIssue GetFiles errored",
+			"folder", folder, "err", err)
+		return nil
+	}
+	for _, f := range files {
+		if _, ok := dangerousExtensions[lowerExt(f)]; ok {
+			return rejectionResult(episodeimport.ImportRejectionDangerousFile, "Caution: Found potentially dangerous file")
+		}
+	}
+	for _, f := range files {
+		if _, ok := executableExtensions[lowerExt(f)]; ok {
+			return rejectionResult(episodeimport.ImportRejectionExecutableFile, "Caution: Found executable file")
+		}
+	}
+	for _, f := range files {
+		if _, ok := archiveExtensions[lowerExt(f)]; ok {
+			return rejectionResult(episodeimport.ImportRejectionArchiveFile, "Found archive file, might need to be extracted")
+		}
+	}
+	return nil
+}
+
+// lowerExt returns the lowercase extension of path, including the
+// leading dot. Empty string when path has no extension. Used by the
+// extension-set checks that need case-insensitive lookups against
+// the lowercase-stored sets.
+func lowerExt(path string) string {
+	return strings.ToLower(filepath.Ext(path))
 }
 
 // processFile mirrors C# `:247-262` (no-series overload). Deferred
@@ -538,14 +735,7 @@ func (s *Service) logInaccessiblePathError(path string) {
 	)
 }
 
-// --- compile-time guards ------------------------------------------
-
-// rejectionResult and fileIsLockedResult are reachable only from the
-// deferred processFolder / processFile bodies; the build pipeline
-// doesn't see callers in this slice. Reference them via package-level
-// var assignments so the unparam-style linter pass doesn't flag
-// them as dead. Lands as a real callsite in slice 3.79b/3.79c.
-var (
-	_ = rejectionResult
-	_ = fileIsLockedResult
-)
+// rejectionResult is reachable from processFolderWithSeries
+// (slice 3.79b) and processFileWithSeries (slice 3.79c).
+// fileIsLockedResult is reachable from processFolderWithSeries
+// already; the slice-3.79c processFile body adds the second caller.

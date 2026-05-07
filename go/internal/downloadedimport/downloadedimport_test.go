@@ -175,19 +175,25 @@ func TestProcessPath_FileRoute(t *testing.T) {
 	}
 }
 
-func TestProcessPath_FolderRouteWithSeries(t *testing.T) {
+func TestProcessPath_FolderRouteWithSeries_NoVideoFiles(t *testing.T) {
 	t.Parallel()
-	d := &stubDisk{folders: map[string]bool{"/drop/show": true}}
+	dir := "/drop/show"
+	d := &stubDisk{
+		folders: map[string]bool{dir: true},
+		// No allFiles/videos → checkEmptyResultForIssue returns nil
+		// (no flagged extensions among zero files).
+	}
 	svc := newSvc(t, d, nil, nil)
 	ser := &series.Series{ID: 1}
-	got := svc.ProcessPath("/drop/show", episodeimport.ImportModeAuto, ser, nil)
+	got := svc.ProcessPath(dir, episodeimport.ImportModeAuto, ser, nil)
 	if got == nil {
 		t.Fatal("ProcessPath returned nil")
 	}
-	// With ser != nil, dispatcher routes to processFolderWithSeries
-	// (deferred stub) — single result with deferred error message.
-	if len(got) != 1 {
-		t.Errorf("expected 1 result from deferred processFolderWithSeries, got %d", len(got))
+	// processFolderWithSeries on an empty folder: no SeriesPathExists
+	// match, no videoFiles, no decisions, no results, no flagged
+	// extensions → empty slice.
+	if len(got) != 0 {
+		t.Errorf("expected empty slice, got %d results: %+v", len(got), got)
 	}
 }
 
@@ -341,6 +347,297 @@ func TestShouldDeleteFolder_RarFileSizeError_ReturnsFalse(t *testing.T) {
 	svc := newSvc(t, d, scanner, nil)
 	if svc.ShouldDeleteFolder(dir, &series.Series{ID: 1}) {
 		t.Error("ShouldDeleteFolder = true on size-stat error, want false")
+	}
+}
+
+// --- processFolder (via ProcessPath FolderRoute) ------------------
+
+// scannerWithVideos returns a stubScanner whose GetVideoFiles map
+// pins the supplied videos under the conventional test directory.
+// Every processFolder test below uses /drop/show as its dir, so the
+// helper hardcodes that — keeps the test names short and the helper
+// signature single-arg.
+func scannerWithVideos(videos []string) *stubScanner {
+	return &stubScanner{videos: map[string][]string{"/drop/show": videos}}
+}
+
+// recDecider records GetImportDecisions calls + lets the test
+// stipulate the returned decisions list.
+type recDecider struct {
+	calls    int
+	got      []string
+	gotSer   *series.Series
+	gotDci   *downloadclients.Item
+	gotDciI  *parser.ParsedEpisodeInfo
+	gotFInfo *parser.ParsedEpisodeInfo
+	ret      []*episodeimport.ImportDecision
+}
+
+func (r *recDecider) GetImportDecisions(
+	paths []string, ser *series.Series, dci *downloadclients.Item,
+	dciI *parser.ParsedEpisodeInfo, folderInfo *parser.ParsedEpisodeInfo, _ bool,
+) []*episodeimport.ImportDecision {
+	r.calls++
+	r.got = paths
+	r.gotSer = ser
+	r.gotDci = dci
+	r.gotDciI = dciI
+	r.gotFInfo = folderInfo
+	return r.ret
+}
+
+// recRunner records Import calls + lets the test stipulate the
+// returned results.
+type recRunner struct {
+	calls   int
+	gotMode episodeimport.ImportMode
+	gotDci  *downloadclients.Item
+	ret     []*episodeimport.ImportResult
+}
+
+func (r *recRunner) Import(
+	_ []*episodeimport.ImportDecision, _ bool, dci *downloadclients.Item, mode episodeimport.ImportMode,
+) []*episodeimport.ImportResult {
+	r.calls++
+	r.gotMode = mode
+	r.gotDci = dci
+	return r.ret
+}
+
+func newSvcCustom(
+	t *testing.T,
+	disk *stubDisk,
+	scanner *stubScanner,
+	seriesPaths *stubSeriesPaths,
+	parserSvc *stubParser,
+	decider downloadedimport.ImportDecider,
+	runner downloadedimport.ImportRunner,
+) *downloadedimport.Service {
+	t.Helper()
+	if scanner == nil {
+		scanner = &stubScanner{}
+	}
+	if seriesPaths == nil {
+		seriesPaths = &stubSeriesPaths{}
+	}
+	if parserSvc == nil {
+		parserSvc = &stubParser{}
+	}
+	if decider == nil {
+		decider = stubDecider{}
+	}
+	if runner == nil {
+		runner = stubRunner{}
+	}
+	// Sample detector defaults to "all-Sample" — the processFolder
+	// tests below don't exercise ShouldDeleteFolder unless the
+	// PostImportDelete test, which uses sample-named files that
+	// match the default verdict.
+	sample := &stubSample{verdict: episodeimport.DetectSampleSample}
+	svc := downloadedimport.NewService(disk, scanner, seriesPaths, parserSvc,
+		decider, runner, sample, stubCfg{}, slog.Default())
+	if svc == nil {
+		t.Fatal("NewService returned nil")
+	}
+	return svc
+}
+
+func TestProcessFolder_UnknownSeries(t *testing.T) {
+	t.Parallel()
+	dir := "/drop/show"
+	d := &stubDisk{folders: map[string]bool{dir: true}}
+	// stubParser default returns nil → unknown series.
+	svc := newSvcCustom(t, d, nil, nil, nil, nil, nil)
+	got := svc.ProcessPath(dir, episodeimport.ImportModeAuto, nil, nil)
+	if len(got) != 1 {
+		t.Fatalf("got %d results, want 1 (UnknownSeries)", len(got))
+	}
+	rejs := got[0].Decision.Rejections
+	if len(rejs) == 0 || rejs[0].Reason != episodeimport.ImportRejectionUnknownSeries {
+		t.Errorf("expected UnknownSeries rejection, got %+v", rejs)
+	}
+}
+
+func TestProcessFolder_SeriesPathExists_Refuses(t *testing.T) {
+	t.Parallel()
+	dir := "/drop/show"
+	d := &stubDisk{folders: map[string]bool{dir: true}}
+	sp := &stubSeriesPaths{exists: map[string]bool{dir: true}}
+	pSvc := &stubParser{resolveTo: &series.Series{ID: 1}}
+	svc := newSvcCustom(t, d, nil, sp, pSvc, nil, nil)
+	got := svc.ProcessPath(dir, episodeimport.ImportModeAuto, nil, nil)
+	if len(got) != 1 {
+		t.Fatalf("got %d, want 1 (SeriesFolder rejection)", len(got))
+	}
+	rejs := got[0].Decision.Rejections
+	if len(rejs) == 0 || rejs[0].Reason != episodeimport.ImportRejectionSeriesFolder {
+		t.Errorf("expected SeriesFolder rejection, got %+v", rejs)
+	}
+}
+
+func TestProcessFolder_FileLocked_NoDci(t *testing.T) {
+	t.Parallel()
+	dir := "/drop/show"
+	video := filepath.Join(dir, "Show.S01E01.mkv")
+	d := &stubDisk{
+		folders: map[string]bool{dir: true},
+		locked:  map[string]bool{video: true},
+	}
+	scanner := scannerWithVideos([]string{video})
+	pSvc := &stubParser{resolveTo: &series.Series{ID: 1}}
+	svc := newSvcCustom(t, d, scanner, nil, pSvc, nil, nil)
+	got := svc.ProcessPath(dir, episodeimport.ImportModeAuto, nil, nil)
+	if len(got) != 1 {
+		t.Fatalf("got %d, want 1 (FileLocked rejection)", len(got))
+	}
+	rejs := got[0].Decision.Rejections
+	if len(rejs) == 0 || rejs[0].Reason != episodeimport.ImportRejectionFileLocked {
+		t.Errorf("expected FileLocked, got %+v", rejs)
+	}
+}
+
+func TestProcessFolder_FileLockedSkippedWhenDci(t *testing.T) {
+	t.Parallel()
+	// Mirrors C# `:192-204` — when downloadClientItem != nil, the
+	// IsFileLocked check is skipped entirely.
+	dir := "/drop/show"
+	video := filepath.Join(dir, "Show.S01E01.mkv")
+	d := &stubDisk{
+		folders: map[string]bool{dir: true},
+		locked:  map[string]bool{video: true},
+	}
+	scanner := scannerWithVideos([]string{video})
+	pSvc := &stubParser{resolveTo: &series.Series{ID: 1}}
+	dci := &downloadclients.Item{Title: "Show.S01E01.WEB"}
+	rec := &recDecider{}
+	rRun := &recRunner{}
+	svc := newSvcCustom(t, d, scanner, nil, pSvc, rec, rRun)
+	svc.ProcessPath(dir, episodeimport.ImportModeAuto, nil, dci)
+	if rec.calls != 1 {
+		t.Errorf("expected decider called 1 time (lock check skipped), got %d", rec.calls)
+	}
+}
+
+// MultiSeason rejection is structurally wired (see
+// processFolderWithSeries: dciInfo.IsMultiSeason check at C# `:206-214`)
+// but the Go parser doesn't yet populate ParsedEpisodeInfo.IsMultiSeason
+// — the field exists on the model but no parser branch sets it true.
+// A direct test of the rejection arm would require either a parser
+// change (out of scope for this slice) or a test seam past
+// parser.ParseTitle (the dispatcher takes title strings, not
+// ParsedEpisodeInfo). Documented here so the gap is tracked.
+
+func TestProcessFolder_AutoMode_NoDci_ResolvesToMove(t *testing.T) {
+	t.Parallel()
+	dir := "/drop/show"
+	d := &stubDisk{folders: map[string]bool{dir: true}}
+	scanner := scannerWithVideos([]string{filepath.Join(dir, "Show.S01E01.mkv")})
+	pSvc := &stubParser{resolveTo: &series.Series{ID: 1}}
+	rRun := &recRunner{ret: []*episodeimport.ImportResult{}}
+	svc := newSvcCustom(t, d, scanner, nil, pSvc, nil, rRun)
+	svc.ProcessPath(dir, episodeimport.ImportModeAuto, nil, nil)
+	if rRun.gotMode != episodeimport.ImportModeAuto {
+		// Mode passed to runner.Import is the ORIGINAL mode at C#
+		// `:217` — auto-resolution happens AFTER on the local copy.
+		t.Errorf("runner.Import got mode %v, want ImportModeAuto (C# `:217` passes pre-resolution)", rRun.gotMode)
+	}
+}
+
+func TestProcessFolder_AutoMode_DciCantMove_ResolvesToCopy_NoDelete(t *testing.T) {
+	t.Parallel()
+	dir := "/drop/show"
+	video := filepath.Join(dir, "Show.S01E01.mkv")
+	d := &stubDisk{folders: map[string]bool{dir: true}}
+	scanner := scannerWithVideos([]string{video})
+	pSvc := &stubParser{resolveTo: &series.Series{ID: 1}}
+	dci := &downloadclients.Item{Title: "Show.S01E01.mkv", CanMoveFiles: false}
+	// One Imported result — the post-import delete branch should
+	// NOT fire because CanMoveFiles=false → mode resolves to Copy.
+	imported := episodeimport.NewImportedImportResult(
+		episodeimport.NewImportDecision(&episodeimport.LocalEpisode{Path: video}),
+		nil,
+	)
+	rRun := &recRunner{ret: []*episodeimport.ImportResult{imported}}
+	svc := newSvcCustom(t, d, scanner, nil, pSvc, nil, rRun)
+	svc.ProcessPath(dir, episodeimport.ImportModeAuto, nil, dci)
+	if len(d.deleted) != 0 {
+		t.Errorf("expected no folder delete (Copy mode), got %v", d.deleted)
+	}
+}
+
+func TestProcessFolder_EmptyResults_AppendsArchiveRejection(t *testing.T) {
+	t.Parallel()
+	dir := "/drop/show"
+	rar := filepath.Join(dir, "show.rar")
+	d := &stubDisk{
+		folders:  map[string]bool{dir: true},
+		allFiles: map[string][]string{dir: {rar}},
+		// rar at 1MB so ShouldDeleteFolder wouldn't block — but we
+		// exercise checkEmptyResultForIssue, not ShouldDeleteFolder.
+		sizes: map[string]int64{rar: 1024},
+	}
+	scanner := scannerWithVideos(nil)
+	pSvc := &stubParser{resolveTo: &series.Series{ID: 1}}
+	rRun := &recRunner{ret: []*episodeimport.ImportResult{}}
+	svc := newSvcCustom(t, d, scanner, nil, pSvc, nil, rRun)
+	got := svc.ProcessPath(dir, episodeimport.ImportModeAuto, nil, nil)
+	if len(got) != 1 {
+		t.Fatalf("got %d, want 1 (archive rejection)", len(got))
+	}
+	if got[0].Decision.Rejections[0].Reason != episodeimport.ImportRejectionArchiveFile {
+		t.Errorf("expected ArchiveFile rejection, got %+v", got[0].Decision.Rejections)
+	}
+}
+
+func TestProcessFolder_EmptyResults_DangerousBeatsArchive(t *testing.T) {
+	t.Parallel()
+	// Mirrors C# `:378-390` order — Dangerous before Executable
+	// before Archive. Folder with both .vbs (dangerous) and .rar
+	// (archive) → DangerousFile wins.
+	dir := "/drop/show"
+	d := &stubDisk{
+		folders: map[string]bool{dir: true},
+		allFiles: map[string][]string{
+			dir: {filepath.Join(dir, "evil.VBS"), filepath.Join(dir, "show.rar")},
+		},
+	}
+	scanner := scannerWithVideos(nil)
+	pSvc := &stubParser{resolveTo: &series.Series{ID: 1}}
+	rRun := &recRunner{ret: []*episodeimport.ImportResult{}}
+	svc := newSvcCustom(t, d, scanner, nil, pSvc, nil, rRun)
+	got := svc.ProcessPath(dir, episodeimport.ImportModeAuto, nil, nil)
+	if len(got) != 1 {
+		t.Fatalf("got %d, want 1", len(got))
+	}
+	if got[0].Decision.Rejections[0].Reason != episodeimport.ImportRejectionDangerousFile {
+		t.Errorf("expected DangerousFile (case-insensitive .VBS), got %+v", got[0].Decision.Rejections)
+	}
+}
+
+func TestProcessFolder_PostImportDelete_FiresOnMoveAndImported(t *testing.T) {
+	t.Parallel()
+	dir := "/drop/show"
+	video := filepath.Join(dir, "Show.S01E01.mkv")
+	d := &stubDisk{
+		folders:  map[string]bool{dir: true},
+		allFiles: map[string][]string{dir: {video}},
+		// Configure ShouldDeleteFolder to return true: video file
+		// parses + sample.IsSample == DetectSampleSample, no rar
+		// files.
+	}
+	video = filepath.Join(dir, "Show.S01E01.sample.mkv") // make ShouldDeleteFolder happy
+	d.allFiles[dir] = []string{video}
+	scanner := scannerWithVideos([]string{video})
+	pSvc := &stubParser{resolveTo: &series.Series{ID: 1}}
+	imported := episodeimport.NewImportedImportResult(
+		episodeimport.NewImportDecision(&episodeimport.LocalEpisode{Path: video}),
+		nil,
+	)
+	rRun := &recRunner{ret: []*episodeimport.ImportResult{imported}}
+	svc := newSvcCustom(t, d, scanner, nil, pSvc, nil, rRun)
+	svc.ProcessPath(dir, episodeimport.ImportModeMove, nil, nil)
+	if len(d.deleted) != 1 || d.deleted[0] != dir {
+		t.Errorf("expected DeleteFolder(%q), got %v", dir, d.deleted)
 	}
 }
 
