@@ -26,6 +26,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/downloadclients"
@@ -191,21 +192,49 @@ func (stubImportRunner) Import(
 	return nil
 }
 
-// stubSampleDetector always classifies as NotSample. The C#
-// `IDetectSample.IsSample` would inspect the file's runtime against
-// the expected episode runtime; until [episodeimport.SampleDetector]
-// (slice 3.55) is wired with a real [episodeimport.VideoRuntimeReader]
-// at boot, every candidate is treated as non-sample so it can flow
-// through the ShouldDeleteFolder gate.
+// noopVideoRuntimeReader is a stub [episodeimport.VideoRuntimeReader]
+// that always returns the package's [episodeimport.ErrRuntimeUnavailable]
+// sentinel. Slice 3.84 wires the real *episodeimport.SampleDetector at
+// the host but defers the ffprobe-backed reader port — until that
+// lands, every reader call surfaces as a "no runtime" Indeterminate
+// inside the SampleDetector's classify pipeline. The downstream
+// orchestrator's ShouldDeleteFolder gate at C# `:131` treats anything
+// other than DetectSampleSample as "don't sample-reject", so the
+// production behaviour is conservatively safe — no false-positive
+// sample-deletes while ffprobe is missing.
 //
-// `episodeimport.SampleDetector` itself is constructed via
-// [episodeimport.NewSampleDetector(reader, log)]; replace this stub
-// once a real `mediainfo`-backed VideoRuntimeReader is wired.
-type stubSampleDetector struct{}
+// The extension/special short-circuit arms inside SampleDetector still
+// fire correctly (.flv / .strm / specials → NotSample), so this stub
+// only affects the runtime-bucket arm. Replace when an ffprobe-backed
+// reader (or mediainfo-backed equivalent) ports into the host.
+type noopVideoRuntimeReader struct{}
 
-// IsSample always returns DetectSampleNotSample.
-func (stubSampleDetector) IsSample(_ *series.Series, _ string, _ bool) episodeimport.DetectSampleResult {
-	return episodeimport.DetectSampleNotSample
+// GetRunTime always returns (0, ErrRuntimeUnavailable). The error is
+// the package's typed sentinel so SampleDetector's error-log uses the
+// right phrasing ("runtime unavailable" rather than "ffprobe missing").
+func (noopVideoRuntimeReader) GetRunTime(_ context.Context, _ string) (time.Duration, error) {
+	return 0, episodeimport.ErrRuntimeUnavailable
+}
+
+// downloadedImportSampleDetector adapts the slice-3.84
+// [*episodeimport.SampleDetector.IsSampleForSeries] (3-arg overload)
+// to the narrow ctx-less [downloadedimport.SampleDetector] interface.
+// Same posture as the other ctx-bridge adapters in this file —
+// [context.Background] for the underlying call; the narrow interface
+// drops ctx by design at slice 3.79a.
+//
+// Composition: holds a *episodeimport.SampleDetector that's
+// constructed at the boot site with the noopVideoRuntimeReader above.
+// Once the real reader ports, the only edit is at the boot site (swap
+// noopVideoRuntimeReader for the real binding) — the adapter and the
+// SampleDetector struct itself stay unchanged.
+type downloadedImportSampleDetector struct {
+	svc *episodeimport.SampleDetector
+}
+
+// IsSample bridges the narrow signature to IsSampleForSeries.
+func (s downloadedImportSampleDetector) IsSample(ser *series.Series, path string, isPossibleSpecial bool) episodeimport.DetectSampleResult {
+	return s.svc.IsSampleForSeries(context.Background(), ser, path, isPossibleSpecial)
 }
 
 // Compile-time interface satisfaction guards. If a future deps.go
@@ -219,5 +248,6 @@ var (
 	_ downloadedimport.SeriesParser      = downloadedImportSeriesParser{}
 	_ downloadedimport.ImportDecider     = stubImportDecider{}
 	_ downloadedimport.ImportRunner      = stubImportRunner{}
-	_ downloadedimport.SampleDetector    = stubSampleDetector{}
+	_ downloadedimport.SampleDetector    = downloadedImportSampleDetector{}
+	_ episodeimport.VideoRuntimeReader   = noopVideoRuntimeReader{}
 )

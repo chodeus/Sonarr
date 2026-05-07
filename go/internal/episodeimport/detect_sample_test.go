@@ -268,3 +268,76 @@ func TestSampleDetector_IsSamplePath_NoReader(t *testing.T) {
 		t.Errorf("nil reader = %v, want Indeterminate", got)
 	}
 }
+
+// TestSampleDetector_IsSampleForSeries pins the slice-3.84 port of
+// the C# `IDetectSample.IsSample(Series, string, bool)` 3-arg overload
+// at `DetectSample.cs:33-45`. Behaviour delegates to IsSamplePath; the
+// only port-side responsibility is the Series.Runtime →
+// expectedRuntimeMinutes translation.
+//
+// Test matrix mirrors IsSamplePath's: special / extension short-circuit,
+// runtime-bucket classification, reader-error indeterminate, plus
+// nil-Series + zero-Runtime fallback arms.
+func TestSampleDetector_IsSampleForSeries(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		ser     *series.Series
+		path    string
+		special bool
+		runtime time.Duration
+		readErr error
+		want    episodeimport.DetectSampleResult
+	}{
+		// extension/special short-circuit — IsSamplePath delegates
+		// keep these arms wired even with nil-Series.
+		{"special skip nil series", nil, "/tv/foo/foo.mkv", true, 0, nil, episodeimport.DetectSampleNotSample},
+		{"flv skip", &series.Series{Runtime: 60}, "/tv/foo/foo.flv", false, 0, nil, episodeimport.DetectSampleNotSample},
+		// nil Series — falls back to DefaultSeriesRuntimeMinutes (45).
+		// 5 min < 600s catch-all bucket → Sample.
+		{"nil series falls back", nil, "/tv/foo/foo.mkv", false, 5 * time.Minute, nil, episodeimport.DetectSampleSample},
+		// 30-min episode bucket: <300s → Sample; >300s → NotSample.
+		{"30min bucket sample", &series.Series{Runtime: 30}, "/tv/foo/foo.mkv", false, 4 * time.Minute, nil, episodeimport.DetectSampleSample},
+		{"30min bucket not sample", &series.Series{Runtime: 30}, "/tv/foo/foo.mkv", false, 6 * time.Minute, nil, episodeimport.DetectSampleNotSample},
+		// 60-min catch-all (Series.Runtime=60 → catch-all bucket): <600s → Sample.
+		{"60min bucket sample", &series.Series{Runtime: 60}, "/tv/foo/foo.mkv", false, 5 * time.Minute, nil, episodeimport.DetectSampleSample},
+		{"60min bucket not sample", &series.Series{Runtime: 60}, "/tv/foo/foo.mkv", false, 30 * time.Minute, nil, episodeimport.DetectSampleNotSample},
+		// Reader error propagates as Indeterminate.
+		{"reader err indeterminate", &series.Series{Runtime: 60}, "/tv/foo/foo.mkv", false, 0, episodeimport.ErrRuntimeUnavailable, episodeimport.DetectSampleIndeterminate},
+		// Zero runtime is treated as corrupt → Sample (matches classify).
+		{"zero file runtime is corrupt", &series.Series{Runtime: 60}, "/tv/foo/foo.mkv", false, 0, nil, episodeimport.DetectSampleSample},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			reader := &fakeRuntimeReader{runtime: c.runtime, err: c.readErr}
+			d := episodeimport.NewSampleDetector(reader, nil)
+			if got := d.IsSampleForSeries(t.Context(), c.ser, c.path, c.special); got != c.want {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestSampleDetector_IsSampleForSeries_NoReader verifies the
+// extension/special arms work without a reader (since they
+// short-circuit before the read), and the no-reader path beyond them
+// returns Indeterminate (not a panic). Mirrors the
+// IsSamplePath_NoReader case shape.
+func TestSampleDetector_IsSampleForSeries_NoReader(t *testing.T) {
+	t.Parallel()
+	d := episodeimport.NewSampleDetector(nil, nil)
+
+	// Extension short-circuit hits NotSample before the reader is
+	// consulted.
+	if got := d.IsSampleForSeries(t.Context(), &series.Series{Runtime: 60}, "/tv/foo.flv", false); got != episodeimport.DetectSampleNotSample {
+		t.Errorf("flv-no-reader = %v, want NotSample", got)
+	}
+	// Special short-circuit same.
+	if got := d.IsSampleForSeries(t.Context(), &series.Series{Runtime: 60}, "/tv/foo.mkv", true); got != episodeimport.DetectSampleNotSample {
+		t.Errorf("special-no-reader = %v, want NotSample", got)
+	}
+	// Falls through to "no reader" arm → Indeterminate.
+	if got := d.IsSampleForSeries(t.Context(), &series.Series{Runtime: 60}, "/tv/foo.mkv", false); got != episodeimport.DetectSampleIndeterminate {
+		t.Errorf("no-reader-fallthrough = %v, want Indeterminate", got)
+	}
+}

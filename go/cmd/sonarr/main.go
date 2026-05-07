@@ -51,6 +51,7 @@ import (
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/downloadedimport"
 	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/housekeeping"
@@ -433,6 +434,18 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// rejection ladder (DangerousFile / ExecutableFile / ArchiveFile /
 	// UserRejectedExtensions / video-extension filtering / multi-season
 	// gate) IS exercised against real disk + parser state.
+	// Sample-detector wiring (Phase 3.84). Constructs the real
+	// *episodeimport.SampleDetector with a noopVideoRuntimeReader
+	// stand-in until an ffprobe-backed reader ports — the
+	// extension/special short-circuit arms still fire correctly
+	// (.flv / .strm / specials → NotSample), and the runtime-bucket
+	// arm conservatively returns Indeterminate (which the
+	// downloadedimport ShouldDeleteFolder gate at C# `:131` treats as
+	// "don't sample-reject"). The downloadedImportSampleDetector
+	// adapter bridges to the slice-3.84 IsSampleForSeries 3-arg
+	// overload; replacing the noopVideoRuntimeReader with a real
+	// binding is the only edit needed when ffprobe lands.
+	sampleDetector := episodeimport.NewSampleDetector(noopVideoRuntimeReader{}, logger)
 	dimpDisk := downloadedImportDiskOps{Provider: diskProv}
 	dimpSvc := downloadedimport.NewService(
 		dimpDisk,
@@ -441,7 +454,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		downloadedImportSeriesParser{svc: parsingSvc, log: logger},
 		stubImportDecider{},
 		stubImportRunner{},
-		stubSampleDetector{},
+		downloadedImportSampleDetector{svc: sampleDetector},
 		configProv,
 		logger,
 	)

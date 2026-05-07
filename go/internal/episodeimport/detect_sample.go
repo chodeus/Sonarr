@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"sonarr.tv/sonarr/internal/series"
 )
 
 // DetectSampleResult is the three-state outcome of the sample-detection
@@ -175,6 +177,37 @@ func (d *SampleDetector) IsSample(ctx context.Context, le *LocalEpisode) DetectS
 		return DetectSampleIndeterminate
 	}
 	return d.classify(le.Path, fileRuntime, expectedMinutes)
+}
+
+// IsSampleForSeries ports the C# `IDetectSample.IsSample(Series, string, bool)`
+// 3-arg overload at `DetectSample.cs:33-45` — the path-based detection
+// variant that derives the expected per-episode runtime directly from
+// `Series.Runtime`.
+//
+// Used by `DownloadedEpisodesImportService.ShouldDeleteFolder` at C#
+// `:131` (the slice-3.79's downloadedimport.SampleDetector narrow
+// interface). The narrow interface is ctx-less + errorless because
+// the consumer threads neither — the adapter at the cmd/sonarr boot
+// site supplies a [context.Background] and surfaces failures via the
+// log+Indeterminate posture inside [IsSamplePath].
+//
+// nil ser is tolerated — falls back to [DefaultSeriesRuntimeMinutes]
+// (matches IsSamplePath's expectedRuntimeMinutes==0 arm). The C#
+// version would NPE on `series.Runtime`; surfacing a sane Indeterminate
+// is the safer Go posture, mirroring the slice-3.79a narrow-interface
+// nil-tolerant SeriesPathChecker / SeriesParser convention.
+//
+// Behaviour delegates to [IsSamplePath] which already implements the
+// extension short-circuit + reader read + classify pipeline. The only
+// thing this method adds is the Series.Runtime → expectedRuntimeMinutes
+// translation that distinguishes the C# 3-arg overload from the path-
+// based one.
+func (d *SampleDetector) IsSampleForSeries(ctx context.Context, ser *series.Series, path string, isSpecial bool) DetectSampleResult {
+	expectedMinutes := 0
+	if ser != nil {
+		expectedMinutes = ser.Runtime
+	}
+	return d.IsSamplePath(ctx, path, isSpecial, expectedMinutes)
 }
 
 // IsSamplePath is the path-based detection variant — used by the
