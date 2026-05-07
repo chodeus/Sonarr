@@ -2,6 +2,8 @@ package handlers_test
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -11,13 +13,23 @@ import (
 	"sonarr.tv/sonarr/internal/commands/handlers"
 )
 
+type stubCleanupRunner struct {
+	called int
+	err    error
+}
+
+func (s *stubCleanupRunner) Cleanup(_ context.Context) error {
+	s.called++
+	return s.err
+}
+
 var cleanUpRecycleBinFixedTime = time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 
-func TestCleanUpRecycleBin_Execute_LogsAndReturnsNil(t *testing.T) {
+func TestCleanUpRecycleBin_Execute_NoRunner_LogsStubAndReturnsNil(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	h := handlers.NewCleanUpRecycleBin(logger)
+	h := handlers.NewCleanUpRecycleBin(nil, logger)
 
 	if err := h.Execute(t.Context(), `{}`); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -31,9 +43,40 @@ func TestCleanUpRecycleBin_Execute_LogsAndReturnsNil(t *testing.T) {
 	}
 }
 
+func TestCleanUpRecycleBin_Execute_DelegatesToRunner(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	runner := &stubCleanupRunner{}
+	h := handlers.NewCleanUpRecycleBin(runner, logger)
+
+	if err := h.Execute(t.Context(), `{}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if runner.called != 1 {
+		t.Errorf("runner.Cleanup called %d times, want 1", runner.called)
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "delegating to recyclebin.Service.Cleanup") {
+		t.Errorf("expected delegation log line; got: %q", logged)
+	}
+}
+
+func TestCleanUpRecycleBin_Execute_RunnerErrorPropagates(t *testing.T) {
+	t.Parallel()
+	bottom := errors.New("recycle-bin not configured")
+	runner := &stubCleanupRunner{err: bottom}
+	h := handlers.NewCleanUpRecycleBin(runner, slog.Default())
+
+	err := h.Execute(t.Context(), "")
+	if !errors.Is(err, bottom) {
+		t.Errorf("Execute err = %v, want it to wrap %v", err, bottom)
+	}
+}
+
 func TestCleanUpRecycleBin_NewWithNilLogger_Defaults(t *testing.T) {
 	t.Parallel()
-	h := handlers.NewCleanUpRecycleBin(nil)
+	h := handlers.NewCleanUpRecycleBin(nil, nil)
 	if err := h.Execute(t.Context(), ""); err != nil {
 		t.Errorf("Execute with default logger: %v", err)
 	}

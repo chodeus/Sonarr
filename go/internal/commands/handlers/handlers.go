@@ -61,6 +61,14 @@ type Deps struct {
 	// handlers (a stub would silently no-op every API rescan).
 	RescanSeries RescanSeriesScanner
 
+	// CleanUpRecycleBin wires the IExecute<CleanUpRecycleBinCommand>
+	// handler into the dispatcher. Optional — nil falls back to the
+	// pre-3.77 stub-shaped log line so hosts that haven't yet wired a
+	// recyclebin Service still register the slot (the 24-hour
+	// scheduled-task entry depends on the registry key existing).
+	// Production binds `*recyclebin.Service` via structural typing.
+	CleanUpRecycleBin CleanupRunner
+
 	Log *slog.Logger
 }
 
@@ -119,7 +127,7 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 		Handler: NewBackup(deps.Log),
 	})
 	registry.Register(CleanUpRecycleBinName, commands.CommandSpec{
-		Handler: NewCleanUpRecycleBin(deps.Log),
+		Handler: NewCleanUpRecycleBin(deps.CleanUpRecycleBin, deps.Log),
 	})
 	registry.Register(RescanSeriesName, commands.CommandSpec{
 		Handler: rescanSeries,

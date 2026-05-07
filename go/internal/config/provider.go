@@ -396,3 +396,18 @@ func (p *Provider) SetRecycleBin(ctx context.Context, v string) error {
 	_, err := p.setString(ctx, "RecycleBin", v)
 	return err
 }
+
+// RecycleBinCleanupDays mirrors `ConfigService.cs:106-110`. Default
+// 7 at `:108`. A value of 0 disables Cleanup entirely (matches the
+// C# `cleanupDays == 0` short-circuit at
+// `RecycleBinProvider.cs:172-176`).
+func (p *Provider) RecycleBinCleanupDays() int {
+	return p.getInt("RecycleBinCleanupDays", 7)
+}
+
+// SetRecycleBinCleanupDays writes the new value, publishing
+// ConfigSavedEvent on change.
+func (p *Provider) SetRecycleBinCleanupDays(ctx context.Context, v int) error {
+	_, err := p.setInt(ctx, "RecycleBinCleanupDays", v)
+	return err
+}

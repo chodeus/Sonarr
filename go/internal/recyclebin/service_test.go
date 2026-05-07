@@ -1,10 +1,12 @@
 package recyclebin_test
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/recyclebin"
@@ -12,25 +14,38 @@ import (
 )
 
 type stubConfig struct {
-	bin string
+	bin         string
+	cleanupDays int
 }
 
-func (s stubConfig) RecycleBin() string { return s.bin }
+func (s stubConfig) RecycleBin() string         { return s.bin }
+func (s stubConfig) RecycleBinCleanupDays() int { return s.cleanupDays }
 
 type fakeDisk struct {
-	deleted     []string
-	created     []string
-	moves       []move
-	exists      map[string]bool
+	deleted []string
+	created []string
+	moves   []move
+	exists  map[string]bool
+	files   []string             // returned by GetFiles
+	mtimes  map[string]time.Time // for FileGetLastWrite
+	swept   []string             // RemoveEmptySubfolders calls
+
 	deleteErr   error
 	createErr   error
 	moveErr     error
+	getFilesErr error
+	mtimeErr    map[string]error // per-path err for FileGetLastWrite
+	deleteErrs  map[string]error // per-path err for DeleteFile (for partial-failure tests)
+	sweepErr    error
 	existsHooks func(path string) bool
 }
 
 type move struct{ src, dst string }
 
 func (f *fakeDisk) DeleteFile(path string) error {
+	if perr, ok := f.deleteErrs[path]; ok {
+		return perr
+	}
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
@@ -58,6 +73,32 @@ func (f *fakeDisk) MoveFile(src, dst string) error {
 		return f.moveErr
 	}
 	f.moves = append(f.moves, move{src, dst})
+	return nil
+}
+
+func (f *fakeDisk) GetFiles(_ string, _ bool) ([]string, error) {
+	if f.getFilesErr != nil {
+		return nil, f.getFilesErr
+	}
+	return f.files, nil
+}
+
+func (f *fakeDisk) FileGetLastWrite(path string) (time.Time, error) {
+	if perr, ok := f.mtimeErr[path]; ok {
+		return time.Time{}, perr
+	}
+	t, ok := f.mtimes[path]
+	if !ok {
+		return time.Time{}, nil
+	}
+	return t, nil
+}
+
+func (f *fakeDisk) RemoveEmptySubfolders(path string) error {
+	if f.sweepErr != nil {
+		return f.sweepErr
+	}
+	f.swept = append(f.swept, path)
 	return nil
 }
 
@@ -264,4 +305,193 @@ func TestService_SatisfiesUpgradeMediafilesRecycleBinProvider(t *testing.T) {
 func TestDiskProvider_SatisfiesDiskOps(t *testing.T) {
 	t.Parallel()
 	var _ recyclebin.DiskOps = (*disk.Provider)(nil)
+}
+
+// --- Cleanup --------------------------------------------------------
+
+func TestCleanup_RecycleBinNotConfigured(t *testing.T) {
+	t.Parallel()
+	d := &fakeDisk{}
+	svc := recyclebin.NewService(stubConfig{bin: ""}, d, slog.Default())
+	if err := svc.Cleanup(context.Background()); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	// Mirrors C# `:164-167` — early-return without hitting disk.
+	if len(d.deleted) != 0 || len(d.swept) != 0 {
+		t.Errorf("disk touched: deleted=%v swept=%v", d.deleted, d.swept)
+	}
+}
+
+func TestCleanup_CleanupDaysZeroIsDisabled(t *testing.T) {
+	t.Parallel()
+	d := &fakeDisk{}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle", cleanupDays: 0}, d, slog.Default())
+	if err := svc.Cleanup(context.Background()); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	// Mirrors C# `:172-176` — cleanupDays=0 → return without sweep.
+	if len(d.deleted) != 0 || len(d.swept) != 0 {
+		t.Errorf("disk touched: deleted=%v swept=%v", d.deleted, d.swept)
+	}
+}
+
+func TestCleanup_RemovesExpiredFiles(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	old := now.Add(-10 * 24 * time.Hour)  // 10 days old → expired (cleanupDays=7)
+	fresh := now.Add(-2 * 24 * time.Hour) // 2 days old → kept
+
+	d := &fakeDisk{
+		files: []string{"/recycle/old.mkv", "/recycle/fresh.mkv"},
+		mtimes: map[string]time.Time{
+			"/recycle/old.mkv":   old,
+			"/recycle/fresh.mkv": fresh,
+		},
+	}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle", cleanupDays: 7}, d, slog.Default())
+	if err := svc.Cleanup(context.Background()); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if len(d.deleted) != 1 || d.deleted[0] != "/recycle/old.mkv" {
+		t.Errorf("deleted = %v, want [/recycle/old.mkv]", d.deleted)
+	}
+	if len(d.swept) != 1 || d.swept[0] != "/recycle" {
+		t.Errorf("swept = %v, want [/recycle]", d.swept)
+	}
+}
+
+func TestCleanup_BoundaryCondition_ExactlyAtThreshold(t *testing.T) {
+	t.Parallel()
+	// File mtime exactly at the threshold (mtime + retention == now).
+	// Mirrors C# `mtime.AddDays(cleanupDays) > now` — strict greater,
+	// so equal-to-threshold means EXPIRED (the > is false, so we don't
+	// take the skip branch). The Go port's `mtime.Add(expiry).After(now)`
+	// preserves that strict-greater semantics.
+	now := time.Now().UTC()
+	d := &fakeDisk{
+		files:  []string{"/recycle/at.mkv"},
+		mtimes: map[string]time.Time{"/recycle/at.mkv": now.Add(-7 * 24 * time.Hour)},
+	}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle", cleanupDays: 7}, d, slog.Default())
+	if err := svc.Cleanup(context.Background()); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	// At-threshold → expired → deleted.
+	if len(d.deleted) != 1 {
+		t.Errorf("deleted = %v, want one delete (at-threshold should expire)", d.deleted)
+	}
+}
+
+func TestCleanup_GetFilesError_Propagates(t *testing.T) {
+	t.Parallel()
+	d := &fakeDisk{getFilesErr: errors.New("boom")}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle", cleanupDays: 7}, d, slog.Default())
+	err := svc.Cleanup(context.Background())
+	if err == nil {
+		t.Fatal("Cleanup returned nil, want GetFiles error")
+	}
+	if !errors.Is(err, d.getFilesErr) {
+		t.Errorf("err = %v, want it to wrap GetFiles error", err)
+	}
+}
+
+func TestCleanup_PerFileMtimeError_SkipsAndContinues(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	old := now.Add(-10 * 24 * time.Hour)
+	d := &fakeDisk{
+		files:    []string{"/recycle/broken.mkv", "/recycle/old.mkv"},
+		mtimeErr: map[string]error{"/recycle/broken.mkv": errors.New("stat failed")},
+		mtimes:   map[string]time.Time{"/recycle/old.mkv": old},
+	}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle", cleanupDays: 7}, d, slog.Default())
+	if err := svc.Cleanup(context.Background()); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	// broken.mkv skipped, old.mkv deleted.
+	if len(d.deleted) != 1 || d.deleted[0] != "/recycle/old.mkv" {
+		t.Errorf("deleted = %v, want only /recycle/old.mkv", d.deleted)
+	}
+}
+
+func TestCleanup_PerFileDeleteError_ContinuesSweep(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	old := now.Add(-10 * 24 * time.Hour)
+	d := &fakeDisk{
+		files: []string{"/recycle/locked.mkv", "/recycle/old.mkv"},
+		mtimes: map[string]time.Time{
+			"/recycle/locked.mkv": old,
+			"/recycle/old.mkv":    old,
+		},
+		deleteErrs: map[string]error{"/recycle/locked.mkv": errors.New("EBUSY")},
+	}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle", cleanupDays: 7}, d, slog.Default())
+	if err := svc.Cleanup(context.Background()); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	// old.mkv deleted; locked.mkv NOT in deleted (perr returned before append).
+	if len(d.deleted) != 1 || d.deleted[0] != "/recycle/old.mkv" {
+		t.Errorf("deleted = %v, want only /recycle/old.mkv (locked.mkv should fail without aborting)", d.deleted)
+	}
+	// Sweep still ran.
+	if len(d.swept) != 1 {
+		t.Errorf("swept = %v, want one (loop should continue past per-file failure)", d.swept)
+	}
+}
+
+func TestCleanup_RemoveEmptySubfoldersError_Propagates(t *testing.T) {
+	t.Parallel()
+	d := &fakeDisk{
+		files:    []string{},
+		sweepErr: errors.New("permission denied"),
+	}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle", cleanupDays: 7}, d, slog.Default())
+	err := svc.Cleanup(context.Background())
+	if err == nil {
+		t.Fatal("Cleanup returned nil, want RemoveEmptySubfolders error")
+	}
+	if !errors.Is(err, d.sweepErr) {
+		t.Errorf("err = %v, want wrapping sweep error", err)
+	}
+}
+
+func TestCleanup_ContextCancelled(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	old := now.Add(-10 * 24 * time.Hour)
+	d := &fakeDisk{
+		files: []string{"/recycle/a.mkv", "/recycle/b.mkv"},
+		mtimes: map[string]time.Time{
+			"/recycle/a.mkv": old,
+			"/recycle/b.mkv": old,
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle", cleanupDays: 7}, d, slog.Default())
+	err := svc.Cleanup(ctx)
+	if err == nil {
+		t.Fatal("Cleanup returned nil after cancel")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	// No files should have been deleted.
+	if len(d.deleted) != 0 {
+		t.Errorf("deleted = %v on cancelled ctx, want 0", d.deleted)
+	}
+}
+
+// CleanupRunner is a test-only assertion that *Service satisfies a
+// one-method `Cleanup(ctx) error` interface — the seam the
+// CleanUpRecycleBin handler reaches for. Mirrors the convention in
+// `mediafileattributes/service_test.go`.
+type cleanupRunnerSeam interface {
+	Cleanup(ctx context.Context) error
+}
+
+func TestService_SatisfiesCleanupRunnerSeam(t *testing.T) {
+	t.Parallel()
+	var _ cleanupRunnerSeam = (*recyclebin.Service)(nil)
 }
