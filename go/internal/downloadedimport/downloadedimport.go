@@ -644,26 +644,161 @@ func lowerExt(path string) string {
 	return strings.ToLower(filepath.Ext(path))
 }
 
-// processFile mirrors C# `:247-262` (no-series overload). Deferred
-// to slice 3.79c.
-func (s *Service) processFile(path string, _ episodeimport.ImportMode, _ *downloadclients.Item) []*episodeimport.ImportResult {
-	ser := s.parser.GetSeriesFromTitle(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
+// processFile mirrors C# `:247-262` (no-series overload). Discovers
+// the series from the filename's stem; nil → UnknownSeriesResult.
+// Otherwise dispatches to the typed overload.
+func (s *Service) processFile(path string, mode episodeimport.ImportMode, dci *downloadclients.Item) []*episodeimport.ImportResult {
+	stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	ser := s.parser.GetSeriesFromTitle(stem)
 	if ser == nil {
 		s.log.Debug("downloadedimport: unknown series for file", "file", path)
 		return []*episodeimport.ImportResult{
 			unknownSeriesResult(fmt.Sprintf("Unknown Series for file: %s", filepath.Base(path)), path),
 		}
 	}
-	return s.processFileWithSeries(path, episodeimport.ImportModeAuto, ser, nil)
+	return s.processFileWithSeries(path, mode, ser, dci)
 }
 
-// processFileWithSeries mirrors C# `:264-346`. Deferred to slice
-// 3.79c.
-func (s *Service) processFileWithSeries(_ string, _ episodeimport.ImportMode, _ *series.Series, _ *downloadclients.Item) []*episodeimport.ImportResult {
-	dec := episodeimport.NewImportDecision(nil)
-	return []*episodeimport.ImportResult{
-		episodeimport.NewSkippedImportResult(dec, "downloadedimport: processFile not yet ported (slice 3.79c)"),
+// processFileWithSeries ports `:264-346` end-to-end. The single-file
+// import path applies an extension-rejection ladder before delegating
+// into the EpisodeImport pipeline.
+//
+// Behaviour, in order (matches C# fall-through exactly):
+//
+//  1. ._-prefix guard (`:266-274`) — files whose stem starts with
+//     "._" (macOS resource forks) → InvalidFilePath rejection. The
+//     C# StartsWith check is case-sensitive; the Go port matches.
+//
+//  2. Dangerous extension (`:278-286`) → DangerousFile rejection
+//     with the extension interpolated into the message.
+//
+//  3. Executable extension (`:288-296`) → ExecutableFile rejection.
+//
+//  4. UserRejectedExtensions (`:298-317`) — split on comma, trim
+//     dot+space, re-prepend dot. If the file's extension matches
+//     → UserRejectedExtension rejection. Empty config ⇒ skip.
+//
+//  5. MediaFileExtensions check (`:319-329`) — extension empty OR
+//     not in the parser's media-extension set → UnsupportedExtension
+//     rejection.
+//
+//  6. IsFileLocked (`:331-340`) — only when dci == nil. Locked →
+//     FileIsLockedResult.
+//
+//  7. parser.ParseTitle on dci.Title when present (`:342`).
+//
+//  8. decider.GetImportDecisions on a one-element slice (`:343`).
+//
+//  9. runner.Import (`:345`) — returns the final result list.
+//
+// Extension comparisons are case-insensitive: the C# uses
+// HashSet<string>(StringComparer.OrdinalIgnoreCase) for the static
+// sets; the Go port pre-lowercases via [lowerExt] / strings.ToLower
+// and compares against lowercase-keyed maps.
+func (s *Service) processFileWithSeries(path string, mode episodeimport.ImportMode, ser *series.Series, dci *downloadclients.Item) []*episodeimport.ImportResult {
+	name := filepath.Base(path)
+	stem := strings.TrimSuffix(name, filepath.Ext(name))
+
+	// 1. ._ resource-fork prefix.
+	if strings.HasPrefix(stem, "._") {
+		s.log.Debug("downloadedimport: file starts with '._', skipping", "file", path)
+		return []*episodeimport.ImportResult{
+			fileRejection(path, episodeimport.ImportRejectionInvalidFilePath, "Invalid video file, filename starts with '._'"),
+		}
 	}
+
+	rawExt := filepath.Ext(name)
+	ext := strings.ToLower(rawExt)
+
+	// 2. Dangerous extension.
+	if _, ok := dangerousExtensions[ext]; ok {
+		msg := fmt.Sprintf("Caution: Found potentially dangerous file with extension: %s", rawExt)
+		return []*episodeimport.ImportResult{
+			fileRejection(path, episodeimport.ImportRejectionDangerousFile, msg),
+		}
+	}
+
+	// 3. Executable extension.
+	if _, ok := executableExtensions[ext]; ok {
+		msg := fmt.Sprintf("Caution: Found executable file with extension: '%s'", rawExt)
+		return []*episodeimport.ImportResult{
+			fileRejection(path, episodeimport.ImportRejectionExecutableFile, msg),
+		}
+	}
+
+	// 4. UserRejectedExtensions.
+	if userRej := s.cfg.UserRejectedExtensions(); userRej != "" {
+		if userRejectedContains(userRej, ext) {
+			msg := fmt.Sprintf("Caution: Found file with user defined rejected extension: '%s'", rawExt)
+			return []*episodeimport.ImportResult{
+				fileRejection(path, episodeimport.ImportRejectionUserRejectedExtension, msg),
+			}
+		}
+	}
+
+	// 5. Unsupported extension (empty OR not a media file extension).
+	if ext == "" || !parser.IsMediaExtension(ext) {
+		s.log.Debug("downloadedimport: file has unsupported extension",
+			"file", path, "extension", rawExt)
+		msg := fmt.Sprintf("Invalid video file, unsupported extension: '%s'", rawExt)
+		return []*episodeimport.ImportResult{
+			fileRejection(path, episodeimport.ImportRejectionUnsupportedExtension, msg),
+		}
+	}
+
+	// 6. IsFileLocked when dci == nil.
+	if dci == nil && s.disk.IsFileLocked(path) {
+		return []*episodeimport.ImportResult{fileIsLockedResult(s.log, path)}
+	}
+
+	// 7. dciInfo from dci.Title when present.
+	var dciInfo *parser.ParsedEpisodeInfo
+	if dci != nil {
+		dciInfo = parser.ParseTitle(dci.Title)
+	}
+
+	// 8 + 9. decision pipeline + import.
+	decisions := s.decider.GetImportDecisions([]string{path}, ser, dci, dciInfo, nil, true)
+	results := s.runner.Import(decisions, true, dci, mode)
+	if results == nil {
+		results = []*episodeimport.ImportResult{}
+	}
+	return results
+}
+
+// fileRejection builds the per-file rejection ImportResult shape
+// used by the extension-rejection ladder. Mirrors the inline
+// `new ImportResult(new ImportDecision(new LocalEpisode { Path = ... },
+// new ImportRejection(reason, message)), message)` blocks at C#
+// `:270-274,280-285,290-295,309-315,323-328`.
+//
+// path → LocalEpisode.Path; reason + message → ImportRejection.
+func fileRejection(path string, reason episodeimport.ImportRejectionReason, message string) *episodeimport.ImportResult {
+	le := &episodeimport.LocalEpisode{Path: path}
+	rej := episodeimport.NewImportRejection(reason, message)
+	dec := episodeimport.NewImportDecision(le, rej)
+	return episodeimport.NewSkippedImportResult(dec, message)
+}
+
+// userRejectedContains parses the comma-separated UserRejectedExtensions
+// config string and reports whether ext matches any entry. Mirrors
+// the C# parser at `:300-303` — split on comma, trim leading/trailing
+// dots and spaces, re-prepend a leading dot, then compare.
+//
+// Inputs are lowercased: ext is already pre-lowered by the caller;
+// the config-side entries are lowered here so comparison stays
+// case-insensitive (matches HashSet<string>(StringComparer.OrdinalIgnoreCase)).
+func userRejectedContains(userRej, ext string) bool {
+	for _, raw := range strings.Split(userRej, ",") {
+		entry := strings.Trim(raw, " .")
+		if entry == "" {
+			continue
+		}
+		if "."+strings.ToLower(entry) == ext {
+			return true
+		}
+	}
+	return false
 }
 
 // --- helpers ------------------------------------------------------

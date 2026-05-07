@@ -139,7 +139,19 @@ func RemoveFileExtension(title string) string {
 // an import cycle with quality.Quality — see the package comment
 // there); this helper queries it via the public lookup which returns
 // a non-Unknown Quality iff the extension is in the map.
+//
+// Lower-cased extension expected — the C# HashSet is
+// case-insensitive but the Go port stores keys lowercased and the
+// internal callers always pre-lowercase via strings.ToLower.
 func isMediaExtension(ext string) bool {
 	q := quality.GetQualityForExtension(ext)
 	return q.ID != quality.Unknown.ID
+}
+
+// IsMediaExtension is the exported alias of [isMediaExtension] for
+// callers outside the parser package (e.g.
+// `internal/downloadedimport.processFile`'s unsupported-extension
+// gate). Pre-lowercase the extension before calling.
+func IsMediaExtension(ext string) bool {
+	return isMediaExtension(ext)
 }

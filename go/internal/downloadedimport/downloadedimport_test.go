@@ -641,6 +641,184 @@ func TestProcessFolder_PostImportDelete_FiresOnMoveAndImported(t *testing.T) {
 	}
 }
 
+// --- processFile (via ProcessPath FileRoute) ----------------------
+
+// fileSvc builds a Service whose disk.FileExists matches a single
+// path and whose parser resolves to a known series; convenient for
+// the processFile rejection-ladder tests below. The dci is threaded
+// at the ProcessPath call site, not here.
+func fileSvc(t *testing.T, path string, cfg downloadedimport.ConfigReader) (
+	*downloadedimport.Service, *recDecider, *recRunner, *stubDisk,
+) {
+	t.Helper()
+	d := &stubDisk{files: map[string]bool{path: true}}
+	pSvc := &stubParser{resolveTo: &series.Series{ID: 1}}
+	rec := &recDecider{}
+	rRun := &recRunner{}
+	if cfg == nil {
+		cfg = stubCfg{}
+	}
+	svc := downloadedimport.NewService(
+		d, &stubScanner{}, &stubSeriesPaths{}, pSvc,
+		rec, rRun, &stubSample{verdict: episodeimport.DetectSampleSample},
+		cfg, slog.Default(),
+	)
+	if svc == nil {
+		t.Fatal("NewService returned nil")
+	}
+	return svc, rec, rRun, d
+}
+
+func TestProcessFile_UnknownSeries(t *testing.T) {
+	t.Parallel()
+	path := "/drop/Unknown.S01E01.mkv"
+	d := &stubDisk{files: map[string]bool{path: true}}
+	// stubParser default returns nil → unknown series.
+	svc := newSvc(t, d, nil, nil)
+	got := svc.ProcessPath(path, episodeimport.ImportModeAuto, nil, nil)
+	if len(got) != 1 {
+		t.Fatalf("got %d, want 1 (UnknownSeries)", len(got))
+	}
+	rejs := got[0].Decision.Rejections
+	if len(rejs) == 0 || rejs[0].Reason != episodeimport.ImportRejectionUnknownSeries {
+		t.Errorf("expected UnknownSeries, got %+v", rejs)
+	}
+}
+
+func TestProcessFile_DotUnderscorePrefix(t *testing.T) {
+	t.Parallel()
+	// macOS resource fork. C# `:266-274` rejects with
+	// InvalidFilePath without consulting any ladder below.
+	path := "/drop/show/._hidden.mkv"
+	svc, _, _, _ := fileSvc(t, path, nil)
+	got := svc.ProcessPath(path, episodeimport.ImportModeAuto, nil, nil)
+	if len(got) != 1 {
+		t.Fatalf("got %d, want 1 (InvalidFilePath)", len(got))
+	}
+	if got[0].Decision.Rejections[0].Reason != episodeimport.ImportRejectionInvalidFilePath {
+		t.Errorf("expected InvalidFilePath, got %+v", got[0].Decision.Rejections)
+	}
+}
+
+func TestProcessFile_DangerousExtension(t *testing.T) {
+	t.Parallel()
+	path := "/drop/Show.S01E01.vbs"
+	svc, _, _, _ := fileSvc(t, path, nil)
+	got := svc.ProcessPath(path, episodeimport.ImportModeAuto, nil, nil)
+	if got[0].Decision.Rejections[0].Reason != episodeimport.ImportRejectionDangerousFile {
+		t.Errorf("expected DangerousFile, got %+v", got[0].Decision.Rejections)
+	}
+}
+
+func TestProcessFile_DangerousExtension_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+	path := "/drop/evil.PS1"
+	svc, _, _, _ := fileSvc(t, path, nil)
+	got := svc.ProcessPath(path, episodeimport.ImportModeAuto, nil, nil)
+	if got[0].Decision.Rejections[0].Reason != episodeimport.ImportRejectionDangerousFile {
+		t.Errorf("expected DangerousFile (case-insensitive .PS1), got %+v", got[0].Decision.Rejections)
+	}
+}
+
+func TestProcessFile_ExecutableExtension(t *testing.T) {
+	t.Parallel()
+	path := "/drop/installer.exe"
+	svc, _, _, _ := fileSvc(t, path, nil)
+	got := svc.ProcessPath(path, episodeimport.ImportModeAuto, nil, nil)
+	if got[0].Decision.Rejections[0].Reason != episodeimport.ImportRejectionExecutableFile {
+		t.Errorf("expected ExecutableFile, got %+v", got[0].Decision.Rejections)
+	}
+}
+
+func TestProcessFile_UserRejectedExtension(t *testing.T) {
+	t.Parallel()
+	// User-config rejects .nfo via the C# `:300-303` parsing
+	// (split-on-comma, trim-dot-and-space, re-prepend-dot).
+	path := "/drop/show.nfo"
+	svc, _, _, _ := fileSvc(t, path, stubCfg{rejected: " nfo, srt"})
+	got := svc.ProcessPath(path, episodeimport.ImportModeAuto, nil, nil)
+	if got[0].Decision.Rejections[0].Reason != episodeimport.ImportRejectionUserRejectedExtension {
+		t.Errorf("expected UserRejectedExtension, got %+v", got[0].Decision.Rejections)
+	}
+}
+
+func TestProcessFile_UserRejected_NotMatched_FallsThrough(t *testing.T) {
+	t.Parallel()
+	// .mkv is not in the user-rejected list and IS a media
+	// extension, so the ladder falls through to the decision
+	// pipeline.
+	path := "/drop/Show.S01E01.mkv"
+	svc, rec, rRun, _ := fileSvc(t, path, stubCfg{rejected: ".nfo,.srt"})
+	rRun.ret = []*episodeimport.ImportResult{}
+	svc.ProcessPath(path, episodeimport.ImportModeAuto, nil, nil)
+	if rec.calls != 1 {
+		t.Errorf("decider should have been called once, got %d", rec.calls)
+	}
+}
+
+func TestProcessFile_UnsupportedExtension(t *testing.T) {
+	t.Parallel()
+	// .docx is neither dangerous, executable, user-rejected, nor a
+	// media extension → UnsupportedExtension.
+	path := "/drop/notes.docx"
+	svc, _, _, _ := fileSvc(t, path, nil)
+	got := svc.ProcessPath(path, episodeimport.ImportModeAuto, nil, nil)
+	if got[0].Decision.Rejections[0].Reason != episodeimport.ImportRejectionUnsupportedExtension {
+		t.Errorf("expected UnsupportedExtension, got %+v", got[0].Decision.Rejections)
+	}
+}
+
+func TestProcessFile_NoExtension_Unsupported(t *testing.T) {
+	t.Parallel()
+	// Mirrors C# `extension.IsNullOrWhiteSpace()` arm at `:319` —
+	// extensionless files are unsupported.
+	path := "/drop/README"
+	svc, _, _, _ := fileSvc(t, path, nil)
+	got := svc.ProcessPath(path, episodeimport.ImportModeAuto, nil, nil)
+	if got[0].Decision.Rejections[0].Reason != episodeimport.ImportRejectionUnsupportedExtension {
+		t.Errorf("expected UnsupportedExtension on extensionless file, got %+v", got[0].Decision.Rejections)
+	}
+}
+
+func TestProcessFile_Locked_NoDci(t *testing.T) {
+	t.Parallel()
+	path := "/drop/Show.S01E01.mkv"
+	svc, _, _, d := fileSvc(t, path, nil)
+	d.locked = map[string]bool{path: true}
+	got := svc.ProcessPath(path, episodeimport.ImportModeAuto, nil, nil)
+	if got[0].Decision.Rejections[0].Reason != episodeimport.ImportRejectionFileLocked {
+		t.Errorf("expected FileLocked, got %+v", got[0].Decision.Rejections)
+	}
+}
+
+func TestProcessFile_LockedSkippedWhenDci(t *testing.T) {
+	t.Parallel()
+	// Mirrors C# `:331-340` — IsFileLocked is gated behind
+	// downloadClientItem == nil.
+	path := "/drop/Show.S01E01.mkv"
+	svc, rec, _, d := fileSvc(t, path, nil)
+	d.locked = map[string]bool{path: true}
+	dci := &downloadclients.Item{Title: "Show.S01E01.WEB"}
+	svc.ProcessPath(path, episodeimport.ImportModeAuto, nil, dci)
+	if rec.calls != 1 {
+		t.Errorf("expected decider called 1 (lock check skipped), got %d", rec.calls)
+	}
+}
+
+func TestProcessFile_PassesPathsThroughDecider(t *testing.T) {
+	t.Parallel()
+	path := "/drop/Show.S01E01.mkv"
+	svc, rec, rRun, _ := fileSvc(t, path, nil)
+	rRun.ret = []*episodeimport.ImportResult{}
+	svc.ProcessPath(path, episodeimport.ImportModeMove, nil, nil)
+	if len(rec.got) != 1 || rec.got[0] != path {
+		t.Errorf("decider got %v, want [%q]", rec.got, path)
+	}
+	if rRun.gotMode != episodeimport.ImportModeMove {
+		t.Errorf("runner got mode %v, want Move", rRun.gotMode)
+	}
+}
+
 // --- ProcessRootFolder (deferred) ----------------------------------
 
 func TestProcessRootFolder_Deferred(t *testing.T) {
