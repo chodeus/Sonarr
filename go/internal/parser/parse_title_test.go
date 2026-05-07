@@ -629,3 +629,70 @@ func TestParseTitle_SeriesTitleInfo(t *testing.T) {
 		}
 	})
 }
+
+// TestParseTitle_IsMultiSeason ports the multi-season detection
+// behaviour at C# `Parser.cs:1057-1062`
+// (`Groups["season"].Captures.Distinct().Count() > 1` → IsMultiSeason).
+// Slice 3.83 closes the parser-side gap noted in slice 3.79b — the
+// downloadedimport.processFolderWithSeries multi-season rejection arm
+// at C# `:206-214` was structurally wired but never fired because the
+// Go parser left IsMultiSeason at its zero value.
+//
+// Three input shapes covered, one per build function that received
+// the scan:
+//
+//   - `<title> S01E04 - S02E05` style (buildTitleSeasonEpisode 2+ form).
+//   - `<title> 1x05 - 2x10` style (buildTitleNxMulti).
+//   - No-title `S01E04.S02E05` (buildNoTitleEpisode via the no-title
+//     multi rule's `[-_. ]?S\d{1,2}E` second-iteration arm).
+//
+// Plus a sanity round-trip that the same shapes with a SINGLE season
+// keep IsMultiSeason=false (no false positives on the dominant
+// single-season input distribution).
+func TestParseTitle_IsMultiSeason(t *testing.T) {
+	multiCases := []struct {
+		name  string
+		title string
+	}{
+		{"title+SE 2+ multi-S, dot-separated", "Series.Title.S01E04.S02E05.HDTV.x264-LOL"},
+		{"title+SE 2+ multi-S, space-dash-space separated", "Series Title - S07E22 - S08E01"},
+		{"title+Nx 2+ multi-S", "Series.Title.1x05.2x10.HDTV.x264-LOL"},
+		{"no-title S01E04.S02E05", "S01E04.S02E05"},
+	}
+	for _, tc := range multiCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parser.ParseTitle(tc.title)
+			if got == nil {
+				t.Fatalf("ParseTitle(%q) = nil; expected a parse with IsMultiSeason=true", tc.title)
+			}
+			if !got.IsMultiSeason {
+				t.Errorf("IsMultiSeason = false; want true. SeasonNumber=%d, Episodes=%v",
+					got.SeasonNumber, got.EpisodeNumbers)
+			}
+		})
+	}
+
+	// Round-trip — the same builders must NOT spuriously flag a
+	// SINGLE-season input as multi-season.
+	singleCases := []string{
+		"Series.Title.S01E05.HDTV.x264-LOL",
+		"Series.Title.S01E04E05.HDTV.XviD-LOL",
+		"Series.Title.S01E04E05E06.HDTV.x264-LOL",
+		"Series Title - 1x05",
+		"Series Title - 1x05 - 1x06",
+		"S01E05",
+		"S01E04E05",
+	}
+	for _, title := range singleCases {
+		t.Run("single/"+title, func(t *testing.T) {
+			got := parser.ParseTitle(title)
+			if got == nil {
+				t.Fatalf("ParseTitle(%q) = nil; expected a parse", title)
+			}
+			if got.IsMultiSeason {
+				t.Errorf("IsMultiSeason = true on single-season input; want false. SeasonNumber=%d, Episodes=%v",
+					got.SeasonNumber, got.EpisodeNumbers)
+			}
+		})
+	}
+}

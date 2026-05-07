@@ -691,6 +691,80 @@ func extractGroupSpan(re *regexp.Regexp, m []int, name, title string) (string, i
 	return title[start:end], end
 }
 
+// multiSeasonSeasonERe scans for `S<digits>E` season tokens in a
+// matched span. Used by [detectMultiSeasonByS] for the C#
+// `Parser.cs:1057-1062` multi-season detection on rules whose regex
+// repeats `(?<season>\d+)` inside a `S<n>E<m>` form (Go RE2 retains
+// only the LAST capture per named group, so a per-iteration scan is
+// required).
+//
+// Case-insensitive. Captures the season digit run.
+var multiSeasonSeasonERe = regexp.MustCompile(`(?i)S(\d{1,4})E\d`)
+
+// multiSeasonNxRe scans for `<digits>x<digits>` Nx tokens. Used by
+// [detectMultiSeasonByNx] for the multi-season detection on the
+// title+Nx-multi rule whose regex repeats `(?<season>\d+)x<n>` inside
+// a `{2,}` quantifier.
+//
+// Captures the season digit run.
+var multiSeasonNxRe = regexp.MustCompile(`(\d{1,4})x\d`)
+
+// detectMultiSeasonByS scans `region` for `S<n>E` tokens and returns
+// true iff at least two distinct seasons appear in the matched span.
+// Used by build functions whose source rule's regex contains a
+// repeating `S(?<season>\d+)E\d+` pattern (the multi-S form of
+// `Parser.cs:117` + the no-title multi rule's `[-_. ]?S\d{1,2}E`
+// second-iteration arm).
+//
+// `firstSeason` is added to the distinct-set as a baseline so a
+// single-S input where region happens to start with the captured
+// season produces (count == 1) → false. Mirrors the C# behaviour at
+// `Parser.cs:1058` where the foreach over Captures already includes
+// the first match.
+//
+// Cheap when the input has zero / one S-token (early return after
+// first FindAllStringSubmatch result).
+func detectMultiSeasonByS(region string, firstSeason int) bool {
+	matches := multiSeasonSeasonERe.FindAllStringSubmatch(region, -1)
+	if len(matches) <= 1 {
+		return false
+	}
+	seen := map[int]struct{}{firstSeason: {}}
+	for _, mm := range matches {
+		n, ok := ParseNumber(mm[1])
+		if !ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		if len(seen) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// detectMultiSeasonByNx mirrors [detectMultiSeasonByS] for the
+// `<n>x<m>` Nx form. Used by [buildTitleNxMulti] whose source rule
+// regex repeats `(?<season>\d+)x<n>` 2+ times.
+func detectMultiSeasonByNx(region string, firstSeason int) bool {
+	matches := multiSeasonNxRe.FindAllStringSubmatch(region, -1)
+	if len(matches) <= 1 {
+		return false
+	}
+	seen := map[int]struct{}{firstSeason: {}}
+	for _, mm := range matches {
+		n, ok := ParseNumber(mm[1])
+		if !ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		if len(seen) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
 func buildTitleSeasonEpisode(re *regexp.Regexp, m []int, title string) *ParsedEpisodeInfo {
 	seasonText, _ := extractGroupSpan(re, m, "season", title)
 	season, ok := ParseNumber(seasonText)
@@ -719,6 +793,17 @@ func buildTitleSeasonEpisode(re *regexp.Regexp, m []int, title string) *ParsedEp
 	info.SeriesTitle = titleText
 	info.SeasonNumber = season
 	info.EpisodeNumbers = episodes
+	// Multi-season detection — slice 3.83. The 2+ form of this rule
+	// (the `(?:[-_. \W]+S(?P<season>\d{4}|\d{1,3})(?:E\d{1,4})+){2,}`
+	// pattern at `report_title.go:227-231`) repeats the named season
+	// group so a `Series S07E22 - S08E01` input matches with the LAST
+	// captured season (08) winning at the named-group slot. Scanning
+	// for distinct `S\d+E` tokens in the matched span recovers the
+	// "more than one season" signal that C# `Parser.cs:1057-1062`
+	// produces from `Groups["season"].Captures.Distinct().Count() > 1`.
+	// The single-S form short-circuits via the len(matches) <= 1 fast
+	// path inside [detectMultiSeasonByS].
+	info.IsMultiSeason = detectMultiSeasonByS(episodeRegion, season)
 	return info
 }
 
@@ -787,6 +872,15 @@ func buildNoTitleEpisode(re *regexp.Regexp, m []int, title string) *ParsedEpisod
 	info := NewParsedEpisodeInfo()
 	info.SeasonNumber = season
 	info.EpisodeNumbers = episodes
+	// Multi-season detection — slice 3.83. The no-title MULTI rule's
+	// second-iteration `[-_. ]?S\d{1,2}E` arm permits a different
+	// season per iteration, so an input like `S01E04.S02E05` matches
+	// here with season=01 captured but the trailing `.S02E05` adding
+	// season=02 to the multi-season set. Scan the full matched span
+	// for `S\d+E` tokens — any second distinct value flags IsMultiSeason.
+	// The single rule's regex shape (one S group only) short-circuits
+	// via the len(matches) <= 1 fast path.
+	info.IsMultiSeason = detectMultiSeasonByS(title[m[0]:m[1]], season)
 	return info
 }
 
@@ -1211,6 +1305,13 @@ func buildTitleNxMulti(re *regexp.Regexp, m []int, title string) *ParsedEpisodeI
 	info.SeriesTitle = titleText
 	info.SeasonNumber = season
 	info.EpisodeNumbers = episodes
+	// Multi-season detection — slice 3.83. The buildTitleNxMulti
+	// rule's `{2,}` quantifier repeats `(?P<season>\d{4}|\d{1,2})x{1,2}\d{1,3}`
+	// so an input like `Series Title - 1x05 - 2x10` matches with the
+	// LAST captured season winning the named-group slot. A scan over
+	// the full matched span for `\d+x\d` pairs recovers the per-
+	// iteration season values; 2+ distinct values → IsMultiSeason.
+	info.IsMultiSeason = detectMultiSeasonByNx(title[m[0]:m[1]], season)
 	return info
 }
 
