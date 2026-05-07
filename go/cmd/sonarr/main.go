@@ -481,6 +481,27 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		episodeimport.NewUnverifiedSceneNumberingSpecification(logger),
 		episodeimport.NewHasAudioTrackSpecification(logger),
 		episodeimport.NewMatchesGrabSpecification(logger),
+		// Slice 3.87: NotSampleSpecification — its SampleChecker dep
+		// (`IsSample(ctx, *LocalEpisode) DetectSampleResult`) is
+		// satisfied structurally by the slice-3.84 *SampleDetector.
+		// Skips the check for ExistingFile=true (library-rescan flow)
+		// and rejects Sample / SampleIndeterminate verdicts per C#
+		// `NotSampleSpecification.cs:32-39`.
+		//
+		// Behaviour-with-noop-reader note: with the slice-3.84
+		// noopVideoRuntimeReader still in place AND the slice-3.85
+		// empty aggregator list (so LocalEpisode.MediaInfo also stays
+		// nil), every non-special, non-.flv/.strm file the spec sees
+		// surfaces as DetectSampleIndeterminate → ImportRejectionSampleIndeterminate.
+		// Production users see "Unable to determine if file is a
+		// sample" rejections per file until either an ffprobe-backed
+		// VideoRuntimeReader is wired (slice TBD) OR the MediaInfo
+		// aggregator is wired (also slice TBD) — whichever lands first
+		// supplies the runtime data the spec needs to produce real
+		// Sample/NotSample verdicts. The diagnostic surface is the
+		// correct C#-faithful posture: ffprobe-not-available is a
+		// loud-fail rather than a silent-pass.
+		episodeimport.NewNotSampleSpecification(sampleDetector, logger),
 	}
 	importDecisionMaker, err := episodeimport.NewImportDecisionMaker(
 		importDecisionSpecs, // specs — slice-3.86: 5 zero-dep specs wired
