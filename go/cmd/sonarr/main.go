@@ -446,13 +446,46 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// overload; replacing the noopVideoRuntimeReader with a real
 	// binding is the only edit needed when ffprobe lands.
 	sampleDetector := episodeimport.NewSampleDetector(noopVideoRuntimeReader{}, logger)
+
+	// AggregationService + ImportDecisionMaker wiring (Phase 3.85).
+	// Replaces the slice-3.82 stubImportDecider at the cmd/sonarr
+	// boot site. AggregationService runs with an empty aggregator
+	// list — the per-augmenter constructor chain (Languages /
+	// Quality / Episodes / ReleaseInfo / SubtitleInfo) ports in
+	// later slices. Augment still fills LocalEpisode.Size + SceneName
+	// even with an empty aggregator list, which is enough for the
+	// orchestrator's per-file Specification pass.
+	//
+	// ImportDecisionMaker constructor takes specs as the first arg —
+	// nil/empty is explicitly allowed (every file is approved by
+	// default, matching C# IoC behaviour with zero spec bindings).
+	// Per-spec wiring lands as each Specification's dep chain (config
+	// readers, scene-mapping finders, etc.) is constructed at boot.
+	aggregationSvc, err := episodeimport.NewAggregationService(nil, diskProv, nil, nil, logger)
+	if err != nil {
+		return fmt.Errorf("aggregation service: %w", err)
+	}
+	importDecisionMaker, err := episodeimport.NewImportDecisionMaker(
+		nil,             // specs — empty until per-spec dep chains are wired
+		episodeFilesSvc, // filter — FilterExistingFiles
+		aggregationSvc,  // aggregator — slice-3.60 AggregationService (empty aggregators above)
+		diskProv,        // disk — GetFileSize
+		sampleDetector,  // sampler — slice-3.55 + 3.84 SampleDetector
+		nil,             // pathParser — nil → defaults to parser.ParsePath
+		nil,             // tracked — no trackeddownloads.Service yet
+		nil,             // formats — no LocalEpisodeCustomFormatCalculator yet
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("import decision maker: %w", err)
+	}
 	dimpDisk := downloadedImportDiskOps{Provider: diskProv}
 	dimpSvc := downloadedimport.NewService(
 		dimpDisk,
 		downloadedImportDiskScanner{disk: diskProv, log: logger},
 		downloadedImportSeriesPaths{svc: seriesSvc, log: logger},
 		downloadedImportSeriesParser{svc: parsingSvc, log: logger},
-		stubImportDecider{},
+		downloadedImportDecider{svc: importDecisionMaker, log: logger},
 		stubImportRunner{},
 		downloadedImportSampleDetector{svc: sampleDetector},
 		configProv,

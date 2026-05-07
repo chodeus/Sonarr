@@ -147,28 +147,69 @@ func (s downloadedImportSeriesParser) GetSeriesFromTitle(title string) *series.S
 	return ser
 }
 
-// stubImportDecider returns no decisions. Mirrors the C#
-// `MakeImportDecision.GetImportDecisions` behaviour when no candidate
-// files match — the orchestrator receives an empty list and
-// short-circuits via [downloadedimport.checkEmptyResultForIssue]
-// (slice 3.79b).
+// downloadedImportDecider adapts [*episodeimport.ImportDecisionMaker.GetImportDecisions]
+// (slice 3.65) to the narrow ctx-less + errorless
+// [downloadedimport.ImportDecider] interface from slice 3.79a. Same
+// posture as the other ctx-bridge adapters in this file:
+// [context.Background] supplied for the underlying call; errors
+// surface as a logged-warning + nil-decisions return so the
+// orchestrator's [downloadedimport.checkEmptyResultForIssue] arm
+// (slice 3.79b) maps the failure to a documented rejection.
 //
-// Replace when [episodeimport.ImportDecisionMaker] is constructed at
-// the cmd/sonarr boot site. The constructor chain — Aggregator with
-// per-augmenter wiring + EpisodeInfoParser + custom-format calculator
-// + sample classifier — is heavier than this slice's scope.
-type stubImportDecider struct{}
+// Construction site at the cmd/sonarr boot path (slice 3.85) wires:
+//
+//   - filter      ← *episodefiles.Service (FilterExistingFiles)
+//   - aggregator  ← *episodeimport.AggregationService (empty
+//     aggregator list — augmenter constructor chain
+//     ports in a future slice; an empty list still
+//     runs the Size + SceneName fills inside Augment)
+//   - disk        ← *disk.Provider (GetFileSize)
+//   - sampler     ← *episodeimport.SampleDetector (slice 3.84)
+//   - pathParser  ← nil → defaults to parser.ParsePath
+//   - tracked     ← nil (no trackeddownloads.Service yet)
+//   - formats     ← nil (no LocalEpisodeCustomFormatCalculator yet)
+//   - specs       ← nil/empty (every spec ports separately and the
+//     ImportDecisionMaker tolerates an empty spec list
+//     per its constructor doc — every file is approved
+//     by default, matching the C# IoC behaviour with
+//     zero IImportDecisionEngineSpecification bindings)
+type downloadedImportDecider struct {
+	svc *episodeimport.ImportDecisionMaker
+	log *slog.Logger
+}
 
-// GetImportDecisions always returns nil.
-func (stubImportDecider) GetImportDecisions(
-	_ []string,
-	_ *series.Series,
-	_ *downloadclients.Item,
-	_ *parser.ParsedEpisodeInfo,
-	_ *parser.ParsedEpisodeInfo,
-	_ bool,
+// GetImportDecisions adapts the narrow signature to
+// ImportDecisionMaker.GetImportDecisions by packing the four
+// caller-supplied params into a [episodeimport.GetImportDecisionsOptions]
+// struct. SceneSource is left at its zero (false) — the
+// downloaded-episodes-scan flow is never scene-numbered (matches the
+// C# `IsSceneSource = false` posture at
+// `DownloadedEpisodesImportService.cs:124`).
+func (d downloadedImportDecider) GetImportDecisions(
+	paths []string,
+	ser *series.Series,
+	downloadClientItem *downloadclients.Item,
+	downloadClientItemInfo *parser.ParsedEpisodeInfo,
+	folderInfo *parser.ParsedEpisodeInfo,
+	filterExistingFiles bool,
 ) []*episodeimport.ImportDecision {
-	return nil
+	out, err := d.svc.GetImportDecisions(
+		context.Background(),
+		paths,
+		ser,
+		episodeimport.GetImportDecisionsOptions{
+			DownloadItem:        downloadClientItem,
+			DownloadItemInfo:    downloadClientItemInfo,
+			FolderInfo:          folderInfo,
+			FilterExistingFiles: filterExistingFiles,
+		},
+	)
+	if err != nil {
+		d.log.Warn("downloadedimport: GetImportDecisions failed",
+			"len", len(paths), "err", err)
+		return nil
+	}
+	return out
 }
 
 // stubImportRunner accepts any decision list as a no-op. Mirrors the
@@ -246,7 +287,7 @@ var (
 	_ downloadedimport.DiskScanner       = downloadedImportDiskScanner{}
 	_ downloadedimport.SeriesPathChecker = downloadedImportSeriesPaths{}
 	_ downloadedimport.SeriesParser      = downloadedImportSeriesParser{}
-	_ downloadedimport.ImportDecider     = stubImportDecider{}
+	_ downloadedimport.ImportDecider     = downloadedImportDecider{}
 	_ downloadedimport.ImportRunner      = stubImportRunner{}
 	_ downloadedimport.SampleDetector    = downloadedImportSampleDetector{}
 	_ episodeimport.VideoRuntimeReader   = noopVideoRuntimeReader{}
