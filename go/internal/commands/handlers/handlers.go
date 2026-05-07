@@ -69,7 +69,28 @@ type Deps struct {
 	// Production binds `*recyclebin.Service` via structural typing.
 	CleanUpRecycleBin CleanupRunner
 
+	// DownloadedEpisodesScan wires the IExecute<DownloadedEpisodesScanCommand>
+	// handler into the dispatcher. The processor field is REQUIRED
+	// when this struct is non-zero — RegisterAll passes the whole
+	// nested struct through. When `Processor` is nil the handler is
+	// not registered at all (RegisterAll skips the slot).
+	//
+	// Finder / Verifier / Reporter are all optional — see the
+	// per-field doc on the [DownloadedEpisodesScan] handler.
+	DownloadedEpisodesScan DownloadedEpisodesScanDeps
+
 	Log *slog.Logger
+}
+
+// DownloadedEpisodesScanDeps bundles the four sub-deps the
+// DownloadedEpisodesScan handler reaches for. Hoisted into its own
+// struct so the parent Deps stays readable; only Processor is
+// required.
+type DownloadedEpisodesScanDeps struct {
+	Processor ImportProcessor
+	Finder    TrackedDownloadFinder
+	Verifier  CompletedDownloadVerifier
+	Reporter  CommandResultReporter
 }
 
 // RegisterAll wires every shipped handler into `registry`. The host
@@ -132,6 +153,27 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	registry.Register(RescanSeriesName, commands.CommandSpec{
 		Handler: rescanSeries,
 	})
+
+	// DownloadedEpisodesScan registers only when the processor is
+	// wired — there's no useful stub fallback (the C# command always
+	// requires a path + an import service). Hosts that haven't yet
+	// constructed `*downloadedimport.Service` simply omit the slot;
+	// the API surface returns "Unknown command" for those callers.
+	if deps.DownloadedEpisodesScan.Processor != nil {
+		downloadedScan, err := NewDownloadedEpisodesScan(
+			deps.DownloadedEpisodesScan.Processor,
+			deps.DownloadedEpisodesScan.Finder,
+			deps.DownloadedEpisodesScan.Verifier,
+			deps.DownloadedEpisodesScan.Reporter,
+			deps.Log,
+		)
+		if err != nil {
+			return err
+		}
+		registry.Register(DownloadedEpisodesScanName, commands.CommandSpec{
+			Handler: downloadedScan,
+		})
+	}
 	return nil
 }
 
