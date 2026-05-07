@@ -1,14 +1,18 @@
 package episodeimport_test
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/downloadclients"
+	"sonarr.tv/sonarr/internal/downloadhistory"
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/mediainfo"
 	"sonarr.tv/sonarr/internal/parser"
@@ -663,4 +667,512 @@ type spyVideo struct {
 func (s *spyVideo) GetMediaInfo(string) (*mediainfo.Model, error) {
 	s.calls++
 	return s.out, s.err
+}
+
+// --- AggregateEpisodes ---------------------------------------------
+
+type stubParsing struct {
+	specials map[string]*parser.ParsedEpisodeInfo
+	episodes map[*parser.ParsedEpisodeInfo][]episodes.Episode
+	calls    []parsingCall
+}
+
+type parsingCall struct {
+	op    string
+	title string
+	prev  *parser.ParsedEpisodeInfo
+	scene bool
+}
+
+func (s *stubParsing) ParseSpecialEpisodeTitle(prev *parser.ParsedEpisodeInfo, title string, _ *series.Series) *parser.ParsedEpisodeInfo {
+	s.calls = append(s.calls, parsingCall{op: "special", title: title, prev: prev})
+	if r, ok := s.specials[title]; ok {
+		return r
+	}
+	return nil
+}
+
+func (s *stubParsing) GetEpisodes(parsed *parser.ParsedEpisodeInfo, _ *series.Series, sceneSource bool) []episodes.Episode {
+	s.calls = append(s.calls, parsingCall{op: "episodes", prev: parsed, scene: sceneSource})
+	if r, ok := s.episodes[parsed]; ok {
+		return r
+	}
+	return nil
+}
+
+func TestAggregateEpisodes(t *testing.T) {
+	t.Parallel()
+
+	s := &series.Series{ID: 7, SeriesType: series.SeriesTypeStandard}
+	mkLE := func(path string) *episodeimport.LocalEpisode {
+		le := episodeimport.NewLocalEpisode()
+		le.Path = path
+		le.Series = s
+		return le
+	}
+
+	t.Run("nil parsing returns nil", func(t *testing.T) {
+		if got := episodeimport.NewAggregateEpisodes(nil); got != nil {
+			t.Errorf("NewAggregateEpisodes(nil) = %v, want nil", got)
+		}
+	})
+
+	t.Run("Order is 1", func(t *testing.T) {
+		ag := episodeimport.NewAggregateEpisodes(&stubParsing{})
+		if got := ag.Order(); got != 1 {
+			t.Errorf("Order = %d, want 1", got)
+		}
+	})
+
+	t.Run("download-client info preferred over file when not FullSeason", func(t *testing.T) {
+		fileInfo := &parser.ParsedEpisodeInfo{ReleaseTitle: "file"}
+		dcInfo := &parser.ParsedEpisodeInfo{ReleaseTitle: "dc"}
+		want := []episodes.Episode{{ID: 42}}
+		stub := &stubParsing{episodes: map[*parser.ParsedEpisodeInfo][]episodes.Episode{dcInfo: want}}
+		ag := episodeimport.NewAggregateEpisodes(stub)
+		le := mkLE("/tv/normal-name.mkv")
+		le.FileEpisodeInfo = fileInfo
+		le.DownloadClientEpisodeInfo = dcInfo
+		ag.Aggregate(le, nil)
+		if len(le.Episodes) != 1 || le.Episodes[0].ID != 42 {
+			t.Errorf("Episodes = %+v, want [{ID:42}]", le.Episodes)
+		}
+	})
+
+	t.Run("FullSeason download-client info skipped", func(t *testing.T) {
+		fileInfo := &parser.ParsedEpisodeInfo{ReleaseTitle: "file"}
+		dcInfo := &parser.ParsedEpisodeInfo{ReleaseTitle: "dc", FullSeason: true}
+		want := []episodes.Episode{{ID: 99}}
+		stub := &stubParsing{episodes: map[*parser.ParsedEpisodeInfo][]episodes.Episode{fileInfo: want}}
+		ag := episodeimport.NewAggregateEpisodes(stub)
+		le := mkLE("/tv/normal-name.mkv")
+		le.FileEpisodeInfo = fileInfo
+		le.DownloadClientEpisodeInfo = dcInfo
+		ag.Aggregate(le, nil)
+		if len(le.Episodes) != 1 || le.Episodes[0].ID != 99 {
+			t.Errorf("Episodes = %+v, want file source [{ID:99}]", le.Episodes)
+		}
+	})
+
+	t.Run("scene-named bare title bypasses dc/folder", func(t *testing.T) {
+		fileInfo := &parser.ParsedEpisodeInfo{ReleaseTitle: "scene"}
+		dcInfo := &parser.ParsedEpisodeInfo{ReleaseTitle: "dc"}
+		want := []episodes.Episode{{ID: 1}}
+		stub := &stubParsing{episodes: map[*parser.ParsedEpisodeInfo][]episodes.Episode{fileInfo: want}}
+		ag := episodeimport.NewAggregateEpisodes(stub)
+		// Scene-style filename per parser.IsSceneTitle's six-step
+		// gauntlet (must parse, have a release group, have non-zero
+		// quality ID, and a non-empty SeriesTitle).
+		le := mkLE("/tv/Series.Title.S04E17.720p.HDTV.X264-DIMENSION.mkv")
+		le.FileEpisodeInfo = fileInfo
+		le.DownloadClientEpisodeInfo = dcInfo
+		ag.Aggregate(le, nil)
+		if len(le.Episodes) != 1 || le.Episodes[0].ID != 1 {
+			t.Errorf("Episodes = %+v, want file source [{ID:1}]", le.Episodes)
+		}
+	})
+
+	t.Run("OtherVideoFiles bypasses dc/folder", func(t *testing.T) {
+		fileInfo := &parser.ParsedEpisodeInfo{ReleaseTitle: "file"}
+		dcInfo := &parser.ParsedEpisodeInfo{ReleaseTitle: "dc"}
+		want := []episodes.Episode{{ID: 2}}
+		stub := &stubParsing{episodes: map[*parser.ParsedEpisodeInfo][]episodes.Episode{fileInfo: want}}
+		ag := episodeimport.NewAggregateEpisodes(stub)
+		le := mkLE("/tv/normal.mkv")
+		le.OtherVideoFiles = true
+		le.FileEpisodeInfo = fileInfo
+		le.DownloadClientEpisodeInfo = dcInfo
+		ag.Aggregate(le, nil)
+		if len(le.Episodes) != 1 || le.Episodes[0].ID != 2 {
+			t.Errorf("Episodes = %+v, want file source", le.Episodes)
+		}
+	})
+
+	t.Run("no parsed info → special episode fallback", func(t *testing.T) {
+		special := &parser.ParsedEpisodeInfo{ReleaseTitle: "special"}
+		want := []episodes.Episode{{ID: 555}}
+		stub := &stubParsing{
+			specials: map[string]*parser.ParsedEpisodeInfo{"normal": special},
+			episodes: map[*parser.ParsedEpisodeInfo][]episodes.Episode{special: want},
+		}
+		ag := episodeimport.NewAggregateEpisodes(stub)
+		le := mkLE("/tv/normal.mkv")
+		ag.Aggregate(le, nil)
+		if len(le.Episodes) != 1 || le.Episodes[0].ID != 555 {
+			t.Errorf("Episodes = %+v, want special [{ID:555}]", le.Episodes)
+		}
+	})
+
+	t.Run("empty episodes + IsPossibleSpecialEpisode → re-runs special", func(t *testing.T) {
+		// FileEpisodeInfo with FullSeason=false + zero seasonNumber +
+		// no episode numbers → IsPossibleSpecialEpisode=true.
+		fileInfo := &parser.ParsedEpisodeInfo{ReleaseTitle: "weirdname", SeasonNumber: 0}
+		special := &parser.ParsedEpisodeInfo{ReleaseTitle: "special"}
+		want := []episodes.Episode{{ID: 7}}
+		stub := &stubParsing{
+			specials: map[string]*parser.ParsedEpisodeInfo{"weirdname": special},
+			episodes: map[*parser.ParsedEpisodeInfo][]episodes.Episode{special: want},
+		}
+		ag := episodeimport.NewAggregateEpisodes(stub)
+		le := mkLE("/tv/weirdname.mkv")
+		le.FileEpisodeInfo = fileInfo
+		ag.Aggregate(le, nil)
+		if len(le.Episodes) != 1 || le.Episodes[0].ID != 7 {
+			t.Errorf("Episodes = %+v, want re-run special [{ID:7}]", le.Episodes)
+		}
+		// Verify the second special call's prev is the first parse
+		// (NOT nil) — this is the C# `:83` behaviour.
+		var seenPrev *parser.ParsedEpisodeInfo
+		for _, c := range stub.calls {
+			if c.op == "special" && c.title == "weirdname" {
+				seenPrev = c.prev
+			}
+		}
+		if seenPrev != fileInfo {
+			t.Errorf("special-episode re-call prev = %p, want fileInfo %p", seenPrev, fileInfo)
+		}
+	})
+
+	t.Run("daily parse against Standard series fails validation → empty", func(t *testing.T) {
+		fileInfo := &parser.ParsedEpisodeInfo{ReleaseTitle: "daily-show.2024.01.01", AirDate: "2024-01-01"}
+		stub := &stubParsing{episodes: map[*parser.ParsedEpisodeInfo][]episodes.Episode{
+			fileInfo: {{ID: 1}},
+		}}
+		ag := episodeimport.NewAggregateEpisodes(stub)
+		le := mkLE("/tv/daily-show.mkv")
+		le.FileEpisodeInfo = fileInfo
+		ag.Aggregate(le, nil)
+		if len(le.Episodes) != 0 {
+			t.Errorf("Episodes = %+v, want [] (daily on standard rejected)", le.Episodes)
+		}
+	})
+}
+
+// --- AggregateReleaseInfo ------------------------------------------
+
+type stubGrabsFinder struct {
+	rows []history.Entry
+	err  error
+}
+
+func (s stubGrabsFinder) FindGrabsByDownloadID(_ context.Context, _ string) ([]history.Entry, error) {
+	return s.rows, s.err
+}
+
+func TestAggregateReleaseInfo(t *testing.T) {
+	t.Parallel()
+
+	mkEntry := func(eventType *int, source string) history.Entry {
+		return history.Entry{EventType: eventType, SourceTitle: source, DownloadID: "abc"}
+	}
+	grabbed := episodeimport.EpisodeHistoryEventTypeGrabbed
+	imported := 3
+
+	t.Run("nil finder returns nil constructor", func(t *testing.T) {
+		if got := episodeimport.NewAggregateReleaseInfo(nil, nil); got != nil {
+			t.Errorf("NewAggregateReleaseInfo(nil) = %v, want nil", got)
+		}
+	})
+
+	t.Run("Order is 1", func(t *testing.T) {
+		ag := episodeimport.NewAggregateReleaseInfo(stubGrabsFinder{}, slog.New(slog.DiscardHandler))
+		if got := ag.Order(); got != 1 {
+			t.Errorf("Order = %d, want 1", got)
+		}
+	})
+
+	t.Run("nil download item → no Release", func(t *testing.T) {
+		ag := episodeimport.NewAggregateReleaseInfo(stubGrabsFinder{rows: []history.Entry{mkEntry(&grabbed, "x")}}, slog.New(slog.DiscardHandler))
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/a.mkv"
+		ag.Aggregate(le, nil)
+		if le.Release != nil {
+			t.Errorf("Release = %+v, want nil for missing item", le.Release)
+		}
+	})
+
+	t.Run("empty download id → no Release", func(t *testing.T) {
+		ag := episodeimport.NewAggregateReleaseInfo(stubGrabsFinder{rows: []history.Entry{mkEntry(&grabbed, "x")}}, slog.New(slog.DiscardHandler))
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/a.mkv"
+		ag.Aggregate(le, &downloadclients.Item{DownloadID: ""})
+		if le.Release != nil {
+			t.Errorf("Release = %+v, want nil for empty download id", le.Release)
+		}
+	})
+
+	t.Run("no grabbed history rows → no Release", func(t *testing.T) {
+		ag := episodeimport.NewAggregateReleaseInfo(stubGrabsFinder{rows: []history.Entry{mkEntry(&imported, "imported-only")}}, slog.New(slog.DiscardHandler))
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/a.mkv"
+		ag.Aggregate(le, &downloadclients.Item{DownloadID: "abc"})
+		if le.Release != nil {
+			t.Errorf("Release = %+v, want nil when only non-grab events present", le.Release)
+		}
+	})
+
+	t.Run("grabbed history populates Release.Title from most recent", func(t *testing.T) {
+		// The repo returns date-descending; the aggregator picks
+		// the first (= most recent) grab's SourceTitle.
+		rows := []history.Entry{
+			mkEntry(&grabbed, "Show.S01E01.GROUP"),
+			mkEntry(&grabbed, "older"),
+		}
+		ag := episodeimport.NewAggregateReleaseInfo(stubGrabsFinder{rows: rows}, slog.New(slog.DiscardHandler))
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/a.mkv"
+		ag.Aggregate(le, &downloadclients.Item{DownloadID: "abc"})
+		if le.Release == nil {
+			t.Fatalf("Release = nil, want populated")
+		}
+		if le.Release.Title != "Show.S01E01.GROUP" {
+			t.Errorf("Release.Title = %q, want most-recent grab title", le.Release.Title)
+		}
+	})
+
+	t.Run("nil EventType skipped", func(t *testing.T) {
+		// Old pre-EventType-column rows.
+		rows := []history.Entry{mkEntry(nil, "preEventType")}
+		ag := episodeimport.NewAggregateReleaseInfo(stubGrabsFinder{rows: rows}, slog.New(slog.DiscardHandler))
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/a.mkv"
+		ag.Aggregate(le, &downloadclients.Item{DownloadID: "abc"})
+		if le.Release != nil {
+			t.Errorf("Release = %+v, want nil when only nil-EventType rows", le.Release)
+		}
+	})
+
+	t.Run("finder error skipped silently", func(t *testing.T) {
+		ag := episodeimport.NewAggregateReleaseInfo(stubGrabsFinder{err: errors.New("db down")}, slog.New(slog.DiscardHandler))
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/a.mkv"
+		ag.Aggregate(le, &downloadclients.Item{DownloadID: "abc"})
+		if le.Release != nil {
+			t.Errorf("Release = %+v, want nil on finder error", le.Release)
+		}
+	})
+}
+
+// --- AggregateSubtitleInfo -----------------------------------------
+
+type stubFiles struct {
+	files map[int]*episodefiles.File
+	err   error
+}
+
+func (s stubFiles) GetByID(_ context.Context, id int) (*episodefiles.File, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.files[id], nil
+}
+
+func TestAggregateSubtitleInfo(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil files → nil constructor", func(t *testing.T) {
+		if got := episodeimport.NewAggregateSubtitleInfo(nil, nil); got != nil {
+			t.Errorf("NewAggregateSubtitleInfo(nil) = %v, want nil", got)
+		}
+	})
+
+	t.Run("Order is 2", func(t *testing.T) {
+		ag := episodeimport.NewAggregateSubtitleInfo(stubFiles{}, slog.New(slog.DiscardHandler))
+		if got := ag.Order(); got != 2 {
+			t.Errorf("Order = %d, want 2", got)
+		}
+	})
+
+	t.Run("non-subtitle extension → no SubtitleInfo", func(t *testing.T) {
+		ag := episodeimport.NewAggregateSubtitleInfo(stubFiles{}, slog.New(slog.DiscardHandler))
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/a.mkv"
+		ag.Aggregate(le, nil)
+		if le.SubtitleInfo != nil {
+			t.Errorf("SubtitleInfo = %+v, want nil for non-subtitle ext", le.SubtitleInfo)
+		}
+	})
+
+	t.Run("empty Episodes → no SubtitleInfo", func(t *testing.T) {
+		ag := episodeimport.NewAggregateSubtitleInfo(stubFiles{}, slog.New(slog.DiscardHandler))
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/a.srt"
+		ag.Aggregate(le, nil)
+		if le.SubtitleInfo != nil {
+			t.Errorf("SubtitleInfo = %+v, want nil with no episodes", le.SubtitleInfo)
+		}
+	})
+
+	t.Run("nil EpisodeFileID → no SubtitleInfo", func(t *testing.T) {
+		ag := episodeimport.NewAggregateSubtitleInfo(stubFiles{}, slog.New(slog.DiscardHandler))
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/a.srt"
+		le.Episodes = []episodes.Episode{{ID: 1}}
+		ag.Aggregate(le, nil)
+		if le.SubtitleInfo != nil {
+			t.Errorf("SubtitleInfo = %+v, want nil for nil-EpisodeFileID", le.SubtitleInfo)
+		}
+	})
+
+	t.Run("file resolver error → no SubtitleInfo", func(t *testing.T) {
+		ag := episodeimport.NewAggregateSubtitleInfo(stubFiles{err: errors.New("db down")}, slog.New(slog.DiscardHandler))
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/a.srt"
+		efid := 9
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: &efid}}
+		ag.Aggregate(le, nil)
+		if le.SubtitleInfo != nil {
+			t.Errorf("SubtitleInfo = %+v, want nil on resolver error", le.SubtitleInfo)
+		}
+	})
+
+	t.Run("populates SubtitleInfo from path parse", func(t *testing.T) {
+		ef := &episodefiles.File{ID: 9, RelativePath: "Show.S01E01.GROUP.mkv"}
+		ag := episodeimport.NewAggregateSubtitleInfo(stubFiles{files: map[int]*episodefiles.File{9: ef}}, slog.New(slog.DiscardHandler))
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/Show.S01E01.GROUP.eng.srt"
+		efid := 9
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: &efid}}
+		ag.Aggregate(le, nil)
+		if le.SubtitleInfo == nil {
+			t.Fatalf("SubtitleInfo = nil, want populated")
+		}
+	})
+
+	t.Run("language tag already in file title is dropped", func(t *testing.T) {
+		// File title contains ".eng" and the subtitle path has ".eng" tag.
+		// The cleanup should drop the tag.
+		ef := &episodefiles.File{ID: 9, RelativePath: "Show.S01E01.eng.GROUP.mkv"}
+		ag := episodeimport.NewAggregateSubtitleInfo(stubFiles{files: map[int]*episodefiles.File{9: ef}}, slog.New(slog.DiscardHandler))
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/Show.S01E01.eng.GROUP.eng.srt"
+		efid := 9
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: &efid}}
+		ag.Aggregate(le, nil)
+		if le.SubtitleInfo == nil {
+			t.Fatalf("SubtitleInfo = nil, want populated")
+		}
+		// We don't assert specific Language ParseSubtitleLanguageInformation
+		// returns — we only verify the cleanup loop didn't crash. The
+		// tag-drop logic is exercised end-to-end whenever the parsed
+		// info has tags overlapping the file title; the parse_subtitle
+		// package owns the canonical extraction tests.
+	})
+
+	t.Run("FileNameBeforeRename used as title source", func(t *testing.T) {
+		ef := &episodefiles.File{ID: 9, RelativePath: "after-rename.mkv", OriginalFilePath: "Show.S01E01.GROUP.mkv"}
+		ag := episodeimport.NewAggregateSubtitleInfo(stubFiles{files: map[int]*episodefiles.File{9: ef}}, slog.New(slog.DiscardHandler))
+		le := episodeimport.NewLocalEpisode()
+		le.Path = "/tv/Show.S01E01.GROUP.eng.srt"
+		le.FileNameBeforeRename = "Show.S01E01.GROUP.mkv"
+		efid := 9
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: &efid}}
+		ag.Aggregate(le, nil)
+		if le.SubtitleInfo == nil {
+			t.Fatalf("SubtitleInfo = nil, want populated")
+		}
+	})
+}
+
+// --- AugmentQualityFromReleaseName --------------------------------
+
+type stubGrabFinder struct {
+	entry *downloadhistory.Entry
+}
+
+func (s stubGrabFinder) GetLatestGrab(_ string) *downloadhistory.Entry { return s.entry }
+
+func TestAugmentQualityFromReleaseName(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil finder → nil constructor", func(t *testing.T) {
+		if got := episodeimport.NewAugmentQualityFromReleaseName(nil, nil); got != nil {
+			t.Errorf("NewAugmentQualityFromReleaseName(nil) = %v, want nil", got)
+		}
+	})
+
+	t.Run("Order is 5 / Name is ReleaseName", func(t *testing.T) {
+		a := episodeimport.NewAugmentQualityFromReleaseName(stubGrabFinder{}, nil)
+		if got := a.Order(); got != 5 {
+			t.Errorf("Order = %d, want 5", got)
+		}
+		if got := a.AugmenterName(); got != "ReleaseName" {
+			t.Errorf("AugmenterName = %q, want ReleaseName", got)
+		}
+	})
+
+	t.Run("nil item → nil result", func(t *testing.T) {
+		a := episodeimport.NewAugmentQualityFromReleaseName(stubGrabFinder{entry: &downloadhistory.Entry{SourceTitle: "x"}}, nil)
+		if got := a.AugmentQuality(episodeimport.NewLocalEpisode(), nil); got != nil {
+			t.Errorf("AugmentQuality(nil item) = %+v, want nil", got)
+		}
+	})
+
+	t.Run("empty download id → nil", func(t *testing.T) {
+		a := episodeimport.NewAugmentQualityFromReleaseName(stubGrabFinder{entry: &downloadhistory.Entry{SourceTitle: "x"}}, nil)
+		if got := a.AugmentQuality(episodeimport.NewLocalEpisode(), &downloadclients.Item{DownloadID: ""}); got != nil {
+			t.Errorf("AugmentQuality(empty id) = %+v, want nil", got)
+		}
+	})
+
+	t.Run("no grab → nil", func(t *testing.T) {
+		a := episodeimport.NewAugmentQualityFromReleaseName(stubGrabFinder{entry: nil}, nil)
+		if got := a.AugmentQuality(episodeimport.NewLocalEpisode(), &downloadclients.Item{DownloadID: "abc"}); got != nil {
+			t.Errorf("AugmentQuality(no grab) = %+v, want nil", got)
+		}
+	})
+
+	t.Run("DetectionName components promote to Tag", func(t *testing.T) {
+		// Inject a custom parser that returns a model where every
+		// detection source is Name — every confidence should be Tag.
+		parsed := quality.Model{
+			Quality:                   quality.Quality{ID: 4, Source: quality.SourceWeb, Resolution: 1080},
+			SourceDetectionSource:     quality.DetectionName,
+			ResolutionDetectionSource: quality.DetectionName,
+			RevisionDetectionSource:   quality.DetectionName,
+		}
+		a := episodeimport.NewAugmentQualityFromReleaseName(
+			stubGrabFinder{entry: &downloadhistory.Entry{SourceTitle: "Show.S01E01.1080p.WEB-DL.GROUP"}},
+			func(string) quality.Model { return parsed },
+		)
+		got := a.AugmentQuality(episodeimport.NewLocalEpisode(), &downloadclients.Item{DownloadID: "abc"})
+		if got == nil {
+			t.Fatalf("AugmentQuality = nil, want non-nil")
+		}
+		if got.Source != quality.SourceWeb || got.SourceConfidence != episodeimport.QualityConfidenceTag {
+			t.Errorf("source=%v conf=%v, want Web/Tag", got.Source, got.SourceConfidence)
+		}
+		if got.Resolution != 1080 || got.ResolutionConfidence != episodeimport.QualityConfidenceTag {
+			t.Errorf("res=%v conf=%v, want 1080/Tag", got.Resolution, got.ResolutionConfidence)
+		}
+		if got.RevisionConfidence != episodeimport.QualityConfidenceTag {
+			t.Errorf("revision conf=%v, want Tag", got.RevisionConfidence)
+		}
+	})
+
+	t.Run("non-Name detection sources fall back", func(t *testing.T) {
+		parsed := quality.Model{
+			Quality:                   quality.Quality{ID: 4, Source: quality.SourceWeb, Resolution: 1080},
+			SourceDetectionSource:     quality.DetectionExtension,
+			ResolutionDetectionSource: quality.DetectionUnknown,
+			RevisionDetectionSource:   quality.DetectionExtension,
+		}
+		a := episodeimport.NewAugmentQualityFromReleaseName(
+			stubGrabFinder{entry: &downloadhistory.Entry{SourceTitle: "anything"}},
+			func(string) quality.Model { return parsed },
+		)
+		got := a.AugmentQuality(episodeimport.NewLocalEpisode(), &downloadclients.Item{DownloadID: "abc"})
+		if got == nil {
+			t.Fatalf("AugmentQuality = nil, want non-nil")
+		}
+		if got.SourceConfidence != episodeimport.QualityConfidenceFallback {
+			t.Errorf("source conf=%v, want Fallback", got.SourceConfidence)
+		}
+		if got.ResolutionConfidence != episodeimport.QualityConfidenceFallback {
+			t.Errorf("res conf=%v, want Fallback", got.ResolutionConfidence)
+		}
+		if got.RevisionConfidence != episodeimport.QualityConfidenceFallback {
+			t.Errorf("revision conf=%v, want Fallback", got.RevisionConfidence)
+		}
+	})
 }

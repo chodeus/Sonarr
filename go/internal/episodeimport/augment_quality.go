@@ -5,9 +5,28 @@ import (
 	"strings"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
+	"sonarr.tv/sonarr/internal/downloadhistory"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
 )
+
+// LatestGrabFinder is the slice of `IDownloadHistoryService.GetLatestGrab`
+// that [AugmentQualityFromReleaseName] reaches for at
+// `AugmentQualityFromReleaseName.cs:29`. The full
+// DownloadHistoryService is a downstream subsystem (event-handler-
+// driven row writer) that hasn't ported yet — only the
+// `downloadhistory.Repo` exists today.
+//
+// GetLatestGrab returns the most-recent `DownloadGrabbed` entry for
+// the given DownloadID, or nil when no grab event exists. The
+// production binding will compose the existing
+// `downloadhistory.Repo.AllByDownloadID` (rows are returned date-
+// descending) with a `DownloadHistoryEventType.DownloadGrabbed`
+// filter; the wiring slice owns that composition. For tests, callers
+// pass a stub that returns the expected entry directly.
+type LatestGrabFinder interface {
+	GetLatestGrab(downloadID string) *downloadhistory.Entry
+}
 
 // QualityConfidence ports the C# quality augmenter confidence enum at
 // `Aggregation/Aggregators/Augmenters/Quality/Confidence.cs:3-9`.
@@ -316,10 +335,87 @@ func (a *AugmentQualityFromMediaInfo) AugmentQuality(le *LocalEpisode, _ *downlo
 	return nil
 }
 
+// AugmentQualityFromReleaseName ports
+// `Aggregators/Augmenters/Quality/AugmentQualityFromReleaseName.cs:9-53`.
+//
+// Looks up the latest DownloadGrabbed history entry for the download
+// item and parses the persisted `SourceTitle` (the on-wire release
+// title) for quality information. The release name is treated as the
+// most authoritative external source — when the parsed quality
+// reports DetectionName for a component, the augmenter promotes that
+// component to Tag confidence; otherwise Fallback (matching C#
+// `:38-48`'s ternary triplet).
+//
+// Skip arms (matching C# `:23-34`):
+//
+//   - nil download item — manual / library rescan flow.
+//   - empty download ID — defensive, treated like the C# null arm.
+//   - finder returns nil — no grab history for this download.
+//
+// Order is 5 — the C# value at `:11` — placing this after the four
+// Order=1..4 augmenters (FileName / Folder / DownloadClientItem /
+// MediaInfo) so the release-name evidence is the LAST per-component
+// vote. Combined with [AggregateQuality]'s "strictly-higher
+// confidence wins, equal-confidence revision tiebreak" merge, this
+// means a Tag-confidence release-name parse displaces an earlier
+// Fallback-confidence file-name parse, which matches C# behaviour.
+type AugmentQualityFromReleaseName struct {
+	finder LatestGrabFinder
+
+	// QualityParser is the title-parsing dep. nil defaults to
+	// [quality.ParseQuality]. Pulled out as a function-typed field
+	// for the same reason [AugmentQualityFromMediaInfo].QualityNameParser
+	// is — testability without dragging the parser through the call.
+	QualityParser func(name string) quality.Model
+}
+
+// NewAugmentQualityFromReleaseName binds the latest-grab finder and
+// optional parser. nil parser defaults to [quality.ParseQuality].
+// nil finder returns nil — production wiring MUST pass a real
+// implementation.
+func NewAugmentQualityFromReleaseName(finder LatestGrabFinder, parserFn func(string) quality.Model) *AugmentQualityFromReleaseName {
+	if finder == nil {
+		return nil
+	}
+	if parserFn == nil {
+		parserFn = quality.ParseQuality
+	}
+	return &AugmentQualityFromReleaseName{finder: finder, QualityParser: parserFn}
+}
+
+// Order returns 5 — the C# value at `AugmentQualityFromReleaseName.cs:11`.
+func (*AugmentQualityFromReleaseName) Order() int { return 5 }
+
+// AugmenterName returns `"ReleaseName"` per C# `:12`.
+func (*AugmentQualityFromReleaseName) AugmenterName() string { return "ReleaseName" }
+
+// AugmentQuality runs the parse-and-promote pipeline.
+func (a *AugmentQualityFromReleaseName) AugmentQuality(_ *LocalEpisode, item *downloadclients.Item) *AugmentQualityResult {
+	if a == nil || item == nil || item.DownloadID == "" {
+		return nil
+	}
+	entry := a.finder.GetLatestGrab(item.DownloadID)
+	if entry == nil {
+		return nil
+	}
+	parsed := a.QualityParser(entry.SourceTitle)
+	revision := parsed.Revision
+	return &AugmentQualityResult{
+		Name:                 "ReleaseName",
+		Source:               parsed.Quality.Source,
+		SourceConfidence:     tagOrFallback(parsed.SourceDetectionSource),
+		Resolution:           parsed.Quality.Resolution,
+		ResolutionConfidence: tagOrFallback(parsed.ResolutionDetectionSource),
+		Revision:             &revision,
+		RevisionConfidence:   tagOrFallback(parsed.RevisionDetectionSource),
+	}
+}
+
 // Compile-time interface-satisfaction guards.
 var (
 	_ QualityAugmenter = AugmentQualityFromFileName{}
 	_ QualityAugmenter = AugmentQualityFromFolder{}
 	_ QualityAugmenter = AugmentQualityFromDownloadClientItem{}
 	_ QualityAugmenter = (*AugmentQualityFromMediaInfo)(nil)
+	_ QualityAugmenter = (*AugmentQualityFromReleaseName)(nil)
 )
