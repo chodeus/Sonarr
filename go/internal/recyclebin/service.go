@@ -17,13 +17,11 @@
 //     hasn't shipped (slice 3.74 only ported TransferFile, the file
 //     half of the C# DiskTransferService class). Lands when the
 //     folder-transfer surface ports.
-//   - Empty (`:139-160`) — requires
-//     IDiskProvider.GetDirectories which `internal/disk/Provider`
-//     hasn't shipped. Lands alongside the directory-walk surface.
 //
-// Slice 3.77 lands [Service.Cleanup] (`:162-200`) — the
-// `IExecute<CleanUpRecycleBinCommand>` handler delegates here. The
-// remaining two deferred surfaces are documented at type-level on
+// Slice 3.77 landed [Service.Cleanup] (`:162-200`); slice 3.78
+// landed [Service.Empty] (`:139-160`) alongside the
+// [disk.Provider.GetDirectories] primitive it needs. The remaining
+// deferred surface (DeleteFolder) is documented at type-level on
 // [Service] so a future slice has a clear plan-of-attack pointer.
 //
 // # Wiring
@@ -85,8 +83,8 @@ type ConfigReader interface {
 // the move-time mtime the operator expects.
 type DiskOps interface {
 	// DeleteFile removes a regular file. Used by the
-	// "RecycleBin disabled" arm of DeleteFile and the per-file
-	// expiry pass inside Cleanup.
+	// "RecycleBin disabled" arm of DeleteFile, the per-file expiry
+	// pass inside Cleanup, and the file-sweep arm of Empty.
 	DeleteFile(path string) error
 	// CreateFolder makes the destination subfolder under the
 	// recycle-bin root.
@@ -100,7 +98,7 @@ type DiskOps interface {
 	MoveFile(src, dst string) error
 	// GetFiles returns absolute paths of every regular file under
 	// path. recursive=true descends. Used by Cleanup to enumerate
-	// recycle-bin contents.
+	// recycle-bin contents and by Empty to delete top-level files.
 	GetFiles(path string, recursive bool) ([]string, error)
 	// FileGetLastWrite returns the file's last-modified time. Used
 	// by Cleanup to test the per-file retention window.
@@ -108,6 +106,14 @@ type DiskOps interface {
 	// RemoveEmptySubfolders sweeps path bottom-up, deleting any
 	// subfolder that ended up empty after Cleanup's per-file pass.
 	RemoveEmptySubfolders(path string) error
+	// GetDirectories returns absolute paths of every immediate
+	// subdirectory of path. Top-level only — Empty uses it to
+	// enumerate recycle-bin entries that are themselves folders.
+	GetDirectories(path string) ([]string, error)
+	// DeleteFolder removes a directory. recursive=true removes the
+	// directory and everything under it. Used by Empty's
+	// folder-sweep arm.
+	DeleteFolder(path string, recursive bool) error
 }
 
 // RecycleBinError mirrors `RecycleBinException` raised at the C#
@@ -247,6 +253,82 @@ func (s *Service) DeleteFile(path, subfolder string) (string, error) {
 
 	s.log.Debug("recyclebin: file moved", "dst", dest)
 	return dest, nil
+}
+
+// Empty ports `RecycleBinProvider.cs:139-160`. Recursively deletes
+// every entry inside the recycle-bin folder — both subdirectories
+// (via [DiskOps.DeleteFolder] with recursive=true) and top-level
+// files (via [DiskOps.DeleteFile]). The recycle-bin root itself is
+// left in place.
+//
+// Early-return arm (matches C# `:141-145`):
+//
+//   - RecycleBin == "" → log "not configured, cannot empty",
+//     return nil.
+//
+// Per-entry behaviour:
+//
+//   - DeleteFolder + DeleteFile errors are logged at warn-level and
+//     the loop continues so a single broken inode doesn't abort the
+//     whole sweep. Mirrors the looser C# semantics — the C# tree
+//     doesn't catch around the per-iteration calls, but the
+//     equivalent Go panic behaviour would be much harsher than what
+//     the C# Sonarr operator expects (a single permission-denied
+//     entry would crash the command).
+//
+// Errors:
+//
+//   - GetDirectories failure on the recycle-bin root → propagated
+//     wrapped. The C# tree doesn't catch here either; the foreach
+//     would throw the underlying IOException up to the IExecute
+//     dispatcher.
+//   - GetFiles failure on the recycle-bin root → propagated wrapped
+//     for the same reason.
+//
+// ctx is used purely for cancellation; the C# loop has no
+// cancellation surface, but the Go port checks ctx.Err() at the top
+// of each iteration so a long sweep stays responsive.
+func (s *Service) Empty(ctx context.Context) error {
+	bin := strings.TrimSpace(s.cfg.RecycleBin())
+	if bin == "" {
+		s.log.Info("recyclebin: feature not configured, cannot empty")
+		return nil
+	}
+
+	s.log.Info("recyclebin: removing all items from the recycling bin", "bin", bin)
+
+	folders, err := s.disk.GetDirectories(bin)
+	if err != nil {
+		return fmt.Errorf("recyclebin: Empty GetDirectories(%q): %w", bin, err)
+	}
+	for _, folder := range folders {
+		if cerr := ctx.Err(); cerr != nil {
+			return fmt.Errorf("recyclebin: Empty cancelled: %w", cerr)
+		}
+		if err := s.disk.DeleteFolder(folder, true); err != nil {
+			s.log.Warn("recyclebin: Empty per-folder DeleteFolder failed (continuing)",
+				"folder", folder, "err", err)
+			continue
+		}
+	}
+
+	files, err := s.disk.GetFiles(bin, false)
+	if err != nil {
+		return fmt.Errorf("recyclebin: Empty GetFiles(%q): %w", bin, err)
+	}
+	for _, file := range files {
+		if cerr := ctx.Err(); cerr != nil {
+			return fmt.Errorf("recyclebin: Empty cancelled: %w", cerr)
+		}
+		if err := s.disk.DeleteFile(file); err != nil {
+			s.log.Warn("recyclebin: Empty per-file DeleteFile failed (continuing)",
+				"file", file, "err", err)
+			continue
+		}
+	}
+
+	s.log.Debug("recyclebin: empty complete", "bin", bin)
+	return nil
 }
 
 // Cleanup ports `RecycleBinProvider.cs:162-200`. Walks the

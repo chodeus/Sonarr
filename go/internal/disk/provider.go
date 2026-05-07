@@ -250,6 +250,39 @@ func (p *Provider) FileGetLastWrite(path string) (time.Time, error) {
 	return st.ModTime(), nil
 }
 
+// GetDirectories ports `DiskProviderBase.cs:153-162`. Returns
+// absolute paths of every immediate subdirectory of path. Top-level
+// only — non-recursive — matching the C# `Directory.EnumerateDirectories(path, "*")`
+// shape.
+//
+// Inaccessible entries are silently skipped (the C# version sets
+// `IgnoreInaccessible = true` on the EnumerationOptions; the Go port
+// matches by skipping any entry that errors on read). Errors from
+// the initial os.ReadDir propagate wrapped — a missing or
+// non-directory path is the caller's problem to classify.
+//
+// The C# version also sets `AttributesToSkip = FileAttributes.System`;
+// the Go port skips that filter because Linux/macOS targets don't
+// have the System attribute, and a Windows port can layer the
+// filter behind a build tag without changing this signature.
+//
+// Returns a nil-safe empty slice when the path is empty rather than
+// nil — callers can range over the result without a length check.
+func (p *Provider) GetDirectories(path string) ([]string, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("disk: GetDirectories(%q): %w", path, err)
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		out = append(out, filepath.Join(path, e.Name()))
+	}
+	return out, nil
+}
+
 // GetAvailableSpace returns the free space on the filesystem hosting
 // `path`, in bytes. Mirrors C# `IDiskProvider.GetAvailableSpace(string)`
 // at `Common/Disk/IDiskProvider.cs`.

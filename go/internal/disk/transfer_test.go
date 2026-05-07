@@ -233,3 +233,83 @@ func TestProvider_DeleteFile_Missing(t *testing.T) {
 		t.Errorf("DeleteFile err = %v, want fs.ErrNotExist", err)
 	}
 }
+
+func TestProvider_GetDirectories(t *testing.T) {
+	t.Parallel()
+	p := newProvider()
+	tmp := t.TempDir()
+	// Three subdirs and two files.
+	for _, d := range []string{"alpha", "beta", "gamma"} {
+		if err := os.Mkdir(filepath.Join(tmp, d), 0o755); err != nil {
+			t.Fatalf("Mkdir(%s): %v", d, err)
+		}
+	}
+	writeFile(t, filepath.Join(tmp, "f.txt"), "x")
+	writeFile(t, filepath.Join(tmp, "g.txt"), "x")
+
+	got, err := p.GetDirectories(tmp)
+	if err != nil {
+		t.Fatalf("GetDirectories: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d dirs, want 3: %v", len(got), got)
+	}
+	// Each entry should be an absolute path joining tmp + name.
+	want := map[string]bool{
+		filepath.Join(tmp, "alpha"): true,
+		filepath.Join(tmp, "beta"):  true,
+		filepath.Join(tmp, "gamma"): true,
+	}
+	for _, d := range got {
+		if !want[d] {
+			t.Errorf("unexpected dir in result: %q", d)
+		}
+	}
+}
+
+func TestProvider_GetDirectories_TopLevelOnly(t *testing.T) {
+	t.Parallel()
+	p := newProvider()
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, "a", "nested"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	got, err := p.GetDirectories(tmp)
+	if err != nil {
+		t.Fatalf("GetDirectories: %v", err)
+	}
+	// Should return only "a", NOT "a/nested" — top-level only.
+	if len(got) != 1 || got[0] != filepath.Join(tmp, "a") {
+		t.Errorf("got %v, want only top-level [%s/a]", got, tmp)
+	}
+}
+
+func TestProvider_GetDirectories_EmptyFolder(t *testing.T) {
+	t.Parallel()
+	p := newProvider()
+	tmp := t.TempDir()
+	got, err := p.GetDirectories(tmp)
+	if err != nil {
+		t.Fatalf("GetDirectories(empty): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %v, want empty slice", got)
+	}
+	if got == nil {
+		t.Errorf("got = nil, want non-nil empty slice (callers range without length check)")
+	}
+}
+
+func TestProvider_GetDirectories_MissingPath(t *testing.T) {
+	t.Parallel()
+	p := newProvider()
+	tmp := t.TempDir()
+	_, err := p.GetDirectories(filepath.Join(tmp, "nonexistent"))
+	if err == nil {
+		t.Fatal("GetDirectories(missing) returned nil")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("err = %v, want fs.ErrNotExist", err)
+	}
+}

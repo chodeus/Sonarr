@@ -22,22 +22,32 @@ func (s stubConfig) RecycleBin() string         { return s.bin }
 func (s stubConfig) RecycleBinCleanupDays() int { return s.cleanupDays }
 
 type fakeDisk struct {
-	deleted []string
-	created []string
-	moves   []move
-	exists  map[string]bool
-	files   []string             // returned by GetFiles
-	mtimes  map[string]time.Time // for FileGetLastWrite
-	swept   []string             // RemoveEmptySubfolders calls
+	deleted        []string
+	deletedFolders []folderDel
+	created        []string
+	moves          []move
+	exists         map[string]bool
+	files          []string             // returned by GetFiles
+	mtimes         map[string]time.Time // for FileGetLastWrite
+	swept          []string             // RemoveEmptySubfolders calls
+	dirs           []string             // returned by GetDirectories
 
-	deleteErr   error
-	createErr   error
-	moveErr     error
-	getFilesErr error
-	mtimeErr    map[string]error // per-path err for FileGetLastWrite
-	deleteErrs  map[string]error // per-path err for DeleteFile (for partial-failure tests)
-	sweepErr    error
-	existsHooks func(path string) bool
+	deleteErr        error
+	createErr        error
+	moveErr          error
+	getFilesErr      error
+	getDirsErr       error
+	deleteFolderErr  error
+	deleteFolderErrs map[string]error // per-path err for DeleteFolder
+	mtimeErr         map[string]error // per-path err for FileGetLastWrite
+	deleteErrs       map[string]error // per-path err for DeleteFile (for partial-failure tests)
+	sweepErr         error
+	existsHooks      func(path string) bool
+}
+
+type folderDel struct {
+	path      string
+	recursive bool
 }
 
 type move struct{ src, dst string }
@@ -99,6 +109,24 @@ func (f *fakeDisk) RemoveEmptySubfolders(path string) error {
 		return f.sweepErr
 	}
 	f.swept = append(f.swept, path)
+	return nil
+}
+
+func (f *fakeDisk) GetDirectories(_ string) ([]string, error) {
+	if f.getDirsErr != nil {
+		return nil, f.getDirsErr
+	}
+	return f.dirs, nil
+}
+
+func (f *fakeDisk) DeleteFolder(path string, recursive bool) error {
+	if perr, ok := f.deleteFolderErrs[path]; ok {
+		return perr
+	}
+	if f.deleteFolderErr != nil {
+		return f.deleteFolderErr
+	}
+	f.deletedFolders = append(f.deletedFolders, folderDel{path: path, recursive: recursive})
 	return nil
 }
 
@@ -495,3 +523,131 @@ func TestService_SatisfiesCleanupRunnerSeam(t *testing.T) {
 	t.Parallel()
 	var _ cleanupRunnerSeam = (*recyclebin.Service)(nil)
 }
+
+// --- Empty -----------------------------------------------------------
+
+func TestEmpty_RecycleBinNotConfigured(t *testing.T) {
+	t.Parallel()
+	d := &fakeDisk{}
+	svc := recyclebin.NewService(stubConfig{bin: ""}, d, slog.Default())
+	if err := svc.Empty(context.Background()); err != nil {
+		t.Fatalf("Empty: %v", err)
+	}
+	if len(d.deleted) != 0 || len(d.deletedFolders) != 0 {
+		t.Errorf("disk touched: deleted=%v deletedFolders=%v", d.deleted, d.deletedFolders)
+	}
+}
+
+func TestEmpty_DeletesFoldersAndFiles(t *testing.T) {
+	t.Parallel()
+	d := &fakeDisk{
+		dirs:  []string{"/recycle/show1", "/recycle/show2"},
+		files: []string{"/recycle/loose1.mkv", "/recycle/loose2.mkv"},
+	}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle"}, d, slog.Default())
+	if err := svc.Empty(context.Background()); err != nil {
+		t.Fatalf("Empty: %v", err)
+	}
+	if len(d.deletedFolders) != 2 {
+		t.Fatalf("deletedFolders = %v, want 2", d.deletedFolders)
+	}
+	for _, fd := range d.deletedFolders {
+		if !fd.recursive {
+			t.Errorf("DeleteFolder(%q) recursive=false, want true (matches C# `:151`)", fd.path)
+		}
+	}
+	if len(d.deleted) != 2 {
+		t.Errorf("deleted = %v, want 2 files", d.deleted)
+	}
+}
+
+func TestEmpty_GetDirectoriesError_Propagates(t *testing.T) {
+	t.Parallel()
+	d := &fakeDisk{getDirsErr: errors.New("boom")}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle"}, d, slog.Default())
+	err := svc.Empty(context.Background())
+	if err == nil {
+		t.Fatal("Empty returned nil, want GetDirectories error")
+	}
+	if !errors.Is(err, d.getDirsErr) {
+		t.Errorf("err = %v, want it to wrap GetDirectories error", err)
+	}
+}
+
+func TestEmpty_GetFilesError_Propagates(t *testing.T) {
+	t.Parallel()
+	d := &fakeDisk{getFilesErr: errors.New("boom")}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle"}, d, slog.Default())
+	err := svc.Empty(context.Background())
+	if err == nil {
+		t.Fatal("Empty returned nil, want GetFiles error")
+	}
+	if !errors.Is(err, d.getFilesErr) {
+		t.Errorf("err = %v, want it to wrap GetFiles error", err)
+	}
+}
+
+func TestEmpty_PerFolderError_ContinuesSweep(t *testing.T) {
+	t.Parallel()
+	d := &fakeDisk{
+		dirs:             []string{"/recycle/locked", "/recycle/ok"},
+		deleteFolderErrs: map[string]error{"/recycle/locked": errors.New("EBUSY")},
+		files:            []string{"/recycle/loose.mkv"},
+	}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle"}, d, slog.Default())
+	if err := svc.Empty(context.Background()); err != nil {
+		t.Fatalf("Empty: %v", err)
+	}
+	// /recycle/ok should be deleted; /recycle/locked should NOT be in
+	// the delete log (perr returned before append).
+	if len(d.deletedFolders) != 1 || d.deletedFolders[0].path != "/recycle/ok" {
+		t.Errorf("deletedFolders = %v, want only /recycle/ok", d.deletedFolders)
+	}
+	// File-sweep arm still runs after the per-folder failure.
+	if len(d.deleted) != 1 {
+		t.Errorf("deleted = %v, want 1 (file sweep should continue)", d.deleted)
+	}
+}
+
+func TestEmpty_PerFileError_ContinuesSweep(t *testing.T) {
+	t.Parallel()
+	d := &fakeDisk{
+		dirs:       []string{"/recycle/show"},
+		files:      []string{"/recycle/locked.mkv", "/recycle/ok.mkv"},
+		deleteErrs: map[string]error{"/recycle/locked.mkv": errors.New("EBUSY")},
+	}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle"}, d, slog.Default())
+	if err := svc.Empty(context.Background()); err != nil {
+		t.Fatalf("Empty: %v", err)
+	}
+	if len(d.deleted) != 1 || d.deleted[0] != "/recycle/ok.mkv" {
+		t.Errorf("deleted = %v, want only /recycle/ok.mkv", d.deleted)
+	}
+}
+
+func TestEmpty_ContextCancelled(t *testing.T) {
+	t.Parallel()
+	d := &fakeDisk{
+		dirs:  []string{"/recycle/a", "/recycle/b"},
+		files: []string{"/recycle/loose.mkv"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle"}, d, slog.Default())
+	err := svc.Empty(ctx)
+	if err == nil {
+		t.Fatal("Empty returned nil after cancel")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if len(d.deletedFolders) != 0 {
+		t.Errorf("deletedFolders = %v on cancelled ctx, want 0", d.deletedFolders)
+	}
+}
+
+// GetFiles list-only top-level usage is exercised through the Empty
+// recursive=false path — when Empty calls GetFiles(bin, false), the
+// fakeDisk's GetFiles ignores the recursive flag because it just
+// returns f.files directly. The real disk.Provider's GetFiles
+// already enforces recursive=false at top-level (provider.go:93).
