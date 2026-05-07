@@ -516,6 +516,43 @@ func TestImportApprovedHistoryEnrichesIndexerFlagsNumeric(t *testing.T) {
 	}
 }
 
+func TestImportApprovedHistoryEnrichesIndexerFlagsNameForm(t *testing.T) {
+	t.Parallel()
+	// The C# EpisodeGrabbedEvent handler renders IndexerFlags via
+	// `Enum.ToString()` which produces the comma-separated `[Flags]`
+	// form for any value with multiple bits set. Slice 3.73 wires
+	// parser.ParseIndexerFlags to accept that form.
+	files := &fakeMediaFileWriter{}
+	upgrader := &fakeUpgrader{}
+	hist := fakeHistory{
+		out: &history.Entry{
+			Data: map[string]string{
+				"indexerFlags": "Freeleech, Internal", // → 1+8 = 9
+				"releaseType":  "MultiEpisode",        // → 2
+			},
+		},
+	}
+
+	svc := mkApprovedSvc(t, files, fakeDisk{}, func(d *approvedDeps) {
+		d.upgrader = upgrader
+		d.history = hist
+	})
+
+	d := mkApprovedDecision(5, 0)
+	item := &downloadclients.Item{DownloadID: "abc", CanMoveFiles: true}
+	_, _ = svc.Import(context.Background(), []*episodeimport.ImportDecision{d}, true, item, episodeimport.ImportModeAuto)
+
+	if len(files.added) != 1 {
+		t.Fatalf("nothing added")
+	}
+	if files.added[0].IndexerFlags != 9 {
+		t.Errorf("IndexerFlags = %d, want 9 (parsed from name form)", files.added[0].IndexerFlags)
+	}
+	if files.added[0].ReleaseType != 2 {
+		t.Errorf("ReleaseType = %d, want 2 (parsed from name form)", files.added[0].ReleaseType)
+	}
+}
+
 // --- sort: per-series Quality DESC + per-batch ep-number ASC ----
 
 func TestImportApprovedSortsByEpisodeNumberAsc(t *testing.T) {

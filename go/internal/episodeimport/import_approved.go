@@ -11,6 +11,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/ospath"
+	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
 )
 
@@ -437,19 +438,19 @@ func (s *ImportApprovedEpisodes) processOne(
 	// EpisodeGrabbedEvent handler).
 	if item != nil && item.DownloadID != "" {
 		if grab, err := s.history.MostRecentGrabbed(ctx, item.DownloadID); err == nil && grab != nil {
-			// The Data map's "indexerFlags" / "releaseType" parsing
-			// is intentionally minimal here — the C# Enum.TryParse
-			// accepts both numeric-int and Enum-name forms; the Go
-			// port handles only the numeric-int form to keep this
-			// slice focused. A future slice can layer name-form
-			// parsing on top without changing the call site.
+			// Slice 3.73 wired in [parser.ParseIndexerFlags] +
+			// [parser.ParseReleaseType] which accept both the
+			// numeric-int form AND the C# `[Flags]`-style comma-
+			// separated name form (e.g. "Freeleech, Internal" → 9)
+			// case-insensitively. Mirrors the C# `Enum.TryParse`
+			// invocations at `ImportApprovedEpisodes.cs:96-108`.
 			if flagsStr, ok := grab.Data["indexerFlags"]; ok {
-				if flags := parseIntStr(flagsStr); flags != 0 {
+				if flags := int(parser.ParseIndexerFlags(flagsStr)); flags != 0 {
 					file.IndexerFlags = flags
 				}
 			}
 			if rtStr, ok := grab.Data["releaseType"]; ok {
-				if rt := parseIntStr(rtStr); rt != 0 {
+				if rt := int(parser.ParseReleaseType(rtStr)); rt != 0 {
 					file.ReleaseType = rt
 				}
 			}
@@ -599,31 +600,6 @@ func alreadyImportedInRun(prior []*ImportResult, le *LocalEpisode) bool {
 		}
 	}
 	return false
-}
-
-// parseIntStr does a permissive integer parse of a string. Returns
-// 0 on any failure — matches the C# `Enum.TryParse` failure path
-// where the out var is the enum's zero value.
-func parseIntStr(s string) int {
-	if s == "" {
-		return 0
-	}
-	n := 0
-	negative := false
-	for i, c := range s {
-		if i == 0 && c == '-' {
-			negative = true
-			continue
-		}
-		if c < '0' || c > '9' {
-			return 0
-		}
-		n = n*10 + int(c-'0')
-	}
-	if negative {
-		return -n
-	}
-	return n
 }
 
 // dirOf returns the parent directory of the supplied path. Wraps
