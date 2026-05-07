@@ -2,6 +2,7 @@ package downloadedimport_test
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"path/filepath"
@@ -819,16 +820,105 @@ func TestProcessFile_PassesPathsThroughDecider(t *testing.T) {
 	}
 }
 
-// --- ProcessRootFolder (deferred) ----------------------------------
+// --- ProcessRootFolder ---------------------------------------------
 
-func TestProcessRootFolder_Deferred(t *testing.T) {
+func TestProcessRootFolder_EmptyDrop(t *testing.T) {
 	t.Parallel()
-	svc := newSvc(t, &stubDisk{}, nil, nil)
+	d := &stubDisk{}
+	svc := newSvc(t, d, nil, nil)
 	got, err := svc.ProcessRootFolder("/drop")
-	if got != nil {
-		t.Errorf("expected nil slice for deferred method, got %v", got)
+	if err != nil {
+		t.Fatalf("ProcessRootFolder: %v", err)
 	}
-	if err == nil {
-		t.Fatal("expected error from deferred method")
+	if len(got) != 0 {
+		t.Errorf("got %d results from empty drop, want 0", len(got))
 	}
 }
+
+func TestProcessRootFolder_GetDirectoriesError_Propagates(t *testing.T) {
+	t.Parallel()
+	// Inject an error via stubDisk by overriding GetDirectories with
+	// a failing path. The current stubDisk doesn't have an explicit
+	// err field for GetDirectories, so we use a path with no dirs
+	// map entry which returns nil + nil err — that's not the error
+	// path. Instead use a custom stub via newSvcCustom.
+	d := &errorDirsDisk{err: fmt.Errorf("boom")}
+	svc := downloadedimport.NewService(
+		d, &stubScanner{}, &stubSeriesPaths{}, &stubParser{},
+		stubDecider{}, stubRunner{}, &stubSample{verdict: episodeimport.DetectSampleSample},
+		stubCfg{}, slog.Default(),
+	)
+	if svc == nil {
+		t.Fatal("NewService returned nil")
+	}
+	got, err := svc.ProcessRootFolder("/drop")
+	if err == nil {
+		t.Fatal("expected GetDirectories error to propagate")
+	}
+	if got != nil {
+		t.Errorf("expected nil slice on error, got %v", got)
+	}
+}
+
+func TestProcessRootFolder_DispatchesSubfolders(t *testing.T) {
+	t.Parallel()
+	root := "/drop"
+	subA := filepath.Join(root, "Show.S01")
+	subB := filepath.Join(root, "Show.S02")
+	d := &stubDisk{
+		dirs: map[string][]string{root: {subA, subB}},
+	}
+	// Two subfolders → processFolder fires twice. With nil parser
+	// resolution, each surfaces an UnknownSeries result. The slice
+	// returned should have 2 entries.
+	svc := newSvc(t, d, nil, nil)
+	got, err := svc.ProcessRootFolder(root)
+	if err != nil {
+		t.Fatalf("ProcessRootFolder: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d, want 2 (one per sub-folder UnknownSeries)", len(got))
+	}
+	for _, r := range got {
+		if r.Decision.Rejections[0].Reason != episodeimport.ImportRejectionUnknownSeries {
+			t.Errorf("expected UnknownSeries, got %+v", r.Decision.Rejections)
+		}
+	}
+}
+
+func TestProcessRootFolder_DispatchesTopLevelFiles(t *testing.T) {
+	t.Parallel()
+	root := "/drop"
+	video := filepath.Join(root, "Show.S01E01.mkv")
+	d := &stubDisk{}
+	scanner := &stubScanner{
+		videos: map[string][]string{root: {video}},
+	}
+	svc := newSvc(t, d, scanner, nil)
+	got, err := svc.ProcessRootFolder(root)
+	if err != nil {
+		t.Fatalf("ProcessRootFolder: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d, want 1 (UnknownSeries for top-level file)", len(got))
+	}
+	if got[0].Decision.Rejections[0].Reason != episodeimport.ImportRejectionUnknownSeries {
+		t.Errorf("expected UnknownSeries, got %+v", got[0].Decision.Rejections)
+	}
+}
+
+// errorDirsDisk satisfies DiskOps with a GetDirectories that always
+// errors — used to exercise the GetDirectories-error arm of
+// ProcessRootFolder. Defaults for every other method match
+// stubDisk's zero-value behaviour.
+type errorDirsDisk struct {
+	err error
+}
+
+func (e *errorDirsDisk) FolderExists(string) bool                { return false }
+func (e *errorDirsDisk) FileExists(string) bool                  { return false }
+func (e *errorDirsDisk) GetDirectories(string) ([]string, error) { return nil, e.err }
+func (e *errorDirsDisk) GetFiles(string, bool) ([]string, error) { return nil, nil }
+func (e *errorDirsDisk) GetFileSize(string) (int64, error)       { return 0, nil }
+func (e *errorDirsDisk) IsFileLocked(string) bool                { return false }
+func (e *errorDirsDisk) DeleteFolder(string, bool) error         { return nil }

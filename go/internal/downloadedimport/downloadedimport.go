@@ -15,25 +15,28 @@
 // # Slice plan
 //
 // The C# class is ~428 LOC with three public methods and a tangle of
-// private helpers. The Go port lands across multiple slices:
+// private helpers. The Go port landed across four slices:
 //
-//   - 3.79a (this slice) — package skeleton, narrow interfaces,
+//   - 3.79a — package skeleton, narrow interfaces,
 //     [Service.ProcessPath] dispatcher, [Service.ShouldDeleteFolder],
 //     and the helper builders (cleanedUpFolderName / fileIsLockedResult /
 //     unknownSeriesResult / rejectionResult).
-//   - 3.79b (next) — [Service.processFolder] (both overloads at C#
-//     `:159-245`) + the multi-season + locked-file gates.
+//   - 3.79b — [Service.processFolder] (both overloads at C#
+//     `:159-245`) + the multi-season + locked-file gates +
+//     [Service.checkEmptyResultForIssue].
 //   - 3.79c — [Service.processFile] (both overloads at C# `:247-346`)
 //   - the extension-rejection ladder (DangerousExtensions /
 //     ExecutableExtensions / UserRejectedExtensions /
 //     MediaFileExtensions).
-//   - 3.79d — [Service.ProcessRootFolder] + [Service.checkEmptyResultForIssue]
-//   - the wiring slice that lifts disk.Provider / config.Provider /
-//     the EpisodeImport orchestrator into `cmd/sonarr/main.go`.
+//   - 3.79d (this slice) — [Service.ProcessRootFolder] body. Closes
+//     the arc.
 //
-// Each slice keeps the package compileable and the deferred methods
-// behind `errNotPorted` returns so the slice ordering can be
-// interrupted cleanly.
+// The `cmd/sonarr/main.go` wiring slice + the
+// `DownloadedEpisodesCommandService` IExecute<DownloadedEpisodesScanCommand>
+// handler port (~91 LOC C# at
+// `MediaFiles/DownloadedEpisodesCommandService.cs`) ports separately
+// once the rest of the command-bus surface is ready to receive a real
+// downloaded-episodes-scan dispatch.
 //
 // # Narrow interfaces
 //
@@ -48,21 +51,17 @@
 // Production wiring composes the existing concrete types via Go's
 // structural typing; tests pass per-method stubs.
 //
-// # Deferred (this slice ships only ProcessPath + ShouldDeleteFolder)
+// # Deferred (post-3.79d)
 //
-//   - ProcessRootFolder (`:61-78`) — iterates GetDirectories +
-//     GetVideoFiles, dispatches each to processFolder / processFile.
-//     Lands in 3.79d.
-//   - processFolder×2 (`:159-262`) — folder-route flow including
-//     SeriesPathExists guard, IsFileLocked check, multi-season check,
-//     ImportDecisionMaker + ImportApprovedEpisodes invocation, and
-//     post-import folder-delete branch. Lands in 3.79b.
-//   - processFile×2 (`:247-346`) — file-route flow including the
-//     extension-rejection ladder. Lands in 3.79c.
 //   - logInaccessiblePathError (`:396-426`) — Windows-aware error
 //     message generation; the Go port currently logs a single
 //     "path not accessible" line and defers the runtime/Windows-mount
-//     dispatch behind a Linux-first comment.
+//     dispatch behind a Linux-first comment. Lands when first-class
+//     Windows support arrives.
+//   - cmd/sonarr/main.go wiring + DownloadedEpisodesCommandService
+//     handler — the production caller that dispatches a
+//     DownloadedEpisodesScan command into [Service.ProcessPath] /
+//     [Service.ProcessRootFolder].
 //
 // # Wiring
 //
@@ -83,7 +82,6 @@
 package downloadedimport
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -94,11 +92,6 @@ import (
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/series"
 )
-
-// errNotPorted is the sentinel returned by deferred methods. Callers
-// never see this in production until the slice that ports the
-// method lands; tests assert errors.Is to detect the deferred state.
-var errNotPorted = errors.New("downloadedimport: method not yet ported")
 
 // --- narrow interfaces -------------------------------------------
 
@@ -457,12 +450,41 @@ func (s *Service) ShouldDeleteFolder(path string, ser *series.Series) bool {
 	return true
 }
 
-// ProcessRootFolder ports `:61-78`. Deferred to slice 3.79d. Returns
-// errNotPorted-wrapped error at type-level so a host that wires this
-// before 3.79d ships fails loudly rather than silently producing
-// empty results.
-func (s *Service) ProcessRootFolder(_ string) ([]*episodeimport.ImportResult, error) {
-	return nil, fmt.Errorf("downloadedimport: ProcessRootFolder: %w", errNotPorted)
+// ProcessRootFolder ports `DownloadedEpisodesImportService.cs:61-78`.
+// Iterates every immediate subdirectory of the supplied drop-root
+// path, dispatching each to [Service.processFolder] in
+// [episodeimport.ImportModeAuto]; then iterates every top-level
+// video file in the same root, dispatching each to
+// [Service.processFile]. Concatenates every per-entry result list
+// into the returned slice.
+//
+// dci is always nil — ProcessRootFolder is the periodic
+// drop-folder-scanner entry point (the C# `DownloadedEpisodesScan`
+// command), with no association to a specific download-client item.
+//
+// GetDirectories errors propagate as a wrapped error; the C# tree
+// would let the underlying IOException unwind into the IExecute
+// dispatcher, the Go port surfaces the error explicitly so callers
+// can classify.
+//
+// GetVideoFiles is a free-function-style call returning a (possibly
+// nil) slice — no error path. Mirrors C# `_diskScanService.GetVideoFiles(path, false)`.
+func (s *Service) ProcessRootFolder(path string) ([]*episodeimport.ImportResult, error) {
+	results := []*episodeimport.ImportResult{}
+
+	subFolders, err := s.disk.GetDirectories(path)
+	if err != nil {
+		return nil, fmt.Errorf("downloadedimport: ProcessRootFolder GetDirectories(%q): %w", path, err)
+	}
+	for _, sub := range subFolders {
+		results = append(results, s.processFolder(sub, episodeimport.ImportModeAuto, nil)...)
+	}
+
+	for _, vf := range s.scanner.GetVideoFiles(path, false) {
+		results = append(results, s.processFile(vf, episodeimport.ImportModeAuto, nil)...)
+	}
+
+	return results, nil
 }
 
 // --- private dispatchers (deferred bodies) ------------------------
