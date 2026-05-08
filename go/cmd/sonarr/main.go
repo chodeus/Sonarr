@@ -341,6 +341,17 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("episodes service: %w", err)
 	}
+	// Slice 3.AB: wire series.Service deferred dependencies — episode
+	// monitor cascade ([series.EpisodeMonitorCascade]) bound to
+	// *episodes.Service.SetEpisodeMonitoredBySeason via Go's
+	// structural typing. Mirrors the C# DI graph at
+	// `SeriesService.cs:217` where `_episodeService.SetEpisodeMonitoredBySeason`
+	// is invoked from inside UpdateSeries; the Go port requires the
+	// host to wire the cascade via the optional setter so series can
+	// avoid an episodes-package import. Without this, UpdateSeries'
+	// season-monitored toggle propagation to episodes is silently
+	// skipped.
+	seriesSvc.SetEpisodeMonitorCascade(episodesSvc)
 	episodeFilesRepo, err := episodefiles.NewRepo(db)
 	if err != nil {
 		return fmt.Errorf("episodefiles repo: %w", err)
@@ -835,6 +846,26 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("rootfolders repo: %w", err)
 	}
+
+	// Slice 3.AB: wire series.Service tag-change provider (the second
+	// of series.Service's two deferred-dependency setters; the
+	// EpisodeMonitorCascade was wired alongside episodesSvc above).
+	// First production binding of [autotagging.Service] —
+	// [seriesTagChangeProviderAdapter] composes Service.All +
+	// rootFoldersRepo.All + the package-level [autotagging.ChangesFor]
+	// to satisfy [series.TagChangeProvider]. Mirrors the C# DI graph
+	// at `SeriesService.cs:281` where IAutoTaggingService.GetTagChanges
+	// is invoked from UpdateSeries / UpdateTags. Without this,
+	// UpdateTags / UpdateSeries silently skip the auto-tagging delta
+	// (existing tolerance at `internal/series/mutations.go:131-134`).
+	autoTagsSvc := autotagging.NewService(autoTagRepo, bus)
+	if autoTagsSvc == nil {
+		return fmt.Errorf("autotagging service: nil — required dep regressed")
+	}
+	seriesSvc.SetTagChangeProvider(seriesTagChangeProviderAdapter{
+		autoTags:    autoTagsSvc,
+		rootFolders: rootFoldersRepo,
+	})
 
 	// Slice 3.A8: healthcheck service construction relocated here so
 	// the RemovedSeriesCheck (deps: *series.Service.GetAllSeries) and
