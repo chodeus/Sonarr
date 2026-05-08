@@ -488,6 +488,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	episodeAggregators := []episodeimport.LocalEpisodeAggregator{
 		episodeimport.NewAggregateLanguage(nil, nil, logger),
 		episodeimport.NewAggregateQuality(nil, logger),
+		// Slice 3.89: AggregateSubtitleInfo wired via the
+		// [episodeFileResolverAdapter] thin GetByID→GetFile bridge over
+		// the existing *episodefiles.Service. Aggregator mirrors C#
+		// `AggregateSubtitleInfo.cs:8-50`: when LocalEpisode.ExistingFile
+		// is true (rescan path), fetches the persisted EpisodeFile by ID
+		// and merges its SubtitleFile paths into the in-memory
+		// LocalEpisode.SubtitleInfo so the orchestrator's downstream
+		// rename / extras steps don't lose subtitle metadata. New-import
+		// path (ExistingFile=false) skips the lookup entirely.
+		episodeimport.NewAggregateSubtitleInfo(episodeFileResolverAdapter{svc: episodeFilesSvc}, logger),
 	}
 	aggregationSvc, err := episodeimport.NewAggregationService(episodeAggregators, diskProv, nil, nil, logger)
 	if err != nil {

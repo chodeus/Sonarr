@@ -31,6 +31,7 @@ import (
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadedimport"
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/parser"
@@ -278,6 +279,27 @@ func (s downloadedImportSampleDetector) IsSample(ser *series.Series, path string
 	return s.svc.IsSampleForSeries(context.Background(), ser, path, isPossibleSpecial)
 }
 
+// episodeFileResolverAdapter bridges *episodefiles.Service to the
+// [episodeimport.EpisodeFileResolver] narrow interface (slice 3.65).
+// Method-name mismatch only — the C# narrow interface uses `GetByID`
+// while the Go-port service shipped slice 3.2 with `GetFile`. Both
+// signatures are identical (ctx + int → *File + error); the adapter
+// is a single-line forward.
+//
+// Used by [AggregateSubtitleInfo] (slice 3.65) which fetches the
+// previously-imported EpisodeFile to merge its subtitle paths into
+// the LocalEpisode being aggregated. The C# behaviour at
+// `AggregateSubtitleInfo.cs:34-38` treats a nil result as "no prior
+// file; nothing to merge"; the Go port preserves that.
+type episodeFileResolverAdapter struct {
+	svc *episodefiles.Service
+}
+
+// GetByID forwards to *episodefiles.Service.GetFile.
+func (a episodeFileResolverAdapter) GetByID(ctx context.Context, id int) (*episodefiles.File, error) {
+	return a.svc.GetFile(ctx, id)
+}
+
 // Compile-time interface satisfaction guards. If a future deps.go
 // edit changes a method signature, the build error surfaces here at
 // the boot site rather than as a `*downloadedimport.Service`
@@ -291,4 +313,5 @@ var (
 	_ downloadedimport.ImportRunner      = stubImportRunner{}
 	_ downloadedimport.SampleDetector    = downloadedImportSampleDetector{}
 	_ episodeimport.VideoRuntimeReader   = noopVideoRuntimeReader{}
+	_ episodeimport.EpisodeFileResolver  = episodeFileResolverAdapter{}
 )
