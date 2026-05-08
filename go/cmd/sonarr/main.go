@@ -312,22 +312,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("housekeeping service: %w", err)
 	}
 
-	// Health-check service. Phase 3.29 closes the 3.24 stub by wiring
-	// the real orchestrator with two concrete checks (AppDataLocation
-	// + ApiKeyValidation). Additional checks land alongside their
-	// dependent subsystems in subsequent slices.
-	apiKeyCheck, err := healthcheck.NewApiKeyValidationCheck(cfg)
-	if err != nil {
-		return fmt.Errorf("healthcheck apiKey: %w", err)
-	}
-	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
-		healthcheck.NewAppDataLocationCheck(folder),
-		apiKeyCheck,
-	}, bus, logger)
-	if err != nil {
-		return fmt.Errorf("healthcheck service: %w", err)
-	}
-	healthSvc.Subscribe(bus)
+	// Health-check service constructed AFTER seriesSvc / diskProv /
+	// rootFoldersRepo so checks that need them (RemovedSeries,
+	// RootFolder — slice 3.A8) can be registered at construction.
+	// healthcheck.Service has no Add method; the check list is fixed
+	// at NewService time. Slice 3.A8 relocated this block from above
+	// the mediafiles wiring (where it was originally placed in slice
+	// 3.29 with the two zero-dep checks) to alongside the
+	// healthcheck deps. healthSvc.Subscribe must run before the
+	// ApplicationStartedEvent publish below; the order is preserved.
 
 	// mediafiles.Service wiring (Phase 3.52). The Service is
 	// constructed with concrete impls for series / episodefiles /
@@ -773,6 +766,41 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("rootfolders repo: %w", err)
 	}
+
+	// Slice 3.A8: healthcheck service construction relocated here so
+	// the RemovedSeriesCheck (deps: *series.Service.GetAllSeries) and
+	// RootFolderCheck (deps: *series.Service.AllSeriesPaths +
+	// rootFolderHealthResolverAdapter over *rootfolders.Repo +
+	// *disk.Provider.FolderExists/FolderEmpty) can be registered at
+	// construction. Two new checks join AppDataLocation +
+	// ApiKeyValidation. Other available checks (SystemTime,
+	// IndexerStatus, RecyclingBin, Proxy) gate on subsystems that
+	// don't exist yet — cloud-time fetcher / EnabledIndexers /
+	// disk.Provider.FolderWritable / proxy ping reach.
+	apiKeyCheck, err := healthcheck.NewApiKeyValidationCheck(cfg)
+	if err != nil {
+		return fmt.Errorf("healthcheck apiKey: %w", err)
+	}
+	removedSeriesCheck, err := healthcheck.NewRemovedSeriesCheck(seriesSvc)
+	if err != nil {
+		return fmt.Errorf("healthcheck removedSeries: %w", err)
+	}
+	rootFolderCheck := healthcheck.NewRootFolderCheck(
+		seriesSvc,
+		rootFolderHealthResolverAdapter{repo: rootFoldersRepo},
+		diskProv,
+	)
+	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
+		healthcheck.NewAppDataLocationCheck(folder),
+		apiKeyCheck,
+		removedSeriesCheck,
+		rootFolderCheck,
+	}, bus, logger)
+	if err != nil {
+		return fmt.Errorf("healthcheck service: %w", err)
+	}
+	healthSvc.Subscribe(bus)
+
 	mediaFileAttrsSvc := mediafileattributes.NewService(configProv, diskProv, logger)
 	if mediaFileAttrsSvc == nil {
 		return fmt.Errorf("mediafileattributes service: nil — required dep regressed")
