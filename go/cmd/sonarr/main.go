@@ -968,6 +968,35 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("qualityprofiles service: %w", err)
 	}
+	// Slice 3.A9: customformats.Service constructed + wired to its
+	// two qualityprofiles.Service event handlers. The C# class
+	// `QualityProfileService` is `IHandle<CustomFormatAddedEvent>` +
+	// `IHandle<CustomFormatDeletedEvent>` at
+	// `Profiles/Qualities/QualityProfileService.cs:159-191`; the Go
+	// port already exposes [Service.OnCustomFormatAdded] /
+	// [Service.OnCustomFormatDeleted] (slice 3.X — see
+	// internal/qualityprofiles/handlers.go:95-173) but the host hadn't
+	// wired them yet. Subscribing here closes the cycle so any future
+	// customformats.Service.Insert / .Delete API caller fans the
+	// per-profile FormatItems update through every QualityProfile.
+	//
+	// customFormatsSvc reuses the cfRepo already constructed for the
+	// CleanupQualityProfileFormatItems housekeeping task (no second
+	// repo). Bus injection enables the publishAdded/publishDeleted
+	// emitters; until an API caller appears, no events fire.
+	customFormatsSvc := customformats.NewService(cfRepo, bus)
+	if customFormatsSvc == nil {
+		return fmt.Errorf("customformats service: nil — required dep regressed")
+	}
+	messaging.Subscribe(bus, "qualityprofiles.OnCustomFormatAdded",
+		func(ctx context.Context, ev customformats.CustomFormatAddedEvent) error {
+			return qualityProfilesSvc.OnCustomFormatAdded(ctx, ev.Format)
+		})
+	messaging.Subscribe(bus, "qualityprofiles.OnCustomFormatDeleted",
+		func(ctx context.Context, ev customformats.CustomFormatDeletedEvent) error {
+			return qualityProfilesSvc.OnCustomFormatDeleted(ctx, ev.Format)
+		})
+	_ = customFormatsSvc // held until the customformats API surface ports.
 	importApprovedSvc, err := episodeimport.NewImportApprovedEpisodes(
 		episodeFilesSvc,      // files (MediaFileWriter — Add + GetFilesWithRelativePath + Delete)
 		diskProv,             // disk (FileSizeReader — GetFileSize)
