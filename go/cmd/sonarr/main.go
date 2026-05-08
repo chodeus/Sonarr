@@ -488,10 +488,31 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// platform-aware via build tags (chmod+chown on Linux, no-op on
 	// other GOOS). Drops the second mediafiles boot stub.
 	diskProv := disk.NewProvider(logger)
+	// Slice 3.AD: rootFoldersRepo construction relocated up here so
+	// the mediafiles.NewService call below can take a real
+	// [rootFolderHealthResolverAdapter] (slice 3.A8 — same shape as
+	// mediafiles.RootFolderResolver via Go's structural typing) in
+	// place of the slice-3.52 stubRootFolderResolver. The real
+	// adapter resolves against the rootFolders table via Repo.All +
+	// the package-level rootfolders.BestPath free fn — same dep-gap
+	// dodge as the slice-3.96 rootFolderFinderAdapter (full
+	// *rootfolders.Service still requires disk.Provider.FolderWritable
+	// + GetTotalSize that haven't ported — FAIL-CLOSED #8 territory).
+	// Without this swap, mediafiles.Service.RescanSeries took every
+	// series.Path as its own root and short-circuited to
+	// RootFolderDoesNotExist on the first FolderExists check; with
+	// the real resolver, RescanSeries finds the configured root and
+	// proceeds to the FolderExists / FolderEmpty checks against the
+	// real *disk.Provider. The slice-3.A8 adapter (defined in
+	// healthcheck_wiring.go) is reused verbatim.
+	rootFoldersRepo, err := rootfolders.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("rootfolders repo: %w", err)
+	}
 	mediafilesSvc, err := mediafiles.NewService(
 		diskProv,
 		configProv,
-		stubRootFolderResolver{},
+		rootFolderHealthResolverAdapter{repo: rootFoldersRepo},
 		seriesSvc,
 		episodeFilesSvc,
 		mediaFileCleanupSvc,
@@ -857,10 +878,9 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	//              no-op until a downstream consumer appears.
 	//
 	//   - log:     logger.
-	rootFoldersRepo, err := rootfolders.NewRepo(db)
-	if err != nil {
-		return fmt.Errorf("rootfolders repo: %w", err)
-	}
+	// Slice 3.AD relocated rootFoldersRepo construction up to the
+	// mediafiles.NewService site so the real resolver could be wired
+	// there. rootFoldersRepo is reused below.
 
 	// Slice 3.AB: wire series.Service tag-change provider (the second
 	// of series.Service's two deferred-dependency setters; the

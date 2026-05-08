@@ -19,19 +19,11 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 )
 
-// stubRootFolderResolver returns the input path unchanged with a nil
-// error. The C# tree's `RootFolderService.GetBestRootFolderPath`
-// walks the configured roots and returns the longest matching
-// prefix; this stub effectively says "every series.Path is its own
-// root" — combined with the all-false stubDiskProvider, every Scan
-// short-circuits to RootFolderDoesNotExist. Replace when
-// `rootfolders.Service` is wired into cmd/sonarr boot (needs its own
-// disk + series-paths + naming-config wiring).
-type stubRootFolderResolver struct{}
-
-func (stubRootFolderResolver) GetBestRootFolderPath(_ context.Context, p string) (string, error) {
-	return p, nil
-}
+// Slice 3.AD dropped the stubRootFolderResolver: the boot site now
+// wires the real [rootFolderHealthResolverAdapter] (defined in
+// healthcheck_wiring.go) into mediafiles.NewService, satisfying
+// [mediafiles.RootFolderResolver] via Go's structural typing on the
+// shared GetBestRootFolderPath(ctx, path) (string, error) signature.
 
 // stubImportDecisionMaker returns no decisions. Mirrors the C#
 // `MakeImportDecision.GetImportDecisions` behaviour when no candidate
@@ -65,7 +57,6 @@ func (stubUpdateMediaInfo) Update(_ context.Context, _ *episodefiles.File, _ *se
 // the boot site rather than as a `*mediafiles.Service` constructor
 // failure at runtime.
 var (
-	_ mediafiles.RootFolderResolver     = stubRootFolderResolver{}
 	_ mediafiles.ImportDecisionMaker    = stubImportDecisionMaker{}
 	_ mediafiles.ImportApprovedEpisodes = stubImportApprovedEpisodes{}
 	_ mediafiles.UpdateMediaInfo        = stubUpdateMediaInfo{}
