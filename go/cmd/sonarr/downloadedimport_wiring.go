@@ -25,6 +25,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -37,6 +39,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/mediafiles"
+	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/organizer"
 	"sonarr.tv/sonarr/internal/parser"
@@ -638,6 +641,76 @@ func (a nameBuilderAdapter) BuildSeasonPath(s *series.Series, seasonNumber int) 
 	return organizer.BuildSeasonPath(s, seasonNumber, a.buildOptions().FolderOptions())
 }
 
+// importEventPublisherAdapter bridges *messaging.Bus to the slice-3.71
+// [episodeimport.ImportEventPublisher] narrow interface. The narrow
+// interface signature is `Publish(event any)` (the C# IEventAggregator
+// shape) but the Go-port [messaging.Publish] is a top-level GENERIC
+// function — `Publish[E any](ctx, *Bus, event E)` — that infers E from
+// the value's static type. Calling it with `any` would set E=any,
+// which means subscribers must register against `any` to receive the
+// event; that's the wrong fan-out shape (subscribers register against
+// a concrete event type so the bus's per-type handler map can dispatch
+// without a type-switch on every published event).
+//
+// The adapter therefore type-switches the incoming `any` payload on
+// the two concrete event types the slice-3.71 ImportApprovedEpisodes
+// orchestrator emits, then calls the generic Publish with the
+// rebound concrete static type. Unknown event types log a warn-level
+// "unrecognised event" line and drop — defensive for a future event
+// type added to the orchestrator without the adapter being updated
+// (which would otherwise be silently swallowed by the orchestrator's
+// nil-tolerant noopImportEventPublisher fallback).
+//
+// errors.Is against [messaging.ErrShutdown] is swallowed silently
+// because the bus may be in the lifecycle-shutdown window when the
+// orchestrator's ImportApprovedEpisodes.processOne emits a final
+// EpisodeImportedEvent (e.g. a long-running scan finishing during
+// app shutdown); other errors log at warn-level.
+//
+// Slice 3.99 (post-arc) adds this adapter, replacing the
+// noopImportEventPublisher default at the cmd/sonarr boot site so
+// any subscribers that port later see events from production
+// without further wiring at this site.
+type importEventPublisherAdapter struct {
+	bus *messaging.Bus
+	log *slog.Logger
+}
+
+// Publish dispatches the event by concrete type to the typed bus.
+// Mirrors the C# IEventAggregator.PublishEvent overload-resolution
+// behaviour where the static type drives subscriber dispatch.
+func (a importEventPublisherAdapter) Publish(event any) {
+	switch e := event.(type) {
+	case episodeimport.EpisodeImportedEvent:
+		if err := messaging.Publish(context.Background(), a.bus, e); err != nil &&
+			!errors.Is(err, messaging.ErrShutdown) {
+			a.log.Warn("episodeimport: publish EpisodeImportedEvent",
+				"localPath", localEpisodePath(e.LocalEpisode), "err", err)
+		}
+	case episodeimport.EpisodeImportFailedEvent:
+		if err := messaging.Publish(context.Background(), a.bus, e); err != nil &&
+			!errors.Is(err, messaging.ErrShutdown) {
+			a.log.Warn("episodeimport: publish EpisodeImportFailedEvent",
+				"localPath", localEpisodePath(e.LocalEpisode), "underlying", e.Err, "err", err)
+		}
+	default:
+		a.log.Warn("episodeimport: importEventPublisherAdapter: unrecognised event type — dropping",
+			"type", fmt.Sprintf("%T", event))
+	}
+}
+
+// localEpisodePath safely extracts the LocalEpisode.Path for log
+// lines without panicking on a nil pointer (the orchestrator
+// constructs both events with le non-nil, but the defensive guard
+// keeps the adapter robust against future code-paths that emit a
+// nil LocalEpisode).
+func localEpisodePath(le *episodeimport.LocalEpisode) string {
+	if le == nil {
+		return ""
+	}
+	return le.Path
+}
+
 // Compile-time interface satisfaction guards. If a future deps.go
 // edit changes a method signature, the build error surfaces here at
 // the boot site rather than as a `*downloadedimport.Service`
@@ -657,4 +730,5 @@ var (
 	_ episodeimport.EpisodeTitleConfig    = episodeTitleConfigAdapter{}
 	_ episodefilemoving.RootFolderFinder  = rootFolderFinderAdapter{}
 	_ episodefilemoving.FileNameBuilder   = nameBuilderAdapter{}
+	_ episodeimport.ImportEventPublisher  = importEventPublisherAdapter{}
 )

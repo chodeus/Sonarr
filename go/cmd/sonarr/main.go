@@ -900,8 +900,17 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		nil,                  // extras → noopExtrasImporter (C# IExtraService unported)
 		nil,                  // historyFinder → noopHistoryGrabFinder (slice-3.61 finder needs MostRecentGrabbed adapter)
 		nil,                  // qcmp → noopQualityComparer (decisionengine.CompareQualityModels not wired here yet)
-		nil,                  // events → noopImportEventPublisher (no ported subscribers; messaging.Bus generic Publish[E] needs an adapter)
-		nil,                  // rescan → noopRescanCommander (RescanSeriesCommand bus adapter ports separately)
+		// Slice 3.99: ImportEventPublisher wired via the new
+		// importEventPublisherAdapter (downloadedimport_wiring.go) —
+		// type-switches on the two concrete event types the orchestrator
+		// emits (EpisodeImportedEvent / EpisodeImportFailedEvent) and
+		// republishes through *messaging.Bus's typed Publish[E]. With no
+		// ported subscribers yet, this is "lit but no listeners" — but
+		// the bus dispatch path is now exercised so the next subsystem
+		// that ports a subscriber sees events from production without
+		// further wiring at this site.
+		importEventPublisherAdapter{bus: bus, log: logger},
+		nil, // rescan → noopRescanCommander (RescanSeriesCommand bus adapter ports separately)
 		logger,
 	)
 	if err != nil {
