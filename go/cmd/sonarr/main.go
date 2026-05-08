@@ -451,18 +451,25 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// rejection ladder (DangerousFile / ExecutableFile / ArchiveFile /
 	// UserRejectedExtensions / video-extension filtering / multi-season
 	// gate) IS exercised against real disk + parser state.
-	// Sample-detector wiring (Phase 3.84). Constructs the real
-	// *episodeimport.SampleDetector with a noopVideoRuntimeReader
-	// stand-in until an ffprobe-backed reader ports — the
-	// extension/special short-circuit arms still fire correctly
-	// (.flv / .strm / specials → NotSample), and the runtime-bucket
-	// arm conservatively returns Indeterminate (which the
-	// downloadedimport ShouldDeleteFolder gate at C# `:131` treats as
-	// "don't sample-reject"). The downloadedImportSampleDetector
-	// adapter bridges to the slice-3.84 IsSampleForSeries 3-arg
-	// overload; replacing the noopVideoRuntimeReader with a real
-	// binding is the only edit needed when ffprobe lands.
-	sampleDetector := episodeimport.NewSampleDetector(noopVideoRuntimeReader{}, logger)
+	// Sample-detector wiring (Phase 3.84 + 3.A3 ffprobe reader).
+	// Constructs the real *episodeimport.SampleDetector. The
+	// VideoRuntimeReader binding tries the new ffprobeRuntimeReader
+	// (Phase 3.A3) — ffprobe-on-PATH backed reader that resolves the
+	// slice-3.87 NotSampleSpecification's runtime-bucket Indeterminate
+	// cascade for short-runtime samples — and falls back to the
+	// noopVideoRuntimeReader if ffprobe isn't installed (the binary
+	// isn't a hard install requirement; degrading to Indeterminate
+	// keeps the orchestrator functional without it).
+	var videoReader episodeimport.VideoRuntimeReader
+	if r, err := newFfprobeRuntimeReader(logger); err == nil {
+		videoReader = r
+		logger.Info("ffprobe: video-runtime reader bound", "binary", r.binary)
+	} else {
+		videoReader = noopVideoRuntimeReader{}
+		logger.Warn("ffprobe: binary not on PATH; falling back to noopVideoRuntimeReader (slice-3.87 Indeterminate cascade resumes)",
+			"err", err)
+	}
+	sampleDetector := episodeimport.NewSampleDetector(videoReader, logger)
 
 	// AggregationService + ImportDecisionMaker wiring (Phase 3.85).
 	// Replaces the slice-3.82 stubImportDecider at the cmd/sonarr
@@ -909,6 +916,17 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if historySvc == nil {
 		return fmt.Errorf("history service: nil — required dep regressed")
 	}
+	// Slice 3.A2: qualityprofiles.Service constructed for the import
+	// path. First production binding of the slice-2.45-ish
+	// qualityprofiles.Service for non-housekeeping use — the
+	// qualityComparerAdapter (downloadedimport_wiring.go) reaches for
+	// it via Get(ctx, profileID) to resolve the per-series QualityProfile
+	// during ImportApprovedEpisodes.sortApproved tiebreaks. The slice
+	// reuses the qpRepo already constructed for housekeeping above.
+	qualityProfilesSvc, err := qualityprofiles.NewService(qpRepo, bus)
+	if err != nil {
+		return fmt.Errorf("qualityprofiles service: %w", err)
+	}
 	importApprovedSvc, err := episodeimport.NewImportApprovedEpisodes(
 		episodeFilesSvc,      // files (MediaFileWriter — Add + GetFilesWithRelativePath + Delete)
 		diskProv,             // disk (FileSizeReader — GetFileSize)
@@ -924,7 +942,17 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		// branches at C# `:90-108` start populating against real
 		// history rows for any download that's been previously grabbed.
 		historyGrabFinderForImportAdapter{svc: historySvc},
-		nil, // qcmp → noopQualityComparer (decisionengine.CompareQualityModels not wired here yet)
+		// Slice 3.A2: QualityComparer wired via the new
+		// qualityComparerAdapter (downloadedimport_wiring.go) —
+		// resolves the per-series QualityProfile via *series.Service.GetSeries
+		// + *qualityprofiles.Service.Get, parses Items, and delegates to
+		// [decisionengine.CompareQualityModels] with respectGroupOrder=false
+		// (matches C# QualityModelComparer default ctor). Defensive: any
+		// lookup/parse failure returns 0 (treats as equal — degrades
+		// to Size-only ordering in sortApproved, matching C# try/catch
+		// behaviour at the call site). Mirrors the C# call chain
+		// `ImportApprovedEpisodes.cs:63` invoking _qualityComparer.Compare.
+		qualityComparerAdapter{series: seriesSvc, qp: qualityProfilesSvc, log: logger},
 		// Slice 3.99: ImportEventPublisher wired via the new
 		// importEventPublisherAdapter (downloadedimport_wiring.go) —
 		// type-switches on the two concrete event types the orchestrator

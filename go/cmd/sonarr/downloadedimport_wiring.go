@@ -33,6 +33,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/config"
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadedimport"
@@ -47,6 +48,8 @@ import (
 	"sonarr.tv/sonarr/internal/organizer"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/parsingservice"
+	"sonarr.tv/sonarr/internal/quality"
+	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/rootfolders"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -816,6 +819,70 @@ func (a historyGrabFinderForImportAdapter) MostRecentGrabbed(ctx context.Context
 	return &rows[0], nil
 }
 
+// qualityComparerAdapter bridges *series.Service + *qualityprofiles.Service
+// to the slice-3.71 [episodeimport.QualityComparer] narrow interface.
+// Mirrors the C# `QualityModelComparer.Compare(left, right)` chain at
+// `ImportApprovedEpisodes.cs:63` — each comparison resolves the
+// per-series QualityProfile, parses Items, and delegates to
+// [decisionengine.CompareQualityModels] with respectGroupOrder=false
+// (the C# QualityModelComparer constructor's default — the
+// upgrade-grouping path that passes true is the
+// [decisionengine.UpgradableSpecification.IsRevisionUpgrade] arm,
+// which doesn't go through this adapter).
+//
+// Defensive posture: any lookup/parse failure logs warn-level + returns
+// 0 (treats as equal). This collapses to the noopQualityComparer
+// behaviour that's been the default since slice 3.98 — the orchestrator's
+// sortApproved falls back to Size-only ordering when the comparer
+// reports equal qualities, which mirrors the C# behaviour when the
+// profile lookup yields equal qualities (the C# QualityModelComparer
+// throws on null profile inside Ensure.That but ImportApprovedEpisodes
+// wraps the call in a try/catch that logs and continues with a
+// degraded-but-stable ordering — same end-state as our defensive 0).
+//
+// Per-call DB hit posture matches the C# IoC default — neither
+// series.Service nor qualityprofiles.Service caches Get(), and the C#
+// equivalents go through to the DB on every comparison. Sorting an
+// approved-decision batch fires at most O(n log n) comparisons; for
+// typical batches (1-100 decisions per scan) the per-comparison hit
+// is acceptable. A future slice may add a per-batch cache wrapper.
+type qualityComparerAdapter struct {
+	series *series.Service
+	qp     *qualityprofiles.Service
+	log    *slog.Logger
+}
+
+// Compare resolves the per-series QualityProfile, parses Items, and
+// delegates to [decisionengine.CompareQualityModels]. Returns 0 on
+// any lookup/parse failure (defensive; treats as equal so the
+// orchestrator's sortApproved falls back to Size-only ordering).
+func (a qualityComparerAdapter) Compare(seriesID int, left, right quality.Model) int {
+	ser, err := a.series.GetSeries(context.Background(), seriesID)
+	if err != nil || ser == nil {
+		a.log.Warn("quality-comparer: series lookup failed; treating as equal",
+			"seriesId", seriesID, "err", err)
+		return 0
+	}
+	if ser.QualityProfileID == nil {
+		a.log.Warn("quality-comparer: series has no QualityProfileID; treating as equal",
+			"seriesId", seriesID)
+		return 0
+	}
+	profile, err := a.qp.Get(context.Background(), *ser.QualityProfileID)
+	if err != nil || profile == nil {
+		a.log.Warn("quality-comparer: profile lookup failed; treating as equal",
+			"seriesId", seriesID, "profileId", *ser.QualityProfileID, "err", err)
+		return 0
+	}
+	items, err := profile.ParsedItems()
+	if err != nil {
+		a.log.Warn("quality-comparer: profile.ParsedItems failed; treating as equal",
+			"seriesId", seriesID, "profileId", profile.ID, "err", err)
+		return 0
+	}
+	return decisionengine.CompareQualityModels(items, left, right, false)
+}
+
 // Compile-time interface satisfaction guards. If a future deps.go
 // edit changes a method signature, the build error surfaces here at
 // the boot site rather than as a `*downloadedimport.Service`
@@ -838,4 +905,5 @@ var (
 	_ episodeimport.ImportEventPublisher       = importEventPublisherAdapter{}
 	_ episodeimport.RescanSeriesCommander      = rescanSeriesCommanderAdapter{}
 	_ episodeimport.HistoryGrabFinderForImport = historyGrabFinderForImportAdapter{}
+	_ episodeimport.QualityComparer            = qualityComparerAdapter{}
 )
