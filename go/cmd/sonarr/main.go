@@ -551,6 +551,25 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		// loud-fail rather than a silent-pass.
 		episodeimport.NewNotSampleSpecification(sampleDetector, logger),
 	}
+	// Slice 3.91: SameEpisodesImportSpecification wired via Go's
+	// structural typing — *episodes.Service.GetEpisodesByFileID(ctx, id)
+	// matches the slice-3.65 episodeimport.SameEpisodesEpisodeFinder
+	// narrow interface exactly. Spec mirrors C# `SameEpisodesImportSpecification.cs:11-32`:
+	// rejects an import candidate when an existing on-disk file linked
+	// to one of its episodes covers OTHER episodes the candidate
+	// doesn't (importing would orphan the wider file's metadata).
+	// Lookup errors translate to Accept + Warn-log so a transient DB
+	// outage doesn't bounce every candidate file in a batch.
+	//
+	// Constructor returns (*Spec, error); errors out only on nil finder
+	// — *episodes.Service is non-nil here so the error arm is
+	// belt-and-braces. Appended after the spec slice literal so the
+	// (*Spec, error) shape stays clean.
+	sameEpisodesSpec, err := episodeimport.NewSameEpisodesImportSpecification(episodesSvc, logger)
+	if err != nil {
+		return fmt.Errorf("same-episodes spec: %w", err)
+	}
+	importDecisionSpecs = append(importDecisionSpecs, sameEpisodesSpec)
 	importDecisionMaker, err := episodeimport.NewImportDecisionMaker(
 		importDecisionSpecs, // specs — slice-3.86: 5 zero-dep specs wired
 		episodeFilesSvc,     // filter — FilterExistingFiles
