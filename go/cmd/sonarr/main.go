@@ -461,7 +461,35 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// default, matching C# IoC behaviour with zero spec bindings).
 	// Per-spec wiring lands as each Specification's dep chain (config
 	// readers, scene-mapping finders, etc.) is constructed at boot.
-	aggregationSvc, err := episodeimport.NewAggregationService(nil, diskProv, nil, nil, logger)
+	// Per-augmenter wiring (Phase 3.88). Two of five LocalEpisodeAggregator
+	// implementations populated — both are zero-dep at the boot site:
+	//
+	//   - AggregateLanguage with an empty []LanguageAugmenter establishes
+	//     the baseline pick: [Series.OriginalLanguage] resolved via the
+	//     constructor's default closure over [language.FindByID]. Real
+	//     augmenters (AugmentLanguageFromMediaInfo, etc.) progressively
+	//     refine in later slices once their narrow-interface deps land.
+	//   - AggregateQuality with an empty []QualityAugmenter establishes
+	//     the baseline source/resolution merge against zero augmenter
+	//     verdicts — Quality stays at its zero-value default until
+	//     real augmenters (AugmentQualityFromMediaInfo / AugmentQualityFromReleaseName)
+	//     wire in.
+	//
+	// Skipped here:
+	//   - AggregateEpisodes — needs an EpisodeParsingService adapter
+	//     over *parsingservice.Service (sig mismatch on
+	//     ParseSpecialEpisodeTitle / GetEpisodes — both bear ctx + error
+	//     in the Go port; future slice writes the adapter).
+	//   - AggregateReleaseInfo — needs a HistoryGrabsFinder; no Go
+	//     port of the history grabs surface yet.
+	//   - AggregateSubtitleInfo — needs an EpisodeFileResolver adapter
+	//     over *episodefiles.Service (GetFile vs GetByID method-name
+	//     mismatch; trivial adapter).
+	episodeAggregators := []episodeimport.LocalEpisodeAggregator{
+		episodeimport.NewAggregateLanguage(nil, nil, logger),
+		episodeimport.NewAggregateQuality(nil, logger),
+	}
+	aggregationSvc, err := episodeimport.NewAggregationService(episodeAggregators, diskProv, nil, nil, logger)
 	if err != nil {
 		return fmt.Errorf("aggregation service: %w", err)
 	}
