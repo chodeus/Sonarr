@@ -35,6 +35,8 @@ import (
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/mediafiles"
+	"sonarr.tv/sonarr/internal/namingconfig"
+	"sonarr.tv/sonarr/internal/organizer"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/series"
@@ -330,6 +332,68 @@ func (a episodeParsingServiceAdapter) GetEpisodes(
 	return out
 }
 
+// fileNamerAdapter bridges *namingconfig.Service + the package-level
+// [organizer] free functions to the slice-3.65
+// [episodeimport.FileNamer] narrow interface that the
+// AbsoluteEpisodeNumberSpecification + EpisodeTitleSpecification
+// reach for. The C# `IBuildFileNames` interface (`Organizer/FileNameBuilder.cs:21-31`)
+// has constructor-injected `INamingConfigService`; the Go port
+// shipped the equivalent primitives as package-level free fns
+// (organizer.RequiresAbsoluteEpisodeNumber / RequiresEpisodeTitle)
+// taking a [organizer.BuildOptions] bag. The adapter loads the
+// active NamingConfig row per call and translates the relevant
+// fields into a BuildOptions before forwarding.
+//
+// Per-call DB hit posture matches the C# IoC default — namingconfig.Service
+// doesn't cache, the production singleton-row Service does an
+// indexed PK read per GetConfig. A future slice may add a
+// ConfigSavedEvent-driven cache wrapper; until then the per-call
+// hit is the simplest correct posture.
+//
+// Errors from GetConfig surface as a logged-warning + zero-value
+// BuildOptions return — RenameEpisodes=false there short-circuits
+// RequiresEpisodeTitle to false, and an empty AnimeEpisodeFormat
+// short-circuits RequiresAbsoluteEpisodeNumber to false. Both are
+// Accept-safe defaults (the orchestrator won't reject on a
+// transient namingconfig DB outage).
+type fileNamerAdapter struct {
+	svc *namingconfig.Service
+	log *slog.Logger
+}
+
+// buildOptions loads the active NamingConfig row and returns a
+// BuildOptions bag with the format fields the spec helpers actually
+// read. The other BuildOptions fields stay zero — the spec helpers
+// don't consult them.
+func (f fileNamerAdapter) buildOptions() organizer.BuildOptions {
+	cfg, err := f.svc.GetConfig(context.Background())
+	if err != nil || cfg == nil {
+		f.log.Warn("filenamer: GetConfig failed; falling back to zero BuildOptions",
+			"err", err)
+		return organizer.BuildOptions{}
+	}
+	return organizer.BuildOptions{
+		RenameEpisodes:        cfg.RenameEpisodes,
+		StandardEpisodeFormat: cfg.StandardEpisodeFormat,
+		DailyEpisodeFormat:    cfg.DailyEpisodeFormat,
+		AnimeEpisodeFormat:    cfg.AnimeEpisodeFormat,
+	}
+}
+
+// RequiresAbsoluteEpisodeNumber forwards to
+// [organizer.RequiresAbsoluteEpisodeNumber] with a freshly-loaded
+// BuildOptions.
+func (f fileNamerAdapter) RequiresAbsoluteEpisodeNumber() bool {
+	return organizer.RequiresAbsoluteEpisodeNumber(f.buildOptions())
+}
+
+// RequiresEpisodeTitle forwards to [organizer.RequiresEpisodeTitle]
+// with a freshly-loaded BuildOptions and the per-call series +
+// episodes.
+func (f fileNamerAdapter) RequiresEpisodeTitle(s *series.Series, eps []episodes.Episode) bool {
+	return organizer.RequiresEpisodeTitle(s, eps, f.buildOptions())
+}
+
 // episodeFileResolverAdapter bridges *episodefiles.Service to the
 // [episodeimport.EpisodeFileResolver] narrow interface (slice 3.65).
 // Method-name mismatch only — the C# narrow interface uses `GetByID`
@@ -366,4 +430,5 @@ var (
 	_ episodeimport.VideoRuntimeReader    = noopVideoRuntimeReader{}
 	_ episodeimport.EpisodeFileResolver   = episodeFileResolverAdapter{}
 	_ episodeimport.EpisodeParsingService = episodeParsingServiceAdapter{}
+	_ episodeimport.FileNamer             = fileNamerAdapter{}
 )

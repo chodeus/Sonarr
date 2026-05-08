@@ -59,6 +59,7 @@ import (
 	"sonarr.tv/sonarr/internal/lifecycle"
 	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
@@ -365,6 +366,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("config provider load: %w", err)
 	}
 	configProv.Subscribe(bus)
+	// Naming-config wiring (Phase 3.94). Singleton-row Service that
+	// the slice-3.94 fileNamerAdapter reaches for to compute
+	// RequiresAbsoluteEpisodeNumber / RequiresEpisodeTitle for the
+	// downstream import-decision specs. namingconfig.NewRepo stores
+	// + reads from the dynamix NamingConfig table.
+	namingConfigRepo, err := namingconfig.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("namingconfig repo: %w", err)
+	}
+	namingConfigSvc := namingconfig.NewService(namingConfigRepo)
 	// Disk provider (Phase 3.54). Concrete os/filepath-backed impl of
 	// the 8-method mediafiles.DiskProvider surface; SetPermissions is
 	// platform-aware via build tags (chmod+chown on Linux, no-op on
@@ -607,6 +618,22 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("not-unpacking spec: %w", err)
 	}
 	importDecisionSpecs = append(importDecisionSpecs, notUnpackingSpec)
+	// Slice 3.94: AbsoluteEpisodeNumberSpecification wired via the
+	// new [fileNamerAdapter] over *namingconfig.Service +
+	// [organizer.RequiresAbsoluteEpisodeNumber] / RequiresEpisodeTitle
+	// free fns. nil clock → defaults to time.Now.
+	// Spec mirrors C# `AbsoluteEpisodeNumberSpecification.cs:11-58`:
+	// rejects an anime import when the active naming pattern requires
+	// the {absolute} token AND any matched episode is recently aired
+	// (within 1 day) without an absolute episode number. Skip arms:
+	// non-Anime SeriesType / pattern doesn't require {absolute} /
+	// episode aired > 1 day ago → Accept.
+	absEpsSpec, err := episodeimport.NewAbsoluteEpisodeNumberSpecification(
+		fileNamerAdapter{svc: namingConfigSvc, log: logger}, nil, logger)
+	if err != nil {
+		return fmt.Errorf("absolute-episode-number spec: %w", err)
+	}
+	importDecisionSpecs = append(importDecisionSpecs, absEpsSpec)
 	importDecisionMaker, err := episodeimport.NewImportDecisionMaker(
 		importDecisionSpecs, // specs — slice-3.86: 5 zero-dep specs wired
 		episodeFilesSvc,     // filter — FilterExistingFiles
