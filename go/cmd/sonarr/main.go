@@ -353,6 +353,75 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("episodefiles cleanup service: %w", err)
 	}
+	// Slice 3.AA: cross-package event-handler subscribers.
+	//
+	// Wires four IHandle<TEvent> ports already shipped on episodes /
+	// episodefiles into the bus. C# fires these via IoC-discovered
+	// IHandle<T> attributes; the Go port surfaces them as plain
+	// methods + leaves the host to thread the event payload into the
+	// method args.
+	//
+	//   - episodefiles.Service.HandleSeriesDeleted ←
+	//     series.SeriesDeletedEvent. Bulk-deletes EpisodeFiles rows
+	//     for every Series in the event payload (mirrors C#
+	//     `MediaFileService.HandleAsync(SeriesDeletedEvent)` at
+	//     `MediaFileService.cs:131-134`).
+	//
+	//   - episodes.Service.HandleEpisodeFileAdded ←
+	//     episodefiles.EpisodeFileAddedEvent. Sets EpisodeFileId on
+	//     every linked Episode + drops the missing-from-disk cache
+	//     entry. The handler signature splits the event into
+	//     (fileID, linkedEpisodes) — the lambda extracts both from
+	//     the event payload.
+	//
+	//   - episodes.Service.HandleEpisodeFileDeleted ←
+	//     episodefiles.EpisodeFileDeletedEvent. Auto-unmonitor
+	//     decision on the deleted episodes per the C# decision
+	//     matrix. The episodes package can't import episodefiles
+	//     (cycle), so episodes.FileDeleteReason is a parallel enum
+	//     with matching ordinals — the lambda casts via int(...).
+	//     Pinned by tests on both sides; reordering either side
+	//     bites the test and forces a host-adapter audit.
+	//
+	//   - episodes.Service.HandleSeriesScanned ←
+	//     mediafiles.SeriesScannedEvent. Drains the
+	//     missing-from-disk cache for the scanned series and
+	//     unmonitors any episode IDs that didn't pick up a file in
+	//     the interim. The handler takes a bare seriesID; the
+	//     lambda extracts ev.Series.ID (defensive: nil-Series → no-op).
+	//
+	// Until this slice the episodes/episodefiles services published
+	// these events but no in-process subscriber consumed them — the
+	// C# side has subscribers that the Go port shipped in code but
+	// hadn't bus-subscribed at boot.
+	messaging.Subscribe(bus, "episodefiles.HandleSeriesDeleted",
+		func(ctx context.Context, ev series.SeriesDeletedEvent) error {
+			return episodeFilesSvc.HandleSeriesDeleted(ctx, ev)
+		})
+	messaging.Subscribe(bus, "episodes.HandleEpisodeFileAdded",
+		func(ctx context.Context, ev episodefiles.EpisodeFileAddedEvent) error {
+			if ev.EpisodeFile == nil {
+				return nil
+			}
+			return episodesSvc.HandleEpisodeFileAdded(ctx, ev.EpisodeFile.ID, ev.LinkedEpisodes)
+		})
+	messaging.Subscribe(bus, "episodes.HandleEpisodeFileDeleted",
+		func(ctx context.Context, ev episodefiles.EpisodeFileDeletedEvent) error {
+			if ev.EpisodeFile == nil {
+				return nil
+			}
+			return episodesSvc.HandleEpisodeFileDeleted(
+				ctx, ev.EpisodeFile.ID, ev.LinkedEpisodes,
+				episodes.FileDeleteReason(int(ev.Reason)),
+			)
+		})
+	messaging.Subscribe(bus, "episodes.HandleSeriesScanned",
+		func(ctx context.Context, ev mediafiles.SeriesScannedEvent) error {
+			if ev.Series == nil {
+				return nil
+			}
+			return episodesSvc.HandleSeriesScanned(ctx, ev.Series.ID)
+		})
 	// Config table provider (Phase 3.53). First mediafiles boot stub
 	// to drop — the typed Provider lazily caches every Config row and
 	// invalidates on ConfigSavedEvent so getters stay fresh as the
