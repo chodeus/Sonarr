@@ -381,7 +381,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("namingconfig repo: %w", err)
 	}
-	namingConfigSvc := namingconfig.NewService(namingConfigRepo)
+	// Slice 3.A2: bus injection + Subscribe wires the namingconfig
+	// cache-invalidation handler. With Save publishing
+	// NamingConfigSavedEvent, every save (Service.Save in-process or
+	// any future out-of-band writer that publishes the event)
+	// invalidates the cached singleton row. Eliminates the per-call
+	// DB hit in the slice-3.94 fileNamerAdapter + slice-3.96
+	// nameBuilderAdapter — both call GetConfig once per
+	// import-decision spec / writer-path invocation.
+	namingConfigSvc := namingconfig.NewService(namingConfigRepo, bus)
+	namingConfigSvc.Subscribe(bus)
 	// Disk provider (Phase 3.54). Concrete os/filepath-backed impl of
 	// the 8-method mediafiles.DiskProvider surface; SetPermissions is
 	// platform-aware via build tags (chmod+chown on Linux, no-op on

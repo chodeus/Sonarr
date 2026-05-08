@@ -16,7 +16,7 @@ func newServiceSQLite(t *testing.T) (*namingconfig.Service, *namingconfig.Repo) 
 	if err != nil {
 		t.Fatalf("NewRepo: %v", err)
 	}
-	return namingconfig.NewService(r), r
+	return namingconfig.NewService(r, nil), r
 }
 
 func TestService_GetConfig_SeedsDefault(t *testing.T) {
