@@ -55,6 +55,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/healthcheck"
+	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/instrumentation"
 	"sonarr.tv/sonarr/internal/lifecycle"
@@ -893,13 +894,37 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// is now production-bound: download-folder-scan → import-decision
 	// (filter + 11 specs + 4 augmenters) → upgrade-and-recycle (slice
 	// 3.97) → writer move (slice 3.96) → episodefiles row Add. ✓
+	// Slice 3.A1: history.Service constructed for the import path.
+	// First production binding of the slice-3.62 history.Service —
+	// the historyGrabFinderForImportAdapter (downloadedimport_wiring.go)
+	// reaches for it via the typed Find(ctx, downloadID, EventTypeGrabbed)
+	// surface. The slice-3.62 Service is read-only here; the seven
+	// IHandle<...> event-bus subscribers it has in C# are deferred
+	// until each event-shape ports.
+	historyRepo, err := history.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("history repo: %w", err)
+	}
+	historySvc := history.NewService(historyRepo)
+	if historySvc == nil {
+		return fmt.Errorf("history service: nil — required dep regressed")
+	}
 	importApprovedSvc, err := episodeimport.NewImportApprovedEpisodes(
 		episodeFilesSvc,      // files (MediaFileWriter — Add + GetFilesWithRelativePath + Delete)
 		diskProv,             // disk (FileSizeReader — GetFileSize)
 		upgradeMediaFilesSvc, // upgrader — slice-3.97; recycles + replaces existing files
 		nil,                  // extras → noopExtrasImporter (C# IExtraService unported)
-		nil,                  // historyFinder → noopHistoryGrabFinder (slice-3.61 finder needs MostRecentGrabbed adapter)
-		nil,                  // qcmp → noopQualityComparer (decisionengine.CompareQualityModels not wired here yet)
+		// Slice 3.A1: HistoryGrabFinderForImport wired via the new
+		// historyGrabFinderForImportAdapter (downloadedimport_wiring.go) —
+		// delegates to *history.Service.Find with the typed
+		// EventTypeGrabbed filter (slice 3.62), returning the most-recent
+		// matching entry. Mirrors the C# call chain at
+		// `ImportApprovedEpisodes.cs:92-94`. With this lit, the
+		// orchestrator's IndexerFlags / ReleaseType enrichment
+		// branches at C# `:90-108` start populating against real
+		// history rows for any download that's been previously grabbed.
+		historyGrabFinderForImportAdapter{svc: historySvc},
+		nil, // qcmp → noopQualityComparer (decisionengine.CompareQualityModels not wired here yet)
 		// Slice 3.99: ImportEventPublisher wired via the new
 		// importEventPublisherAdapter (downloadedimport_wiring.go) —
 		// type-switches on the two concrete event types the orchestrator
@@ -910,7 +935,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		// that ports a subscriber sees events from production without
 		// further wiring at this site.
 		importEventPublisherAdapter{bus: bus, log: logger},
-		nil, // rescan → noopRescanCommander (RescanSeriesCommand bus adapter ports separately)
+		// Slice 3.A0: RescanSeriesCommander wired via the new
+		// rescanSeriesCommanderAdapter (downloadedimport_wiring.go) —
+		// JSON-encodes a [mediafiles.RescanSeriesCommand]{SeriesID: &id}
+		// then pushes it through *commands.Service.Push using the
+		// canonical RescanSeriesName + Priority=Normal + Trigger=Unspecified
+		// (mirroring the default C# Push overload invoked from
+		// `ImportApprovedEpisodes.cs:186`). The slice-3.49
+		// IExecute<RescanSeriesCommand> handler picks the row up via
+		// the dispatcher and delegates to *mediafiles.Service.RescanSeries.
+		rescanSeriesCommanderAdapter{cmds: cmdSvc, log: logger},
 		logger,
 	)
 	if err != nil {

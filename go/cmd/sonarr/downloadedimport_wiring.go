@@ -25,11 +25,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/config"
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/downloadclients"
@@ -38,6 +40,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/namingconfig"
@@ -711,24 +714,128 @@ func localEpisodePath(le *episodeimport.LocalEpisode) string {
 	return le.Path
 }
 
+// rescanSeriesCommanderAdapter bridges *commands.Service to the
+// slice-3.71 [episodeimport.RescanSeriesCommander] narrow interface.
+// The narrow interface is a single fire-and-forget method
+// `PushRescanSeries(seriesID int)` (mirrors the C# `IManageCommandQueue.Push`
+// call at `ImportApprovedEpisodes.cs:186`). The adapter encodes the
+// payload into the canonical JSON shape the slice-3.49
+// `mediafiles.RescanSeriesCommand` expects + delegates to
+// [*commands.Service.Push].
+//
+// Posture mirrors the C# overload's default — `_commandQueueManager.Push(new RescanSeriesCommand(seriesId))`
+// goes through the no-arg-trigger overload at `CommandQueueManager.cs:101`
+// which defaults Priority=Normal + Trigger=Unspecified. The Go port
+// preserves these defaults so the queued row matches a C# row pushed
+// from the same call site byte-for-byte (modulo ID + QueuedAt).
+//
+// The adapter is best-effort: errors from Push log at warn-level and
+// drop. The orchestrator's caller at C# `:186` doesn't check the return
+// value either — pushing is "send and forget"; if the queue is broken
+// the operator hits user-visible failures elsewhere first.
+//
+// Slice 3.A0 (post-arc) wires this adapter at the cmd/sonarr boot
+// site, replacing the noopRescanCommander default the slice-3.98
+// ImportApprovedEpisodes constructor binds.
+type rescanSeriesCommanderAdapter struct {
+	cmds *commands.Service
+	log  *slog.Logger
+}
+
+// PushRescanSeries enqueues a RescanSeries command scoped to the
+// supplied series ID. JSON-encodes the [mediafiles.RescanSeriesCommand]
+// payload via the typed marshaller (so the camelCase tag at
+// `mediafiles/commands.go:24` survives) then calls
+// [*commands.Service.Push] with the canonical name, body, priority,
+// trigger.
+//
+// Errors log at warn-level and drop — best-effort posture matches the
+// C# call site's fire-and-forget shape.
+func (a rescanSeriesCommanderAdapter) PushRescanSeries(seriesID int) {
+	id := seriesID
+	body, err := json.Marshal(mediafiles.RescanSeriesCommand{SeriesID: &id})
+	if err != nil {
+		a.log.Warn("rescan-series: marshal command body",
+			"seriesId", seriesID, "err", err)
+		return
+	}
+	if _, err := a.cmds.Push(
+		context.Background(),
+		mediafiles.RescanSeriesName,
+		string(body),
+		commands.PriorityNormal,
+		commands.TriggerUnspecified,
+	); err != nil {
+		a.log.Warn("rescan-series: push command",
+			"seriesId", seriesID, "err", err)
+	}
+}
+
+// historyGrabFinderForImportAdapter bridges *history.Service to the
+// slice-3.71 [episodeimport.HistoryGrabFinderForImport] narrow
+// interface. The narrow interface is `MostRecentGrabbed(ctx, downloadID)
+// → (*history.Entry, error)` (mirrors the C#
+// `_historyService.FindByDownloadId(...).Where(h => h.EventType == Grabbed).OrderByDescending(h => h.Date).FirstOrDefault()`
+// chain at `ImportApprovedEpisodes.cs:92-94`).
+//
+// The adapter delegates to *history.Service.Find with the typed
+// EventTypeGrabbed filter (slice 3.62 ported the Find method that
+// applies the EventType=Grabbed filter in-memory after pulling all
+// rows for the downloadID — date-DESC ordering preserved by the
+// underlying repo). First entry of the filtered result is the most
+// recent.
+//
+// Empty downloadID short-circuits to (nil, nil) — the C# call site
+// is gated on `localEpisode.DownloadClientItem != null` AND
+// `!string.IsNullOrWhiteSpace(downloadId)`, so the adapter mirrors
+// that pre-filter to keep the code paths identical.
+//
+// Lookup errors propagate to the orchestrator (slice 3.71), which
+// catches them at C# `:96-99` with a try/catch + log + skip — the
+// Go orchestrator's [HistoryGrabFinderForImport] caller doesn't
+// abort the import on a lookup failure either, just skips the
+// IndexerFlags / ReleaseType enrichment branches.
+type historyGrabFinderForImportAdapter struct {
+	svc *history.Service
+}
+
+// MostRecentGrabbed delegates to *history.Service.Find with the
+// typed EventTypeGrabbed filter. Returns the first (most recent)
+// matching entry, or (nil, nil) when none.
+func (a historyGrabFinderForImportAdapter) MostRecentGrabbed(ctx context.Context, downloadID string) (*history.Entry, error) {
+	if downloadID == "" {
+		return nil, nil
+	}
+	rows, err := a.svc.Find(ctx, downloadID, history.EventTypeGrabbed)
+	if err != nil {
+		return nil, fmt.Errorf("history: MostRecentGrabbed(%q): %w", downloadID, err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	return &rows[0], nil
+}
+
 // Compile-time interface satisfaction guards. If a future deps.go
 // edit changes a method signature, the build error surfaces here at
 // the boot site rather than as a `*downloadedimport.Service`
 // constructor failure at runtime.
 var (
-	_ downloadedimport.DiskOps            = downloadedImportDiskOps{}
-	_ downloadedimport.DiskScanner        = downloadedImportDiskScanner{}
-	_ downloadedimport.SeriesPathChecker  = downloadedImportSeriesPaths{}
-	_ downloadedimport.SeriesParser       = downloadedImportSeriesParser{}
-	_ downloadedimport.ImportDecider      = downloadedImportDecider{}
-	_ downloadedimport.ImportRunner       = downloadedImportRunner{}
-	_ downloadedimport.SampleDetector     = downloadedImportSampleDetector{}
-	_ episodeimport.VideoRuntimeReader    = noopVideoRuntimeReader{}
-	_ episodeimport.EpisodeFileResolver   = episodeFileResolverAdapter{}
-	_ episodeimport.EpisodeParsingService = episodeParsingServiceAdapter{}
-	_ episodeimport.FileNamer             = fileNamerAdapter{}
-	_ episodeimport.EpisodeTitleConfig    = episodeTitleConfigAdapter{}
-	_ episodefilemoving.RootFolderFinder  = rootFolderFinderAdapter{}
-	_ episodefilemoving.FileNameBuilder   = nameBuilderAdapter{}
-	_ episodeimport.ImportEventPublisher  = importEventPublisherAdapter{}
+	_ downloadedimport.DiskOps                 = downloadedImportDiskOps{}
+	_ downloadedimport.DiskScanner             = downloadedImportDiskScanner{}
+	_ downloadedimport.SeriesPathChecker       = downloadedImportSeriesPaths{}
+	_ downloadedimport.SeriesParser            = downloadedImportSeriesParser{}
+	_ downloadedimport.ImportDecider           = downloadedImportDecider{}
+	_ downloadedimport.ImportRunner            = downloadedImportRunner{}
+	_ downloadedimport.SampleDetector          = downloadedImportSampleDetector{}
+	_ episodeimport.VideoRuntimeReader         = noopVideoRuntimeReader{}
+	_ episodeimport.EpisodeFileResolver        = episodeFileResolverAdapter{}
+	_ episodeimport.EpisodeParsingService      = episodeParsingServiceAdapter{}
+	_ episodeimport.FileNamer                  = fileNamerAdapter{}
+	_ episodeimport.EpisodeTitleConfig         = episodeTitleConfigAdapter{}
+	_ episodefilemoving.RootFolderFinder       = rootFolderFinderAdapter{}
+	_ episodefilemoving.FileNameBuilder        = nameBuilderAdapter{}
+	_ episodeimport.ImportEventPublisher       = importEventPublisherAdapter{}
+	_ episodeimport.RescanSeriesCommander      = rescanSeriesCommanderAdapter{}
+	_ episodeimport.HistoryGrabFinderForImport = historyGrabFinderForImportAdapter{}
 )
