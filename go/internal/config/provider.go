@@ -349,6 +349,21 @@ func (p *Provider) SetDownloadPropersAndRepacks(ctx context.Context, v quality.P
 	return err
 }
 
+// Retention mirrors `ConfigService.cs:?`. Default 0 — the C# default
+// at `GetValueInt("Retention", 0)`. Days of usenet retention configured
+// by the user; 0 disables the [decisionengine.RetentionSpecification]
+// check. Read by [decisionengine.RetentionSpecification] (slice 3.A4).
+func (p *Provider) Retention() int {
+	return p.getInt("Retention", 0)
+}
+
+// SetRetention writes the new value, publishing ConfigSavedEvent on
+// change.
+func (p *Provider) SetRetention(ctx context.Context, v int) error {
+	_, err := p.setInt(ctx, "Retention", v)
+	return err
+}
+
 // MinimumFreeSpaceWhenImporting mirrors `ConfigService.cs:202-207`. The
 // stored unit is megabytes; default 100 per C# `:204`.
 func (p *Provider) MinimumFreeSpaceWhenImporting() int {
