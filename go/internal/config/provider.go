@@ -259,6 +259,27 @@ func (p *Provider) SetChownGroup(ctx context.Context, v string) error {
 	return err
 }
 
+// CopyUsingHardlinks mirrors `ConfigService.cs:209-214`. Default true
+// at `:211`. Drives the [episodefilemoving.Service.CopyEpisodeFile]
+// hardlink-vs-copy decision — when true, the writer first tries
+// [disk.Provider.TryCreateHardLink] before falling back to plain
+// copy; when false, it always copies. The matching writer-path is
+// at `internal/episodefilemoving/episodefilemoving.go:471`.
+//
+// Read by the slice-3.96 episodefilemoving.Service binding through
+// Go's structural typing — *config.Provider satisfies the writer's
+// narrow [Config] interface (`CopyUsingHardlinks() bool`) directly.
+func (p *Provider) CopyUsingHardlinks() bool {
+	return p.getBool("CopyUsingHardlinks", true)
+}
+
+// SetCopyUsingHardlinks writes the new value, publishing
+// ConfigSavedEvent on change.
+func (p *Provider) SetCopyUsingHardlinks(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "CopyUsingHardlinks", v)
+	return err
+}
+
 // EpisodeTitleRequired mirrors `ConfigService.cs:258-263`. Returns the
 // raw stored enum identifier — defaults to `"Always"` when the row is
 // missing OR empty (matches C# `GetValueEnum(..., Always)`).

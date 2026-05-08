@@ -32,6 +32,7 @@ import (
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadedimport"
+	"sonarr.tv/sonarr/internal/episodefilemoving"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
@@ -40,6 +41,7 @@ import (
 	"sonarr.tv/sonarr/internal/organizer"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/parsingservice"
+	"sonarr.tv/sonarr/internal/rootfolders"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -438,6 +440,144 @@ func (a episodeFileResolverAdapter) GetByID(ctx context.Context, id int) (*episo
 	return a.svc.GetFile(ctx, id)
 }
 
+// rootFolderFinderAdapter bridges *rootfolders.Repo to the slice-3.70
+// [episodefilemoving.RootFolderFinder] narrow interface. The C#
+// `IRootFolderService.GetBestRootFolderPath` returns plain string —
+// the Go-port rootfolders.Service.GetBestRootFolderPath returns
+// (string, error) AND requires an additional DiskProvider with
+// FolderWritable + GetTotalSize methods that don't exist on
+// `*disk.Provider` yet. The adapter dodges the dep gap by talking
+// directly to *rootfolders.Repo + the package-level
+// [rootfolders.BestPath] free fn — neither requires the missing
+// disk surfaces.
+//
+// On Repo.All error the adapter returns "" (the writer surfaces
+// [episodefilemoving.ErrRootFolderNotFound]); on a normal lookup
+// rootfolders.BestPath itself falls back to filepath.Dir(path) when
+// no configured root matches, so the empty-string arm is reserved
+// for hard DB failures.
+//
+// Future slice will lift this to consume the real *rootfolders.Service
+// once `disk.Provider.FolderWritable` + `GetTotalSize` port; the
+// existing interface signature is unchanged and the call site here
+// will swap to a thin Service-wrapping adapter.
+type rootFolderFinderAdapter struct {
+	repo *rootfolders.Repo
+	log  *slog.Logger
+}
+
+// GetBestRootFolderPath swallows the (string, error) tuple to a
+// plain string — empty on error mirrors C# `IRootFolderService` which
+// throws inside the writer and propagates upward as
+// RootFolderNotFoundException at `EpisodeFileMovingService.cs:191-197`.
+// The Go writer's check at `episodefilemoving.go:601-606` treats
+// empty as ErrRootFolderNotFound so the propagation is preserved.
+func (a rootFolderFinderAdapter) GetBestRootFolderPath(ctx context.Context, path string) string {
+	rows, err := a.repo.All(ctx)
+	if err != nil {
+		a.log.Warn("rootfolders: All failed; returning empty best-path",
+			"path", path, "err", err)
+		return ""
+	}
+	folders := make([]rootfolders.Folder, 0, len(rows))
+	for _, r := range rows {
+		folders = append(folders, rootfolders.Folder{ID: r.ID, Path: r.Path})
+	}
+	return rootfolders.BestPath(path, folders)
+}
+
+// nameBuilderAdapter bridges *namingconfig.Service + the package-level
+// [organizer] free fns to the slice-3.70 [episodefilemoving.FileNameBuilder]
+// narrow interface. The C# `IBuildFileNames` interface
+// (`Organizer/FileNameBuilder.cs:21-31`) wraps the equivalent of
+// `BuildFilePath` + `BuildSeasonPath` over a constructor-injected
+// `INamingConfigService`. The Go port shipped the equivalent
+// primitives as package-level free fns taking a [organizer.BuildOptions]
+// bag; this adapter loads the active NamingConfig row per call and
+// translates ALL writer-relevant fields into a BuildOptions before
+// forwarding.
+//
+// Distinct from the slice-3.94 fileNamerAdapter — that adapter only
+// populates the four format-string fields the AbsoluteEpisodeNumber /
+// EpisodeTitle specs read (RenameEpisodes / Standard / Daily / Anime
+// formats). The writer needs the FULL BuildOptions including the
+// folder-format strings (SeriesFolderFormat / SeasonFolderFormat /
+// SpecialsFolderFormat — used by [organizer.BuildSeasonPath]) and
+// the ColonReplacement / IllegalCharacter cleaning fields (used by
+// [organizer.BuildFileName] when rendering tokens). The two
+// adapters can't share a translation function because their
+// downstream consumers read different BuildOptions subsets.
+//
+// Per-call DB hit posture matches the C# IoC default — namingconfig.Service
+// doesn't cache, the production singleton-row Service does an indexed
+// PK read per GetConfig. A future slice may add a ConfigSavedEvent-driven
+// cache wrapper; until then the per-call hit is the simplest correct
+// posture. The hit is rare in practice — every BuildFilePath /
+// BuildSeasonPath call corresponds to one episode being moved, not
+// one user action.
+//
+// Errors from GetConfig surface as a logged-warning + zero-value
+// BuildOptions return. Zero-value RenameEpisodes=false short-circuits
+// [organizer.BuildFileName] to "use the original filename + extension"
+// (matches `:147-154`), which is a reasonable conservative fallback
+// for a transient namingconfig DB outage — the writer still moves the
+// file with its original name into the configured destination folder.
+type nameBuilderAdapter struct {
+	svc *namingconfig.Service
+	log *slog.Logger
+}
+
+// buildOptions loads the active NamingConfig row and returns a
+// BuildOptions populated with every field the writer's downstream
+// organizer calls consult. Differs from fileNamerAdapter.buildOptions
+// (slice 3.94) in that this populates the folder-format + cleaning
+// fields too — the writer's BuildFilePath path renders the season
+// folder which depends on SeriesFolderFormat / SeasonFolderFormat /
+// SpecialsFolderFormat, and the filename rendering applies the
+// configured colon/illegal-character cleaning rules.
+func (a nameBuilderAdapter) buildOptions() organizer.BuildOptions {
+	cfg, err := a.svc.GetConfig(context.Background())
+	if err != nil || cfg == nil {
+		a.log.Warn("namebuilder: GetConfig failed; falling back to zero BuildOptions",
+			"err", err)
+		return organizer.BuildOptions{}
+	}
+	return organizer.BuildOptions{
+		RenameEpisodes:               cfg.RenameEpisodes,
+		StandardEpisodeFormat:        cfg.StandardEpisodeFormat,
+		DailyEpisodeFormat:           cfg.DailyEpisodeFormat,
+		AnimeEpisodeFormat:           cfg.AnimeEpisodeFormat,
+		SeriesFolderFormat:           cfg.SeriesFolderFormat,
+		SeasonFolderFormat:           cfg.SeasonFolderFormat,
+		SpecialsFolderFormat:         cfg.SpecialsFolderFormat,
+		MultiEpisodeStyle:            organizer.MultiEpisodeStyle(cfg.MultiEpisodeStyle),
+		ReplaceIllegalCharacters:     cfg.ReplaceIllegalCharacters,
+		ColonReplacementFormat:       organizer.ColonReplacementFormat(cfg.ColonReplacementFormat),
+		CustomColonReplacementFormat: cfg.CustomColonReplacementFormat,
+	}
+}
+
+// BuildFilePath forwards to [organizer.BuildFilePath] with a
+// freshly-loaded BuildOptions. The LocalEpisode arg currently feeds
+// only `CustomFormats` into the underlying BuildOptions — but the
+// Go-port persisted form ([]customformats.CustomFormat) lacks the
+// typed Specifications field BuildOptions wants
+// ([]*customformats.Format), so the typed slice stays nil here.
+// Mirrors the slice-3.70 defaultFileNameBuilder.BuildFilePath
+// behaviour — token rendering proceeds without CustomFormat-driven
+// tokens until the format-deserialiser ports.
+func (a nameBuilderAdapter) BuildFilePath(eps []episodes.Episode, s *series.Series, file *episodefiles.File, extension string, _ *episodeimport.LocalEpisode) (string, error) {
+	return organizer.BuildFilePath(eps, s, file, extension, a.buildOptions())
+}
+
+// BuildSeasonPath forwards to [organizer.BuildSeasonPath] with a
+// FolderOptions derived from the loaded BuildOptions (via
+// BuildOptions.FolderOptions which extracts the four folder-format +
+// cleaning fields).
+func (a nameBuilderAdapter) BuildSeasonPath(s *series.Series, seasonNumber int) string {
+	return organizer.BuildSeasonPath(s, seasonNumber, a.buildOptions().FolderOptions())
+}
+
 // Compile-time interface satisfaction guards. If a future deps.go
 // edit changes a method signature, the build error surfaces here at
 // the boot site rather than as a `*downloadedimport.Service`
@@ -455,4 +595,6 @@ var (
 	_ episodeimport.EpisodeParsingService = episodeParsingServiceAdapter{}
 	_ episodeimport.FileNamer             = fileNamerAdapter{}
 	_ episodeimport.EpisodeTitleConfig    = episodeTitleConfigAdapter{}
+	_ episodefilemoving.RootFolderFinder  = rootFolderFinderAdapter{}
+	_ episodefilemoving.FileNameBuilder   = nameBuilderAdapter{}
 )

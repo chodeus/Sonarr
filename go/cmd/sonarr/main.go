@@ -50,6 +50,7 @@ import (
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/downloadedimport"
+	"sonarr.tv/sonarr/internal/episodefilemoving"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
@@ -57,11 +58,13 @@ import (
 	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/instrumentation"
 	"sonarr.tv/sonarr/internal/lifecycle"
+	"sonarr.tv/sonarr/internal/mediafileattributes"
 	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
+	"sonarr.tv/sonarr/internal/rootfolders"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -672,6 +675,109 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("import decision maker: %w", err)
 	}
+	// Slice 3.96: episodefilemoving.Service wiring — first slice in
+	// the ImportApprovedEpisodes (Option A) sub-arc. Constructs the
+	// writer with all 9 deps populated against real production
+	// services (or noop defaults where the downstream subsystem
+	// hasn't ported). The Service value is held in
+	// `episodeFileMovingSvc` for use by the slice-3.97
+	// upgrademediafiles.Service constructor (the next slice in the
+	// arc); it isn't yet plugged into the
+	// `downloadedimport.Service` ImportRunner slot — that swap
+	// lands in slice 3.98 once upgrademediafiles ports.
+	//
+	// Dep wiring:
+	//
+	//   - fs:      *episodefilemoving.DiskFilesystem (slice 3.74)
+	//              composes *disk.Provider with the move/copy/hardlink
+	//              dispatch the C# DiskTransferService layer adds.
+	//
+	//   - names:   nameBuilderAdapter loads the active NamingConfig row
+	//              per call and translates ALL writer-relevant fields
+	//              (formats + folder formats + cleaning) into a
+	//              [organizer.BuildOptions] before forwarding into
+	//              [organizer.BuildFilePath] / [organizer.BuildSeasonPath].
+	//              Distinct from the slice-3.94 fileNamerAdapter which
+	//              only populates the four format-string fields the
+	//              two import-decision specs read.
+	//
+	//   - roots:   rootFolderFinderAdapter talks directly to
+	//              *rootfolders.Repo (NOT the full Service) because the
+	//              Service requires DiskProvider methods
+	//              (FolderWritable / GetTotalSize) that don't exist on
+	//              *disk.Provider yet. The narrow GetBestRootFolderPath
+	//              path only needs the Repo + the package-level
+	//              [rootfolders.BestPath] — the missing disk surfaces
+	//              are only consulted by Service.fillDetails / Add /
+	//              GetUnmappedFolders, none of which the writer reaches.
+	//              Future slice will swap to a Service-wrapping adapter
+	//              once the disk methods port.
+	//
+	//   - cfg:     *config.Provider via Go's structural typing — the
+	//              CopyUsingHardlinks() bool getter added in this slice
+	//              satisfies the writer's narrow [Config] interface.
+	//
+	//   - finder:  *episodes.Service via Go's structural typing — the
+	//              GetEpisodesByFileID(ctx, int) signature already
+	//              shipped in slice 3.3 matches the
+	//              [EpisodeFinder] interface exactly.
+	//
+	//   - dates:   nil → noopFileDateUpdater. The C#
+	//              IUpdateEpisodeFileService.ChangeFileDateForFile (used
+	//              for "useScene/useUtc" file-date updates after a move)
+	//              hasn't ported; nil-tolerant per the slice-3.70
+	//              contract.
+	//
+	//   - attrs:   mediafileattributes.NewService(configProv, diskProv,
+	//              logger). Slice 3.75 closed the noopAttributeWriter
+	//              stub the writer used since slice 3.70; the real
+	//              Service applies the configured Linux chmod/chown
+	//              after each move.
+	//
+	//   - scripts: nil → alwaysDeferImportScriptRunner. The C#
+	//              IImportScript surface (custom-script post-import
+	//              hook) hasn't ported; nil-tolerant per the slice-3.70
+	//              contract — the writer always falls through to its
+	//              regular TransferFile path.
+	//
+	//   - events:  nil → noopEventPublisher. The C#
+	//              EpisodeFolderCreatedEvent has no ported subscribers;
+	//              the writer's Publish call after a folder-create is a
+	//              no-op until a downstream consumer appears.
+	//
+	//   - log:     logger.
+	rootFoldersRepo, err := rootfolders.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("rootfolders repo: %w", err)
+	}
+	mediaFileAttrsSvc := mediafileattributes.NewService(configProv, diskProv, logger)
+	if mediaFileAttrsSvc == nil {
+		return fmt.Errorf("mediafileattributes service: nil — required dep regressed")
+	}
+	episodeFileMovingFs := episodefilemoving.NewDiskFilesystem(diskProv, logger)
+	if episodeFileMovingFs == nil {
+		return fmt.Errorf("episodefilemoving DiskFilesystem: nil — required dep regressed")
+	}
+	episodeFileMovingSvc, err := episodefilemoving.NewService(
+		episodeFileMovingFs,
+		nameBuilderAdapter{svc: namingConfigSvc, log: logger},
+		rootFolderFinderAdapter{repo: rootFoldersRepo, log: logger},
+		configProv,
+		episodesSvc,
+		nil, // FileDateUpdater — noop; C# IUpdateEpisodeFileService unported.
+		mediaFileAttrsSvc,
+		nil, // ImportScriptRunner — DeferMove; C# IImportScript unported.
+		nil, // EventPublisher — noop; C# EpisodeFolderCreatedEvent has no ported subscribers.
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("episodefilemoving service: %w", err)
+	}
+	// Reference until slice 3.97 wires it into upgrademediafiles.Service.
+	// Holding the value here keeps the construction error path live so
+	// a regressed required dep surfaces at boot.
+	_ = episodeFileMovingSvc
+
 	dimpDisk := downloadedImportDiskOps{Provider: diskProv}
 	dimpSvc := downloadedimport.NewService(
 		dimpDisk,
