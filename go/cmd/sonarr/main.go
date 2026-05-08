@@ -360,6 +360,21 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("episodefiles service: %w", err)
 	}
+	// Slice 3.AC: wire the two episodefiles.Service deferred-dep
+	// setters that populate per-event payload fields. Without these,
+	// EpisodeFileAddedEvent.LinkedEpisodes / EpisodeFileDeletedEvent
+	// .{LinkedEpisodes,Series} are left nil — the slice-3.AA
+	// subscribers (episodes.HandleEpisodeFileAdded /
+	// HandleEpisodeFileDeleted) iterate the nil slice and silently
+	// no-op. Wiring closes the loop so the subscribers actually
+	// process linked episodes.
+	//
+	//   - SetEpisodeProvider: *episodes.Service satisfies
+	//     EpisodeProvider via GetEpisodesByFileID(ctx, fileID).
+	//   - SetSeriesProvider: *series.Service satisfies
+	//     SeriesProvider via GetSeries(ctx, id).
+	episodeFilesSvc.SetEpisodeProvider(episodesSvc)
+	episodeFilesSvc.SetSeriesProvider(seriesSvc)
 	mediaFileCleanupSvc, err := episodefiles.NewCleanupService(episodeFilesSvc, episodesSvc, logger)
 	if err != nil {
 		return fmt.Errorf("episodefiles cleanup service: %w", err)
