@@ -498,6 +498,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		// rename / extras steps don't lose subtitle metadata. New-import
 		// path (ExistingFile=false) skips the lookup entirely.
 		episodeimport.NewAggregateSubtitleInfo(episodeFileResolverAdapter{svc: episodeFilesSvc}, logger),
+		// Slice 3.90: AggregateEpisodes wired via the
+		// [episodeParsingServiceAdapter] ctx-bridge over the slice-3.81
+		// *parsingservice.Service. Aggregator mirrors C#
+		// `AggregateEpisodes.cs:11-113`: three-source pick from
+		// FileEpisodeInfo / DownloadClientEpisodeInfo / FolderEpisodeInfo
+		// followed by a ValidateForSeriesType gate and a special-episode
+		// fallback. The adapter swallows context.Background errors as
+		// log+nil to match the narrow interface's ctx-less + errorless
+		// surface.
+		episodeimport.NewAggregateEpisodes(episodeParsingServiceAdapter{svc: parsingSvc, log: logger}),
 	}
 	aggregationSvc, err := episodeimport.NewAggregationService(episodeAggregators, diskProv, nil, nil, logger)
 	if err != nil {

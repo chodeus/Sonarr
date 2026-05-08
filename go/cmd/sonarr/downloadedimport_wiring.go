@@ -33,6 +33,7 @@ import (
 	"sonarr.tv/sonarr/internal/downloadedimport"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/parsingservice"
@@ -279,6 +280,56 @@ func (s downloadedImportSampleDetector) IsSample(ser *series.Series, path string
 	return s.svc.IsSampleForSeries(context.Background(), ser, path, isPossibleSpecial)
 }
 
+// episodeParsingServiceAdapter bridges *parsingservice.Service to the
+// [episodeimport.EpisodeParsingService] narrow interface (slice 3.61).
+// The narrow interface deliberately drops ctx + error from the C#-port
+// signatures; the adapter supplies [context.Background] for both calls
+// and swallows errors as a logged-warning + nil/empty return.
+//
+// Used by [episodeimport.AggregateEpisodes] (slice 3.61) to derive
+// LocalEpisode.Episodes from the file's parsed info via the three-source
+// FileEpisodeInfo / DownloadClientEpisodeInfo / FolderEpisodeInfo
+// resolution at C# `AggregateEpisodes.cs:11-113`. Adapter posture
+// matches the slice-3.82 ctx-bridge convention used for SeriesPaths /
+// SeriesParser.
+type episodeParsingServiceAdapter struct {
+	svc *parsingservice.Service
+	log *slog.Logger
+}
+
+// ParseSpecialEpisodeTitle adapts the ctx-bearing
+// *parsingservice.Service.ParseSpecialEpisodeTitle. nil-result on
+// error matches the C# `try { _parsingService.ParseSpecialEpisodeTitle(...) }
+// catch { return null; }` posture used at the AggregateEpisodes call
+// site.
+func (a episodeParsingServiceAdapter) ParseSpecialEpisodeTitle(
+	prev *parser.ParsedEpisodeInfo, title string, s *series.Series,
+) *parser.ParsedEpisodeInfo {
+	out, err := a.svc.ParseSpecialEpisodeTitle(context.Background(), prev, title, s)
+	if err != nil {
+		a.log.Warn("downloadedimport: ParseSpecialEpisodeTitle failed",
+			"title", title, "err", err)
+		return nil
+	}
+	return out
+}
+
+// GetEpisodes adapts the ctx-bearing *parsingservice.Service.GetEpisodes.
+// Empty-slice on error matches the C# null/empty handling at
+// `AggregateEpisodes.cs:67-95` where a non-resolving parse short-circuits
+// to "no episodes" rather than propagating.
+func (a episodeParsingServiceAdapter) GetEpisodes(
+	parsed *parser.ParsedEpisodeInfo, s *series.Series, sceneSource bool,
+) []episodes.Episode {
+	out, err := a.svc.GetEpisodes(context.Background(), parsed, s, sceneSource)
+	if err != nil {
+		a.log.Warn("downloadedimport: GetEpisodes failed",
+			"sceneSource", sceneSource, "err", err)
+		return nil
+	}
+	return out
+}
+
 // episodeFileResolverAdapter bridges *episodefiles.Service to the
 // [episodeimport.EpisodeFileResolver] narrow interface (slice 3.65).
 // Method-name mismatch only — the C# narrow interface uses `GetByID`
@@ -305,13 +356,14 @@ func (a episodeFileResolverAdapter) GetByID(ctx context.Context, id int) (*episo
 // the boot site rather than as a `*downloadedimport.Service`
 // constructor failure at runtime.
 var (
-	_ downloadedimport.DiskOps           = downloadedImportDiskOps{}
-	_ downloadedimport.DiskScanner       = downloadedImportDiskScanner{}
-	_ downloadedimport.SeriesPathChecker = downloadedImportSeriesPaths{}
-	_ downloadedimport.SeriesParser      = downloadedImportSeriesParser{}
-	_ downloadedimport.ImportDecider     = downloadedImportDecider{}
-	_ downloadedimport.ImportRunner      = stubImportRunner{}
-	_ downloadedimport.SampleDetector    = downloadedImportSampleDetector{}
-	_ episodeimport.VideoRuntimeReader   = noopVideoRuntimeReader{}
-	_ episodeimport.EpisodeFileResolver  = episodeFileResolverAdapter{}
+	_ downloadedimport.DiskOps            = downloadedImportDiskOps{}
+	_ downloadedimport.DiskScanner        = downloadedImportDiskScanner{}
+	_ downloadedimport.SeriesPathChecker  = downloadedImportSeriesPaths{}
+	_ downloadedimport.SeriesParser       = downloadedImportSeriesParser{}
+	_ downloadedimport.ImportDecider      = downloadedImportDecider{}
+	_ downloadedimport.ImportRunner       = stubImportRunner{}
+	_ downloadedimport.SampleDetector     = downloadedImportSampleDetector{}
+	_ episodeimport.VideoRuntimeReader    = noopVideoRuntimeReader{}
+	_ episodeimport.EpisodeFileResolver   = episodeFileResolverAdapter{}
+	_ episodeimport.EpisodeParsingService = episodeParsingServiceAdapter{}
 )
