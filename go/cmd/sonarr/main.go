@@ -588,6 +588,25 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("free-space spec: %w", err)
 	}
 	importDecisionSpecs = append(importDecisionSpecs, freeSpaceSpec)
+	// Slice 3.93: NotUnpackingSpecification wired via Go's structural
+	// typing — *config.Provider satisfies the slice-3.65
+	// UnpackingConfig narrow interface (DownloadClientWorkingFolders()
+	// shipped in slice 3.53) and *disk.Provider satisfies the
+	// FileLastWriteProvider narrow interface (FileGetLastWrite shipped
+	// in the original disk package). nil clock → defaults to time.Now;
+	// isWindows captured from runtime.GOOS at construction.
+	// Spec mirrors C# `NotUnpackingSpecification.cs:12-65`: walks the
+	// candidate's parent-dir chain for any name starting with a
+	// configured working-folder prefix (default `_UNPACK_|_FAILED_`).
+	// On non-Windows: reject Unpacking immediately. On Windows: also
+	// check the file's mtime — within 5 minutes of now → reject;
+	// older accept (the unpacker may have died leaving the dir
+	// behind). ExistingFile path Accepts defensively.
+	notUnpackingSpec, err := episodeimport.NewNotUnpackingSpecification(configProv, diskProv, nil, logger)
+	if err != nil {
+		return fmt.Errorf("not-unpacking spec: %w", err)
+	}
+	importDecisionSpecs = append(importDecisionSpecs, notUnpackingSpec)
 	importDecisionMaker, err := episodeimport.NewImportDecisionMaker(
 		importDecisionSpecs, // specs — slice-3.86: 5 zero-dep specs wired
 		episodeFilesSvc,     // filter — FilterExistingFiles
