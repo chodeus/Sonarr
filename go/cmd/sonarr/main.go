@@ -570,6 +570,24 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("same-episodes spec: %w", err)
 	}
 	importDecisionSpecs = append(importDecisionSpecs, sameEpisodesSpec)
+	// Slice 3.92: FreeSpaceSpecification wired via Go's structural
+	// typing — *config.Provider satisfies the slice-3.65
+	// FreeSpaceConfig narrow interface (SkipFreeSpaceCheckWhenImporting
+	// + MinimumFreeSpaceWhenImporting getters were added in slice 3.53),
+	// and *disk.Provider satisfies the AvailableSpaceProvider narrow
+	// interface (GetAvailableSpace shipped in the original disk
+	// package). Spec mirrors C# `FreeSpaceSpecification.cs:11-67`:
+	// rejects when the destination filesystem doesn't have room for
+	// the candidate file plus the user's MinimumFreeSpaceWhenImporting
+	// MB headroom; ExistingFile / SkipFreeSpaceCheckWhenImporting /
+	// disk-error paths Accept defensively. Errors out only on nil
+	// deps — both deps are non-nil here so the error arm is
+	// belt-and-braces.
+	freeSpaceSpec, err := episodeimport.NewFreeSpaceSpecification(configProv, diskProv, logger)
+	if err != nil {
+		return fmt.Errorf("free-space spec: %w", err)
+	}
+	importDecisionSpecs = append(importDecisionSpecs, freeSpaceSpec)
 	importDecisionMaker, err := episodeimport.NewImportDecisionMaker(
 		importDecisionSpecs, // specs — slice-3.86: 5 zero-dep specs wired
 		episodeFilesSvc,     // filter — FilterExistingFiles
