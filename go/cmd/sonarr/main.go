@@ -509,22 +509,13 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("rootfolders repo: %w", err)
 	}
-	mediafilesSvc, err := mediafiles.NewService(
-		diskProv,
-		configProv,
-		rootFolderHealthResolverAdapter{repo: rootFoldersRepo},
-		seriesSvc,
-		episodeFilesSvc,
-		mediaFileCleanupSvc,
-		stubImportDecisionMaker{},
-		stubImportApprovedEpisodes{},
-		stubUpdateMediaInfo{},
-		bus,
-		logger,
-	)
-	if err != nil {
-		return fmt.Errorf("mediafiles service: %w", err)
-	}
+	// Slice 3.AE relocated mediafiles.NewService construction down to
+	// after importApprovedSvc + importDecisionMaker so the real
+	// mediafilesImportDecisionAdapter / mediafilesImportApprovedAdapter
+	// (mediafiles_wiring.go) can be wired in place of
+	// stubImportDecisionMaker / stubImportApprovedEpisodes. The deps
+	// constructed in this block (diskProv + rootFoldersRepo) are
+	// captured by the relocated NewService call.
 
 	// parsingservice.Service wiring (Phase 3.82). Slice 3.81 closed
 	// the [Service.GetSeriesFromTitle] gap that the
@@ -1182,6 +1173,39 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	)
 	if err != nil {
 		return fmt.Errorf("import approved episodes: %w", err)
+	}
+
+	// Slice 3.AE: mediafiles.Service construction relocated here so
+	// the real mediafilesImportDecisionAdapter +
+	// mediafilesImportApprovedAdapter (cmd/sonarr/mediafiles_wiring.go)
+	// replace the slice-3.52 stubImportDecisionMaker /
+	// stubImportApprovedEpisodes. The adapters wrap the slice-3.85
+	// *episodeimport.ImportDecisionMaker (constructed above with 11
+	// specs + the slice-3.91/3.92/3.93/3.94/3.95 augmenters) and the
+	// slice-3.98 *episodeimport.ImportApprovedEpisodes (constructed
+	// just above). With this swap, mediafiles.Service.Scan
+	// (RescanSeries → DiskScanService.Scan) walks the real
+	// per-file decision pipeline against unmapped files and commits
+	// the approved subset via the real ImportApprovedEpisodes; until
+	// this slice it short-circuited to "no decisions" + "no-op
+	// import" against the stubs. The remaining stub
+	// (stubUpdateMediaInfo) gates on the MediaInfo updater port —
+	// FAIL-CLOSED #8 territory.
+	mediafilesSvc, err := mediafiles.NewService(
+		diskProv,
+		configProv,
+		rootFolderHealthResolverAdapter{repo: rootFoldersRepo},
+		seriesSvc,
+		episodeFilesSvc,
+		mediaFileCleanupSvc,
+		mediafilesImportDecisionAdapter{real: importDecisionMaker},
+		mediafilesImportApprovedAdapter{real: importApprovedSvc},
+		stubUpdateMediaInfo{},
+		bus,
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("mediafiles service: %w", err)
 	}
 
 	// Slice 3.A7: decisionengine register-into-DecisionMaker wiring.
