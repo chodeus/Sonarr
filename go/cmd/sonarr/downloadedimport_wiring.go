@@ -219,25 +219,85 @@ func (d downloadedImportDecider) GetImportDecisions(
 	return out
 }
 
-// stubImportRunner accepts any decision list as a no-op. Mirrors the
-// C# `IImportApprovedEpisodes.Import` behaviour when handed an empty
-// list — returns an empty result slice without touching disk.
+// downloadedImportRunner adapts [*episodeimport.ImportApprovedEpisodes.Import]
+// (slice 3.71) to the narrow ctx-less + errorless
+// [downloadedimport.ImportRunner] interface from slice 3.79a. Same
+// posture as the slice-3.85 [downloadedImportDecider] /
+// slice-3.90 [parsingservice] adapters: [context.Background] for the
+// underlying call; errors surface as a logged-warning + nil-results
+// return so the orchestrator's
+// [downloadedimport.checkEmptyResultForIssue] arm (slice 3.79b)
+// maps the failure to a documented rejection.
 //
-// Replace when [episodeimport.ImportApprovedEpisodes] (slice 3.71) is
-// constructed at the cmd/sonarr boot site. Its dep chain is the
-// writer/upgrade/extras/history/quality-comparer/event-publisher/
-// rescan-commander stack; constructing all of those is its own
-// follow-up wiring slice.
-type stubImportRunner struct{}
+// Construction site at the cmd/sonarr boot path (slice 3.98) wires:
+//
+//   - files          ← *episodefiles.Service (Add + GetFilesWithRelativePath +
+//     Delete — all match MediaFileWriter exactly via Go's
+//     structural typing)
+//   - disk           ← *disk.Provider (GetFileSize for FileSizeReader)
+//   - upgrader       ← slice-3.97 *upgrademediafiles.Service
+//     (no longer the slice-3.71 noopMediaFileUpgrader —
+//     UpgradeEpisodeFile now actually recycles + replaces
+//     existing files via the slice-3.96
+//     *episodefilemoving.Service writer)
+//   - extras         ← nil → noopExtrasImporter (extras subsystem unported)
+//   - historyFinder  ← nil → noopHistoryGrabFinder (no HistoryGrabsFinder
+//     wiring here yet — slice-3.61 finder exists but
+//     MostRecentGrabbed-shape adapter is its own slice)
+//   - qcmp           ← nil → noopQualityComparer (decisionengine.CompareQualityModels
+//     isn't reachable here yet — defaults to "equal", which
+//     collapses ImportApprovedEpisodes.sortApproved to
+//     Size-only ordering; matches the C# behaviour when
+//     the comparer's QualityProfile lookup yields equal
+//     qualities)
+//   - events         ← nil → noopImportEventPublisher (the orchestrator-emitted
+//     EpisodeImportedEvent / EpisodeImportFailedEvent has no
+//     ported subscribers yet; the messaging.Bus generic
+//     Publish[E] doesn't satisfy the bare Publish(any)
+//     narrow interface without an adapter)
+//   - rescan         ← nil → noopRescanCommander (RescanSeriesCommand is
+//     wired through the commands.Queue but the
+//     PushRescanSeries adapter shape ports separately)
+//
+// With this slice in place the POST /api/v3/command
+// {"name":"DownloadedEpisodesScan"} endpoint actually moves a downloaded
+// file into the series library — the last and biggest stub in the
+// import pipeline (stubImportRunner since slice 3.79a) is replaced by
+// the real production binding. The downstream noops gate ancillary
+// behaviours (extras, history enrichment, quality-tiebreak,
+// event-emission, rescan) that are NOT required for "files actually
+// move" — each is an additive slice that doesn't break the closure
+// when wired later.
+type downloadedImportRunner struct {
+	svc *episodeimport.ImportApprovedEpisodes
+	log *slog.Logger
+}
 
-// Import always returns nil.
-func (stubImportRunner) Import(
-	_ []*episodeimport.ImportDecision,
-	_ bool,
-	_ *downloadclients.Item,
-	_ episodeimport.ImportMode,
+// Import adapts the narrow ctx-less + errorless signature to
+// [*episodeimport.ImportApprovedEpisodes.Import] by supplying
+// [context.Background] for the underlying call and swallowing the
+// returned error to a logged-warning + nil-results.
+//
+// Mirrors the C# `IImportApprovedEpisodes.Import` shape — the C#
+// surface is also errorless (the orchestrator catches every internal
+// failure and emits per-decision ImportResult.Result entries
+// describing the failure, not a top-level throw). The Go port's
+// `error` return is a defensive escape hatch for the orchestrator's
+// own ctx-cancellation / nil-receiver guards; in practice the real
+// orchestrator doesn't surface errors here for a non-cancelled ctx.
+func (r downloadedImportRunner) Import(
+	decisions []*episodeimport.ImportDecision,
+	newDownload bool,
+	downloadClientItem *downloadclients.Item,
+	mode episodeimport.ImportMode,
 ) []*episodeimport.ImportResult {
-	return nil
+	out, err := r.svc.Import(context.Background(), decisions, newDownload, downloadClientItem, mode)
+	if err != nil {
+		r.log.Warn("downloadedimport: ImportApprovedEpisodes.Import failed",
+			"len", len(decisions), "newDownload", newDownload, "mode", mode, "err", err)
+		return nil
+	}
+	return out
 }
 
 // noopVideoRuntimeReader is a stub [episodeimport.VideoRuntimeReader]
@@ -588,7 +648,7 @@ var (
 	_ downloadedimport.SeriesPathChecker  = downloadedImportSeriesPaths{}
 	_ downloadedimport.SeriesParser       = downloadedImportSeriesParser{}
 	_ downloadedimport.ImportDecider      = downloadedImportDecider{}
-	_ downloadedimport.ImportRunner       = stubImportRunner{}
+	_ downloadedimport.ImportRunner       = downloadedImportRunner{}
 	_ downloadedimport.SampleDetector     = downloadedImportSampleDetector{}
 	_ episodeimport.VideoRuntimeReader    = noopVideoRuntimeReader{}
 	_ episodeimport.EpisodeFileResolver   = episodeFileResolverAdapter{}

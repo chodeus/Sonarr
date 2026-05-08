@@ -839,10 +839,74 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("upgrademediafiles service: %w", err)
 	}
-	// Reference until slice 3.98 wires it into ImportApprovedEpisodes.
-	// Holding the value here keeps the construction error path live so
-	// a regressed required dep surfaces at boot.
-	_ = upgradeMediaFilesSvc
+	// Slice 3.98: ImportApprovedEpisodes wiring — closes the
+	// ImportApprovedEpisodes (Option A) sub-arc. Constructs
+	// *episodeimport.ImportApprovedEpisodes against the slice-3.97
+	// *upgrademediafiles.Service (above) + *episodefiles.Service +
+	// *disk.Provider. The four optional deps that gate ancillary
+	// behaviours (extras / history enrichment / quality-tiebreak /
+	// event-emission / rescan) stay nil-defaulted to their package
+	// noops — none are required for the arc's endpoint of "files
+	// actually move":
+	//
+	//   - extras (ExtrasImporter): noopExtrasImporter — the C#
+	//     IExtraService + IExistingExtraFiles surfaces are
+	//     unported. Companion-extras detection / movement is a
+	//     separate sub-arc.
+	//   - historyFinder (HistoryGrabFinderForImport):
+	//     noopHistoryGrabFinder — the slice-3.61 HistoryGrabsFinder
+	//     port exists but its MostRecentGrabbed-shape adapter is
+	//     deferred. The orchestrator's IndexerFlags / ReleaseType
+	//     enrichment branches at C# `:90-108` skip cleanly.
+	//   - qcmp (QualityComparer): noopQualityComparer — the
+	//     decisionengine.CompareQualityModels surface needs a
+	//     QualityProfile lookup that isn't wired to this site yet.
+	//     Defaulting to "all qualities equal" collapses
+	//     ImportApprovedEpisodes.sortApproved to Size-only ordering,
+	//     which matches the C# behaviour when the comparer's
+	//     QualityProfile lookup yields equal qualities.
+	//   - events (ImportEventPublisher): noopImportEventPublisher —
+	//     EpisodeImportedEvent / EpisodeImportFailedEvent have no
+	//     ported subscribers yet, AND the messaging.Bus generic
+	//     Publish[E any] doesn't satisfy the bare Publish(any)
+	//     narrow interface without an adapter (a future slice can
+	//     bridge by type-switching the event into the appropriate
+	//     concrete type before delegating to messaging.Publish).
+	//   - rescan (RescanSeriesCommander): noopRescanCommander — the
+	//     RescanSeriesCommand command bus path exists, but the
+	//     PushRescanSeries(seriesID) → command-queue adapter is its
+	//     own slice.
+	//
+	// The constructed *ImportApprovedEpisodes is then plugged into
+	// the slice-3.79a downloadedimport.Service via the new
+	// downloadedImportRunner adapter (downloadedimport_wiring.go)
+	// that bridges the ctx-bearing+error orchestrator signature to
+	// the ctx-less+errorless ImportRunner narrow interface — same
+	// posture as the slice-3.85 downloadedImportDecider /
+	// slice-3.90 parsingservice ctx-bridge adapters.
+	//
+	// With this slice in place the POST /api/v3/command
+	// {"name":"DownloadedEpisodesScan"} endpoint actually moves a
+	// downloaded file into the series library: the last and biggest
+	// stub in the import pipeline (stubImportRunner since slice 3.79a)
+	// is replaced by the real production binding. End-to-end pipeline
+	// is now production-bound: download-folder-scan → import-decision
+	// (filter + 11 specs + 4 augmenters) → upgrade-and-recycle (slice
+	// 3.97) → writer move (slice 3.96) → episodefiles row Add. ✓
+	importApprovedSvc, err := episodeimport.NewImportApprovedEpisodes(
+		episodeFilesSvc,      // files (MediaFileWriter — Add + GetFilesWithRelativePath + Delete)
+		diskProv,             // disk (FileSizeReader — GetFileSize)
+		upgradeMediaFilesSvc, // upgrader — slice-3.97; recycles + replaces existing files
+		nil,                  // extras → noopExtrasImporter (C# IExtraService unported)
+		nil,                  // historyFinder → noopHistoryGrabFinder (slice-3.61 finder needs MostRecentGrabbed adapter)
+		nil,                  // qcmp → noopQualityComparer (decisionengine.CompareQualityModels not wired here yet)
+		nil,                  // events → noopImportEventPublisher (no ported subscribers; messaging.Bus generic Publish[E] needs an adapter)
+		nil,                  // rescan → noopRescanCommander (RescanSeriesCommand bus adapter ports separately)
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("import approved episodes: %w", err)
+	}
 
 	dimpDisk := downloadedImportDiskOps{Provider: diskProv}
 	dimpSvc := downloadedimport.NewService(
@@ -851,7 +915,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		downloadedImportSeriesPaths{svc: seriesSvc, log: logger},
 		downloadedImportSeriesParser{svc: parsingSvc, log: logger},
 		downloadedImportDecider{svc: importDecisionMaker, log: logger},
-		stubImportRunner{},
+		downloadedImportRunner{svc: importApprovedSvc, log: logger},
 		downloadedImportSampleDetector{svc: sampleDetector},
 		configProv,
 		logger,
