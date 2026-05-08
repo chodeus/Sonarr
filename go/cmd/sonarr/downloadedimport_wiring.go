@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"time"
 
+	"sonarr.tv/sonarr/internal/config"
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadedimport"
@@ -394,6 +395,28 @@ func (f fileNamerAdapter) RequiresEpisodeTitle(s *series.Series, eps []episodes.
 	return organizer.RequiresEpisodeTitle(s, eps, f.buildOptions())
 }
 
+// episodeTitleConfigAdapter bridges *config.Provider to the slice-3.65
+// [episodeimport.EpisodeTitleConfig] narrow interface that the
+// EpisodeTitleSpecification reaches for. The C# `IConfigService`
+// surface returns the enum directly; the Go-port config.Provider
+// returns the raw string identifier so the adapter parses on each
+// call via [episodeimport.ParseEpisodeTitleRequiredType] (matches
+// the comment hint at `episodeimport/specs.go:505`).
+//
+// Production posture: per-call DB hit through *config.Provider's
+// in-memory cache (config.Provider lazily caches every Config row
+// and invalidates on ConfigSavedEvent, so this is much cheaper than
+// the namingconfig.Service per-call DB hit in fileNamerAdapter
+// above).
+type episodeTitleConfigAdapter struct {
+	cfg *config.Provider
+}
+
+// EpisodeTitleRequired returns the typed enum.
+func (a episodeTitleConfigAdapter) EpisodeTitleRequired() episodeimport.EpisodeTitleRequiredType {
+	return episodeimport.ParseEpisodeTitleRequiredType(a.cfg.EpisodeTitleRequired())
+}
+
 // episodeFileResolverAdapter bridges *episodefiles.Service to the
 // [episodeimport.EpisodeFileResolver] narrow interface (slice 3.65).
 // Method-name mismatch only — the C# narrow interface uses `GetByID`
@@ -431,4 +454,5 @@ var (
 	_ episodeimport.EpisodeFileResolver   = episodeFileResolverAdapter{}
 	_ episodeimport.EpisodeParsingService = episodeParsingServiceAdapter{}
 	_ episodeimport.FileNamer             = fileNamerAdapter{}
+	_ episodeimport.EpisodeTitleConfig    = episodeTitleConfigAdapter{}
 )

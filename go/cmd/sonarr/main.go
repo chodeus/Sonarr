@@ -634,6 +634,30 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("absolute-episode-number spec: %w", err)
 	}
 	importDecisionSpecs = append(importDecisionSpecs, absEpsSpec)
+	// Slice 3.95: EpisodeTitleSpecification wired via the slice-3.94
+	// fileNamerAdapter + new episodeTitleConfigAdapter (parses the
+	// config.Provider EpisodeTitleRequired() string into the typed
+	// enum) + *episodes.Service for EpisodeFinderBySeason (the
+	// GetEpisodesBySeason(ctx, seriesID, seasonNumber) signature
+	// matches the narrow interface exactly via Go's structural typing).
+	// Spec mirrors C# `EpisodeTitleSpecification.cs:13-97`: rejects
+	// when the active naming pattern needs the episode title AND a
+	// matched episode is recently aired (within 48h) without a real
+	// title (or with a literal "TBA"). Skip arms — ExistingFile /
+	// EpisodeTitleRequired=Never / pattern doesn't require {Episode
+	// Title} / BulkSeasonReleases-with-non-bulk-shape → Accept.
+	// nil clock → defaults to time.Now.
+	episodeTitleSpec, err := episodeimport.NewEpisodeTitleSpecification(
+		episodeTitleConfigAdapter{cfg: configProv},
+		fileNamerAdapter{svc: namingConfigSvc, log: logger},
+		episodesSvc,
+		nil,
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("episode-title spec: %w", err)
+	}
+	importDecisionSpecs = append(importDecisionSpecs, episodeTitleSpec)
 	importDecisionMaker, err := episodeimport.NewImportDecisionMaker(
 		importDecisionSpecs, // specs — slice-3.86: 5 zero-dep specs wired
 		episodeFilesSvc,     // filter — FilterExistingFiles
