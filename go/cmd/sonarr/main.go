@@ -41,6 +41,7 @@ import (
 	"sonarr.tv/sonarr/internal/appenv"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
+	"sonarr.tv/sonarr/internal/blocklist"
 	"sonarr.tv/sonarr/internal/buildinfo"
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/commands/handlers"
@@ -48,6 +49,8 @@ import (
 	"sonarr.tv/sonarr/internal/configfile"
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/datastore"
+	"sonarr.tv/sonarr/internal/decisionengine"
+	"sonarr.tv/sonarr/internal/delayprofiles"
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/downloadedimport"
 	"sonarr.tv/sonarr/internal/episodefilemoving"
@@ -66,6 +69,7 @@ import (
 	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/recyclebin"
+	"sonarr.tv/sonarr/internal/releaseprofiles"
 	"sonarr.tv/sonarr/internal/rootfolders"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 	"sonarr.tv/sonarr/internal/series"
@@ -987,6 +991,72 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("import approved episodes: %w", err)
 	}
+
+	// Slice 3.A7: decisionengine register-into-DecisionMaker wiring.
+	// First production binding of [decisionengine.NewDecisionMaker] —
+	// constructs every ported Specification (19 of ~25) and feeds the
+	// resulting slice to the orchestrator. The DecisionMaker is held
+	// via `_ = decisionMaker` until a downstream consumer (the
+	// indexer-search / RSS flow that ports as part of Phase 4) wires
+	// up. Holding the constructed value keeps the boot-time
+	// nil-required-dep guards live: any signature drift on a per-spec
+	// constructor or new required-dep addition surfaces as a startup
+	// error here, not at first use.
+	//
+	// Per-spec adapter rationale lives in
+	// `cmd/sonarr/decisionengine_wiring.go`; the noop MaximumSize /
+	// MinimumAge readers there are stand-ins until
+	// [config.Provider.MaximumSize] / .MinimumAge port (both default
+	// to 0 = disabled in C#, so the wired specs accept-all on those
+	// caps until the getters land).
+	upgradableSpec, err := decisionengine.NewUpgradableSpecification(configProv, logger)
+	if err != nil {
+		return fmt.Errorf("upgradable specification: %w", err)
+	}
+	blocklistRepo, err := blocklist.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("blocklist repo: %w", err)
+	}
+	delayProfilesRepo, err := delayprofiles.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("delayprofiles repo: %w", err)
+	}
+	delayProfilesSvc := delayprofiles.NewService(delayProfilesRepo)
+	if delayProfilesSvc == nil {
+		return fmt.Errorf("delayprofiles service: nil — required dep regressed")
+	}
+	releaseProfilesRepo, err := releaseprofiles.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("releaseprofiles repo: %w", err)
+	}
+	releaseProfilesSvc := releaseprofiles.NewService(releaseProfilesRepo)
+	if releaseProfilesSvc == nil {
+		return fmt.Errorf("releaseprofiles service: nil — required dep regressed")
+	}
+	matcherSvc := releaseprofiles.NewMatcherService()
+	if matcherSvc == nil {
+		return fmt.Errorf("releaseprofiles matcher service: nil — required dep regressed")
+	}
+	decisionEngineSpecs, err := buildDecisionEngineSpecs(decisionEngineDeps{
+		upgradable:     upgradableSpec,
+		qualityProfile: qualityProfilesSvc,
+		episodes:       episodesSvc,
+		episodeFiles:   episodeFilesSvc,
+		disk:           diskProv,
+		configCfg:      configProv,
+		freeSpaceCfg:   configProv,
+		retentionCfg:   configProv,
+		delayProfiles:  delayProfilesSvc,
+		releaseProfile: releaseProfilesSvc,
+		matcher:        matcherSvc,
+		blocklistRepo:  blocklistRepo,
+		log:            logger,
+	})
+	if err != nil {
+		return fmt.Errorf("decisionengine specs: %w", err)
+	}
+	decisionMaker := decisionengine.NewDecisionMaker(decisionEngineSpecs, logger)
+	_ = decisionMaker // held until the indexer-search / RSS flow ports.
 
 	dimpDisk := downloadedImportDiskOps{Provider: diskProv}
 	dimpSvc := downloadedimport.NewService(
