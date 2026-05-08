@@ -64,9 +64,11 @@ import (
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
+	"sonarr.tv/sonarr/internal/recyclebin"
 	"sonarr.tv/sonarr/internal/rootfolders"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/upgrademediafiles"
 )
 
 func main() {
@@ -773,10 +775,74 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("episodefilemoving service: %w", err)
 	}
-	// Reference until slice 3.97 wires it into upgrademediafiles.Service.
+	// Slice 3.97: upgrademediafiles.Service wiring — second slice in
+	// the ImportApprovedEpisodes (Option A) sub-arc. Constructs the
+	// upgrader on top of the slice-3.96 *episodefilemoving.Service +
+	// a freshly-constructed *recyclebin.Service. The upgrader handles
+	// the recycle-bin / replace-existing flow that the ImportApprovedEpisodes
+	// orchestrator (slice 3.71) reaches for through its
+	// MediaFileUpgrader seam — every existing EpisodeFile referenced
+	// by an incoming LocalEpisode is recycled (or hard-deleted when the
+	// recycle bin is disabled) BEFORE the new file is moved into place.
+	//
+	// Until this slice the orchestrator's noopMediaFileUpgrader returned
+	// "no existing files" for every upgrade, which would silently
+	// overwrite duplicates on disk once the writer was production-bound.
+	// Holding the constructed *upgrademediafiles.Service in
+	// upgradeMediaFilesSvc keeps the construction error paths live;
+	// slice 3.98 plugs it into the ImportApprovedEpisodes constructor.
+	//
+	// Dep wiring:
+	//
+	//   - recycle: *recyclebin.Service constructed here over
+	//              *config.Provider (RecycleBin + RecycleBinCleanupDays
+	//              getters shipped 3.76 / 3.77) + *disk.Provider (the
+	//              7-method DiskOps surface — every method already
+	//              shipped on the Provider after slice 3.74's transfer
+	//              primitives). First production binding of the
+	//              slice-3.76 recyclebin.Service (CleanUpRecycleBin
+	//              handler in slice 3.77 binds it separately for the
+	//              scheduled-task path).
+	//
+	//   - deleter: *episodefiles.Service via Go's structural typing —
+	//              the slice-3.2 Delete(ctx, *File, DeleteMediaFileReason)
+	//              method matches the upgrader's MediaFileDeleter
+	//              interface exactly.
+	//
+	//   - mover:   *episodefilemoving.Service from slice 3.96 (above) —
+	//              MoveEpisodeFileWithLocal + CopyEpisodeFile both
+	//              shipped at slice 3.70; satisfies the upgrader's
+	//              EpisodeFileMover interface directly.
+	//
+	//   - files:   *episodefiles.Service via Go's structural typing —
+	//              the slice-3.2 GetFile(ctx, int) method matches the
+	//              upgrader's EpisodeFileFinder interface exactly.
+	//
+	//   - fs:      *disk.Provider via Go's structural typing —
+	//              FolderExists + FileExists both already shipped;
+	//              the upgrader's narrow Filesystem interface needs
+	//              nothing else.
+	//
+	//   - log:     logger.
+	recycleBinSvc := recyclebin.NewService(configProv, diskProv, logger)
+	if recycleBinSvc == nil {
+		return fmt.Errorf("recyclebin service: nil — required dep regressed")
+	}
+	upgradeMediaFilesSvc, err := upgrademediafiles.NewService(
+		recycleBinSvc,
+		episodeFilesSvc,
+		episodeFileMovingSvc,
+		episodeFilesSvc,
+		diskProv,
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("upgrademediafiles service: %w", err)
+	}
+	// Reference until slice 3.98 wires it into ImportApprovedEpisodes.
 	// Holding the value here keeps the construction error path live so
 	// a regressed required dep surfaces at boot.
-	_ = episodeFileMovingSvc
+	_ = upgradeMediaFilesSvc
 
 	dimpDisk := downloadedImportDiskOps{Provider: diskProv}
 	dimpSvc := downloadedimport.NewService(
