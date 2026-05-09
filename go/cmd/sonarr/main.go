@@ -72,6 +72,7 @@ import (
 	"sonarr.tv/sonarr/internal/recyclebin"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
 	"sonarr.tv/sonarr/internal/rootfolders"
+	"sonarr.tv/sonarr/internal/scenemappings"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/upgrademediafiles"
@@ -528,7 +529,28 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// hasn't lifted yet. The series finder upgrade to the real
 	// *series.Service is included so GetSeriesFromTitle resolves
 	// against the live catalog.
-	parsingSvc, err := parsingservice.NewService(episodesSvc, nil, nil, seriesSvc, logger)
+	// Slice 3.AH: scenemappings.Service constructed and wired into
+	// parsingservice via [sceneMappingFinderAdapter] (parsingservice_wiring.go).
+	// The adapter bridges *scenemappings.Service.FindSceneMapping +
+	// GetSceneSeasonNumber (ctx + error returns) to the narrow
+	// [parsingservice.SceneMappingFinder] (ctx-less, errorless,
+	// nil-on-miss) — same dep-gap dodge pattern as
+	// historyGrabsFinderAdapter (slice 3.AG) and latestGrabFinderAdapter
+	// (slice 3.AF). Without this swap parsingservice.Service used
+	// the noopSceneMappingFinder default which always returned nil
+	// from both methods, defeating any scene-numbering / scene-name
+	// resolution path the parser walks.
+	scenemappingsRepo, err := scenemappings.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("scenemappings repo: %w", err)
+	}
+	scenemappingsSvc := scenemappings.NewService(scenemappingsRepo, logger)
+	if scenemappingsSvc == nil {
+		return fmt.Errorf("scenemappings service: nil — required dep regressed")
+	}
+	parsingSvc, err := parsingservice.NewService(episodesSvc, nil,
+		sceneMappingFinderAdapter{svc: scenemappingsSvc, log: logger},
+		seriesSvc, logger)
 	if err != nil {
 		return fmt.Errorf("parsingservice: %w", err)
 	}
