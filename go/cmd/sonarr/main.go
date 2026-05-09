@@ -732,6 +732,19 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			return historyhandlers.HandleDownloadFailed(ctx, historySvc, &ev)
 		})
 
+	// Slice 3.AW: history IHandle<EpisodeFileDeletedEvent> subscriber.
+	// Walks ev.LinkedEpisodes and writes one history.Entry per id
+	// with the deletion metadata. Skips the NoLinkedEpisodes /
+	// ManualOverride reasons (housekeeping cleanup + force-import
+	// swaps don't earn audit rows per C# `:269-278`). Independent
+	// of the existing episodes.HandleEpisodeFileDeleted subscriber
+	// at line 437 — both fire on the same event, no ordering
+	// dependency.
+	messaging.Subscribe(bus, "history.HandleEpisodeFileDeleted",
+		func(ctx context.Context, ev episodefiles.EpisodeFileDeletedEvent) error {
+			return historyhandlers.HandleEpisodeFileDeleted(ctx, historySvc, &ev)
+		})
+
 	// Per-augmenter wiring (Phase 3.88 + 3.AF). Slice 3.AF lights up
 	// the previously-empty AggregateLanguage + AggregateQuality
 	// augmenter lists with every available augmenter. Both
