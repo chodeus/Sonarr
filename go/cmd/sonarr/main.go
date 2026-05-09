@@ -1380,6 +1380,8 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		retentionCfg:   configProv,
 		maxSizeCfg:     configProv,
 		minAgeCfg:      configProv,
+		cdhCfg:         configProv,
+		historyByEp:    historySvc,
 		delayProfiles:  delayProfilesSvc,
 		releaseProfile: releaseProfilesSvc,
 		matcher:        matcherSvc,

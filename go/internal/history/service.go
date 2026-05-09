@@ -87,13 +87,15 @@ func (t EventType) String() string {
 // out so callers can inject a stub in tests without dragging the full
 // CRUD surface; the real repo satisfies the interface.
 //
-// AllByDownloadID is the only method the service needs at this slice
-// — both readonly methods walk it. Future slices that port heavier C#
-// methods (`Paged`, `MostRecentForEpisode`, `GetBySeason`,
+// Both methods are date-DESC ordered queries that the service walks
+// directly: AllByDownloadID feeds FindByDownloadID + Find,
+// AllByEpisodeID feeds FindByEpisodeId. Future slices that port
+// heavier C# methods (`Paged`, `MostRecentForEpisode`, `GetBySeason`,
 // `FindDownloadHistory`) will append to this interface as their needs
 // land.
 type EntryReader interface {
 	AllByDownloadID(ctx context.Context, downloadID string) ([]Entry, error)
+	AllByEpisodeID(ctx context.Context, episodeID int) ([]Entry, error)
 }
 
 // Service ports a subset of `IHistoryService` at
@@ -200,7 +202,31 @@ func (s *Service) Find(ctx context.Context, downloadID string, eventType EventTy
 	return out, nil
 }
 
+// FindByEpisodeId ports `HistoryService.cs:101-104` —
+// returns every history entry for the supplied EpisodeId, preserving
+// the date-DESC order the underlying repo guarantees.
+//
+// Direct delegate to the repo; no filtering. Empty slice is the
+// "no rows" signal — propagates verbatim. Repo errors propagate
+// wrapped.
+//
+// Production binding for [decisionengine.AlreadyImportedSpec] (slice
+// 3.AL) which walks the per-episode history rows looking for
+// matching grab/import pairs. The C# enum spelling
+// `FindByEpisodeId` (note: lowercase 'd') is preserved verbatim for
+// grep parity with the C# tree.
+func (s *Service) FindByEpisodeId(ctx context.Context, episodeID int) ([]Entry, error) {
+	if s == nil || s.repo == nil {
+		return nil, errors.New("history: FindByEpisodeId on nil receiver")
+	}
+	out, err := s.repo.AllByEpisodeID(ctx, episodeID)
+	if err != nil {
+		return nil, fmt.Errorf("history: FindByEpisodeId: %w", err)
+	}
+	return out, nil
+}
+
 // Compile-time interface-satisfaction guard. A refactor that breaks
-// the contract (Repo loses AllByDownloadID, signature changes) fails
-// at build time rather than at the wiring callsite.
+// the contract (Repo loses AllByDownloadID / AllByEpisodeID, signature
+// changes) fails at build time rather than at the wiring callsite.
 var _ EntryReader = (*Repo)(nil)

@@ -511,3 +511,20 @@ func (p *Provider) SetAutoUnmonitorPreviouslyDownloadedEpisodes(ctx context.Cont
 	_, err := p.setBool(ctx, "AutoUnmonitorPreviouslyDownloadedEpisodes", v)
 	return err
 }
+
+// EnableCompletedDownloadHandling mirrors `ConfigService.cs:139-143`.
+// Default true at `:141` — note this is one of the few config getters
+// that defaults to true. Drives the
+// [decisionengine.AlreadyImportedSpec] gate (slice 3.AL): when CDH is
+// disabled the spec accepts every release without consulting history,
+// matching the C# `:33-37` short-circuit at the top of IsSatisfiedBy.
+func (p *Provider) EnableCompletedDownloadHandling() bool {
+	return p.getBool("EnableCompletedDownloadHandling", true)
+}
+
+// SetEnableCompletedDownloadHandling writes the new value, publishing
+// ConfigSavedEvent on change.
+func (p *Provider) SetEnableCompletedDownloadHandling(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "EnableCompletedDownloadHandling", v)
+	return err
+}

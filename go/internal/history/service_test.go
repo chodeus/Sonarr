@@ -23,6 +23,10 @@ func (s stubReader) AllByDownloadID(_ context.Context, _ string) ([]history.Entr
 	return s.out, s.err
 }
 
+func (s stubReader) AllByEpisodeID(_ context.Context, _ int) ([]history.Entry, error) {
+	return s.out, s.err
+}
+
 func TestNewServiceNilRepoReturnsNil(t *testing.T) {
 	t.Parallel()
 	if s := history.NewService(nil); s != nil {
@@ -191,6 +195,54 @@ func TestFindUnmatchedEventTypeReturnsEmpty(t *testing.T) {
 	}
 }
 
+// --- FindByEpisodeId -----------------------------------------------
+
+func TestFindByEpisodeIdRepoErrPropagates(t *testing.T) {
+	t.Parallel()
+	s := history.NewService(stubReader{err: errors.New("EIO")})
+	got, err := s.FindByEpisodeId(context.Background(), 42)
+	if err == nil || got != nil {
+		t.Errorf("got (%v, %v), want (nil, error)", got, err)
+	}
+}
+
+func TestFindByEpisodeIdPassesThroughOrderedRows(t *testing.T) {
+	t.Parallel()
+
+	g := func(t history.EventType) *int { v := int(t); return &v }
+	rows := []history.Entry{
+		{ID: 1, EpisodeID: 42, EventType: g(history.EventTypeDownloadFolderImported)},
+		{ID: 2, EpisodeID: 42, EventType: g(history.EventTypeGrabbed)},
+		{ID: 3, EpisodeID: 42, EventType: nil},
+	}
+	s := history.NewService(stubReader{out: rows})
+
+	got, err := s.FindByEpisodeId(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d rows, want 3", len(got))
+	}
+	for i := range got {
+		if got[i].ID != rows[i].ID {
+			t.Errorf("[%d] ID=%d, want %d (caller relies on date-DESC pass-through)", i, got[i].ID, rows[i].ID)
+		}
+	}
+}
+
+func TestFindByEpisodeIdEmptyReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	s := history.NewService(stubReader{})
+	got, err := s.FindByEpisodeId(context.Background(), 999)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d rows, want 0", len(got))
+	}
+}
+
 func ptr(i int) *int { return &i }
 
 // --- repo-backed integration suite ---------------------------------
@@ -281,6 +333,24 @@ func runServiceSuite(t *testing.T, db *datastore.DB) {
 	}
 	if got, err := svc.Find(t.Context(), "missing", history.EventTypeGrabbed); err != nil || len(got) != 0 {
 		t.Errorf("Find(missing): got (%v, %v)", got, err)
+	}
+
+	// FindByEpisodeId returns ALL 5 rows (every seeded row has
+	// EpisodeID=100) ordered date-DESC. Mirror of FindByDownloadID
+	// but routes through AllByEpisodeID.
+	byEp, err := svc.FindByEpisodeId(t.Context(), 100)
+	if err != nil {
+		t.Fatalf("FindByEpisodeId: %v", err)
+	}
+	if len(byEp) != 5 {
+		t.Fatalf("FindByEpisodeId got %d rows, want 5", len(byEp))
+	}
+	if byEp[0].SourceTitle != "imported" || byEp[4].SourceTitle != "older-grab" {
+		t.Errorf("FindByEpisodeId date-DESC ordering broken: first=%q last=%q",
+			byEp[0].SourceTitle, byEp[4].SourceTitle)
+	}
+	if got, err := svc.FindByEpisodeId(t.Context(), 999); err != nil || len(got) != 0 {
+		t.Errorf("FindByEpisodeId(missing): got (%v, %v)", got, err)
 	}
 }
 

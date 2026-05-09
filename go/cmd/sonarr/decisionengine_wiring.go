@@ -123,6 +123,8 @@ type decisionEngineDeps struct {
 	retentionCfg   decisionengine.RetentionConfigReader         // *config.Provider
 	maxSizeCfg     decisionengine.MaximumSizeReader             // *config.Provider
 	minAgeCfg      decisionengine.MinimumAgeReader              // *config.Provider
+	cdhCfg         decisionengine.AlreadyImportedCDHReader      // *config.Provider
+	historyByEp    decisionengine.HistoryByEpisodeFinder        // *history.Service
 	delayProfiles  *delayprofiles.Service
 	releaseProfile *releaseprofiles.Service
 	matcher        *releaseprofiles.MatcherService
@@ -136,26 +138,32 @@ type decisionEngineDeps struct {
 // constructor's nil-required-dep guard surfaces as a typed error here;
 // the caller wraps the failure with the boot-site's `fmt.Errorf("decisionengine specs: %w", err)`.
 //
-// Spec coverage as of slice 3.A7: 19 of ~25 specs (the 6 unported
+// Spec coverage as of slice 3.AL: 20 of ~25 specs (the 5 unported
 // gate on subsystems that don't exist yet — UpgradeSpec /
 // UpgradeDiskSpec / CustomFormatAllowedByProfile on the
 // CustomFormatCalculator-by-EpisodeFile port; QueueSpec on
-// queue.Service; AlreadyImportedSpec on history.Service.FindByEpisodeId;
-// SceneMappingSpec on scenemappings.Service signature; Phase 4 specs —
-// BlockedIndexer / TorrentSeeding — on provider integrations).
+// queue.Service; SceneMappingSpec on scenemappings.Service signature;
+// Phase 4 specs — BlockedIndexer / TorrentSeeding — on provider
+// integrations).
 func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specification, error) {
 	profileLookup := profileViewLookupAdapter{svc: d.qualityProfile}
 	episodeFinder := firstEpisodeOfSeasonAdapter{svc: d.episodes}
 	delayResolver := delayProfileResolverAdapter{svc: d.delayProfiles}
 	blocklistChecker := decisionengine.NewRepoBlocklistChecker(d.blocklistRepo)
 
-	specs := make([]decisionengine.Specification, 0, 19)
+	specs := make([]decisionengine.Specification, 0, 20)
 
 	acceptableSize, err := decisionengine.NewAcceptableSizeSpecification(profileLookup, episodeFinder, d.log)
 	if err != nil {
 		return nil, err
 	}
 	specs = append(specs, acceptableSize)
+
+	alreadyImported, err := decisionengine.NewAlreadyImportedSpecification(d.cdhCfg, d.historyByEp, d.log)
+	if err != nil {
+		return nil, err
+	}
+	specs = append(specs, alreadyImported)
 
 	airDate, err := decisionengine.NewAirDateSpecification(d.releaseProfile, d.log)
 	if err != nil {

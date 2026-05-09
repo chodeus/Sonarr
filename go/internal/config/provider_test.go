@@ -387,6 +387,23 @@ func TestProvider_DecisionEngineGetters_Defaults(t *testing.T) {
 	if got := prov.AutoUnmonitorPreviouslyDownloadedEpisodes(); got != false {
 		t.Errorf("AutoUnmonitorPreviouslyDownloadedEpisodes default = %v, want false", got)
 	}
+	if got := prov.EnableCompletedDownloadHandling(); got != true {
+		t.Errorf("EnableCompletedDownloadHandling default = %v, want true", got)
+	}
+}
+
+func TestProvider_EnableCompletedDownloadHandling_RoundTrip(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	prov, _, _ := providerFixture(t, db)
+
+	ctx := t.Context()
+	if err := prov.SetEnableCompletedDownloadHandling(ctx, false); err != nil {
+		t.Fatalf("SetEnableCompletedDownloadHandling: %v", err)
+	}
+	if prov.EnableCompletedDownloadHandling() {
+		t.Errorf("EnableCompletedDownloadHandling after Set(false) = true")
+	}
 }
 
 func TestProvider_DecisionEngineGetters_RoundTrip(t *testing.T) {
