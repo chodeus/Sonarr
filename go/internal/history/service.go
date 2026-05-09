@@ -87,15 +87,25 @@ func (t EventType) String() string {
 // out so callers can inject a stub in tests without dragging the full
 // CRUD surface; the real repo satisfies the interface.
 //
-// Both methods are date-DESC ordered queries that the service walks
-// directly: AllByDownloadID feeds FindByDownloadID + Find,
-// AllByEpisodeID feeds FindByEpisodeId. Future slices that port
-// heavier C# methods (`Paged`, `MostRecentForEpisode`, `GetBySeason`,
-// `FindDownloadHistory`) will append to this interface as their needs
-// land.
+// Method coverage:
+//   - AllByDownloadID / AllByEpisodeID feed the per-id read paths
+//     (FindByDownloadID + Find + FindByEpisodeId).
+//   - Insert feeds the slice-3.AQ Service.Add wrapper. The seven
+//     IHandle subscribers (sub-arcs 9b-9h) write through Add.
+//
+// Future slices that port heavier C# methods (`Paged`,
+// `MostRecentForEpisode`, `GetBySeason`, `FindDownloadHistory`) will
+// append to this interface as their needs land.
+//
+// The "Reader" name is preserved despite Insert appearing here —
+// renaming would cascade into every test stub. The Go-port's
+// pattern across packages is to grow these interfaces as needs land
+// rather than splitting; the slice-3.62 stubReader pattern continues
+// to apply.
 type EntryReader interface {
 	AllByDownloadID(ctx context.Context, downloadID string) ([]Entry, error)
 	AllByEpisodeID(ctx context.Context, episodeID int) ([]Entry, error)
+	Insert(ctx context.Context, e *Entry) (*Entry, error)
 }
 
 // Service ports a subset of `IHistoryService` at
@@ -198,6 +208,55 @@ func (s *Service) Find(ctx context.Context, downloadID string, eventType EventTy
 		if EventType(*r.EventType) == eventType {
 			out = append(out, r)
 		}
+	}
+	return out, nil
+}
+
+// Add inserts a new History row. Mirrors the C# pattern at
+// `HistoryService.cs:213-373` — every IHandle subscriber builds an
+// EpisodeHistory locally and calls `_historyRepository.Insert(history)`
+// directly. The Go port surfaces the write as a public Service.Add
+// so the future IHandle subscribers (sub-arcs 9b-9h) can route
+// through one wrapper rather than each importing the Repo.
+//
+// Validation expectations match the C# Insert call sites:
+//
+//   - EpisodeID / SeriesID required; the C# repo allows zero but
+//     the History UI filters them out, so the Go port surfaces a
+//     typed error instead of silently inserting an orphan row.
+//   - SourceTitle / Date required for the same reason.
+//
+// Quality / Languages / Data are JSON-shape strings the per-event
+// handler builds before calling Add. Add does not validate them
+// — the column is opaque text on the C# side too.
+//
+// Returns the inserted Entry (with ID populated by the underlying
+// Repo.Insert auto-increment) on success.
+//
+// Future slices may add a ConfigSavedEvent-shaped audit-log emit
+// here; for now Add is a thin pass-through.
+func (s *Service) Add(ctx context.Context, e *Entry) (*Entry, error) {
+	if s == nil || s.repo == nil {
+		return nil, errors.New("history: Add on nil receiver")
+	}
+	if e == nil {
+		return nil, errors.New("history: Add: nil entry")
+	}
+	if e.EpisodeID <= 0 {
+		return nil, fmt.Errorf("history: Add: EpisodeID required, got %d", e.EpisodeID)
+	}
+	if e.SeriesID <= 0 {
+		return nil, fmt.Errorf("history: Add: SeriesID required, got %d", e.SeriesID)
+	}
+	if e.SourceTitle == "" {
+		return nil, errors.New("history: Add: SourceTitle required")
+	}
+	if e.Date.IsZero() {
+		return nil, errors.New("history: Add: Date required")
+	}
+	out, err := s.repo.Insert(ctx, e)
+	if err != nil {
+		return nil, fmt.Errorf("history: Add: %w", err)
 	}
 	return out, nil
 }

@@ -14,17 +14,40 @@ import (
 // stubReader is a deterministic [history.EntryReader] for service-
 // level tests that don't need a real DB. The repo-backed integration
 // suite below covers the SQL-to-Go path.
+//
+// The Insert method records the last inserted Entry + an injectable
+// error. Tests that need to assert "Add was called with X" inspect
+// `gotInsert` directly. inserted.ID is set to a sentinel non-zero so
+// tests confirming the auto-increment ID propagation can assert on
+// the returned value.
 type stubReader struct {
-	out []history.Entry
-	err error
+	out        []history.Entry
+	err        error
+	gotInsert  *history.Entry
+	insertErr  error
+	insertedID int
 }
 
-func (s stubReader) AllByDownloadID(_ context.Context, _ string) ([]history.Entry, error) {
+func (s *stubReader) AllByDownloadID(_ context.Context, _ string) ([]history.Entry, error) {
 	return s.out, s.err
 }
 
-func (s stubReader) AllByEpisodeID(_ context.Context, _ int) ([]history.Entry, error) {
+func (s *stubReader) AllByEpisodeID(_ context.Context, _ int) ([]history.Entry, error) {
 	return s.out, s.err
+}
+
+func (s *stubReader) Insert(_ context.Context, e *history.Entry) (*history.Entry, error) {
+	s.gotInsert = e
+	if s.insertErr != nil {
+		return nil, s.insertErr
+	}
+	out := *e
+	if s.insertedID > 0 {
+		out.ID = s.insertedID
+	} else {
+		out.ID = 1
+	}
+	return &out, nil
 }
 
 func TestNewServiceNilRepoReturnsNil(t *testing.T) {
@@ -64,7 +87,7 @@ func TestEventTypeStringMatchesCSharpNames(t *testing.T) {
 
 func TestFindByDownloadIDRepoErrPropagates(t *testing.T) {
 	t.Parallel()
-	s := history.NewService(stubReader{err: errors.New("EIO")})
+	s := history.NewService(&stubReader{err: errors.New("EIO")})
 	got, err := s.FindByDownloadID(context.Background(), "abc")
 	if err == nil || got != nil {
 		t.Errorf("got (%v, %v), want (nil, error)", got, err)
@@ -80,7 +103,7 @@ func TestFindByDownloadIDPassesThroughOrderedRows(t *testing.T) {
 		{ID: 2, DownloadID: "abc", EventType: g(history.EventTypeGrabbed)},
 		{ID: 3, DownloadID: "abc", EventType: nil},
 	}
-	s := history.NewService(stubReader{out: rows})
+	s := history.NewService(&stubReader{out: rows})
 
 	got, err := s.FindByDownloadID(context.Background(), "abc")
 	if err != nil {
@@ -98,7 +121,7 @@ func TestFindByDownloadIDPassesThroughOrderedRows(t *testing.T) {
 
 func TestFindByDownloadIDEmptyReturnsEmpty(t *testing.T) {
 	t.Parallel()
-	s := history.NewService(stubReader{})
+	s := history.NewService(&stubReader{})
 	got, err := s.FindByDownloadID(context.Background(), "missing")
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -112,7 +135,7 @@ func TestFindByDownloadIDEmptyReturnsEmpty(t *testing.T) {
 
 func TestFindRepoErrPropagates(t *testing.T) {
 	t.Parallel()
-	s := history.NewService(stubReader{err: errors.New("EIO")})
+	s := history.NewService(&stubReader{err: errors.New("EIO")})
 	got, err := s.Find(context.Background(), "abc", history.EventTypeGrabbed)
 	if err == nil || got != nil {
 		t.Errorf("got (%v, %v), want (nil, error)", got, err)
@@ -121,7 +144,7 @@ func TestFindRepoErrPropagates(t *testing.T) {
 
 func TestFindEmptyReturnsNil(t *testing.T) {
 	t.Parallel()
-	s := history.NewService(stubReader{})
+	s := history.NewService(&stubReader{})
 	got, err := s.Find(context.Background(), "missing", history.EventTypeGrabbed)
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -142,7 +165,7 @@ func TestFindFiltersByEventType(t *testing.T) {
 		{ID: 4, EventType: nil, SourceTitle: "null-row"},
 		{ID: 5, EventType: g(history.EventTypeDownloadFolderImported), SourceTitle: "i1"},
 	}
-	s := history.NewService(stubReader{out: rows})
+	s := history.NewService(&stubReader{out: rows})
 
 	got, err := s.Find(context.Background(), "abc", history.EventTypeGrabbed)
 	if err != nil {
@@ -167,7 +190,7 @@ func TestFindNilEventTypeRowsAlwaysSkipped(t *testing.T) {
 		{ID: 1, EventType: nil, SourceTitle: "nil-row"},
 		{ID: 2, EventType: ptr(0), SourceTitle: "unknown-row"},
 	}
-	s := history.NewService(stubReader{out: rows})
+	s := history.NewService(&stubReader{out: rows})
 
 	got, err := s.Find(context.Background(), "abc", history.EventTypeUnknown)
 	if err != nil {
@@ -185,7 +208,7 @@ func TestFindUnmatchedEventTypeReturnsEmpty(t *testing.T) {
 	rows := []history.Entry{
 		{EventType: g(history.EventTypeGrabbed)},
 	}
-	s := history.NewService(stubReader{out: rows})
+	s := history.NewService(&stubReader{out: rows})
 	got, err := s.Find(context.Background(), "abc", history.EventTypeDownloadIgnored)
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -199,7 +222,7 @@ func TestFindUnmatchedEventTypeReturnsEmpty(t *testing.T) {
 
 func TestFindByEpisodeIdRepoErrPropagates(t *testing.T) {
 	t.Parallel()
-	s := history.NewService(stubReader{err: errors.New("EIO")})
+	s := history.NewService(&stubReader{err: errors.New("EIO")})
 	got, err := s.FindByEpisodeId(context.Background(), 42)
 	if err == nil || got != nil {
 		t.Errorf("got (%v, %v), want (nil, error)", got, err)
@@ -215,7 +238,7 @@ func TestFindByEpisodeIdPassesThroughOrderedRows(t *testing.T) {
 		{ID: 2, EpisodeID: 42, EventType: g(history.EventTypeGrabbed)},
 		{ID: 3, EpisodeID: 42, EventType: nil},
 	}
-	s := history.NewService(stubReader{out: rows})
+	s := history.NewService(&stubReader{out: rows})
 
 	got, err := s.FindByEpisodeId(context.Background(), 42)
 	if err != nil {
@@ -233,13 +256,111 @@ func TestFindByEpisodeIdPassesThroughOrderedRows(t *testing.T) {
 
 func TestFindByEpisodeIdEmptyReturnsEmpty(t *testing.T) {
 	t.Parallel()
-	s := history.NewService(stubReader{})
+	s := history.NewService(&stubReader{})
 	got, err := s.FindByEpisodeId(context.Background(), 999)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("got %d rows, want 0", len(got))
+	}
+}
+
+// --- Service.Add (slice 3.AQ) ---------------------------------------
+
+// validEntry returns a fully-populated minimal Entry that passes
+// every Service.Add validation check. Tests mutate one field at a
+// time to drive the per-field rejection arms.
+func validEntry() *history.Entry {
+	return &history.Entry{
+		EpisodeID:   42,
+		SeriesID:    7,
+		SourceTitle: "Show.S01E01",
+		Date:        time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
+		Quality:     `{}`,
+		Data:        map[string]string{"k": "v"},
+	}
+}
+
+func TestAddNilReceiverErrors(t *testing.T) {
+	t.Parallel()
+	var s *history.Service
+	if _, err := s.Add(context.Background(), validEntry()); err == nil {
+		t.Errorf("Add on nil receiver: want error, got nil")
+	}
+}
+
+func TestAddNilEntryErrors(t *testing.T) {
+	t.Parallel()
+	s := history.NewService(&stubReader{})
+	if _, err := s.Add(context.Background(), nil); err == nil {
+		t.Errorf("Add(nil entry): want error")
+	}
+}
+
+func TestAddRequiresEpisodeID(t *testing.T) {
+	t.Parallel()
+	s := history.NewService(&stubReader{})
+	e := validEntry()
+	e.EpisodeID = 0
+	if _, err := s.Add(context.Background(), e); err == nil {
+		t.Errorf("EpisodeID=0: want error")
+	}
+}
+
+func TestAddRequiresSeriesID(t *testing.T) {
+	t.Parallel()
+	s := history.NewService(&stubReader{})
+	e := validEntry()
+	e.SeriesID = 0
+	if _, err := s.Add(context.Background(), e); err == nil {
+		t.Errorf("SeriesID=0: want error")
+	}
+}
+
+func TestAddRequiresSourceTitle(t *testing.T) {
+	t.Parallel()
+	s := history.NewService(&stubReader{})
+	e := validEntry()
+	e.SourceTitle = ""
+	if _, err := s.Add(context.Background(), e); err == nil {
+		t.Errorf("empty SourceTitle: want error")
+	}
+}
+
+func TestAddRequiresDate(t *testing.T) {
+	t.Parallel()
+	s := history.NewService(&stubReader{})
+	e := validEntry()
+	e.Date = time.Time{}
+	if _, err := s.Add(context.Background(), e); err == nil {
+		t.Errorf("zero Date: want error")
+	}
+}
+
+func TestAddRepoErrorPropagates(t *testing.T) {
+	t.Parallel()
+	stub := &stubReader{insertErr: errors.New("EIO")}
+	s := history.NewService(stub)
+	if _, err := s.Add(context.Background(), validEntry()); err == nil {
+		t.Errorf("repo Insert error: want propagated error")
+	}
+}
+
+func TestAddSuccessReturnsRepoResult(t *testing.T) {
+	t.Parallel()
+	stub := &stubReader{insertedID: 42}
+	s := history.NewService(stub)
+	e := validEntry()
+	got, err := s.Add(context.Background(), e)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if got == nil || got.ID != 42 {
+		t.Errorf("Add result = %+v, want ID=42", got)
+	}
+	if stub.gotInsert == nil || stub.gotInsert.SourceTitle != e.SourceTitle {
+		t.Errorf("repo Insert was not called with the supplied Entry: got %+v", stub.gotInsert)
 	}
 }
 
