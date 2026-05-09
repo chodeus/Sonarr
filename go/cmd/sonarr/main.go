@@ -1423,6 +1423,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		releaseProfile: releaseProfilesSvc,
 		matcher:        matcherSvc,
 		blocklistRepo:  blocklistRepo,
+		customFormats:  customFormatsSvc,
 		log:            logger,
 	})
 	if err != nil {

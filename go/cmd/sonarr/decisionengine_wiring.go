@@ -19,6 +19,7 @@ import (
 	"log/slog"
 
 	"sonarr.tv/sonarr/internal/blocklist"
+	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/delayprofiles"
 	"sonarr.tv/sonarr/internal/disk"
@@ -26,6 +27,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 // profileViewLookupAdapter wraps `*qualityprofiles.Service` to satisfy
@@ -99,14 +101,37 @@ func (a delayProfileResolverAdapter) BestForTags(ctx context.Context, tagIDs []i
 	return *p, true, nil
 }
 
+// customFormatForFileAdapter wraps `*customformats.Service.All` +
+// the package-level `customformats.ParseCustomFormatForFile` free fn
+// (slice 3.AP) to satisfy [decisionengine.UpgradeAllowedFormatCalculator]
+// — the by-EpisodeFile CustomFormat dispatch the
+// [UpgradeAllowedSpecification] (and future UpgradeDiskSpecification)
+// needs. ParseCustomFormatForFile takes the full `[]*Format` catalogue
+// as its third arg; the adapter fetches it on every call so a profile
+// edit lands without a restart. The wrapped fn returns no error itself
+// — the only failure mode is the catalogue fetch.
+type customFormatForFileAdapter struct {
+	svc *customformats.Service
+}
+
+func (a customFormatForFileAdapter) ParseCustomFormat(ctx context.Context, file *episodefiles.File, ser *series.Series) ([]customformats.CustomFormat, error) {
+	all, err := a.svc.All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return customformats.ParseCustomFormatForFile(file, ser, all), nil
+}
+
 // Compile-time guards: every adapter satisfies the corresponding
 // per-spec narrow interface in `internal/decisionengine`. A signature
 // drift on either side breaks the build at this site.
 var (
 	_ decisionengine.AcceptableSizeProfileReader          = profileViewLookupAdapter{}
 	_ decisionengine.QualityAllowedByProfileProfileReader = profileViewLookupAdapter{}
+	_ decisionengine.UpgradeAllowedProfileReader          = profileViewLookupAdapter{}
 	_ decisionengine.AcceptableSizeEpisodeFinder          = firstEpisodeOfSeasonAdapter{}
 	_ decisionengine.DelayProfileResolver                 = delayProfileResolverAdapter{}
+	_ decisionengine.UpgradeAllowedFormatCalculator       = customFormatForFileAdapter{}
 )
 
 // decisionEngineDeps groups the production handles
@@ -129,6 +154,7 @@ type decisionEngineDeps struct {
 	releaseProfile *releaseprofiles.Service
 	matcher        *releaseprofiles.MatcherService
 	blocklistRepo  *blocklist.Repo
+	customFormats  *customformats.Service
 	log            *slog.Logger
 }
 
@@ -138,19 +164,20 @@ type decisionEngineDeps struct {
 // constructor's nil-required-dep guard surfaces as a typed error here;
 // the caller wraps the failure with the boot-site's `fmt.Errorf("decisionengine specs: %w", err)`.
 //
-// Spec coverage as of slice 3.AO: 21 of ~25 specs (the 4 unported
-// gate on subsystems that don't exist yet — UpgradeAllowedSpec /
-// UpgradeDiskSpec on the CustomFormatCalculator-by-EpisodeFile port;
-// QueueSpec on queue.Service; SceneMappingSpec on scenemappings.Service
-// signature; Phase 4 specs — BlockedIndexer / TorrentSeeding — on
-// provider integrations).
+// Spec coverage as of slice 3.AR: 22 of ~25 specs (the 3 unported
+// gate on subsystems that don't exist yet — UpgradeDiskSpec on
+// SeasonPackUpgrade* config getters + by-EpisodeFile CF dispatch
+// (queue [7] sub-arc 7d); QueueSpec on queue.Service; SceneMappingSpec
+// on scenemappings.Service signature; Phase 4 specs — BlockedIndexer /
+// TorrentSeeding — on provider integrations).
 func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specification, error) {
 	profileLookup := profileViewLookupAdapter{svc: d.qualityProfile}
 	episodeFinder := firstEpisodeOfSeasonAdapter{svc: d.episodes}
 	delayResolver := delayProfileResolverAdapter{svc: d.delayProfiles}
 	blocklistChecker := decisionengine.NewRepoBlocklistChecker(d.blocklistRepo)
+	cfForFile := customFormatForFileAdapter{svc: d.customFormats}
 
-	specs := make([]decisionengine.Specification, 0, 21)
+	specs := make([]decisionengine.Specification, 0, 22)
 
 	acceptableSize, err := decisionengine.NewAcceptableSizeSpecification(profileLookup, episodeFinder, d.log)
 	if err != nil {
@@ -251,6 +278,12 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 
 	specs = append(specs, decisionengine.NewSeasonPackOnlySpecification(nil, d.log))
 	specs = append(specs, decisionengine.NewSplitEpisodeSpecification(d.log))
+
+	upgradeAllowed, err := decisionengine.NewUpgradeAllowedSpecification(d.upgradable, profileLookup, d.episodeFiles, cfForFile, d.log)
+	if err != nil {
+		return nil, err
+	}
+	specs = append(specs, upgradeAllowed)
 
 	return specs, nil
 }
