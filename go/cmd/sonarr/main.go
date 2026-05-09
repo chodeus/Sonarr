@@ -53,6 +53,7 @@ import (
 	"sonarr.tv/sonarr/internal/delayprofiles"
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/downloadedimport"
+	"sonarr.tv/sonarr/internal/downloadhistory"
 	"sonarr.tv/sonarr/internal/episodefilemoving"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
@@ -598,33 +599,72 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// default, matching C# IoC behaviour with zero spec bindings).
 	// Per-spec wiring lands as each Specification's dep chain (config
 	// readers, scene-mapping finders, etc.) is constructed at boot.
-	// Per-augmenter wiring (Phase 3.88). Two of five LocalEpisodeAggregator
-	// implementations populated — both are zero-dep at the boot site:
+	// Slice 3.AF: downloadhistory.Service constructed for the
+	// AugmentQualityFromReleaseName augmenter's [LatestGrabFinder]
+	// dep. First production binding of *downloadhistory.Service for
+	// non-import-orchestrator use — the slice-3.62 history.Service
+	// covers EpisodeHistory; this covers DownloadHistory. The
+	// [latestGrabFinderAdapter] (cmd/sonarr/episodeimport_wiring.go)
+	// bridges the (ctx, error) → ctx-less narrow interface.
+	dlHistoryRepo, err := downloadhistory.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("downloadhistory repo: %w", err)
+	}
+	dlHistorySvc := downloadhistory.NewService(dlHistoryRepo)
+	if dlHistorySvc == nil {
+		return fmt.Errorf("downloadhistory service: nil — required dep regressed")
+	}
+
+	// Per-augmenter wiring (Phase 3.88 + 3.AF). Slice 3.AF lights up
+	// the previously-empty AggregateLanguage + AggregateQuality
+	// augmenter lists with every available augmenter. Both
+	// aggregators sort augmenters by Order() at construction; the
+	// orchestrator picks the highest-confidence verdict per
+	// component (source / resolution / revision for quality;
+	// languages list for language).
 	//
-	//   - AggregateLanguage with an empty []LanguageAugmenter establishes
-	//     the baseline pick: [Series.OriginalLanguage] resolved via the
-	//     constructor's default closure over [language.FindByID]. Real
-	//     augmenters (AugmentLanguageFromMediaInfo, etc.) progressively
-	//     refine in later slices once their narrow-interface deps land.
-	//   - AggregateQuality with an empty []QualityAugmenter establishes
-	//     the baseline source/resolution merge against zero augmenter
-	//     verdicts — Quality stays at its zero-value default until
-	//     real augmenters (AugmentQualityFromMediaInfo / AugmentQualityFromReleaseName)
-	//     wire in.
+	// Language augmenters (4):
+	//   - AugmentLanguageFromFileName  (Order=1) — parses the
+	//     local file path's stem.
+	//   - AugmentLanguageFromFolder    (Order=2) — parses the
+	//     containing folder name.
+	//   - AugmentLanguageFromDownloadClientItem (Order=3) — parses
+	//     the download-client-reported title (NZB/torrent name).
+	//   - AugmentLanguageFromMediaInfo (Order=4) — walks the
+	//     MediaInfo AudioStream language tags via [language.FindIso]
+	//     (default closure).
 	//
-	// Skipped here:
-	//   - AggregateEpisodes — needs an EpisodeParsingService adapter
-	//     over *parsingservice.Service (sig mismatch on
-	//     ParseSpecialEpisodeTitle / GetEpisodes — both bear ctx + error
-	//     in the Go port; future slice writes the adapter).
-	//   - AggregateReleaseInfo — needs a HistoryGrabsFinder; no Go
-	//     port of the history grabs surface yet.
-	//   - AggregateSubtitleInfo — needs an EpisodeFileResolver adapter
-	//     over *episodefiles.Service (GetFile vs GetByID method-name
-	//     mismatch; trivial adapter).
+	// Quality augmenters (5):
+	//   - AugmentQualityFromFileName            (Order=1)
+	//   - AugmentQualityFromFolder              (Order=2)
+	//   - AugmentQualityFromDownloadClientItem  (Order=3)
+	//   - AugmentQualityFromMediaInfo           (Order=4) —
+	//     resolution + source from MediaInfo; nil parser →
+	//     [quality.ParseQualityName].
+	//   - AugmentQualityFromReleaseName         (Order=5) —
+	//     looks up the latest Grabbed history entry for the
+	//     download via [latestGrabFinderAdapter] + parses its
+	//     SourceTitle.
+	//
+	// Skipped (still no port):
+	//   - AggregateReleaseInfo — needs a HistoryGrabsFinder; no
+	//     Go port of the history grabs surface yet (different from
+	//     downloadhistory).
 	episodeAggregators := []episodeimport.LocalEpisodeAggregator{
-		episodeimport.NewAggregateLanguage(nil, nil, logger),
-		episodeimport.NewAggregateQuality(nil, logger),
+		episodeimport.NewAggregateLanguage([]episodeimport.LanguageAugmenter{
+			episodeimport.AugmentLanguageFromFileName{},
+			episodeimport.AugmentLanguageFromFolder{},
+			episodeimport.AugmentLanguageFromDownloadClientItem{},
+			episodeimport.NewAugmentLanguageFromMediaInfo(nil),
+		}, nil, logger),
+		episodeimport.NewAggregateQuality([]episodeimport.QualityAugmenter{
+			episodeimport.AugmentQualityFromFileName{},
+			episodeimport.AugmentQualityFromFolder{},
+			episodeimport.AugmentQualityFromDownloadClientItem{},
+			episodeimport.NewAugmentQualityFromMediaInfo(logger, nil),
+			episodeimport.NewAugmentQualityFromReleaseName(
+				latestGrabFinderAdapter{svc: dlHistorySvc, log: logger}, nil),
+		}, logger),
 		// Slice 3.89: AggregateSubtitleInfo wired via the
 		// [episodeFileResolverAdapter] thin GetByID→GetFile bridge over
 		// the existing *episodefiles.Service. Aggregator mirrors C#
