@@ -17,3 +17,10 @@ import "errors"
 func availableSpace(_ string) (int64, error) {
 	return 0, errors.New("disk: GetAvailableSpace not implemented on this platform")
 }
+
+// totalSize is the non-unix fallback for [Provider.GetTotalSize].
+// Symmetric posture to availableSpace — returns a typed error so the
+// caller's `if err != nil` path fires.
+func totalSize(_ string) (int64, error) {
+	return 0, errors.New("disk: GetTotalSize not implemented on this platform")
+}

@@ -13,53 +13,36 @@ package main
 
 import (
 	"context"
-	"fmt"
 
 	"sonarr.tv/sonarr/internal/healthcheck"
+	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/rootfolders"
 )
 
-// rootFolderHealthResolverAdapter bridges *rootfolders.Repo to
-// [healthcheck.RootFolderResolver] without dragging in the full
-// *rootfolders.Service — which still needs the disk.Provider
-// methods (FolderWritable / GetTotalSize) that haven't ported yet.
+// seriesFolderFormatAdapter bridges *namingconfig.Service to the
+// narrow [rootfolders.NamingConfigProvider] which only needs the
+// SeriesFolderFormat field. Pulls the singleton row via Service.GetConfig
+// (cached per slice 3.A2) and forwards the one field.
 //
-// The adapter mirrors the slice-3.96 [rootFolderFinderAdapter]
-// (`downloadedimport_wiring.go:512`) but preserves the (string,
-// error) tuple — RootFolderCheck's narrow interface keeps the error
-// channel so a transient DB failure surfaces as a Warning rather
-// than silently coercing to "no match".
-//
-// On Repo.All error the adapter wraps and returns; the check
-// translates a non-nil error into a Warning row, matching the C#
-// `RootFolderService.GetBestRootFolderPath` behaviour at
-// `RootFolderService.cs:195-227`.
-//
-// Replaces with a Service-wrapping adapter once
-// [disk.Provider.FolderWritable] + [disk.Provider.GetTotalSize] port.
-type rootFolderHealthResolverAdapter struct {
-	repo *rootfolders.Repo
+// Errors propagate verbatim. nil-Config arm is defensive only — the
+// Service guarantees a non-nil row whenever GetConfig returns nil err.
+type seriesFolderFormatAdapter struct {
+	svc *namingconfig.Service
 }
 
-// GetBestRootFolderPath delegates to the package-level
-// [rootfolders.BestPath] free fn after pulling every persisted
-// folder. Mirrors the [rootfolders.Service.GetBestRootFolderPath]
-// body at `rootfolders/service.go:271-294` but skips the per-path
-// cache (the healthcheck cadence is bounded — startup +
-// SeriesUpdated/Deleted/RefreshComplete events — and avoiding the
-// cache keeps the adapter stateless / goroutine-safe without an
-// additional mutex).
-func (a rootFolderHealthResolverAdapter) GetBestRootFolderPath(ctx context.Context, path string) (string, error) {
-	rows, err := a.repo.All(ctx)
+func (a seriesFolderFormatAdapter) GetSeriesFolderFormat(ctx context.Context) (string, error) {
+	cfg, err := a.svc.GetConfig(ctx)
 	if err != nil {
-		return "", fmt.Errorf("rootfolders: GetBestRootFolderPath: %w", err)
+		return "", err
 	}
-	folders := make([]rootfolders.Folder, 0, len(rows))
-	for _, r := range rows {
-		folders = append(folders, rootfolders.Folder{ID: r.ID, Path: r.Path})
+	if cfg == nil {
+		return "", nil
 	}
-	return rootfolders.BestPath(path, folders), nil
+	return cfg.SeriesFolderFormat, nil
 }
 
-// Compile-time guard.
-var _ healthcheck.RootFolderResolver = rootFolderHealthResolverAdapter{}
+// Compile-time guards.
+var (
+	_ rootfolders.NamingConfigProvider = seriesFolderFormatAdapter{}
+	_ healthcheck.RootFolderResolver   = (*rootfolders.Service)(nil)
+)

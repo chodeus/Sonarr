@@ -283,6 +283,54 @@ func (p *Provider) GetDirectories(path string) ([]string, error) {
 	return out, nil
 }
 
+// FolderWritable mirrors `DiskProviderBase.cs:127-144`. Probes write
+// access by creating + immediately deleting a sentinel file inside
+// the folder. Returns true on success, false on any error (missing
+// folder, EACCES, EROFS, full filesystem). The sentinel content
+// matches the C# message verbatim so the file is recognisable to
+// users who interrupt the test mid-flight.
+//
+// Sentinel filename also matches the C# tree
+// (`sonarr_write_test.txt`); preserving the exact name keeps any
+// out-of-band scripts that grep server FS state cross-compatible
+// between the C# and Go releases.
+//
+// Failures are debug-logged so a node-by-node troubleshooter can
+// trace WHICH path the writable check rejected without flooding the
+// info log on every healthcheck cycle.
+func (p *Provider) FolderWritable(path string) bool {
+	test := filepath.Join(path, "sonarr_write_test.txt")
+	content := []byte(fmt.Sprintf("This file was created to verify if '%s' is writable. It should've been automatically deleted. Feel free to delete it.", path))
+	if err := os.WriteFile(test, content, 0o644); err != nil {
+		p.log.Debug("disk: FolderWritable probe failed on write", "path", path, "err", err)
+		return false
+	}
+	if err := os.Remove(test); err != nil {
+		p.log.Debug("disk: FolderWritable probe failed on delete", "path", path, "err", err)
+		return false
+	}
+	return true
+}
+
+// GetTotalSize returns the total bytes the filesystem hosting `path`
+// reports. Mirrors C# `IDiskProvider.GetTotalSize(string)` at
+// `Common/Disk/IDiskProvider.cs:15` + the Mono-side
+// `DiskProvider.cs:226-233` impl which routes through GetMount.TotalSize
+// (statvfs `f_blocks * f_frsize`).
+//
+// The C# return is `long?` — null on a missing-mount / permission
+// error. The Go port returns `(int64, error)` so the rootfolders
+// caller can `if err == nil` and treat any error as "couldn't
+// determine, surface defensively" (matches C# `mount?.TotalSize`
+// = nil-on-failure).
+//
+// Implementation lives in build-tag-split files (`provider_unix.go` /
+// `provider_windows.go`) so the native syscall path is selected at
+// compile time. The dispatcher here delegates to `totalSize`.
+func (p *Provider) GetTotalSize(path string) (int64, error) {
+	return totalSize(path)
+}
+
 // GetAvailableSpace returns the free space on the filesystem hosting
 // `path`, in bytes. Mirrors C# `IDiskProvider.GetAvailableSpace(string)`
 // at `Common/Disk/IDiskProvider.cs`.

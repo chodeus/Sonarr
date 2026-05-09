@@ -30,3 +30,21 @@ func availableSpace(path string) (int64, error) {
 	// type without silently overflowing on a 32-bit Bsize.
 	return int64(stat.Bavail) * int64(stat.Bsize), nil
 }
+
+// totalSize is the unix-family implementation of
+// [Provider.GetTotalSize]. Mirrors the C# Mono-side
+// `DiskProvider.cs:226-233` which reads `mount.TotalSize` —
+// `f_blocks * f_frsize` per the Linux statvfs(3) man page.
+//
+// `Blocks` is the data + metadata + reserved-for-root total (matching
+// what `df` reports as the "Size" column); `Bsize` is the
+// fundamental block size. Both cast to int64 before multiplication
+// for cross-platform consistency (Bsize is uint64 on Linux, int32
+// on darwin).
+func totalSize(path string) (int64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, fmt.Errorf("disk: GetTotalSize(%q): %w", path, err)
+	}
+	return int64(stat.Blocks) * int64(stat.Bsize), nil
+}

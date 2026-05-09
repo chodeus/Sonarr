@@ -429,3 +429,72 @@ func TestProvider_GetAvailableSpace(t *testing.T) {
 		t.Errorf("missing path: want error")
 	}
 }
+
+func TestProvider_FolderWritable(t *testing.T) {
+	t.Parallel()
+	p := newProvider()
+	tmp := t.TempDir()
+
+	if !p.FolderWritable(tmp) {
+		t.Errorf("FolderWritable on TempDir = false, want true")
+	}
+	// Sentinel must not leak — successful probe deletes it before returning.
+	if _, err := os.Stat(filepath.Join(tmp, "sonarr_write_test.txt")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("write sentinel survived a successful probe; stat err = %v", err)
+	}
+
+	// Missing folder → false (write fails).
+	if p.FolderWritable(filepath.Join(tmp, "nope")) {
+		t.Errorf("FolderWritable(missing) = true, want false")
+	}
+
+	// Read-only folder → false. POSIX-mode-bit removal is enough on
+	// Linux/macOS; Windows ignores the read-only bit on directories so
+	// skip there.
+	if runtime.GOOS != "windows" {
+		ro := filepath.Join(tmp, "ro")
+		if err := os.Mkdir(ro, 0o555); err != nil {
+			t.Fatalf("Mkdir read-only: %v", err)
+		}
+		// Restore writable mode at end so t.TempDir cleanup succeeds.
+		t.Cleanup(func() { _ = os.Chmod(ro, 0o755) })
+		// Skip when running as root — the kernel ignores 0o555 for uid=0.
+		if os.Geteuid() != 0 {
+			if p.FolderWritable(ro) {
+				t.Errorf("FolderWritable(read-only) = true, want false")
+			}
+		}
+	}
+}
+
+func TestProvider_GetTotalSize(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("GetTotalSize not implemented on Windows in this slice")
+	}
+	p := newProvider()
+	tmp := t.TempDir()
+	got, err := p.GetTotalSize(tmp)
+	if err != nil {
+		t.Fatalf("GetTotalSize: %v", err)
+	}
+	if got <= 0 {
+		t.Errorf("GetTotalSize = %d, want > 0 (filesystem must report a non-zero size)", got)
+	}
+
+	// Total size must be at least the available space (modulo
+	// reservation accounting). Loose floor protects against the cast
+	// going negative on a 32-bit Bsize platform.
+	avail, err := p.GetAvailableSpace(tmp)
+	if err != nil {
+		t.Fatalf("GetAvailableSpace: %v", err)
+	}
+	if got < avail {
+		t.Errorf("GetTotalSize=%d < GetAvailableSpace=%d, want total >= avail", got, avail)
+	}
+
+	// Missing path → error (statfs fails).
+	if _, err := p.GetTotalSize(filepath.Join(tmp, "nope")); err == nil {
+		t.Errorf("missing path: want error")
+	}
+}

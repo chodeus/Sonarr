@@ -520,6 +520,34 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("rootfolders repo: %w", err)
 	}
+	// Slice 3.AM: construct the real *rootfolders.Service. With
+	// disk.Provider.FolderWritable + GetTotalSize ported (this slice),
+	// every rootfolders.NewService dep is now real:
+	//
+	//   - Repo            → rootFoldersRepo (above)
+	//   - DiskProvider    → *disk.Provider via Go structural typing on
+	//                       FolderExists / FolderWritable / FolderEmpty /
+	//                       GetAvailableSpace / GetTotalSize / GetDirectories
+	//   - SeriesPaths     → *series.Service.AllSeriesPaths
+	//   - NamingConfig    → seriesFolderFormatAdapter (thin wrapper
+	//                       around *namingconfig.Service.GetConfig that
+	//                       returns just the SeriesFolderFormat field)
+	//
+	// Replaces the two slice-3.96 / 3.A8 adapter dodges
+	// (rootFolderHealthResolverAdapter / rootFolderFinderAdapter) that
+	// talked directly to *rootfolders.Repo + the package-level
+	// rootfolders.BestPath free fn — both adapters now pass through
+	// the real Service so the per-path GetBestRootFolderPath cache +
+	// future write-side validation reach production code paths.
+	rootFoldersSvc, err := rootfolders.NewService(
+		rootFoldersRepo,
+		diskProv,
+		seriesSvc,
+		seriesFolderFormatAdapter{svc: namingConfigSvc},
+	)
+	if err != nil {
+		return fmt.Errorf("rootfolders service: %w", err)
+	}
 	// Slice 3.AE relocated mediafiles.NewService construction down to
 	// after importApprovedSvc + importDecisionMaker so the real
 	// mediafilesImportDecisionAdapter / mediafilesImportApprovedAdapter
@@ -1028,14 +1056,25 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 	rootFolderCheck := healthcheck.NewRootFolderCheck(
 		seriesSvc,
-		rootFolderHealthResolverAdapter{repo: rootFoldersRepo},
+		rootFoldersSvc,
 		diskProv,
 	)
+	// Slice 3.AM: append RecyclingBinCheck. Both deps now real:
+	//   - RecyclingBinCheckConfig → *config.Provider.RecycleBin (already
+	//     shipped, structural typing).
+	//   - RecyclingBinDiskProvider → *disk.Provider.FolderWritable
+	//     (ported this slice).
+	// Mirrors the C# class at HealthCheck/Checks/RecyclingBinCheck.cs.
+	recyclingBinCheck, err := healthcheck.NewRecyclingBinCheck(configProv, diskProv)
+	if err != nil {
+		return fmt.Errorf("healthcheck recyclingBin: %w", err)
+	}
 	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
 		healthcheck.NewAppDataLocationCheck(folder),
 		apiKeyCheck,
 		removedSeriesCheck,
 		rootFolderCheck,
+		recyclingBinCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)
@@ -1053,7 +1092,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	episodeFileMovingSvc, err := episodefilemoving.NewService(
 		episodeFileMovingFs,
 		nameBuilderAdapter{svc: namingConfigSvc, log: logger},
-		rootFolderFinderAdapter{repo: rootFoldersRepo, log: logger},
+		rootFolderFinderAdapter{svc: rootFoldersSvc, log: logger},
 		configProv,
 		episodesSvc,
 		nil, // FileDateUpdater — noop; C# IUpdateEpisodeFileService unported.
@@ -1310,7 +1349,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	mediafilesSvc, err := mediafiles.NewService(
 		diskProv,
 		configProv,
-		rootFolderHealthResolverAdapter{repo: rootFoldersRepo},
+		rootFoldersSvc,
 		seriesSvc,
 		episodeFilesSvc,
 		mediaFileCleanupSvc,

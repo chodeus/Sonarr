@@ -509,30 +509,29 @@ func (a episodeFileResolverAdapter) GetByID(ctx context.Context, id int) (*episo
 	return a.svc.GetFile(ctx, id)
 }
 
-// rootFolderFinderAdapter bridges *rootfolders.Repo to the slice-3.70
-// [episodefilemoving.RootFolderFinder] narrow interface. The C#
-// `IRootFolderService.GetBestRootFolderPath` returns plain string —
-// the Go-port rootfolders.Service.GetBestRootFolderPath returns
-// (string, error) AND requires an additional DiskProvider with
-// FolderWritable + GetTotalSize methods that don't exist on
-// `*disk.Provider` yet. The adapter dodges the dep gap by talking
-// directly to *rootfolders.Repo + the package-level
-// [rootfolders.BestPath] free fn — neither requires the missing
-// disk surfaces.
+// rootFolderFinderAdapter bridges *rootfolders.Service to the
+// slice-3.70 [episodefilemoving.RootFolderFinder] narrow interface.
+// The C# `IRootFolderService.GetBestRootFolderPath` returns plain
+// string — the Go-port rootfolders.Service.GetBestRootFolderPath
+// returns (string, error). This adapter swallows the error tuple
+// so the writer-side narrow interface stays minimal.
 //
-// On Repo.All error the adapter returns "" (the writer surfaces
+// Slice 3.AM: previously dodged the dep gap by talking directly to
+// *rootfolders.Repo + the package-level rootfolders.BestPath free
+// fn (because the full Service required disk.Provider.FolderWritable
+// + GetTotalSize which hadn't ported). With both methods now
+// shipped on *disk.Provider, the adapter wraps the real Service —
+// per-path GetBestRootFolderPath cache + future write-side
+// validation flow through.
+//
+// On Service error the adapter returns "" (the writer surfaces
 // [episodefilemoving.ErrRootFolderNotFound]); on a normal lookup
-// rootfolders.BestPath itself falls back to filepath.Dir(path) when
-// no configured root matches, so the empty-string arm is reserved
-// for hard DB failures.
-//
-// Future slice will lift this to consume the real *rootfolders.Service
-// once `disk.Provider.FolderWritable` + `GetTotalSize` port; the
-// existing interface signature is unchanged and the call site here
-// will swap to a thin Service-wrapping adapter.
+// the Service itself falls back to filepath.Dir(path) when no
+// configured root matches, so the empty-string arm is reserved for
+// hard DB failures.
 type rootFolderFinderAdapter struct {
-	repo *rootfolders.Repo
-	log  *slog.Logger
+	svc *rootfolders.Service
+	log *slog.Logger
 }
 
 // GetBestRootFolderPath swallows the (string, error) tuple to a
@@ -542,17 +541,13 @@ type rootFolderFinderAdapter struct {
 // The Go writer's check at `episodefilemoving.go:601-606` treats
 // empty as ErrRootFolderNotFound so the propagation is preserved.
 func (a rootFolderFinderAdapter) GetBestRootFolderPath(ctx context.Context, path string) string {
-	rows, err := a.repo.All(ctx)
+	got, err := a.svc.GetBestRootFolderPath(ctx, path)
 	if err != nil {
-		a.log.Warn("rootfolders: All failed; returning empty best-path",
+		a.log.Warn("rootfolders: GetBestRootFolderPath failed; returning empty best-path",
 			"path", path, "err", err)
 		return ""
 	}
-	folders := make([]rootfolders.Folder, 0, len(rows))
-	for _, r := range rows {
-		folders = append(folders, rootfolders.Folder{ID: r.ID, Path: r.Path})
-	}
-	return rootfolders.BestPath(path, folders)
+	return got
 }
 
 // nameBuilderAdapter bridges *namingconfig.Service + the package-level
