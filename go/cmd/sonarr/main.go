@@ -60,6 +60,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/history"
+	"sonarr.tv/sonarr/internal/historyhandlers"
 	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/instrumentation"
 	"sonarr.tv/sonarr/internal/lifecycle"
@@ -689,6 +690,20 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if historySvc == nil {
 		return fmt.Errorf("history service: nil — required dep regressed")
 	}
+
+	// Slice 3.AT: history IHandle<EpisodeGrabbedEvent> subscriber.
+	// Builds a per-episode history.Entry from the grabbed Subject's
+	// release metadata + per-episode IDs and routes through
+	// history.Service.Add. The publisher (Phase 4 download
+	// orchestrator) hasn't ported yet, so this is "lit but no
+	// listeners on the publisher side" — the bus dispatch path is
+	// exercised at boot so the next subsystem that publishes an
+	// EpisodeGrabbedEvent gets the audit-log row written without
+	// further wiring at this site.
+	messaging.Subscribe(bus, "history.HandleEpisodeGrabbed",
+		func(ctx context.Context, ev decisionengine.EpisodeGrabbedEvent) error {
+			return historyhandlers.HandleEpisodeGrabbed(ctx, historySvc, &ev)
+		})
 
 	// Per-augmenter wiring (Phase 3.88 + 3.AF). Slice 3.AF lights up
 	// the previously-empty AggregateLanguage + AggregateQuality
