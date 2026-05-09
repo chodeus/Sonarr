@@ -745,6 +745,18 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			return historyhandlers.HandleEpisodeFileDeleted(ctx, historySvc, &ev)
 		})
 
+	// Slice 3.AX: history IHandle<EpisodeFileRenamedEvent> subscriber.
+	// Looks up linked episodes via episodesSvc.GetEpisodesByFileID
+	// (the Go-port substitute for C# `EpisodeFile.Episodes.Value`
+	// lazy-load) and writes one history.Entry per linked episode.
+	// SourceTitle = ev.OriginalPath; the new path lives in
+	// Data["Path"] so the v3 history search hits both pre- and
+	// post-rename names.
+	messaging.Subscribe(bus, "history.HandleEpisodeFileRenamed",
+		func(ctx context.Context, ev episodefiles.EpisodeFileRenamedEvent) error {
+			return historyhandlers.HandleEpisodeFileRenamed(ctx, historySvc, episodesSvc, &ev)
+		})
+
 	// Per-augmenter wiring (Phase 3.88 + 3.AF). Slice 3.AF lights up
 	// the previously-empty AggregateLanguage + AggregateQuality
 	// augmenter lists with every available augmenter. Both
