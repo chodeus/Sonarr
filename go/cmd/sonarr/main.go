@@ -705,6 +705,20 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			return historyhandlers.HandleEpisodeGrabbed(ctx, historySvc, &ev)
 		})
 
+	// Slice 3.AU: history IHandle<EpisodeImportedEvent> subscriber.
+	// Builds a per-episode history.Entry from the imported file +
+	// LocalEpisode and routes through history.Service.Add. Unlike
+	// EpisodeGrabbedEvent (still listener-only), the producer here
+	// IS in-tree — episodeimport.ImportApprovedEpisodes publishes
+	// EpisodeImportedEvent at the end of every successful import —
+	// so this subscriber actively writes audit rows for new-download
+	// imports. The handler gates on NewDownload to skip rescans /
+	// manual imports (matches C# `HistoryService.cs:198-201`).
+	messaging.Subscribe(bus, "history.HandleEpisodeImported",
+		func(ctx context.Context, ev episodeimport.EpisodeImportedEvent) error {
+			return historyhandlers.HandleEpisodeImported(ctx, historySvc, &ev)
+		})
+
 	// Per-augmenter wiring (Phase 3.88 + 3.AF). Slice 3.AF lights up
 	// the previously-empty AggregateLanguage + AggregateQuality
 	// augmenter lists with every available augmenter. Both
