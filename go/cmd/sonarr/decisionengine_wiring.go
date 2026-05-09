@@ -19,6 +19,7 @@ import (
 	"log/slog"
 
 	"sonarr.tv/sonarr/internal/blocklist"
+	"sonarr.tv/sonarr/internal/config"
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/delayprofiles"
@@ -122,6 +123,23 @@ func (a customFormatForFileAdapter) ParseCustomFormat(ctx context.Context, file 
 	return customformats.ParseCustomFormatForFile(file, ser, all), nil
 }
 
+// seasonPackConfigAdapter wraps `*config.Provider` to satisfy
+// [decisionengine.UpgradeDiskSeasonReader]. Translates the raw `string`
+// SeasonPackUpgrade getter via [decisionengine.ParseSeasonPackUpgradeType]
+// so the config package stays free of the decisionengine import. The
+// double-tier threshold getter passes through unchanged.
+type seasonPackConfigAdapter struct {
+	cfg *config.Provider
+}
+
+func (a seasonPackConfigAdapter) SeasonPackUpgrade() decisionengine.SeasonPackUpgradeType {
+	return decisionengine.ParseSeasonPackUpgradeType(a.cfg.SeasonPackUpgrade())
+}
+
+func (a seasonPackConfigAdapter) SeasonPackUpgradeThreshold() float64 {
+	return a.cfg.SeasonPackUpgradeThreshold()
+}
+
 // Compile-time guards: every adapter satisfies the corresponding
 // per-spec narrow interface in `internal/decisionengine`. A signature
 // drift on either side breaks the build at this site.
@@ -129,9 +147,12 @@ var (
 	_ decisionengine.AcceptableSizeProfileReader          = profileViewLookupAdapter{}
 	_ decisionengine.QualityAllowedByProfileProfileReader = profileViewLookupAdapter{}
 	_ decisionengine.UpgradeAllowedProfileReader          = profileViewLookupAdapter{}
+	_ decisionengine.UpgradeDiskProfileReader             = profileViewLookupAdapter{}
 	_ decisionengine.AcceptableSizeEpisodeFinder          = firstEpisodeOfSeasonAdapter{}
 	_ decisionengine.DelayProfileResolver                 = delayProfileResolverAdapter{}
 	_ decisionengine.UpgradeAllowedFormatCalculator       = customFormatForFileAdapter{}
+	_ decisionengine.UpgradeDiskFormatCalculator          = customFormatForFileAdapter{}
+	_ decisionengine.UpgradeDiskSeasonReader              = seasonPackConfigAdapter{}
 )
 
 // decisionEngineDeps groups the production handles
@@ -155,6 +176,7 @@ type decisionEngineDeps struct {
 	matcher        *releaseprofiles.MatcherService
 	blocklistRepo  *blocklist.Repo
 	customFormats  *customformats.Service
+	configProvider *config.Provider
 	log            *slog.Logger
 }
 
@@ -164,20 +186,20 @@ type decisionEngineDeps struct {
 // constructor's nil-required-dep guard surfaces as a typed error here;
 // the caller wraps the failure with the boot-site's `fmt.Errorf("decisionengine specs: %w", err)`.
 //
-// Spec coverage as of slice 3.AR: 22 of ~25 specs (the 3 unported
-// gate on subsystems that don't exist yet — UpgradeDiskSpec on
-// SeasonPackUpgrade* config getters + by-EpisodeFile CF dispatch
-// (queue [7] sub-arc 7d); QueueSpec on queue.Service; SceneMappingSpec
-// on scenemappings.Service signature; Phase 4 specs — BlockedIndexer /
-// TorrentSeeding — on provider integrations).
+// Spec coverage as of slice 3.AS: 23 of ~25 specs (the 2 unported
+// gate on subsystems that don't exist yet — QueueSpec on queue.Service
+// (queue [11]); SceneMappingSpec on scenemappings.Service signature;
+// Phase 4 specs — BlockedIndexer / TorrentSeeding — on provider
+// integrations).
 func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specification, error) {
 	profileLookup := profileViewLookupAdapter{svc: d.qualityProfile}
 	episodeFinder := firstEpisodeOfSeasonAdapter{svc: d.episodes}
 	delayResolver := delayProfileResolverAdapter{svc: d.delayProfiles}
 	blocklistChecker := decisionengine.NewRepoBlocklistChecker(d.blocklistRepo)
 	cfForFile := customFormatForFileAdapter{svc: d.customFormats}
+	seasonPack := seasonPackConfigAdapter{cfg: d.configProvider}
 
-	specs := make([]decisionengine.Specification, 0, 22)
+	specs := make([]decisionengine.Specification, 0, 23)
 
 	acceptableSize, err := decisionengine.NewAcceptableSizeSpecification(profileLookup, episodeFinder, d.log)
 	if err != nil {
@@ -284,6 +306,12 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 		return nil, err
 	}
 	specs = append(specs, upgradeAllowed)
+
+	upgradeDisk, err := decisionengine.NewUpgradeDiskSpecification(d.upgradable, profileLookup, d.episodeFiles, cfForFile, seasonPack, d.log)
+	if err != nil {
+		return nil, err
+	}
+	specs = append(specs, upgradeDisk)
 
 	return specs, nil
 }

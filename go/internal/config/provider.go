@@ -528,3 +528,69 @@ func (p *Provider) SetEnableCompletedDownloadHandling(ctx context.Context, v boo
 	_, err := p.setBool(ctx, "EnableCompletedDownloadHandling", v)
 	return err
 }
+
+// SeasonPackUpgrade mirrors `ConfigService.cs:271-275`. Returns the
+// raw stored enum identifier (`"All"`, `"Threshold"`, `"Any"`);
+// defaults to `"All"` when the row is missing or empty (matches C#
+// `GetValueEnum("SeasonPackUpgrade", All)`).
+//
+// The decisionengine consumer parses to a typed
+// [decisionengine.SeasonPackUpgradeType] via
+// [decisionengine.ParseSeasonPackUpgradeType] at the wiring adapter —
+// keeps the config package free of the decisionengine import (same
+// dep-shape dodge as `EpisodeTitleRequired` returning a raw string).
+//
+// Read by [decisionengine.UpgradeDiskSpecification].
+func (p *Provider) SeasonPackUpgrade() string {
+	return p.getString("SeasonPackUpgrade", "All")
+}
+
+// SetSeasonPackUpgrade writes the new enum identifier, publishing
+// ConfigSavedEvent on change. Caller should pass one of `"All"`,
+// `"Threshold"`, or `"Any"` — the persistence layer doesn't validate
+// (matches C# `SetValue` posture).
+func (p *Provider) SetSeasonPackUpgrade(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "SeasonPackUpgrade", v)
+	return err
+}
+
+// SeasonPackUpgradeThreshold mirrors `ConfigService.cs:277-281`.
+// Default 100.0 — C# `GetValueDouble("SeasonPackUpgradeThreshold", 100.0)`.
+// Read in tandem with [SeasonPackUpgrade]; only consulted when the
+// upgrade-mode is `"Threshold"`.
+//
+// Stored as a string in the Config table; the getter parses via
+// strconv.ParseFloat with a 100.0 fallback for missing / empty /
+// unparseable rows. Caller domain is decisionengine.UpgradeDiskSpec
+// where the value compares against an integer percent-upgradable —
+// the C# `double` is preserved verbatim so a user-stored fractional
+// threshold (e.g. 87.5%) round-trips byte-identically.
+func (p *Provider) SeasonPackUpgradeThreshold() float64 {
+	return p.getFloat64("SeasonPackUpgradeThreshold", 100.0)
+}
+
+// SetSeasonPackUpgradeThreshold writes the new value, publishing
+// ConfigSavedEvent on change.
+func (p *Provider) SetSeasonPackUpgradeThreshold(ctx context.Context, v float64) error {
+	_, err := p.setFloat64(ctx, "SeasonPackUpgradeThreshold", v)
+	return err
+}
+
+// getFloat64 parses the cached value as float64, falling back to def
+// for missing / empty / unparseable entries. Mirrors the strconv-based
+// posture of [getInt] / [getBool].
+func (p *Provider) getFloat64(key string, def float64) float64 {
+	s := p.getString(key, "")
+	if s == "" {
+		return def
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return def
+	}
+	return v
+}
+
+func (p *Provider) setFloat64(ctx context.Context, key string, v float64) (bool, error) {
+	return p.setString(ctx, key, strconv.FormatFloat(v, 'f', -1, 64))
+}

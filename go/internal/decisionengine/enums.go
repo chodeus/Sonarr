@@ -1,5 +1,7 @@
 package decisionengine
 
+import "strings"
+
 // RejectionKind ports the C# `RejectionType` enum at
 // `src/NzbDrone.Core/DecisionEngine/RejectionType.cs:1-9`. Renamed
 // to avoid collision with Go's pervasive `reflect.Type` /
@@ -135,3 +137,64 @@ const (
 	// external automation tool.
 	ReleaseSourceReleasePush ReleaseSourceType = 5
 )
+
+// SeasonPackUpgradeType ports the C# enum at
+// `src/NzbDrone.Core/MediaFiles/SeasonPackUpgradeType.cs:1-9`. Drives
+// the season-pack upgrade-acceptance policy in
+// [UpgradeDiskSpecification] when the candidate release is a
+// FullSeason — controls how much of the season pack must be an
+// upgrade-or-missing for the pack to be accepted.
+//
+// Order matches C# `:5-7` exactly — wire-stable through the persisted
+// `Config.SeasonPackUpgrade` value identifier and the v3 API envelope.
+type SeasonPackUpgradeType int
+
+// SeasonPackUpgradeType enumeration.
+const (
+	// SeasonPackUpgradeAll — every episode in the pack must be either
+	// missing or strictly upgradable. Equivalent to a 100% threshold.
+	// Matches C# `:5`.
+	SeasonPackUpgradeAll SeasonPackUpgradeType = 0
+	// SeasonPackUpgradeThresholdMode — the percentage of upgradable
+	// episodes (counting missing-on-disk as upgradable) must meet or
+	// exceed the user-configured `SeasonPackUpgradeThreshold` floor.
+	// Renamed from C# `Threshold` to avoid stuttering with the
+	// independently-spelled threshold-percent config getter. Matches
+	// C# `:6`.
+	SeasonPackUpgradeThresholdMode SeasonPackUpgradeType = 1
+	// SeasonPackUpgradeAny — any episode in the pack being upgradable
+	// or missing accepts the pack. Most permissive. Matches C# `:7`.
+	SeasonPackUpgradeAny SeasonPackUpgradeType = 2
+)
+
+// String returns the C# enum-identifier form (`"All"`, `"Threshold"`,
+// `"Any"`) — the persistence layer round-trips this token, so a Go
+// caller writing the config value via `config.Provider.SetSeasonPackUpgrade`
+// AFTER reading via `config.Provider.SeasonPackUpgrade` produces a
+// byte-equivalent row.
+func (t SeasonPackUpgradeType) String() string {
+	switch t {
+	case SeasonPackUpgradeAll:
+		return "All"
+	case SeasonPackUpgradeThresholdMode:
+		return "Threshold"
+	case SeasonPackUpgradeAny:
+		return "Any"
+	}
+	return "All"
+}
+
+// ParseSeasonPackUpgradeType parses the persisted enum identifier
+// (case-insensitive) into a typed [SeasonPackUpgradeType]. Unknown /
+// empty input falls back to [SeasonPackUpgradeAll] — matches C#
+// `GetValueEnum(..., All)` at `ConfigService.cs:271-275`.
+func ParseSeasonPackUpgradeType(s string) SeasonPackUpgradeType {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "threshold":
+		return SeasonPackUpgradeThresholdMode
+	case "any":
+		return SeasonPackUpgradeAny
+	default:
+		return SeasonPackUpgradeAll
+	}
+}

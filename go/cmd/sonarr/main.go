@@ -1424,6 +1424,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		matcher:        matcherSvc,
 		blocklistRepo:  blocklistRepo,
 		customFormats:  customFormatsSvc,
+		configProvider: configProv,
 		log:            logger,
 	})
 	if err != nil {

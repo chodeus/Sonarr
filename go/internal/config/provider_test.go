@@ -146,6 +146,39 @@ func TestProvider_ImportSpecGetters_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestProvider_SeasonPackUpgrade_Defaults(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	prov, _, _ := providerFixture(t, db)
+
+	if got := prov.SeasonPackUpgrade(); got != "All" {
+		t.Errorf("SeasonPackUpgrade default = %q, want \"All\"", got)
+	}
+	if got := prov.SeasonPackUpgradeThreshold(); got != 100.0 {
+		t.Errorf("SeasonPackUpgradeThreshold default = %v, want 100", got)
+	}
+}
+
+func TestProvider_SeasonPackUpgrade_RoundTrip(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	prov, _, _ := providerFixture(t, db)
+
+	ctx := t.Context()
+	if err := prov.SetSeasonPackUpgrade(ctx, "Threshold"); err != nil {
+		t.Fatalf("SetSeasonPackUpgrade: %v", err)
+	}
+	if got := prov.SeasonPackUpgrade(); got != "Threshold" {
+		t.Errorf("SeasonPackUpgrade after Set = %q, want \"Threshold\"", got)
+	}
+	if err := prov.SetSeasonPackUpgradeThreshold(ctx, 87.5); err != nil {
+		t.Fatalf("SetSeasonPackUpgradeThreshold: %v", err)
+	}
+	if got := prov.SeasonPackUpgradeThreshold(); got != 87.5 {
+		t.Errorf("SeasonPackUpgradeThreshold after Set = %v, want 87.5", got)
+	}
+}
+
 func TestProvider_SetThenGet(t *testing.T) {
 	t.Parallel()
 	db := datastoretest.OpenSQLite(t)
