@@ -25,6 +25,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"sonarr.tv/sonarr/internal/datastore"
@@ -130,6 +131,43 @@ func (r *Repo) AllByDownloadID(ctx context.Context, downloadID string) ([]Entry,
 		`SELECT "Id","EpisodeId","SeriesId","SourceTitle","Date","Quality","Data","EventType","DownloadId","Languages" FROM "History" WHERE "DownloadId" = %s ORDER BY "Date" DESC`,
 		datastore.Placeholder(db.Engine, 1))
 	return r.scanQuery(ctx, q, downloadID, "allByDownloadID")
+}
+
+// DeleteForSeries ports `HistoryRepository.DeleteForSeries(List<int>)`
+// at `History/HistoryRepository.cs:116-119`. Bulk DELETE every History
+// row whose SeriesId is in the supplied list. Returns rows affected.
+// Empty input is a no-op (0, nil) — matches the C# Delete predicate
+// against an empty IN clause yielding zero rows.
+//
+// Production binding: the SeriesDeletedEvent IHandle subscriber
+// (slice 3.AY) calls this when a series is removed so its history
+// rows don't linger after the parent row is gone (FK constraint
+// would not catch it — the History.SeriesId column is not declared
+// as a foreign key in the schema, so the delete is application-side).
+func (r *Repo) DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, error) {
+	if len(seriesIDs) == 0 {
+		return 0, nil
+	}
+	db := r.DB()
+	placeholders := make([]string, len(seriesIDs))
+	args := make([]any, len(seriesIDs))
+	for i, id := range seriesIDs {
+		placeholders[i] = datastore.Placeholder(db.Engine, i+1)
+		args[i] = id
+	}
+	q := fmt.Sprintf(
+		`DELETE FROM "History" WHERE "SeriesId" IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+	res, err := db.SQL.ExecContext(ctx, q, args...)
+	if err != nil {
+		return 0, fmt.Errorf("history: DeleteForSeries: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("history: DeleteForSeries: rowsAffected: %w", err)
+	}
+	return n, nil
 }
 
 func (r *Repo) queryByInt(ctx context.Context, col string, value int) ([]Entry, error) {

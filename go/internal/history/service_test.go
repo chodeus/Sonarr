@@ -21,11 +21,14 @@ import (
 // tests confirming the auto-increment ID propagation can assert on
 // the returned value.
 type stubReader struct {
-	out        []history.Entry
-	err        error
-	gotInsert  *history.Entry
-	insertErr  error
-	insertedID int
+	out                  []history.Entry
+	err                  error
+	gotInsert            *history.Entry
+	insertErr            error
+	insertedID           int
+	gotDeleteSeries      []int
+	deleteSeriesAffected int64
+	deleteSeriesErr      error
 }
 
 func (s *stubReader) AllByDownloadID(_ context.Context, _ string) ([]history.Entry, error) {
@@ -48,6 +51,14 @@ func (s *stubReader) Insert(_ context.Context, e *history.Entry) (*history.Entry
 		out.ID = 1
 	}
 	return &out, nil
+}
+
+func (s *stubReader) DeleteForSeries(_ context.Context, ids []int) (int64, error) {
+	s.gotDeleteSeries = append([]int(nil), ids...)
+	if s.deleteSeriesErr != nil {
+		return 0, s.deleteSeriesErr
+	}
+	return s.deleteSeriesAffected, nil
 }
 
 func TestNewServiceNilRepoReturnsNil(t *testing.T) {
@@ -366,6 +377,62 @@ func TestAddSuccessReturnsRepoResult(t *testing.T) {
 
 func ptr(i int) *int { return &i }
 
+// --- Service.DeleteForSeries (slice 3.AY) ---------------------------
+
+func TestDeleteForSeriesNilReceiverErrors(t *testing.T) {
+	t.Parallel()
+	var s *history.Service
+	if _, err := s.DeleteForSeries(context.Background(), []int{1}); err == nil {
+		t.Errorf("nil receiver: want error, got nil")
+	}
+}
+
+func TestDeleteForSeriesEmptyIDsIsNoOp(t *testing.T) {
+	t.Parallel()
+	r := &stubReader{}
+	s := history.NewService(r)
+	n, err := s.DeleteForSeries(context.Background(), nil)
+	if err != nil {
+		t.Errorf("err: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("rows = %d, want 0", n)
+	}
+	if r.gotDeleteSeries != nil {
+		t.Errorf("repo.DeleteForSeries should not have been called for empty input; got %v", r.gotDeleteSeries)
+	}
+}
+
+func TestDeleteForSeriesPassesIDsThrough(t *testing.T) {
+	t.Parallel()
+	r := &stubReader{deleteSeriesAffected: 7}
+	s := history.NewService(r)
+	n, err := s.DeleteForSeries(context.Background(), []int{4, 9, 16})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if n != 7 {
+		t.Errorf("rows = %d, want 7 (stub-pinned)", n)
+	}
+	if got := r.gotDeleteSeries; len(got) != 3 || got[0] != 4 || got[1] != 9 || got[2] != 16 {
+		t.Errorf("repo.DeleteForSeries got %v, want [4 9 16]", got)
+	}
+}
+
+func TestDeleteForSeriesRepoErrorPropagates(t *testing.T) {
+	t.Parallel()
+	repoErr := errors.New("EIO")
+	r := &stubReader{deleteSeriesErr: repoErr}
+	s := history.NewService(r)
+	_, err := s.DeleteForSeries(context.Background(), []int{1})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, repoErr) {
+		t.Errorf("error chain missing repo err: %v", err)
+	}
+}
+
 // --- repo-backed integration suite ---------------------------------
 
 // runServiceSuite exercises the Service against a real repo on the
@@ -472,6 +539,28 @@ func runServiceSuite(t *testing.T, db *datastore.DB) {
 	}
 	if got, err := svc.FindByEpisodeId(t.Context(), 999); err != nil || len(got) != 0 {
 		t.Errorf("FindByEpisodeId(missing): got (%v, %v)", got, err)
+	}
+
+	// DeleteForSeries removes every row whose SeriesId matches.
+	// All five seeded rows share SeriesId=50, so a delete with [50]
+	// wipes the whole audit trail for the series.
+	deleted, err := svc.DeleteForSeries(t.Context(), []int{50})
+	if err != nil {
+		t.Fatalf("DeleteForSeries: %v", err)
+	}
+	if deleted != 5 {
+		t.Errorf("DeleteForSeries rows = %d, want 5", deleted)
+	}
+	if got, err := svc.FindByEpisodeId(t.Context(), 100); err != nil || len(got) != 0 {
+		t.Errorf("FindByEpisodeId after DeleteForSeries: got (%v, %v); want empty", got, err)
+	}
+	// Re-deleting the same series is a no-op (no rows match).
+	if n, err := svc.DeleteForSeries(t.Context(), []int{50}); err != nil || n != 0 {
+		t.Errorf("DeleteForSeries (re-run): got (%d, %v); want (0, nil)", n, err)
+	}
+	// Deleting an unknown series id returns 0 with no error.
+	if n, err := svc.DeleteForSeries(t.Context(), []int{999}); err != nil || n != 0 {
+		t.Errorf("DeleteForSeries(unknown): got (%d, %v); want (0, nil)", n, err)
 	}
 }
 

@@ -757,6 +757,17 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			return historyhandlers.HandleEpisodeFileRenamed(ctx, historySvc, episodesSvc, &ev)
 		})
 
+	// Slice 3.AY: history IHandle<SeriesDeletedEvent> subscriber.
+	// DELETES audit-log rows for the removed series rather than
+	// inserting (per C# `:368-371`). The History.SeriesId column is
+	// not declared as a foreign key, so the cascade is application-
+	// side. Independent of the trackeddownloads / series-mutation
+	// SeriesDeleted subscribers — fan-out, no ordering dependency.
+	messaging.Subscribe(bus, "history.HandleSeriesDeleted",
+		func(ctx context.Context, ev series.SeriesDeletedEvent) error {
+			return historyhandlers.HandleSeriesDeleted(ctx, historySvc, &ev)
+		})
+
 	// Per-augmenter wiring (Phase 3.88 + 3.AF). Slice 3.AF lights up
 	// the previously-empty AggregateLanguage + AggregateQuality
 	// augmenter lists with every available augmenter. Both

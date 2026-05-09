@@ -106,6 +106,7 @@ type EntryReader interface {
 	AllByDownloadID(ctx context.Context, downloadID string) ([]Entry, error)
 	AllByEpisodeID(ctx context.Context, episodeID int) ([]Entry, error)
 	Insert(ctx context.Context, e *Entry) (*Entry, error)
+	DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, error)
 }
 
 // Service ports a subset of `IHistoryService` at
@@ -259,6 +260,33 @@ func (s *Service) Add(ctx context.Context, e *Entry) (*Entry, error) {
 		return nil, fmt.Errorf("history: Add: %w", err)
 	}
 	return out, nil
+}
+
+// DeleteForSeries ports the SeriesDeletedEvent path at
+// `HistoryService.cs:368-371` —
+//
+//	_historyRepository.DeleteForSeries(message.Series.Select(m => m.Id).ToList())
+//
+// Bulk-removes every History row whose SeriesId is in the supplied
+// list. Returns rows affected; 0 with nil error when seriesIDs is
+// empty (no-op short-circuit). Repo errors propagate wrapped.
+//
+// Mirrors the C# behaviour where a SeriesDeletedEvent fan-out cleans
+// up audit-log rows alongside other per-series children — the
+// History.SeriesId column is NOT a foreign key in the schema, so
+// the cleanup is application-side rather than DB-cascade.
+func (s *Service) DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, error) {
+	if s == nil || s.repo == nil {
+		return 0, errors.New("history: DeleteForSeries on nil receiver")
+	}
+	if len(seriesIDs) == 0 {
+		return 0, nil
+	}
+	n, err := s.repo.DeleteForSeries(ctx, seriesIDs)
+	if err != nil {
+		return 0, fmt.Errorf("history: DeleteForSeries: %w", err)
+	}
+	return n, nil
 }
 
 // FindByEpisodeId ports `HistoryService.cs:101-104` —
