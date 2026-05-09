@@ -467,6 +467,14 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("config provider load: %w", err)
 	}
 	configProv.Subscribe(bus)
+	// Wire the AutoUnmonitorPreviouslyDownloadedEpisodes config flag
+	// into episodes.Service. Without this setter, the slice-3.AA
+	// HandleEpisodeFileDeleted path defaults autoUnmonitor=false and
+	// the user's config toggle is silently ignored. *config.Provider
+	// satisfies episodes.AutoUnmonitorMissingProvider via Go's
+	// structural typing on AutoUnmonitorPreviouslyDownloadedEpisodes()
+	// bool.
+	episodesSvc.SetAutoUnmonitorMissingProvider(configProv)
 	// Naming-config wiring (Phase 3.94). Singleton-row Service that
 	// the slice-3.94 fileNamerAdapter reaches for to compute
 	// RequiresAbsoluteEpisodeNumber / RequiresEpisodeTitle for the
@@ -1370,6 +1378,8 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		configCfg:      configProv,
 		freeSpaceCfg:   configProv,
 		retentionCfg:   configProv,
+		maxSizeCfg:     configProv,
+		minAgeCfg:      configProv,
 		delayProfiles:  delayProfilesSvc,
 		releaseProfile: releaseProfilesSvc,
 		matcher:        matcherSvc,

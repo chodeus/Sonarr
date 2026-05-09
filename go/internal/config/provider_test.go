@@ -373,6 +373,48 @@ func TestProvider_ConcurrentReads(t *testing.T) {
 	wg.Wait()
 }
 
+func TestProvider_DecisionEngineGetters_Defaults(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	prov, _, _ := providerFixture(t, db)
+
+	if got := prov.MaximumSize(); got != 0 {
+		t.Errorf("MaximumSize default = %d, want 0", got)
+	}
+	if got := prov.MinimumAge(); got != 0 {
+		t.Errorf("MinimumAge default = %d, want 0", got)
+	}
+	if got := prov.AutoUnmonitorPreviouslyDownloadedEpisodes(); got != false {
+		t.Errorf("AutoUnmonitorPreviouslyDownloadedEpisodes default = %v, want false", got)
+	}
+}
+
+func TestProvider_DecisionEngineGetters_RoundTrip(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	prov, _, _ := providerFixture(t, db)
+
+	ctx := t.Context()
+	if err := prov.SetMaximumSize(ctx, 8192); err != nil {
+		t.Fatalf("SetMaximumSize: %v", err)
+	}
+	if got := prov.MaximumSize(); got != 8192 {
+		t.Errorf("MaximumSize = %d, want 8192", got)
+	}
+	if err := prov.SetMinimumAge(ctx, 30); err != nil {
+		t.Fatalf("SetMinimumAge: %v", err)
+	}
+	if got := prov.MinimumAge(); got != 30 {
+		t.Errorf("MinimumAge = %d, want 30", got)
+	}
+	if err := prov.SetAutoUnmonitorPreviouslyDownloadedEpisodes(ctx, true); err != nil {
+		t.Fatalf("SetAutoUnmonitorPreviouslyDownloadedEpisodes: %v", err)
+	}
+	if got := prov.AutoUnmonitorPreviouslyDownloadedEpisodes(); !got {
+		t.Errorf("AutoUnmonitorPreviouslyDownloadedEpisodes = false, want true")
+	}
+}
+
 // TestProvider_PostgresSmoke is the postgres twin of the SQLite
 // suite — runs the per-getter default + Set/Get round-trip against
 // the shared Postgres test fixture so we catch any engine-specific

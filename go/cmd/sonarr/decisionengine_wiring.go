@@ -99,22 +99,6 @@ func (a delayProfileResolverAdapter) BestForTags(ctx context.Context, tagIDs []i
 	return *p, true, nil
 }
 
-// noopMaximumSizeReader returns 0 unconditionally — disables the
-// global maximum-size cap. Mirrors the C# default-when-unset behaviour
-// (`MaximumSize` defaults to 0 in `ConfigService.cs:119-123`). Drop
-// this adapter when [config.Provider.MaximumSize] ports.
-type noopMaximumSizeReader struct{}
-
-func (noopMaximumSizeReader) MaximumSize() int { return 0 }
-
-// noopMinimumAgeReader returns 0 unconditionally — disables the
-// minimum-age floor. Same C#-default-when-unset rationale as
-// [noopMaximumSizeReader]. Drop when [config.Provider.MinimumAge]
-// ports.
-type noopMinimumAgeReader struct{}
-
-func (noopMinimumAgeReader) MinimumAge() int { return 0 }
-
 // Compile-time guards: every adapter satisfies the corresponding
 // per-spec narrow interface in `internal/decisionengine`. A signature
 // drift on either side breaks the build at this site.
@@ -123,8 +107,6 @@ var (
 	_ decisionengine.QualityAllowedByProfileProfileReader = profileViewLookupAdapter{}
 	_ decisionengine.AcceptableSizeEpisodeFinder          = firstEpisodeOfSeasonAdapter{}
 	_ decisionengine.DelayProfileResolver                 = delayProfileResolverAdapter{}
-	_ decisionengine.MaximumSizeReader                    = noopMaximumSizeReader{}
-	_ decisionengine.MinimumAgeReader                     = noopMinimumAgeReader{}
 )
 
 // decisionEngineDeps groups the production handles
@@ -139,6 +121,8 @@ type decisionEngineDeps struct {
 	configCfg      decisionengine.PropersAndRepacksConfigReader // *config.Provider
 	freeSpaceCfg   decisionengine.FreeSpaceConfigReader         // *config.Provider
 	retentionCfg   decisionengine.RetentionConfigReader         // *config.Provider
+	maxSizeCfg     decisionengine.MaximumSizeReader             // *config.Provider
+	minAgeCfg      decisionengine.MinimumAgeReader              // *config.Provider
 	delayProfiles  *delayprofiles.Service
 	releaseProfile *releaseprofiles.Service
 	matcher        *releaseprofiles.MatcherService
@@ -159,11 +143,6 @@ type decisionEngineDeps struct {
 // queue.Service; AlreadyImportedSpec on history.Service.FindByEpisodeId;
 // SceneMappingSpec on scenemappings.Service signature; Phase 4 specs —
 // BlockedIndexer / TorrentSeeding — on provider integrations).
-//
-// The two noop adapters [noopMaximumSizeReader] /
-// [noopMinimumAgeReader] disable the user's global max-size / min-age
-// caps until [config.Provider.MaximumSize] / .MinimumAge port (small
-// follow-up; both default to 0 = disabled in C#).
 func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specification, error) {
 	profileLookup := profileViewLookupAdapter{svc: d.qualityProfile}
 	episodeFinder := firstEpisodeOfSeasonAdapter{svc: d.episodes}
@@ -204,13 +183,13 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 
 	specs = append(specs, decisionengine.NewFullSeasonSpecification(nil, d.log))
 
-	maxSize, err := decisionengine.NewMaximumSizeSpecification(noopMaximumSizeReader{}, d.log)
+	maxSize, err := decisionengine.NewMaximumSizeSpecification(d.maxSizeCfg, d.log)
 	if err != nil {
 		return nil, err
 	}
 	specs = append(specs, maxSize)
 
-	minAge, err := decisionengine.NewMinimumAgeSpecification(noopMinimumAgeReader{}, d.log)
+	minAge, err := decisionengine.NewMinimumAgeSpecification(d.minAgeCfg, d.log)
 	if err != nil {
 		return nil, err
 	}

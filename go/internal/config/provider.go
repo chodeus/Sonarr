@@ -458,3 +458,56 @@ func (p *Provider) SetRecycleBinCleanupDays(ctx context.Context, v int) error {
 	_, err := p.setInt(ctx, "RecycleBinCleanupDays", v)
 	return err
 }
+
+// MaximumSize mirrors `ConfigService.cs:119-123`. Default 0 — the C#
+// default at `GetValueInt("MaximumSize", 0)`. A value of 0 disables
+// the global maximum-size cap entirely; any positive value is a
+// release-size ceiling (in MB) applied by
+// [decisionengine.MaximumSizeSpecification].
+func (p *Provider) MaximumSize() int {
+	return p.getInt("MaximumSize", 0)
+}
+
+// SetMaximumSize writes the new value, publishing ConfigSavedEvent
+// on change.
+func (p *Provider) SetMaximumSize(ctx context.Context, v int) error {
+	_, err := p.setInt(ctx, "MaximumSize", v)
+	return err
+}
+
+// MinimumAge mirrors `ConfigService.cs:125-129`. Default 0 — the C#
+// default at `GetValueInt("MinimumAge", 0)`. A value of 0 disables
+// the minimum-age floor; any positive value is the minimum age in
+// minutes a usenet release must have before
+// [decisionengine.MinimumAgeSpecification] will accept it.
+func (p *Provider) MinimumAge() int {
+	return p.getInt("MinimumAge", 0)
+}
+
+// SetMinimumAge writes the new value, publishing ConfigSavedEvent
+// on change.
+func (p *Provider) SetMinimumAge(ctx context.Context, v int) error {
+	_, err := p.setInt(ctx, "MinimumAge", v)
+	return err
+}
+
+// AutoUnmonitorPreviouslyDownloadedEpisodes mirrors
+// `ConfigService.cs:88-92`. Default false — C# `GetValueBoolean`
+// without an explicit default falls back to false. Drives the
+// auto-unmonitor cascade in [episodes.Service.HandleEpisodeFileDeleted]
+// (slice 3.AA): when true, deleting a file cascades to clearing the
+// monitored flag on the linked episodes.
+//
+// Read by [episodes.Service] through Go's structural typing —
+// *config.Provider satisfies the narrow
+// [episodes.AutoUnmonitorMissingProvider] interface directly.
+func (p *Provider) AutoUnmonitorPreviouslyDownloadedEpisodes() bool {
+	return p.getBool("AutoUnmonitorPreviouslyDownloadedEpisodes", false)
+}
+
+// SetAutoUnmonitorPreviouslyDownloadedEpisodes writes the new value,
+// publishing ConfigSavedEvent on change.
+func (p *Provider) SetAutoUnmonitorPreviouslyDownloadedEpisodes(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "AutoUnmonitorPreviouslyDownloadedEpisodes", v)
+	return err
+}
