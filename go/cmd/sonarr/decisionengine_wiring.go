@@ -27,6 +27,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
+	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -140,6 +141,35 @@ func (a seasonPackConfigAdapter) SeasonPackUpgradeThreshold() float64 {
 	return a.cfg.SeasonPackUpgradeThreshold()
 }
 
+// queueReaderAdapter wraps `*queue.Service` to satisfy
+// [decisionengine.QueueReader] — projects each queue.Queue row onto
+// the narrow [decisionengine.QueueItem] shape on every spec
+// evaluation. Stays out of the queue→decisionengine import edge
+// (queue already imports decisionengine for the Subject type) by
+// keeping QueueItem inside decisionengine; the projection happens
+// here at the boot-site wire layer.
+type queueReaderAdapter struct {
+	svc *queue.Service
+}
+
+func (a queueReaderAdapter) GetQueue() []decisionengine.QueueItem {
+	rows := a.svc.GetQueue()
+	out := make([]decisionengine.QueueItem, 0, len(rows))
+	for i := range rows {
+		var statePtr *int
+		if rows[i].TrackedDownloadState != nil {
+			s := int(*rows[i].TrackedDownloadState)
+			statePtr = &s
+		}
+		out = append(out, decisionengine.QueueItem{
+			RemoteEpisode:        rows[i].RemoteEpisode,
+			Size:                 rows[i].Size,
+			TrackedDownloadState: statePtr,
+		})
+	}
+	return out
+}
+
 // Compile-time guards: every adapter satisfies the corresponding
 // per-spec narrow interface in `internal/decisionengine`. A signature
 // drift on either side breaks the build at this site.
@@ -148,11 +178,13 @@ var (
 	_ decisionengine.QualityAllowedByProfileProfileReader = profileViewLookupAdapter{}
 	_ decisionengine.UpgradeAllowedProfileReader          = profileViewLookupAdapter{}
 	_ decisionengine.UpgradeDiskProfileReader             = profileViewLookupAdapter{}
+	_ decisionengine.QueueProfileReader                   = profileViewLookupAdapter{}
 	_ decisionengine.AcceptableSizeEpisodeFinder          = firstEpisodeOfSeasonAdapter{}
 	_ decisionengine.DelayProfileResolver                 = delayProfileResolverAdapter{}
 	_ decisionengine.UpgradeAllowedFormatCalculator       = customFormatForFileAdapter{}
 	_ decisionengine.UpgradeDiskFormatCalculator          = customFormatForFileAdapter{}
 	_ decisionengine.UpgradeDiskSeasonReader              = seasonPackConfigAdapter{}
+	_ decisionengine.QueueReader                          = queueReaderAdapter{}
 )
 
 // decisionEngineDeps groups the production handles
@@ -177,6 +209,7 @@ type decisionEngineDeps struct {
 	blocklistRepo  *blocklist.Repo
 	customFormats  *customformats.Service
 	configProvider *config.Provider
+	queueSvc       *queue.Service
 	log            *slog.Logger
 }
 
@@ -312,6 +345,21 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 		return nil, err
 	}
 	specs = append(specs, upgradeDisk)
+
+	// Slice 3.BF: QueueSpec wired via queueReaderAdapter projection
+	// over *queue.Service. UpgradableSpecification satisfies the
+	// QueueUpgradableChecker shape via Go's structural typing.
+	queueSpec, err := decisionengine.NewQueueSpecification(
+		queueReaderAdapter{svc: d.queueSvc},
+		profileLookup,
+		d.upgradable,
+		d.configCfg,
+		d.log,
+	)
+	if err != nil {
+		return nil, err
+	}
+	specs = append(specs, queueSpec)
 
 	return specs, nil
 }

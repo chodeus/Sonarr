@@ -71,6 +71,7 @@ import (
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
+	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/recyclebin"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
 	"sonarr.tv/sonarr/internal/rootfolders"
@@ -1497,6 +1498,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			return blocklisthandlers.HandleSeriesDeleted(ctx, blocklistSvc, &ev)
 		})
 
+	// Slice 3.BF (sub-arc 11d): queue.Service host wire + QueueSpec
+	// hookup. queueSvc is the in-memory cache; SubscribeOn registers
+	// the IHandle<TrackedDownloadRefreshedEvent> dispatch + captures
+	// the bus for QueueUpdatedEvent publish per slice 3.BE. The
+	// QueueSpec adapter projects queue.Queue rows onto the narrow
+	// decisionengine.QueueItem shape so the spec stays out of the
+	// queue→decisionengine import edge.
+	queueSvc := queue.NewService()
+	queueSvc.SubscribeOn(bus)
+
 	delayProfilesRepo, err := delayprofiles.NewRepo(db)
 	if err != nil {
 		return fmt.Errorf("delayprofiles repo: %w", err)
@@ -1536,6 +1547,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		blocklistRepo:  blocklistRepo,
 		customFormats:  customFormatsSvc,
 		configProvider: configProv,
+		queueSvc:       queueSvc,
 		log:            logger,
 	})
 	if err != nil {
