@@ -157,3 +157,24 @@ type DownloadIgnoredEvent struct {
 // downloadclients at every consumer. Defined here in trackeddownloads
 // so the event-package boundary stays self-contained.
 type ItemClientInfo = downloadclients.ItemClientInfo
+
+// TrackedDownloadRefreshedEvent ports the C#
+// `TrackedDownloadRefreshedEvent : IEvent` at
+// `src/NzbDrone.Core/Download/TrackedDownloads/TrackedDownloadRefreshedEvent.cs:1-15`.
+// Published by `TrackedDownloadService.Refresh` on every poll cycle —
+// carries the full current set of TrackedDownload rows so subscribers
+// can re-project (queue.Service.HandleTrackedDownloadRefreshed in
+// slice 3.BE) or recompute (notification dispatch) against the
+// freshest snapshot.
+//
+// The C# tree carries TrackedDownloads as `List<TrackedDownload>`;
+// the Go-port mirrors with a slice-of-pointers so subscribers can
+// call IndexerFlags() and other receiver methods without a copy.
+//
+// Wire-stable: a single-field marker. Future Phase-4 publishers
+// fill it from the Refresh poll output.
+type TrackedDownloadRefreshedEvent struct {
+	// TrackedDownloads — current snapshot of every tracked download
+	// the service is aware of. May be empty (no active downloads).
+	TrackedDownloads []*TrackedDownload
+}

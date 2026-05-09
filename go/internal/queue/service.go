@@ -2,6 +2,8 @@ package queue
 
 import (
 	"sync"
+
+	"sonarr.tv/sonarr/internal/messaging"
 )
 
 // Service is the in-memory queue cache + read-only surface. Mirrors a
@@ -33,6 +35,13 @@ import (
 type Service struct {
 	mu    sync.RWMutex
 	queue []Queue
+	// bus is the optional message bus used to publish
+	// QueueUpdatedEvent on every successful HandleTrackedDownloadRefreshed
+	// projection (slice 3.BE). nil when the Service is constructed
+	// without a bus — the handler simply skips the publish in that
+	// case (mirrors the slice-3.A history.Service pattern where bus
+	// is optional). Captured by SubscribeOn at boot time.
+	bus *messaging.Bus
 }
 
 // NewService returns a zero-cache Service ready for population. The
