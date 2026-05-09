@@ -719,6 +719,19 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			return historyhandlers.HandleEpisodeImported(ctx, historySvc, &ev)
 		})
 
+	// Slice 3.AV: history IHandle<DownloadFailedEvent> subscriber.
+	// Walks ev.EpisodeIDs and writes one history.Entry per id with
+	// the failure metadata. Producer (FailedDownloadService) is
+	// Phase 4 — this is "lit but no listeners on the publisher
+	// side" pending Phase-4. The Data-fallback chain (ReleaseGroup /
+	// Size / Indexer pulled from TrackedDownload first, then ev.Data
+	// lowercase keys) preserves audit-log shape across both
+	// orchestrator-driven and manual-failure paths.
+	messaging.Subscribe(bus, "history.HandleDownloadFailed",
+		func(ctx context.Context, ev trackeddownloads.DownloadFailedEvent) error {
+			return historyhandlers.HandleDownloadFailed(ctx, historySvc, &ev)
+		})
+
 	// Per-augmenter wiring (Phase 3.88 + 3.AF). Slice 3.AF lights up
 	// the previously-empty AggregateLanguage + AggregateQuality
 	// augmenter lists with every available augmenter. Both
