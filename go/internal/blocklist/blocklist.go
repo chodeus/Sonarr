@@ -23,6 +23,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"sonarr.tv/sonarr/internal/datastore"
@@ -162,6 +163,43 @@ func (r *Repo) AllBySeriesID(ctx context.Context, seriesID int) ([]Entry, error)
 		return nil, fmt.Errorf("blocklist: allBySeriesID rows: %w", err)
 	}
 	return out, nil
+}
+
+// DeleteForSeries ports
+// `BlocklistRepository.DeleteForSeriesIds(List<int>)`. Bulk DELETE
+// every Blocklist row whose SeriesId is in the supplied list.
+// Returns rows affected. Empty input is no-op (0, nil).
+//
+// Production binding: the SeriesDeletedEvent IHandleAsync subscriber
+// (slice 3.BB) calls this via Service.DeleteForSeries when a series
+// is removed so its blocklist rows don't linger after the parent row
+// is gone (the Blocklist.SeriesId column is not declared as a
+// foreign key in the schema, so the cleanup is application-side —
+// same posture as the slice-3.AY history sibling).
+func (r *Repo) DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, error) {
+	if len(seriesIDs) == 0 {
+		return 0, nil
+	}
+	db := r.DB()
+	placeholders := make([]string, len(seriesIDs))
+	args := make([]any, len(seriesIDs))
+	for i, id := range seriesIDs {
+		placeholders[i] = datastore.Placeholder(db.Engine, i+1)
+		args[i] = id
+	}
+	q := fmt.Sprintf(
+		`DELETE FROM "Blocklist" WHERE "SeriesId" IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+	res, err := db.SQL.ExecContext(ctx, q, args...)
+	if err != nil {
+		return 0, fmt.Errorf("blocklist: DeleteForSeries: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("blocklist: DeleteForSeries: rowsAffected: %w", err)
+	}
+	return n, nil
 }
 
 func marshalInts(xs []int) string {

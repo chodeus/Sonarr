@@ -19,6 +19,7 @@ import (
 // trackeddownloads-driven Block call in the queue/import wire) land.
 type EntryWriter interface {
 	Insert(ctx context.Context, e *Entry) (*Entry, error)
+	DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, error)
 }
 
 // Service ports a subset of `IBlocklistService` at
@@ -103,6 +104,33 @@ func (s *Service) Add(ctx context.Context, e *Entry) (*Entry, error) {
 		return nil, fmt.Errorf("blocklist: Add: %w", err)
 	}
 	return out, nil
+}
+
+// DeleteForSeries ports the SeriesDeletedEvent path at
+// `BlocklistService.cs:160-163` —
+//
+//	_blocklistRepository.DeleteForSeriesIds(message.Series.Select(m => m.Id).ToList())
+//
+// Bulk-removes every Blocklist row whose SeriesId is in the supplied
+// list. Returns rows affected; 0 with nil error when seriesIDs is
+// empty (no-op short-circuit). Repo errors propagate wrapped.
+//
+// Mirrors the C# IHandleAsync<SeriesDeletedEvent> behaviour where a
+// SeriesDeletedEvent fan-out cleans up blocklist rows alongside other
+// per-series children — the Blocklist.SeriesId column is NOT a
+// foreign key in the schema, so the cleanup is application-side.
+func (s *Service) DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, error) {
+	if s == nil || s.repo == nil {
+		return 0, errors.New("blocklist: DeleteForSeries on nil receiver")
+	}
+	if len(seriesIDs) == 0 {
+		return 0, nil
+	}
+	n, err := s.repo.DeleteForSeries(ctx, seriesIDs)
+	if err != nil {
+		return 0, fmt.Errorf("blocklist: DeleteForSeries: %w", err)
+	}
+	return n, nil
 }
 
 // Compile-time interface-satisfaction guard. A refactor that breaks

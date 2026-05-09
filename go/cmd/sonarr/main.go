@@ -42,6 +42,7 @@ import (
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/blocklist"
+	"sonarr.tv/sonarr/internal/blocklisthandlers"
 	"sonarr.tv/sonarr/internal/buildinfo"
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/commands/handlers"
@@ -1476,6 +1477,26 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("blocklist repo: %w", err)
 	}
+
+	// Slice 3.BB (sub-arc 10b): blocklist IHandle subscribers — both
+	// the DownloadFailedEvent insert path AND the SeriesDeletedEvent
+	// bulk-delete path. Mirrors C# `BlocklistService.cs:126-163`.
+	// blocklistSvc binds the repo via the slice-3.BA write surface;
+	// the handlers route through it (Add for the failed insert,
+	// DeleteForSeries for the series-cascade cleanup).
+	blocklistSvc := blocklist.NewService(blocklistRepo)
+	if blocklistSvc == nil {
+		return fmt.Errorf("blocklist service: nil — required dep regressed")
+	}
+	messaging.Subscribe(bus, "blocklist.HandleDownloadFailed",
+		func(ctx context.Context, ev trackeddownloads.DownloadFailedEvent) error {
+			return blocklisthandlers.HandleDownloadFailed(ctx, blocklistSvc, &ev)
+		})
+	messaging.Subscribe(bus, "blocklist.HandleSeriesDeleted",
+		func(ctx context.Context, ev series.SeriesDeletedEvent) error {
+			return blocklisthandlers.HandleSeriesDeleted(ctx, blocklistSvc, &ev)
+		})
+
 	delayProfilesRepo, err := delayprofiles.NewRepo(db)
 	if err != nil {
 		return fmt.Errorf("delayprofiles repo: %w", err)

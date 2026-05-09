@@ -14,9 +14,12 @@ import (
 // stubWriter captures the last Insert call + lets tests inject an
 // error / a sentinel auto-increment id.
 type stubWriter struct {
-	gotInsert  *blocklist.Entry
-	insertErr  error
-	insertedID int
+	gotInsert            *blocklist.Entry
+	insertErr            error
+	insertedID           int
+	gotDeleteSeries      []int
+	deleteSeriesAffected int64
+	deleteSeriesErr      error
 }
 
 func (s *stubWriter) Insert(_ context.Context, e *blocklist.Entry) (*blocklist.Entry, error) {
@@ -31,6 +34,14 @@ func (s *stubWriter) Insert(_ context.Context, e *blocklist.Entry) (*blocklist.E
 		out.ID = 1
 	}
 	return &out, nil
+}
+
+func (s *stubWriter) DeleteForSeries(_ context.Context, ids []int) (int64, error) {
+	s.gotDeleteSeries = append([]int(nil), ids...)
+	if s.deleteSeriesErr != nil {
+		return 0, s.deleteSeriesErr
+	}
+	return s.deleteSeriesAffected, nil
 }
 
 func validEntry() *blocklist.Entry {
@@ -142,6 +153,58 @@ func TestAddSuccessReturnsRepoResult(t *testing.T) {
 	}
 }
 
+// --- Service.DeleteForSeries (slice 3.BB) ---------------------------
+
+func TestDeleteForSeriesNilReceiverErrors(t *testing.T) {
+	t.Parallel()
+	var s *blocklist.Service
+	if _, err := s.DeleteForSeries(context.Background(), []int{1}); err == nil {
+		t.Errorf("nil receiver: want error")
+	}
+}
+
+func TestDeleteForSeriesEmptyIDsIsNoOp(t *testing.T) {
+	t.Parallel()
+	w := &stubWriter{}
+	s := blocklist.NewService(w)
+	n, err := s.DeleteForSeries(context.Background(), nil)
+	if err != nil || n != 0 {
+		t.Errorf("got (%d, %v); want (0, nil)", n, err)
+	}
+	if w.gotDeleteSeries != nil {
+		t.Errorf("repo.DeleteForSeries should not have been called for empty input")
+	}
+}
+
+func TestDeleteForSeriesPassesIDsThrough(t *testing.T) {
+	t.Parallel()
+	w := &stubWriter{deleteSeriesAffected: 11}
+	s := blocklist.NewService(w)
+	n, err := s.DeleteForSeries(context.Background(), []int{4, 9})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if n != 11 {
+		t.Errorf("rows = %d, want 11", n)
+	}
+	if got := w.gotDeleteSeries; len(got) != 2 || got[0] != 4 || got[1] != 9 {
+		t.Errorf("ids = %v, want [4 9]", got)
+	}
+}
+
+func TestDeleteForSeriesRepoErrorPropagates(t *testing.T) {
+	t.Parallel()
+	repoErr := errors.New("EIO")
+	s := blocklist.NewService(&stubWriter{deleteSeriesErr: repoErr})
+	_, err := s.DeleteForSeries(context.Background(), []int{1})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, repoErr) {
+		t.Errorf("error chain missing repo err: %v", err)
+	}
+}
+
 // runServiceSuite exercises the Service against a real repo on the
 // supplied DB engine. Pins the auto-increment ID propagation + the
 // SQL boundary so a regression in the generic-repo Insert path is
@@ -177,6 +240,22 @@ func runServiceSuite(t *testing.T, db *datastore.DB) {
 	}
 	if got[0].SourceTitle != e.SourceTitle || got[0].SeriesID != e.SeriesID {
 		t.Errorf("round-trip mismatch: got %+v", got[0])
+	}
+
+	// DeleteForSeries removes every row whose SeriesId matches.
+	deleted, err := svc.DeleteForSeries(t.Context(), []int{e.SeriesID})
+	if err != nil {
+		t.Fatalf("DeleteForSeries: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("DeleteForSeries rows = %d, want 1", deleted)
+	}
+	if got, err := repo.AllBySeriesID(t.Context(), e.SeriesID); err != nil || len(got) != 0 {
+		t.Errorf("AllBySeriesID after DeleteForSeries: got (%v, %v); want empty", got, err)
+	}
+	// Re-deleting same series → no-op.
+	if n, err := svc.DeleteForSeries(t.Context(), []int{e.SeriesID}); err != nil || n != 0 {
+		t.Errorf("DeleteForSeries (re-run): got (%d, %v); want (0, nil)", n, err)
 	}
 
 	// nil-entry / missing-required validation arms are pure-Go
