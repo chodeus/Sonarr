@@ -1166,6 +1166,21 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		rootFolders: rootFoldersRepo,
 	})
 
+	// Slice 3.BG (queue [12]): seriesSvc.SetSeriesPathBuilder lights
+	// up the bulk-update path-rebuild arm at series.Service.UpdateMany.
+	// Mirrors the C# `SeriesPathBuilder` injection at
+	// `Tv/SeriesPathBuilder.cs:21-26`. The adapter composes
+	// organizer.GetSeriesFolder + rootFoldersSvc.GetBestRootFolderPath
+	// + namingConfigSvc.GetConfig under the
+	// [series.SeriesPathBuilder] interface; series.Service stops
+	// short-circuiting the per-row path rebuild now that the dep is
+	// wired (matches C# behaviour at SeriesService.cs:244-252).
+	seriesSvc.SetSeriesPathBuilder(seriesPathBuilderAdapter{
+		naming:      namingConfigSvc,
+		rootFolders: rootFoldersSvc,
+		log:         logger,
+	})
+
 	// Slice 3.A8: healthcheck service construction relocated here so
 	// the RemovedSeriesCheck (deps: *series.Service.GetAllSeries) and
 	// RootFolderCheck (deps: *series.Service.AllSeriesPaths +

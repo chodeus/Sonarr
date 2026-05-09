@@ -15,9 +15,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"path/filepath"
+	"strings"
 
 	"sonarr.tv/sonarr/internal/autotagging"
+	"sonarr.tv/sonarr/internal/namingconfig"
+	"sonarr.tv/sonarr/internal/organizer"
 	"sonarr.tv/sonarr/internal/rootfolders"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -76,5 +82,134 @@ func (a seriesTagChangeProviderAdapter) GetTagChanges(ctx context.Context, s *se
 	return changes.TagsToAdd, changes.TagsToRemove, nil
 }
 
-// Compile-time guard.
-var _ series.TagChangeProvider = seriesTagChangeProviderAdapter{}
+// seriesPathBuilderAdapter implements [series.SeriesPathBuilder] by
+// composing [organizer.GetSeriesFolder] (the slice-2 token-replace
+// pipeline) + [rootfolders.Service.GetBestRootFolderPath] +
+// [namingconfig.Service.GetConfig] for the user-configured folder
+// patterns.
+//
+// Mirrors the C# `SeriesPathBuilder.BuildPath` at
+// `Tv/SeriesPathBuilder.cs:28-58`. Two arms:
+//
+//  1. `useExistingRelativeFolder=true` AND `series.Path` non-empty:
+//     resolve the best root folder for the existing series.Path via
+//     rootfolders.Service.GetBestRootFolderPath; if it's a parent of
+//     series.Path, return RootFolderPath + relative-from-root path.
+//     Else (no parent match — the series.Path lives outside any
+//     known root) log a warning + return RootFolderPath + the
+//     basename of series.Path (the C# `series.Path.GetDirectoryName()`
+//     fallback at `:53` — note: C# .GetDirectoryName() is misleadingly
+//     named; the Sonarr extension strips the trailing path component
+//     to give the folder name, which is filepath.Base in Go-port
+//     terms when the input is a directory path).
+//  2. Otherwise: RootFolderPath + organizer.GetSeriesFolder using the
+//     naming-config's SeriesFolderFormat. Mirrors C# `:41`
+//     `_fileNameBuilder.GetSeriesFolder(series)`.
+//
+// Empty RootFolderPath returns an error (mirrors the C# argument-
+// exception throw at `:30-33`); the C# tree raises which would crash
+// the bulk-update loop, so the Go port surfaces a typed error and
+// the caller (series.Service.UpdateMany) propagates.
+// seriesPathBuilderNamingReader narrows [*namingconfig.Service] to the
+// one method this adapter needs (GetConfig). Defined as an interface
+// so tests can inject a fixed-config stub without spinning up a
+// namingconfig DB.
+type seriesPathBuilderNamingReader interface {
+	GetConfig(ctx context.Context) (*namingconfig.Config, error)
+}
+
+// seriesPathBuilderRootFolderResolver narrows [*rootfolders.Service]
+// to GetBestRootFolderPath. Same posture — stub-friendly without
+// the rootfolders.Service dep tree.
+type seriesPathBuilderRootFolderResolver interface {
+	GetBestRootFolderPath(ctx context.Context, path string) (string, error)
+}
+
+type seriesPathBuilderAdapter struct {
+	naming      seriesPathBuilderNamingReader
+	rootFolders seriesPathBuilderRootFolderResolver
+	log         *slog.Logger
+}
+
+// BuildPath ports `SeriesPathBuilder.BuildPath`. See
+// [seriesPathBuilderAdapter] doc-comment for the algorithm.
+func (a seriesPathBuilderAdapter) BuildPath(ctx context.Context, s *series.Series, useExistingRelativeFolder bool) (string, error) {
+	if s == nil {
+		return "", errors.New("series path builder: nil series")
+	}
+	if strings.TrimSpace(s.RootFolderPath) == "" {
+		return "", errors.New("series path builder: root folder was not provided")
+	}
+
+	if useExistingRelativeFolder && strings.TrimSpace(s.Path) != "" {
+		best, err := a.rootFolders.GetBestRootFolderPath(ctx, s.Path)
+		if err != nil {
+			return "", fmt.Errorf("series path builder: GetBestRootFolderPath: %w", err)
+		}
+		if best != "" && isParentPath(best, s.Path) {
+			rel, err := filepath.Rel(best, s.Path)
+			if err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+				return filepath.Join(s.RootFolderPath, rel), nil
+			}
+		}
+		// No parent match — fall through to the basename arm. Mirrors
+		// C# `:53-57` warning + GetDirectoryName fallback.
+		if a.log != nil {
+			a.log.Warn("series path builder: cannot resolve relative path; using basename",
+				"seriesPath", s.Path, "bestRoot", best)
+		}
+		return filepath.Join(s.RootFolderPath, filepath.Base(s.Path)), nil
+	}
+
+	cfg, err := a.naming.GetConfig(ctx)
+	if err != nil {
+		return "", fmt.Errorf("series path builder: namingconfig.GetConfig: %w", err)
+	}
+	opts := organizer.FolderOptions{
+		SeriesFolderFormat: defaultIfEmpty(cfg.SeriesFolderFormat, "{Series Title}"),
+		// SeasonFolderFormat / SpecialsFolderFormat are not used by
+		// GetSeriesFolder but FolderOptions is shared with
+		// GetSeasonFolder; populate for forward compatibility so a
+		// future helper that reads them sees the same options.
+		SeasonFolderFormat:   cfg.SeasonFolderFormat,
+		SpecialsFolderFormat: cfg.SpecialsFolderFormat,
+		// Clean defaults to a zero CleanNameOptions — the FolderOptions
+		// docstring says callers configure this; for the series-folder
+		// path we use the default which is what the C# tree's
+		// FileNameBuilder does for the GetSeriesFolder call site.
+	}
+	folder := organizer.GetSeriesFolder(s, opts)
+	return filepath.Join(s.RootFolderPath, folder), nil
+}
+
+// isParentPath reports whether `parent` is a path-prefix of `child`
+// in the directory sense (strict — equal paths return false to match
+// C# `IsParentPath` semantics where a path is not its own parent).
+// Both inputs are expected to be cleaned absolute paths in production;
+// the helper still calls filepath.Clean defensively for tests.
+func isParentPath(parent, child string) bool {
+	parent = filepath.Clean(parent)
+	child = filepath.Clean(child)
+	if parent == child {
+		return false
+	}
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel != "" && !strings.HasPrefix(rel, "..")
+}
+
+// defaultIfEmpty returns `s` when non-empty, else `fallback`.
+func defaultIfEmpty(s, fallback string) string {
+	if strings.TrimSpace(s) == "" {
+		return fallback
+	}
+	return s
+}
+
+// Compile-time guards.
+var (
+	_ series.TagChangeProvider = seriesTagChangeProviderAdapter{}
+	_ series.SeriesPathBuilder = seriesPathBuilderAdapter{}
+)
