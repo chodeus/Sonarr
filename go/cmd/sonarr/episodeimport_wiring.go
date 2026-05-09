@@ -10,6 +10,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/downloadhistory"
 	"sonarr.tv/sonarr/internal/episodeimport"
+	"sonarr.tv/sonarr/internal/history"
 )
 
 // latestGrabFinderAdapter wraps `*downloadhistory.Service.GetLatestGrab`
@@ -44,5 +45,32 @@ func (a latestGrabFinderAdapter) GetLatestGrab(downloadID string) *downloadhisto
 	return entry
 }
 
-// Compile-time guard.
-var _ episodeimport.LatestGrabFinder = latestGrabFinderAdapter{}
+// historyGrabsFinderAdapter wraps `*history.Service.Find` (with the
+// typed [history.EventTypeGrabbed] filter) to satisfy
+// [episodeimport.HistoryGrabsFinder]. The C# call chain at
+// `Aggregators/AggregateReleaseInfo.cs:23-34` walks
+// `_historyService.Find(downloadId, EpisodeHistoryEventType.Grabbed)`
+// which returns the full Grabbed-only list (the per-import variant
+// in slice 3.A1's historyGrabFinderForImportAdapter returns just
+// the most-recent entry — different shape).
+//
+// Distinct from latestGrabFinderAdapter in this same file (which
+// wraps *downloadhistory.Service for the AugmentQualityFromReleaseName
+// augmenter) — different table (EpisodeHistory vs DownloadHistory),
+// different semantic.
+type historyGrabsFinderAdapter struct {
+	svc *history.Service
+}
+
+func (a historyGrabsFinderAdapter) FindGrabsByDownloadID(ctx context.Context, downloadID string) ([]history.Entry, error) {
+	if a.svc == nil {
+		return nil, nil
+	}
+	return a.svc.Find(ctx, downloadID, history.EventTypeGrabbed)
+}
+
+// Compile-time guards.
+var (
+	_ episodeimport.LatestGrabFinder   = latestGrabFinderAdapter{}
+	_ episodeimport.HistoryGrabsFinder = historyGrabsFinderAdapter{}
+)

@@ -614,6 +614,22 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if dlHistorySvc == nil {
 		return fmt.Errorf("downloadhistory service: nil — required dep regressed")
 	}
+	// Slice 3.AG: history.Service relocated up here (was originally
+	// constructed in slice 3.A1 alongside the import path) so the
+	// new [historyGrabsFinderAdapter] feeding AggregateReleaseInfo
+	// reaches it at aggregator construction. historySvc is reused
+	// further down by the slice-3.A1 historyGrabFinderForImportAdapter.
+	// Slice-3.62 history.Service is read-only; the seven IHandle<...>
+	// event-bus subscribers it has in C# are deferred until each
+	// event-shape ports.
+	historyRepo, err := history.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("history repo: %w", err)
+	}
+	historySvc := history.NewService(historyRepo)
+	if historySvc == nil {
+		return fmt.Errorf("history service: nil — required dep regressed")
+	}
 
 	// Per-augmenter wiring (Phase 3.88 + 3.AF). Slice 3.AF lights up
 	// the previously-empty AggregateLanguage + AggregateQuality
@@ -665,6 +681,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			episodeimport.NewAugmentQualityFromReleaseName(
 				latestGrabFinderAdapter{svc: dlHistorySvc, log: logger}, nil),
 		}, logger),
+		// Slice 3.AG: AggregateReleaseInfo wired via the new
+		// historyGrabsFinderAdapter (episodeimport_wiring.go) over
+		// *history.Service.Find with EventTypeGrabbed. Mirrors C#
+		// `AggregateReleaseInfo.cs:9-40`. With nil DownloadItem,
+		// empty DownloadID, or zero Grabbed-history rows the
+		// aggregator skips populating LocalEpisode.Release. The
+		// finder constructor returns nil if the dep is nil; we
+		// pass historySvc directly which is non-nil at this site.
+		episodeimport.NewAggregateReleaseInfo(historyGrabsFinderAdapter{svc: historySvc}, logger),
 		// Slice 3.89: AggregateSubtitleInfo wired via the
 		// [episodeFileResolverAdapter] thin GetByID→GetFile bridge over
 		// the existing *episodefiles.Service. Aggregator mirrors C#
@@ -686,7 +711,12 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		// surface.
 		episodeimport.NewAggregateEpisodes(episodeParsingServiceAdapter{svc: parsingSvc, log: logger}),
 	}
-	aggregationSvc, err := episodeimport.NewAggregationService(episodeAggregators, diskProv, nil, nil, logger)
+	// Slice 3.AG: AggregationService.cfg arg now wires *config.Provider
+	// (EnableMediaInfo getter) so user toggles via the Config table
+	// take effect on the rescan-MediaInfo branch. The video arg
+	// stays nil — VideoMediaInfoReader has no production impl yet
+	// (gated on a full MediaInfo reader port).
+	aggregationSvc, err := episodeimport.NewAggregationService(episodeAggregators, diskProv, nil, configProv, logger)
 	if err != nil {
 		return fmt.Errorf("aggregation service: %w", err)
 	}
@@ -1108,21 +1138,13 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// is now production-bound: download-folder-scan → import-decision
 	// (filter + 11 specs + 4 augmenters) → upgrade-and-recycle (slice
 	// 3.97) → writer move (slice 3.96) → episodefiles row Add. ✓
-	// Slice 3.A1: history.Service constructed for the import path.
-	// First production binding of the slice-3.62 history.Service —
-	// the historyGrabFinderForImportAdapter (downloadedimport_wiring.go)
-	// reaches for it via the typed Find(ctx, downloadID, EventTypeGrabbed)
-	// surface. The slice-3.62 Service is read-only here; the seven
-	// IHandle<...> event-bus subscribers it has in C# are deferred
-	// until each event-shape ports.
-	historyRepo, err := history.NewRepo(db)
-	if err != nil {
-		return fmt.Errorf("history repo: %w", err)
-	}
-	historySvc := history.NewService(historyRepo)
-	if historySvc == nil {
-		return fmt.Errorf("history service: nil — required dep regressed")
-	}
+	// Slice 3.AG relocated history.NewRepo + history.NewService up to
+	// alongside dlHistoryRepo / dlHistorySvc so the new
+	// historyGrabsFinderAdapter (episodeimport_wiring.go) feeding
+	// AggregateReleaseInfo can reach historySvc at the aggregator
+	// construction time. historySvc is reused below by the slice-3.A1
+	// historyGrabFinderForImportAdapter.
+
 	// Slice 3.A2: qualityprofiles.Service constructed for the import
 	// path. First production binding of the slice-2.45-ish
 	// qualityprofiles.Service for non-housekeeping use — the
