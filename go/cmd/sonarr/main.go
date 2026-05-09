@@ -768,6 +768,18 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			return historyhandlers.HandleSeriesDeleted(ctx, historySvc, &ev)
 		})
 
+	// Slice 3.AZ: history IHandle<DownloadIgnoredEvent> subscriber.
+	// Walks ev.EpisodeIDs and writes one history.Entry per id with
+	// the ignore metadata. Producer is Phase 4
+	// (FailedDownloadService / manual-ignore UI action), so this is
+	// listener-only on the publisher side until Phase 4 ports.
+	// Closes queue [9] entirely (the seven IHandle subscribers from
+	// HistoryService are now all ported).
+	messaging.Subscribe(bus, "history.HandleDownloadIgnored",
+		func(ctx context.Context, ev trackeddownloads.DownloadIgnoredEvent) error {
+			return historyhandlers.HandleDownloadIgnored(ctx, historySvc, &ev)
+		})
+
 	// Per-augmenter wiring (Phase 3.88 + 3.AF). Slice 3.AF lights up
 	// the previously-empty AggregateLanguage + AggregateQuality
 	// augmenter lists with every available augmenter. Both

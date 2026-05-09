@@ -2,6 +2,7 @@ package trackeddownloads
 
 import (
 	"sonarr.tv/sonarr/internal/decisionengine"
+	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/quality"
 )
@@ -96,3 +97,63 @@ type DownloadFailedEvent struct {
 	// ReleaseSource — pipeline entry-point of the originating release.
 	ReleaseSource decisionengine.ReleaseSourceType
 }
+
+// DownloadIgnoredEvent ports the C# `DownloadIgnoredEvent : IEvent`
+// at `src/NzbDrone.Core/Download/DownloadIgnoredEvent.cs:1-21`.
+// Published when the user explicitly tells Sonarr to forget about a
+// tracked download (e.g. the "remove from queue" UI action with the
+// "do not redownload" toggle). Subscribed-to by [history.Service]
+// (this slice's HandleDownloadIgnored handler) AND blocklist.Service
+// (sub-arc 10b for blocklist's per-handler IHandle).
+//
+// Field-shape parity with the C# class:
+//
+//   - SeriesID / EpisodeIDs: the matched series + episodes set. Handler
+//     walks EpisodeIDs and writes one history.Entry per id.
+//   - Languages: per-release language list persisted into the history
+//     Languages column.
+//   - Quality / SourceTitle: release-shape carry-over.
+//   - DownloadClientInfo: the Type/Name pair for the picked client.
+//     The C# tree derefs this UNCONDITIONALLY in the handler at
+//     `HistoryService.cs:354-355` — no `?.` guard — so the producer
+//     is expected to populate this. The Go-port handler stays
+//     defensive (`failedClientName`-style nil-tolerance) since
+//     test fixtures and future producers may diverge.
+//   - DownloadID: the per-grab token.
+//   - TrackedDownload: in-memory cache record for the same
+//     DownloadID. Optional; nil for manual-ignored pushes that
+//     don't have a matching tracked row.
+//   - Message: human-readable explanation surfaced to the audit log.
+//
+// Wire-stable: the field names match the C# JsonPropertyName
+// defaults. Like DownloadFailedEvent the local subscribers don't
+// serialize the event but a future cross-process bus would.
+type DownloadIgnoredEvent struct {
+	// SeriesID — the matched series for the ignored download.
+	SeriesID int
+	// EpisodeIDs — the matched episode-id set. Handler writes one
+	// history.Entry per id; empty list → no-op.
+	EpisodeIDs []int
+	// Languages — per-release language set.
+	Languages []language.Language
+	// Quality — release quality.
+	Quality quality.Model
+	// SourceTitle — original release title / grabbed name.
+	SourceTitle string
+	// DownloadClientInfo — provider Type + Name pair. Optional; nil
+	// for manual-ignored pushes without a download-client item.
+	DownloadClientInfo *ItemClientInfo
+	// DownloadID — the per-grab token.
+	DownloadID string
+	// TrackedDownload — in-memory cache record for the same
+	// DownloadID. Optional.
+	TrackedDownload *TrackedDownload
+	// Message — human-readable explanation.
+	Message string
+}
+
+// ItemClientInfo aliases [downloadclients.ItemClientInfo] so the
+// DownloadIgnoredEvent payload can name the type without re-importing
+// downloadclients at every consumer. Defined here in trackeddownloads
+// so the event-package boundary stays self-contained.
+type ItemClientInfo = downloadclients.ItemClientInfo
