@@ -1051,7 +1051,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		nil, // FileDateUpdater — noop; C# IUpdateEpisodeFileService unported.
 		mediaFileAttrsSvc,
 		nil, // ImportScriptRunner — DeferMove; C# IImportScript unported.
-		nil, // EventPublisher — noop; C# EpisodeFolderCreatedEvent has no ported subscribers.
+		// Slice 3.AJ: EventPublisher wired via the new
+		// episodeFileMovingEventPublisherAdapter (downloadedimport_wiring.go).
+		// Type-switches EpisodeFolderCreatedEvent and republishes
+		// through *messaging.Bus's typed Publish[E] — same posture as
+		// the slice-3.99 importEventPublisherAdapter. With no ported
+		// subscribers yet this is "lit but no listeners" but the bus
+		// dispatch path is now exercised so the next subsystem that
+		// ports a subscriber sees events from production without
+		// further wiring at this site.
+		episodeFileMovingEventPublisherAdapter{bus: bus, log: logger},
 		logger,
 	)
 	if err != nil {

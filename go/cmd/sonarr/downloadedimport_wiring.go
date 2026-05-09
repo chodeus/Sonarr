@@ -883,6 +883,38 @@ func (a qualityComparerAdapter) Compare(seriesID int, left, right quality.Model)
 	return decisionengine.CompareQualityModels(items, left, right, false)
 }
 
+// episodeFileMovingEventPublisherAdapter wraps *messaging.Bus to
+// satisfy [episodefilemoving.EventPublisher]. The Service emits a
+// single event type — [episodefilemoving.EpisodeFolderCreatedEvent]
+// — when SyncFolders creates a new series folder. Same posture as
+// the slice-3.99 [importEventPublisherAdapter]: type-switch to the
+// typed messaging.Publish[E] dispatch so subscribers (when any
+// port) get the event via their reflect.TypeOf-keyed registration.
+//
+// With no ported subscribers yet this is "lit but no listeners" —
+// but the bus dispatch path is exercised so the next subsystem that
+// ports a subscriber sees events from production without further
+// wiring at this site.
+type episodeFileMovingEventPublisherAdapter struct {
+	bus *messaging.Bus
+	log *slog.Logger
+}
+
+// Publish dispatches the event by concrete type to the typed bus.
+func (a episodeFileMovingEventPublisherAdapter) Publish(event any) {
+	switch e := event.(type) {
+	case episodefilemoving.EpisodeFolderCreatedEvent:
+		if err := messaging.Publish(context.Background(), a.bus, e); err != nil &&
+			!errors.Is(err, messaging.ErrShutdown) {
+			a.log.Warn("episodefilemoving: publish EpisodeFolderCreatedEvent",
+				"seriesFolder", e.SeriesFolder, "err", err)
+		}
+	default:
+		a.log.Warn("episodefilemoving: episodeFileMovingEventPublisherAdapter: unrecognised event type — dropping",
+			"type", fmt.Sprintf("%T", event))
+	}
+}
+
 // Compile-time interface satisfaction guards. If a future deps.go
 // edit changes a method signature, the build error surfaces here at
 // the boot site rather than as a `*downloadedimport.Service`
@@ -902,6 +934,7 @@ var (
 	_ episodeimport.EpisodeTitleConfig         = episodeTitleConfigAdapter{}
 	_ episodefilemoving.RootFolderFinder       = rootFolderFinderAdapter{}
 	_ episodefilemoving.FileNameBuilder        = nameBuilderAdapter{}
+	_ episodefilemoving.EventPublisher         = episodeFileMovingEventPublisherAdapter{}
 	_ episodeimport.ImportEventPublisher       = importEventPublisherAdapter{}
 	_ episodeimport.RescanSeriesCommander      = rescanSeriesCommanderAdapter{}
 	_ episodeimport.HistoryGrabFinderForImport = historyGrabFinderForImportAdapter{}
