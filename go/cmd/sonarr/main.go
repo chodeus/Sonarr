@@ -75,6 +75,7 @@ import (
 	"sonarr.tv/sonarr/internal/scenemappings"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/trackeddownloads"
 	"sonarr.tv/sonarr/internal/upgrademediafiles"
 )
 
@@ -876,6 +877,20 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("episode-title spec: %w", err)
 	}
 	importDecisionSpecs = append(importDecisionSpecs, episodeTitleSpec)
+	// Slice 3.AI: trackeddownloads.Service constructed here for two
+	// downstream consumers — the ImportDecisionMaker `tracked` arg
+	// (FindIndexerFlags for IndexerFlags enrichment per
+	// ImportDecisionMaker.cs:153) and the slice-3.80
+	// DownloadedEpisodesScan handler `Finder` dep (Find for the
+	// known-tracked-download fast path at downloadedepisodesscan.go:50).
+	// The cache starts empty — Track is invoked by future Phase 4
+	// download-client integration; until then both consumers see
+	// the same zero-result behaviour they had with nil deps, but
+	// the wiring is now ready for the cache to fill.
+	trackedDownloadsSvc := trackeddownloads.NewService(logger)
+	if trackedDownloadsSvc == nil {
+		return fmt.Errorf("trackeddownloads service: nil — required dep regressed")
+	}
 	importDecisionMaker, err := episodeimport.NewImportDecisionMaker(
 		importDecisionSpecs, // specs — slice-3.86: 5 zero-dep specs wired
 		episodeFilesSvc,     // filter — FilterExistingFiles
@@ -883,7 +898,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		diskProv,            // disk — GetFileSize
 		sampleDetector,      // sampler — slice-3.55 + 3.84 SampleDetector
 		nil,                 // pathParser — nil → defaults to parser.ParsePath
-		nil,                 // tracked — no trackeddownloads.Service yet
+		trackedDownloadsSvc, // tracked — slice-3.AI: trackeddownloads.Service.FindIndexerFlags
 		nil,                 // formats — no LocalEpisodeCustomFormatCalculator yet
 		logger,
 	)
@@ -1393,11 +1408,18 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			// always live; the upstream stubs are inside the service
 			// itself, not at the handler boundary.
 			Processor: dimpSvc,
-			// Finder / Verifier / Reporter remain nil — those slots
-			// gate on the trackeddownloads.Service / completed-download
-			// lifecycle / ICommandResultReporter ports respectively.
-			// Each is documented optional at slice-3.80's handler
-			// definition; the handler tolerates nil for all three.
+			// Slice 3.AI: Finder wired to trackeddownloads.Service.
+			// The handler reaches for it via the slice-3.80 narrow
+			// TrackedDownloadFinder.Find(downloadID) signature; the
+			// real Service.Find returns nil for any unknown
+			// downloadID (cache starts empty, populates only when
+			// future Phase 4 download-client wiring calls Track).
+			Finder: trackedDownloadsSvc,
+			// Verifier / Reporter remain nil — those slots gate on
+			// the completed-download lifecycle / ICommandResultReporter
+			// ports respectively. Each is documented optional at
+			// slice-3.80's handler definition; the handler tolerates
+			// nil for both.
 		},
 		Log: logger,
 	}); err != nil {
