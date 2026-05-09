@@ -927,15 +927,53 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if trackedDownloadsSvc == nil {
 		return fmt.Errorf("trackeddownloads service: nil — required dep regressed")
 	}
+	// Slice 3.AN: relocate qualityProfilesSvc + customFormatsSvc
+	// construction up here (was at the post-IDM block) so the new
+	// LocalEpisodeFormatCalculator can be threaded into IDM's
+	// `formats` arg. qpRepo + cfRepo were already constructed early
+	// for housekeeping; this block reuses both repos and bus and
+	// wires the slice-3.A9 cross-package event-handler subscriptions
+	// (CustomFormatAddedEvent / CustomFormatDeletedEvent → qualityprofiles.Service).
+	qualityProfilesSvc, err := qualityprofiles.NewService(qpRepo, bus)
+	if err != nil {
+		return fmt.Errorf("qualityprofiles service: %w", err)
+	}
+	customFormatsSvc := customformats.NewService(cfRepo, bus)
+	if customFormatsSvc == nil {
+		return fmt.Errorf("customformats service: nil — required dep regressed")
+	}
+	messaging.Subscribe(bus, "qualityprofiles.OnCustomFormatAdded",
+		func(ctx context.Context, ev customformats.CustomFormatAddedEvent) error {
+			return qualityProfilesSvc.OnCustomFormatAdded(ctx, ev.Format)
+		})
+	messaging.Subscribe(bus, "qualityprofiles.OnCustomFormatDeleted",
+		func(ctx context.Context, ev customformats.CustomFormatDeletedEvent) error {
+			return qualityProfilesSvc.OnCustomFormatDeleted(ctx, ev.Format)
+		})
+	// Slice 3.AN: construct *episodeimport.LocalEpisodeFormatCalculator
+	// (already ported as the EpisodeCustomFormatCalculator interface
+	// satisfier) and thread into the IDM `formats` arg below. Closes
+	// queue [7] sub-arc 7a — the per-LocalEpisode CustomFormat
+	// resolution flow now runs during ImportDecisionMaker.GetImportDecisions
+	// instead of being silently skipped.
+	localFormatCalculator, err := episodeimport.NewLocalEpisodeFormatCalculator(
+		localEpisodeFileNameBuilderAdapter{svc: namingConfigSvc, log: logger},
+		localEpisodeFormatParserAdapter{svc: customFormatsSvc, log: logger},
+		localEpisodeFormatScorerAdapter{series: seriesSvc, qp: qualityProfilesSvc, log: logger},
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("local-episode format calculator: %w", err)
+	}
 	importDecisionMaker, err := episodeimport.NewImportDecisionMaker(
-		importDecisionSpecs, // specs — slice-3.86: 5 zero-dep specs wired
-		episodeFilesSvc,     // filter — FilterExistingFiles
-		aggregationSvc,      // aggregator — slice-3.60 AggregationService (empty aggregators above)
-		diskProv,            // disk — GetFileSize
-		sampleDetector,      // sampler — slice-3.55 + 3.84 SampleDetector
-		nil,                 // pathParser — nil → defaults to parser.ParsePath
-		trackedDownloadsSvc, // tracked — slice-3.AI: trackeddownloads.Service.FindIndexerFlags
-		nil,                 // formats — no LocalEpisodeCustomFormatCalculator yet
+		importDecisionSpecs,   // specs — slice-3.86: 5 zero-dep specs wired
+		episodeFilesSvc,       // filter — FilterExistingFiles
+		aggregationSvc,        // aggregator — slice-3.60 AggregationService (empty aggregators above)
+		diskProv,              // disk — GetFileSize
+		sampleDetector,        // sampler — slice-3.55 + 3.84 SampleDetector
+		nil,                   // pathParser — nil → defaults to parser.ParsePath
+		trackedDownloadsSvc,   // tracked — slice-3.AI: trackeddownloads.Service.FindIndexerFlags
+		localFormatCalculator, // formats — slice-3.AN: LocalEpisodeFormatCalculator
 		logger,
 	)
 	if err != nil {
@@ -1238,46 +1276,6 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// construction time. historySvc is reused below by the slice-3.A1
 	// historyGrabFinderForImportAdapter.
 
-	// Slice 3.A2: qualityprofiles.Service constructed for the import
-	// path. First production binding of the slice-2.45-ish
-	// qualityprofiles.Service for non-housekeeping use — the
-	// qualityComparerAdapter (downloadedimport_wiring.go) reaches for
-	// it via Get(ctx, profileID) to resolve the per-series QualityProfile
-	// during ImportApprovedEpisodes.sortApproved tiebreaks. The slice
-	// reuses the qpRepo already constructed for housekeeping above.
-	qualityProfilesSvc, err := qualityprofiles.NewService(qpRepo, bus)
-	if err != nil {
-		return fmt.Errorf("qualityprofiles service: %w", err)
-	}
-	// Slice 3.A9: customformats.Service constructed + wired to its
-	// two qualityprofiles.Service event handlers. The C# class
-	// `QualityProfileService` is `IHandle<CustomFormatAddedEvent>` +
-	// `IHandle<CustomFormatDeletedEvent>` at
-	// `Profiles/Qualities/QualityProfileService.cs:159-191`; the Go
-	// port already exposes [Service.OnCustomFormatAdded] /
-	// [Service.OnCustomFormatDeleted] (slice 3.X — see
-	// internal/qualityprofiles/handlers.go:95-173) but the host hadn't
-	// wired them yet. Subscribing here closes the cycle so any future
-	// customformats.Service.Insert / .Delete API caller fans the
-	// per-profile FormatItems update through every QualityProfile.
-	//
-	// customFormatsSvc reuses the cfRepo already constructed for the
-	// CleanupQualityProfileFormatItems housekeeping task (no second
-	// repo). Bus injection enables the publishAdded/publishDeleted
-	// emitters; until an API caller appears, no events fire.
-	customFormatsSvc := customformats.NewService(cfRepo, bus)
-	if customFormatsSvc == nil {
-		return fmt.Errorf("customformats service: nil — required dep regressed")
-	}
-	messaging.Subscribe(bus, "qualityprofiles.OnCustomFormatAdded",
-		func(ctx context.Context, ev customformats.CustomFormatAddedEvent) error {
-			return qualityProfilesSvc.OnCustomFormatAdded(ctx, ev.Format)
-		})
-	messaging.Subscribe(bus, "qualityprofiles.OnCustomFormatDeleted",
-		func(ctx context.Context, ev customformats.CustomFormatDeletedEvent) error {
-			return qualityProfilesSvc.OnCustomFormatDeleted(ctx, ev.Format)
-		})
-	_ = customFormatsSvc // held until the customformats API surface ports.
 	importApprovedSvc, err := episodeimport.NewImportApprovedEpisodes(
 		episodeFilesSvc,      // files (MediaFileWriter — Add + GetFilesWithRelativePath + Delete)
 		diskProv,             // disk (FileSizeReader — GetFileSize)
