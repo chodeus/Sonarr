@@ -124,3 +124,123 @@ func TestGetQueuePreservesOrder(t *testing.T) {
 		t.Errorf("GetQueue order = %v", got)
 	}
 }
+
+// --- SetQueue (slice 3.BD) -----------------------------------------
+
+func TestSetQueueReplacesCache(t *testing.T) {
+	t.Parallel()
+	s := seedForTest(Queue{ID: 11}, Queue{ID: 22})
+	s.SetQueue([]Queue{{ID: 100}, {ID: 200}, {ID: 300}})
+	got := s.GetQueue()
+	if len(got) != 3 {
+		t.Fatalf("len(GetQueue) = %d, want 3", len(got))
+	}
+	for i, want := range []int{100, 200, 300} {
+		if got[i].ID != want {
+			t.Errorf("entry %d ID = %d, want %d", i, got[i].ID, want)
+		}
+	}
+}
+
+func TestSetQueueNilClearsCache(t *testing.T) {
+	t.Parallel()
+	s := seedForTest(Queue{ID: 11}, Queue{ID: 22})
+	s.SetQueue(nil)
+	got := s.GetQueue()
+	if got == nil {
+		t.Errorf("GetQueue after nil-SetQueue = nil, want empty slice")
+	}
+	if len(got) != 0 {
+		t.Errorf("len after nil-SetQueue = %d, want 0", len(got))
+	}
+}
+
+func TestSetQueueEmptyClearsCache(t *testing.T) {
+	t.Parallel()
+	s := seedForTest(Queue{ID: 11})
+	s.SetQueue([]Queue{})
+	if got := s.GetQueue(); len(got) != 0 {
+		t.Errorf("len after empty-SetQueue = %d, want 0", len(got))
+	}
+}
+
+func TestSetQueueCopiesInput(t *testing.T) {
+	t.Parallel()
+	s := NewService()
+	input := []Queue{{ID: 11, Title: "Original"}}
+	s.SetQueue(input)
+	// Mutate the input — the cache should be unaffected.
+	input[0].Title = "Mutated"
+	got := s.GetQueue()
+	if got[0].Title != "Original" {
+		t.Errorf("cache mutated by input change: got %q, want 'Original'", got[0].Title)
+	}
+}
+
+func TestSetQueueOnNilReceiverIsNoOp(t *testing.T) {
+	t.Parallel()
+	var s *Service
+	// Must not panic.
+	s.SetQueue([]Queue{{ID: 1}})
+}
+
+// --- Remove (slice 3.BD) -------------------------------------------
+
+func TestRemoveExistingRowReturnsTrue(t *testing.T) {
+	t.Parallel()
+	s := seedForTest(Queue{ID: 11}, Queue{ID: 22}, Queue{ID: 33})
+	if !s.Remove(22) {
+		t.Errorf("Remove(22) returned false; want true")
+	}
+	got := s.GetQueue()
+	if len(got) != 2 || got[0].ID != 11 || got[1].ID != 33 {
+		t.Errorf("after Remove(22) cache = %v, want [11 33]", got)
+	}
+}
+
+func TestRemoveMissingRowReturnsFalse(t *testing.T) {
+	t.Parallel()
+	s := seedForTest(Queue{ID: 11}, Queue{ID: 22})
+	if s.Remove(99) {
+		t.Errorf("Remove(99) returned true; want false")
+	}
+	if got := s.GetQueue(); len(got) != 2 {
+		t.Errorf("cache modified by failed Remove: len = %d, want 2", len(got))
+	}
+}
+
+func TestRemoveOnEmptyCacheReturnsFalse(t *testing.T) {
+	t.Parallel()
+	s := NewService()
+	if s.Remove(1) {
+		t.Errorf("Remove on empty cache returned true; want false")
+	}
+}
+
+func TestRemoveOnNilReceiverReturnsFalse(t *testing.T) {
+	t.Parallel()
+	var s *Service
+	if s.Remove(1) {
+		t.Errorf("Remove on nil receiver returned true; want false")
+	}
+}
+
+func TestRemoveFirstRowPreservesOrder(t *testing.T) {
+	t.Parallel()
+	s := seedForTest(Queue{ID: 11}, Queue{ID: 22}, Queue{ID: 33})
+	s.Remove(11)
+	got := s.GetQueue()
+	if len(got) != 2 || got[0].ID != 22 || got[1].ID != 33 {
+		t.Errorf("after Remove(first) cache = %v, want [22 33]", got)
+	}
+}
+
+func TestRemoveLastRowPreservesOrder(t *testing.T) {
+	t.Parallel()
+	s := seedForTest(Queue{ID: 11}, Queue{ID: 22}, Queue{ID: 33})
+	s.Remove(33)
+	got := s.GetQueue()
+	if len(got) != 2 || got[0].ID != 11 || got[1].ID != 22 {
+		t.Errorf("after Remove(last) cache = %v, want [11 22]", got)
+	}
+}

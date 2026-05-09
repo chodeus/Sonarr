@@ -66,6 +66,65 @@ func (s *Service) GetQueue() []Queue {
 	return out
 }
 
+// SetQueue replaces the cache with the supplied rows under the write
+// lock. nil input is treated as "empty cache" (cleared). The supplied
+// slice is COPIED — callers can mutate their input after the call
+// without affecting the cache.
+//
+// Slice 3.BD (sub-arc 11b) ships SetQueue as the cache-write surface
+// the slice-3.BE (sub-arc 11c) IHandle<TrackedDownloadRefreshedEvent>
+// will route through. The IHandle wraps SetQueue with the
+// QueueUpdatedEvent publish per C# `:98-105`; SetQueue itself does
+// NOT publish so test paths can replace the cache without bus side
+// effects.
+//
+// nil-receiver is a no-op (no panic, no error returned) — matches
+// the GetQueue / Find tolerance posture so callers wiring through a
+// nil Service stack get silent dropping rather than an NPE.
+func (s *Service) SetQueue(rows []Queue) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rows == nil {
+		s.queue = []Queue{}
+		return
+	}
+	s.queue = append([]Queue(nil), rows...)
+}
+
+// Remove ports `QueueService.cs:41-44` —
+//
+//	public void Remove(int id) { _queue.Remove(Find(id)); }
+//
+// Drops the cache row whose ID matches. Returns true when a row was
+// removed, false otherwise. The C# tree returns void (silent on
+// miss); the Go-port surfaces a bool so UI handlers can distinguish
+// "removed N rows" from "no-op".
+//
+// Locks the write mutex for the duration. nil-receiver is a no-op
+// returning false.
+//
+// Note: the C# Remove silently no-ops on a miss because
+// `Find(id)` returns null and `List.Remove(null)` returns false
+// without raising. The Go-port preserves the silent semantic but
+// returns the boolean for caller diagnostics.
+func (s *Service) Remove(id int) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.queue {
+		if s.queue[i].ID == id {
+			s.queue = append(s.queue[:i], s.queue[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 // Find ports `QueueService.cs:36-39` —
 //
 //	public Queue Find(int id) { return _queue.SingleOrDefault(q => q.Id == id); }
