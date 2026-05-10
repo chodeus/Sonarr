@@ -39,6 +39,7 @@ import (
 	"syscall"
 	"time"
 
+	"sonarr.tv/sonarr/internal/aggregation"
 	"sonarr.tv/sonarr/internal/appenv"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
@@ -1700,7 +1701,34 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("decisionengine specs: %w", err)
 	}
 	decisionMaker := decisionengine.NewDecisionMaker(decisionEngineSpecs, logger)
-	_ = decisionMaker // held until the indexer-search / RSS flow ports.
+
+	// Slice 4.U (queue [11] sub-arc 11c, CLOSES queue [11]): construct
+	// the aggregation.Service + DownloadDecisionMaker that the RssSync
+	// handler dispatches to. aggregation.Service wraps the
+	// AggregateLanguages augmenter (the only augmenter at HEAD);
+	// IndexerMultiLanguagesLookup is nil (the per-indexer MultiLanguages
+	// reach into provider settings is a future follow-up — without it
+	// the augmenter skips the indexer-side language union but still
+	// runs the parsed-language + series.OriginalLanguage fallbacks).
+	remoteEpisodeAggregator, err := aggregation.NewService(
+		[]aggregation.Augmenter{
+			aggregation.NewAggregateLanguages(nil, logger),
+		},
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("aggregation service: %w", err)
+	}
+	downloadDecider, err := decisionengine.NewDownloadDecisionMaker(
+		decisionMaker,
+		parsingSvc,
+		remoteEpisodeAggregator,
+		scenemappingsSvc,
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("download decision maker: %w", err)
+	}
 
 	dimpDisk := downloadedImportDiskOps{Provider: diskProv}
 	dimpSvc := downloadedimport.NewService(
@@ -1815,14 +1843,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	queue := commands.NewQueue(registry.Properties)
 	cmdSvc.SetQueue(queue)
 	if err := handlers.RegisterAll(registry, handlers.Deps{
-		Commands:     cmdSvc,
-		Housekeeping: houseSvc,
-		HealthCheck:  healthSvc,
-		RescanSeries: mediafilesSvc,
-		Backup:       backupSvc,
-		Lifecycle:    lifecycleSvc,
-		RssSync:      indexerSearchSvc,
-		RssSyncBus:   bus,
+		Commands:       cmdSvc,
+		Housekeeping:   houseSvc,
+		HealthCheck:    healthSvc,
+		RescanSeries:   mediafilesSvc,
+		Backup:         backupSvc,
+		Lifecycle:      lifecycleSvc,
+		RssSync:        indexerSearchSvc,
+		RssSyncBus:     bus,
+		RssSyncDecider: downloadDecider,
 		DownloadedEpisodesScan: handlers.DownloadedEpisodesScanDeps{
 			// Processor REQUIRED — slice 3.80 contract: nil Processor
 			// → handler not registered. We always wire the real

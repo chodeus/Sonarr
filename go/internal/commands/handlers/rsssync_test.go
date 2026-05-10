@@ -27,14 +27,14 @@ func (s *stubRssFetcher) FetchRSS(_ context.Context) ([]any, error) {
 func (s *stubRssFetcher) callCount() int { return int(atomic.LoadInt32(&s.calls)) }
 
 func TestNewRssSync_NilFetcherErrors(t *testing.T) {
-	if _, err := handlers.NewRssSync(nil, nil, nil); err == nil {
+	if _, err := handlers.NewRssSync(nil, nil, nil, nil); err == nil {
 		t.Fatalf("expected error for nil fetcher")
 	}
 }
 
 func TestRssSync_Execute_HappyPath(t *testing.T) {
 	fetcher := &stubRssFetcher{releases: []any{"r1", "r2", "r3"}}
-	h, err := handlers.NewRssSync(fetcher, nil, nil)
+	h, err := handlers.NewRssSync(fetcher, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewRssSync: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestRssSync_Execute_HappyPath(t *testing.T) {
 func TestRssSync_Execute_FetcherErrorPropagates(t *testing.T) {
 	want := errors.New("indexer source down")
 	fetcher := &stubRssFetcher{err: want}
-	h, _ := handlers.NewRssSync(fetcher, nil, nil)
+	h, _ := handlers.NewRssSync(fetcher, nil, nil, nil)
 	if err := h.Execute(context.Background(), ""); !errors.Is(err, want) {
 		t.Errorf("Execute err = %v, want %v", err, want)
 	}
@@ -57,7 +57,7 @@ func TestRssSync_Execute_FetcherErrorPropagates(t *testing.T) {
 
 func TestRssSync_Execute_BodyIgnored(t *testing.T) {
 	fetcher := &stubRssFetcher{}
-	h, _ := handlers.NewRssSync(fetcher, nil, nil)
+	h, _ := handlers.NewRssSync(fetcher, nil, nil, nil)
 	if err := h.Execute(context.Background(), `{"junk":"ignored"}`); err != nil {
 		t.Errorf("Execute should ignore body, got %v", err)
 	}
@@ -78,7 +78,7 @@ func TestRssSync_Execute_PublishesCompleteEvent(t *testing.T) {
 	})
 
 	fetcher := &stubRssFetcher{releases: []any{"r1", "r2"}}
-	h, _ := handlers.NewRssSync(fetcher, bus, nil)
+	h, _ := handlers.NewRssSync(fetcher, nil, bus, nil)
 	if err := h.Execute(context.Background(), ""); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestRssSync_Execute_PublishesCompleteEvent(t *testing.T) {
 
 func TestRssSync_Execute_NilBusSafe(t *testing.T) {
 	fetcher := &stubRssFetcher{releases: []any{"r1"}}
-	h, _ := handlers.NewRssSync(fetcher, nil, nil)
+	h, _ := handlers.NewRssSync(fetcher, nil, nil, nil)
 	if err := h.Execute(context.Background(), ""); err != nil {
 		t.Errorf("nil bus should be safe, got %v", err)
 	}

@@ -111,6 +111,14 @@ type Deps struct {
 	// handler still completes the FetchRSS work.
 	RssSyncBus *messaging.Bus
 
+	// RssSyncDecider is the optional decisionengine.DownloadDecisionMaker
+	// projection RssSync dispatches the fetched releases to after
+	// FetchRSS returns. Slice 4.U (queue [11] sub-arc 11c). Nil skips
+	// the decision pipeline (compat with the slice 4.Q wiring); the
+	// handler still logs the fetched-release count and publishes the
+	// RssSyncCompleteEvent (with zero approved/rejected counts).
+	RssSyncDecider RssDecider
+
 	Log *slog.Logger
 }
 
@@ -219,7 +227,7 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	// the scheduler ticks against). Hosts that haven't yet wired
 	// indexersearch.Service simply omit the slot.
 	if deps.RssSync != nil {
-		rssSync, err := NewRssSync(deps.RssSync, deps.RssSyncBus, deps.Log)
+		rssSync, err := NewRssSync(deps.RssSync, deps.RssSyncDecider, deps.RssSyncBus, deps.Log)
 		if err != nil {
 			return err
 		}
