@@ -86,20 +86,41 @@ type SearchAction func(ctx context.Context, idx Indexer) ([]any, error)
 // wires through). C# faithfulness: the C# tree always has a
 // non-null IIndexerStatusService since DI registers it singleton, but
 // the Go port allows nil to keep the orchestrator decoupled.
+//
+// `seriesGet` / `episodeGet` / `sceneMapper` are the search-side
+// dependencies the entry points (EpisodeSearch / SeasonSearch in
+// search.go) consume. They may be nil when the Service is used only
+// for the dispatcher core (the queue [9] RssSync feeder uses
+// FetchRSS directly without touching them).
 type Service struct {
-	source   IndexerSource
-	recorder providerstatus.Recorder
-	log      *slog.Logger
+	source      IndexerSource
+	recorder    providerstatus.Recorder
+	seriesGet   SeriesGetter
+	episodeGet  EpisodeRepo
+	sceneMapper SceneMapper
+	log         *slog.Logger
 }
 
-// NewService binds the source + recorder + logger. log defaults to
-// slog.Default when nil. recorder may be nil to skip status-recording
-// entirely.
-func NewService(source IndexerSource, recorder providerstatus.Recorder, log *slog.Logger) *Service {
+// NewService binds the dispatcher dependencies. log defaults to
+// slog.Default when nil. recorder / seriesGet / episodeGet /
+// sceneMapper may be nil for use cases that don't exercise that
+// surface (recorder=nil disables status-recording; the search-side
+// deps may be nil when only the FetchRSS feeder is wanted).
+//
+// Use NewService(source, recorder, nil, nil, nil, log) for the
+// dispatcher-only shape that slice 4.M's tests exercise.
+func NewService(source IndexerSource, recorder providerstatus.Recorder, seriesGet SeriesGetter, episodeGet EpisodeRepo, sceneMapper SceneMapper, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Service{source: source, recorder: recorder, log: log}
+	return &Service{
+		source:      source,
+		recorder:    recorder,
+		seriesGet:   seriesGet,
+		episodeGet:  episodeGet,
+		sceneMapper: sceneMapper,
+		log:         log,
+	}
 }
 
 // Eligible filters the enabled-indexer list by the criteria. Two

@@ -152,7 +152,7 @@ func TestEligible_AutomaticSelectsAutoFlag(t *testing.T) {
 	auto := &stubIndexer{id: 1, name: "auto", auto: true}
 	inter := &stubIndexer{id: 2, name: "inter", inter: true}
 	src := &stubSource{indexers: []Indexer{auto, inter}}
-	svc := NewService(src, nil, nil)
+	svc := NewService(src, nil, nil, nil, nil, nil)
 
 	got, err := svc.Eligible(context.Background(), newCriteria(nil, false))
 	if err != nil {
@@ -167,7 +167,7 @@ func TestEligible_InteractiveSelectsInteractiveFlag(t *testing.T) {
 	auto := &stubIndexer{id: 1, name: "auto", auto: true}
 	inter := &stubIndexer{id: 2, name: "inter", inter: true}
 	src := &stubSource{indexers: []Indexer{auto, inter}}
-	svc := NewService(src, nil, nil)
+	svc := NewService(src, nil, nil, nil, nil, nil)
 
 	got, err := svc.Eligible(context.Background(), newCriteria(nil, true))
 	if err != nil {
@@ -181,7 +181,7 @@ func TestEligible_InteractiveSelectsInteractiveFlag(t *testing.T) {
 func TestEligible_TagsUntaggedIndexerMatches(t *testing.T) {
 	idx := &stubIndexer{id: 1, name: "untagged", auto: true}
 	src := &stubSource{indexers: []Indexer{idx}}
-	svc := NewService(src, nil, nil)
+	svc := NewService(src, nil, nil, nil, nil, nil)
 
 	// Untagged indexer matches a series with arbitrary tags.
 	got, err := svc.Eligible(context.Background(), newCriteria([]int{99}, false))
@@ -197,7 +197,7 @@ func TestEligible_TagsIntersectionRequired(t *testing.T) {
 	matching := &stubIndexer{id: 1, name: "match", auto: true, tags: []int{42}}
 	disjoint := &stubIndexer{id: 2, name: "disjoint", auto: true, tags: []int{99}}
 	src := &stubSource{indexers: []Indexer{matching, disjoint}}
-	svc := NewService(src, nil, nil)
+	svc := NewService(src, nil, nil, nil, nil, nil)
 
 	got, err := svc.Eligible(context.Background(), newCriteria([]int{42}, false))
 	if err != nil {
@@ -211,7 +211,7 @@ func TestEligible_TagsIntersectionRequired(t *testing.T) {
 func TestEligible_TaggedIndexerVsUntaggedSeriesIsExcluded(t *testing.T) {
 	tagged := &stubIndexer{id: 1, name: "tagged", auto: true, tags: []int{42}}
 	src := &stubSource{indexers: []Indexer{tagged}}
-	svc := NewService(src, nil, nil)
+	svc := NewService(src, nil, nil, nil, nil, nil)
 
 	got, err := svc.Eligible(context.Background(), newCriteria(nil, false))
 	if err != nil {
@@ -225,7 +225,7 @@ func TestEligible_TaggedIndexerVsUntaggedSeriesIsExcluded(t *testing.T) {
 func TestEligible_NilEntriesSkipped(t *testing.T) {
 	idx := &stubIndexer{id: 1, name: "ok", auto: true}
 	src := &stubSource{indexers: []Indexer{nil, idx, nil}}
-	svc := NewService(src, nil, nil)
+	svc := NewService(src, nil, nil, nil, nil, nil)
 
 	got, err := svc.Eligible(context.Background(), newCriteria(nil, false))
 	if err != nil {
@@ -238,7 +238,7 @@ func TestEligible_NilEntriesSkipped(t *testing.T) {
 
 func TestEligible_SourceErrorPropagates(t *testing.T) {
 	src := &stubSource{err: errors.New("boom")}
-	svc := NewService(src, nil, nil)
+	svc := NewService(src, nil, nil, nil, nil, nil)
 	if _, err := svc.Eligible(context.Background(), newCriteria(nil, false)); err == nil {
 		t.Fatalf("expected source error to propagate")
 	}
@@ -259,7 +259,7 @@ func TestDispatch_AggregatesAcrossIndexers(t *testing.T) {
 	}
 	src := &stubSource{indexers: []Indexer{a, b}}
 	rec := &stubRecorder{}
-	svc := NewService(src, rec, nil)
+	svc := NewService(src, rec, nil, nil, nil, nil)
 
 	criteria := SingleEpisodeCriteria{
 		CriteriaBase:  newCriteria(nil, false),
@@ -295,7 +295,7 @@ func TestDispatch_PerIndexerErrorIsolated(t *testing.T) {
 	}
 	src := &stubSource{indexers: []Indexer{good, bad}}
 	rec := &stubRecorder{}
-	svc := NewService(src, rec, nil)
+	svc := NewService(src, rec, nil, nil, nil, nil)
 
 	releases, err := svc.Dispatch(context.Background(), func(ctx context.Context, idx Indexer) ([]any, error) {
 		return idx.FetchSearch(ctx, SingleEpisodeCriteria{})
@@ -317,7 +317,7 @@ func TestDispatch_PerIndexerErrorIsolated(t *testing.T) {
 func TestDispatch_NoEligibleReturnsEmpty(t *testing.T) {
 	idx := &stubIndexer{id: 1, name: "i", inter: true} // auto=false
 	src := &stubSource{indexers: []Indexer{idx}}
-	svc := NewService(src, nil, nil)
+	svc := NewService(src, nil, nil, nil, nil, nil)
 
 	releases, err := svc.Dispatch(context.Background(), func(ctx context.Context, idx Indexer) ([]any, error) {
 		t.Fatalf("action should not be invoked when no indexers eligible")
@@ -333,7 +333,7 @@ func TestDispatch_NoEligibleReturnsEmpty(t *testing.T) {
 
 func TestDispatch_NilActionErrors(t *testing.T) {
 	src := &stubSource{}
-	svc := NewService(src, nil, nil)
+	svc := NewService(src, nil, nil, nil, nil, nil)
 	if _, err := svc.Dispatch(context.Background(), nil, newCriteria(nil, false)); err == nil {
 		t.Fatalf("expected nil-action error")
 	}
@@ -344,7 +344,7 @@ func TestDispatch_RecorderNilSafe(t *testing.T) {
 		search: func(ctx context.Context, c Criteria) ([]any, error) { return nil, nil },
 	}
 	src := &stubSource{indexers: []Indexer{idx}}
-	svc := NewService(src, nil, nil) // recorder=nil
+	svc := NewService(src, nil, nil, nil, nil, nil) // recorder=nil
 
 	if _, err := svc.Dispatch(context.Background(), func(ctx context.Context, idx Indexer) ([]any, error) {
 		return idx.FetchSearch(ctx, SingleEpisodeCriteria{})
@@ -369,7 +369,7 @@ func TestFetchRSS_FiltersToEnableRSSOnly(t *testing.T) {
 	}
 	src := &stubSource{indexers: []Indexer{rssOn, rssOff}}
 	rec := &stubRecorder{}
-	svc := NewService(src, rec, nil)
+	svc := NewService(src, rec, nil, nil, nil, nil)
 
 	releases, err := svc.FetchRSS(context.Background())
 	if err != nil {
@@ -386,7 +386,7 @@ func TestFetchRSS_FiltersToEnableRSSOnly(t *testing.T) {
 func TestFetchRSS_NoRSSEnabledReturnsEmpty(t *testing.T) {
 	idx := &stubIndexer{id: 1, name: "noRss", rss: false}
 	src := &stubSource{indexers: []Indexer{idx}}
-	svc := NewService(src, nil, nil)
+	svc := NewService(src, nil, nil, nil, nil, nil)
 
 	releases, err := svc.FetchRSS(context.Background())
 	if err != nil {
@@ -410,7 +410,7 @@ func TestFetchRSS_PerIndexerErrorIsolated(t *testing.T) {
 	}
 	src := &stubSource{indexers: []Indexer{good, bad}}
 	rec := &stubRecorder{}
-	svc := NewService(src, rec, nil)
+	svc := NewService(src, rec, nil, nil, nil, nil)
 
 	releases, err := svc.FetchRSS(context.Background())
 	if err != nil {
@@ -426,7 +426,7 @@ func TestFetchRSS_PerIndexerErrorIsolated(t *testing.T) {
 
 func TestFetchRSS_SourceErrorPropagates(t *testing.T) {
 	src := &stubSource{err: errors.New("db gone")}
-	svc := NewService(src, nil, nil)
+	svc := NewService(src, nil, nil, nil, nil, nil)
 	if _, err := svc.FetchRSS(context.Background()); err == nil {
 		t.Fatalf("expected source error to propagate")
 	}
