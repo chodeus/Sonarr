@@ -81,6 +81,7 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 	"sonarr.tv/sonarr/internal/upgrademediafiles"
+	"sonarr.tv/sonarr/internal/videofileinforeader"
 )
 
 func main() {
@@ -1452,19 +1453,25 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// import" against the stubs. The remaining stub
 	// (stubUpdateMediaInfo) gates on the MediaInfo updater port —
 	// REPLACED in slice 3.BI by the real *mediainfoupdater.UpdateService
-	// constructed below. The reader dep stays a no-op stub
-	// (noopMediaInfoReader) until sub-arc 13c ports the
-	// VideoFileInfoReader; with the noop reader the
-	// HandleSeriesScanned + Update paths short-circuit on the
-	// nil-MediaInfo arm without touching ffmpeg, so production
-	// behaviour matches the slice 3.AE stub plus the new
-	// SeriesScannedEvent IHandle subscription which fires the
-	// "no extraction" debug log line per file.
+	// constructed below. As of slice 3.BJ the MediaInfoReader dep
+	// is the real *videofileinforeader.Reader (sub-arc 13c) — closes
+	// queue [13]. The reader shells out to ffprobe via os/exec; if
+	// the binary is missing on PATH the per-file Update path's
+	// reader-error fallthrough fires (debug-log "ffprobe error",
+	// returns nil-result) and the row is skipped without surfacing
+	// to higher layers. Production deployments are expected to ship
+	// ffprobe alongside the binary (matches the C# tree's bundled
+	// FFMpegCore expectation).
+	mediaInfoReader := videofileinforeader.NewExecRunner("")
+	videoInfoReader, err := videofileinforeader.NewReader(diskProv, mediaInfoReader, logger)
+	if err != nil {
+		return fmt.Errorf("videofileinforeader: %w", err)
+	}
 	mediaInfoUpdater, err := mediainfoupdater.NewUpdateService(
 		diskProv,
 		episodeFilesSvc,
 		episodeFilesSvc,
-		noopMediaInfoReader{},
+		videoInfoReader,
 		configProv,
 		logger,
 	)
