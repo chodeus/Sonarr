@@ -33,6 +33,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/decisionengine"
+	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/indexers/newznab"
@@ -323,3 +324,45 @@ func (a minimumSeedersAdapter) MinimumSeeders(ctx context.Context, id int) (int,
 
 // Compile-time guard.
 var _ decisionengine.MinimumSeedersReader = minimumSeedersAdapter{}
+
+// enabledIndexerListerAdapter implements
+// healthcheck.EnabledIndexerLister — the "list every enabled indexer
+// row" projection the slice 4.R IndexerStatusCheck consumes.
+// Wraps indexers.Repo.All and applies the Enable predicate
+// (EnableRss || EnableAutomaticSearch || EnableInteractiveSearch)
+// already encoded in rowEnabled. Reuses the same filter the
+// dbIndexerSource uses for runtime indexer membership, so the
+// healthcheck and the orchestrator agree on "what counts as
+// enabled."
+//
+// C# parallel: IndexerStatusCheck.cs:28 (`enabledProviders =
+// _providerFactory.GetAvailableProviders()`). The Go port flattens
+// to (ID, Name) since the healthcheck doesn't need anything else.
+type enabledIndexerListerAdapter struct {
+	repo *indexers.Repo
+}
+
+// newEnabledIndexerListerAdapter binds the dependency.
+func newEnabledIndexerListerAdapter(repo *indexers.Repo) enabledIndexerListerAdapter {
+	return enabledIndexerListerAdapter{repo: repo}
+}
+
+// EnabledIndexers implements healthcheck.EnabledIndexerLister.
+func (a enabledIndexerListerAdapter) EnabledIndexers(ctx context.Context) ([]healthcheck.EnabledIndexer, error) {
+	rows, err := a.repo.All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("indexers.All: %w", err)
+	}
+	out := make([]healthcheck.EnabledIndexer, 0, len(rows))
+	for i := range rows {
+		row := &rows[i]
+		if !rowEnabled(row) {
+			continue
+		}
+		out = append(out, healthcheck.EnabledIndexer{ID: row.ID, Name: row.Name})
+	}
+	return out, nil
+}
+
+// Compile-time guard.
+var _ healthcheck.EnabledIndexerLister = enabledIndexerListerAdapter{}

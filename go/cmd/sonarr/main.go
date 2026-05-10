@@ -1223,12 +1223,52 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("healthcheck recyclingBin: %w", err)
 	}
+
+	// Slice 4.P/4.R (queue [8] + [10]): wire indexers.Repo +
+	// indexerstatus.Service EARLY so that:
+	//   - the BlockedIndexerSpecification + TorrentSeedingSpec at
+	//     decisionEngineSpecs (below, at the original site) can reach
+	//     the IndexerStatus surface, AND
+	//   - the IndexerStatusCheck registered as part of healthSvc
+	//     (immediately below this block) can reach the same surface.
+	// The runtime indexer factory (newIndexerSource +
+	// indexersearch.Service from slice 4.O) wires later, after
+	// httpClient is available — that path needs the HTTP transport,
+	// the repo/status pair does not.
+	indexersRepo, err := indexers.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("indexers repo: %w", err)
+	}
+	indexerStatusRepo, err := indexerstatus.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("indexerstatus repo: %w", err)
+	}
+	indexerStatusSvc, err := indexerstatus.NewService(indexerStatusRepo, bus, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("indexerstatus service: %w", err)
+	}
+
+	// Slice 4.R (queue [10]): IndexerStatusCheck wires
+	// EnabledIndexerLister (over indexers.Repo via the
+	// enabledIndexerListerAdapter in indexersearch_wiring.go) +
+	// IndexerStatusBlockedLister (over *indexerstatus.Service via
+	// structural typing on GetBlockedProviders).
+	indexerStatusCheck, err := healthcheck.NewIndexerStatusCheck(
+		newEnabledIndexerListerAdapter(indexersRepo),
+		indexerStatusSvc,
+		nil, // default clock = time.Now().UTC()
+	)
+	if err != nil {
+		return fmt.Errorf("healthcheck indexerStatus: %w", err)
+	}
+
 	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
 		healthcheck.NewAppDataLocationCheck(folder),
 		apiKeyCheck,
 		removedSeriesCheck,
 		rootFolderCheck,
 		recyclingBinCheck,
+		indexerStatusCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)
@@ -1627,24 +1667,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("releaseprofiles matcher service: nil — required dep regressed")
 	}
 
-	// Slice 4.P (queue [8]): wire indexers.Repo + indexerstatus.Service
-	// EARLY so the BlockedIndexerSpecification + TorrentSeedingSpec can
-	// reach the IndexerStatus surface during decisionengine spec
-	// construction. The runtime indexer factory (newIndexerSource +
-	// indexersearch.Service from slice 4.O) wires below, after
-	// httpClient is available.
-	indexersRepo, err := indexers.NewRepo(db)
-	if err != nil {
-		return fmt.Errorf("indexers repo: %w", err)
-	}
-	indexerStatusRepo, err := indexerstatus.NewRepo(db)
-	if err != nil {
-		return fmt.Errorf("indexerstatus repo: %w", err)
-	}
-	indexerStatusSvc, err := indexerstatus.NewService(indexerStatusRepo, bus, time.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("indexerstatus service: %w", err)
-	}
+	// indexersRepo + indexerStatusSvc are constructed above (slice 4.P
+	// moved their wiring above healthcheck so both the
+	// BlockedIndexerSpecification at decisionEngineSpecs and the
+	// IndexerStatusCheck at healthSvc reach them).
 
 	decisionEngineSpecs, err := buildDecisionEngineSpecs(decisionEngineDeps{
 		upgradable:     upgradableSpec,
