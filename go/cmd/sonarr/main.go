@@ -1705,6 +1705,18 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("backup service: %w", err)
 	}
 
+	// Slice 3.BP (queue [18]): construct *lifecycle.Service so the
+	// IExecute<ShutdownCommand> + IExecute<RestartCommand> handlers
+	// register against the real publish-and-flag semantics
+	// (ApplicationShutdownRequested{Restarting:false/true} + the
+	// RestartPending atomic the host reads at shutdown to decide
+	// whether to chain an updater process). Replaces the direct
+	// messaging.Publish call at the shutdown drain below.
+	lifecycleSvc, err := lifecycle.NewService(bus)
+	if err != nil {
+		return fmt.Errorf("lifecycle service: %w", err)
+	}
+
 	registry := commands.NewRegistry()
 	queue := commands.NewQueue(registry.Properties)
 	cmdSvc.SetQueue(queue)
@@ -1714,6 +1726,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		HealthCheck:  healthSvc,
 		RescanSeries: mediafilesSvc,
 		Backup:       backupSvc,
+		Lifecycle:    lifecycleSvc,
 		DownloadedEpisodesScan: handlers.DownloadedEpisodesScanDeps{
 			// Processor REQUIRED — slice 3.80 contract: nil Processor
 			// → handler not registered. We always wire the real
@@ -1813,10 +1826,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 
 	// Shutdown sequence — publish the signal BEFORE BeginShutdown
 	// gates further lifecycle events; then drain the async pool.
+	// Slice 3.BP: route through *lifecycle.Service.Shutdown so the
+	// publish goes through the same code path API-triggered
+	// ShutdownCommand uses, and the RestartPending flag check at
+	// the end of this function reflects whether a Restart command
+	// fired before the SIGTERM/SIGINT signal landed (mirrors C#
+	// `_runtimeInfo.RestartPending` read at startup-script tier).
 	logger.Info("sonarr shutdown requested")
-	if err := messaging.Publish(context.Background(), bus, lifecycle.ApplicationShutdownRequested{}); err != nil &&
+	if err := lifecycleSvc.Shutdown(context.Background()); err != nil &&
 		!errors.Is(err, messaging.ErrShutdown) {
-		logger.Warn("publish ApplicationShutdownRequested failed", "err", err)
+		logger.Warn("lifecycle shutdown publish failed", "err", err)
 	}
 	// Stop the dispatcher + scheduler before draining the bus so any
 	// in-flight CommandExecutedEvent publishes flow through to the

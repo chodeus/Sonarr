@@ -77,6 +77,16 @@ type Deps struct {
 	// Production binds `*backup.Service` via structural typing.
 	Backup BackupRunner
 
+	// Lifecycle wires the IExecute<ShutdownCommand> +
+	// IExecute<RestartCommand> handler pair into the dispatcher.
+	// Required when callers want API-triggered shutdown/restart;
+	// nil skips registration entirely (the dispatcher then rejects
+	// the commands with ErrNoHandler — there's no useful stub
+	// since shutdown/restart MUST go through the bus to reach the
+	// host's signal-handling code). Production binds
+	// `*lifecycle.Service` via structural typing.
+	Lifecycle LifecycleRunner
+
 	// DownloadedEpisodesScan wires the IExecute<DownloadedEpisodesScanCommand>
 	// handler into the dispatcher. The processor field is REQUIRED
 	// when this struct is non-zero — RegisterAll passes the whole
@@ -173,6 +183,22 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	registry.Register(RescanSeriesName, commands.CommandSpec{
 		Handler: rescanSeries,
 	})
+	if deps.Lifecycle != nil {
+		shutdownHandler, err := NewShutdown(deps.Lifecycle, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(ShutdownName, commands.CommandSpec{
+			Handler: shutdownHandler,
+		})
+		restartHandler, err := NewRestart(deps.Lifecycle, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(RestartName, commands.CommandSpec{
+			Handler: restartHandler,
+		})
+	}
 
 	// DownloadedEpisodesScan registers only when the processor is
 	// wired — there's no useful stub fallback (the C# command always
