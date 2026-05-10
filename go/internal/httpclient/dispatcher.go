@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -52,22 +53,101 @@ type Dispatcher interface {
 // surface a `Content-Encoding: br` body the caller will need to handle (or
 // we'll add the dep in 1c after sign-off).
 type netHTTPDispatcher struct {
-	client    *http.Client
 	userAgent string
+
+	proxyProvider ProxyProvider
+
+	// clientCache caches one *http.Client per proxy key so that the same
+	// underlying connection pool is reused for requests sharing a proxy.
+	// Mirrors C# ManagedHttpDispatcher._httpClientCache at :41 and
+	// :138-145. The "no-proxy" key matches NO_PROXY_KEY at :19.
+	cacheMu     sync.RWMutex
+	clientCache map[string]*http.Client
+}
+
+// DispatcherOptions tunes the dispatcher constructor. A zero-value
+// DispatcherOptions yields the same behaviour as NewDispatcher: env-based
+// HTTP/HTTPS proxy via http.ProxyFromEnvironment via NoopProxyProvider,
+// and the supplied UserAgent.
+type DispatcherOptions struct {
+	UserAgent     string
+	ProxyProvider ProxyProvider
 }
 
 // NewDispatcher builds a Dispatcher using a fresh net/http client. The
 // userAgent string is sent on every request unless overridden by
-// Request.UserAgentOverride.
+// Request.UserAgentOverride. No proxy is consulted for routing; callers
+// that want proxy support should use NewDispatcherWithOptions.
 func NewDispatcher(userAgent string) Dispatcher {
+	return NewDispatcherWithOptions(DispatcherOptions{UserAgent: userAgent})
+}
+
+// NewDispatcherWithOptions builds a Dispatcher with a typed proxy provider
+// and other knobs. When opts.ProxyProvider is nil, NoopProxyProvider{} is
+// used (i.e. no proxy is consulted at all — env-based proxy is opt-in,
+// not implicit).
+func NewDispatcherWithOptions(opts DispatcherOptions) Dispatcher {
+	provider := opts.ProxyProvider
+	if provider == nil {
+		provider = NoopProxyProvider{}
+	}
+	return &netHTTPDispatcher{
+		userAgent:     opts.UserAgent,
+		proxyProvider: provider,
+		clientCache:   map[string]*http.Client{},
+	}
+}
+
+// noProxyKey mirrors ManagedHttpDispatcher.NO_PROXY_KEY at :19.
+const noProxyKey = "no-proxy"
+
+// getClient returns the *http.Client to use for the given URI, honouring
+// the configured ProxyProvider. Mirrors GetClient at :138-145.
+func (d *netHTTPDispatcher) getClient(uri URI) (*http.Client, error) {
+	settings := d.proxyProvider.GetProxySettings(uri)
+
+	key := noProxyKey
+	if settings != nil {
+		key = settings.Key()
+	}
+
+	d.cacheMu.RLock()
+	if c, ok := d.clientCache[key]; ok {
+		d.cacheMu.RUnlock()
+		return c, nil
+	}
+	d.cacheMu.RUnlock()
+
+	d.cacheMu.Lock()
+	defer d.cacheMu.Unlock()
+	// Re-check after acquiring write lock.
+	if c, ok := d.clientCache[key]; ok {
+		return c, nil
+	}
+
+	c, err := buildHTTPClient(settings)
+	if err != nil {
+		return nil, err
+	}
+	d.clientCache[key] = c
+	return c, nil
+}
+
+// buildHTTPClient constructs the *http.Client mirroring CreateHttpClient at
+// ManagedHttpDispatcher.cs:147-177. settings=nil ⇒ no proxy.
+func buildHTTPClient(settings *ProxySettings) (*http.Client, error) {
 	transport := &http.Transport{
-		// Force-disable cookie jar at the transport level — Client manages
-		// cookies. (net/http.Client.Jar is the relevant lever; the transport
-		// itself doesn't read cookies, but we pass nil to the Client below.)
 		DisableCompression: false, // explicit: gzip auto-decode
 		MaxConnsPerHost:    12,    // mirror MaxConnectionsPerServer=12 at C# :156
 	}
-	c := &http.Client{
+	if settings != nil {
+		u, err := settings.URL()
+		if err != nil {
+			return nil, fmt.Errorf("build http client for proxy: %w", err)
+		}
+		transport.Proxy = http.ProxyURL(u)
+	}
+	return &http.Client{
 		Transport: transport,
 		// Manual redirect handling — return the response as-is so the
 		// Client's redirect loop can inspect it. Mirrors AllowAutoRedirect=false
@@ -75,10 +155,8 @@ func NewDispatcher(userAgent string) Dispatcher {
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		// Per-call timeout is set via context.WithTimeout in Dispatch.
 		Timeout: 0,
-	}
-	return &netHTTPDispatcher{client: c, userAgent: userAgent}
+	}, nil
 }
 
 // Dispatch sends one HTTP request and returns the parsed Response.
@@ -96,7 +174,12 @@ func (d *netHTTPDispatcher) Dispatch(ctx context.Context, req *Request) (*Respon
 		return nil, err
 	}
 
-	httpResp, err := d.client.Do(httpReq)
+	client, err := d.getClient(req.URL)
+	if err != nil {
+		return nil, err
+	}
+
+	httpResp, err := client.Do(httpReq)
 	if err != nil {
 		// Distinguish timeout (mirrors C# WebExceptionStatus.Timeout at :134).
 		if errors.Is(err, context.DeadlineExceeded) {

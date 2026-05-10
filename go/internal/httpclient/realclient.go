@@ -22,12 +22,15 @@ import (
 //   - looping the redirect chain (max 5 hops, 302/303→GET force),
 //   - parsing Set-Cookie back into the jar (and into per-request cookies
 //     when StoreResponseCookie is set),
-//   - throwing typed errors on status >=400 unless suppressed.
+//   - throwing typed errors on status >=400 unless suppressed,
+//   - running pre-/post-request interceptors,
+//   - calling the rate limiter before each dispatch (sub-arc 1c).
 //
-// Sub-arc 1c will add: rate limit, interceptors, proxy-key dispatch.
 // Sub-arc 1d will add: per-host status tracker.
 type realClient struct {
-	dispatcher Dispatcher
+	dispatcher   Dispatcher
+	rateLimiter  RateLimiter   // optional; when nil, rate-limit fields on Request are no-ops.
+	interceptors []Interceptor // optional; ordered list applied around every dispatch.
 
 	// jarMu guards persistentJar. The Go stdlib cookiejar.Jar is
 	// goroutine-safe internally, but we still need our own mutex around the
@@ -37,27 +40,51 @@ type realClient struct {
 	persistentJar *cookiejar.Jar
 }
 
+// ClientOptions tunes NewClientWithOptions. Zero-value options yield the
+// same behaviour as NewClient: a fresh dispatcher with the supplied
+// UserAgent, no rate limiter, no interceptors, no proxy.
+type ClientOptions struct {
+	UserAgent     string
+	Dispatcher    Dispatcher    // optional override; tests inject stubs here.
+	RateLimiter   RateLimiter   // optional; when nil, Request.RateLimit is no-op.
+	Interceptors  []Interceptor // optional ordered list.
+	ProxyProvider ProxyProvider // optional; only consulted when Dispatcher is nil.
+}
+
 // NewClient builds a production Client. userAgent is sent on every request
 // unless overridden by Request.UserAgentOverride. Returns an error only if
 // the underlying cookiejar refuses to construct, which it won't.
 func NewClient(userAgent string) (Client, error) {
+	return NewClientWithOptions(ClientOptions{UserAgent: userAgent})
+}
+
+// NewClientWithOptions builds a Client with the supplied options. When
+// opts.Dispatcher is nil, a fresh dispatcher is constructed with the
+// supplied UserAgent and ProxyProvider.
+func NewClientWithOptions(opts ClientOptions) (Client, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, fmt.Errorf("httpclient: build cookie jar: %w", err)
 	}
+	d := opts.Dispatcher
+	if d == nil {
+		d = NewDispatcherWithOptions(DispatcherOptions{
+			UserAgent:     opts.UserAgent,
+			ProxyProvider: opts.ProxyProvider,
+		})
+	}
 	return &realClient{
-		dispatcher:    NewDispatcher(userAgent),
+		dispatcher:    d,
+		rateLimiter:   opts.RateLimiter,
+		interceptors:  append([]Interceptor(nil), opts.Interceptors...),
 		persistentJar: jar,
 	}, nil
 }
 
 // NewClientWithDispatcher allows tests to inject a stub Dispatcher.
+// Equivalent to NewClientWithOptions{Dispatcher: d}.
 func NewClientWithDispatcher(d Dispatcher) (Client, error) {
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		return nil, err
-	}
-	return &realClient{dispatcher: d, persistentJar: jar}, nil
+	return NewClientWithOptions(ClientOptions{Dispatcher: d})
 }
 
 // MaxRedirects mirrors the constant at src/NzbDrone.Common/Http/HttpClient.cs:43.
@@ -205,9 +232,21 @@ func (c *realClient) executeWithRedirects(ctx context.Context, req *Request) (*R
 }
 
 // executeRequestOnce ports the single-attempt body of HttpClient.ExecuteRequestAsync
-// at HttpClient.cs:140-175 (minus the rate-limit + interceptor parts which
-// land in sub-arc 1c).
+// at HttpClient.cs:140-175.
 func (c *realClient) executeRequestOnce(ctx context.Context, req *Request) (*Response, error) {
+	// Pre-request interceptors (HttpClient.cs:142-145). May replace req.
+	for _, i := range c.interceptors {
+		req = i.PreRequest(req)
+	}
+
+	// Rate-limit (HttpClient.cs:147-150). Honours per-request RateLimit +
+	// optional sub-key bucket. Cancellation propagates from ctx.
+	if req.RateLimit > 0 && c.rateLimiter != nil {
+		if err := c.rateLimiter.WaitAndPulse(ctx, req.URL.Host(), req.RateLimitKey, req.RateLimit); err != nil {
+			return nil, err
+		}
+	}
+
 	c.applyPerRequestCookies(req)
 
 	resp, err := c.dispatcher.Dispatch(ctx, req)
@@ -215,6 +254,11 @@ func (c *realClient) executeRequestOnce(ctx context.Context, req *Request) (*Res
 		return nil, err
 	}
 	c.handleResponseCookies(req, resp)
+
+	// Post-response interceptors (HttpClient.cs:164-167).
+	for _, i := range c.interceptors {
+		resp = i.PostResponse(resp)
+	}
 	return resp, nil
 }
 
