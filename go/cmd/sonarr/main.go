@@ -1236,13 +1236,25 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if episodeFileMovingFs == nil {
 		return fmt.Errorf("episodefilemoving DiskFilesystem: nil — required dep regressed")
 	}
+	// Slice 3.BK (queue [14]): real *episodefilemoving.UpdateService
+	// satisfies [episodefilemoving.FileDateUpdater] — replaces the
+	// slice-3.70 nil-passes-noop placeholder. Ports
+	// `UpdateEpisodeFileService.ChangeFileDateForFile`. Reads the
+	// FileDate config flag (None/LocalAirDate/UtcAirDate); the writer
+	// pulls this once per move via the FileDateUpdater seam.
+	// *disk.Provider satisfies FileTimeManager via Go structural typing
+	// (FileGetLastWrite + new FileSetLastWriteTime shipped this slice).
+	fileDateUpdater, err := episodefilemoving.NewUpdateService(diskProv, configProv, logger)
+	if err != nil {
+		return fmt.Errorf("episodefilemoving fileDate: %w", err)
+	}
 	episodeFileMovingSvc, err := episodefilemoving.NewService(
 		episodeFileMovingFs,
 		nameBuilderAdapter{svc: namingConfigSvc, log: logger},
 		rootFolderFinderAdapter{svc: rootFoldersSvc, log: logger},
 		configProv,
 		episodesSvc,
-		nil, // FileDateUpdater — noop; C# IUpdateEpisodeFileService unported.
+		fileDateUpdater,
 		mediaFileAttrsSvc,
 		nil, // ImportScriptRunner — DeferMove; C# IImportScript unported.
 		// Slice 3.AJ: EventPublisher wired via the new

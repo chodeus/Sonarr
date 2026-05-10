@@ -576,6 +576,28 @@ func (p *Provider) SetSeasonPackUpgradeThreshold(ctx context.Context, v float64)
 	return err
 }
 
+// FileDate mirrors `ConfigService.cs:174-179`. Default `"None"` per
+// C# `GetValueEnum("FileDate", FileDateType.None)`. Returns the raw
+// stored enum-identifier string (`"None"` / `"LocalAirDate"` /
+// `"UtcAirDate"`); the consumer ([episodefilemoving.UpdateService])
+// parses it into a typed enum locally — same posture as
+// [SeasonPackUpgrade] / [DownloadPropersAndRepacks].
+//
+// Read by the slice-3.BK [episodefilemoving.UpdateService.ChangeFileDateForFile]
+// + the SeriesScannedEvent handler that follows. Closes queue [14].
+func (p *Provider) FileDate() string {
+	return p.getString("FileDate", "None")
+}
+
+// SetFileDate writes the new enum identifier, publishing
+// ConfigSavedEvent on change. Caller should pass one of `"None"`,
+// `"LocalAirDate"`, or `"UtcAirDate"` — the persistence layer
+// doesn't validate (matches the C# `SetValue` posture).
+func (p *Provider) SetFileDate(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "FileDate", v)
+	return err
+}
+
 // getFloat64 parses the cached value as float64, falling back to def
 // for missing / empty / unparseable entries. Mirrors the strconv-based
 // posture of [getInt] / [getBool].

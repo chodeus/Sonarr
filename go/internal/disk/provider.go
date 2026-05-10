@@ -250,6 +250,20 @@ func (p *Provider) FileGetLastWrite(path string) (time.Time, error) {
 	return st.ModTime(), nil
 }
 
+// FileSetLastWriteTime mirrors `IDiskProvider.FileSetLastWriteTime` at
+// `Common/Disk/IDiskProvider.cs`. Used by the slice-3.BK
+// [episodefilemoving.UpdateService.ChangeFileDateForFile] to stamp
+// the configured-air-date mtime onto a renamed file. The atime
+// argument is set to the same value as mtime — Sonarr does not track
+// access times (matches C# behaviour at the corresponding
+// `File.SetLastWriteTime(...)` call).
+func (p *Provider) FileSetLastWriteTime(path string, t time.Time) error {
+	if err := os.Chtimes(path, t, t); err != nil {
+		return fmt.Errorf("disk: FileSetLastWriteTime(%q): %w", path, err)
+	}
+	return nil
+}
+
 // GetDirectories ports `DiskProviderBase.cs:153-162`. Returns
 // absolute paths of every immediate subdirectory of path. Top-level
 // only — non-recursive — matching the C# `Directory.EnumerateDirectories(path, "*")`
