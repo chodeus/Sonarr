@@ -644,6 +644,37 @@ func (p *Provider) SetApplicationUrl(ctx context.Context, v string) error {
 	return err
 }
 
+// BackupFolder mirrors `ConfigService.cs:412`. Default `"Backups"` —
+// relative paths resolve against AppFolderInfo.GetAppDataPath() at
+// the consumer side. Read by the slice-3.BM
+// [backup.Service.GetBackupFolder].
+func (p *Provider) BackupFolder() string {
+	return p.getString("BackupFolder", "Backups")
+}
+
+// SetBackupFolder writes the new value, publishing ConfigSavedEvent
+// on change.
+func (p *Provider) SetBackupFolder(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "BackupFolder", v)
+	return err
+}
+
+// BackupRetention mirrors `ConfigService.cs:416`. Default 28 days —
+// the C# `GetValueInt("BackupRetention", 28)`. Backups whose mtime
+// exceeds this many days are pruned by
+// [backup.Service.CleanupOldBackups] on Scheduled / Update runs
+// (Manual backups are exempt — match C# `:85-88`).
+func (p *Provider) BackupRetention() int {
+	return p.getInt("BackupRetention", 28)
+}
+
+// SetBackupRetention writes the new value, publishing
+// ConfigSavedEvent on change.
+func (p *Provider) SetBackupRetention(ctx context.Context, v int) error {
+	_, err := p.setInt(ctx, "BackupRetention", v)
+	return err
+}
+
 // getFloat64 parses the cached value as float64, falling back to def
 // for missing / empty / unparseable entries. Mirrors the strconv-based
 // posture of [getInt] / [getBool].
