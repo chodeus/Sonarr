@@ -41,6 +41,7 @@ import (
 	"sonarr.tv/sonarr/internal/appenv"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
+	"sonarr.tv/sonarr/internal/backup"
 	"sonarr.tv/sonarr/internal/blocklist"
 	"sonarr.tv/sonarr/internal/blocklisthandlers"
 	"sonarr.tv/sonarr/internal/buildinfo"
@@ -1668,6 +1669,42 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("downloadedimport service: nil — required dep regressed")
 	}
 
+	// Slice 3.BN (queue [16] sub-arc 16b): wire the *backup.Service
+	// the BackupCommand handler delegates to. Picks the engine-
+	// specific DatabaseBackup impl from dbCfg.Engine — SQLite uses
+	// `VACUUM INTO`, Postgres shells out to pg_dump. Adapters bind
+	// the Filesystem narrow over *disk.Provider+stdlib, AppFolders
+	// over appenv.AppFolderInfo, VersionInfo over buildinfo.String().
+	var dbBackup backup.DatabaseBackup
+	switch dbCfg.Engine {
+	case datastore.EngineSQLite:
+		sqliteBackup, sqliteErr := backup.NewSQLiteBackup(db.SQL)
+		if sqliteErr != nil {
+			return fmt.Errorf("backup sqlite: %w", sqliteErr)
+		}
+		dbBackup = sqliteBackup
+	case datastore.EnginePostgres:
+		pgBackup, pgErr := backup.NewPostgresBackup(dbCfg.Host, dbCfg.Port, dbCfg.User, dbCfg.Password, dbCfg.Database)
+		if pgErr != nil {
+			return fmt.Errorf("backup postgres: %w", pgErr)
+		}
+		dbBackup = pgBackup
+	default:
+		return fmt.Errorf("backup: unsupported engine %q", dbCfg.Engine)
+	}
+	backupSvc, err := backup.NewService(
+		newBackupFilesystemAdapter(diskProv, logger),
+		backup.ZipArchiver{},
+		dbBackup,
+		configProv,
+		backupAppFoldersAdapter{folder: folder},
+		backupVersionInfoAdapter{},
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("backup service: %w", err)
+	}
+
 	registry := commands.NewRegistry()
 	queue := commands.NewQueue(registry.Properties)
 	cmdSvc.SetQueue(queue)
@@ -1676,6 +1713,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		Housekeeping: houseSvc,
 		HealthCheck:  healthSvc,
 		RescanSeries: mediafilesSvc,
+		Backup:       backupSvc,
 		DownloadedEpisodesScan: handlers.DownloadedEpisodesScanDeps{
 			// Processor REQUIRED — slice 3.80 contract: nil Processor
 			// → handler not registered. We always wire the real

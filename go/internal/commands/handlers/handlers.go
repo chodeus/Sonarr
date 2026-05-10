@@ -69,6 +69,14 @@ type Deps struct {
 	// Production binds `*recyclebin.Service` via structural typing.
 	CleanUpRecycleBin CleanupRunner
 
+	// Backup wires the IExecute<BackupCommand> handler into the
+	// dispatcher. Optional — nil falls back to the pre-3.BN stub-
+	// shaped log line so hosts that haven't yet wired a backup
+	// Service still register the slot (the 7-day scheduled-task
+	// entry depends on the registry key existing).
+	// Production binds `*backup.Service` via structural typing.
+	Backup BackupRunner
+
 	// DownloadedEpisodesScan wires the IExecute<DownloadedEpisodesScanCommand>
 	// handler into the dispatcher. The processor field is REQUIRED
 	// when this struct is non-zero — RegisterAll passes the whole
@@ -144,9 +152,21 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	registry.Register(RefreshMonitoredDownloadsName, commands.CommandSpec{
 		Handler: NewRefreshMonitoredDownloads(deps.Log),
 	})
-	registry.Register(BackupName, commands.CommandSpec{
-		Handler: NewBackup(deps.Log),
-	})
+	if deps.Backup != nil {
+		backupHandler, err := NewBackup(deps.Backup, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(BackupName, commands.CommandSpec{
+			Handler: backupHandler,
+		})
+	} else {
+		// Pre-3.BN behaviour: log-only stub when no backup Service
+		// is wired (boot site can opt out by leaving Deps.Backup nil).
+		registry.Register(BackupName, commands.CommandSpec{
+			Handler: newBackupStub(deps.Log),
+		})
+	}
 	registry.Register(CleanUpRecycleBinName, commands.CommandSpec{
 		Handler: NewCleanUpRecycleBin(deps.CleanUpRecycleBin, deps.Log),
 	})
