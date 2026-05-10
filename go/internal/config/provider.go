@@ -598,6 +598,52 @@ func (p *Provider) SetFileDate(ctx context.Context, v string) error {
 	return err
 }
 
+// UseScriptImport mirrors `ConfigService.cs:223-228`. Default `false`
+// per C# `GetValueBoolean("UseScriptImport", false)`. Read by the
+// slice-3.BL [episodefilemoving.ImportScriptService.TryImport] which
+// short-circuits to `DeferMove` when the flag is off.
+func (p *Provider) UseScriptImport() bool {
+	return p.getBool("UseScriptImport", false)
+}
+
+// SetUseScriptImport writes the new value, publishing ConfigSavedEvent
+// on change.
+func (p *Provider) SetUseScriptImport(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "UseScriptImport", v)
+	return err
+}
+
+// ScriptImportPath mirrors `ConfigService.cs:230-235`. Default empty
+// string — C# `GetValue("ScriptImportPath")` returns null which the
+// Go-port collapses to "". Path to the user-supplied script the
+// ImportScriptService invokes during a move/copy with two positional
+// args (sourcePath, destinationPath). Empty path with UseScriptImport=true
+// surfaces as a script-spawn error per the C# behaviour.
+func (p *Provider) ScriptImportPath() string {
+	return p.getString("ScriptImportPath", "")
+}
+
+// SetScriptImportPath writes the new value, publishing ConfigSavedEvent
+// on change.
+func (p *Provider) SetScriptImportPath(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "ScriptImportPath", v)
+	return err
+}
+
+// ApplicationUrl mirrors `ConfigService.cs:421`. Default empty string.
+// Surfaced to user-supplied scripts (and notification provider Phase 4
+// surfaces) as the externally-visible URL of this Sonarr instance.
+func (p *Provider) ApplicationUrl() string {
+	return p.getString("ApplicationUrl", "")
+}
+
+// SetApplicationUrl writes the new value, publishing ConfigSavedEvent
+// on change.
+func (p *Provider) SetApplicationUrl(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "ApplicationUrl", v)
+	return err
+}
+
 // getFloat64 parses the cached value as float64, falling back to def
 // for missing / empty / unparseable entries. Mirrors the strconv-based
 // posture of [getInt] / [getBool].

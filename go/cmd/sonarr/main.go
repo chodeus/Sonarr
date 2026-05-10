@@ -79,6 +79,7 @@ import (
 	"sonarr.tv/sonarr/internal/scenemappings"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/tags"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 	"sonarr.tv/sonarr/internal/upgrademediafiles"
 	"sonarr.tv/sonarr/internal/videofileinforeader"
@@ -1248,6 +1249,43 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("episodefilemoving fileDate: %w", err)
 	}
+	// Slice 3.BL (queue [15]): the *videofileinforeader.Reader the
+	// MediaInfo updater wires below is also the MediaInfoReader the
+	// new ImportScriptService needs (the RenameRequested arm at C#
+	// `ScriptImportDecider.cs:230` re-probes after the script renames).
+	// Construct the reader once here so both consumers can hold a
+	// reference; the slice-3.BJ wire site downstream just re-uses
+	// videoInfoReader instead of re-constructing.
+	mediaInfoReader := videofileinforeader.NewExecRunner("")
+	videoInfoReader, err := videofileinforeader.NewReader(diskProv, mediaInfoReader, logger)
+	if err != nil {
+		return fmt.Errorf("videofileinforeader: %w", err)
+	}
+	// Slice 3.BL: real *episodefilemoving.ImportScriptService
+	// satisfies [episodefilemoving.ImportScriptRunner] — replaces the
+	// slice-3.70 nil-passes-alwaysDeferImportScriptRunner placeholder.
+	// Ports `MediaFiles/ScriptImportDecider.cs:23-237`. Production now
+	// invokes the user-supplied import script (when UseScriptImport=true
+	// AND ScriptImportPath is set) and honours its move-decision
+	// verdict; the writer's TransferFile path observes
+	// DeferMove/MoveComplete/RenameRequested as if it were the C# tree.
+	tagsRepo, err := tags.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("tags repo: %w", err)
+	}
+	tagsSvc := tags.NewService(tagsRepo, bus)
+	importScriptRunner, err := episodefilemoving.NewImportScriptService(
+		configProv,
+		instanceNameReaderAdapter{p: cfg},
+		tagLabelReaderAdapter{svc: tagsSvc},
+		diskProv,
+		videoInfoReader,
+		episodefilemoving.NewExecProcessRunner(),
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("episodefilemoving importScript: %w", err)
+	}
 	episodeFileMovingSvc, err := episodefilemoving.NewService(
 		episodeFileMovingFs,
 		nameBuilderAdapter{svc: namingConfigSvc, log: logger},
@@ -1256,7 +1294,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		episodesSvc,
 		fileDateUpdater,
 		mediaFileAttrsSvc,
-		nil, // ImportScriptRunner — DeferMove; C# IImportScript unported.
+		importScriptRunner,
 		// Slice 3.AJ: EventPublisher wired via the new
 		// episodeFileMovingEventPublisherAdapter (downloadedimport_wiring.go).
 		// Type-switches EpisodeFolderCreatedEvent and republishes
@@ -1474,11 +1512,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// to higher layers. Production deployments are expected to ship
 	// ffprobe alongside the binary (matches the C# tree's bundled
 	// FFMpegCore expectation).
-	mediaInfoReader := videofileinforeader.NewExecRunner("")
-	videoInfoReader, err := videofileinforeader.NewReader(diskProv, mediaInfoReader, logger)
-	if err != nil {
-		return fmt.Errorf("videofileinforeader: %w", err)
-	}
+	//
+	// Slice 3.BL relocated the videoInfoReader construction up to
+	// the ImportScriptService boot site so both consumers share one
+	// reader instance. This site re-uses the existing variable.
 	mediaInfoUpdater, err := mediainfoupdater.NewUpdateService(
 		diskProv,
 		episodeFilesSvc,
