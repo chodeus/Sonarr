@@ -26,6 +26,7 @@ import (
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/providerstatus"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
@@ -210,6 +211,8 @@ type decisionEngineDeps struct {
 	customFormats  *customformats.Service
 	configProvider *config.Provider
 	queueSvc       *queue.Service
+	blockedView    providerstatus.BlockedView          // *indexerstatus.Service (slice 4.P queue [8])
+	minSeeders     decisionengine.MinimumSeedersReader // minimumSeedersAdapter (slice 4.P queue [8])
 	log            *slog.Logger
 }
 
@@ -219,11 +222,11 @@ type decisionEngineDeps struct {
 // constructor's nil-required-dep guard surfaces as a typed error here;
 // the caller wraps the failure with the boot-site's `fmt.Errorf("decisionengine specs: %w", err)`.
 //
-// Spec coverage as of slice 3.AS: 23 of ~25 specs (the 2 unported
-// gate on subsystems that don't exist yet — QueueSpec on queue.Service
-// (queue [11]); SceneMappingSpec on scenemappings.Service signature;
-// Phase 4 specs — BlockedIndexer / TorrentSeeding — on provider
-// integrations).
+// Spec coverage as of slice 4.P: 25 of ~25 specs. Slice 3.BF added
+// QueueSpec; slice 4.P (queue [8]) adds BlockedIndexer +
+// TorrentSeeding. The remaining gap is SceneMappingSpec, which
+// gates on a scenemappings.Service signature shape that's
+// orthogonal to this loop.
 func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specification, error) {
 	profileLookup := profileViewLookupAdapter{svc: d.qualityProfile}
 	episodeFinder := firstEpisodeOfSeasonAdapter{svc: d.episodes}
@@ -232,7 +235,7 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 	cfForFile := customFormatForFileAdapter{svc: d.customFormats}
 	seasonPack := seasonPackConfigAdapter{cfg: d.configProvider}
 
-	specs := make([]decisionengine.Specification, 0, 23)
+	specs := make([]decisionengine.Specification, 0, 25)
 
 	acceptableSize, err := decisionengine.NewAcceptableSizeSpecification(profileLookup, episodeFinder, d.log)
 	if err != nil {
@@ -360,6 +363,20 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 		return nil, err
 	}
 	specs = append(specs, queueSpec)
+
+	// Slice 4.P (queue [8]): BlockedIndexerSpecification +
+	// TorrentSeedingSpecification.
+	blockedIndexer, err := decisionengine.NewBlockedIndexerSpecification(d.blockedView, d.log)
+	if err != nil {
+		return nil, err
+	}
+	specs = append(specs, blockedIndexer)
+
+	torrentSeeding, err := decisionengine.NewTorrentSeedingSpecification(d.minSeeders, d.log)
+	if err != nil {
+		return nil, err
+	}
+	specs = append(specs, torrentSeeding)
 
 	return specs, nil
 }

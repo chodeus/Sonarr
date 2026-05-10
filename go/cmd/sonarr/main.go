@@ -1626,6 +1626,26 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if matcherSvc == nil {
 		return fmt.Errorf("releaseprofiles matcher service: nil — required dep regressed")
 	}
+
+	// Slice 4.P (queue [8]): wire indexers.Repo + indexerstatus.Service
+	// EARLY so the BlockedIndexerSpecification + TorrentSeedingSpec can
+	// reach the IndexerStatus surface during decisionengine spec
+	// construction. The runtime indexer factory (newIndexerSource +
+	// indexersearch.Service from slice 4.O) wires below, after
+	// httpClient is available.
+	indexersRepo, err := indexers.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("indexers repo: %w", err)
+	}
+	indexerStatusRepo, err := indexerstatus.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("indexerstatus repo: %w", err)
+	}
+	indexerStatusSvc, err := indexerstatus.NewService(indexerStatusRepo, bus, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("indexerstatus service: %w", err)
+	}
+
 	decisionEngineSpecs, err := buildDecisionEngineSpecs(decisionEngineDeps{
 		upgradable:     upgradableSpec,
 		qualityProfile: qualityProfilesSvc,
@@ -1646,6 +1666,8 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		customFormats:  customFormatsSvc,
 		configProvider: configProv,
 		queueSvc:       queueSvc,
+		blockedView:    indexerStatusSvc,
+		minSeeders:     newMinimumSeedersAdapter(indexersRepo),
 		log:            logger,
 	})
 	if err != nil {
@@ -1742,34 +1764,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("http client: %w", err)
 	}
-	// Slice 4.O (queue [7] sub-arc 7c, FINAL): wire indexers.Repo +
-	// indexerstatus.Service + indexersearch.Service. Closes the
-	// indexer-search orchestrator's plumbing — the dispatcher
-	// (indexersearch.Service) now has a live IndexerSource that
-	// hydrates persisted Indexers rows into runtime
-	// newznab/torznab/torrentrss instances per dispatch via
-	// dbIndexerSource (see indexersearch_wiring.go).
-	//
-	// httpClient is now the production HTTP transport for the indexer
-	// fetches; the prior `_ = httpClient` blank-assign is gone. The
-	// download-client / import-list factories that ALSO need it remain
-	// follow-up loops outside this focused subset.
-	indexersRepo, err := indexers.NewRepo(db)
-	if err != nil {
-		return fmt.Errorf("indexers repo: %w", err)
-	}
-	indexerStatusRepo, err := indexerstatus.NewRepo(db)
-	if err != nil {
-		return fmt.Errorf("indexerstatus repo: %w", err)
-	}
-	indexerStatusSvc, err := indexerstatus.NewService(indexerStatusRepo, bus, time.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("indexerstatus service: %w", err)
-	}
+	// Slice 4.O (queue [7] sub-arc 7c, FINAL) + 4.P (queue [8]):
+	// wire indexersearch.Service. The dispatcher's typed deps
+	// (series.Service / episodes.Service / scenemappings.Service)
+	// satisfy the SeriesGetter/EpisodeRepo/SceneMapper narrow
+	// interfaces directly. indexersRepo + indexerStatusSvc are
+	// already constructed above (slice 4.P moved their wiring earlier
+	// so the BlockedIndexerSpecification + TorrentSeedingSpecification
+	// at decisionEngineSpecs build can reach them).
 	indexerSource := newIndexerSource(indexersRepo, httpClient, logger)
-	// series.Service / episodes.Service / scenemappings.Service satisfy
-	// the indexersearch narrow interfaces directly (see deps.go) — no
-	// adapter wrappers needed.
 	indexerSearchSvc := indexersearch.NewService(
 		indexerSource,
 		indexerStatusSvc,
@@ -1778,7 +1781,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		scenemappingsSvc,
 		logger,
 	)
-	_ = indexerSearchSvc // queue [9] RssSync handler + queue [8] specs will consume the Service.
+	_ = indexerSearchSvc // queue [9] RssSync handler will consume the Service.
 
 	registry := commands.NewRegistry()
 	queue := commands.NewQueue(registry.Properties)

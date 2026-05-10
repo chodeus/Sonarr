@@ -27,10 +27,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"sonarr.tv/sonarr/internal/datastore"
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/indexers/newznab"
@@ -258,3 +260,66 @@ var _ indexersearch.IndexerSource = (*dbIndexerSource)(nil)
 // reorganization (e.g. moving the repo construction into this file)
 // finds it pre-imported.
 var _ = (*datastore.DB)(nil)
+
+// minimumSeedersAdapter implements decisionengine.MinimumSeedersReader
+// — the per-indexer MinimumSeeders lookup the TorrentSeedingSpecification
+// at slice 4.P (queue [8]) consumes.
+//
+// Mirrors the C# `IIndexerFactory.Get(id).Settings as ITorrentIndexerSettings`
+// pattern at TorrentSeedingSpecification.cs:34-46, flattened to a
+// single MinimumSeeders read since the spec doesn't need the rest of
+// the IIndexer surface. The (id → row → Definition →
+// type-switch-on-Settings) chain is identical to dbIndexerSource's
+// row-hydration path in this file; consolidated into one helper to
+// keep the spec's contract narrow.
+//
+// On indexers.ErrNotFound the adapter returns
+// decisionengine.ErrTorrentIndexerNotFound — the C# spec catches
+// ModelNotFoundException and accepts; the spec's IsSatisfiedBy at
+// internal/decisionengine/spec_torrent_seeding.go translates this
+// sentinel back to accept.
+type minimumSeedersAdapter struct {
+	repo    *indexers.Repo
+	factory provider.Factory
+}
+
+// newMinimumSeedersAdapter binds the dependencies. Used by main.go
+// when building decisionEngineDeps.
+func newMinimumSeedersAdapter(repo *indexers.Repo) minimumSeedersAdapter {
+	return minimumSeedersAdapter{
+		repo:    repo,
+		factory: provider.NewFactory(provider.Default()),
+	}
+}
+
+// MinimumSeeders implements decisionengine.MinimumSeedersReader.
+func (a minimumSeedersAdapter) MinimumSeeders(ctx context.Context, id int) (int, bool, error) {
+	row, err := a.repo.Get(ctx, id)
+	if err != nil {
+		if errors.Is(err, indexers.ErrNotFound) {
+			return 0, false, decisionengine.ErrTorrentIndexerNotFound
+		}
+		return 0, false, fmt.Errorf("indexers.Get(%d): %w", id, err)
+	}
+	def, err := a.factory.LoadDefinition(provider.FamilyIndexer, indexerRowAdapter{row: row})
+	if err != nil {
+		return 0, false, fmt.Errorf("provider.LoadDefinition(%d): %w", id, err)
+	}
+	if def == nil || def.Settings == nil {
+		// Implementation unknown / unregistered — treat as
+		// non-torrent (mirrors the C# settings-cast-fails path).
+		return 0, false, nil
+	}
+	switch s := def.Settings.(type) {
+	case *torznab.Settings:
+		return s.MinimumSeeders, true, nil
+	case *torrentrss.Settings:
+		return s.MinimumSeeders, true, nil
+	default:
+		// Newznab + any non-torrent provider class.
+		return 0, false, nil
+	}
+}
+
+// Compile-time guard.
+var _ decisionengine.MinimumSeedersReader = minimumSeedersAdapter{}
