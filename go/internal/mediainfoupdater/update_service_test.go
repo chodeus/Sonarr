@@ -57,9 +57,29 @@ type stubCfg struct{ enabled bool }
 
 func (s stubCfg) EnableMediaInfo() bool { return s.enabled }
 
+// stubFileReader feeds a fixed []episodefiles.File + optional error,
+// captures the seriesID arg.
+type stubFileReader struct {
+	rows  []episodefiles.File
+	err   error
+	calls int
+	got   int
+}
+
+func (s *stubFileReader) GetFilesBySeries(_ context.Context, seriesID int) ([]episodefiles.File, error) {
+	s.calls++
+	s.got = seriesID
+	return s.rows, s.err
+}
+
 func newSvc(t *testing.T, fs stubFS, files *stubFiles, reader *stubReader, cfg stubCfg) *mediainfoupdater.UpdateService {
 	t.Helper()
-	svc, err := mediainfoupdater.NewUpdateService(fs, files, reader, cfg, slog.New(slog.DiscardHandler))
+	return newSvcWithFileReader(t, fs, files, &stubFileReader{}, reader, cfg)
+}
+
+func newSvcWithFileReader(t *testing.T, fs stubFS, files *stubFiles, fileReader *stubFileReader, reader *stubReader, cfg stubCfg) *mediainfoupdater.UpdateService {
+	t.Helper()
+	svc, err := mediainfoupdater.NewUpdateService(fs, files, fileReader, reader, cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("NewUpdateService: %v", err)
 	}
@@ -70,24 +90,29 @@ func TestNewUpdateService_RejectsNilDeps(t *testing.T) {
 	t.Parallel()
 	files := &stubFiles{}
 	reader := &stubReader{}
+	fileReader := &stubFileReader{}
 	cases := []struct {
 		name string
 		fn   func() error
 	}{
 		{"nil disk", func() error {
-			_, err := mediainfoupdater.NewUpdateService(nil, files, reader, stubCfg{}, nil)
+			_, err := mediainfoupdater.NewUpdateService(nil, files, fileReader, reader, stubCfg{}, nil)
 			return err
 		}},
 		{"nil files", func() error {
-			_, err := mediainfoupdater.NewUpdateService(stubFS{}, nil, reader, stubCfg{}, nil)
+			_, err := mediainfoupdater.NewUpdateService(stubFS{}, nil, fileReader, reader, stubCfg{}, nil)
+			return err
+		}},
+		{"nil fileReader", func() error {
+			_, err := mediainfoupdater.NewUpdateService(stubFS{}, files, nil, reader, stubCfg{}, nil)
 			return err
 		}},
 		{"nil reader", func() error {
-			_, err := mediainfoupdater.NewUpdateService(stubFS{}, files, nil, stubCfg{}, nil)
+			_, err := mediainfoupdater.NewUpdateService(stubFS{}, files, fileReader, nil, stubCfg{}, nil)
 			return err
 		}},
 		{"nil cfg", func() error {
-			_, err := mediainfoupdater.NewUpdateService(stubFS{}, files, reader, nil, nil)
+			_, err := mediainfoupdater.NewUpdateService(stubFS{}, files, fileReader, reader, nil, nil)
 			return err
 		}},
 	}

@@ -67,6 +67,7 @@ import (
 	"sonarr.tv/sonarr/internal/lifecycle"
 	"sonarr.tv/sonarr/internal/mediafileattributes"
 	"sonarr.tv/sonarr/internal/mediafiles"
+	"sonarr.tv/sonarr/internal/mediainfoupdater"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/parsingservice"
@@ -1450,7 +1451,27 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// this slice it short-circuited to "no decisions" + "no-op
 	// import" against the stubs. The remaining stub
 	// (stubUpdateMediaInfo) gates on the MediaInfo updater port —
-	// FAIL-CLOSED #8 territory.
+	// REPLACED in slice 3.BI by the real *mediainfoupdater.UpdateService
+	// constructed below. The reader dep stays a no-op stub
+	// (noopMediaInfoReader) until sub-arc 13c ports the
+	// VideoFileInfoReader; with the noop reader the
+	// HandleSeriesScanned + Update paths short-circuit on the
+	// nil-MediaInfo arm without touching ffmpeg, so production
+	// behaviour matches the slice 3.AE stub plus the new
+	// SeriesScannedEvent IHandle subscription which fires the
+	// "no extraction" debug log line per file.
+	mediaInfoUpdater, err := mediainfoupdater.NewUpdateService(
+		diskProv,
+		episodeFilesSvc,
+		episodeFilesSvc,
+		noopMediaInfoReader{},
+		configProv,
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("mediainfoupdater service: %w", err)
+	}
+	mediaInfoUpdater.SubscribeOn(bus)
 	mediafilesSvc, err := mediafiles.NewService(
 		diskProv,
 		configProv,
@@ -1460,7 +1481,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		mediaFileCleanupSvc,
 		mediafilesImportDecisionAdapter{real: importDecisionMaker},
 		mediafilesImportApprovedAdapter{real: importApprovedSvc},
-		stubUpdateMediaInfo{},
+		mediaInfoUpdater,
 		bus,
 		logger,
 	)

@@ -64,6 +64,21 @@ type FileWriter interface {
 	Update(ctx context.Context, f *episodefiles.File) error
 }
 
+// FileReader narrows [*episodefiles.Service] to the GetFilesBySeries
+// method the SeriesScannedEvent IHandle subscriber reaches for via
+// IMediaFileService.GetFilesBySeries.
+//
+// Mirrors the C# `IMediaFileService.GetFilesBySeries(int)` call at
+// `UpdateMediaInfoService.cs:48`. Returns the value-typed slice
+// (matches *episodefiles.Service.GetFilesBySeries signature). The
+// handler iterates this list looking for rows whose persisted
+// MediaInfo is nil OR has a SchemaRevision below
+// [MinimumSchemaRevision] — those rows get re-extracted via
+// UpdateMediaInfo.
+type FileReader interface {
+	GetFilesBySeries(ctx context.Context, seriesID int) ([]episodefiles.File, error)
+}
+
 // MediaInfoReader narrows the as-yet-unported [VideoFileInfoReader]
 // to the one method UpdateMediaInfoService reaches for via
 // IVideoFileInfoReader.GetMediaInfo. Returns the parsed *Model on
@@ -102,14 +117,15 @@ type EnableMediaInfoConfigReader interface {
 //
 // Goroutine-safe: stateless after construction.
 type UpdateService struct {
-	disk   FileSystem
-	files  FileWriter
-	reader MediaInfoReader
-	cfg    EnableMediaInfoConfigReader
-	log    *slog.Logger
+	disk       FileSystem
+	files      FileWriter
+	fileReader FileReader
+	reader     MediaInfoReader
+	cfg        EnableMediaInfoConfigReader
+	log        *slog.Logger
 }
 
-// NewUpdateService binds the four narrow deps. nil-required-dep
+// NewUpdateService binds the five narrow deps. nil-required-dep
 // returns a typed error (sibling spec-constructor posture).
 //
 // nil-log defaults to slog.Default() so the boot-site can drop a
@@ -117,6 +133,7 @@ type UpdateService struct {
 func NewUpdateService(
 	disk FileSystem,
 	files FileWriter,
+	fileReader FileReader,
 	reader MediaInfoReader,
 	cfg EnableMediaInfoConfigReader,
 	log *slog.Logger,
@@ -126,6 +143,9 @@ func NewUpdateService(
 	}
 	if files == nil {
 		return nil, errors.New("mediainfoupdater: NewUpdateService: files is nil")
+	}
+	if fileReader == nil {
+		return nil, errors.New("mediainfoupdater: NewUpdateService: fileReader is nil")
 	}
 	if reader == nil {
 		return nil, errors.New("mediainfoupdater: NewUpdateService: reader is nil")
@@ -137,11 +157,12 @@ func NewUpdateService(
 		log = slog.Default()
 	}
 	return &UpdateService{
-		disk:   disk,
-		files:  files,
-		reader: reader,
-		cfg:    cfg,
-		log:    log,
+		disk:       disk,
+		files:      files,
+		fileReader: fileReader,
+		reader:     reader,
+		cfg:        cfg,
+		log:        log,
 	}, nil
 }
 

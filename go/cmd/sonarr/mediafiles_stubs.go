@@ -1,38 +1,40 @@
 // Boot-time stub implementations of mediafiles.Service narrow
 // interfaces whose real ports haven't landed yet.
 //
-// As of slice 3.AE only stubUpdateMediaInfo remains — the real
-// MediaInfo updater is FAIL-CLOSED #8 territory (NEW subsystem).
-// The slice-3.AD swap dropped stubRootFolderResolver in favour of
-// rootFolderHealthResolverAdapter; the slice-3.AE swap dropped
-// stubImportDecisionMaker + stubImportApprovedEpisodes in favour of
-// the mediafilesImportDecisionAdapter +
-// mediafilesImportApprovedAdapter (mediafiles_wiring.go) wrapping
-// the real *episodeimport types.
+// As of slice 3.BI the slice-3.AE stubUpdateMediaInfo dropped — the
+// real *mediainfoupdater.UpdateService now satisfies
+// mediafiles.UpdateMediaInfo. What remains is noopMediaInfoReader:
+// the placeholder for the VideoFileInfoReader port deferred to
+// sub-arc 13c (slice 3.BJ). The noop returns (nil, nil) so the
+// UpdateService.UpdateMediaInfo nil-result short-circuit fires
+// instead of stamping an actual MediaInfo blob — no behavioural
+// change vs the prior stubUpdateMediaInfo while 13c remains
+// deferred.
 //
-// Replace this stub by removing it and binding the real
-// MediaInfo-update type at the cmd/sonarr boot site once it ports.
-// `mediafiles.NewService` rejects nil deps, so a missed rewire
-// surfaces loudly at startup, not on first scan.
+// Replace noopMediaInfoReader by removing it and binding the real
+// VideoFileInfoReader at the cmd/sonarr boot site once 13c ports.
+// `mediainfoupdater.NewUpdateService` rejects nil deps, so a missed
+// rewire surfaces loudly at startup, not on first scan.
 
 package main
 
 import (
 	"context"
 
-	"sonarr.tv/sonarr/internal/episodefiles"
-	"sonarr.tv/sonarr/internal/mediafiles"
-	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/mediainfo"
+	"sonarr.tv/sonarr/internal/mediainfoupdater"
 )
 
-// stubUpdateMediaInfo returns false-without-error so the size-update
-// loop falls back to the bulk EpisodeFileService.UpdateMany path.
-// Replace when the MediaInfo-update subsystem ports.
-type stubUpdateMediaInfo struct{}
+// noopMediaInfoReader satisfies [mediainfoupdater.MediaInfoReader]
+// with a (nil, nil) return — the UpdateService's nil-result arm
+// then short-circuits without touching DB or modifying file rows,
+// preserving the slice-3.AE no-op behaviour. Production swap
+// happens when sub-arc 13c lands the ffmpeg-backed reader.
+type noopMediaInfoReader struct{}
 
-func (stubUpdateMediaInfo) Update(_ context.Context, _ *episodefiles.File, _ *series.Series) (bool, error) {
-	return false, nil
+func (noopMediaInfoReader) GetMediaInfo(_ context.Context, _ string) (*mediainfo.Model, error) {
+	return nil, nil
 }
 
 // Compile-time interface satisfaction guard.
-var _ mediafiles.UpdateMediaInfo = stubUpdateMediaInfo{}
+var _ mediainfoupdater.MediaInfoReader = noopMediaInfoReader{}
