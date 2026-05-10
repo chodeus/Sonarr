@@ -147,6 +147,28 @@ func (r *Registry) MustRegister(family Family, key Key, factory Constructor) {
 	}
 }
 
+// Replace overwrites the factory for (family, key). Used by Phase 4
+// family-port slices to swap the nil placeholder constructor seeded by
+// Default() with the real instantiator. Returns nil on success, or
+// errors.New("not registered") when the key was never registered (a
+// genuine bug — the family-port slice should match an existing catalog
+// entry, not invent new ones).
+//
+// Concurrency-safe; takes the write lock.
+func (r *Registry) Replace(family Family, key Key, factory Constructor) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	bucket, ok := r.entries[family]
+	if !ok {
+		return fmt.Errorf("provider: family %q not registered", family)
+	}
+	if _, exists := bucket[key]; !exists {
+		return fmt.Errorf("provider: %q/%q not registered (use Register for new keys)", key.Impl, key.Contract)
+	}
+	bucket[key] = factory
+	return nil
+}
+
 // Has reports whether (family, key) is registered. Returns true even if
 // the registered factory is nil — "known identifier" is distinct from
 // "instantiable identifier".

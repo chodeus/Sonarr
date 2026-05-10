@@ -1,5 +1,7 @@
 package provider
 
+import "sync"
+
 // This file catalogues every (Impl, Contract) pair the C# tree ships at
 // HEAD, plus every CustomFormat / AutoTagging spec type-string the
 // embedded JSON envelopes reference. The strings are sourced from
@@ -16,36 +18,49 @@ package provider
 // "Implementation+ConfigContract round-trip into a known pair" without
 // also depending on Phase 4 constructor wiring.
 
-// Default returns a Registry seeded with the canonical Sonarr provider
-// identifier set. Callers who only need identifier validation should
-// share one Default registry per process; callers wiring real
-// constructors in Phase 4 should fork their own registry instance via
-// NewRegistry() and call Register on each constructor.
+// Default returns the process-wide Registry seeded with the canonical
+// Sonarr provider identifier set. The registry is built once and reused
+// — Phase 4 family-port slices register their real constructors against
+// this shared instance via init() blocks, and the boot-time wiring code
+// reads from the same instance via Default().Lookup.
+//
+// Tests that need an isolated registry (no shared state) should call
+// NewRegistry() directly; Default() is for the shared catalog.
+//
+// Concurrency-safe: built under sync.Once so concurrent Default() calls
+// during init order resolution see the same Registry pointer.
 func Default() *Registry {
-	r := NewRegistry()
-	for _, k := range indexerKeys {
-		r.MustRegister(FamilyIndexer, k, nil)
-	}
-	for _, k := range downloadClientKeys {
-		r.MustRegister(FamilyDownloadClient, k, nil)
-	}
-	for _, k := range notificationKeys {
-		r.MustRegister(FamilyNotification, k, nil)
-	}
-	for _, k := range importListKeys {
-		r.MustRegister(FamilyImportList, k, nil)
-	}
-	for _, k := range metadataKeys {
-		r.MustRegister(FamilyMetadata, k, nil)
-	}
-	for _, name := range customFormatSpecTypes {
-		r.MustRegister(FamilyCustomFormatSpec, Key{Impl: name}, nil)
-	}
-	for _, name := range autoTaggingSpecTypes {
-		r.MustRegister(FamilyAutoTaggingSpec, Key{Impl: name}, nil)
-	}
-	return r
+	defaultOnce.Do(func() {
+		defaultRegistry = NewRegistry()
+		for _, k := range indexerKeys {
+			defaultRegistry.MustRegister(FamilyIndexer, k, nil)
+		}
+		for _, k := range downloadClientKeys {
+			defaultRegistry.MustRegister(FamilyDownloadClient, k, nil)
+		}
+		for _, k := range notificationKeys {
+			defaultRegistry.MustRegister(FamilyNotification, k, nil)
+		}
+		for _, k := range importListKeys {
+			defaultRegistry.MustRegister(FamilyImportList, k, nil)
+		}
+		for _, k := range metadataKeys {
+			defaultRegistry.MustRegister(FamilyMetadata, k, nil)
+		}
+		for _, name := range customFormatSpecTypes {
+			defaultRegistry.MustRegister(FamilyCustomFormatSpec, Key{Impl: name}, nil)
+		}
+		for _, name := range autoTaggingSpecTypes {
+			defaultRegistry.MustRegister(FamilyAutoTaggingSpec, Key{Impl: name}, nil)
+		}
+	})
+	return defaultRegistry
 }
+
+var (
+	defaultOnce     sync.Once
+	defaultRegistry *Registry
+)
 
 // indexerKeys — 10 concrete providers per analysis/providers/indexers.md.
 var indexerKeys = []Key{
