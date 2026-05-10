@@ -56,6 +56,7 @@ import (
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/delayprofiles"
 	"sonarr.tv/sonarr/internal/disk"
+	"sonarr.tv/sonarr/internal/downloadclientstatus"
 	"sonarr.tv/sonarr/internal/downloadedimport"
 	"sonarr.tv/sonarr/internal/downloadhistory"
 	"sonarr.tv/sonarr/internal/episodefilemoving"
@@ -1248,6 +1249,27 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("indexerstatus service: %w", err)
 	}
+
+	// Slice 4.V (queue [12]): wire downloadclientstatus.Service. Pattern-
+	// mirror of the indexerstatus pair above. The constructor applies
+	// the C# `DownloadClientStatusService.cs:18-19` overrides
+	// (MinTimeSinceInitialFailure=5min, MaxEscalationLevel=5) so the
+	// back-off envelope matches the C# behaviour the moment a download-
+	// client provider lands. The Service has no live consumer yet — the
+	// download-client family ports in queue [13]/[14]; this slice just
+	// brings the persistence + Recorder surface online so the wiring is
+	// ready when the provider entries appear. The compile-time guards
+	// in internal/downloadclientstatus/recorder.go pin the
+	// providerstatus.Recorder + BlockedView interfaces.
+	downloadClientStatusRepo, err := downloadclientstatus.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("downloadclientstatus repo: %w", err)
+	}
+	downloadClientStatusSvc, err := downloadclientstatus.NewService(downloadClientStatusRepo, bus, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("downloadclientstatus service: %w", err)
+	}
+	_ = downloadClientStatusSvc // held until queue [13]/[14] download-client provider wires consume it.
 
 	// Slice 4.R (queue [10]): IndexerStatusCheck wires
 	// EnabledIndexerLister (over indexers.Repo via the
