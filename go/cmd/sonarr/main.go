@@ -37,6 +37,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"sonarr.tv/sonarr/internal/appenv"
 	"sonarr.tv/sonarr/internal/auth"
@@ -65,6 +66,9 @@ import (
 	"sonarr.tv/sonarr/internal/historyhandlers"
 	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/httpclient"
+	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/indexersearch"
+	"sonarr.tv/sonarr/internal/indexerstatus"
 	"sonarr.tv/sonarr/internal/instrumentation"
 	"sonarr.tv/sonarr/internal/lifecycle"
 	"sonarr.tv/sonarr/internal/mediafileattributes"
@@ -1738,7 +1742,43 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("http client: %w", err)
 	}
-	_ = httpClient // queue [4]+ will pass into indexer/import-list/notification factories.
+	// Slice 4.O (queue [7] sub-arc 7c, FINAL): wire indexers.Repo +
+	// indexerstatus.Service + indexersearch.Service. Closes the
+	// indexer-search orchestrator's plumbing — the dispatcher
+	// (indexersearch.Service) now has a live IndexerSource that
+	// hydrates persisted Indexers rows into runtime
+	// newznab/torznab/torrentrss instances per dispatch via
+	// dbIndexerSource (see indexersearch_wiring.go).
+	//
+	// httpClient is now the production HTTP transport for the indexer
+	// fetches; the prior `_ = httpClient` blank-assign is gone. The
+	// download-client / import-list factories that ALSO need it remain
+	// follow-up loops outside this focused subset.
+	indexersRepo, err := indexers.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("indexers repo: %w", err)
+	}
+	indexerStatusRepo, err := indexerstatus.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("indexerstatus repo: %w", err)
+	}
+	indexerStatusSvc, err := indexerstatus.NewService(indexerStatusRepo, bus, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("indexerstatus service: %w", err)
+	}
+	indexerSource := newIndexerSource(indexersRepo, httpClient, logger)
+	// series.Service / episodes.Service / scenemappings.Service satisfy
+	// the indexersearch narrow interfaces directly (see deps.go) — no
+	// adapter wrappers needed.
+	indexerSearchSvc := indexersearch.NewService(
+		indexerSource,
+		indexerStatusSvc,
+		seriesSvc,
+		episodesSvc,
+		scenemappingsSvc,
+		logger,
+	)
+	_ = indexerSearchSvc // queue [9] RssSync handler + queue [8] specs will consume the Service.
 
 	registry := commands.NewRegistry()
 	queue := commands.NewQueue(registry.Properties)
