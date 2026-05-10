@@ -18,14 +18,26 @@ const SeasonPackOnlySpecificationName = "SeasonPackOnly"
 // the search was issued against so per-release decisions can verify
 // the candidate matches the user's intent.
 //
-// This is a partial port of the C# `IndexerSearch.SearchCriteriaBase`
-// — only the field SeasonPackOnlySpecification needs lives here. The
-// full type (SeriesId, Series, MonitoredEpisodesOnly, etc.) lands in
-// its own slice once IndexerSearch is on the Phase 4 critical path.
+// Partial port of the C# `IndexerSearch.SearchCriteriaBase` at
+// `src/NzbDrone.Core/IndexerSearch/Definitions/SearchCriteriaBase.cs`.
+// Three fields landed in slice 4.E (Episodes / UserInvokedSearch /
+// InteractiveSearch); slice 4.S adds [SearchCriteria.Series] so the
+// parsingservice.Service.Map series-resolution short-circuits at C#
+// `ParsingService.cs:411-468` (alias TvdbId match, CleanTitle match,
+// TvdbId / TvRageId / ImdbId ID matches) can read the search-context
+// series row without a database round-trip. The full type (SeriesId,
+// MonitoredEpisodesOnly, etc.) lands when IndexerSearch picks up the
+// remaining surface area in later slices.
 //
 // Callers attach the typed value to ReleaseDecisionInformation.SearchCriteria
-// (which remains `any` for now); specs type-assert to `*SearchCriteria`.
+// (which remains `any` for now); specs type-assert to *SearchCriteria.
 type SearchCriteria struct {
+	// Series is the series the search was issued against — mirrors C#
+	// `SearchCriteriaBase.Series`. Read by parsingservice.findSeries to
+	// short-circuit ID + CleanTitle matches without a series lookup. May
+	// be nil in test setups that don't pin a series; production callers
+	// always populate it.
+	Series *series.Series
 	// Episodes is the list of episodes the search asked for. May span
 	// multiple seasons.
 	Episodes []episodes.Episode

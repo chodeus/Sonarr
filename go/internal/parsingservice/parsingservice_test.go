@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/parser"
@@ -911,6 +912,14 @@ type stubSeriesFinder struct {
 	byTvdbID      map[int]*series.Series
 	byTvdbIDErr   error
 	byTvdbIDCalls []int
+
+	byTvRageID      map[int]*series.Series
+	byTvRageIDErr   error
+	byTvRageIDCalls []int
+
+	byImdbID      map[string]*series.Series
+	byImdbIDErr   error
+	byImdbIDCalls []string
 }
 
 func (s *stubSeriesFinder) FindByTitle(_ context.Context, title string) (*series.Series, error) {
@@ -945,6 +954,28 @@ func (s *stubSeriesFinder) FindByTvdbID(_ context.Context, tvdbID int) (*series.
 		return nil, s.byTvdbIDErr
 	}
 	if v, ok := s.byTvdbID[tvdbID]; ok {
+		return v, nil
+	}
+	return nil, series.ErrNotFound
+}
+
+func (s *stubSeriesFinder) FindByTvRageID(_ context.Context, tvRageID int) (*series.Series, error) {
+	s.byTvRageIDCalls = append(s.byTvRageIDCalls, tvRageID)
+	if s.byTvRageIDErr != nil {
+		return nil, s.byTvRageIDErr
+	}
+	if v, ok := s.byTvRageID[tvRageID]; ok {
+		return v, nil
+	}
+	return nil, series.ErrNotFound
+}
+
+func (s *stubSeriesFinder) FindByImdbID(_ context.Context, imdbID string) (*series.Series, error) {
+	s.byImdbIDCalls = append(s.byImdbIDCalls, imdbID)
+	if s.byImdbIDErr != nil {
+		return nil, s.byImdbIDErr
+	}
+	if v, ok := s.byImdbID[imdbID]; ok {
 		return v, nil
 	}
 	return nil, series.ErrNotFound
@@ -1193,3 +1224,538 @@ func TestGetSeriesFromTitleStep3FinderErrorPropagates(t *testing.T) {
 		t.Errorf("got %v, want wrapped FindByTitle error", err)
 	}
 }
+
+// ============================================================================
+// Service.Map (slice 4.S — queue [11] sub-arc 11a)
+// ============================================================================
+//
+// Ports the C# MapFixture cases at
+// `src/NzbDrone.Core.Test/ParserTests/ParsingServiceTests/MapFixture.cs`.
+// Each test pins a specific findSeries arm + verifies the resolved
+// *decisionengine.Subject's Series + SeriesMatchType + (where
+// relevant) Episodes/EpisodeRequested/MappedSeasonNumber.
+
+// mapTestSubject builds the parsedInfo used across MapFixture cases.
+// Mirrors the C# `Setup()` at MapFixture.cs:27-56 — series "30 Stone"
+// with cleanTitle="stone", one episode (id=1), and a parsedInfo for
+// S01E01 against the series title.
+func mapTestParsedInfo() *parser.ParsedEpisodeInfo {
+	return &parser.ParsedEpisodeInfo{
+		SeriesTitle:     "30 Stone",
+		SeriesTitleInfo: &parser.SeriesTitleInfo{Title: "30 Stone"},
+		SeasonNumber:    1,
+		EpisodeNumbers:  []int{1},
+		Languages:       []language.Language{language.English},
+	}
+}
+
+func mapTestSeries() *series.Series {
+	year := 2020
+	return &series.Series{
+		ID:         42,
+		Title:      "30 Stone",
+		CleanTitle: parser.CleanSeriesTitle("30 Stone"),
+		TvdbID:     1234,
+		TvRageID:   5678,
+		ImdbID:     "tt9999",
+		Year:       &year,
+		SeriesType: series.SeriesTypeStandard,
+	}
+}
+
+func TestMapNilReceiverErrors(t *testing.T) {
+	t.Parallel()
+	var svc *parsingservice.Service
+	_, err := svc.Map(context.Background(), mapTestParsedInfo(), 0, 0, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "nil receiver") {
+		t.Errorf("got %v, want nil-receiver error", err)
+	}
+}
+
+func TestMapNilParsedInfoErrors(t *testing.T) {
+	t.Parallel()
+	svc := mkSvc(t, &stubFinder{}, &stubInfos{})
+	_, got := svc.Map(context.Background(), nil, 0, 0, "", nil)
+	if got == nil || !strings.Contains(got.Error(), "nil parsedEpisodeInfo") {
+		t.Errorf("got %v, want nil-parsedEpisodeInfo error", got)
+	}
+}
+
+// MapFixture.cs:85-93 — should_lookup_series_by_name. FindByTitle hits.
+func TestMapResolvesSeriesByTitle(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries()
+	sf := &stubSeriesFinder{byTitle: map[string]*series.Series{"30 Stone": ser}}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{}, sf)
+
+	sub, err := svc.Map(context.Background(), mapTestParsedInfo(), ser.TvdbID, ser.TvRageID, ser.ImdbID, nil)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if sub.Series != ser {
+		t.Errorf("Series = %v, want %v", sub.Series, ser)
+	}
+	if sub.SeriesMatchType != series.MatchTypeTitle {
+		t.Errorf("SeriesMatchType = %v, want Title", sub.SeriesMatchType)
+	}
+	if len(sf.byTitleCalls) != 1 {
+		t.Errorf("FindByTitle calls = %v, want 1 call", sf.byTitleCalls)
+	}
+}
+
+// MapFixture.cs:96-104 — should_use_tvdbid_when_series_title_lookup_fails.
+func TestMapFallsBackToTvdbID(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries()
+	sf := &stubSeriesFinder{byTvdbID: map[int]*series.Series{ser.TvdbID: ser}}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{}, sf)
+
+	sub, err := svc.Map(context.Background(), mapTestParsedInfo(), ser.TvdbID, ser.TvRageID, ser.ImdbID, nil)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if sub.Series != ser {
+		t.Errorf("Series = %v, want %v", sub.Series, ser)
+	}
+	if sub.SeriesMatchType != series.MatchTypeID {
+		t.Errorf("SeriesMatchType = %v, want ID", sub.SeriesMatchType)
+	}
+	if len(sf.byTvdbIDCalls) != 1 {
+		t.Errorf("FindByTvdbID calls = %v, want 1", sf.byTvdbIDCalls)
+	}
+}
+
+// MapFixture.cs:107-115 — should_use_tvrageid_when_series_title_lookup_fails.
+// Critical: tvdbId argument is 0 so step 7 actually fires.
+func TestMapFallsBackToTvRageIDWhenTvdbAbsent(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries()
+	sf := &stubSeriesFinder{byTvRageID: map[int]*series.Series{ser.TvRageID: ser}}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{}, sf)
+
+	sub, err := svc.Map(context.Background(), mapTestParsedInfo(), 0, ser.TvRageID, "", nil)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if sub.Series != ser {
+		t.Errorf("Series = %v, want %v", sub.Series, ser)
+	}
+	if sub.SeriesMatchType != series.MatchTypeID {
+		t.Errorf("SeriesMatchType = %v, want ID", sub.SeriesMatchType)
+	}
+	if len(sf.byTvRageIDCalls) != 1 {
+		t.Errorf("FindByTvRageID calls = %v, want 1", sf.byTvRageIDCalls)
+	}
+}
+
+// MapFixture.cs:118-132 — should_not_use_tvrageid_when_scene_naming_exception_exists.
+// Scene mapping wins, FindByTvRageID never called. Note: scene mapping's
+// TvdbID is unknown to the seriesFinder so the series stays nil.
+func TestMapSceneMappingShortCircuitsAndSkipsTvRageFallback(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries()
+	mapping := &scenemappings.Mapping{TvdbID: 10}
+	sf := &stubSeriesFinder{byTvRageID: map[int]*series.Series{ser.TvRageID: ser}}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{mapping: mapping}, sf)
+
+	sub, err := svc.Map(context.Background(), mapTestParsedInfo(), ser.TvdbID, ser.TvRageID, ser.ImdbID, nil)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if sub.Series != nil {
+		t.Errorf("Series = %v, want nil", sub.Series)
+	}
+	if len(sf.byTvRageIDCalls) != 0 {
+		t.Errorf("FindByTvRageID calls = %v, want 0", sf.byTvRageIDCalls)
+	}
+	// Step 1 dispatched FindByTvdbID(10), which misses → ser=nil.
+	if len(sf.byTvdbIDCalls) != 1 || sf.byTvdbIDCalls[0] != 10 {
+		t.Errorf("FindByTvdbID calls = %v, want [10]", sf.byTvdbIDCalls)
+	}
+}
+
+// MapFixture.cs:135-143 — should_use_search_criteria_series_title.
+// searchCriteria.Series CleanTitle matches parsedInfo → no FindByTitle.
+func TestMapSearchCriteriaCleanTitleShortCircuit(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries()
+	sf := &stubSeriesFinder{}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{}, sf)
+	crit := &decisionengine.SearchCriteria{Series: ser}
+
+	sub, err := svc.Map(context.Background(), mapTestParsedInfo(), ser.TvdbID, ser.TvRageID, ser.ImdbID, crit)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if sub.Series != ser {
+		t.Errorf("Series = %v, want %v", sub.Series, ser)
+	}
+	if sub.SeriesMatchType != series.MatchTypeTitle {
+		t.Errorf("SeriesMatchType = %v, want Title", sub.SeriesMatchType)
+	}
+	if len(sf.byTitleCalls) != 0 {
+		t.Errorf("FindByTitle calls = %v, want 0 (search-criteria short-circuit)", sf.byTitleCalls)
+	}
+}
+
+// MapFixture.cs:146-154 — should_FindByTitle_when_search_criteria_matching_fails.
+// SearchCriteria.Series doesn't match parsedInfo → falls through to step 3
+// FindByTitle.
+func TestMapSearchCriteriaMissFallsThroughToFindByTitle(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries()
+	sf := &stubSeriesFinder{} // FindByTitle returns ErrNotFound → ser stays nil
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{}, sf)
+	crit := &decisionengine.SearchCriteria{Series: ser}
+
+	parsedInfo := mapTestParsedInfo()
+	parsedInfo.SeriesTitle = "Another Name"
+
+	_, err := svc.Map(context.Background(), parsedInfo, 10, 10, "", crit)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if len(sf.byTitleCalls) != 1 {
+		t.Errorf("FindByTitle calls = %v, want 1", sf.byTitleCalls)
+	}
+}
+
+// MapFixture.cs:179-187 — should_FindByTvdbId_when_search_criteria_and_FindByTitle_matching_fails.
+func TestMapFallsBackToTvdbIDAfterSearchCriteriaMiss(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries()
+	sf := &stubSeriesFinder{}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{}, sf)
+	crit := &decisionengine.SearchCriteria{Series: ser}
+
+	parsedInfo := mapTestParsedInfo()
+	parsedInfo.SeriesTitle = "Another Name"
+
+	_, err := svc.Map(context.Background(), parsedInfo, 10, 10, "", crit)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if len(sf.byTvdbIDCalls) != 1 || sf.byTvdbIDCalls[0] != 10 {
+		t.Errorf("FindByTvdbID calls = %v, want [10]", sf.byTvdbIDCalls)
+	}
+}
+
+// MapFixture.cs:190-198 — should_FindByTvRageId_when_search_criteria_and_FindByTitle_matching_fails.
+// tvdbId argument 0 → step 7 fires.
+func TestMapFallsBackToTvRageIDAfterSearchCriteriaMiss(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries()
+	sf := &stubSeriesFinder{}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{}, sf)
+	crit := &decisionengine.SearchCriteria{Series: ser}
+
+	parsedInfo := mapTestParsedInfo()
+	parsedInfo.SeriesTitle = "Another Name"
+
+	_, err := svc.Map(context.Background(), parsedInfo, 0, 10, "", crit)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if len(sf.byTvRageIDCalls) != 1 || sf.byTvRageIDCalls[0] != 10 {
+		t.Errorf("FindByTvRageID calls = %v, want [10]", sf.byTvRageIDCalls)
+	}
+}
+
+// MapFixture.cs:201-209 — should_not_FindByTvRageId_when_...tvdb_id_is_specified.
+// Step 7 is gated on tvdbId<=0 so a non-zero tvdbId argument suppresses it.
+func TestMapSkipsTvRageFallbackWhenTvdbIdSpecified(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries()
+	sf := &stubSeriesFinder{}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{}, sf)
+	crit := &decisionengine.SearchCriteria{Series: ser}
+
+	parsedInfo := mapTestParsedInfo()
+	parsedInfo.SeriesTitle = "Another Name"
+
+	_, err := svc.Map(context.Background(), parsedInfo, 10, 10, "", crit)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if len(sf.byTvRageIDCalls) != 0 {
+		t.Errorf("FindByTvRageID calls = %v, want 0 (tvdbId > 0 suppresses TvRage fallback)", sf.byTvRageIDCalls)
+	}
+}
+
+// MapFixture.cs:212-220 — should_FindByImdbId_when_search_criteria_and_FindByTitle_matching_fails.
+func TestMapFallsBackToImdbIDAfterSearchCriteriaMiss(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries()
+	sf := &stubSeriesFinder{}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{}, sf)
+	crit := &decisionengine.SearchCriteria{Series: ser}
+
+	parsedInfo := mapTestParsedInfo()
+	parsedInfo.SeriesTitle = "Another Name"
+
+	_, err := svc.Map(context.Background(), parsedInfo, 0, 0, "tt12345", crit)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if len(sf.byImdbIDCalls) != 1 || sf.byImdbIDCalls[0] != "tt12345" {
+		t.Errorf("FindByImdbID calls = %v, want [tt12345]", sf.byImdbIDCalls)
+	}
+}
+
+// MapFixture.cs:223-231 — should_not_FindByImdbId_when_...tvdb_id_is_specified.
+func TestMapSkipsImdbFallbackWhenTvdbIdSpecified(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries()
+	sf := &stubSeriesFinder{}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{}, sf)
+	crit := &decisionengine.SearchCriteria{Series: ser}
+
+	parsedInfo := mapTestParsedInfo()
+	parsedInfo.SeriesTitle = "Another Name"
+
+	_, err := svc.Map(context.Background(), parsedInfo, 10, 10, "tt12345", crit)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if len(sf.byImdbIDCalls) != 0 {
+		t.Errorf("FindByImdbID calls = %v, want 0 (tvdbId > 0 suppresses IMDb fallback)", sf.byImdbIDCalls)
+	}
+}
+
+// MapFixture.cs:258-275 — should_use_scene_season_number_from_xem_mapping_if_alias_matches_a_specific_season_number.
+func TestMapXemSceneSeasonNumberOverridesMappedSeason(t *testing.T) {
+	t.Parallel()
+	scenum := 2
+	mapping := &scenemappings.Mapping{
+		Type:              "XemService",
+		SceneSeasonNumber: &scenum,
+	}
+	sf := &stubSeriesFinder{}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{mapping: mapping}, sf)
+
+	pi := mapTestParsedInfo()
+	pi.SeasonNumber = 1
+	sub, err := svc.Map(context.Background(), pi, 0, 0, "", nil)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if sub.MappedSeasonNumber != 2 {
+		t.Errorf("MappedSeasonNumber = %d, want 2 (XemService override)", sub.MappedSeasonNumber)
+	}
+}
+
+// MapFixture.cs:277-295 — should_not_use_scene_season_number_from_xem_mapping_if_..._but_did_not_parse_season_1.
+// Confusingly named in C# — the docstring says "should not" but the assertion
+// expects the override TO take effect with SeasonNumber=2 because the offset
+// arm (SeasonNumber!=null && SceneSeasonNumber<=parsedInfo.SeasonNumber) fires
+// instead of the XemService override. C# `:191-195` + `:201-207`: a non-Xem
+// path adds the diff; the test's mapping doesn't set SeasonNumber so the
+// offset arm is a no-op, but the XemService elif also doesn't fire because
+// parsedInfo.SeasonNumber != 1. Result: MappedSeasonNumber stays as parsed.
+func TestMapXemOverrideOnlyFiresAtSeasonOne(t *testing.T) {
+	t.Parallel()
+	scenum := 2
+	mapping := &scenemappings.Mapping{
+		Type:              "XemService",
+		SceneSeasonNumber: &scenum,
+	}
+	sf := &stubSeriesFinder{}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{mapping: mapping}, sf)
+
+	pi := mapTestParsedInfo()
+	pi.SeasonNumber = 2
+	sub, err := svc.Map(context.Background(), pi, 0, 0, "", nil)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if sub.MappedSeasonNumber != 2 {
+		t.Errorf("MappedSeasonNumber = %d, want 2 (no XemService override at S>1)", sub.MappedSeasonNumber)
+	}
+}
+
+// MapFixture.cs:323-345 — should_not_use_tvdbid_matching_when_alias_without_year_is_found_with_wrong_year.
+// AliasMapping resolves but the resolved series's Year disagrees with
+// parsedInfo's Year → abandon. The seriesFinder will be queried twice
+// (step 5 FindByTitleAndYear → miss, then step 5b alias FindByTvdbID →
+// returns a row that fails the year cross-check).
+func TestMapAliasWithoutYearWrongYearAbandons(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries() // ser.Year = 2020
+
+	// stubSceneByArg returns the alias-keyed mapping only when called
+	// for the TitleWithoutYear ("Series Alias") — Step 1's
+	// FindSceneMapping(SeriesTitle="Series Alias 2020") returns nil, so
+	// the test exercises Step 5b (alias-by-year scene-mapping fallback)
+	// in isolation.
+	scene := stubSceneByArg{
+		bySeriesTitle: map[string]*scenemappings.Mapping{
+			"Series Alias": {TvdbID: ser.TvdbID},
+		},
+	}
+
+	parsedInfo := mapTestParsedInfo()
+	parsedInfo.SeriesTitle = "Series Alias 2020"
+	parsedInfo.SeriesTitleInfo = &parser.SeriesTitleInfo{
+		Title:            "Series Alias 2020",
+		TitleWithoutYear: "Series Alias",
+		Year:             2021,
+	}
+
+	sf := &stubSeriesFinder{
+		byTvdbID: map[int]*series.Series{ser.TvdbID: ser},
+	}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, scene, sf)
+
+	sub, err := svc.Map(context.Background(), parsedInfo, 0, 0, "", nil)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if sub.Series != nil {
+		t.Errorf("Series = %v, want nil (wrong year abandons alias)", sub.Series)
+	}
+	if len(sf.byTvdbIDCalls) != 1 {
+		t.Errorf("FindByTvdbID calls = %v, want 1", sf.byTvdbIDCalls)
+	}
+}
+
+// MapFixture.cs:298-320 — should_use_tvdbid_matching_when_alias_without_year_is_found.
+// Same as above but Year matches → alias resolution succeeds with MatchTypeAlias.
+func TestMapAliasWithoutYearMatchesResolvesAlias(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries() // ser.Year = 2020
+	scene := stubSceneByArg{
+		bySeriesTitle: map[string]*scenemappings.Mapping{
+			"Series Alias": {TvdbID: ser.TvdbID},
+		},
+	}
+
+	parsedInfo := mapTestParsedInfo()
+	parsedInfo.SeriesTitle = "Series Alias 2020"
+	parsedInfo.SeriesTitleInfo = &parser.SeriesTitleInfo{
+		Title:            "Series Alias 2020",
+		TitleWithoutYear: "Series Alias",
+		Year:             2020,
+	}
+
+	sf := &stubSeriesFinder{
+		byTvdbID: map[int]*series.Series{ser.TvdbID: ser},
+	}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, scene, sf)
+
+	sub, err := svc.Map(context.Background(), parsedInfo, ser.TvdbID, ser.TvRageID, ser.ImdbID, nil)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if sub.Series != ser {
+		t.Errorf("Series = %v, want %v", sub.Series, ser)
+	}
+	if sub.SeriesMatchType != series.MatchTypeAlias {
+		t.Errorf("SeriesMatchType = %v, want Alias", sub.SeriesMatchType)
+	}
+}
+
+// Subject populated when no series resolves — Languages still set,
+// Episodes is empty, SeriesMatchType is Unknown.
+func TestMapNoSeriesResolvedReturnsBareSubject(t *testing.T) {
+	t.Parallel()
+	sf := &stubSeriesFinder{}
+	svc := mkSvcAll(t, &stubFinder{}, &stubInfos{}, stubScene{}, sf)
+
+	pi := mapTestParsedInfo()
+	sub, err := svc.Map(context.Background(), pi, 0, 0, "", nil)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if sub == nil {
+		t.Fatalf("nil subject")
+	}
+	if sub.Series != nil {
+		t.Errorf("Series = %v, want nil", sub.Series)
+	}
+	if sub.SeriesMatchType != series.MatchTypeUnknown {
+		t.Errorf("SeriesMatchType = %v, want Unknown", sub.SeriesMatchType)
+	}
+	if len(sub.Episodes) != 0 {
+		t.Errorf("Episodes = %v, want empty", sub.Episodes)
+	}
+	if len(sub.Languages) != 1 || sub.Languages[0] != language.English {
+		t.Errorf("Languages = %v, want [English]", sub.Languages)
+	}
+	if sub.ParsedEpisodeInfo != pi {
+		t.Errorf("ParsedEpisodeInfo not propagated")
+	}
+}
+
+// Resolved series with successful episode lookup → Episodes populated;
+// when the matched episode is in searchCriteria.Episodes, EpisodeRequested
+// is true. Mirrors C# `:238-242`.
+func TestMapPopulatesEpisodesAndEpisodeRequested(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries()
+	ep := episodes.Episode{ID: 99, SeasonNumber: 1, EpisodeNumber: 1}
+	ef := &stubFinder{
+		findEpisodeMap: map[[3]int]*episodes.Episode{
+			{ser.ID, 1, 1}: &ep,
+		},
+	}
+	sf := &stubSeriesFinder{byTitle: map[string]*series.Series{"30 Stone": ser}}
+	svc := mkSvcAll(t, ef, &stubInfos{}, stubScene{}, sf)
+
+	crit := &decisionengine.SearchCriteria{
+		Series:   ser,
+		Episodes: []episodes.Episode{ep},
+	}
+	// Use a searchCriteria with matching Series so step 2 short-circuits
+	// (cleanTitle match) — we want to test the EpisodeRequested tagging.
+	sub, err := svc.Map(context.Background(), mapTestParsedInfo(), ser.TvdbID, ser.TvRageID, ser.ImdbID, crit)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if sub.Series != ser {
+		t.Fatalf("Series = %v, want %v", sub.Series, ser)
+	}
+	if len(sub.Episodes) != 1 || sub.Episodes[0].ID != ep.ID {
+		t.Errorf("Episodes = %v, want [%v]", sub.Episodes, ep)
+	}
+	if !sub.EpisodeRequested {
+		t.Errorf("EpisodeRequested = false, want true (matched episode in searchCriteria.Episodes)")
+	}
+}
+
+// EpisodeRequested stays false when the matched episodes don't intersect
+// searchCriteria.Episodes — guards against spurious tagging.
+func TestMapEpisodeRequestedFalseOnDisjointEpisodes(t *testing.T) {
+	t.Parallel()
+	ser := mapTestSeries()
+	matched := episodes.Episode{ID: 99, SeasonNumber: 1, EpisodeNumber: 1}
+	requested := episodes.Episode{ID: 100, SeasonNumber: 1, EpisodeNumber: 2}
+	ef := &stubFinder{
+		findEpisodeMap: map[[3]int]*episodes.Episode{
+			{ser.ID, 1, 1}: &matched,
+		},
+	}
+	sf := &stubSeriesFinder{byTitle: map[string]*series.Series{"30 Stone": ser}}
+	svc := mkSvcAll(t, ef, &stubInfos{}, stubScene{}, sf)
+
+	crit := &decisionengine.SearchCriteria{Series: ser, Episodes: []episodes.Episode{requested}}
+
+	sub, err := svc.Map(context.Background(), mapTestParsedInfo(), ser.TvdbID, ser.TvRageID, ser.ImdbID, crit)
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if sub.EpisodeRequested {
+		t.Errorf("EpisodeRequested = true, want false")
+	}
+}
+
+// stubSceneByArg returns per-args FindSceneMapping responses so tests
+// that need different mappings for the original-SeriesTitle vs alias
+// lookup paths (Step 1 nil, Step 5b non-nil) can pin behaviour.
+type stubSceneByArg struct {
+	bySeriesTitle map[string]*scenemappings.Mapping
+}
+
+func (s stubSceneByArg) FindSceneMapping(seriesTitle, _ string, _ int) *scenemappings.Mapping {
+	return s.bySeriesTitle[seriesTitle]
+}
+func (s stubSceneByArg) GetSceneSeasonNumber(_, _ string) *int { return nil }

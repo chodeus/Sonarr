@@ -53,6 +53,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/parser"
@@ -231,18 +232,18 @@ func (noopSceneMappingFinder) FindSceneMapping(_, _ string, _ int) *scenemapping
 // GetSceneSeasonNumber always returns nil.
 func (noopSceneMappingFinder) GetSceneSeasonNumber(_, _ string) *int { return nil }
 
-// SeriesFinder narrows `ISeriesService` for the three lookup methods
-// [Service.GetSeriesFromTitle] (slice 3.81) reaches for. The C# class
-// at `Parser/ParsingService.cs:43-73` calls `_seriesService.FindByTitle`
-// (both the 1-arg and 2-arg overloads) and `_seriesService.FindByTvdbId`
-// — that's the entire surface needed to resolve a release-title string
-// to a [series.Series].
+// SeriesFinder narrows `ISeriesService` for the lookup methods the
+// parsing service reaches for. The C# class at
+// `Parser/ParsingService.cs:43-73, 405-555` calls five `ISeriesService`
+// methods: FindByTitle (1-arg + 2-arg overloads), FindByTvdbId,
+// FindByTvRageId, and FindByImdbId — that's the entire surface needed
+// to resolve a release-title string + ID hints + (optional)
+// SearchCriteria to a [series.Series].
 //
 // Production binds [series.Service] directly via Go's structural typing:
-// the three method signatures match exactly. Tests pass a per-method
-// stub.
+// every method signature matches exactly. Tests pass a per-method stub.
 //
-// Method semantics — all three return (nil, nil) on no-match (mirrors
+// Method semantics — all five return (nil, nil) on no-match (mirrors
 // C# `null`) and propagate any underlying lookup error:
 //
 //   - FindByTitle takes the RAW (uncleaned) title; the production
@@ -253,26 +254,34 @@ func (noopSceneMappingFinder) GetSceneSeasonNumber(_, _ string) *int { return ni
 //     binding cleans the title before the repo lookup. Matches
 //     `SeriesService.cs:158-161`.
 //   - FindByTvdbID takes the integer TvdbId; matches the C# overload
-//     used at `ParsingService.cs:55`.
+//     used at `ParsingService.cs:55,499`.
+//   - FindByTvRageID takes the integer TvRageId; matches the C#
+//     overload used at `ParsingService.cs:516`. Slice 4.S added.
+//   - FindByImdbID takes the IMDb id string (tt-prefixed); matches the
+//     C# overload used at `ParsingService.cs:533`. Slice 4.S added.
 //
 // Returns [series.ErrNotFound] (not a sentinel nil) when the row
-// isn't present — [Service.GetSeriesFromTitle] classifies via
-// `errors.Is` and treats it as the C# null arm.
+// isn't present — both [Service.GetSeriesFromTitle] and
+// [Service.findSeries] classify via `errors.Is` and treat it as the
+// C# null arm.
 type SeriesFinder interface {
 	FindByTitle(ctx context.Context, title string) (*series.Series, error)
 	FindByTitleAndYear(ctx context.Context, title string, year int) (*series.Series, error)
 	FindByTvdbID(ctx context.Context, tvdbID int) (*series.Series, error)
+	FindByTvRageID(ctx context.Context, tvRageID int) (*series.Series, error)
+	FindByImdbID(ctx context.Context, imdbID string) (*series.Series, error)
 }
 
-// noopSeriesFinder satisfies [SeriesFinder] with three nil-returning
+// noopSeriesFinder satisfies [SeriesFinder] with five nil-returning
 // methods. Bound by [NewService] when the caller passes nil. Mirrors
 // the noop-tolerant convention from [noopSceneMappingFinder] above —
-// the consumer ([Service.GetSeriesFromTitle]) treats every (nil, nil)
-// arm as "no series in catalog" so a parsingservice.Service constructed
-// without a real seriesFinder is still usable for the
-// ParseSpecialEpisodeTitle / GetEpisodes paths that don't need it. A
-// brand-new install with zero series rows would behave the same way
-// against a real binding, so the noop preserves semantic equivalence.
+// the consumer ([Service.GetSeriesFromTitle] / [Service.findSeries])
+// treats every (nil, nil) arm as "no series in catalog" so a
+// parsingservice.Service constructed without a real seriesFinder is
+// still usable for the ParseSpecialEpisodeTitle / GetEpisodes paths
+// that don't need it. A brand-new install with zero series rows would
+// behave the same way against a real binding, so the noop preserves
+// semantic equivalence.
 type noopSeriesFinder struct{}
 
 // FindByTitle always returns (nil, nil).
@@ -287,6 +296,16 @@ func (noopSeriesFinder) FindByTitleAndYear(_ context.Context, _ string, _ int) (
 
 // FindByTvdbID always returns (nil, nil).
 func (noopSeriesFinder) FindByTvdbID(_ context.Context, _ int) (*series.Series, error) {
+	return nil, nil
+}
+
+// FindByTvRageID always returns (nil, nil).
+func (noopSeriesFinder) FindByTvRageID(_ context.Context, _ int) (*series.Series, error) {
+	return nil, nil
+}
+
+// FindByImdbID always returns (nil, nil).
+func (noopSeriesFinder) FindByImdbID(_ context.Context, _ string) (*series.Series, error) {
 	return nil, nil
 }
 
@@ -979,4 +998,362 @@ func (s *Service) getStandardEpisodes(ctx context.Context, ser *series.Series, p
 	}
 
 	return result, nil
+}
+
+// Map ports the public `IParsingService.Map(parsedEpisodeInfo, tvdbId,
+// tvRageId, imdbId, searchCriteria)` overload at C# `Parser/ParsingService.cs:156-159`
+// (which thin-wraps the private 6-arg overload at `:176-245`).
+//
+// Slice 4.S (sub-arc 11a of queue [11]). The end-to-end release-info
+// → matched-series + matched-episodes pipeline that the decisionengine
+// front-end (DownloadDecisionMaker.GetRssDecision / GetSearchDecision —
+// sub-arc 11c) feeds Subject by. Returns a fully-populated
+// [*decisionengine.Subject] with ParsedEpisodeInfo + SceneMapping +
+// MappedSeasonNumber + Series + Episodes + SeriesMatchType +
+// EpisodeRequested + Languages set; Release / CustomFormats /
+// CustomFormatScore / SeedConfiguration / DownloadAllowed /
+// ReleaseSource remain zero — the caller (RemoteEpisodeAggregationService,
+// sub-arc 11b) attaches those.
+//
+// Direction-of-imports note: parsingservice → decisionengine. The
+// natural C# layering is the inverse (DecisionEngine consumes
+// ParsingService); the Go port reverses ONLY at the Subject return
+// type so the orchestrator doesn't need a glue conversion layer.
+// decisionengine.Subject is the canonical "release under decision"
+// shape and lives in decisionengine for read-by-spec ergonomics;
+// parsingservice is the only producer, so the dep edge is one-way
+// and acyclic.
+//
+// Decision tree (line-aligned with C# `:176-245`):
+//
+//  1. FindSceneMapping(seriesTitle, releaseTitle, seasonNumber). The
+//     result populates Subject.SceneMapping + drives the
+//     MappedSeasonNumber adjustment + scene/tvdb origin override.
+//     Mirrors C# `:178`.
+//
+//  2. MappedSeasonNumber = parsedInfo.SeasonNumber, sceneSource = true
+//     by default. If the mapping exists and supplies a non-negative
+//     SeasonNumber AND its SceneSeasonNumber <= parsedInfo.SeasonNumber,
+//     add the season-offset. If SceneOrigin == "tvdb", flip sceneSource
+//     to false. Else if Type == "XemService" and the XemService remap
+//     fires, set MappedSeasonNumber to the scene-season number.
+//     Mirrors C# `:189-208`.
+//
+//  3. findSeries(parsedInfo, tvdbId, tvRageId, imdbId, sceneMapping,
+//     searchCriteria) → matched series + match type. Mirrors C#
+//     `:212-217`.
+//
+//  4. If series is non-nil AND ValidateForSeriesType passes, dispatch
+//     to getEpisodes(parsedInfo, series, mappedSeasonNumber, sceneSource)
+//     to populate Subject.Episodes. Mirrors C# `:221-228`.
+//
+//  5. Languages always populated from parsedInfo.Languages. Mirrors C#
+//     `:231`.
+//
+//  6. If searchCriteria != nil, set EpisodeRequested true iff any
+//     matched episode appears in searchCriteria.Episodes (by ID).
+//     Mirrors C# `:238-242`.
+//
+// Errors from the seriesFinder / episodeFinder / scenemap helpers
+// propagate wrapped; nil parsedInfo / nil receiver returns
+// (nil, error).
+//
+// Production callers: indexersearch.Service.Dispatch search arm and
+// commands/handlers/rsssync.go (both wired in sub-arc 11c when
+// DownloadDecisionMaker.GetRssDecision + GetSearchDecision land).
+func (s *Service) Map(
+	ctx context.Context,
+	parsedInfo *parser.ParsedEpisodeInfo,
+	tvdbID int,
+	tvRageID int,
+	imdbID string,
+	searchCriteria *decisionengine.SearchCriteria,
+) (*decisionengine.Subject, error) {
+	if s == nil {
+		return nil, errors.New("parsingservice: Map on nil receiver")
+	}
+	if parsedInfo == nil {
+		return nil, errors.New("parsingservice: Map: nil parsedEpisodeInfo")
+	}
+
+	subject := decisionengine.NewSubject()
+	subject.ParsedEpisodeInfo = parsedInfo
+	subject.MappedSeasonNumber = parsedInfo.SeasonNumber
+
+	// Step 1: scene-mapping pre-pass. Mirrors C# `:178`.
+	sceneMapping := s.scenemap.FindSceneMapping(
+		parsedInfo.SeriesTitle,
+		parsedInfo.ReleaseTitle,
+		parsedInfo.SeasonNumber,
+	)
+	subject.SceneMapping = sceneMapping
+	sceneSource := true
+
+	if sceneMapping != nil {
+		// C# `:191-195`. SceneMapping.SeasonNumber is `int?` and
+		// SceneSeasonNumber is `int?` — the C# `null <= int` returns
+		// false, so the compound check is false when either is null.
+		// Mirror with explicit nil checks.
+		if sceneMapping.SeasonNumber != nil && *sceneMapping.SeasonNumber >= 0 &&
+			sceneMapping.SceneSeasonNumber != nil && *sceneMapping.SceneSeasonNumber <= parsedInfo.SeasonNumber {
+			subject.MappedSeasonNumber += *sceneMapping.SeasonNumber - *sceneMapping.SceneSeasonNumber
+		}
+
+		switch {
+		case sceneMapping.SceneOrigin == "tvdb":
+			// tvdb-origin mappings disable scene-source semantics — the
+			// parsed numbers are already TVDB-numbered. C# `:197-200`.
+			sceneSource = false
+		case sceneMapping.Type == "XemService" &&
+			sceneMapping.SceneSeasonNumber != nil && *sceneMapping.SceneSeasonNumber >= 0 &&
+			parsedInfo.SeasonNumber == 1 &&
+			*sceneMapping.SceneSeasonNumber != parsedInfo.SeasonNumber:
+			// XemService remap: parsed S01 actually lives under a
+			// different TVDB-mapped season. C# `:201-207`.
+			subject.MappedSeasonNumber = *sceneMapping.SceneSeasonNumber
+		}
+	}
+
+	// Step 2: series resolution. C# `:210-219`.
+	resolvedSeries, matchType, err := s.findSeries(ctx, parsedInfo, tvdbID, tvRageID, imdbID, sceneMapping, searchCriteria)
+	if err != nil {
+		return nil, err
+	}
+	if resolvedSeries != nil {
+		subject.Series = resolvedSeries
+		subject.SeriesMatchType = matchType
+	}
+
+	// Step 3: episode resolution. C# `:221-228`.
+	if subject.Series != nil && parser.ValidateForSeriesType(parsedInfo, subject.Series.SeriesType) {
+		eps, err := s.getEpisodes(ctx, parsedInfo, subject.Series, subject.MappedSeasonNumber, sceneSource)
+		if err != nil {
+			return nil, err
+		}
+		subject.Episodes = eps
+	}
+
+	// Languages always set from the parser output. C# `:231`.
+	subject.Languages = parsedInfo.Languages
+
+	// Episodes guaranteed non-nil empty slice (NewSubject + the
+	// getEpisodes contract both return empty-not-nil); the C# `:233-236`
+	// null-coercion arm is implicit.
+
+	// Step 4: searchCriteria-driven EpisodeRequested tag. C# `:238-242`.
+	if searchCriteria != nil && len(subject.Episodes) > 0 {
+		requested := make(map[int]struct{}, len(searchCriteria.Episodes))
+		for _, ep := range searchCriteria.Episodes {
+			requested[ep.ID] = struct{}{}
+		}
+		for _, ep := range subject.Episodes {
+			if _, ok := requested[ep.ID]; ok {
+				subject.EpisodeRequested = true
+				break
+			}
+		}
+	}
+
+	return subject, nil
+}
+
+// findSeries ports the private `ParsingService.FindSeries` helper at
+// C# `Parser/ParsingService.cs:405-555`. Resolves a parsed-info +
+// (tvdbId, tvRageId, imdbId) + (optional sceneMapping, optional
+// searchCriteria) to a [*series.Series] + [series.MatchType], or
+// (nil, MatchTypeUnknown, nil) for "couldn't resolve".
+//
+// Decision tree:
+//
+//  1. sceneMapping non-nil: if searchCriteria.Series.TvdbId matches
+//     sceneMapping.TvdbId, return (searchCriteria.Series, Alias). Else
+//     dispatch FindByTvdbID(sceneMapping.TvdbId). Either way, the
+//     match type is Alias. C# `:409-425`.
+//
+//  2. searchCriteria non-nil + Series non-nil: try CleanTitle match
+//     (Title), tvdbId match (ID), tvRageId match (ID; requires
+//     tvdbId <= 0), imdbId match (ID; requires tvdbId <= 0). Each
+//     short-circuits with the searchCriteria.Series row. C# `:427-468`.
+//
+//  3. FindByTitle(parsedInfo.SeriesTitle) — match type Title. C# `:472`.
+//
+//  4. If still nil AND parsedInfo.SeriesTitleInfo.AllTitles non-empty,
+//     dispatch [Service.getSeriesByAllTitles] — match type Title.
+//     C# `:479-482`.
+//
+//  5. If still nil AND parsedInfo.SeriesTitleInfo.Year > 0, try
+//     FindByTitleAndYear(TitleWithoutYear, Year) — match type Title.
+//     If THAT misses, fall back to scene-mapping FindTvdbId on
+//     TitleWithoutYear and then FindByTvdbID — match type Alias.
+//     C# `:485-495`.
+//
+//  6. If still nil AND tvdbId > 0, FindByTvdbID(tvdbId) — match type ID.
+//     C# `:497-512`.
+//
+//  7. If still nil AND tvRageId > 0 AND tvdbId <= 0,
+//     FindByTvRageID(tvRageId) — match type ID. C# `:514-529`.
+//
+//  8. If still nil AND imdbId non-empty AND tvdbId <= 0,
+//     FindByImdbID(imdbId) — match type ID. C# `:531-546`.
+//
+//  9. Return (series, matchType) — nil + Unknown when every arm missed.
+//     C# `:548-554`.
+//
+// Errors from the seriesFinder calls propagate wrapped (except
+// [series.ErrNotFound], treated as the C# null arm).
+//
+// The C# `getSeriesAliasTitleAndYear` private helper at
+// `:638-678` (the title-by-AllTitles + Year + scene-mapping fallback
+// used by step 5b) is NOT separately ported — its logic is inlined
+// into step 5 here; the AllTitles iteration in step 5b is identical
+// to the existing [Service.getSeriesByAllTitles] which is shared.
+func (s *Service) findSeries(
+	ctx context.Context,
+	parsedInfo *parser.ParsedEpisodeInfo,
+	tvdbID, tvRageID int,
+	imdbID string,
+	sceneMapping *scenemappings.Mapping,
+	searchCriteria *decisionengine.SearchCriteria,
+) (*series.Series, series.MatchType, error) {
+	// Step 1: scene-mapping short-circuit. C# `:409-425`.
+	if sceneMapping != nil {
+		if searchCriteria != nil && searchCriteria.Series != nil &&
+			searchCriteria.Series.TvdbID == sceneMapping.TvdbID {
+			return searchCriteria.Series, series.MatchTypeAlias, nil
+		}
+
+		ser, err := s.seriesFinder.FindByTvdbID(ctx, sceneMapping.TvdbID)
+		if err != nil && !errors.Is(err, series.ErrNotFound) {
+			return nil, series.MatchTypeUnknown, fmt.Errorf("parsingservice: findSeries: FindByTvdbID(%d): %w", sceneMapping.TvdbID, err)
+		}
+		if ser == nil {
+			s.log.Debug("parsingservice: findSeries: no matching series for scene mapping",
+				"seriesTitle", parsedInfo.SeriesTitle, "tvdbId", sceneMapping.TvdbID)
+			return nil, series.MatchTypeUnknown, nil
+		}
+		return ser, series.MatchTypeAlias, nil
+	}
+
+	// Step 2: searchCriteria short-circuits. C# `:427-468`.
+	if searchCriteria != nil && searchCriteria.Series != nil {
+		critSer := searchCriteria.Series
+		if critSer.CleanTitle == parser.CleanSeriesTitle(parsedInfo.SeriesTitle) {
+			return critSer, series.MatchTypeTitle, nil
+		}
+		if tvdbID > 0 && tvdbID == critSer.TvdbID {
+			return critSer, series.MatchTypeID, nil
+		}
+		if tvRageID > 0 && tvRageID == critSer.TvRageID && tvdbID <= 0 {
+			return critSer, series.MatchTypeID, nil
+		}
+		if imdbID != "" && imdbID == critSer.ImdbID && tvdbID <= 0 {
+			return critSer, series.MatchTypeID, nil
+		}
+	}
+
+	// Step 3: plain title lookup. C# `:472-477`.
+	matchType := series.MatchTypeUnknown
+	ser, err := s.seriesFinder.FindByTitle(ctx, parsedInfo.SeriesTitle)
+	if err != nil && !errors.Is(err, series.ErrNotFound) {
+		return nil, series.MatchTypeUnknown, fmt.Errorf("parsingservice: findSeries: FindByTitle(%q): %w", parsedInfo.SeriesTitle, err)
+	}
+	if ser != nil {
+		matchType = series.MatchTypeTitle
+	}
+
+	// Step 4: AllTitles fallback. C# `:479-483`.
+	if ser == nil && parsedInfo.SeriesTitleInfo != nil && len(parsedInfo.SeriesTitleInfo.AllTitles) > 0 {
+		ser, err = s.getSeriesByAllTitles(ctx, parsedInfo)
+		if err != nil {
+			return nil, series.MatchTypeUnknown, err
+		}
+		if ser != nil {
+			matchType = series.MatchTypeTitle
+		}
+	}
+
+	// Step 5: TitleWithoutYear + Year fallback. C# `:485-495`.
+	if ser == nil && parsedInfo.SeriesTitleInfo != nil && parsedInfo.SeriesTitleInfo.Year > 0 {
+		ser, err = s.seriesFinder.FindByTitleAndYear(
+			ctx,
+			parsedInfo.SeriesTitleInfo.TitleWithoutYear,
+			parsedInfo.SeriesTitleInfo.Year,
+		)
+		if err != nil && !errors.Is(err, series.ErrNotFound) {
+			return nil, series.MatchTypeUnknown, fmt.Errorf("parsingservice: findSeries: FindByTitleAndYear(%q,%d): %w",
+				parsedInfo.SeriesTitleInfo.TitleWithoutYear,
+				parsedInfo.SeriesTitleInfo.Year, err)
+		}
+		if ser != nil {
+			matchType = series.MatchTypeTitle
+		} else {
+			// 5b: scene-mapping FindTvdbId(TitleWithoutYear, ReleaseTitle, SeasonNumber)
+			// → FindByTvdbID. Mirrors the C# `GetSeriesAliasTitleAndYear`
+			// helper at `:638-678` — the alias-by-AllTitles path that
+			// `FindByTitleAndYear` doesn't cover.
+			aliasMapping := s.scenemap.FindSceneMapping(
+				parsedInfo.SeriesTitleInfo.TitleWithoutYear,
+				parsedInfo.ReleaseTitle,
+				parsedInfo.SeasonNumber,
+			)
+			if aliasMapping != nil && aliasMapping.TvdbID != 0 {
+				aliasSer, aliasErr := s.seriesFinder.FindByTvdbID(ctx, aliasMapping.TvdbID)
+				if aliasErr != nil && !errors.Is(aliasErr, series.ErrNotFound) {
+					return nil, series.MatchTypeUnknown, fmt.Errorf("parsingservice: findSeries: FindByTvdbID(alias %d): %w", aliasMapping.TvdbID, aliasErr)
+				}
+				// The C# `GetSeriesAliasTitleAndYear` cross-checks the
+				// resolved series's Year against parsedInfo.Year — if
+				// they disagree, abandon the alias resolution. Mirror
+				// that guard so the "wrong year" MapFixture case ends
+				// with series=nil even though FindByTvdbID returned a
+				// row. series.Series.Year is *int (nullable); a nil
+				// Year on the resolved series counts as mismatch (no
+				// year to cross-check against).
+				if aliasSer != nil && aliasSer.Year != nil && *aliasSer.Year == parsedInfo.SeriesTitleInfo.Year {
+					ser = aliasSer
+					matchType = series.MatchTypeAlias
+				}
+			}
+		}
+	}
+
+	// Step 6: TvdbID fallback. C# `:497-512`.
+	if ser == nil && tvdbID > 0 {
+		ser, err = s.seriesFinder.FindByTvdbID(ctx, tvdbID)
+		if err != nil && !errors.Is(err, series.ErrNotFound) {
+			return nil, series.MatchTypeUnknown, fmt.Errorf("parsingservice: findSeries: FindByTvdbID(%d): %w", tvdbID, err)
+		}
+		if ser != nil {
+			matchType = series.MatchTypeID
+		}
+	}
+
+	// Step 7: TvRageID fallback. C# `:514-529`.
+	if ser == nil && tvRageID > 0 && tvdbID <= 0 {
+		ser, err = s.seriesFinder.FindByTvRageID(ctx, tvRageID)
+		if err != nil && !errors.Is(err, series.ErrNotFound) {
+			return nil, series.MatchTypeUnknown, fmt.Errorf("parsingservice: findSeries: FindByTvRageID(%d): %w", tvRageID, err)
+		}
+		if ser != nil {
+			matchType = series.MatchTypeID
+		}
+	}
+
+	// Step 8: ImdbID fallback. C# `:531-546`.
+	if ser == nil && imdbID != "" && tvdbID <= 0 {
+		ser, err = s.seriesFinder.FindByImdbID(ctx, imdbID)
+		if err != nil && !errors.Is(err, series.ErrNotFound) {
+			return nil, series.MatchTypeUnknown, fmt.Errorf("parsingservice: findSeries: FindByImdbID(%q): %w", imdbID, err)
+		}
+		if ser != nil {
+			matchType = series.MatchTypeID
+		}
+	}
+
+	if ser == nil {
+		s.log.Debug("parsingservice: findSeries: no matching series",
+			"seriesTitle", parsedInfo.SeriesTitle)
+		return nil, series.MatchTypeUnknown, nil
+	}
+	return ser, matchType, nil
 }
