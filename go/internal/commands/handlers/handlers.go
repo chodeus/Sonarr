@@ -32,6 +32,7 @@ import (
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/housekeeping"
+	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 )
 
@@ -96,6 +97,19 @@ type Deps struct {
 	// Finder / Verifier / Reporter are all optional — see the
 	// per-field doc on the [DownloadedEpisodesScan] handler.
 	DownloadedEpisodesScan DownloadedEpisodesScanDeps
+
+	// RssSync wires the IExecute<RssSyncCommand> handler into the
+	// dispatcher. Slice 4.Q (queue [9]) — the FetchRSS-only minimum
+	// the focused-subset Phase-4 loop ships. Optional: nil skips
+	// registration entirely (the API surface returns "Unknown
+	// command" for callers and the scheduler entry is also skipped).
+	// Production binds `*indexersearch.Service` via structural typing.
+	RssSync RssFetcher
+
+	// RssSyncBus is the optional message bus the RssSync handler
+	// publishes RssSyncCompleteEvent on. Nil skips the publish; the
+	// handler still completes the FetchRSS work.
+	RssSyncBus *messaging.Bus
 
 	Log *slog.Logger
 }
@@ -200,6 +214,20 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 		})
 	}
 
+	// RssSync registers only when the fetcher is wired — there's no
+	// useful stub fallback (a stub would silently no-op the RSS sweep
+	// the scheduler ticks against). Hosts that haven't yet wired
+	// indexersearch.Service simply omit the slot.
+	if deps.RssSync != nil {
+		rssSync, err := NewRssSync(deps.RssSync, deps.RssSyncBus, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(RssSyncName, commands.CommandSpec{
+			Handler: rssSync,
+		})
+	}
+
 	// DownloadedEpisodesScan registers only when the processor is
 	// wired — there's no useful stub fallback (the C# command always
 	// requires a path + an import service). Hosts that haven't yet
@@ -279,5 +307,11 @@ func DefaultScheduledTasks() []*scheduledtasks.Task {
 			// (24h in minutes).
 			Interval: 24 * 60,
 		},
+		// Slice 4.Q (queue [9]): RssSync default schedule. Mirrors the
+		// C# `TaskManager.cs:132` entry — Interval set from
+		// `_configService.RssSyncInterval` with the default 15-minute
+		// clamp. The Go port hardcodes the default until the
+		// RssSyncInterval config getter ports.
+		rssSyncDefaultTask(),
 	}
 }

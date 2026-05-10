@@ -1781,7 +1781,9 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		scenemappingsSvc,
 		logger,
 	)
-	_ = indexerSearchSvc // queue [9] RssSync handler will consume the Service.
+	// Slice 4.Q (queue [9]): wire the RssSync handler. Below in
+	// handlers.RegisterAll the indexerSearchSvc satisfies the narrow
+	// handlers.RssFetcher interface via Go's structural typing.
 
 	registry := commands.NewRegistry()
 	queue := commands.NewQueue(registry.Properties)
@@ -1793,6 +1795,8 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		RescanSeries: mediafilesSvc,
 		Backup:       backupSvc,
 		Lifecycle:    lifecycleSvc,
+		RssSync:      indexerSearchSvc,
+		RssSyncBus:   bus,
 		DownloadedEpisodesScan: handlers.DownloadedEpisodesScanDeps{
 			// Processor REQUIRED — slice 3.80 contract: nil Processor
 			// → handler not registered. We always wire the real
