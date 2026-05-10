@@ -29,8 +29,9 @@ import (
 // Sub-arc 1d will add: per-host status tracker.
 type realClient struct {
 	dispatcher   Dispatcher
-	rateLimiter  RateLimiter   // optional; when nil, rate-limit fields on Request are no-ops.
-	interceptors []Interceptor // optional; ordered list applied around every dispatch.
+	rateLimiter  RateLimiter       // optional; when nil, rate-limit fields on Request are no-ops.
+	interceptors []Interceptor     // optional; ordered list applied around every dispatch.
+	hostStatus   HostStatusTracker // optional; per-host circuit breaker (sub-arc 1d).
 
 	// jarMu guards persistentJar. The Go stdlib cookiejar.Jar is
 	// goroutine-safe internally, but we still need our own mutex around the
@@ -42,13 +43,15 @@ type realClient struct {
 
 // ClientOptions tunes NewClientWithOptions. Zero-value options yield the
 // same behaviour as NewClient: a fresh dispatcher with the supplied
-// UserAgent, no rate limiter, no interceptors, no proxy.
+// UserAgent, no rate limiter, no interceptors, no host status tracker,
+// no proxy.
 type ClientOptions struct {
-	UserAgent     string
-	Dispatcher    Dispatcher    // optional override; tests inject stubs here.
-	RateLimiter   RateLimiter   // optional; when nil, Request.RateLimit is no-op.
-	Interceptors  []Interceptor // optional ordered list.
-	ProxyProvider ProxyProvider // optional; only consulted when Dispatcher is nil.
+	UserAgent         string
+	Dispatcher        Dispatcher        // optional override; tests inject stubs here.
+	RateLimiter       RateLimiter       // optional; when nil, Request.RateLimit is no-op.
+	Interceptors      []Interceptor     // optional ordered list.
+	ProxyProvider     ProxyProvider     // optional; only consulted when Dispatcher is nil.
+	HostStatusTracker HostStatusTracker // optional; per-host circuit breaker.
 }
 
 // NewClient builds a production Client. userAgent is sent on every request
@@ -77,6 +80,7 @@ func NewClientWithOptions(opts ClientOptions) (Client, error) {
 		dispatcher:    d,
 		rateLimiter:   opts.RateLimiter,
 		interceptors:  append([]Interceptor(nil), opts.Interceptors...),
+		hostStatus:    opts.HostStatusTracker,
 		persistentJar: jar,
 	}, nil
 }
@@ -232,17 +236,26 @@ func (c *realClient) executeWithRedirects(ctx context.Context, req *Request) (*R
 }
 
 // executeRequestOnce ports the single-attempt body of HttpClient.ExecuteRequestAsync
-// at HttpClient.cs:140-175.
+// at HttpClient.cs:140-175, plus the Go-port-specific per-host circuit
+// breaker (sub-arc 1d).
 func (c *realClient) executeRequestOnce(ctx context.Context, req *Request) (*Response, error) {
 	// Pre-request interceptors (HttpClient.cs:142-145). May replace req.
 	for _, i := range c.interceptors {
 		req = i.PreRequest(req)
 	}
 
+	// Per-host circuit breaker — short-circuit if the host is in cooldown.
+	host := req.URL.Host()
+	if c.hostStatus != nil && host != "" {
+		if allowed, retry := c.hostStatus.Allow(host); !allowed {
+			return nil, &HostBlockedError{Host: host, RetryAfter: retry}
+		}
+	}
+
 	// Rate-limit (HttpClient.cs:147-150). Honours per-request RateLimit +
 	// optional sub-key bucket. Cancellation propagates from ctx.
 	if req.RateLimit > 0 && c.rateLimiter != nil {
-		if err := c.rateLimiter.WaitAndPulse(ctx, req.URL.Host(), req.RateLimitKey, req.RateLimit); err != nil {
+		if err := c.rateLimiter.WaitAndPulse(ctx, host, req.RateLimitKey, req.RateLimit); err != nil {
 			return nil, err
 		}
 	}
@@ -251,6 +264,12 @@ func (c *realClient) executeRequestOnce(ctx context.Context, req *Request) (*Res
 
 	resp, err := c.dispatcher.Dispatch(ctx, req)
 	if err != nil {
+		// Transport-level failure → record as host failure if we have a
+		// tracker. Application-layer 4xx/5xx is recorded after the
+		// post-response interceptors run, below.
+		if c.hostStatus != nil && host != "" {
+			c.hostStatus.Record(host, false)
+		}
 		return nil, err
 	}
 	c.handleResponseCookies(req, resp)
@@ -258,6 +277,14 @@ func (c *realClient) executeRequestOnce(ctx context.Context, req *Request) (*Res
 	// Post-response interceptors (HttpClient.cs:164-167).
 	for _, i := range c.interceptors {
 		resp = i.PostResponse(resp)
+	}
+
+	// Update host status from the response. 5xx counts as a host failure
+	// (server is broken/overloaded); 4xx and 2xx/3xx do not — those are
+	// either request-side errors or success. See HostStatusTracker docs
+	// for the rationale.
+	if c.hostStatus != nil && host != "" {
+		c.hostStatus.Record(host, !resp.HasHTTPServerError())
 	}
 	return resp, nil
 }

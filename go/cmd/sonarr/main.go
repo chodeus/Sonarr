@@ -64,6 +64,7 @@ import (
 	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/historyhandlers"
 	"sonarr.tv/sonarr/internal/housekeeping"
+	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/instrumentation"
 	"sonarr.tv/sonarr/internal/lifecycle"
 	"sonarr.tv/sonarr/internal/mediafileattributes"
@@ -1716,6 +1717,28 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("lifecycle service: %w", err)
 	}
+
+	// Slice 4.D (queue [1] sub-arc 1d): construct the production HTTP
+	// client. Wires the rate limiter + per-host status tracker + the
+	// User-Agent built from buildinfo. ProxyProvider is intentionally
+	// NoopProxyProvider for now — the typed proxy config will land with
+	// the download-client family in a follow-up Phase-4 loop. Sub-arc 1c
+	// already structured the dispatcher to accept a ProxyProvider, so
+	// that swap is a one-line change at this site.
+	//
+	// httpClient is held in this scope until queue [4]+ wires real
+	// consumers (Newznab/Torznab/RSS indexers, RssSync job). Until then
+	// we keep a reference via the blank ident so the linter accepts the
+	// unused local — the construction itself is the contract under test.
+	httpClient, err := httpclient.NewClientWithOptions(httpclient.ClientOptions{
+		UserAgent:         "Sonarr/" + buildinfo.Version + " (" + buildinfo.Commit + ")",
+		RateLimiter:       httpclient.NewRateLimiter(),
+		HostStatusTracker: httpclient.NewHostStatusTracker(),
+	})
+	if err != nil {
+		return fmt.Errorf("http client: %w", err)
+	}
+	_ = httpClient // queue [4]+ will pass into indexer/import-list/notification factories.
 
 	registry := commands.NewRegistry()
 	queue := commands.NewQueue(registry.Properties)
