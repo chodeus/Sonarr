@@ -213,11 +213,14 @@ func (s *Service) GetAll(_ context.Context) []Task {
 // typed error).
 func (s *Service) GetNextExecution(_ context.Context, typeName string) (time.Time, error) {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	t, ok := s.cache[typeName]
-	s.mu.RUnlock()
 	if !ok {
 		return time.Time{}, fmt.Errorf("%w: typeName=%q", ErrNotFound, typeName)
 	}
+	// LastExecution / Interval are mutated by HandleCommandExecuted
+	// under the write lock; dereference the pointer while we still
+	// hold the read lock to avoid a data race.
 	return t.LastExecution.Add(time.Duration(t.Interval) * time.Minute), nil
 }
 
