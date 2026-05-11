@@ -138,6 +138,23 @@ var ErrNotRegistered = errors.New("downloadclients: not registered")
 // `Download/DownloadClientBase.cs:189-192` for the default impl.
 var ErrMarkAsImportedUnsupported = errors.New("downloadclients: MarkItemAsImported not supported by this client")
 
+// ErrNotImplementedYet is the typed-error return Provider methods
+// use when the concrete client's sub-arc has shipped the interface
+// shape but not yet the body. Distinguished from
+// [ErrMarkAsImportedUnsupported] (a permanent capability statement)
+// — the orchestrator at queue [15] will treat ErrNotImplementedYet
+// as a "log + skip" so partial provider implementations don't
+// crash the grab loop while in-flight.
+//
+// Per-method usage:
+//
+//   - sub-arc 14a stubs GetItems/RemoveItem/GetStatus/MarkItemAsImported
+//     for SABnzbd. The orchestrator will replace these returns once
+//     sub-arc 14b finishes the methods.
+//
+// Removed before subset 2 ships; this is a development-only sentinel.
+var ErrNotImplementedYet = errors.New("downloadclients: method not implemented in current sub-arc")
+
 // Register binds factory to (implementation, configContract). Both
 // keys must be non-empty (an empty key surfaces a programmer error
 // — every C# concrete download-client class has both a Type.Name

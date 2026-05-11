@@ -204,6 +204,24 @@ type GrabRequest struct {
 	// `RemoteEpisode.SeedConfiguration` at
 	// `Parser/Model/RemoteEpisode.cs:22`.
 	SeedConfiguration *TorrentSeedConfiguration
+
+	// NzbBody is the fetched NZB-file bytes for usenet grabs. The
+	// orchestrator (queue [15]) fetches DownloadURL via the
+	// indexer's HTTP-request builder (cookie / auth-header
+	// support) before invoking Provider.Download, and stuffs the
+	// bytes here so the concrete client can POST them directly.
+	// Empty for torrent grabs. Mirrors the in-method fetch C#
+	// `UsenetClientBase.Download` does at `:40-91` — the Go port
+	// hoists the fetch into the orchestrator to keep the Provider
+	// interface synchronous + side-effect-light.
+	NzbBody []byte
+
+	// IsRecent is true when at least one matched episode aired in
+	// the last 14 days (per [decisionengine.Subject.IsRecentEpisode]).
+	// Concrete clients use this to pick between RecentTvPriority +
+	// OlderTvPriority settings. Mirrors C# `remoteEpisode.IsRecentEpisode()`
+	// at `Sabnzbd.cs:43`.
+	IsRecent bool
 }
 
 // ClientInfo is the runtime status snapshot a Provider's GetStatus
