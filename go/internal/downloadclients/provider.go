@@ -216,6 +216,15 @@ type GrabRequest struct {
 	// interface synchronous + side-effect-light.
 	NzbBody []byte
 
+	// TorrentBody is the optional .torrent-file bytes for torrent
+	// grabs. The orchestrator may pre-fetch a .torrent (when the
+	// concrete client prefers torrent files over magnet links — see
+	// the C# `TorrentClientBase.PreferTorrentFile` arm at
+	// `TorrentClientBase.cs:46`); concrete clients route through
+	// AddTorrentFromData when this is non-empty. Empty when the
+	// client should fetch via MagnetURL or DownloadURL directly.
+	TorrentBody []byte
+
 	// IsRecent is true when at least one matched episode aired in
 	// the last 14 days (per [decisionengine.Subject.IsRecentEpisode]).
 	// Concrete clients use this to pick between RecentTvPriority +
