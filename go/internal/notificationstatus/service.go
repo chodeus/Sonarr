@@ -50,19 +50,50 @@ type Service struct {
 	mu sync.Mutex
 }
 
+// MaxEscalationLevel is the per-type override applied by [NewService].
+// Mirrors the C# `NotificationStatusService` constructor override at
+// `Notifications/NotificationStatusService.cs:19`
+// (`MaximumEscalationLevel = 5`). Cap at level 5 means the longest
+// back-off period a failing notification can incur is the
+// providerstatus.BackOffPeriods[5] tier (1 hour) — vs the 24-hour
+// tier-9 the indexer fleet allows. Matches the download-client family
+// cap; the rationale (user-visible failure mode, transient blips
+// shouldn't disable for a day) is the same.
+const MaxEscalationLevel = 5
+
+// MinTimeSinceInitialFailure is the per-type override applied by
+// [NewService]. Mirrors the C# override at
+// `Notifications/NotificationStatusService.cs:18`
+// (`MinimumTimeSinceInitialFailure = TimeSpan.FromMinutes(5)`). The
+// notification family fires user-visible alerts (Discord/Slack/Email/
+// etc) on grab + download + import + health events, so a transient
+// network blip during an OnGrab webhook POST should not instantly
+// disable the provider; the C# code waits 5 minutes after the first
+// failure before escalating.
+const MinTimeSinceInitialFailure = 5 * time.Minute
+
 // NewService binds a Repo + Bus + RuntimeStart into a Service. The
 // runtime-start time is required and cannot be changed after
 // construction (matches the C# `IRuntimeInfo.StartTime` immutable).
 // Bus may be nil to skip event publication.
+//
+// Applies the C# `NotificationStatusService` Tunables overrides at
+// `Notifications/NotificationStatusService.cs:18-19` — see the
+// [MaxEscalationLevel] and [MinTimeSinceInitialFailure] consts above.
+// Callers that want to tweak per-test can override via
+// [Service.SetTunables].
 func NewService(r *Repo, bus *messaging.Bus, runtimeStart time.Time) (*Service, error) {
 	if r == nil {
 		return nil, errors.New("notificationstatus: nil repo")
 	}
+	tun := providerstatus.DefaultTunables(runtimeStart)
+	tun.MaxEscalationLevel = MaxEscalationLevel
+	tun.MinTimeSinceInitialFailure = MinTimeSinceInitialFailure
 	return &Service{
 		repo: r,
 		bus:  bus,
 		now:  func() time.Time { return time.Now().UTC() },
-		tun:  providerstatus.DefaultTunables(runtimeStart),
+		tun:  tun,
 	}, nil
 }
 

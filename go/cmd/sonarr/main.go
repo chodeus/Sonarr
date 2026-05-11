@@ -78,6 +78,7 @@ import (
 	"sonarr.tv/sonarr/internal/mediainfoupdater"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/namingconfig"
+	"sonarr.tv/sonarr/internal/notificationstatus"
 	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
@@ -1270,6 +1271,28 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("downloadclientstatus service: %w", err)
 	}
 	_ = downloadClientStatusSvc // held until queue [13]/[14] download-client provider wires consume it.
+
+	// Slice 4.AB (queue [N1]): wire notificationstatus.Service. Pattern-
+	// mirror of the indexerstatus / downloadclientstatus pairs above.
+	// The constructor applies the C# `NotificationStatusService.cs:18-19`
+	// overrides (MinTimeSinceInitialFailure=5min, MaxEscalationLevel=5)
+	// so the back-off envelope matches the C# behaviour the moment a
+	// notification provider lands. The Service has no live consumer yet
+	// — the notifications package (queue [N2]) and NotificationService
+	// fan-out (queue [N4]) port in later slices of this focused-subset;
+	// this slice brings the persistence + Recorder surface online so the
+	// wiring is ready when the provider entries appear. The compile-time
+	// guards in internal/notificationstatus/recorder.go pin the
+	// providerstatus.Recorder + BlockedView interfaces.
+	notificationStatusRepo, err := notificationstatus.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("notificationstatus repo: %w", err)
+	}
+	notificationStatusSvc, err := notificationstatus.NewService(notificationStatusRepo, bus, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("notificationstatus service: %w", err)
+	}
+	_ = notificationStatusSvc // held until queues [N2]/[N4] notifications provider + fan-out wires consume it.
 
 	// Slice 4.R (queue [10]): IndexerStatusCheck wires
 	// EnabledIndexerLister (over indexers.Repo via the
