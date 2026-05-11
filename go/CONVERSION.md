@@ -39,6 +39,12 @@ You are a senior engineer with deep expertise in both C# .NET and Go. Convert th
 - Replace Entity Framework with `database/sql` + a lightweight driver (`pgx` for Postgres, `modernc.org/sqlite` for SQLite).
 - Replace `HttpClient` with `net/http`.
 - Replace `Newtonsoft.Json` / `System.Text.Json` with `encoding/json`.
+  - **JSON wire-shape policy: byte-for-byte parity with the Sonarr v3 API.**
+    Idiomatic Go's `omitempty` posture is INCOMPATIBLE with the v3 contract
+    existing clients (React UI, mobile apps, *-arr ecosystem) parse against.
+    Full rules + field-by-field table + audit checklist live at
+    [JSON_CONVENTIONS.md](JSON_CONVENTIONS.md). Every new or modified
+    JSON-emitting type MUST follow that policy.
 - Replace dependency-injection containers with explicit constructor injection (just pass deps as arguments).
 - Replace `appsettings.json` / `IConfiguration` with `os.Getenv` or a typed config struct populated at startup.
 
