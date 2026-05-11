@@ -77,6 +77,37 @@ type DailySeriesService interface {
 	IsDailySeries(tvdbID int) bool
 }
 
+// SeriesLookup narrows the C# `ISeriesService` to the one method the
+// SkyHookProxy reaches for — `_seriesService.FindByTvdbId(tvdbId)`.
+//
+// Used by two arms of the search path (slice 4.AU, sub-arc M3b):
+//
+//   - The `tvdb:` / `tvdbid:` prefix short-circuit at C# `SkyHookProxy.cs:128-141`
+//     — when the user types `tvdbid:81189` the proxy returns the
+//     existing local Series row if Sonarr already knows about it,
+//     else falls back to a fresh GetSeriesInfo + map pass.
+//   - MapSearchResult at C# `:170-180` — when the upstream search
+//     returns a TVDB id the local DB already has a Series row for,
+//     return the local row so the UI shows "this is already in your
+//     library".
+//
+// nil-tolerant: when the proxy isn't wired with a SeriesLookup (the
+// unit-test path), both arms skip the lookup and always map fresh.
+//
+// Error semantics: implementations should return
+// [series.ErrNotFound] (or `errors.Is`-compatible) when the TVDB id
+// has no local row — the C# tree models this as a null return; the
+// Go port uses the sentinel + a (nil, nil) "ok-but-empty" contract
+// is NOT used since it conflicts with the typed err signature
+// callers expect from the rest of the series package.
+type SeriesLookup interface {
+	// GetByTvdbID returns the local Series row with the given TVDB
+	// id, or wraps [series.ErrNotFound] when no local row exists.
+	// Implementations should NOT return a fresh ShowResource-mapped
+	// Series — only the existing persisted row.
+	GetByTvdbID(ctx context.Context, tvdbID int) (*series.Series, error)
+}
+
 // Proxy is the SkyHook concrete metadata-source provider — the only
 // concrete [SeriesInfoProvider]+[SeriesSearcher] impl in Sonarr's tree.
 //
@@ -86,17 +117,20 @@ type DailySeriesService interface {
 // Compile-time interface guards live at package init (the var _
 // assignment block at the bottom of this file).
 type Proxy struct {
-	httpClient  *http.Client
-	baseURL     string
-	dailySeries DailySeriesService
-	log         *slog.Logger
+	httpClient   *http.Client
+	baseURL      string
+	dailySeries  DailySeriesService
+	seriesLookup SeriesLookup
+	log          *slog.Logger
 }
 
 // NewProxy constructs a Proxy with the supplied dependencies. nil
 // httpClient or empty baseURL is a programmer error and returns a
-// typed error; dailySeries == nil is permitted (MapSeries treats all
-// series as non-Daily in that case).
-func NewProxy(httpClient *http.Client, baseURL string, dailySeries DailySeriesService, log *slog.Logger) (*Proxy, error) {
+// typed error; dailySeries == nil and seriesLookup == nil are both
+// permitted (MapSeries treats all series as non-Daily when daily is
+// nil; the search arms skip the local-existing-series shortcut when
+// seriesLookup is nil).
+func NewProxy(httpClient *http.Client, baseURL string, dailySeries DailySeriesService, seriesLookup SeriesLookup, log *slog.Logger) (*Proxy, error) {
 	if httpClient == nil {
 		return nil, errors.New("metadatasource: NewProxy: httpClient is nil")
 	}
@@ -107,10 +141,11 @@ func NewProxy(httpClient *http.Client, baseURL string, dailySeries DailySeriesSe
 		log = slog.Default()
 	}
 	return &Proxy{
-		httpClient:  httpClient,
-		baseURL:     strings.TrimRight(baseURL, "/"),
-		dailySeries: dailySeries,
-		log:         log,
+		httpClient:   httpClient,
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		dailySeries:  dailySeries,
+		seriesLookup: seriesLookup,
+		log:          log,
 	}, nil
 }
 
@@ -553,16 +588,54 @@ func parseSkyHookDate(s string) (time.Time, bool) {
 	return t.UTC(), true
 }
 
-// urlEncodeTerm is a small helper used by slice 4.AU's
-// SearchForNewSeries. Placed here so M3a's reading of the surface
-// is contiguous with what M3b will reach for; the M3a slice itself
-// does not call it.
-//
-//nolint:unused // wired in by slice 4.AU (queue [M3b]); reserved here to keep the per-route URL construction symmetrical across the two sub-arcs.
+// urlEncodeTerm is the search-term percent-encoder used by
+// [Proxy.SearchForNewSeries] in slice 4.AU. The C# code calls
+// `.AddQueryParam("term", title.ToLower().Trim())` which leaves
+// encoding to the HttpRequestBuilder layer; in Go we encode
+// manually via url.QueryEscape.
 func urlEncodeTerm(term string) string {
 	return url.QueryEscape(strings.TrimSpace(strings.ToLower(term)))
 }
 
-// Compile-time guard that Proxy implements [SeriesInfoProvider]. The
-// [SeriesSearcher] guard lands with slice 4.AU when the impl arrives.
-var _ SeriesInfoProvider = (*Proxy)(nil)
+// looksLikePath ports the C# `IsPathValid(PathValidationType.AnyOs)`
+// check the SearchForNewSeries guard uses to reject path-injection
+// attempts. C# `PathExtensions.cs:143-184` defines AnyOs as
+// `IsPathValidForWindows OR IsPathValidForNonWindows`:
+//
+//   - Non-Windows: starts with `/`.
+//   - Windows: starts with `\\` (UNC) or matches the drive-letter
+//     regex `^[a-zA-Z]:\\` (e.g. `C:\foo`).
+//
+// The Go port matches the same shape — we don't import an OS-specific
+// path validator because the guard is "does this look like ANY
+// filesystem path?" not "is this a valid path on the current OS?".
+func looksLikePath(s string) bool {
+	if s == "" {
+		return false
+	}
+	// Non-Windows path: leading "/".
+	if s[0] == '/' {
+		return true
+	}
+	// Windows UNC path: leading "\\".
+	if len(s) >= 2 && s[0] == '\\' && s[1] == '\\' {
+		return true
+	}
+	// Windows drive-letter path: "[a-zA-Z]:[\\/]".
+	if len(s) >= 3 && isASCIILetter(s[0]) && s[1] == ':' && (s[2] == '\\' || s[2] == '/') {
+		return true
+	}
+	return false
+}
+
+func isASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// Compile-time guards: Proxy implements both metadata-source
+// interfaces. The [SeriesSearcher] surface is implemented in
+// skyhook_search.go (sub-arc M3b).
+var (
+	_ SeriesInfoProvider = (*Proxy)(nil)
+	_ SeriesSearcher     = (*Proxy)(nil)
+)

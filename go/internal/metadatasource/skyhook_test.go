@@ -111,7 +111,7 @@ func fixtureHandler(t *testing.T, show ShowResource) http.HandlerFunc {
 
 func newProxyForServer(t *testing.T, srv *httptest.Server, daily DailySeriesService) *Proxy {
 	t.Helper()
-	p, err := NewProxy(srv.Client(), srv.URL, daily, nil)
+	p, err := NewProxy(srv.Client(), srv.URL, daily, nil, nil)
 	if err != nil {
 		t.Fatalf("NewProxy: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestProxy_GetSeriesInfo_NilDailyServiceTreatsAsStandard(t *testing.T) {
 	srv := httptest.NewServer(fixtureHandler(t, show))
 	defer srv.Close()
 
-	p, err := NewProxy(srv.Client(), srv.URL, nil, nil)
+	p, err := NewProxy(srv.Client(), srv.URL, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewProxy: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestNewProxy_RejectsNil(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := NewProxy(tc.client, tc.base, nil, nil); err == nil {
+			if _, err := NewProxy(tc.client, tc.base, nil, nil, nil); err == nil {
 				t.Errorf("NewProxy(%v, %q) = no err, want guard rejection", tc.client, tc.base)
 			}
 		})
