@@ -31,7 +31,7 @@ import (
 // Profile is one ReleaseProfiles row.
 type Profile struct {
 	ID                 int      `json:"id"`
-	Name               string   `json:"name,omitempty"`
+	Name               string   `json:"name"`
 	Enabled            bool     `json:"enabled"`
 	Required           []string `json:"required"`
 	Ignored            []string `json:"ignored"`

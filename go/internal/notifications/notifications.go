@@ -41,9 +41,9 @@ type Notification struct {
 	OnDownload                    bool    `json:"onDownload"`
 	Settings                      string  `json:"settings"`
 	Implementation                string  `json:"implementation"`
-	ConfigContract                *string `json:"configContract,omitempty"`
-	OnUpgrade                     *bool   `json:"onUpgrade,omitempty"`
-	Tags                          []int   `json:"tags,omitempty"`
+	ConfigContract                *string `json:"configContract"`
+	OnUpgrade                     *bool   `json:"onUpgrade"`
+	Tags                          []int   `json:"tags"`
 	OnRename                      bool    `json:"onRename"`
 	OnHealthIssue                 bool    `json:"onHealthIssue"`
 	IncludeHealthWarnings         bool    `json:"includeHealthWarnings"`

@@ -36,9 +36,9 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 		DownloadID:       "abc123",
 		SourceTitle:      "Foo.S01E01",
 		Date:             earlier,
-		Protocol:         ptrInt(1),
-		IndexerID:        ptrInt(10),
-		DownloadClientID: ptrInt(2),
+		Protocol:         1,
+		IndexerID:        10,
+		DownloadClientID: 2,
 		Release:          `{"title":"Foo.S01E01","size":1234}`,
 		Data:             `{"releaseGroup":"RARBG"}`,
 	}
@@ -61,7 +61,7 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Protocol == nil || *got.Protocol != 1 {
+	if got.Protocol == 0 || got.Protocol != 1 {
 		t.Errorf("Protocol: %v", got.Protocol)
 	}
 	if got.Release != grab.Release {
@@ -72,7 +72,7 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 	if err != nil {
 		t.Fatalf("Get imported: %v", err)
 	}
-	if gotImp.Protocol != nil || gotImp.Release != "" || gotImp.Data != "" {
+	if gotImp.Protocol != 0 || gotImp.Release != "" || gotImp.Data != "" {
 		t.Errorf("imported sparse: %+v", gotImp)
 	}
 

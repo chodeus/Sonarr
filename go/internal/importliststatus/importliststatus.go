@@ -25,11 +25,11 @@ import (
 type Status struct {
 	ID                           int        `json:"id"`
 	ProviderID                   int        `json:"providerId"`
-	InitialFailure               *time.Time `json:"initialFailure,omitempty"`
-	MostRecentFailure            *time.Time `json:"mostRecentFailure,omitempty"`
+	InitialFailure               *time.Time `json:"initialFailure"`
+	MostRecentFailure            *time.Time `json:"mostRecentFailure"`
 	EscalationLevel              int        `json:"escalationLevel"`
-	DisabledTill                 *time.Time `json:"disabledTill,omitempty"`
-	LastInfoSync                 *time.Time `json:"lastInfoSync,omitempty"`
+	DisabledTill                 *time.Time `json:"disabledTill"`
+	LastInfoSync                 *time.Time `json:"lastInfoSync"`
 	HasRemovedItemSinceLastClean bool       `json:"hasRemovedItemSinceLastClean"`
 }
 

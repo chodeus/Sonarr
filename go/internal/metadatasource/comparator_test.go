@@ -8,15 +8,10 @@ import (
 )
 
 // seriesWith returns a *series.Series with the given Title and Year.
-// year == 0 → leaves Year nil (mirroring the C# default-zero / Go-port
-// nil distinction). year != 0 → sets Year via pointer.
+// year == 0 leaves Year at zero (per Option A: C# parity — Year is
+// non-nullable int; 0 is the "unset" sentinel).
 func seriesWith(title string, year int) *series.Series {
-	s := &series.Series{Title: title}
-	if year != 0 {
-		y := year
-		s.Year = &y
-	}
-	return s
+	return &series.Series{Title: title, Year: year}
 }
 
 // sortedTitles returns the Title of each entry in input order so test
@@ -93,7 +88,7 @@ func TestSearchSeriesComparer_YearAware(t *testing.T) {
 	if items[0].Title != "Battlestar Galactica" {
 		t.Fatalf("first.Title = %q, want Battlestar Galactica", items[0].Title)
 	}
-	if items[0].Year == nil || *items[0].Year != 2003 {
+	if items[0].Year == 0 || items[0].Year != 2003 {
 		t.Errorf("first.Year = %v, want 2003 (full order: %+v / years: [%d %d])",
 			items[0].Year, sortedTitles(items),
 			derefYear(items[0]), derefYear(items[1]))
@@ -313,8 +308,8 @@ func TestYearFactor(t *testing.T) {
 
 // derefYear is a test helper for diagnostic messages.
 func derefYear(s *series.Series) int {
-	if s == nil || s.Year == nil {
+	if s == nil || s.Year == 0 {
 		return 0
 	}
-	return *s.Year
+	return s.Year
 }

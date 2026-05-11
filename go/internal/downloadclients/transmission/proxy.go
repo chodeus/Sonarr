@@ -87,8 +87,8 @@ type Response struct {
 // rpcRequest is the canonical request envelope.
 type rpcRequest struct {
 	Method    string      `json:"method"`
-	Arguments interface{} `json:"arguments,omitempty"`
-	Tag       int         `json:"tag,omitempty"`
+	Arguments interface{} `json:"arguments"`
+	Tag       int         `json:"tag"`
 }
 
 // AddTorrentFromURL fires `torrent-add` with a magnet or HTTP(S) URL

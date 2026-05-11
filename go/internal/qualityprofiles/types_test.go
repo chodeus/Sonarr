@@ -26,8 +26,12 @@ func TestQualityItem_MarshalUsesIntQuality(t *testing.T) {
 	if !strings.Contains(got, `"quality":1`) {
 		t.Errorf("Quality should encode as int 1, got %s", got)
 	}
-	if strings.Contains(got, `"id"`) {
-		t.Errorf("Id should be omitted when zero, got %s", got)
+	// Per Option A (go/JSON_CONVENTIONS.md): zero values emit explicitly,
+	// matching .NET System.Text.Json default behaviour. The C# tree's
+	// QualityProfileQualityItem.Id is a non-nullable int that emits 0
+	// when unset; the Go port matches.
+	if !strings.Contains(got, `"id":0`) {
+		t.Errorf("Id should emit explicit 0 per Option A wire-shape parity, got %s", got)
 	}
 	if !strings.Contains(got, `"items":[]`) {
 		t.Errorf("Items should always emit []; got %s", got)

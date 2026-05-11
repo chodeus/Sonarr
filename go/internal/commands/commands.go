@@ -43,10 +43,10 @@ type Command struct {
 	Priority  int            `json:"priority"`
 	Status    int            `json:"status"`
 	QueuedAt  time.Time      `json:"queuedAt"`
-	StartedAt *time.Time     `json:"startedAt,omitempty"`
-	EndedAt   *time.Time     `json:"endedAt,omitempty"`
-	Duration  *time.Duration `json:"duration,omitempty"`
-	Exception string         `json:"exception,omitempty"`
+	StartedAt *time.Time     `json:"startedAt"`
+	EndedAt   *time.Time     `json:"endedAt"`
+	Duration  *time.Duration `json:"duration"`
+	Exception string         `json:"exception"`
 	Trigger   int            `json:"trigger"`
 	Result    int            `json:"result"`
 }

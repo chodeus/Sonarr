@@ -202,7 +202,7 @@ func (q *QueueSpecification) IsSatisfiedBy(ctx context.Context, subject *Subject
 	if subject == nil || subject.Series == nil || subject.ParsedEpisodeInfo == nil || len(subject.Episodes) == 0 {
 		return Accept()
 	}
-	if subject.Series.QualityProfileID == nil {
+	if subject.Series.QualityProfileID == 0 {
 		return Accept()
 	}
 
@@ -216,15 +216,15 @@ func (q *QueueSpecification) IsSatisfiedBy(ctx context.Context, subject *Subject
 		candidateEpisodeIDs[ep.ID] = struct{}{}
 	}
 
-	view, ok, err := q.profiles.LookupProfile(ctx, *subject.Series.QualityProfileID)
+	view, ok, err := q.profiles.LookupProfile(ctx, subject.Series.QualityProfileID)
 	if err != nil {
 		q.log.Debug("decisionengine.queue: profile lookup error — accepting defensively",
-			"qualityProfileID", *subject.Series.QualityProfileID, "err", err)
+			"qualityProfileID", subject.Series.QualityProfileID, "err", err)
 		return Accept()
 	}
 	if !ok || view == nil {
 		q.log.Debug("decisionengine.queue: profile not found — accepting defensively",
-			"qualityProfileID", *subject.Series.QualityProfileID)
+			"qualityProfileID", subject.Series.QualityProfileID)
 		return Accept()
 	}
 

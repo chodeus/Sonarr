@@ -24,7 +24,7 @@ func newQualityAllowedSpec(t *testing.T, profiles map[int]*decisionengine.Profil
 	return spec
 }
 
-func qualityAllowedSubject(qualityProfileID *int, q quality.Quality) *decisionengine.Subject {
+func qualityAllowedSubject(qualityProfileID int, q quality.Quality) *decisionengine.Subject {
 	return &decisionengine.Subject{
 		Series: &series.Series{ID: 7, QualityProfileID: qualityProfileID},
 		ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{
@@ -65,7 +65,7 @@ func TestQualityAllowed_AcceptsAllowedQuality(t *testing.T) {
 	spec := newQualityAllowedSpec(t, map[int]*decisionengine.ProfileView{
 		1: allowedProfile(quality.HDTV720p),
 	}, nil)
-	got := spec.IsSatisfiedBy(t.Context(), qualityAllowedSubject(&id, quality.HDTV720p),
+	got := spec.IsSatisfiedBy(t.Context(), qualityAllowedSubject(id, quality.HDTV720p),
 		decisionengine.ReleaseDecisionInformation{})
 	if !got.Accepted {
 		t.Errorf("expected Accept on allowed quality, got %+v", got)
@@ -78,7 +78,7 @@ func TestQualityAllowed_RejectsDisallowedQuality(t *testing.T) {
 	spec := newQualityAllowedSpec(t, map[int]*decisionengine.ProfileView{
 		1: disallowedProfile(quality.HDTV720p),
 	}, nil)
-	got := spec.IsSatisfiedBy(t.Context(), qualityAllowedSubject(&id, quality.HDTV720p),
+	got := spec.IsSatisfiedBy(t.Context(), qualityAllowedSubject(id, quality.HDTV720p),
 		decisionengine.ReleaseDecisionInformation{})
 	if got.Accepted {
 		t.Errorf("expected Reject on disallowed quality, got Accept")
@@ -101,7 +101,7 @@ func TestQualityAllowed_NilProfileIDAccepts(t *testing.T) {
 	t.Parallel()
 	spec := newQualityAllowedSpec(t, nil, nil)
 	got := spec.IsSatisfiedBy(t.Context(),
-		qualityAllowedSubject(nil, quality.HDTV720p),
+		qualityAllowedSubject(0, quality.HDTV720p),
 		decisionengine.ReleaseDecisionInformation{})
 	if !got.Accepted {
 		t.Errorf("expected Accept on nil QualityProfileID, got %+v", got)
@@ -113,7 +113,7 @@ func TestQualityAllowed_LookupErrorAccepts(t *testing.T) {
 	id := 1
 	spec := newQualityAllowedSpec(t, nil, errors.New("db down"))
 	got := spec.IsSatisfiedBy(t.Context(),
-		qualityAllowedSubject(&id, quality.HDTV720p),
+		qualityAllowedSubject(id, quality.HDTV720p),
 		decisionengine.ReleaseDecisionInformation{})
 	if !got.Accepted {
 		t.Errorf("expected defensive Accept on lookup error, got %+v", got)
@@ -127,7 +127,7 @@ func TestQualityAllowed_MissingProfileAccepts(t *testing.T) {
 		1: allowedProfile(quality.HDTV720p),
 	}, nil)
 	got := spec.IsSatisfiedBy(t.Context(),
-		qualityAllowedSubject(&id, quality.HDTV720p),
+		qualityAllowedSubject(id, quality.HDTV720p),
 		decisionengine.ReleaseDecisionInformation{})
 	if !got.Accepted {
 		t.Errorf("expected Accept on missing profile, got %+v", got)
@@ -141,7 +141,7 @@ func TestQualityAllowed_EmptyProfileAccepts(t *testing.T) {
 		1: {Items: nil},
 	}, nil)
 	got := spec.IsSatisfiedBy(t.Context(),
-		qualityAllowedSubject(&id, quality.HDTV720p),
+		qualityAllowedSubject(id, quality.HDTV720p),
 		decisionengine.ReleaseDecisionInformation{})
 	if !got.Accepted {
 		t.Errorf("expected Accept on empty profile, got %+v", got)
@@ -161,7 +161,7 @@ func TestQualityAllowed_UnknownQualityCSharpQuirk_FirstAllowed(t *testing.T) {
 		1: allowedProfile(quality.DVD),
 	}, nil)
 	got := spec.IsSatisfiedBy(t.Context(),
-		qualityAllowedSubject(&id, quality.HDTV720p),
+		qualityAllowedSubject(id, quality.HDTV720p),
 		decisionengine.ReleaseDecisionInformation{})
 	if !got.Accepted {
 		t.Errorf("expected Accept on unknown quality with first-item-Allowed (C# GetIndex=0 quirk), got %+v", got)
@@ -179,7 +179,7 @@ func TestQualityAllowed_UnknownQualityCSharpQuirk_FirstDisallowed(t *testing.T) 
 		1: disallowedProfile(quality.DVD),
 	}, nil)
 	got := spec.IsSatisfiedBy(t.Context(),
-		qualityAllowedSubject(&id, quality.HDTV720p),
+		qualityAllowedSubject(id, quality.HDTV720p),
 		decisionengine.ReleaseDecisionInformation{})
 	if got.Accepted {
 		t.Errorf("expected Reject on unknown quality with first-item-Disallowed (C# quirk), got Accept")

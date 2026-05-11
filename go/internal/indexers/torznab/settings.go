@@ -33,11 +33,11 @@ const minimumSeedersDefault = 1
 // (in settings.go below) only emits warnings for explicit non-positive
 // values.
 type SeedCriteriaSettings struct {
-	SeedRatio           *float64 `json:"seedRatio,omitempty"`
-	SeedTime            *int     `json:"seedTime,omitempty"`
-	SeasonPackSeedGoal  int      `json:"seasonPackSeedGoal,omitempty"`
-	SeasonPackSeedRatio *float64 `json:"seasonPackSeedRatio,omitempty"`
-	SeasonPackSeedTime  *int     `json:"seasonPackSeedTime,omitempty"`
+	SeedRatio           *float64 `json:"seedRatio"`
+	SeedTime            *int     `json:"seedTime"`
+	SeasonPackSeedGoal  int      `json:"seasonPackSeedGoal"`
+	SeasonPackSeedRatio *float64 `json:"seasonPackSeedRatio"`
+	SeasonPackSeedTime  *int     `json:"seasonPackSeedTime"`
 }
 
 // Settings ports src/NzbDrone.Core/Indexers/Torznab/TorznabSettings.cs:45-83.

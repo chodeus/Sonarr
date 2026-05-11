@@ -34,12 +34,12 @@ type Item struct {
 	ImportListID int        `json:"importListId"`
 	Title        string     `json:"title"`
 	TvdbID       int        `json:"tvdbId"`
-	Year         *int       `json:"year,omitempty"`
-	TmdbID       *int       `json:"tmdbId,omitempty"`
-	ImdbID       *string    `json:"imdbId,omitempty"`
-	MalID        *int       `json:"malId,omitempty"`
-	AniListID    *int       `json:"aniListId,omitempty"`
-	ReleaseDate  *time.Time `json:"releaseDate,omitempty"`
+	Year         *int       `json:"year"`
+	TmdbID       *int       `json:"tmdbId"`
+	ImdbID       *string    `json:"imdbId"`
+	MalID        *int       `json:"malId"`
+	AniListID    *int       `json:"aniListId"`
+	ReleaseDate  *time.Time `json:"releaseDate"`
 }
 
 // ErrNotFound is returned when no row matches.

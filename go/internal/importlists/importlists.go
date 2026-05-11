@@ -42,13 +42,13 @@ type ImportList struct {
 	ID                       int     `json:"id"`
 	Name                     string  `json:"name"`
 	Implementation           string  `json:"implementation"`
-	Settings                 *string `json:"settings,omitempty"`
-	ConfigContract           *string `json:"configContract,omitempty"`
-	EnableAutomaticAdd       *bool   `json:"enableAutomaticAdd,omitempty"`
+	Settings                 *string `json:"settings"`
+	ConfigContract           *string `json:"configContract"`
+	EnableAutomaticAdd       *bool   `json:"enableAutomaticAdd"`
 	RootFolderPath           string  `json:"rootFolderPath"`
 	ShouldMonitor            int     `json:"shouldMonitor"`
 	QualityProfileID         int     `json:"qualityProfileId"`
-	Tags                     []int   `json:"tags,omitempty"`
+	Tags                     []int   `json:"tags"`
 	SeriesType               int     `json:"seriesType"`
 	SeasonFolder             bool    `json:"seasonFolder"`
 	SearchForMissingEpisodes bool    `json:"searchForMissingEpisodes"`

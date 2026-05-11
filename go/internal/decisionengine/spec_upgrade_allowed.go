@@ -166,10 +166,10 @@ func (s *UpgradeAllowedSpecification) IsSatisfiedBy(ctx context.Context, subject
 	if subject == nil || subject.Series == nil || subject.ParsedEpisodeInfo == nil {
 		return Accept()
 	}
-	if subject.Series.QualityProfileID == nil {
+	if subject.Series.QualityProfileID == 0 {
 		return Accept()
 	}
-	view, ok, err := s.profileLookup.LookupProfile(ctx, *subject.Series.QualityProfileID)
+	view, ok, err := s.profileLookup.LookupProfile(ctx, subject.Series.QualityProfileID)
 	if err != nil {
 		s.log.Debug("upgradeAllowed: profile lookup failed; accepting (defensive)",
 			"err", err, "seriesID", subject.Series.ID)

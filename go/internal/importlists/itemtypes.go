@@ -83,7 +83,7 @@ type ItemInfo struct {
 
 	// Seasons carries the per-season monitor-state hints some
 	// providers return.
-	Seasons []Season `json:"seasons,omitempty"`
+	Seasons []Season `json:"seasons"`
 }
 
 // Season is the per-season monitor-state hint an import-list item

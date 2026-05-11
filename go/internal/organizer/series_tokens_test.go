@@ -7,9 +7,7 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 )
 
-func ptrInt(v int) *int { return &v }
-
-func sampleSeriesForOrganizer(title string, year *int) *series.Series {
+func sampleSeriesForOrganizer(title string, year int) *series.Series {
 	return &series.Series{
 		Title:        title,
 		Year:         year,
@@ -24,7 +22,7 @@ func sampleSeriesForOrganizer(title string, year *int) *series.Series {
 
 func TestRegisterSeriesTokens_AllTokensReturnSomething(t *testing.T) {
 	t.Parallel()
-	s := sampleSeriesForOrganizer("The Mandalorian", ptrInt(2019))
+	s := sampleSeriesForOrganizer("The Mandalorian", 2019)
 	handlers := map[string]organizer.TokenHandler{}
 	organizer.RegisterSeriesTokens(handlers, s)
 
@@ -60,7 +58,7 @@ func TestRegisterSeriesTokens_AllTokensReturnSomething(t *testing.T) {
 
 func TestRegisterSeriesTokens_NilYearProducesEmptyYear(t *testing.T) {
 	t.Parallel()
-	s := sampleSeriesForOrganizer("Show", nil)
+	s := sampleSeriesForOrganizer("Show", 0)
 	handlers := map[string]organizer.TokenHandler{}
 	organizer.RegisterSeriesTokens(handlers, s)
 
@@ -76,7 +74,7 @@ func TestRegisterSeriesTokens_NilYearProducesEmptyYear(t *testing.T) {
 
 func TestRegisterIDTokens(t *testing.T) {
 	t.Parallel()
-	s := sampleSeriesForOrganizer("Show", ptrInt(2019))
+	s := sampleSeriesForOrganizer("Show", 2019)
 	handlers := map[string]organizer.TokenHandler{}
 	organizer.RegisterIDTokens(handlers, s)
 
@@ -157,7 +155,7 @@ func TestReplaceReservedDeviceNames(t *testing.T) {
 
 func TestGetSeriesFolder(t *testing.T) {
 	t.Parallel()
-	s := sampleSeriesForOrganizer("The Mandalorian", ptrInt(2019))
+	s := sampleSeriesForOrganizer("The Mandalorian", 2019)
 	opts := organizer.FolderOptions{
 		SeriesFolderFormat: "{Series Title}",
 		Clean:              organizer.DefaultCleanNameOptions(),
@@ -170,7 +168,7 @@ func TestGetSeriesFolder(t *testing.T) {
 
 func TestGetSeriesFolder_TitleYearFormat(t *testing.T) {
 	t.Parallel()
-	s := sampleSeriesForOrganizer("The Mandalorian", ptrInt(2019))
+	s := sampleSeriesForOrganizer("The Mandalorian", 2019)
 	opts := organizer.FolderOptions{
 		SeriesFolderFormat: "{Series TitleYear}",
 		Clean:              organizer.DefaultCleanNameOptions(),
@@ -183,7 +181,7 @@ func TestGetSeriesFolder_TitleYearFormat(t *testing.T) {
 
 func TestGetSeriesFolder_SeparatorVariants(t *testing.T) {
 	t.Parallel()
-	s := sampleSeriesForOrganizer("The Mandalorian", ptrInt(2019))
+	s := sampleSeriesForOrganizer("The Mandalorian", 2019)
 	cases := []struct{ format, want string }{
 		{"{Series.Title}", "The.Mandalorian"},
 		{"{Series_Title}", "The_Mandalorian"},
@@ -207,7 +205,7 @@ func TestGetSeriesFolder_SeparatorVariants(t *testing.T) {
 
 func TestGetSeasonFolder_RegularSeason(t *testing.T) {
 	t.Parallel()
-	s := sampleSeriesForOrganizer("Show", ptrInt(2020))
+	s := sampleSeriesForOrganizer("Show", 2020)
 	opts := organizer.FolderOptions{
 		SeasonFolderFormat:   "Season {season:00}",
 		SpecialsFolderFormat: "Specials",
@@ -221,7 +219,7 @@ func TestGetSeasonFolder_RegularSeason(t *testing.T) {
 
 func TestGetSeasonFolder_Season0UsesSpecialsFormat(t *testing.T) {
 	t.Parallel()
-	s := sampleSeriesForOrganizer("Show", ptrInt(2020))
+	s := sampleSeriesForOrganizer("Show", 2020)
 	opts := organizer.FolderOptions{
 		SeasonFolderFormat:   "Season {season:00}",
 		SpecialsFolderFormat: "Specials",
@@ -235,7 +233,7 @@ func TestGetSeasonFolder_Season0UsesSpecialsFormat(t *testing.T) {
 
 func TestGetSeasonFolder_SeriesTokensInsideFormat(t *testing.T) {
 	t.Parallel()
-	s := sampleSeriesForOrganizer("Show", ptrInt(2020))
+	s := sampleSeriesForOrganizer("Show", 2020)
 	opts := organizer.FolderOptions{
 		SeasonFolderFormat:   "{Series Title} S{season:00}",
 		SpecialsFolderFormat: "Specials",
@@ -249,7 +247,7 @@ func TestGetSeasonFolder_SeriesTokensInsideFormat(t *testing.T) {
 
 func TestBuildSeasonPath_WithSeasonFolder(t *testing.T) {
 	t.Parallel()
-	s := sampleSeriesForOrganizer("Show", ptrInt(2020))
+	s := sampleSeriesForOrganizer("Show", 2020)
 	s.Path = "/tv/Show"
 	opts := organizer.FolderOptions{
 		SeasonFolderFormat:   "Season {season:00}",
@@ -265,7 +263,7 @@ func TestBuildSeasonPath_WithSeasonFolder(t *testing.T) {
 
 func TestBuildSeasonPath_WithoutSeasonFolderUsesRoot(t *testing.T) {
 	t.Parallel()
-	s := sampleSeriesForOrganizer("Show", ptrInt(2020))
+	s := sampleSeriesForOrganizer("Show", 2020)
 	s.Path = "/tv/Show"
 	s.SeasonFolder = false
 	opts := organizer.FolderOptions{
@@ -279,7 +277,7 @@ func TestBuildSeasonPath_WithoutSeasonFolderUsesRoot(t *testing.T) {
 
 func TestGetSeriesFolder_ReservedDeviceNames(t *testing.T) {
 	t.Parallel()
-	s := sampleSeriesForOrganizer("AUX.tv", ptrInt(2020))
+	s := sampleSeriesForOrganizer("AUX.tv", 2020)
 	opts := organizer.FolderOptions{
 		SeriesFolderFormat: "{Series Title}",
 		Clean:              organizer.DefaultCleanNameOptions(),

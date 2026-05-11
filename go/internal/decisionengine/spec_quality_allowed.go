@@ -102,21 +102,21 @@ func (s *QualityAllowedByProfileSpecification) IsSatisfiedBy(ctx context.Context
 	if subject == nil || subject.Series == nil || subject.ParsedEpisodeInfo == nil {
 		return Accept()
 	}
-	if subject.Series.QualityProfileID == nil {
+	if subject.Series.QualityProfileID == 0 {
 		s.log.Debug("qualityAllowed: series has no QualityProfileID; accepting defensively",
 			"seriesId", subject.Series.ID)
 		return Accept()
 	}
 
-	view, ok, err := s.profiles.LookupProfile(ctx, *subject.Series.QualityProfileID)
+	view, ok, err := s.profiles.LookupProfile(ctx, subject.Series.QualityProfileID)
 	if err != nil {
 		s.log.Warn("qualityAllowed: profile lookup failed; accepting defensively",
-			"seriesId", subject.Series.ID, "profileId", *subject.Series.QualityProfileID, "err", err)
+			"seriesId", subject.Series.ID, "profileId", subject.Series.QualityProfileID, "err", err)
 		return Accept()
 	}
 	if !ok || view == nil || len(view.Items) == 0 {
 		s.log.Debug("qualityAllowed: profile missing or empty; accepting defensively",
-			"seriesId", subject.Series.ID, "profileId", *subject.Series.QualityProfileID)
+			"seriesId", subject.Series.ID, "profileId", subject.Series.QualityProfileID)
 		return Accept()
 	}
 
@@ -139,7 +139,7 @@ func (s *QualityAllowedByProfileSpecification) IsSatisfiedBy(ctx context.Context
 	item := view.Items[idx.Index]
 	if !item.Allowed {
 		s.log.Debug("qualityAllowed: quality rejected by profile",
-			"seriesId", subject.Series.ID, "quality", q.Name, "profileId", *subject.Series.QualityProfileID)
+			"seriesId", subject.Series.ID, "quality", q.Name, "profileId", subject.Series.QualityProfileID)
 		return Reject(ReasonQualityNotWanted,
 			fmt.Sprintf("%s is not wanted in profile", q.Name))
 	}

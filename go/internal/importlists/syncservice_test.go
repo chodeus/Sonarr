@@ -271,7 +271,7 @@ func TestSync_HappyPath_FiltersExclusions_ExistingDedup(t *testing.T) {
 	if got.Title != "Healthy" {
 		t.Errorf("Title: %q", got.Title)
 	}
-	if got.Year == nil || *got.Year != 2020 {
+	if got.Year == 0 || got.Year != 2020 {
 		t.Errorf("Year: %v", got.Year)
 	}
 	if !got.Monitored {
@@ -280,7 +280,7 @@ func TestSync_HappyPath_FiltersExclusions_ExistingDedup(t *testing.T) {
 	if got.RootFolderPath != "/mnt/tv" {
 		t.Errorf("RootFolderPath: %q", got.RootFolderPath)
 	}
-	if got.QualityProfileID == nil || *got.QualityProfileID != 5 {
+	if got.QualityProfileID == 0 || got.QualityProfileID != 5 {
 		t.Errorf("QualityProfileID: %v", got.QualityProfileID)
 	}
 	if len(got.Tags) != 2 || got.Tags[0] != 11 || got.Tags[1] != 22 {

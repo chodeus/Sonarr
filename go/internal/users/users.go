@@ -36,8 +36,8 @@ type User struct {
 	Identifier string  `json:"identifier"`
 	Username   string  `json:"username"`
 	Password   string  `json:"password"`
-	Salt       *string `json:"salt,omitempty"`
-	Iterations *int    `json:"iterations,omitempty"`
+	Salt       *string `json:"salt"`
+	Iterations *int    `json:"iterations"`
 }
 
 // ErrNotFound is returned when no row matches.

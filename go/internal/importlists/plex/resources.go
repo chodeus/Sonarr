@@ -60,7 +60,7 @@ type ItemGuid struct {
 type PinURLResponse struct {
 	Poll    bool              `json:"poll"`
 	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
+	Headers map[string]string `json:"headers"`
 }
 
 // SignInURLResponse is the C# `PlexTvSignInUrlResponse` shape

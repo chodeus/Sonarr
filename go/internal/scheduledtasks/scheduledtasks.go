@@ -36,7 +36,7 @@ type Task struct {
 	TypeName      string     `json:"typeName"`
 	Interval      int        `json:"interval"`
 	LastExecution time.Time  `json:"lastExecution"`
-	LastStartTime *time.Time `json:"lastStartTime,omitempty"`
+	LastStartTime *time.Time `json:"lastStartTime"`
 }
 
 // ErrNotFound is returned when no row matches.

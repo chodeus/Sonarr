@@ -100,10 +100,10 @@ func (s *QualityProfileSpec) ImplementationName() string { return "Quality Profi
 
 // IsSatisfiedBy implements Specification.
 func (s *QualityProfileSpec) IsSatisfiedBy(in Input) bool {
-	if in.Series == nil || in.Series.QualityProfileID == nil {
+	if in.Series == nil || in.Series.QualityProfileID == 0 {
 		return s.applyNegate(false)
 	}
-	return s.applyNegate(*in.Series.QualityProfileID == s.Value)
+	return s.applyNegate(in.Series.QualityProfileID == s.Value)
 }
 
 // SeriesTypeSpec ports `Specifications/SeriesTypeSpecification.cs`.
@@ -186,10 +186,10 @@ func (s *YearSpec) ImplementationName() string { return "Year" }
 
 // IsSatisfiedBy implements Specification.
 func (s *YearSpec) IsSatisfiedBy(in Input) bool {
-	if in.Series == nil || in.Series.Year == nil {
+	if in.Series == nil || in.Series.Year == 0 {
 		return s.applyNegate(false)
 	}
-	y := *in.Series.Year
+	y := in.Series.Year
 	return s.applyNegate(y >= s.Min && y <= s.Max)
 }
 

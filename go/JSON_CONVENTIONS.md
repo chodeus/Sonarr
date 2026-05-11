@@ -127,20 +127,29 @@ type Series struct {
 }
 ```
 
-## Known non-compliant fields (audit findings, pending fix)
+## Known non-compliant fields
 
-- [series.go:81](internal/series/series.go:81) — `Year *int + omitempty`. C# is
-  non-nullable `int`. Fix: change to `int`; Scan coerces schema NULL → 0.
-- [series.go:88](internal/series/series.go:88) — `QualityProfileID *int + omitempty`.
-  C# is non-nullable `int`; schema is NOT NULL. Fix: change to `int`.
-- [episodes.go:43](internal/episodes/episodes.go:43) — `EpisodeFileID *int + omitempty`.
-  C# is `int?` (nullable). Fix: drop `omitempty` so `null` emits explicitly.
-- Sweep needed across other `*int + omitempty` patterns: series, episodes,
-  episodefiles, qualityprofiles, customformats, scenemappings, etc.
+**None — full sweep landed 2026-05-12.** All violations from the
+5-agent audit + omitempty inventory were resolved in a single cleanup
+pass:
 
-A dedicated cleanup slice (or sub-arc) should land before any Phase-5 API
-surface that exposes these types. After the sweep, this section can be
-emptied and the policy enforced by the audit checklist for new code.
+- `omitempty` dropped from 242 occurrences across 40 production files.
+- `*T → T` migrations for non-nullable C# properties:
+  - `series.Series.Year` (`*int → int`; Scan coerces NULL→0)
+  - `series.Series.QualityProfileID` (`*int → int`; schema NOT NULL)
+  - `downloadhistory.Entry.Protocol` / `.IndexerID` / `.DownloadClientID`
+    (`*int → int`; Scan coerces NULL→0)
+- `scenemappings.Mapping` JSON tag renames: `searchTerm → searchTitle` +
+  `seasonNumber → season` matching C# `[JsonProperty]` attributes at
+  `SceneMapping.cs:12-18`.
+- 25+ downstream call sites updated: `nil`-checks replaced with `== 0`
+  sentinel; pointer dereferences removed.
+- Test fixtures across 10+ files updated to construct value-types in
+  `series.Series{Year: 2015, QualityProfileID: 7}` form.
+
+The audit checklist (above) is the load-bearing prevention for future
+regressions. Every new JSON-emitting type added to the Go port MUST
+pass that checklist before merge.
 
 ## Related
 

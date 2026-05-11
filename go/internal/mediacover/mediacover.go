@@ -101,8 +101,8 @@ func (t CoverType) String() string {
 // expected.
 type Cover struct {
 	CoverType CoverType `json:"coverType"`
-	Url       string    `json:"url,omitempty"`
-	RemoteUrl string    `json:"remoteUrl,omitempty"`
+	Url       string    `json:"url"`
+	RemoteUrl string    `json:"remoteUrl"`
 }
 
 // CoversUpdatedEvent ports `MediaCoversUpdatedEvent` at

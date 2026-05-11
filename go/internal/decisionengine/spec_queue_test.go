@@ -78,7 +78,7 @@ func queueView(t *testing.T) *decisionengine.ProfileView {
 func queueSubject() *decisionengine.Subject {
 	pid := 7
 	return &decisionengine.Subject{
-		Series:   &series.Series{ID: 42, QualityProfileID: &pid},
+		Series:   &series.Series{ID: 42, QualityProfileID: pid},
 		Episodes: []episodes.Episode{{ID: 11}, {ID: 12}},
 		ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{
 			Quality: quality.Model{Quality: quality.WEBDL1080p, Revision: quality.Revision{Version: 1}},
@@ -94,7 +94,7 @@ func queueRow(matchEpisodeID int, queuedQuality quality.Quality, state *int) dec
 	pid := 7
 	return decisionengine.QueueItem{
 		RemoteEpisode: &decisionengine.Subject{
-			Series:   &series.Series{ID: 42, QualityProfileID: &pid},
+			Series:   &series.Series{ID: 42, QualityProfileID: pid},
 			Episodes: []episodes.Episode{{ID: matchEpisodeID}},
 			ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{
 				Quality: quality.Model{Quality: queuedQuality, Revision: quality.Revision{Version: 1}},

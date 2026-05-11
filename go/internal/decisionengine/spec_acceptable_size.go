@@ -149,17 +149,17 @@ func (s *AcceptableSizeSpecification) IsSatisfiedBy(ctx context.Context, subject
 		return Reject(ReasonUnknownRuntime, "Runtime of all episodes is 0, unable to validate size until it is available")
 	}
 
-	if subject.Series == nil || subject.Series.QualityProfileID == nil {
+	if subject.Series == nil || subject.Series.QualityProfileID == 0 {
 		s.log.Debug("acceptableSize: series has no quality profile; accepting", "title", rel.Title)
 		return Accept()
 	}
-	view, ok, err := s.profiles.LookupProfile(ctx, *subject.Series.QualityProfileID)
+	view, ok, err := s.profiles.LookupProfile(ctx, subject.Series.QualityProfileID)
 	if err != nil {
-		s.log.Debug("acceptableSize: profile lookup failed", "err", err, "profileID", *subject.Series.QualityProfileID)
+		s.log.Debug("acceptableSize: profile lookup failed", "err", err, "profileID", subject.Series.QualityProfileID)
 		return Accept()
 	}
 	if !ok || view == nil {
-		s.log.Debug("acceptableSize: profile not found; accepting", "profileID", *subject.Series.QualityProfileID)
+		s.log.Debug("acceptableSize: profile not found; accepting", "profileID", subject.Series.QualityProfileID)
 		return Accept()
 	}
 

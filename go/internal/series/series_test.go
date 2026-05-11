@@ -53,14 +53,14 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 		UseSceneNumbering: false,
 		FirstAired:        ptrTime(now),
 		NextAiring:        ptrTime(now),
-		Year:              ptrInt(2019),
+		Year:              2019,
 		Seasons:           `[{"seasonNumber":1,"monitored":true}]`,
 		Actors:            `[]`,
 		Ratings:           `{"votes":1000,"value":8.5}`,
 		Genres:            `["Sci-Fi","Drama"]`,
 		Certification:     "TV-PG",
 		SortTitle:         "mandalorian, the",
-		QualityProfileID:  ptrInt(1),
+		QualityProfileID:  1,
 		Tags:              []int{1, 2, 3},
 		Added:             ptrTime(now),
 		AddOptions:        `{"searchForMissingEpisodes":false}`,
@@ -98,13 +98,13 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 	if got.Title != "The Mandalorian" || got.Network != "Disney+" {
 		t.Errorf("scalars: %+v", got)
 	}
-	if got.Year == nil || *got.Year != 2019 {
+	if got.Year == 0 || got.Year != 2019 {
 		t.Errorf("Year: %v", got.Year)
 	}
 	if !reflect.DeepEqual(got.Tags, []int{1, 2, 3}) {
 		t.Errorf("Tags: %v", got.Tags)
 	}
-	if got.QualityProfileID == nil || *got.QualityProfileID != 1 {
+	if got.QualityProfileID == 0 || got.QualityProfileID != 1 {
 		t.Errorf("QualityProfileID: %v", got.QualityProfileID)
 	}
 	if got.LastInfoSync == nil || !got.LastInfoSync.Equal(now) {
@@ -122,7 +122,7 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 		gotSparse.LastAired != nil || gotSparse.Added != nil {
 		t.Errorf("sparse pointer nullables: %+v", gotSparse)
 	}
-	if gotSparse.Year != nil || gotSparse.QualityProfileID != nil {
+	if gotSparse.Year != 0 || gotSparse.QualityProfileID != 0 {
 		t.Errorf("sparse int pointers: %+v", gotSparse)
 	}
 	if gotSparse.Network != "" || gotSparse.Genres != "" {

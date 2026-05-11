@@ -49,7 +49,7 @@ func cfaProfileView(t *testing.T, minScore int) *decisionengine.ProfileView {
 func cfaSubject(score int) *decisionengine.Subject {
 	profileID := 1
 	return &decisionengine.Subject{
-		Series:            &series.Series{ID: 7, QualityProfileID: &profileID},
+		Series:            &series.Series{ID: 7, QualityProfileID: profileID},
 		CustomFormatScore: score,
 	}
 }
@@ -161,7 +161,7 @@ func TestCustomFormatAllowedByProfile_AcceptsWhenSeriesHasNoProfileID(t *testing
 	view := cfaProfileView(t, 1)
 	spec := cfaSpec(t, stubCFProfileReader{view: view, ok: true})
 	subj := &decisionengine.Subject{
-		Series:            &series.Series{ID: 7, QualityProfileID: nil},
+		Series:            &series.Series{ID: 7, QualityProfileID: 0},
 		CustomFormatScore: -10,
 	}
 	got := spec.IsSatisfiedBy(t.Context(), subj, decisionengine.ReleaseDecisionInformation{})

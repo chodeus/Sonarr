@@ -47,15 +47,15 @@ type File struct {
 	Size             int64            `json:"size"`
 	DateAdded        time.Time        `json:"dateAdded"`
 	SeasonNumber     int              `json:"seasonNumber"`
-	SceneName        string           `json:"sceneName,omitempty"`
-	ReleaseGroup     string           `json:"releaseGroup,omitempty"`
-	MediaInfo        *mediainfo.Model `json:"mediaInfo,omitempty"`
-	RelativePath     string           `json:"relativePath,omitempty"`
-	OriginalFilePath string           `json:"originalFilePath,omitempty"`
+	SceneName        string           `json:"sceneName"`
+	ReleaseGroup     string           `json:"releaseGroup"`
+	MediaInfo        *mediainfo.Model `json:"mediaInfo"`
+	RelativePath     string           `json:"relativePath"`
+	OriginalFilePath string           `json:"originalFilePath"`
 	Languages        []int            `json:"languages"`
 	IndexerFlags     int              `json:"indexerFlags"`
 	ReleaseType      int              `json:"releaseType"`
-	ReleaseHash      string           `json:"releaseHash,omitempty"`
+	ReleaseHash      string           `json:"releaseHash"`
 }
 
 // ErrNotFound is returned when no row matches.

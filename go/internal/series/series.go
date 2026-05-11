@@ -59,44 +59,51 @@ type Series struct {
 	ID                int        `json:"id"`
 	TvdbID            int        `json:"tvdbId"`
 	TvRageID          int        `json:"tvRageId"`
-	ImdbID            string     `json:"imdbId,omitempty"`
+	ImdbID            string     `json:"imdbId"`
 	Title             string     `json:"title"`
-	TitleSlug         string     `json:"titleSlug,omitempty"`
+	TitleSlug         string     `json:"titleSlug"`
 	CleanTitle        string     `json:"cleanTitle"`
 	Status            int        `json:"status"`
-	Overview          string     `json:"overview,omitempty"`
-	AirTime           string     `json:"airTime,omitempty"`
+	Overview          string     `json:"overview"`
+	AirTime           string     `json:"airTime"`
 	Images            string     `json:"images"`
 	Path              string     `json:"path"`
 	Monitored         bool       `json:"monitored"`
 	SeasonFolder      bool       `json:"seasonFolder"`
-	LastInfoSync      *time.Time `json:"lastInfoSync,omitempty"`
-	LastDiskSync      *time.Time `json:"lastDiskSync,omitempty"`
+	LastInfoSync      *time.Time `json:"lastInfoSync"`
+	LastDiskSync      *time.Time `json:"lastDiskSync"`
 	Runtime           int        `json:"runtime"`
 	SeriesType        int        `json:"seriesType"`
-	Network           string     `json:"network,omitempty"`
+	Network           string     `json:"network"`
 	UseSceneNumbering bool       `json:"useSceneNumbering"`
-	FirstAired        *time.Time `json:"firstAired,omitempty"`
-	NextAiring        *time.Time `json:"nextAiring,omitempty"`
-	Year              *int       `json:"year,omitempty"`
-	Seasons           string     `json:"seasons,omitempty"`
-	Actors            string     `json:"actors,omitempty"`
-	Ratings           string     `json:"ratings,omitempty"`
-	Genres            string     `json:"genres,omitempty"`
-	Certification     string     `json:"certification,omitempty"`
-	SortTitle         string     `json:"sortTitle,omitempty"`
-	QualityProfileID  *int       `json:"qualityProfileId,omitempty"`
+	FirstAired        *time.Time `json:"firstAired"`
+	NextAiring        *time.Time `json:"nextAiring"`
+	// Year mirrors C# `Series.Year` (non-nullable `int`) per
+	// go/JSON_CONVENTIONS.md Option A. Schema column is nullable;
+	// Scan coerces NULL → 0 to match the C# tree's read-side
+	// behaviour (its `int` property cannot hold NULL).
+	Year              int        `json:"year"`
+	Seasons           string     `json:"seasons"`
+	Actors            string     `json:"actors"`
+	Ratings           string     `json:"ratings"`
+	Genres            string     `json:"genres"`
+	Certification     string     `json:"certification"`
+	SortTitle         string     `json:"sortTitle"`
+	// QualityProfileID mirrors C# `Series.QualityProfileId` (non-
+	// nullable `int`) per go/JSON_CONVENTIONS.md Option A. Schema
+	// column is NOT NULL.
+	QualityProfileID  int        `json:"qualityProfileId"`
 	Tags              []int      `json:"tags"`
-	Added             *time.Time `json:"added,omitempty"`
-	AddOptions        string     `json:"addOptions,omitempty"`
+	Added             *time.Time `json:"added"`
+	AddOptions        string     `json:"addOptions"`
 	TvMazeID          int        `json:"tvMazeId"`
 	OriginalLanguage  int        `json:"originalLanguage"`
-	LastAired         *time.Time `json:"lastAired,omitempty"`
+	LastAired         *time.Time `json:"lastAired"`
 	MonitorNewItems   int        `json:"monitorNewItems"`
 	TmdbID            int        `json:"tmdbId"`
 	MalIDs            []int      `json:"malIds"`
 	AniListIDs        []int      `json:"aniListIds"`
-	OriginalCountry   string     `json:"originalCountry,omitempty"`
+	OriginalCountry   string     `json:"originalCountry"`
 
 	// RootFolderPath is a runtime-only field — not persisted in the
 	// Series table. The C# `Series` class carries it as a regular
@@ -104,7 +111,7 @@ type Series struct {
 	// import / add-series flow sets it, and the bulk-update path uses
 	// it (via `SeriesPathBuilder.BuildPath`) to recompute `Path`.
 	// Unbound from the Bind/Scan path at the mapper level.
-	RootFolderPath string `json:"rootFolderPath,omitempty"`
+	RootFolderPath string `json:"rootFolderPath"`
 }
 
 // ErrNotFound is returned when no row matches.
@@ -147,14 +154,18 @@ var mapper = repo.Mapper[Series]{
 			s.UseSceneNumbering,
 			nullableTime(s.FirstAired),
 			nullableTime(s.NextAiring),
-			nullableInt(s.Year),
+			// Year + QualityProfileID per Option A: non-nullable
+			// Go ints written directly. Schema's nullable Year column
+			// receives 0 instead of NULL after Option A; matches what
+			// the C# tree's `int` property would have written.
+			s.Year,
 			nullableStringEmpty(s.Seasons),
 			nullableStringEmpty(s.Actors),
 			nullableStringEmpty(s.Ratings),
 			nullableStringEmpty(s.Genres),
 			nullableStringEmpty(s.Certification),
 			nullableStringEmpty(s.SortTitle),
-			nullableInt(s.QualityProfileID),
+			s.QualityProfileID,
 			nullableTagsJSON(s.Tags),
 			nullableTime(s.Added),
 			nullableStringEmpty(s.AddOptions),
@@ -199,8 +210,14 @@ var mapper = repo.Mapper[Series]{
 		s.SortTitle = sortTitle.String
 		s.AddOptions = addOptions.String
 		s.OriginalCountry = originalCountry.String
-		s.Year = unwrapInt(year)
-		s.QualityProfileID = unwrapInt(qualityProfileID)
+		// Year + QualityProfileID per Option A: NULL → 0 coercion
+		// matches C# `int` property semantics.
+		if year.Valid {
+			s.Year = int(year.Int64)
+		}
+		if qualityProfileID.Valid {
+			s.QualityProfileID = int(qualityProfileID.Int64)
+		}
 		s.LastInfoSync = unwrapTime(lastInfoSync)
 		s.LastDiskSync = unwrapTime(lastDiskSync)
 		s.FirstAired = unwrapTime(firstAired)

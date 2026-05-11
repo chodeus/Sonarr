@@ -310,8 +310,7 @@ func mapSeries(show *ShowResource, dailySeries DailySeriesService) (*series.Seri
 
 	if firstAired, ok := parseSkyHookDate(show.FirstAired); ok {
 		s.FirstAired = &firstAired
-		yr := firstAired.Year()
-		s.Year = &yr
+		s.Year = firstAired.Year()
 	}
 	if lastAired, ok := parseSkyHookDate(show.LastAired); ok {
 		s.LastAired = &lastAired
@@ -461,7 +460,7 @@ func mapSeason(s *SeasonResource) seasonPersist {
 type actorPersist struct {
 	Name      string             `json:"name"`
 	Character string             `json:"character"`
-	Images    []mediacover.Cover `json:"images,omitempty"`
+	Images    []mediacover.Cover `json:"images"`
 }
 
 // mapActor ports `MapActors(ActorResource)` at C# `SkyHookProxy.cs:262-279`.

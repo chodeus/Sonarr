@@ -36,7 +36,7 @@ func minimalSubject(qualityID, sizeMB int, downloadProto indexers.DownloadProtoc
 			ID:               7,
 			Runtime:          runtime,
 			SeriesType:       series.SeriesTypeStandard,
-			QualityProfileID: asPtr(1),
+			QualityProfileID: 1,
 		},
 		Episodes: []episodes.Episode{{ID: 1, EpisodeNumber: 5}},
 		ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{

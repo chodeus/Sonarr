@@ -41,8 +41,8 @@ type Entry struct {
 	Date        time.Time         `json:"date"`
 	Quality     string            `json:"quality"`
 	Data        map[string]string `json:"data"`
-	EventType   *int              `json:"eventType,omitempty"`
-	DownloadID  string            `json:"downloadId,omitempty"`
+	EventType   *int              `json:"eventType"`
+	DownloadID  string            `json:"downloadId"`
 	Languages   []int             `json:"languages"`
 }
 

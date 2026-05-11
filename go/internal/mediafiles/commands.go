@@ -21,5 +21,5 @@ const RescanSeriesName = "RescanSeries"
 // PascalCase by default but the messaging bus persists payloads via
 // STJson with camelCase, matching the tag here.
 type RescanSeriesCommand struct {
-	SeriesID *int `json:"seriesId,omitempty"`
+	SeriesID *int `json:"seriesId"`
 }

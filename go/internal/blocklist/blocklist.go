@@ -39,16 +39,16 @@ type Entry struct {
 	SourceTitle     string     `json:"sourceTitle"`
 	Quality         string     `json:"quality"`
 	Date            time.Time  `json:"date"`
-	PublishedDate   *time.Time `json:"publishedDate,omitempty"`
-	Size            *int64     `json:"size,omitempty"`
-	Protocol        *int       `json:"protocol,omitempty"`
-	Indexer         string     `json:"indexer,omitempty"`
-	Message         string     `json:"message,omitempty"`
-	TorrentInfoHash string     `json:"torrentInfoHash,omitempty"`
+	PublishedDate   *time.Time `json:"publishedDate"`
+	Size            *int64     `json:"size"`
+	Protocol        *int       `json:"protocol"`
+	Indexer         string     `json:"indexer"`
+	Message         string     `json:"message"`
+	TorrentInfoHash string     `json:"torrentInfoHash"`
 	Languages       []int      `json:"languages"`
 	IndexerFlags    int        `json:"indexerFlags"`
 	ReleaseType     int        `json:"releaseType"`
-	Source          string     `json:"source,omitempty"`
+	Source          string     `json:"source"`
 }
 
 // ErrNotFound is returned when no row matches.

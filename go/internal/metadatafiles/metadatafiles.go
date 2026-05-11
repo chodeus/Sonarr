@@ -32,10 +32,10 @@ type MetadataFile struct {
 	Type          int        `json:"type"`
 	RelativePath  string     `json:"relativePath"`
 	LastUpdated   time.Time  `json:"lastUpdated"`
-	SeasonNumber  *int       `json:"seasonNumber,omitempty"`
-	EpisodeFileID *int       `json:"episodeFileId,omitempty"`
-	Hash          string     `json:"hash,omitempty"`
-	Added         *time.Time `json:"added,omitempty"`
+	SeasonNumber  *int       `json:"seasonNumber"`
+	EpisodeFileID *int       `json:"episodeFileId"`
+	Hash          string     `json:"hash"`
+	Added         *time.Time `json:"added"`
 	Extension     string     `json:"extension"`
 }
 

@@ -858,15 +858,15 @@ func (a qualityComparerAdapter) Compare(seriesID int, left, right quality.Model)
 			"seriesId", seriesID, "err", err)
 		return 0
 	}
-	if ser.QualityProfileID == nil {
+	if ser.QualityProfileID == 0 {
 		a.log.Warn("quality-comparer: series has no QualityProfileID; treating as equal",
 			"seriesId", seriesID)
 		return 0
 	}
-	profile, err := a.qp.Get(context.Background(), *ser.QualityProfileID)
+	profile, err := a.qp.Get(context.Background(), ser.QualityProfileID)
 	if err != nil || profile == nil {
 		a.log.Warn("quality-comparer: profile lookup failed; treating as equal",
-			"seriesId", seriesID, "profileId", *ser.QualityProfileID, "err", err)
+			"seriesId", seriesID, "profileId", ser.QualityProfileID, "err", err)
 		return 0
 	}
 	items, err := profile.ParsedItems()

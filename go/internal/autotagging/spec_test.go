@@ -27,14 +27,17 @@ func TestMonitoredSpec(t *testing.T) {
 
 func TestQualityProfileSpec(t *testing.T) {
 	spec := &QualityProfileSpec{Value: 7}
-	if !spec.IsSatisfiedBy(mkInput(&series.Series{QualityProfileID: ptr(7)})) {
+	if !spec.IsSatisfiedBy(mkInput(&series.Series{QualityProfileID: 7})) {
 		t.Errorf("expected match")
 	}
-	if spec.IsSatisfiedBy(mkInput(&series.Series{QualityProfileID: ptr(8)})) {
+	if spec.IsSatisfiedBy(mkInput(&series.Series{QualityProfileID: 8})) {
 		t.Errorf("did not expect match for differing profile")
 	}
-	if spec.IsSatisfiedBy(mkInput(&series.Series{QualityProfileID: nil})) {
-		t.Errorf("nil profile id should not match")
+	// Per Option A: QualityProfileID is non-nullable int (C# parity).
+	// Schema is NOT NULL. The "0 means unset" sentinel matches C#
+	// default-int behaviour.
+	if spec.IsSatisfiedBy(mkInput(&series.Series{QualityProfileID: 0})) {
+		t.Errorf("zero profile id (unset sentinel) should not match")
 	}
 }
 
@@ -70,20 +73,22 @@ func TestTagSpec(t *testing.T) {
 
 func TestYearSpec(t *testing.T) {
 	spec := &YearSpec{Min: 2010, Max: 2020}
-	if !spec.IsSatisfiedBy(mkInput(&series.Series{Year: ptr(2015)})) {
+	if !spec.IsSatisfiedBy(mkInput(&series.Series{Year: 2015})) {
 		t.Errorf("expected match for 2015 in [2010, 2020]")
 	}
-	if !spec.IsSatisfiedBy(mkInput(&series.Series{Year: ptr(2010)})) {
+	if !spec.IsSatisfiedBy(mkInput(&series.Series{Year: 2010})) {
 		t.Errorf("expected match for boundary Min")
 	}
-	if !spec.IsSatisfiedBy(mkInput(&series.Series{Year: ptr(2020)})) {
+	if !spec.IsSatisfiedBy(mkInput(&series.Series{Year: 2020})) {
 		t.Errorf("expected match for boundary Max")
 	}
-	if spec.IsSatisfiedBy(mkInput(&series.Series{Year: ptr(2009)})) {
+	if spec.IsSatisfiedBy(mkInput(&series.Series{Year: 2009})) {
 		t.Errorf("did not expect match for below Min")
 	}
-	if spec.IsSatisfiedBy(mkInput(&series.Series{Year: nil})) {
-		t.Errorf("nil Year should not match")
+	// Per Option A: Year is non-nullable int (C# parity).
+	// Year == 0 is the "unset" sentinel (NULL coerces to 0 in Scan).
+	if spec.IsSatisfiedBy(mkInput(&series.Series{Year: 0})) {
+		t.Errorf("zero Year (unset sentinel) should not match")
 	}
 }
 

@@ -46,7 +46,7 @@ type DownloadClient struct {
 	Priority                 int    `json:"priority"`
 	RemoveCompletedDownloads bool   `json:"removeCompletedDownloads"`
 	RemoveFailedDownloads    bool   `json:"removeFailedDownloads"`
-	Tags                     []int  `json:"tags,omitempty"`
+	Tags                     []int  `json:"tags"`
 }
 
 // ErrNotFound is returned when no row matches.

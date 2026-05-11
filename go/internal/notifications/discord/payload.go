@@ -95,21 +95,21 @@ type Payload struct {
 	// Content is the optional message text rendered above the
 	// embed cards. C# `:9`. Most events omit this (empty string
 	// is JSON-encoded as ""); the embed carries the actual body.
-	Content string `json:"content,omitempty"`
+	Content string `json:"content"`
 
 	// Username overrides the webhook's default bot username. Maps
 	// to [Settings.Username]. C# `:11`.
-	Username string `json:"username,omitempty"`
+	Username string `json:"username"`
 
 	// AvatarURL overrides the webhook's default bot avatar. Maps
 	// to [Settings.Avatar]. C# `:13` — wire-tagged
 	// `avatar_url` per Discord's API.
-	AvatarURL string `json:"avatar_url,omitempty"`
+	AvatarURL string `json:"avatar_url"`
 
 	// Embeds is the per-event rich-card array. Discord supports
 	// up to 10 embeds per message; the Go port emits one per
 	// event. C# `:15`.
-	Embeds []Embed `json:"embeds,omitempty"`
+	Embeds []Embed `json:"embeds"`
 }
 
 // Embed mirrors C# `Embed` at
@@ -120,28 +120,28 @@ type Payload struct {
 // snake_case which doesn't apply at this level).
 type Embed struct {
 	// Description is the embed body text.
-	Description string `json:"description,omitempty"`
+	Description string `json:"description"`
 	// Title is the embed headline (rendered bold + large).
-	Title string `json:"title,omitempty"`
+	Title string `json:"title"`
 	// Text is an alternative body slot — unused by Sonarr's
 	// emitters but ported for wire-format completeness.
-	Text string `json:"text,omitempty"`
+	Text string `json:"text"`
 	// Color is the sidebar color (see [Color] consts).
-	Color int `json:"color,omitempty"`
+	Color int `json:"color"`
 	// URL is the click-through URL the title links to.
-	URL string `json:"url,omitempty"`
+	URL string `json:"url"`
 	// Author is the (optional) embed-author bar (name + icon).
-	Author *Author `json:"author,omitempty"`
+	Author *Author `json:"author"`
 	// Thumbnail is the small image rendered in the embed corner.
-	Thumbnail *Image `json:"thumbnail,omitempty"`
+	Thumbnail *Image `json:"thumbnail"`
 	// Image is the wide image rendered below the body.
-	Image *Image `json:"image,omitempty"`
+	Image *Image `json:"image"`
 	// Timestamp is the ISO-8601 "O"-format string the C# emitter
 	// produces via `DateTime.UtcNow.ToString("O")`.
-	Timestamp string `json:"timestamp,omitempty"`
+	Timestamp string `json:"timestamp"`
 	// Fields is the per-feature key/value list rendered as
 	// inline-or-block tiles.
-	Fields []Field `json:"fields,omitempty"`
+	Fields []Field `json:"fields"`
 }
 
 // Author mirrors C# `DiscordAuthor` at
@@ -151,7 +151,7 @@ type Author struct {
 	Name string `json:"name"`
 	// IconURL is the small icon next to the author name. Discord
 	// API requires snake_case `icon_url`.
-	IconURL string `json:"icon_url,omitempty"`
+	IconURL string `json:"icon_url"`
 }
 
 // Field mirrors C# `DiscordField` at
@@ -163,7 +163,7 @@ type Field struct {
 	Value string `json:"value"`
 	// Inline lays the field side-by-side with the next inline=true
 	// field rather than full-width.
-	Inline bool `json:"inline,omitempty"`
+	Inline bool `json:"inline"`
 }
 
 // Image mirrors C# `DiscordImage` at

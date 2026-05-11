@@ -6,10 +6,11 @@ import (
 	"testing"
 )
 
-// TestRescanSeriesCommandJSONShape pins the wire shape — a populated
-// SeriesID round-trips through camelCase JSON, and the empty form
-// round-trips via `omitempty`. Drift here would silently break the
-// messaging-bus payloads queued by the API.
+// TestRescanSeriesCommandJSONShape pins the wire shape per Option A
+// (go/JSON_CONVENTIONS.md). RescanSeriesCommand.SeriesID is `*int`
+// (mirroring C# `int?`); nil emits explicit `null`, non-nil emits
+// the integer. Drift here silently breaks the messaging-bus payloads
+// queued by the API.
 func TestRescanSeriesCommandJSONShape(t *testing.T) {
 	t.Run("populated", func(t *testing.T) {
 		id := 42
@@ -37,8 +38,11 @@ func TestRescanSeriesCommandJSONShape(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		if string(raw) != `{}` {
-			t.Fatalf("marshal empty: got %s want {}", raw)
+		// Per Option A: nullable C# int? emits explicit null, not
+		// field-absent.
+		want := `{"seriesId":null}`
+		if string(raw) != want {
+			t.Fatalf("marshal empty: got %s want %s", raw, want)
 		}
 		var back RescanSeriesCommand
 		if err := json.Unmarshal([]byte(`{}`), &back); err != nil {
@@ -89,7 +93,8 @@ func TestRescanSeriesCommandFieldShape(t *testing.T) {
 	if f.Type.Kind().String() != "ptr" {
 		t.Fatalf("field kind: got %s want ptr", f.Type.Kind())
 	}
-	if f.Tag.Get("json") != "seriesId,omitempty" {
+	// Per Option A: no omitempty. Nullable C# int? emits explicit null.
+	if f.Tag.Get("json") != "seriesId" {
 		t.Fatalf("json tag: got %q", f.Tag.Get("json"))
 	}
 }

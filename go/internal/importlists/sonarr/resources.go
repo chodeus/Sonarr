@@ -29,7 +29,7 @@ type Series struct {
 	// typed struct — the C# `MediaCover.MediaCover` type isn't
 	// consumed by the import-list Fetch path. The Go port carries
 	// it as opaque JSON for future use.
-	Images []map[string]any `json:"images,omitempty"`
+	Images []map[string]any `json:"images"`
 }
 
 // Profile mirrors C# `SonarrProfile` at `SonarrAPIResource.cs:22-26`.

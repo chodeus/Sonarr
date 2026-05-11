@@ -31,20 +31,27 @@ import (
 )
 
 // Mapping is one SceneMappings row.
+//
+// JSON tags follow Option A wire-shape parity with the Sonarr v3 API
+// (go/JSON_CONVENTIONS.md). Two fields use renames from the C#
+// `[JsonProperty]` attributes at `SceneMapping.cs:12-18`:
+//
+//   - SearchTerm → "searchTitle"  (NOT "searchTerm")
+//   - SeasonNumber → "season"     (NOT "seasonNumber")
 type Mapping struct {
 	ID                int    `json:"id"`
 	TvdbID            int    `json:"tvdbId"`
-	SeasonNumber      *int   `json:"seasonNumber,omitempty"`
-	SearchTerm        string `json:"searchTerm"`
+	SeasonNumber      *int   `json:"season"`      // C# [JsonProperty("season")]
+	SearchTerm        string `json:"searchTitle"` // C# [JsonProperty("searchTitle")]
 	ParseTerm         string `json:"parseTerm"`
-	Title             string `json:"title,omitempty"`
-	Type              string `json:"type,omitempty"`
-	SceneSeasonNumber *int   `json:"sceneSeasonNumber,omitempty"`
-	FilterRegex       string `json:"filterRegex,omitempty"`
-	SceneOrigin       string `json:"sceneOrigin,omitempty"`
-	SearchMode        *int   `json:"searchMode,omitempty"`
-	Comment           string `json:"comment,omitempty"`
-	MappingID         string `json:"mappingId,omitempty"`
+	Title             string `json:"title"`
+	Type              string `json:"type"`
+	SceneSeasonNumber *int   `json:"sceneSeasonNumber"`
+	FilterRegex       string `json:"filterRegex"`
+	SceneOrigin       string `json:"sceneOrigin"`
+	SearchMode        *int   `json:"searchMode"`
+	Comment           string `json:"comment"`
+	MappingID         string `json:"mappingId"`
 }
 
 // ErrNotFound is returned when no row matches.

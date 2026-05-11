@@ -38,26 +38,26 @@ type Episode struct {
 	SeriesID                   int        `json:"seriesId"`
 	SeasonNumber               int        `json:"seasonNumber"`
 	EpisodeNumber              int        `json:"episodeNumber"`
-	Title                      string     `json:"title,omitempty"`
-	Overview                   string     `json:"overview,omitempty"`
-	EpisodeFileID              *int       `json:"episodeFileId,omitempty"`
-	AbsoluteEpisodeNumber      *int       `json:"absoluteEpisodeNumber,omitempty"`
-	SceneAbsoluteEpisodeNumber *int       `json:"sceneAbsoluteEpisodeNumber,omitempty"`
-	SceneSeasonNumber          *int       `json:"sceneSeasonNumber,omitempty"`
-	SceneEpisodeNumber         *int       `json:"sceneEpisodeNumber,omitempty"`
+	Title                      string     `json:"title"`
+	Overview                   string     `json:"overview"`
+	EpisodeFileID              *int       `json:"episodeFileId"`
+	AbsoluteEpisodeNumber      *int       `json:"absoluteEpisodeNumber"`
+	SceneAbsoluteEpisodeNumber *int       `json:"sceneAbsoluteEpisodeNumber"`
+	SceneSeasonNumber          *int       `json:"sceneSeasonNumber"`
+	SceneEpisodeNumber         *int       `json:"sceneEpisodeNumber"`
 	Monitored                  bool       `json:"monitored"`
-	AirDateUtc                 *time.Time `json:"airDateUtc,omitempty"`
-	AirDate                    string     `json:"airDate,omitempty"`
-	Ratings                    string     `json:"ratings,omitempty"`
-	Images                     string     `json:"images,omitempty"`
+	AirDateUtc                 *time.Time `json:"airDateUtc"`
+	AirDate                    string     `json:"airDate"`
+	Ratings                    string     `json:"ratings"`
+	Images                     string     `json:"images"`
 	UnverifiedSceneNumbering   bool       `json:"unverifiedSceneNumbering"`
-	LastSearchTime             *time.Time `json:"lastSearchTime,omitempty"`
-	AiredAfterSeasonNumber     *int       `json:"airedAfterSeasonNumber,omitempty"`
-	AiredBeforeSeasonNumber    *int       `json:"airedBeforeSeasonNumber,omitempty"`
-	AiredBeforeEpisodeNumber   *int       `json:"airedBeforeEpisodeNumber,omitempty"`
-	TvdbID                     *int       `json:"tvdbId,omitempty"`
+	LastSearchTime             *time.Time `json:"lastSearchTime"`
+	AiredAfterSeasonNumber     *int       `json:"airedAfterSeasonNumber"`
+	AiredBeforeSeasonNumber    *int       `json:"airedBeforeSeasonNumber"`
+	AiredBeforeEpisodeNumber   *int       `json:"airedBeforeEpisodeNumber"`
+	TvdbID                     *int       `json:"tvdbId"`
 	Runtime                    int        `json:"runtime"`
-	FinaleType                 string     `json:"finaleType,omitempty"`
+	FinaleType                 string     `json:"finaleType"`
 }
 
 // ErrNotFound is returned when no row matches.

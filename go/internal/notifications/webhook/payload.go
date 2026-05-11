@@ -67,7 +67,7 @@ type BasePayload struct {
 	// `IConfigService.ApplicationUrl`. Omitted on Health payloads
 	// (the C# `BuildHealthPayload` at WebhookBase.cs:160-170
 	// leaves it null).
-	ApplicationURL string `json:"applicationUrl,omitempty"`
+	ApplicationURL string `json:"applicationUrl"`
 }
 
 // GrabPayload is the OnGrab event body. Mirrors C#
@@ -86,10 +86,10 @@ type GrabPayload struct {
 	Series             any    `json:"series"`
 	Episodes           any    `json:"episodes"`
 	Release            any    `json:"release"`
-	DownloadClient     string `json:"downloadClient,omitempty"`
-	DownloadClientType string `json:"downloadClientType,omitempty"`
-	DownloadID         string `json:"downloadId,omitempty"`
-	CustomFormatInfo   any    `json:"customFormatInfo,omitempty"`
+	DownloadClient     string `json:"downloadClient"`
+	DownloadClientType string `json:"downloadClientType"`
+	DownloadID         string `json:"downloadId"`
+	CustomFormatInfo   any    `json:"customFormatInfo"`
 }
 
 // ImportPayload is the OnDownload event body. Mirrors C#
@@ -106,12 +106,12 @@ type ImportPayload struct {
 	Episodes           any    `json:"episodes"`
 	EpisodeFile        any    `json:"episodeFile"`
 	IsUpgrade          bool   `json:"isUpgrade"`
-	DownloadClient     string `json:"downloadClient,omitempty"`
-	DownloadClientType string `json:"downloadClientType,omitempty"`
-	DownloadID         string `json:"downloadId,omitempty"`
-	DeletedFiles       any    `json:"deletedFiles,omitempty"`
-	CustomFormatInfo   any    `json:"customFormatInfo,omitempty"`
-	Release            any    `json:"release,omitempty"`
+	DownloadClient     string `json:"downloadClient"`
+	DownloadClientType string `json:"downloadClientType"`
+	DownloadID         string `json:"downloadId"`
+	DeletedFiles       any    `json:"deletedFiles"`
+	CustomFormatInfo   any    `json:"customFormatInfo"`
+	Release            any    `json:"release"`
 }
 
 // ImportCompletePayload is the OnImportComplete event body.
@@ -122,12 +122,12 @@ type ImportCompletePayload struct {
 	Series             any    `json:"series"`
 	Episodes           any    `json:"episodes"`
 	EpisodeFiles       any    `json:"episodeFiles"`
-	DownloadClient     string `json:"downloadClient,omitempty"`
-	DownloadClientType string `json:"downloadClientType,omitempty"`
-	DownloadID         string `json:"downloadId,omitempty"`
-	SourcePath         string `json:"sourcePath,omitempty"`
-	DestinationPath    string `json:"destinationPath,omitempty"`
-	Release            any    `json:"release,omitempty"`
+	DownloadClient     string `json:"downloadClient"`
+	DownloadClientType string `json:"downloadClientType"`
+	DownloadID         string `json:"downloadId"`
+	SourcePath         string `json:"sourcePath"`
+	DestinationPath    string `json:"destinationPath"`
+	Release            any    `json:"release"`
 }
 
 // RenamePayload is the OnRename event body. Mirrors C#
@@ -176,9 +176,9 @@ type SeriesDeletePayload struct {
 type HealthPayload struct {
 	BasePayload
 	Level   string `json:"level"`
-	Message string `json:"message,omitempty"`
-	Type    string `json:"type,omitempty"`
-	WikiURL string `json:"wikiUrl,omitempty"`
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	WikiURL string `json:"wikiUrl"`
 }
 
 // ApplicationUpdatePayload is the OnApplicationUpdate event body.
@@ -186,9 +186,9 @@ type HealthPayload struct {
 // `Notifications/Webhook/WebhookApplicationUpdatePayload.cs:5-8`.
 type ApplicationUpdatePayload struct {
 	BasePayload
-	Message         string `json:"message,omitempty"`
-	PreviousVersion string `json:"previousVersion,omitempty"`
-	NewVersion      string `json:"newVersion,omitempty"`
+	Message         string `json:"message"`
+	PreviousVersion string `json:"previousVersion"`
+	NewVersion      string `json:"newVersion"`
 }
 
 // ManualInteractionPayload is the OnManualInteractionRequired
@@ -198,12 +198,12 @@ type ManualInteractionPayload struct {
 	BasePayload
 	Series                 any    `json:"series"`
 	Episodes               any    `json:"episodes"`
-	DownloadInfo           any    `json:"downloadInfo,omitempty"`
-	DownloadClient         string `json:"downloadClient,omitempty"`
-	DownloadClientType     string `json:"downloadClientType,omitempty"`
-	DownloadID             string `json:"downloadId,omitempty"`
-	DownloadStatus         string `json:"downloadStatus,omitempty"`
-	DownloadStatusMessages any    `json:"downloadStatusMessages,omitempty"`
-	CustomFormatInfo       any    `json:"customFormatInfo,omitempty"`
-	Release                any    `json:"release,omitempty"`
+	DownloadInfo           any    `json:"downloadInfo"`
+	DownloadClient         string `json:"downloadClient"`
+	DownloadClientType     string `json:"downloadClientType"`
+	DownloadID             string `json:"downloadId"`
+	DownloadStatus         string `json:"downloadStatus"`
+	DownloadStatusMessages any    `json:"downloadStatusMessages"`
+	CustomFormatInfo       any    `json:"customFormatInfo"`
+	Release                any    `json:"release"`
 }

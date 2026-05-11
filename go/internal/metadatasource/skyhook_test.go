@@ -142,7 +142,7 @@ func TestProxy_GetSeriesInfo_HappyPath(t *testing.T) {
 	if s.Runtime != 47 {
 		t.Errorf("Runtime = %d, want 47", s.Runtime)
 	}
-	if s.Year == nil || *s.Year != 2008 {
+	if s.Year == 0 || s.Year != 2008 {
 		t.Errorf("Year = %v, want *2008", s.Year)
 	}
 	if s.FirstAired == nil || s.FirstAired.Year() != 2008 ||
@@ -549,7 +549,7 @@ func TestMapSeries_OmittedNullables(t *testing.T) {
 	if s.FirstAired != nil || s.LastAired != nil {
 		t.Errorf("dates = %v / %v, want both nil", s.FirstAired, s.LastAired)
 	}
-	if s.Year != nil {
+	if s.Year != 0 {
 		t.Errorf("Year = %v, want nil (no FirstAired so Year stays nil)", s.Year)
 	}
 	if s.AirTime != "" {

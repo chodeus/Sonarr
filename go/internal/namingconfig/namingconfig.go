@@ -42,13 +42,13 @@ type Config struct {
 	ID                           int    `json:"id"`
 	MultiEpisodeStyle            int    `json:"multiEpisodeStyle"`
 	RenameEpisodes               bool   `json:"renameEpisodes"`
-	StandardEpisodeFormat        string `json:"standardEpisodeFormat,omitempty"`
-	DailyEpisodeFormat           string `json:"dailyEpisodeFormat,omitempty"`
-	SeasonFolderFormat           string `json:"seasonFolderFormat,omitempty"`
-	SeriesFolderFormat           string `json:"seriesFolderFormat,omitempty"`
-	AnimeEpisodeFormat           string `json:"animeEpisodeFormat,omitempty"`
+	StandardEpisodeFormat        string `json:"standardEpisodeFormat"`
+	DailyEpisodeFormat           string `json:"dailyEpisodeFormat"`
+	SeasonFolderFormat           string `json:"seasonFolderFormat"`
+	SeriesFolderFormat           string `json:"seriesFolderFormat"`
+	AnimeEpisodeFormat           string `json:"animeEpisodeFormat"`
 	ReplaceIllegalCharacters     bool   `json:"replaceIllegalCharacters"`
-	SpecialsFolderFormat         string `json:"specialsFolderFormat,omitempty"`
+	SpecialsFolderFormat         string `json:"specialsFolderFormat"`
 	ColonReplacementFormat       int    `json:"colonReplacementFormat"`
 	CustomColonReplacementFormat string `json:"customColonReplacementFormat"`
 }

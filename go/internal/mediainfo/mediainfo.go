@@ -157,14 +157,14 @@ func (h *HdrFormat) UnmarshalJSON(b []byte) error {
 // AudioStream ports `MediaInfoAudioStreamModel` at
 // `MediaInfoAudioStreamModel.cs`. Added in migration 225.
 type AudioStream struct {
-	Language         string `json:"language,omitempty"`
-	Format           string `json:"format,omitempty"`
-	CodecID          string `json:"codecId,omitempty"`
-	Profile          string `json:"profile,omitempty"`
-	Bitrate          int64  `json:"bitrate,omitempty"`
-	Channels         int    `json:"channels,omitempty"`
-	ChannelPositions string `json:"channelPositions,omitempty"`
-	Title            string `json:"title,omitempty"`
+	Language         string `json:"language"`
+	Format           string `json:"format"`
+	CodecID          string `json:"codecId"`
+	Profile          string `json:"profile"`
+	Bitrate          int64  `json:"bitrate"`
+	Channels         int    `json:"channels"`
+	ChannelPositions string `json:"channelPositions"`
+	Title            string `json:"title"`
 }
 
 // SubtitleStream ports `MediaInfoSubtitleStreamModel` at
@@ -174,35 +174,35 @@ type AudioStream struct {
 // — Go ports them as `*bool` so the unset case round-trips as
 // missing JSON keys (under `omitempty`).
 type SubtitleStream struct {
-	Language        string `json:"language,omitempty"`
-	Format          string `json:"format,omitempty"`
-	Title           string `json:"title,omitempty"`
-	Forced          *bool  `json:"forced,omitempty"`
-	HearingImpaired *bool  `json:"hearingImpaired,omitempty"`
+	Language        string `json:"language"`
+	Format          string `json:"format"`
+	Title           string `json:"title"`
+	Forced          *bool  `json:"forced"`
+	HearingImpaired *bool  `json:"hearingImpaired"`
 }
 
 // Model ports `MediaInfoModel`. Stored on EpisodeFiles.MediaInfo as
 // embedded JSON. Field order in the struct mirrors the C# property
 // declaration order to keep drift visible.
 type Model struct {
-	RawStreamData                string               `json:"rawStreamData,omitempty"`
-	SchemaRevision               int                  `json:"schemaRevision,omitempty"`
-	ContainerFormat              string               `json:"containerFormat,omitempty"`
-	VideoFormat                  string               `json:"videoFormat,omitempty"`
-	VideoCodecID                 string               `json:"videoCodecID,omitempty"` // EDOC-Q16: literal tag, NOT videoCodecId
-	VideoProfile                 string               `json:"videoProfile,omitempty"`
-	VideoBitrate                 int64                `json:"videoBitrate,omitempty"`
-	VideoBitDepth                int                  `json:"videoBitDepth,omitempty"`
-	VideoColourPrimaries         string               `json:"videoColourPrimaries,omitempty"` // British spelling preserved
-	VideoTransferCharacteristics string               `json:"videoTransferCharacteristics,omitempty"`
-	VideoHdrFormat               HdrFormat            `json:"videoHdrFormat,omitempty"`
-	Height                       int                  `json:"height,omitempty"`
-	Width                        int                  `json:"width,omitempty"`
-	RunTime                      datastore.STDuration `json:"runTime,omitempty"`
-	VideoFps                     float64              `json:"videoFps,omitempty"` // C# decimal → Go float64; precision is fine for fps
-	AudioStreams                 []AudioStream        `json:"audioStreams,omitempty"`
-	SubtitleStreams              []SubtitleStream     `json:"subtitleStreams,omitempty"`
-	ScanType                     string               `json:"scanType,omitempty"`
+	RawStreamData                string               `json:"rawStreamData"`
+	SchemaRevision               int                  `json:"schemaRevision"`
+	ContainerFormat              string               `json:"containerFormat"`
+	VideoFormat                  string               `json:"videoFormat"`
+	VideoCodecID                 string               `json:"videoCodecID"` // EDOC-Q16: literal tag, NOT videoCodecId
+	VideoProfile                 string               `json:"videoProfile"`
+	VideoBitrate                 int64                `json:"videoBitrate"`
+	VideoBitDepth                int                  `json:"videoBitDepth"`
+	VideoColourPrimaries         string               `json:"videoColourPrimaries"` // British spelling preserved
+	VideoTransferCharacteristics string               `json:"videoTransferCharacteristics"`
+	VideoHdrFormat               HdrFormat            `json:"videoHdrFormat"`
+	Height                       int                  `json:"height"`
+	Width                        int                  `json:"width"`
+	RunTime                      datastore.STDuration `json:"runTime"`
+	VideoFps                     float64              `json:"videoFps"` // C# decimal → Go float64; precision is fine for fps
+	AudioStreams                 []AudioStream        `json:"audioStreams"`
+	SubtitleStreams              []SubtitleStream     `json:"subtitleStreams"`
+	ScanType                     string               `json:"scanType"`
 	Title                        string               `json:"-"`
 }
 

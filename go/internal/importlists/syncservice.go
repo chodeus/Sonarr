@@ -465,11 +465,10 @@ func buildSeries(item ItemInfo, list *ImportList) series.Series {
 		MonitorNewItems:  list.MonitorNewItems,
 		RootFolderPath:   list.RootFolderPath,
 		Tags:             append([]int(nil), list.Tags...),
-		QualityProfileID: refInt(list.QualityProfileID),
+		QualityProfileID: list.QualityProfileID,
 	}
 	if item.Year > 0 {
-		y := item.Year
-		out.Year = &y
+		out.Year = item.Year
 	}
 	return out
 }

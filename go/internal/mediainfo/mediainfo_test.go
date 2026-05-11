@@ -238,25 +238,48 @@ func TestSubtitleStream_NullableForced(t *testing.T) {
 	if !strings.Contains(string(raw), `"forced":true`) {
 		t.Errorf("forced=true: %s", raw)
 	}
-	// Round-trip nil → omitted.
+	// Round-trip nil → explicit null per Option A (see
+	// go/JSON_CONVENTIONS.md). The C# tree's
+	// `MediaInfoModel.Forced` is `bool?` which serialises to `null`
+	// when null; the Go port emits `null` rather than omitting the
+	// field.
 	in2 := mediainfo.SubtitleStream{Language: "eng"}
 	raw, _ = json.Marshal(&in2)
-	if strings.Contains(string(raw), "forced") {
-		t.Errorf("forced=nil should be omitted: %s", raw)
+	if !strings.Contains(string(raw), `"forced":null`) {
+		t.Errorf("forced=nil should emit explicit null per Option A: %s", raw)
 	}
 }
 
-func TestModel_OmitemptyTrimsZeros(t *testing.T) {
+// TestModel_ZeroValueEmitsAllFields verifies Option A wire shape: a
+// zero-value Model emits every field with its zero value (no omitempty
+// suppression). Mirrors .NET System.Text.Json default behaviour where
+// every property emits regardless of value.
+//
+// Replaces the previous "TestModel_OmitemptyTrimsZeros" which asserted
+// the old idiomatic-Go shape ({} for zero-value). Policy decision
+// 2026-05-12 — see go/JSON_CONVENTIONS.md.
+func TestModel_ZeroValueEmitsAllFields(t *testing.T) {
 	t.Parallel()
 	zero := mediainfo.Model{}
 	raw, err := json.Marshal(&zero)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	// All-zero struct should serialise to `{}` modulo any default-non-empty
-	// fields. Currently every field has omitempty, so the empty struct
-	// must produce an empty object.
-	if string(raw) != "{}" {
-		t.Errorf("zero Model: got %s, want {}", raw)
+	// Zero-value Model is now expected to emit ALL fields per Option A.
+	// Spot-check that at least the load-bearing wire-shape names appear.
+	out := string(raw)
+	for _, k := range []string{
+		`"rawStreamData":""`,
+		`"schemaRevision":0`,
+		`"videoBitrate":0`,
+		`"videoHdrFormat":"none"`,
+		`"runTime":"00:00:00"`,
+	} {
+		if !strings.Contains(out, k) {
+			t.Errorf("zero Model missing expected field %q in output: %s", k, out)
+		}
+	}
+	if out == "{}" {
+		t.Errorf("zero Model emitted {} — Option A requires all fields present, got: %s", out)
 	}
 }

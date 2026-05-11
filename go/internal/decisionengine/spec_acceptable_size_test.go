@@ -103,7 +103,7 @@ func makeSubject(runtime, epCount, sizeMB int, q quality.Quality) *decisionengin
 			ID:               42,
 			Runtime:          runtime,
 			Seasons:          twoSeasonsJSON,
-			QualityProfileID: asPtr(7),
+			QualityProfileID: 7,
 		},
 		Episodes: eps,
 		ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{
@@ -290,7 +290,7 @@ func TestAcceptableSize_NilSeriesProfileIDAccepts(t *testing.T) {
 	t.Parallel()
 	spec := newAcceptableSizeSpec(t, map[int]*decisionengine.ProfileView{7: makeProfile(asPtr(2.0), asPtr(10.0))}, nil)
 	subj := makeSubject(30, 1, 500, quality.SDTV)
-	subj.Series.QualityProfileID = nil
+	subj.Series.QualityProfileID = 0
 	got := spec.IsSatisfiedBy(t.Context(), subj, decisionengine.ReleaseDecisionInformation{})
 	if !got.Accepted {
 		t.Errorf("expected Accept on nil profileID, got %+v", got)

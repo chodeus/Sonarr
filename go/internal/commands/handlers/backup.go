@@ -62,7 +62,7 @@ func NewBackup(svc BackupRunner, log *slog.Logger) (*Backup, error) {
 // override since the dispatcher doesn't surface CommandTrigger to
 // handlers.
 type backupBody struct {
-	Type string `json:"type,omitempty"`
+	Type string `json:"type"`
 }
 
 // Execute parses the body for an optional type override (default

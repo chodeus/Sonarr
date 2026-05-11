@@ -30,9 +30,9 @@ func seedTwo(t *testing.T, db *datastore.DB) (*series.Repo, [2]int) {
 		Status:           1,
 		Images:           "[]",
 		Path:             "/data/tv/The Mandalorian",
-		Year:             ptrInt(2019),
+		Year:             2019,
 		Tags:             []int{1, 2, 3},
-		QualityProfileID: ptrInt(1),
+		QualityProfileID: 1,
 	}
 	foundation := &series.Series{
 		TvdbID:     99999,
@@ -42,7 +42,7 @@ func seedTwo(t *testing.T, db *datastore.DB) (*series.Repo, [2]int) {
 		Status:     1,
 		Images:     "[]",
 		Path:       "/data/tv/Foundation",
-		Year:       ptrInt(2021),
+		Year:       2021,
 	}
 	if _, err := repo.Insert(t.Context(), mando); err != nil {
 		t.Fatalf("Insert mando: %v", err)

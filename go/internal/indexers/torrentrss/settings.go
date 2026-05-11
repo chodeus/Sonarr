@@ -38,24 +38,24 @@ const minimumSeedersDefault = 1
 // no custom element names. That matches the C# default-Detector path
 // where the user hasn't yet customised.
 type ParserSettings struct {
-	UseEZTVFormat             bool `json:"useEZTVFormat,omitempty"`
-	ParseSeedersInDescription bool `json:"parseSeedersInDescription,omitempty"`
-	UseEnclosureUrl           bool `json:"useEnclosureUrl,omitempty"`
-	UseEnclosureLength        bool `json:"useEnclosureLength,omitempty"`
-	ParseSizeInDescription    bool `json:"parseSizeInDescription,omitempty"`
+	UseEZTVFormat             bool `json:"useEZTVFormat"`
+	ParseSeedersInDescription bool `json:"parseSeedersInDescription"`
+	UseEnclosureUrl           bool `json:"useEnclosureUrl"`
+	UseEnclosureLength        bool `json:"useEnclosureLength"`
+	ParseSizeInDescription    bool `json:"parseSizeInDescription"`
 	// SizeElementName overrides the default <enclosure length>; common
 	// values are "size", "torrent_filesize_bytes", "torrent:contentlength".
-	SizeElementName string `json:"sizeElementName,omitempty"`
+	SizeElementName string `json:"sizeElementName"`
 	// SeedsElementName / PeersElementName / MagnetElementName /
 	// InfoHashElementName let the user point the parser at non-RSS-standard
 	// elements. C# cite: TorrentRssParser.cs:14-32.
-	SeedsElementName    string `json:"seedsElementName,omitempty"`
-	PeersElementName    string `json:"peersElementName,omitempty"`
-	MagnetElementName   string `json:"magnetElementName,omitempty"`
-	InfoHashElementName string `json:"infoHashElementName,omitempty"`
+	SeedsElementName    string `json:"seedsElementName"`
+	PeersElementName    string `json:"peersElementName"`
+	MagnetElementName   string `json:"magnetElementName"`
+	InfoHashElementName string `json:"infoHashElementName"`
 	// CalculatePeersAsSum: when true, peers = peersElement + seeds (some
 	// indexers treat <peers> as leechers-only).
-	CalculatePeersAsSum bool `json:"calculatePeersAsSum,omitempty"`
+	CalculatePeersAsSum bool `json:"calculatePeersAsSum"`
 }
 
 // Settings ports src/NzbDrone.Core/Indexers/TorrentRss/TorrentRssIndexerSettings.cs:21-62.
@@ -77,7 +77,7 @@ type Settings struct {
 	FailDownloads                               []int                        `json:"failDownloads"`
 
 	// Parser knobs. Embedded for wire flatness — JSON tags carry through.
-	Parser ParserSettings `json:"parser,omitempty"`
+	Parser ParserSettings `json:"parser"`
 }
 
 // NewSettings builds a Settings populated with the C# constructor defaults

@@ -45,7 +45,7 @@ type Profile struct {
 	Tags                           []int `json:"tags"`
 	BypassIfHighestQuality         bool  `json:"bypassIfHighestQuality"`
 	BypassIfAboveCustomFormatScore bool  `json:"bypassIfAboveCustomFormatScore"`
-	MinimumCustomFormatScore       *int  `json:"minimumCustomFormatScore,omitempty"`
+	MinimumCustomFormatScore       *int  `json:"minimumCustomFormatScore"`
 }
 
 // ErrNotFound is returned by Get when no row matches.

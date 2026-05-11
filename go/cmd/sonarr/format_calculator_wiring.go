@@ -212,14 +212,14 @@ func (a localEpisodeFormatScorerAdapter) CalculateCustomFormatScore(seriesID int
 			"seriesID", seriesID, "err", err)
 		return 0
 	}
-	if ser.QualityProfileID == nil {
+	if ser.QualityProfileID == 0 {
 		// No profile configured — matches C# `?? 0` arm.
 		return 0
 	}
-	profile, err := a.qp.Get(ctx, *ser.QualityProfileID)
+	profile, err := a.qp.Get(ctx, ser.QualityProfileID)
 	if err != nil || profile == nil {
 		a.log.Debug("localEpisodeFormatScorer: QualityProfile lookup failed; returning 0",
-			"seriesID", seriesID, "profileID", *ser.QualityProfileID, "err", err)
+			"seriesID", seriesID, "profileID", ser.QualityProfileID, "err", err)
 		return 0
 	}
 	items, err := profile.ParsedFormatItems()

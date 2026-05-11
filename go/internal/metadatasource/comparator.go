@@ -282,10 +282,10 @@ func titleOf(s *series.Series) string {
 // flatten nil to 0 here for comparison purposes. Practical impact:
 // when both candidates have nil Year, both compare as 0 and tie.
 func yearOf(s *series.Series) int {
-	if s == nil || s.Year == nil {
+	if s == nil || s.Year == 0 {
 		return 0
 	}
-	return *s.Year
+	return s.Year
 }
 
 // cleanPunctuation ports the eponymous helper at `:109-114`. Strips

@@ -36,14 +36,14 @@ import (
 //     `new List<QualityProfileQualityItem>()`. Emit `[]` (not omitted,
 //     not null) for parity.
 type QualityItem struct {
-	ID            int             `json:"id,omitempty"`
-	Name          string          `json:"name,omitempty"`
+	ID            int             `json:"id"`
+	Name          string          `json:"name"`
 	Quality       quality.Quality `json:"quality"`
 	Items         []QualityItem   `json:"items"`
 	Allowed       bool            `json:"allowed"`
-	MinSize       *float64        `json:"minSize,omitempty"`
-	MaxSize       *float64        `json:"maxSize,omitempty"`
-	PreferredSize *float64        `json:"preferredSize,omitempty"`
+	MinSize       *float64        `json:"minSize"`
+	MaxSize       *float64        `json:"maxSize"`
+	PreferredSize *float64        `json:"preferredSize"`
 }
 
 // IsGroup reports whether this item is a group (i.e. has nested Items
@@ -75,14 +75,14 @@ func (i QualityItem) GetQualities() []quality.Quality {
 // when calling `json.Marshal` from within MarshalJSON.
 func (i QualityItem) MarshalJSON() ([]byte, error) {
 	type alias struct {
-		ID            int           `json:"id,omitempty"`
-		Name          string        `json:"name,omitempty"`
+		ID            int           `json:"id"`
+		Name          string        `json:"name"`
 		Quality       int           `json:"quality"`
 		Items         []QualityItem `json:"items"`
 		Allowed       bool          `json:"allowed"`
-		MinSize       *float64      `json:"minSize,omitempty"`
-		MaxSize       *float64      `json:"maxSize,omitempty"`
-		PreferredSize *float64      `json:"preferredSize,omitempty"`
+		MinSize       *float64      `json:"minSize"`
+		MaxSize       *float64      `json:"maxSize"`
+		PreferredSize *float64      `json:"preferredSize"`
 	}
 	items := i.Items
 	if items == nil {
@@ -112,7 +112,7 @@ func (i *QualityItem) UnmarshalJSON(data []byte) error {
 		MinSize       *float64        `json:"minSize"`
 		MaxSize       *float64        `json:"maxSize"`
 		PreferredSize *float64        `json:"preferredSize"`
-		QualityFull   json.RawMessage `json:"qualityFull,omitempty"`
+		QualityFull   json.RawMessage `json:"qualityFull"`
 	}
 	var a alias
 	if err := json.Unmarshal(data, &a); err != nil {

@@ -33,11 +33,11 @@ type SubtitleFile struct {
 	EpisodeFileID int        `json:"episodeFileId"`
 	RelativePath  string     `json:"relativePath"`
 	Extension     string     `json:"extension"`
-	Added         *time.Time `json:"added,omitempty"`
+	Added         *time.Time `json:"added"`
 	LastUpdated   time.Time  `json:"lastUpdated"`
 	Language      int        `json:"language"`
 	LanguageTags  []string   `json:"languageTags"`
-	Title         string     `json:"title,omitempty"`
+	Title         string     `json:"title"`
 	Copy          int        `json:"copy"`
 }
 

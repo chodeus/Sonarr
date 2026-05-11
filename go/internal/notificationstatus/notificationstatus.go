@@ -29,10 +29,10 @@ import (
 type Status struct {
 	ID                int        `json:"id"`
 	ProviderID        int        `json:"providerId"`
-	InitialFailure    *time.Time `json:"initialFailure,omitempty"`
-	MostRecentFailure *time.Time `json:"mostRecentFailure,omitempty"`
+	InitialFailure    *time.Time `json:"initialFailure"`
+	MostRecentFailure *time.Time `json:"mostRecentFailure"`
 	EscalationLevel   int        `json:"escalationLevel"`
-	DisabledTill      *time.Time `json:"disabledTill,omitempty"`
+	DisabledTill      *time.Time `json:"disabledTill"`
 }
 
 // IsDisabled reports whether the status indicates the provider is currently

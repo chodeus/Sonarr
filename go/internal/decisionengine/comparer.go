@@ -137,10 +137,10 @@ func subjectOf(d Decision) *Subject {
 
 // qualityProfileOf wraps profileLookup with subject guards.
 func (c *DecisionComparer) qualityProfileOf(s *Subject) *ProfileView {
-	if c.profileLookup == nil || s == nil || s.Series == nil || s.Series.QualityProfileID == nil {
+	if c.profileLookup == nil || s == nil || s.Series == nil || s.Series.QualityProfileID == 0 {
 		return nil
 	}
-	return c.profileLookup(*s.Series.QualityProfileID)
+	return c.profileLookup(s.Series.QualityProfileID)
 }
 
 // compareQuality stages 1: profile-relative quality index, then

@@ -36,11 +36,15 @@ type Entry struct {
 	DownloadID       string    `json:"downloadId"`
 	SourceTitle      string    `json:"sourceTitle"`
 	Date             time.Time `json:"date"`
-	Protocol         *int      `json:"protocol,omitempty"`
-	IndexerID        *int      `json:"indexerId,omitempty"`
-	DownloadClientID *int      `json:"downloadClientId,omitempty"`
-	Release          string    `json:"release,omitempty"`
-	Data             string    `json:"data,omitempty"`
+	// Protocol / IndexerID / DownloadClientID mirror C# non-nullable
+	// int properties per go/JSON_CONVENTIONS.md Option A. Schema
+	// columns are nullable; Scan coerces NULL → 0 to match C#
+	// property semantics.
+	Protocol         int      `json:"protocol"`
+	IndexerID        int      `json:"indexerId"`
+	DownloadClientID int      `json:"downloadClientId"`
+	Release          string    `json:"release"`
+	Data             string    `json:"data"`
 }
 
 // ErrNotFound is returned when no row matches.
@@ -62,9 +66,9 @@ var mapper = repo.Mapper[Entry]{
 	Bind: func(e *Entry) []any {
 		return []any{
 			e.EventType, e.SeriesID, e.DownloadID, e.SourceTitle, e.Date.UTC(),
-			nullableInt(e.Protocol),
-			nullableInt(e.IndexerID),
-			nullableInt(e.DownloadClientID),
+			e.Protocol,
+			e.IndexerID,
+			e.DownloadClientID,
 			nullableStringEmpty(e.Release),
 			nullableStringEmpty(e.Data),
 		}
@@ -79,9 +83,15 @@ var mapper = repo.Mapper[Entry]{
 			return err
 		}
 		e.Date = e.Date.UTC()
-		e.Protocol = unwrapInt(protocol)
-		e.IndexerID = unwrapInt(indexerID)
-		e.DownloadClientID = unwrapInt(downloadClientID)
+		if protocol.Valid {
+			e.Protocol = int(protocol.Int64)
+		}
+		if indexerID.Valid {
+			e.IndexerID = int(indexerID.Int64)
+		}
+		if downloadClientID.Valid {
+			e.DownloadClientID = int(downloadClientID.Int64)
+		}
 		e.Release = release.String
 		e.Data = data.String
 		return nil

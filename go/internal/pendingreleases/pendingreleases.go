@@ -35,7 +35,7 @@ type Release struct {
 	ParsedEpisodeInfo string    `json:"parsedEpisodeInfo"`
 	ReleaseInfo       string    `json:"release"`
 	Reason            int       `json:"reason"`
-	AdditionalInfo    string    `json:"additionalInfo,omitempty"`
+	AdditionalInfo    string    `json:"additionalInfo"`
 }
 
 // ErrNotFound is returned when no row matches.

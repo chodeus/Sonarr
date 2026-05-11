@@ -102,7 +102,7 @@ func upgradeAllowedSubject(episodeFileIDs []int) *decisionengine.Subject {
 	}
 	pid := 7
 	return &decisionengine.Subject{
-		Series:   &series.Series{ID: 7, QualityProfileID: &pid},
+		Series:   &series.Series{ID: 7, QualityProfileID: pid},
 		Episodes: eps,
 		ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{
 			Quality: quality.Model{Quality: quality.HDTV720p, Revision: quality.Revision{Version: 1}},
@@ -185,7 +185,7 @@ func TestUpgradeAllowed_AcceptsNilQualityProfileID(t *testing.T) {
 	t.Parallel()
 	spec, _, _ := newUpgradeAllowedSpec(t, false, upgradeAllowedView(t), nil, nil)
 	subj := upgradeAllowedSubject([]int{1})
-	subj.Series.QualityProfileID = nil
+	subj.Series.QualityProfileID = 0
 	if got := spec.IsSatisfiedBy(t.Context(), subj, decisionengine.ReleaseDecisionInformation{}); !got.Accepted {
 		t.Errorf("expected Accept on nil-QualityProfileID, got %+v", got)
 	}

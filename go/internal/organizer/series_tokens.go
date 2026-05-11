@@ -54,8 +54,8 @@ func RegisterSeriesTokens(handlers map[string]TokenHandler, s *series.Series) {
 		return
 	}
 	year := 0
-	if s.Year != nil {
-		year = *s.Year
+	if s.Year != 0 {
+		year = s.Year
 	}
 
 	put := func(name string, fn TokenHandler) {

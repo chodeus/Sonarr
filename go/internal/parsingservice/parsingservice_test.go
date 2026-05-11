@@ -1258,7 +1258,7 @@ func mapTestSeries() *series.Series {
 		TvdbID:     1234,
 		TvRageID:   5678,
 		ImdbID:     "tt9999",
-		Year:       &year,
+		Year:       year,
 		SeriesType: series.SeriesTypeStandard,
 	}
 }

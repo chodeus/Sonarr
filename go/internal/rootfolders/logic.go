@@ -39,9 +39,9 @@ type Folder struct {
 	Path            string           `json:"path"`
 	Accessible      bool             `json:"accessible"`
 	IsEmpty         bool             `json:"isEmpty"`
-	FreeSpace       *int64           `json:"freeSpace,omitempty"`
-	TotalSpace      *int64           `json:"totalSpace,omitempty"`
-	UnmappedFolders []UnmappedFolder `json:"unmappedFolders,omitempty"`
+	FreeSpace       *int64           `json:"freeSpace"`
+	TotalSpace      *int64           `json:"totalSpace"`
+	UnmappedFolders []UnmappedFolder `json:"unmappedFolders"`
 }
 
 // specialFolderNames mirrors `RootFolderService.SpecialFolders` at

@@ -51,13 +51,13 @@ type Indexer struct {
 	ID                                  int     `json:"id"`
 	Name                                string  `json:"name"`
 	Implementation                      string  `json:"implementation"`
-	Settings                            *string `json:"settings,omitempty"`
-	ConfigContract                      *string `json:"configContract,omitempty"`
-	EnableRss                           *bool   `json:"enableRss,omitempty"`
-	EnableAutomaticSearch               *bool   `json:"enableAutomaticSearch,omitempty"`
+	Settings                            *string `json:"settings"`
+	ConfigContract                      *string `json:"configContract"`
+	EnableRss                           *bool   `json:"enableRss"`
+	EnableAutomaticSearch               *bool   `json:"enableAutomaticSearch"`
 	EnableInteractiveSearch             bool    `json:"enableInteractiveSearch"`
 	Priority                            int     `json:"priority"`
-	Tags                                []int   `json:"tags,omitempty"`
+	Tags                                []int   `json:"tags"`
 	DownloadClientID                    int     `json:"downloadClientId"`
 	SeasonSearchMaximumSingleEpisodeAge int     `json:"seasonSearchMaximumSingleEpisodeAge"`
 }

@@ -1309,7 +1309,7 @@ func (s *Service) findSeries(
 				// row. series.Series.Year is *int (nullable); a nil
 				// Year on the resolved series counts as mismatch (no
 				// year to cross-check against).
-				if aliasSer != nil && aliasSer.Year != nil && *aliasSer.Year == parsedInfo.SeriesTitleInfo.Year {
+				if aliasSer != nil && aliasSer.Year != 0 && aliasSer.Year == parsedInfo.SeriesTitleInfo.Year {
 					ser = aliasSer
 					matchType = series.MatchTypeAlias
 				}
