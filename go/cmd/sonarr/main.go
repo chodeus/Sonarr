@@ -601,7 +601,17 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("scenemappings repo: %w", err)
 	}
-	scenemappingsSvc := scenemappings.NewService(scenemappingsRepo, logger)
+	// Slice 4.AY (sub-arc M6b-i): the Service.UpdateMappings refresh
+	// path needs a writer + (optional) bus + (optional) providers
+	// chained on top of the read-only base. Writer + bus are
+	// available here; the SceneMappingProxy comes later (after
+	// metadataSourceHTTP is constructed around the metadatasource
+	// proxy block). The slice 4.AZ wiring below calls
+	// `.WithProviders(scenemappingsProxy)` once that exists, leaving
+	// UpdateMappings a no-op + warn until the chain completes.
+	scenemappingsSvc := scenemappings.NewService(scenemappingsRepo, logger).
+		WithWriter(scenemappingsRepo).
+		WithBus(bus)
 	if scenemappingsSvc == nil {
 		return fmt.Errorf("scenemappings service: nil — required dep regressed")
 	}
@@ -1444,6 +1454,26 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("healthcheck systemTime: %w", err)
 	}
 
+	// Slice 4.AZ (sub-arc M6b-ii of queue [M6]): construct the
+	// scene-mapping cloud-fetch Provider + chain it onto the existing
+	// scenemappingsSvc via WithProviders. The service was built earlier
+	// with Writer + Bus already wired (slice 4.AY); attaching providers
+	// now activates the UpdateMappings refresh path.
+	//
+	// Reuses metadataSourceHTTP (the dedicated 30s-timeout *http.Client
+	// the skyhook proxy + services-time fetcher both share). A future
+	// slice may swap this for a shared retry/proxy/UA-aware client
+	// from internal/httpclient once that interface conversion lands.
+	scenemappingsProxy, err := scenemappings.NewProxy(
+		metadataSourceHTTP,
+		scenemappings.ServicesSceneMappingURL,
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("scenemappings proxy: %w", err)
+	}
+	scenemappingsSvc.WithProviders(scenemappingsProxy)
+
 	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
 		healthcheck.NewAppDataLocationCheck(folder),
 		apiKeyCheck,
@@ -2038,6 +2068,13 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		RssSync:        indexerSearchSvc,
 		RssSyncBus:     bus,
 		RssSyncDecider: downloadDecider,
+		// Slice 4.AZ (sub-arc M6b-ii of queue [M6]): wire the
+		// UpdateSceneMapping command handler against
+		// *scenemappings.Service. The Service satisfies
+		// handlers.SceneMappingUpdater via the UpdateMappings(ctx)
+		// method. Scheduled-task entry fires every 3h matching
+		// C# TaskManager.cs:90.
+		UpdateSceneMapping: scenemappingsSvc,
 		DownloadedEpisodesScan: handlers.DownloadedEpisodesScanDeps{
 			// Processor REQUIRED — slice 3.80 contract: nil Processor
 			// → handler not registered. We always wire the real

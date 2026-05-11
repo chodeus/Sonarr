@@ -119,6 +119,15 @@ type Deps struct {
 	// RssSyncCompleteEvent (with zero approved/rejected counts).
 	RssSyncDecider RssDecider
 
+	// UpdateSceneMapping wires the IExecute<UpdateSceneMappingCommand>
+	// handler into the dispatcher. Slice 4.AZ (sub-arc M6b-ii of queue
+	// [M6]). Optional — nil skips registration entirely (the API
+	// returns "Unknown command" + the scheduler entry is also
+	// skipped, since there's no useful stub for "refresh scene
+	// mappings"). Production binds `*scenemappings.Service` via
+	// structural typing.
+	UpdateSceneMapping SceneMappingUpdater
+
 	Log *slog.Logger
 }
 
@@ -259,6 +268,20 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 			Handler: downloadedScan,
 		})
 	}
+
+	// UpdateSceneMapping registers only when the updater is wired.
+	// Slice 4.AZ — sub-arc M6b-ii of queue [M6]. The scheduled-task
+	// entry in DefaultScheduledTasks fires on a 3-hour cadence
+	// matching C# `TaskManager.cs:90`.
+	if deps.UpdateSceneMapping != nil {
+		updateSceneMapping, err := NewUpdateSceneMapping(deps.UpdateSceneMapping, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(UpdateSceneMappingName, commands.CommandSpec{
+			Handler: updateSceneMapping,
+		})
+	}
 	return nil
 }
 
@@ -330,5 +353,14 @@ func DefaultScheduledTasks() []*scheduledtasks.Task {
 		// CommandPriority.High; per-task priority override is
 		// deferred (same divergence as RefreshMonitoredDownloads).
 		checkForFinishedDownloadsDefaultTask(),
+		// Slice 4.AZ (sub-arc M6b-ii of queue [M6]):
+		// UpdateSceneMapping default schedule. Mirrors
+		// `TaskManager.cs:90` — `Interval = 3 * 60` (3 hours in
+		// minutes). The seed task fires the cloud refresh against
+		// services.sonarr.tv/v1/scenemapping at boot + every 3h.
+		{
+			TypeName: UpdateSceneMappingName,
+			Interval: UpdateSceneMappingIntervalMinutes,
+		},
 	}
 }
