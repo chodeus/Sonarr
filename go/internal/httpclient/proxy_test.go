@@ -57,11 +57,97 @@ func TestProxySettings_URL_HTTPWithCreds(t *testing.T) {
 	}
 }
 
-func TestProxySettings_URL_SOCKSReturnsErr(t *testing.T) {
+func TestProxySettings_URL_SOCKS5ReturnsSchemedURL(t *testing.T) {
+	// Slice 4.AA (queue [16]): SOCKS proxies now return a typed URL.
+	// HTTP proxies use Transport.Proxy; SOCKS uses Transport.DialContext
+	// via SOCKSDialer — URL() is informational + cache-key only.
 	p := NewProxySettings(ProxySOCKS5, "127.0.0.1", 1080, "", false, "", "")
-	_, err := p.URL()
+	u, err := p.URL()
+	if err != nil {
+		t.Fatalf("URL: %v", err)
+	}
+	if u.Scheme != "socks5" {
+		t.Errorf("scheme = %q, want socks5", u.Scheme)
+	}
+	if u.Host != "127.0.0.1:1080" {
+		t.Errorf("host = %q, want 127.0.0.1:1080", u.Host)
+	}
+}
+
+func TestProxySettings_URL_SOCKS4ReturnsSchemedURL(t *testing.T) {
+	p := NewProxySettings(ProxySOCKS4, "10.0.0.1", 1080, "", false, "", "")
+	u, err := p.URL()
+	if err != nil {
+		t.Fatalf("URL: %v", err)
+	}
+	if u.Scheme != "socks4" {
+		t.Errorf("scheme = %q, want socks4", u.Scheme)
+	}
+}
+
+func TestProxySettings_IsSOCKS(t *testing.T) {
+	if !NewProxySettings(ProxySOCKS5, "h", 1, "", false, "", "").IsSOCKS() {
+		t.Error("SOCKS5 should report IsSOCKS=true")
+	}
+	if !NewProxySettings(ProxySOCKS4, "h", 1, "", false, "", "").IsSOCKS() {
+		t.Error("SOCKS4 should report IsSOCKS=true")
+	}
+	if NewProxySettings(ProxyHTTP, "h", 1, "", false, "", "").IsSOCKS() {
+		t.Error("HTTP should report IsSOCKS=false")
+	}
+}
+
+func TestProxySettings_SOCKSDialer_ReturnsDialerForSOCKS(t *testing.T) {
+	p := NewProxySettings(ProxySOCKS5, "127.0.0.1", 1080, "", false, "user", "pass")
+	d, err := p.SOCKSDialer()
+	if err != nil {
+		t.Fatalf("SOCKSDialer: %v", err)
+	}
+	if d == nil {
+		t.Fatal("nil dialer")
+	}
+}
+
+func TestProxySettings_SOCKSDialer_RejectsHTTPProxy(t *testing.T) {
+	p := NewProxySettings(ProxyHTTP, "h", 8080, "", false, "", "")
+	_, err := p.SOCKSDialer()
 	if !errors.Is(err, ErrUnsupportedProxyType) {
-		t.Errorf("expected ErrUnsupportedProxyType, got %v", err)
+		t.Errorf("err = %v, want ErrUnsupportedProxyType", err)
+	}
+}
+
+func TestStaticProxyProvider_BypassCIDR(t *testing.T) {
+	// Slice 4.AA: CIDR bypass for literal IP hosts.
+	settings := NewProxySettings(ProxyHTTP, "proxy.example", 8080, "10.0.0.0/8, 192.168.1.0/24", false, "", "")
+	prov := StaticProxyProvider{Settings: settings}
+	cases := []struct {
+		uri      string
+		bypassed bool
+	}{
+		{"http://10.0.0.5/x", true},      // matches 10.0.0.0/8
+		{"http://10.255.255.1/x", true},  // matches 10.0.0.0/8
+		{"http://192.168.1.50/x", true},  // matches 192.168.1.0/24
+		{"http://192.168.2.50/x", false}, // outside 192.168.1.0/24
+		{"http://172.16.0.1/x", false},   // outside both CIDRs
+		{"http://example.com/x", false},  // hostname — no CIDR match (DNS not resolved here)
+	}
+	for _, tc := range cases {
+		uri := MustParseURI(tc.uri)
+		got := prov.GetProxySettings(uri)
+		if (got == nil) != tc.bypassed {
+			t.Errorf("uri %q: bypassed=%v want=%v", tc.uri, got == nil, tc.bypassed)
+		}
+	}
+}
+
+func TestStaticProxyProvider_BypassCIDRDoesNotResolveDNS(t *testing.T) {
+	// Explicit guard: a CIDR pattern + a hostname should NOT trigger
+	// a DNS lookup at bypass-decision time. Slice 4.AA design note.
+	settings := NewProxySettings(ProxyHTTP, "proxy.example", 8080, "127.0.0.0/8", false, "", "")
+	prov := StaticProxyProvider{Settings: settings}
+	got := prov.GetProxySettings(MustParseURI("http://localhost/x"))
+	if got == nil {
+		t.Error("localhost (hostname, not IP) should NOT be bypassed by 127.0.0.0/8 CIDR — DNS not resolved")
 	}
 }
 

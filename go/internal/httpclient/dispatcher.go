@@ -135,17 +135,31 @@ func (d *netHTTPDispatcher) getClient(uri URI) (*http.Client, error) {
 
 // buildHTTPClient constructs the *http.Client mirroring CreateHttpClient at
 // ManagedHttpDispatcher.cs:147-177. settings=nil ⇒ no proxy.
+//
+// HTTP proxies plug into [http.Transport.Proxy] via [http.ProxyURL].
+// SOCKS proxies plug into [http.Transport.DialContext] via
+// [ProxySettings.SOCKSDialer]. Slice 4.AA (queue [16]) added the
+// SOCKS branch; previously SOCKS settings returned an error from
+// URL().
 func buildHTTPClient(settings *ProxySettings) (*http.Client, error) {
 	transport := &http.Transport{
 		DisableCompression: false, // explicit: gzip auto-decode
 		MaxConnsPerHost:    12,    // mirror MaxConnectionsPerServer=12 at C# :156
 	}
 	if settings != nil {
-		u, err := settings.URL()
-		if err != nil {
-			return nil, fmt.Errorf("build http client for proxy: %w", err)
+		if settings.IsSOCKS() {
+			dialer, err := settings.SOCKSDialer()
+			if err != nil {
+				return nil, fmt.Errorf("build http client for SOCKS proxy: %w", err)
+			}
+			transport.DialContext = dialer.DialContext
+		} else {
+			u, err := settings.URL()
+			if err != nil {
+				return nil, fmt.Errorf("build http client for proxy: %w", err)
+			}
+			transport.Proxy = http.ProxyURL(u)
 		}
-		transport.Proxy = http.ProxyURL(u)
 	}
 	return &http.Client{
 		Transport: transport,
