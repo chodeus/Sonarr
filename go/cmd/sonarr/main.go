@@ -78,6 +78,7 @@ import (
 	"sonarr.tv/sonarr/internal/mediainfoupdater"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/namingconfig"
+	"sonarr.tv/sonarr/internal/notifications"
 	"sonarr.tv/sonarr/internal/notificationstatus"
 	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
@@ -1292,7 +1293,11 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("notificationstatus service: %w", err)
 	}
-	_ = notificationStatusSvc // held until queues [N2]/[N4] notifications provider + fan-out wires consume it.
+	// notificationStatusSvc is consumed by the NotificationStatusCheck
+	// wired below; the fan-out service (queue [N4]) consumes the
+	// Recorder surface via main.go Subscribe wiring once the blank-
+	// import aggregator for the Webhook+Discord providers + Service
+	// instantiation land in a follow-up slice.
 
 	// Slice 4.R (queue [10]): IndexerStatusCheck wires
 	// EnabledIndexerLister (over indexers.Repo via the
@@ -1308,6 +1313,24 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("healthcheck indexerStatus: %w", err)
 	}
 
+	// Slice 4.AI (queue [N5]): NotificationStatusCheck wires
+	// EnabledNotificationLister (over notifications.Repo via the
+	// enabledNotificationListerAdapter in healthcheck_wiring.go) +
+	// NotificationStatusBlockedLister (over *notificationstatus.Service
+	// via structural typing on GetBlockedProviders). Pattern-mirror
+	// of the IndexerStatusCheck wire just above.
+	notificationsRepo, err := notifications.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("notifications repo: %w", err)
+	}
+	notificationStatusCheck, err := healthcheck.NewNotificationStatusCheck(
+		newEnabledNotificationListerAdapter(notificationsRepo),
+		notificationStatusSvc,
+	)
+	if err != nil {
+		return fmt.Errorf("healthcheck notificationStatus: %w", err)
+	}
+
 	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
 		healthcheck.NewAppDataLocationCheck(folder),
 		apiKeyCheck,
@@ -1315,6 +1338,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		rootFolderCheck,
 		recyclingBinCheck,
 		indexerStatusCheck,
+		notificationStatusCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)
