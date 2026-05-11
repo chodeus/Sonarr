@@ -151,6 +151,101 @@ func (r *Repo) DeleteAll(ctx context.Context) error {
 	return nil
 }
 
+// GetAllByType ports `SceneMappingRepository.GetAllByType(string)` at
+// C# `SceneMappingRepository.cs:25-28`. Returns every mapping whose
+// `Type` column equals the supplied value — used by
+// [Service.UpdateMappings] to diff the freshly-fetched provider data
+// against the persisted set for that provider.
+//
+// Empty `typ` returns rows with NULL Type (matches the C# `Query`
+// semantics where `x.Type == null` parameterised by null).
+func (r *Repo) GetAllByType(ctx context.Context, typ string) ([]Mapping, error) {
+	db := r.DB()
+	var q string
+	var args []any
+	if typ == "" {
+		q = `SELECT "Id","TvdbId","SeasonNumber","SearchTerm","ParseTerm","Title","Type","SceneSeasonNumber","FilterRegex","SceneOrigin","SearchMode","Comment","MappingId" FROM "SceneMappings" WHERE "Type" IS NULL ORDER BY "Id"`
+	} else {
+		q = fmt.Sprintf(
+			`SELECT "Id","TvdbId","SeasonNumber","SearchTerm","ParseTerm","Title","Type","SceneSeasonNumber","FilterRegex","SceneOrigin","SearchMode","Comment","MappingId" FROM "SceneMappings" WHERE "Type" = %s ORDER BY "Id"`,
+			datastore.Placeholder(db.Engine, 1))
+		args = []any{typ}
+	}
+	rows, err := db.SQL.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("scenemappings: getAllByType(%q): %w", typ, err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]Mapping, 0)
+	for rows.Next() {
+		var m Mapping
+		if err := mapper.Scan(&m, rows); err != nil {
+			return nil, fmt.Errorf("scenemappings: getAllByType scan: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scenemappings: getAllByType rows: %w", err)
+	}
+	return out, nil
+}
+
+// InsertMany inserts every supplied Mapping. Mirrors the C#
+// `IBasicRepository.InsertMany(IEnumerable<T>)` semantic — looped
+// single-row Inserts wrapped in NO transaction by default (caller
+// wraps if it needs atomicity). Each insert populates the row's Id
+// via SetID.
+//
+// Returns on the first error; partially-inserted rows are NOT rolled
+// back. The caller is responsible for tx wrapping when atomicity
+// matters. UpdateMappings wraps the full insert/update/delete batch
+// in a single tx via the [MappingsWriter] interface; this top-level
+// method exists for callers that need raw multi-row insert without
+// the diff/merge machinery.
+//
+// Empty input returns nil.
+func (r *Repo) InsertMany(ctx context.Context, mappings []Mapping) error {
+	for i := range mappings {
+		if _, err := r.Insert(ctx, &mappings[i]); err != nil {
+			return fmt.Errorf("scenemappings: insertMany[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// UpdateMany updates every supplied Mapping by its Id. Same semantics
+// as [InsertMany] — looped single-row Updates with no transaction
+// wrapping by default.
+//
+// Each Mapping in `mappings` MUST have a non-zero Id; an Id == 0 row
+// will be rejected by the underlying [repo.Repository.Update] (which
+// returns ErrNotFound).
+//
+// Empty input returns nil.
+func (r *Repo) UpdateMany(ctx context.Context, mappings []Mapping) error {
+	for i := range mappings {
+		if err := r.Update(ctx, &mappings[i]); err != nil {
+			return fmt.Errorf("scenemappings: updateMany[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// DeleteByIDs removes every row whose Id appears in the supplied
+// list. Like [InsertMany] / [UpdateMany], looped single-row deletes
+// with no implicit transaction.
+//
+// Empty input returns nil. ErrNotFound on a missing Id is treated as
+// success — the row is already gone, which is the goal.
+func (r *Repo) DeleteByIDs(ctx context.Context, ids []int) error {
+	for i, id := range ids {
+		if err := r.Delete(ctx, id); err != nil && !errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("scenemappings: deleteByIDs[%d] (Id=%d): %w", i, id, err)
+		}
+	}
+	return nil
+}
+
 func nullableInt(p *int) sql.NullInt64 {
 	if p == nil {
 		return sql.NullInt64{}
