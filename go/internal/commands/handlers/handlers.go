@@ -184,6 +184,9 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	registry.Register(RefreshMonitoredDownloadsName, commands.CommandSpec{
 		Handler: NewRefreshMonitoredDownloads(deps.Log),
 	})
+	registry.Register(CheckForFinishedDownloadsName, commands.CommandSpec{
+		Handler: NewCheckForFinishedDownloads(deps.Log),
+	})
 	if deps.Backup != nil {
 		backupHandler, err := NewBackup(deps.Backup, deps.Log)
 		if err != nil {
@@ -321,5 +324,11 @@ func DefaultScheduledTasks() []*scheduledtasks.Task {
 		// clamp. The Go port hardcodes the default until the
 		// RssSyncInterval config getter ports.
 		rssSyncDefaultTask(),
+		// Slice 4.Z (queue [15]): CheckForFinishedDownloads default
+		// schedule. Mirrors `TaskManager.cs:74` — `Interval = 1`
+		// (every minute). The C# entry also sets Priority =
+		// CommandPriority.High; per-task priority override is
+		// deferred (same divergence as RefreshMonitoredDownloads).
+		checkForFinishedDownloadsDefaultTask(),
 	}
 }
