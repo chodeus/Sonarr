@@ -39,7 +39,23 @@ type Service struct {
 	mu sync.Mutex
 }
 
-// NewService binds a Repo + Bus + RuntimeStart into a Service.
+// NewService binds a Repo + Bus + RuntimeStart into a Service. The
+// runtime-start time is required and cannot be changed after
+// construction (matches the C# `IRuntimeInfo.StartTime` immutable).
+// Bus may be nil to skip event publication.
+//
+// Unlike notificationstatus.NewService / downloadclientstatus.NewService
+// — which apply `MinimumTimeSinceInitialFailure = 5min` +
+// `MaximumEscalationLevel = 5` per `NotificationStatusService.cs:18-19`
+// / `DownloadClientStatusService.cs:18-19` — the C# class
+// `ImportListStatusService` at `ImportLists/ImportListStatusService.cs:18-58`
+// has NO constructor body overrides. It only adds three semantic methods
+// (`GetListStatus`, `UpdateListSyncStatus`, `MarkListsAsCleaned`) over the
+// shared ProviderStatusServiceBase. The Go port therefore uses
+// [providerstatus.DefaultTunables] verbatim — back-off envelope is the
+// shared default of `MinTimeSinceInitialFailure = 0` +
+// `MaxEscalationLevel = len(BackOffPeriods)-1 = 9` (24-hour ceiling).
+// Callers that want to tweak per-test can override via [Service.SetTunables].
 func NewService(r *Repo, bus *messaging.Bus, runtimeStart time.Time) (*Service, error) {
 	if r == nil {
 		return nil, errors.New("importliststatus: nil repo")

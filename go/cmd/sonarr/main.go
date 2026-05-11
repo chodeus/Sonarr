@@ -68,6 +68,7 @@ import (
 	"sonarr.tv/sonarr/internal/historyhandlers"
 	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/httpclient"
+	"sonarr.tv/sonarr/internal/importliststatus"
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/indexersearch"
 	"sonarr.tv/sonarr/internal/indexerstatus"
@@ -1298,6 +1299,32 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// Recorder surface via main.go Subscribe wiring once the blank-
 	// import aggregator for the Webhook+Discord providers + Service
 	// instantiation land in a follow-up slice.
+
+	// Slice 4.AJ (queue [I1]): wire importliststatus.Service. Pattern-
+	// mirror of the indexerstatus / downloadclientstatus / notification-
+	// status pairs above — but the C# `ImportListStatusService` at
+	// `ImportLists/ImportListStatusService.cs:18-58` does NOT override
+	// the back-off Tunables (no MinimumTimeSinceInitialFailure /
+	// MaximumEscalationLevel reassignment in the constructor body), so
+	// importliststatus.NewService uses providerstatus.DefaultTunables
+	// verbatim — see the doc-comment on importliststatus.NewService for
+	// the C# parity note. The Service has no live consumer yet — the
+	// import-list provider family + ImportListSyncService (queue [I2]/
+	// [I4]) and ImportListStatusCheck (queue [I5]) port in later slices
+	// of this focused-subset; this slice brings the persistence +
+	// Recorder surface online so the wiring is ready when the provider
+	// entries appear. The compile-time guards in
+	// internal/importliststatus/recorder.go pin the
+	// providerstatus.Recorder + BlockedView interfaces.
+	importListStatusRepo, err := importliststatus.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("importliststatus repo: %w", err)
+	}
+	importListStatusSvc, err := importliststatus.NewService(importListStatusRepo, bus, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("importliststatus service: %w", err)
+	}
+	_ = importListStatusSvc // held until queue [I2]/[I4]/[I5] import-list provider wires consume it.
 
 	// Slice 4.R (queue [10]): IndexerStatusCheck wires
 	// EnabledIndexerLister (over indexers.Repo via the

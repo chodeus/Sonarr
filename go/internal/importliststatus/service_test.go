@@ -10,6 +10,7 @@ import (
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
 	"sonarr.tv/sonarr/internal/importliststatus"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/providerstatus"
 )
 
 // Service tests for importliststatus mirror the
@@ -130,5 +131,32 @@ func TestService_TypeSpecificColumnsSurvive(t *testing.T) {
 	}
 	if got.EscalationLevel != 1 {
 		t.Errorf("EscalationLevel: got %d want 1", got.EscalationLevel)
+	}
+}
+
+// C# `ImportListStatusService` (ImportLists/ImportListStatusService.cs:18-58)
+// has no constructor body overrides — unlike NotificationStatusService /
+// DownloadClientStatusService it does NOT cap MaxEscalationLevel at 5 or
+// shift MinTimeSinceInitialFailure off zero. This test pins that parity by
+// escalating beyond level 5 and observing the level ride up to the shared
+// providerstatus default (len(BackOffPeriods)-1 = 9). If a future slice
+// quietly adds a tunable override here, this test breaks.
+func TestService_NoTunablesOverride_MatchesCSharpParity(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	repo, _ := importliststatus.NewRepo(db)
+	svc, _ := importliststatus.NewService(repo, nil, refNow.Add(-1*time.Hour))
+	svc.SetClock(func() time.Time { return refNow })
+
+	for i := 0; i < providerstatus.MaxEscalationLevel+5; i++ {
+		_ = svc.RecordFailure(t.Context(), 7, 0)
+	}
+	got, err := repo.GetByProviderID(t.Context(), 7)
+	if err != nil {
+		t.Fatalf("GetByProviderID: %v", err)
+	}
+	if got.EscalationLevel != providerstatus.MaxEscalationLevel {
+		t.Errorf("EscalationLevel: got %d want %d (default ceiling — no C# override)",
+			got.EscalationLevel, providerstatus.MaxEscalationLevel)
 	}
 }
