@@ -13,7 +13,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"time"
 
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/importlists"
@@ -198,6 +201,56 @@ func (a rootFolderPathListerAdapter) AllRootFolderPaths(ctx context.Context) ([]
 		out = append(out, r.Path)
 	}
 	return out, nil
+}
+
+// serviceTimeURL is the C# `Resource("/time")` against
+// `ISonarrCloudRequestBuilder.Services` (base
+// `https://services.sonarr.tv/v1/`) — see
+// `src/NzbDrone.Common/Cloud/SonarrCloudRequestBuilder.cs:13`. Exposed
+// as a package-level constant so the adapter and its test share a
+// single source of truth.
+const serviceTimeURL = "https://services.sonarr.tv/v1/time"
+
+// serviceTimeResponse mirrors C# `ServiceTimeResponse` at
+// `src/NzbDrone.Core/HealthCheck/Checks/SystemTimeCheck.cs:56-59`.
+// SkyHook/Services emit `{"dateTimeUtc": "<RFC3339>"}`; the
+// json.Unmarshal default decoder parses RFC3339 into time.Time UTC.
+type serviceTimeResponse struct {
+	DateTimeUtc time.Time `json:"dateTimeUtc"`
+}
+
+// newServiceTimeFetcher returns a [healthcheck.SystemTimeFetcher]
+// bound to the supplied *http.Client and the services.sonarr.tv/v1/time
+// endpoint. Slice 4.AW (queue [M5] of Phase 4 focused-subset 5) —
+// wires the existing internal/healthcheck/system_time.go check, which
+// was ported in an earlier slice but never reached main.go's check
+// list. C# parity: `SystemTimeCheck.cs:28-32`.
+//
+// Errors from the upstream are returned unwrapped — the consuming
+// [healthcheck.SystemTimeCheck.Run] swallows them per the C#
+// `catch (Exception e)` block at `:47-50` (logs at Warn, falls through
+// to OK).
+func newServiceTimeFetcher(client *http.Client) healthcheck.SystemTimeFetcher {
+	return func(ctx context.Context) (time.Time, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, serviceTimeURL, nil)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("services time: build request: %w", err)
+		}
+		req.Header.Set("Accept", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("services time: http: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return time.Time{}, fmt.Errorf("services time: HTTP %d", resp.StatusCode)
+		}
+		var body serviceTimeResponse
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			return time.Time{}, fmt.Errorf("services time: decode: %w", err)
+		}
+		return body.DateTimeUtc.UTC(), nil
+	}
 }
 
 // skyHookProberAdapter bridges *metadatasource.Proxy to the

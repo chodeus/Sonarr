@@ -1428,6 +1428,22 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("healthcheck skyHook: %w", err)
 	}
 
+	// Slice 4.AW (queue [M5] of Phase 4 focused-subset 5): wire the
+	// existing internal/healthcheck/system_time.go check (ported in an
+	// earlier slice but never reached the healthSvc list). The fetcher
+	// hits services.sonarr.tv/v1/time per C#
+	// `SystemTimeCheck.cs:28-32`; the client reuses the dedicated
+	// metadata-source HTTP client (30s timeout, no retry plumbing —
+	// good enough for a once-per-cadence probe).
+	systemTimeCheck, err := healthcheck.NewSystemTimeCheck(
+		newServiceTimeFetcher(metadataSourceHTTP),
+		nil, // now: defaults to time.Now().UTC()
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("healthcheck systemTime: %w", err)
+	}
+
 	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
 		healthcheck.NewAppDataLocationCheck(folder),
 		apiKeyCheck,
@@ -1439,6 +1455,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		importListStatusCheck,
 		importListRootFolderCheck,
 		skyHookCheck,
+		systemTimeCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)
