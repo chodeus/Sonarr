@@ -1,0 +1,466 @@
+package notifications
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"sonarr.tv/sonarr/internal/decisionengine"
+	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/healthcheck"
+	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/quality"
+	"sonarr.tv/sonarr/internal/series"
+)
+
+// Service ports the C# `NotificationService` IHandle<*Event>
+// fan-out orchestrator at `Notifications/NotificationService.cs:19-560`.
+//
+// Slice 4.AH (sub-arc N4b of queue [N4]). Sub-arc N4a (slice 4.AG)
+// shipped the [Factory] that returns the per-event provider list.
+// This slice subscribes the dispatchers to the event bus and walks
+// each provider list invoking the matching OnX hook + recording
+// success/failure through the status recorder.
+//
+// Per-provider failure handling: every OnX call is guarded — a
+// returned error is logged + recorded as a RecordFailure on the
+// status service, but the loop continues onto the next provider.
+// Mirrors the C# try/catch at NotificationService.cs:155-160 (the
+// per-provider catch that prevents one broken provider from
+// breaking the fan-out chain).
+//
+// Mapping note: the C# Service handles 16 events (12 IHandle + 4
+// IHandleAsync). The Go-port event surface only exposes a subset
+// today; this slice wires up the events that ARE ported and
+// flags the rest as follow-up. See the Subscribe doc-comment for
+// the mapping table.
+type Service struct {
+	factory  *Factory
+	recorder serviceRecorder
+	logger   *slog.Logger
+}
+
+// serviceRecorder is the narrow recorder interface the service
+// calls after each provider invocation. The real
+// [notificationstatus.Service] satisfies this surface via its
+// RecordSuccess + RecordFailure methods. Tests swap in a stub
+// recorder. Nil-tolerant: when the service is constructed with
+// a nil recorder, success/failure recording is skipped — useful
+// for migrations and unit tests that don't need to exercise the
+// back-off side-effect.
+type serviceRecorder interface {
+	RecordSuccess(ctx context.Context, providerID int) error
+	RecordFailure(ctx context.Context, providerID int, minimumBackOff time.Duration) error
+}
+
+// NewService binds a Factory + recorder + logger into a Service.
+// recorder may be nil (skip recording). logger may be nil (use
+// [slog.Default]).
+func NewService(factory *Factory, recorder serviceRecorder, logger *slog.Logger) (*Service, error) {
+	if factory == nil {
+		return nil, fmt.Errorf("notifications: NewService: nil factory")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Service{
+		factory:  factory,
+		recorder: recorder,
+		logger:   logger,
+	}, nil
+}
+
+// Subscribe registers the Service's IHandle dispatchers on the
+// given event bus. Mirrors the C# IHandle<TEvent> interface
+// declarations on NotificationService — the DI container scans
+// for those interfaces and wires the subscriptions automatically;
+// the Go port wires them explicitly via [messaging.Subscribe].
+//
+// Mapping table (C# event → Go event):
+//
+//   - EpisodeGrabbedEvent → decisionengine.EpisodeGrabbedEvent
+//   - SeriesAddCompletedEvent → series.SeriesAddedEvent
+//   - SeriesDeletedEvent → series.SeriesDeletedEvent
+//   - EpisodeFileDeletedEvent → episodefiles.EpisodeFileDeletedEvent
+//   - HealthCheckFailedEvent → healthcheck.FailedEvent
+//   - HealthCheckRestoredEvent → healthcheck.RestoredEvent
+//   - HealthCheckCompleteEvent (async) → healthcheck.CompleteEvent
+//     (drives ProcessQueue drain)
+//
+// Deferred until upstream events port:
+//
+//   - EpisodeImportedEvent / DownloadCompletedEvent /
+//     UntrackedDownloadCompletedEvent — OnDownload + OnImportComplete
+//     dispatch. Tracked as follow-up.
+//   - UpdateInstalledEvent — OnApplicationUpdate dispatch.
+//   - ManualInteractionRequiredEvent — OnManualInteractionRequired
+//     dispatch.
+//   - SeriesRenamedEvent (batch) — OnRename dispatch. The per-file
+//     episodefiles.EpisodeFileRenamedEvent exists but the C# event
+//     is the batch-summary shape; the Go port defers until the
+//     batch event lands.
+//   - DeleteCompletedEvent / DownloadsProcessedEvent /
+//     RenameCompletedEvent — drain ProcessQueue.
+//     HealthCheckCompleteEvent already covers the
+//     ProcessQueue-drain pattern.
+//
+// Subscribe is idempotent only insofar as messaging.Subscribe is —
+// calling it twice on the same bus produces two subscriptions.
+func (s *Service) Subscribe(bus *messaging.Bus) {
+	if bus == nil {
+		return
+	}
+	messaging.Subscribe(bus, "notifications.HandleEpisodeGrabbedEvent", s.HandleEpisodeGrabbedEvent)
+	messaging.Subscribe(bus, "notifications.HandleSeriesAddedEvent", s.HandleSeriesAddedEvent)
+	messaging.Subscribe(bus, "notifications.HandleSeriesDeletedEvent", s.HandleSeriesDeletedEvent)
+	messaging.Subscribe(bus, "notifications.HandleEpisodeFileDeletedEvent", s.HandleEpisodeFileDeletedEvent)
+	messaging.Subscribe(bus, "notifications.HandleHealthCheckFailedEvent", s.HandleHealthCheckFailedEvent)
+	messaging.Subscribe(bus, "notifications.HandleHealthCheckRestoredEvent", s.HandleHealthCheckRestoredEvent)
+	messaging.SubscribeAsync(bus, "notifications.HandleHealthCheckCompleteEvent", s.HandleHealthCheckCompleteEvent)
+}
+
+// HandleEpisodeGrabbedEvent ports the C# `Handle(EpisodeGrabbedEvent)`
+// at `NotificationService.cs:130-161`. Builds a [GrabMessage] from
+// the EpisodeGrabbedEvent and fans out to every OnGrabEnabled
+// provider, gated by ShouldHandleSeries.
+func (s *Service) HandleEpisodeGrabbedEvent(ctx context.Context, ev decisionengine.EpisodeGrabbedEvent) error {
+	if ev.Episode == nil || ev.Episode.Series == nil {
+		return nil
+	}
+	providers, err := s.factory.OnGrabEnabled(ctx, true)
+	if err != nil {
+		s.logger.Warn("notifications: load OnGrab providers", slog.Any("err", err))
+		return nil
+	}
+	episodesCopy := materialiseEpisodes(ev.Episode.Episodes)
+	var qual *quality.Model
+	if pe := ev.Episode.ParsedEpisodeInfo; pe != nil {
+		q := pe.Quality
+		qual = &q
+	}
+	msg := GrabMessage{
+		Message:            getMessage(ev.Episode.Series, episodesCopy, qual),
+		Series:             ev.Episode.Series,
+		Episode:            ev.Episode,
+		Quality:            qual,
+		DownloadClientType: ev.DownloadClient,
+		DownloadClientName: ev.DownloadClientName,
+		DownloadID:         ev.DownloadID,
+	}
+	s.fanOut(ctx, providers, ev.Episode.Series.Tags, "OnGrab", func(p Provider) error {
+		return p.OnGrab(ctx, msg)
+	})
+	return nil
+}
+
+// HandleSeriesAddedEvent ports the C# Handle(SeriesAddCompletedEvent)
+// at `NotificationService.cs:443-456` (approx — see the C# source
+// for the exact line). The Go-port SeriesAddedEvent is the per-row
+// event; the C# tree adds a SeriesAddCompletedEvent batch shape.
+// Until that batch event ports, the per-row event is the closest
+// match — every Series-add gets one OnSeriesAdd dispatch.
+func (s *Service) HandleSeriesAddedEvent(ctx context.Context, ev series.SeriesAddedEvent) error {
+	if ev.Series == nil {
+		return nil
+	}
+	providers, err := s.factory.OnSeriesAddEnabled(ctx, true)
+	if err != nil {
+		s.logger.Warn("notifications: load OnSeriesAdd providers", slog.Any("err", err))
+		return nil
+	}
+	msg := SeriesAddMessage{
+		Message: ev.Series.Title,
+		Series:  ev.Series,
+	}
+	s.fanOut(ctx, providers, ev.Series.Tags, "OnSeriesAdd", func(p Provider) error {
+		return p.OnSeriesAdd(ctx, msg)
+	})
+	return nil
+}
+
+// HandleSeriesDeletedEvent ports the C# Handle(SeriesDeletedEvent).
+// The Go-port event carries a slice (bulk-deletion supported); the
+// service fans out one OnSeriesDelete dispatch per series in the
+// batch.
+func (s *Service) HandleSeriesDeletedEvent(ctx context.Context, ev series.SeriesDeletedEvent) error {
+	if len(ev.Series) == 0 {
+		return nil
+	}
+	providers, err := s.factory.OnSeriesDeleteEnabled(ctx, true)
+	if err != nil {
+		s.logger.Warn("notifications: load OnSeriesDelete providers", slog.Any("err", err))
+		return nil
+	}
+	for i := range ev.Series {
+		seriesRow := ev.Series[i]
+		msg := NewSeriesDeleteMessage(&seriesRow, ev.DeleteFiles)
+		s.fanOut(ctx, providers, seriesRow.Tags, "OnSeriesDelete", func(p Provider) error {
+			return p.OnSeriesDelete(ctx, msg)
+		})
+	}
+	return nil
+}
+
+// HandleEpisodeFileDeletedEvent ports the C# Handle(EpisodeFileDeletedEvent)
+// at `NotificationService.cs:384-422`. Skips files with no linked
+// episode (matches the C# `Empty()` short-circuit at `:386-391` —
+// "metadata was removed", nothing to notify about).
+func (s *Service) HandleEpisodeFileDeletedEvent(ctx context.Context, ev episodefiles.EpisodeFileDeletedEvent) error {
+	if ev.EpisodeFile == nil || len(ev.LinkedEpisodes) == 0 {
+		return nil
+	}
+	providers, err := s.factory.OnEpisodeFileDeleteEnabled(ctx, true)
+	if err != nil {
+		s.logger.Warn("notifications: load OnEpisodeFileDelete providers", slog.Any("err", err))
+		return nil
+	}
+	episodesCopy := make([]*episodes.Episode, len(ev.LinkedEpisodes))
+	for i := range ev.LinkedEpisodes {
+		e := ev.LinkedEpisodes[i]
+		episodesCopy[i] = &e
+	}
+	msg := EpisodeDeleteMessage{
+		Message:     getMessage(ev.Series, episodesCopy, nil),
+		Series:      ev.Series,
+		EpisodeFile: ev.EpisodeFile,
+		Reason:      ev.Reason,
+	}
+	var seriesTags []int
+	if ev.Series != nil {
+		seriesTags = ev.Series.Tags
+	}
+	s.fanOut(ctx, providers, seriesTags, "OnEpisodeFileDelete", func(p Provider) error {
+		return p.OnEpisodeFileDelete(ctx, msg)
+	})
+	return nil
+}
+
+// HandleHealthCheckFailedEvent ports the C# Handle(HealthCheckFailedEvent)
+// at `NotificationService.cs:493-518` (approx). The dispatcher
+// honours the per-provider IncludeHealthWarnings flag — Warning
+// checks only fire when the row's IncludeHealthWarnings is true.
+//
+// Suppresses notifications during the startup-grace window
+// (IsInStartupGracePeriod=true) — matches the C# guard that
+// prevents a flurry of post-restart alerts.
+func (s *Service) HandleHealthCheckFailedEvent(ctx context.Context, ev healthcheck.FailedEvent) error {
+	if ev.IsInStartupGracePeriod {
+		return nil
+	}
+	providers, err := s.factory.OnHealthIssueEnabled(ctx, true)
+	if err != nil {
+		s.logger.Warn("notifications: load OnHealthIssue providers", slog.Any("err", err))
+		return nil
+	}
+	msg := HealthCheckMessage{Check: ev.HealthCheck}
+	// HealthIssue uses a custom gating function instead of
+	// ShouldHandleSeries — no series context, only the per-provider
+	// IncludeHealthWarnings flag matters.
+	for _, p := range providers {
+		def := p.Definition()
+		if def == nil {
+			continue
+		}
+		if !ShouldHandleHealthFailure(ev.HealthCheck.Type, def.IncludeHealthWarnings) {
+			continue
+		}
+		if err := p.OnHealthIssue(ctx, msg); err != nil {
+			s.recordFailure(ctx, def, "OnHealthIssue", err)
+			continue
+		}
+		s.recordSuccess(ctx, def)
+	}
+	return nil
+}
+
+// HandleHealthCheckRestoredEvent ports the C# Handle(HealthCheckRestoredEvent)
+// at `NotificationService.cs:520-543` (approx). Mirror of
+// HandleHealthCheckFailedEvent for the restored side — same
+// startup-grace gate, same IncludeHealthWarnings gating (the C#
+// code only fires when the originally-failing check would itself
+// have fired, which is the same predicate).
+func (s *Service) HandleHealthCheckRestoredEvent(ctx context.Context, ev healthcheck.RestoredEvent) error {
+	if ev.IsInStartupGracePeriod {
+		return nil
+	}
+	providers, err := s.factory.OnHealthRestoredEnabled(ctx, true)
+	if err != nil {
+		s.logger.Warn("notifications: load OnHealthRestored providers", slog.Any("err", err))
+		return nil
+	}
+	msg := HealthCheckMessage{Check: ev.PreviousCheck}
+	for _, p := range providers {
+		def := p.Definition()
+		if def == nil {
+			continue
+		}
+		if !ShouldHandleHealthFailure(ev.PreviousCheck.Type, def.IncludeHealthWarnings) {
+			continue
+		}
+		if err := p.OnHealthRestored(ctx, msg); err != nil {
+			s.recordFailure(ctx, def, "OnHealthRestored", err)
+			continue
+		}
+		s.recordSuccess(ctx, def)
+	}
+	return nil
+}
+
+// HandleHealthCheckCompleteEvent ports the C# IHandleAsync<HealthCheckCompleteEvent>
+// at `NotificationService.cs:451-465` (approx). Drains every
+// provider's ProcessQueue — the per-host coalescing buffer the
+// Plex/Kodi/Emby providers maintain. Webhook + Discord ProcessQueue
+// are no-ops so this is effectively a no-op until those providers
+// port.
+func (s *Service) HandleHealthCheckCompleteEvent(ctx context.Context, _ healthcheck.CompleteEvent) error {
+	providers, err := s.factory.OnHealthIssueEnabled(ctx, false)
+	if err != nil {
+		s.logger.Warn("notifications: load providers for ProcessQueue", slog.Any("err", err))
+		return nil
+	}
+	for _, p := range providers {
+		def := p.Definition()
+		if err := p.ProcessQueue(ctx); err != nil && def != nil {
+			s.logger.Warn("notifications: ProcessQueue failed",
+				slog.Int("provider_id", def.ID),
+				slog.String("provider_name", def.Name),
+				slog.Any("err", err))
+		}
+	}
+	return nil
+}
+
+// fanOut walks providers and invokes the per-provider call after
+// applying the [ShouldHandleSeries] tag gate. Records success or
+// failure per provider; per-provider failure is logged but does
+// not abort the chain.
+func (s *Service) fanOut(ctx context.Context, providers []Provider, seriesTags []int, hookName string, call func(Provider) error) {
+	for _, p := range providers {
+		def := p.Definition()
+		if def == nil {
+			continue
+		}
+		if !ShouldHandleSeries(def.Tags, seriesTags) {
+			s.logger.Debug("notifications: tags mismatch",
+				slog.Int("provider_id", def.ID),
+				slog.String("provider_name", def.Name),
+				slog.String("hook", hookName))
+			continue
+		}
+		if err := call(p); err != nil {
+			s.recordFailure(ctx, def, hookName, err)
+			continue
+		}
+		s.recordSuccess(ctx, def)
+	}
+}
+
+func (s *Service) recordSuccess(ctx context.Context, def *Notification) {
+	if s.recorder == nil || def == nil || def.ID == 0 {
+		return
+	}
+	if err := s.recorder.RecordSuccess(ctx, def.ID); err != nil {
+		s.logger.Debug("notifications: recordSuccess",
+			slog.Int("provider_id", def.ID),
+			slog.Any("err", err))
+	}
+}
+
+func (s *Service) recordFailure(ctx context.Context, def *Notification, hookName string, hookErr error) {
+	s.logger.Warn("notifications: provider error",
+		slog.Int("provider_id", def.ID),
+		slog.String("provider_name", def.Name),
+		slog.String("hook", hookName),
+		slog.Any("err", hookErr))
+	if s.recorder == nil || def.ID == 0 {
+		return
+	}
+	if err := s.recorder.RecordFailure(ctx, def.ID, 0); err != nil {
+		s.logger.Debug("notifications: recordFailure",
+			slog.Int("provider_id", def.ID),
+			slog.Any("err", err))
+	}
+}
+
+// getMessage ports the C# private helper at
+// `NotificationService.cs:48-69`. Builds the per-event message
+// string used as the human-readable description on most payload
+// types.
+//
+// Series.SeriesType determines the format:
+//
+//   - SeriesTypes.Daily → "Title - AirDate - Episode [Quality]"
+//   - Anything else → "Title - {Season}x{EE}{EE}... - {Title + Title} [Quality]"
+//
+// quality may be nil — the C# call sites that pass nil are the
+// EpisodeFileDelete arm (`:394` passes the per-file Quality which
+// is always non-nil in C#; the Go port reaches here with a nil
+// quality via the EpisodeDeleteMessage path because the per-file
+// Quality isn't surfaced through the EpisodeFileDeletedEvent
+// today — flagged as a follow-up).
+func getMessage(s *series.Series, eps []*episodes.Episode, q *quality.Model) string {
+	if s == nil {
+		return ""
+	}
+	qualityString := getQualityString(s, q)
+	if len(eps) == 0 {
+		return fmt.Sprintf("%s - [%s]", s.Title, qualityString)
+	}
+	// Daily / standard branches.
+	if s.SeriesType == series.SeriesTypeDaily && eps[0] != nil {
+		ep := eps[0]
+		return fmt.Sprintf("%s - %s - %s [%s]", s.Title, ep.AirDate, ep.Title, qualityString)
+	}
+	// Standard: "TitlexEE" join + " + " on titles.
+	var (
+		numbers []string
+		titles  []string
+	)
+	for _, e := range eps {
+		if e == nil {
+			continue
+		}
+		numbers = append(numbers, fmt.Sprintf("x%02d", e.EpisodeNumber))
+		titles = append(titles, e.Title)
+	}
+	if len(numbers) == 0 {
+		return fmt.Sprintf("%s - [%s]", s.Title, qualityString)
+	}
+	episodeNumbers := strings.Join(numbers, "")
+	episodeTitles := strings.Join(titles, " + ")
+	return fmt.Sprintf("%s - %d%s - %s [%s]", s.Title, eps[0].SeasonNumber, episodeNumbers, episodeTitles, qualityString)
+}
+
+// getQualityString ports the C# private helper at
+// `NotificationService.cs:78-95`. Appends "Proper" / "v{N}"
+// suffix per the series type and revision version. Returns an
+// empty-Quality fallback when q is nil.
+func getQualityString(s *series.Series, q *quality.Model) string {
+	if q == nil {
+		return ""
+	}
+	out := q.Quality.Name
+	if q.Revision.Version > 1 {
+		if s != nil && s.SeriesType == series.SeriesTypeAnime {
+			out += fmt.Sprintf(" v%d", q.Revision.Version)
+		} else {
+			out += " Proper"
+		}
+	}
+	return out
+}
+
+// materialiseEpisodes converts a []episodes.Episode (value slice
+// — the Subject's Episodes field shape) to []*episodes.Episode
+// for use through getMessage.
+func materialiseEpisodes(es []episodes.Episode) []*episodes.Episode {
+	out := make([]*episodes.Episode, len(es))
+	for i := range es {
+		e := es[i]
+		out[i] = &e
+	}
+	return out
+}
