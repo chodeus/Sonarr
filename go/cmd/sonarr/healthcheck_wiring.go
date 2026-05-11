@@ -16,6 +16,7 @@ import (
 	"fmt"
 
 	"sonarr.tv/sonarr/internal/healthcheck"
+	"sonarr.tv/sonarr/internal/importlists"
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/notifications"
 	"sonarr.tv/sonarr/internal/rootfolders"
@@ -108,3 +109,100 @@ func notificationEnabled(n *notifications.Notification) bool {
 	}
 	return false
 }
+
+// importListListerAdapter implements both
+// [healthcheck.EnabledImportListLister] and
+// [healthcheck.AllImportListLister] — the projections slice 4.AQ
+// ImportListStatusCheck + ImportListRootFolderCheck consume. Wraps
+// importlists.Repo.All and applies the C# `ImportListDefinition.
+// Enable => EnableAutomaticAdd` predicate at the boundary for the
+// enabled variant.
+//
+// C# parallel: `ImportListStatusCheck.cs:27` —
+// `_providerFactory.GetAvailableProviders()` returns the Active()
+// subset (EnableAutomaticAdd=true) for the status check; the
+// root-folder check at `ImportListRootFolderCheck.cs:38` uses
+// `_importListFactory.All()` (every row).
+type importListListerAdapter struct {
+	repo *importlists.Repo
+}
+
+// newImportListListerAdapter binds the dependency.
+func newImportListListerAdapter(repo *importlists.Repo) importListListerAdapter {
+	return importListListerAdapter{repo: repo}
+}
+
+// EnabledImportLists implements healthcheck.EnabledImportListLister.
+// Applies the "EnableAutomaticAdd is true" predicate (nullable
+// *bool, nil-defaults-false per C# `ImportListDefinition.cs:12`).
+func (a importListListerAdapter) EnabledImportLists(ctx context.Context) ([]healthcheck.EnabledImportList, error) {
+	rows, err := a.repo.All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("importlists.All: %w", err)
+	}
+	out := make([]healthcheck.EnabledImportList, 0, len(rows))
+	for i := range rows {
+		row := &rows[i]
+		if row.EnableAutomaticAdd == nil || !*row.EnableAutomaticAdd {
+			continue
+		}
+		out = append(out, healthcheck.EnabledImportList{
+			ID:             row.ID,
+			Name:           row.Name,
+			RootFolderPath: row.RootFolderPath,
+		})
+	}
+	return out, nil
+}
+
+// AllImportLists implements healthcheck.AllImportListLister. No
+// filtering — every persisted row maps through.
+func (a importListListerAdapter) AllImportLists(ctx context.Context) ([]healthcheck.EnabledImportList, error) {
+	rows, err := a.repo.All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("importlists.All: %w", err)
+	}
+	out := make([]healthcheck.EnabledImportList, 0, len(rows))
+	for i := range rows {
+		row := &rows[i]
+		out = append(out, healthcheck.EnabledImportList{
+			ID:             row.ID,
+			Name:           row.Name,
+			RootFolderPath: row.RootFolderPath,
+		})
+	}
+	return out, nil
+}
+
+// rootFolderPathListerAdapter implements
+// [healthcheck.ImportListRootFolderPathLister] — wraps
+// rootfolders.Repo.All and projects to the Path-only slice the
+// healthcheck consumes.
+type rootFolderPathListerAdapter struct {
+	repo *rootfolders.Repo
+}
+
+func newRootFolderPathListerAdapter(repo *rootfolders.Repo) rootFolderPathListerAdapter {
+	return rootFolderPathListerAdapter{repo: repo}
+}
+
+// AllRootFolderPaths implements healthcheck.ImportListRootFolderPathLister.
+func (a rootFolderPathListerAdapter) AllRootFolderPaths(ctx context.Context) ([]string, error) {
+	rows, err := a.repo.All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("rootfolders.All: %w", err)
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.Path)
+	}
+	return out, nil
+}
+
+// Compile-time guards. The two adapter shapes wire into the slice
+// 4.AQ healthcheck constructors via Go's structural typing.
+var (
+	_ healthcheck.EnabledImportListLister        = importListListerAdapter{}
+	_ healthcheck.AllImportListLister            = importListListerAdapter{}
+	_ healthcheck.ImportListRootFolderPathLister = rootFolderPathListerAdapter{}
+)

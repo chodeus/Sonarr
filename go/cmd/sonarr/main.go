@@ -68,6 +68,7 @@ import (
 	"sonarr.tv/sonarr/internal/historyhandlers"
 	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/httpclient"
+	"sonarr.tv/sonarr/internal/importlists"
 	"sonarr.tv/sonarr/internal/importliststatus"
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/indexersearch"
@@ -1324,7 +1325,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("importliststatus service: %w", err)
 	}
-	_ = importListStatusSvc // held until queue [I2]/[I4]/[I5] import-list provider wires consume it.
+	// importListStatusSvc is consumed by the ImportListStatusCheck
+	// wired below (slice 4.AQ). The fan-out orchestrator
+	// (importlists.SyncService — slice 4.AP) also consumes it once
+	// optional sub-arc I4c wires the scheduled-task entry.
 
 	// Slice 4.R (queue [10]): IndexerStatusCheck wires
 	// EnabledIndexerLister (over indexers.Repo via the
@@ -1358,6 +1362,38 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("healthcheck notificationStatus: %w", err)
 	}
 
+	// Slice 4.AQ (queue [I5] — closes Phase 4 focused-subset 4):
+	// ImportListStatusCheck + ImportListRootFolderCheck. Pattern-
+	// mirror of slice 4.AI (notificationStatusCheck wire just above).
+	// The importListListerAdapter in healthcheck_wiring.go
+	// satisfies BOTH healthcheck.EnabledImportListLister (filters to
+	// EnableAutomaticAdd=true rows for the status check) AND
+	// healthcheck.AllImportListLister (every row for the root-folder
+	// check). The rootFolderPathListerAdapter projects
+	// rootfolders.Repo.All to the Path-only slice the check needs;
+	// disk.Provider satisfies healthcheck.ImportListFolderProbe via
+	// Go structural typing on FolderExists.
+	importListsRepo, err := importlists.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("importlists repo: %w", err)
+	}
+	importListLister := newImportListListerAdapter(importListsRepo)
+	importListStatusCheck, err := healthcheck.NewImportListStatusCheck(
+		importListLister,
+		importListStatusSvc,
+	)
+	if err != nil {
+		return fmt.Errorf("healthcheck importListStatus: %w", err)
+	}
+	importListRootFolderCheck, err := healthcheck.NewImportListRootFolderCheck(
+		importListLister,
+		newRootFolderPathListerAdapter(rootFoldersRepo),
+		diskProv,
+	)
+	if err != nil {
+		return fmt.Errorf("healthcheck importListRootFolder: %w", err)
+	}
+
 	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
 		healthcheck.NewAppDataLocationCheck(folder),
 		apiKeyCheck,
@@ -1366,6 +1402,8 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		recyclingBinCheck,
 		indexerStatusCheck,
 		notificationStatusCheck,
+		importListStatusCheck,
+		importListRootFolderCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)
