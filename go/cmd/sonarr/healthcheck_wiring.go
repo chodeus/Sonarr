@@ -17,6 +17,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/importlists"
+	"sonarr.tv/sonarr/internal/metadatasource"
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/notifications"
 	"sonarr.tv/sonarr/internal/rootfolders"
@@ -199,10 +200,36 @@ func (a rootFolderPathListerAdapter) AllRootFolderPaths(ctx context.Context) ([]
 	return out, nil
 }
 
-// Compile-time guards. The two adapter shapes wire into the slice
-// 4.AQ healthcheck constructors via Go's structural typing.
+// skyHookProberAdapter bridges *metadatasource.Proxy to the
+// [healthcheck.SkyHookProber] narrow interface. The proxy surface
+// is wider than the check needs (GetSeriesInfo + SearchForNewSeries
+// + 4 typed-id wrappers); the adapter narrows it to the single
+// "probe known TVDB id" call.
+//
+// Slice 4.AV (queue [M4] of Phase 4 focused-subset 5).
+type skyHookProberAdapter struct {
+	proxy *metadatasource.Proxy
+}
+
+func newSkyHookProberAdapter(proxy *metadatasource.Proxy) skyHookProberAdapter {
+	return skyHookProberAdapter{proxy: proxy}
+}
+
+// ProbeKnownSeries implements healthcheck.SkyHookProber by firing
+// a GetSeriesInfo against [healthcheck.SkyHookKnownTvdbID]. The
+// returned (series, episodes) pair is discarded — only the err
+// channel matters for the healthcheck classification (preserves
+// the [metadatasource.ErrServiceUnavailable] sentinel chain).
+func (a skyHookProberAdapter) ProbeKnownSeries(ctx context.Context) error {
+	_, _, err := a.proxy.GetSeriesInfo(ctx, healthcheck.SkyHookKnownTvdbID)
+	return err
+}
+
+// Compile-time guards. Adapter shapes wire into the healthcheck
+// constructors via Go's structural typing.
 var (
 	_ healthcheck.EnabledImportListLister        = importListListerAdapter{}
 	_ healthcheck.AllImportListLister            = importListListerAdapter{}
 	_ healthcheck.ImportListRootFolderPathLister = rootFolderPathListerAdapter{}
+	_ healthcheck.SkyHookProber                  = skyHookProberAdapter{}
 )

@@ -159,6 +159,15 @@ const (
 	ReasonUpdateStartupNotWritable
 	ReasonUpdateStartupTranslocation
 	ReasonUpdateUiNotWritable
+	// ReasonSkyHookUnavailable + ReasonSkyHookProbeFailed are Go-port
+	// additions per PROV-Q36 — the C# tree has no equivalent because
+	// C# SkyHookProxy is a singleton with no Test() method and no
+	// dedicated healthcheck. Appended at the end to preserve the
+	// `int(reason)` wire values of every C# reason above. Future C#
+	// reasons that DO map 1:1 should slot in alphabetical position
+	// among the C# group; these two stay at the bottom.
+	ReasonSkyHookUnavailable
+	ReasonSkyHookProbeFailed
 )
 
 // HealthCheck is the value type a Check returns. Mirrors the C#

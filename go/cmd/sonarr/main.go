@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -79,6 +80,7 @@ import (
 	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/mediainfoupdater"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/metadatasource"
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/notifications"
 	"sonarr.tv/sonarr/internal/notificationstatus"
@@ -1394,6 +1396,38 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("healthcheck importListRootFolder: %w", err)
 	}
 
+	// Slice 4.AV (queue [M4] of Phase 4 focused-subset 5): construct
+	// the metadata-source proxy + SkyHookCheck. The proxy itself is
+	// only consumed by this healthcheck today; Phase-5 surfaces
+	// (api/v3 SeriesLookup, RefreshSeriesService) will hold the same
+	// reference once wired. baseURL is hardcoded per PROV-Q30 — a
+	// future slice surfaces it as a config key. dailySeries +
+	// seriesLookup pass nil-tolerantly (the Daily-flag override and
+	// library-hit short-circuit don't fire until those deps wire).
+	//
+	// Dedicated *http.Client because the shared internal/httpclient
+	// Client interface doesn't satisfy metadatasource.Proxy's
+	// *http.Client expectation; reusing the shared retry/proxy/UA
+	// machinery for SkyHook calls is a follow-up.
+	metadataSourceHTTP := &http.Client{Timeout: 30 * time.Second}
+	metadataSourceProxy, err := metadatasource.NewProxy(
+		metadataSourceHTTP,
+		"https://skyhook.sonarr.tv/v1/tvdb",
+		nil, // DailySeriesService — wires when DailySeries persistence ports.
+		nil, // SeriesLookup — wires alongside the api/v3 lookup endpoint.
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("metadatasource proxy: %w", err)
+	}
+	skyHookCheck, err := healthcheck.NewSkyHookCheck(
+		newSkyHookProberAdapter(metadataSourceProxy),
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("healthcheck skyHook: %w", err)
+	}
+
 	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
 		healthcheck.NewAppDataLocationCheck(folder),
 		apiKeyCheck,
@@ -1404,6 +1438,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		notificationStatusCheck,
 		importListStatusCheck,
 		importListRootFolderCheck,
+		skyHookCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)
