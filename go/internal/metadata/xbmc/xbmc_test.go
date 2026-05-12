@@ -23,7 +23,7 @@ func newDetectorFor(t *testing.T, files map[string]string) *xbmc.NfoDetector {
 func newXbmcFor(t *testing.T, files map[string]string) *xbmc.XbmcMetadata {
 	t.Helper()
 	def := &metadata.Metadata{ID: 1, Implementation: xbmc.ImplementationName, ConfigContract: xbmc.ConfigContractName}
-	m, err := xbmc.NewXbmcMetadata(def, xbmc.DefaultSettings(), newDetectorFor(t, files))
+	m, err := xbmc.NewXbmcMetadata(def, xbmc.DefaultSettings(), xbmc.Deps{Detector: newDetectorFor(t, files)})
 	if err != nil {
 		t.Fatalf("NewXbmcMetadata: %v", err)
 	}
@@ -32,8 +32,8 @@ func newXbmcFor(t *testing.T, files map[string]string) *xbmc.XbmcMetadata {
 
 func TestNewXbmcMetadata_RejectsNilDetector(t *testing.T) {
 	t.Parallel()
-	if _, err := xbmc.NewXbmcMetadata(nil, xbmc.DefaultSettings(), nil); err == nil {
-		t.Errorf("expected error on nil detector")
+	if _, err := xbmc.NewXbmcMetadata(nil, xbmc.DefaultSettings(), xbmc.Deps{}); err == nil {
+		t.Errorf("expected error on nil deps.Detector")
 	}
 }
 
@@ -48,7 +48,7 @@ func TestXbmcMetadata_Name(t *testing.T) {
 func TestXbmcMetadata_Definition_RoundTrips(t *testing.T) {
 	t.Parallel()
 	def := &metadata.Metadata{ID: 42, Name: "Kodi", Implementation: xbmc.ImplementationName, ConfigContract: xbmc.ConfigContractName}
-	m, _ := xbmc.NewXbmcMetadata(def, xbmc.DefaultSettings(), newDetectorFor(t, nil))
+	m, _ := xbmc.NewXbmcMetadata(def, xbmc.DefaultSettings(), xbmc.Deps{Detector: newDetectorFor(t, nil)})
 	if got := m.Definition(); got == nil || got.ID != 42 {
 		t.Errorf("Definition = %+v", got)
 	}

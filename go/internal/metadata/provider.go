@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/mediacover"
 	"sonarr.tv/sonarr/internal/metadatafiles"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -60,19 +61,23 @@ func (r SeriesMetadataReason) String() string {
 
 // Season is the per-season slice the metadata-writer consumes when it
 // builds per-season artwork URLs. Mirrors the subset of C# `Tv.Season`
-// the Xbmc / Roksbox / Plex writers read — only SeasonNumber and the
-// Images list are touched at the call sites for season-image emission
-// (the C# `XbmcMetadata.SeasonImages` at `XbmcMetadata.cs:417-454`).
+// at `src/NzbDrone.Core/Tv/Season.cs:6-15` (SeasonNumber + Monitored
+// + Images).
 //
 // The `series.Series` row persists its seasons as a JSON blob string
 // (`Series.Seasons`); per-call decode lands in the consumer-facing
-// service (queue [W7]) or in the per-writer slice as a helper. Kept
+// service (queue [W6]) or in the per-writer slice as a helper. Kept
 // as a local record rather than adding a typed `series.Season` to the
 // series package because no consumer outside the metadata-writers
 // reaches for season as a typed value yet.
 //
 // Slice 4.BA (queue [W1] — METADATA-WRITERS foundation): paired with
 // [Provider.SeasonImages].
+//
+// Slice 4.BC extension (sub-arc W2b of queue [W2]): the Images field
+// landed after foundation when XbmcMetadata.SeasonImages needed
+// per-season artwork. Mirrors C# `Season.Images { get; set; }` —
+// SkyHook populates this with poster/banner/fanart variants.
 type Season struct {
 	// SeasonNumber is the 0-indexed season ordinal (0 = specials).
 	SeasonNumber int
@@ -80,6 +85,13 @@ type Season struct {
 	// Monitored mirrors C# `Season.Monitored`. Not all writers read
 	// it (Xbmc does not; future Emby / Jellyfin writers might).
 	Monitored bool
+
+	// Images is the per-season artwork the writers read. Mirrors C#
+	// `Season.Images` (List<MediaCover.MediaCover>). nil-or-empty
+	// when no per-season art was fetched. The Xbmc / Roksbox / Wdtv
+	// writers iterate this in their SeasonImages methods to emit one
+	// sidecar per cover type.
+	Images []mediacover.Cover
 }
 
 // Provider is the runtime metadata-writer abstraction concrete
