@@ -17,6 +17,7 @@ import (
 	"sonarr.tv/sonarr/internal/metadatafiles"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/tags"
 )
 
 // providerDisplayName is the user-facing name the v3 UI shows for
@@ -62,6 +63,7 @@ type XbmcMetadata struct {
 	detector   *NfoDetector
 	coverPath  CoverPathLookup
 	episodes   EpisodeLookup
+	tags       TagLookup
 }
 
 // CoverPathLookup is the narrow per-writer dep wrapping
@@ -99,6 +101,21 @@ type EpisodeLookup interface {
 	AllByFileID(ctx context.Context, fileID int) ([]episodes.Episode, error)
 }
 
+// TagLookup narrows the per-writer dep for resolving the integer
+// `series.Tags` slice into the typed [tags.Tag] rows. Used by
+// [XbmcMetadata.SeriesMetadata] (sub-arc W2c-i) to render `<tag>`
+// elements with each tag's Label.
+//
+// Production binding wraps `*tags.Service` via Go structural typing
+// — `Service.GetByIDs` already satisfies this contract.
+type TagLookup interface {
+	// GetByIDs returns the [tags.Tag] rows matching the input IDs.
+	// Missing rows are silently skipped (matches the C#
+	// `_tagRepo.GetTags(series.Tags)` contract at
+	// `XbmcMetadata.cs:200`). Empty input → empty result.
+	GetByIDs(ctx context.Context, ids []int) ([]tags.Tag, error)
+}
+
 // Deps bundles the xbmc-specific narrow deps the [XbmcMetadata]
 // constructor requires. Fields are nil-tolerant — the writer
 // degrades gracefully when an optional dep is unset (e.g. missing
@@ -119,6 +136,12 @@ type Deps struct {
 	// Episodes is the episode-by-file lookup [EpisodeImages]
 	// consults. nil → EpisodeImages returns empty.
 	Episodes EpisodeLookup
+
+	// Tags is the tag-row lookup [SeriesMetadata] consults to render
+	// `<tag>` elements. nil → no `<tag>` elements emitted (the C#
+	// behaviour at `XbmcMetadata.cs:198-206` is to skip the tag
+	// block when series.Tags is empty — same outcome).
+	Tags TagLookup
 }
 
 // NewXbmcMetadata builds an [XbmcMetadata] from a persisted
@@ -139,6 +162,7 @@ func NewXbmcMetadata(definition *metadata.Metadata, settings Settings, deps Deps
 		detector:   deps.Detector,
 		coverPath:  deps.CoverPath,
 		episodes:   deps.Episodes,
+		tags:       deps.Tags,
 	}, nil
 }
 
@@ -287,28 +311,15 @@ func (m *XbmcMetadata) FindMetadataFile(s *series.Series, path string) (*metadat
 	return nil, nil
 }
 
-// SeriesMetadata is the W2a STUB for the per-series `tvshow.nfo`
-// emitter. Returns the zero-value [metadata.MetadataFileResult]
-// (RelativePath == "" — the "writer chose to skip" sentinel per
-// go/internal/metadata/results.go). Sub-arc W2b fills the body.
-//
-// Ports C# `XbmcMetadata.SeriesMetadata` at `XbmcMetadata.cs:141-276`
-// — ~135 LOC of XElement build-up gated on Settings.SeriesMetadata
-// plus the optional `episodeguide` JSON sub-document.
-func (m *XbmcMetadata) SeriesMetadata(_ context.Context, _ *series.Series, _ metadata.SeriesMetadataReason) (metadata.MetadataFileResult, error) {
-	// STUB — slice 4.BB sub-arc W2a. Body lands in sub-arc W2b.
-	return metadata.MetadataFileResult{}, nil
-}
-
 // EpisodeMetadata is the W2a STUB for the per-episode `<filename>.nfo`
 // emitter. Returns the zero-value [metadata.MetadataFileResult].
-// Sub-arc W2b fills the body.
+// Sub-arc W2c-ii (slice 4.BE) fills the body.
 //
 // Ports C# `XbmcMetadata.EpisodeMetadata` at `XbmcMetadata.cs:278-423`
 // — ~145 LOC of XElement build-up including the MediaInfo
 // streamdetails sub-document.
 func (m *XbmcMetadata) EpisodeMetadata(_ context.Context, _ *series.Series, _ *episodefiles.File) (metadata.MetadataFileResult, error) {
-	// STUB — slice 4.BB sub-arc W2a. Body lands in sub-arc W2b.
+	// STUB — slice 4.BB sub-arc W2a. Body lands in sub-arc W2c-ii (slice 4.BE).
 	return metadata.MetadataFileResult{}, nil
 }
 

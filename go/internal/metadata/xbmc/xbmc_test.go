@@ -224,35 +224,35 @@ func TestXbmcMetadata_FindMetadataFile_NotChildOfSeriesPath(t *testing.T) {
 	}
 }
 
-func TestXbmcMetadata_StubsReturnZeroValues(t *testing.T) {
+func TestXbmcMetadata_RemainingStubsReturnZeroValues(t *testing.T) {
 	t.Parallel()
+	// After slice 4.BD (sub-arc W2c-i), SeriesMetadata has a real
+	// body. EpisodeMetadata remains a stub pending slice 4.BE
+	// (sub-arc W2c-ii). The image methods are real after 4.BC but
+	// degrade to empty when the optional CoverPath / Episodes deps
+	// are nil — pin that nil-tolerance here.
 	m := newXbmcFor(t, nil)
 	ctx := t.Context()
 	s := &series.Series{ID: 1, Path: "/tv/Show"}
 
-	res, err := m.SeriesMetadata(ctx, s, metadata.SeriesMetadataReasonScan)
-	if err != nil || res.RelativePath != "" || res.Contents != "" {
-		t.Errorf("SeriesMetadata stub: res=%+v err=%v", res, err)
-	}
-
-	res, err = m.EpisodeMetadata(ctx, s, &episodefiles.File{})
+	res, err := m.EpisodeMetadata(ctx, s, &episodefiles.File{})
 	if err != nil || res.RelativePath != "" || res.Contents != "" {
 		t.Errorf("EpisodeMetadata stub: res=%+v err=%v", res, err)
 	}
 
 	imgs, err := m.SeriesImages(ctx, s)
 	if err != nil || len(imgs) != 0 {
-		t.Errorf("SeriesImages stub: imgs=%+v err=%v", imgs, err)
+		t.Errorf("SeriesImages nil-CoverPath empty: imgs=%+v err=%v", imgs, err)
 	}
 
 	imgs, err = m.SeasonImages(ctx, s, metadata.Season{SeasonNumber: 1})
 	if err != nil || len(imgs) != 0 {
-		t.Errorf("SeasonImages stub: imgs=%+v err=%v", imgs, err)
+		t.Errorf("SeasonImages empty-Images empty: imgs=%+v err=%v", imgs, err)
 	}
 
 	imgs, err = m.EpisodeImages(ctx, s, &episodefiles.File{})
 	if err != nil || len(imgs) != 0 {
-		t.Errorf("EpisodeImages stub: imgs=%+v err=%v", imgs, err)
+		t.Errorf("EpisodeImages nil-Episodes empty: imgs=%+v err=%v", imgs, err)
 	}
 }
 
