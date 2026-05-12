@@ -343,6 +343,130 @@ func TestComparer_NilSubjectsTie(t *testing.T) {
 	}
 }
 
+// === PrioritizeDecisions (slice 4.BP / C-cleanup [C8]) ===
+
+// withSeriesID returns a clone of subject with its Series.ID swapped
+// (and a non-zero TvdbID stamp so the value isn't all-zero). Helpers
+// keep PrioritizeDecisions tests readable.
+func withSeriesID(s *decisionengine.Subject, id int) *decisionengine.Subject {
+	clone := *s
+	if clone.Series != nil {
+		seriesClone := *clone.Series
+		seriesClone.ID = id
+		clone.Series = &seriesClone
+	}
+	return &clone
+}
+
+func TestPrioritizeDecisions_EmptyInputReturnsNil(t *testing.T) {
+	t.Parallel()
+	c := decisionengine.NewDecisionComparer(nil, nil, nil)
+	if got := c.PrioritizeDecisions(nil); got != nil {
+		t.Errorf("expected nil for empty input, got %v", got)
+	}
+}
+
+func TestPrioritizeDecisions_GroupsBySeriesAndSortsWithinGroup(t *testing.T) {
+	t.Parallel()
+	profile := twoTierProfile()
+	c := decisionengine.NewDecisionComparer(
+		stubComparerConfig{mode: quality.ProperPreferAndUpgrade},
+		func(_ int) *decisionengine.ProfileView { return profile },
+		nil,
+	)
+
+	// Series 1: low quality then high quality (should reorder).
+	s1Low := makeCmpDecision(withSeriesID(minimalSubject(quality.SDTV.ID, 500, indexers.DownloadProtocolUsenet), 1))
+	s1High := makeCmpDecision(withSeriesID(minimalSubject(quality.HDTV720p.ID, 500, indexers.DownloadProtocolUsenet), 1))
+	// Series 2: single decision.
+	s2 := makeCmpDecision(withSeriesID(minimalSubject(quality.SDTV.ID, 500, indexers.DownloadProtocolUsenet), 2))
+
+	in := []decisionengine.Decision{s1Low, s2, s1High}
+	out := c.PrioritizeDecisions(in)
+	if len(out) != 3 {
+		t.Fatalf("len(out) = %d, want 3", len(out))
+	}
+	// Series 1 group first (first-seen at index 0), best-first: HDTV720p, SDTV.
+	if subjectQualityID(out[0]) != quality.HDTV720p.ID {
+		t.Errorf("out[0] qID = %d, want HDTV720p (series 1 group, best-first)", subjectQualityID(out[0]))
+	}
+	if subjectQualityID(out[1]) != quality.SDTV.ID {
+		t.Errorf("out[1] qID = %d, want SDTV (series 1 group, second)", subjectQualityID(out[1]))
+	}
+	// Series 2 last.
+	if sub, ok := out[2].Subject.(*decisionengine.Subject); !ok || sub.Series.ID != 2 {
+		t.Errorf("out[2] series ID = %v, want 2", sub)
+	}
+}
+
+func TestPrioritizeDecisions_GroupOrderFollowsFirstSeen(t *testing.T) {
+	t.Parallel()
+	c := decisionengine.NewDecisionComparer(nil, nil, nil)
+
+	// First-seen order: 3, 1, 2 → groups should emit in that order.
+	d3 := makeCmpDecision(withSeriesID(minimalSubject(quality.SDTV.ID, 500, indexers.DownloadProtocolUsenet), 3))
+	d1 := makeCmpDecision(withSeriesID(minimalSubject(quality.SDTV.ID, 500, indexers.DownloadProtocolUsenet), 1))
+	d2 := makeCmpDecision(withSeriesID(minimalSubject(quality.SDTV.ID, 500, indexers.DownloadProtocolUsenet), 2))
+
+	out := c.PrioritizeDecisions([]decisionengine.Decision{d3, d1, d2})
+	want := []int{3, 1, 2}
+	for i, w := range want {
+		sub, _ := out[i].Subject.(*decisionengine.Subject)
+		if sub.Series.ID != w {
+			t.Errorf("out[%d] series.ID = %d, want %d", i, sub.Series.ID, w)
+		}
+	}
+}
+
+func TestPrioritizeDecisions_NilSeriesAppendedAtEndInInputOrder(t *testing.T) {
+	t.Parallel()
+	c := decisionengine.NewDecisionComparer(nil, nil, nil)
+
+	sub1 := minimalSubject(quality.SDTV.ID, 500, indexers.DownloadProtocolUsenet)
+	sub1.Series = nil
+	sub1.Release.(*parser.ReleaseInfo).Title = "nil-1"
+
+	keyed := makeCmpDecision(withSeriesID(minimalSubject(quality.SDTV.ID, 500, indexers.DownloadProtocolUsenet), 9))
+
+	sub2 := minimalSubject(quality.SDTV.ID, 500, indexers.DownloadProtocolUsenet)
+	sub2.Series = nil
+	sub2.Release.(*parser.ReleaseInfo).Title = "nil-2"
+
+	nilA := decisionengine.Decision{Subject: sub1}
+	nilB := decisionengine.Decision{Subject: sub2}
+
+	out := c.PrioritizeDecisions([]decisionengine.Decision{nilA, keyed, nilB})
+	if len(out) != 3 {
+		t.Fatalf("len = %d, want 3", len(out))
+	}
+	// Keyed comes first (Series group), then nil-Series in input order.
+	if sub, _ := out[0].Subject.(*decisionengine.Subject); sub.Series == nil || sub.Series.ID != 9 {
+		t.Errorf("out[0] should be keyed (Series.ID=9)")
+	}
+	if sub, _ := out[1].Subject.(*decisionengine.Subject); sub.Series != nil || sub.Release.(*parser.ReleaseInfo).Title != "nil-1" {
+		t.Errorf("out[1] should be nil-1, got %+v", sub.Release)
+	}
+	if sub, _ := out[2].Subject.(*decisionengine.Subject); sub.Series != nil || sub.Release.(*parser.ReleaseInfo).Title != "nil-2" {
+		t.Errorf("out[2] should be nil-2, got %+v", sub.Release)
+	}
+}
+
+func TestPrioritizeDecisions_DoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+	c := decisionengine.NewDecisionComparer(nil, nil, nil)
+
+	d1 := makeCmpDecision(withSeriesID(minimalSubject(quality.SDTV.ID, 500, indexers.DownloadProtocolUsenet), 1))
+	d2 := makeCmpDecision(withSeriesID(minimalSubject(quality.HDTV720p.ID, 500, indexers.DownloadProtocolUsenet), 1))
+	in := []decisionengine.Decision{d1, d2}
+	inCopy := append([]decisionengine.Decision(nil), in...)
+	_ = c.PrioritizeDecisions(in)
+	for i := range in {
+		if subjectQualityID(in[i]) != subjectQualityID(inCopy[i]) {
+			t.Errorf("input mutated at index %d", i)
+		}
+	}
+}
+
 // === helpers ===
 
 func subjectQualityID(d decisionengine.Decision) int {

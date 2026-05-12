@@ -28,11 +28,25 @@ type ClientLister interface {
 	ListByProtocol(ctx context.Context, protocol indexers.DownloadProtocol) ([]downloadclients.Provider, error)
 }
 
+// DecisionPrioritizer is the narrow surface
+// [ProcessDownloadDecisions] consumes for the per-batch ordering
+// step. Mirrors C# `IPrioritizeDownloadDecision.PrioritizeDecisions`
+// at `DownloadDecisionPriorizationService.cs:8-11`. Production binds
+// `*decisionengine.DecisionComparer` via Go's structural typing.
+//
+// Implementations MUST NOT mutate the input slice; ProcessDecisions
+// expects a fresh ordered copy back so the input can be safely
+// retained for diagnostics / error paths.
+type DecisionPrioritizer interface {
+	PrioritizeDecisions(decisions []decisionengine.Decision) []decisionengine.Decision
+}
+
 // ProcessDownloadDecisions is the per-batch grab orchestrator.
 // Ports C# `ProcessDownloadDecisions` at
 // `src/NzbDrone.Core/Download/ProcessDownloadDecisions.cs:14-227`,
-// minus the PendingReleaseService persistence + the
-// PrioritizeDownloadDecision sort.
+// minus the PendingReleaseService persistence. Slice 4.BP (C-cleanup
+// [C8]) wires the [DecisionPrioritizer] dependency that ports the
+// C# `IPrioritizeDownloadDecision` sort.
 //
 // Per-decision processing (line-aligned with C# `:51-117`):
 //
@@ -49,24 +63,28 @@ type ClientLister interface {
 //     Pending + trip the protocol short-circuit; on any other
 //     error → Skipped (logged + dropped).
 type ProcessDownloadDecisions struct {
-	clients ClientLister
-	log     *slog.Logger
+	clients     ClientLister
+	prioritizer DecisionPrioritizer
+	log         *slog.Logger
 }
 
-// NewProcessDownloadDecisions binds the dependency. clients is
-// REQUIRED.
-func NewProcessDownloadDecisions(clients ClientLister, log *slog.Logger) (*ProcessDownloadDecisions, error) {
+// NewProcessDownloadDecisions binds the dependencies. clients is
+// REQUIRED; prioritizer is OPTIONAL — when nil, ProcessDecisions
+// uses the input order as-is, matching the pre-slice-4.BP behavior.
+// Production wiring supplies *decisionengine.DecisionComparer.
+func NewProcessDownloadDecisions(clients ClientLister, prioritizer DecisionPrioritizer, log *slog.Logger) (*ProcessDownloadDecisions, error) {
 	if clients == nil {
 		return nil, errors.New("download: NewProcessDownloadDecisions: nil ClientLister")
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	return &ProcessDownloadDecisions{clients: clients, log: log}, nil
+	return &ProcessDownloadDecisions{clients: clients, prioritizer: prioritizer, log: log}, nil
 }
 
 // ProcessDecisions iterates approved + temporarily-rejected
-// decisions in input order, classifying each into Grabbed/Pending/
+// decisions in priority order (per the wired [DecisionPrioritizer];
+// input order if none), classifying each into Grabbed/Pending/
 // Rejected. Decisions whose Rejections list contains at least one
 // Permanent rejection drop into Rejected without a grab attempt.
 //
@@ -79,6 +97,16 @@ func (p *ProcessDownloadDecisions) ProcessDecisions(ctx context.Context, decisio
 		usenetFailed  bool
 		torrentFailed bool
 	)
+
+	// Slice 4.BP (C-cleanup [C8]): apply the prioritization sort
+	// before iteration so higher-ranked candidates for the same
+	// series are tried first — the dedup gate at bucket 3 then
+	// drops the lower-ranked siblings instead of arbitrarily
+	// keeping the input-order first one. Mirrors C# `ProcessDecisions`
+	// at `:38-39` which feeds prioritized decisions into the loop.
+	if p.prioritizer != nil {
+		decisions = p.prioritizer.PrioritizeDecisions(decisions)
+	}
 
 	for i := range decisions {
 		decision := decisions[i]

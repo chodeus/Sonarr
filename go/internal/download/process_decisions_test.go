@@ -90,7 +90,7 @@ func (s *stubClientLister) ListByProtocol(_ context.Context, protocol indexers.D
 
 func newPDD(t *testing.T, lister *stubClientLister) *download.ProcessDownloadDecisions {
 	t.Helper()
-	p, err := download.NewProcessDownloadDecisions(lister, slog.Default())
+	p, err := download.NewProcessDownloadDecisions(lister, nil, slog.Default())
 	if err != nil {
 		t.Fatalf("NewProcessDownloadDecisions: %v", err)
 	}
@@ -127,10 +127,64 @@ func mkTemporarilyRejected(title string, protocol indexers.DownloadProtocol, epi
 
 func TestNewProcessDownloadDecisionsRejectsNilLister(t *testing.T) {
 	t.Parallel()
-	_, err := download.NewProcessDownloadDecisions(nil, slog.Default())
+	_, err := download.NewProcessDownloadDecisions(nil, nil, slog.Default())
 	if err == nil {
 		t.Fatal("nil ClientLister accepted; want error")
 	}
+}
+
+// TestProcessDecisions_PrioritizerInvokedFirst — slice 4.BP (C8):
+// when a prioritizer is wired, ProcessDecisions iterates the
+// prioritizer's returned order. Provide a stub that reverses the
+// input; the dedup-by-episode bucket then keeps the LAST input
+// decision rather than the first, proving the sort ran.
+func TestProcessDecisions_PrioritizerInvokedFirst(t *testing.T) {
+	t.Parallel()
+
+	first := mkDecision("first", indexers.DownloadProtocolUsenet, 100)
+	second := mkDecision("second", indexers.DownloadProtocolUsenet, 100)
+
+	lister := &stubClientLister{
+		usenet: []downloadclients.Provider{&stubProvider{name: "sab", protocol: indexers.DownloadProtocolUsenet, downloadID: "nzo_x"}},
+	}
+
+	called := 0
+	prio := &stubPrioritizer{fn: func(in []decisionengine.Decision) []decisionengine.Decision {
+		called++
+		// Reverse — second now leads.
+		out := make([]decisionengine.Decision, len(in))
+		for i, d := range in {
+			out[len(in)-1-i] = d
+		}
+		return out
+	}}
+	p, err := download.NewProcessDownloadDecisions(lister, prio, slog.Default())
+	if err != nil {
+		t.Fatalf("NewProcessDownloadDecisions: %v", err)
+	}
+
+	got := p.ProcessDecisions(t.Context(), []decisionengine.Decision{first, second})
+	if called != 1 {
+		t.Errorf("PrioritizeDecisions called %d times, want 1", called)
+	}
+	if len(got.Grabbed) != 1 {
+		t.Fatalf("Grabbed = %d, want 1", len(got.Grabbed))
+	}
+	sub, _ := got.Grabbed[0].Subject.(*decisionengine.Subject)
+	rel, _ := sub.Release.(*parser.ReleaseInfo)
+	if rel.Title != "second" {
+		t.Errorf("Grabbed[0].Title = %q, want %q (reverse-order prioritizer should put 'second' first)", rel.Title, "second")
+	}
+}
+
+// stubPrioritizer satisfies [download.DecisionPrioritizer]. The fn
+// callback lets each test pin a per-call permutation.
+type stubPrioritizer struct {
+	fn func([]decisionengine.Decision) []decisionengine.Decision
+}
+
+func (s *stubPrioritizer) PrioritizeDecisions(in []decisionengine.Decision) []decisionengine.Decision {
+	return s.fn(in)
 }
 
 func TestProcessDecisions_EmptyInputReturnsEmpty(t *testing.T) {

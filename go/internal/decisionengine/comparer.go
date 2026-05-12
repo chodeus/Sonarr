@@ -124,6 +124,72 @@ func (c *DecisionComparer) Sort(decisions []Decision) {
 	})
 }
 
+// PrioritizeDecisions ports
+// `src/NzbDrone.Core/DecisionEngine/DownloadDecisionPriorizationService.cs:24-34`.
+// Returns a NEW slice in priority order:
+//
+//  1. Decisions whose Subject.Series is non-nil are grouped by
+//     Series.ID. Group order follows first-seen insertion order in
+//     the input — matches the C# LINQ `GroupBy` shape which yields
+//     groups in source-position order. Within each group, decisions
+//     are sorted best-first using [DecisionComparer.Compare].
+//  2. Decisions whose Subject.Series is nil are appended at the end,
+//     preserving input order. Mirrors the C# `.Union(decisions.Where(
+//     c => c.RemoteEpisode.Series == null))` at `:32`.
+//
+// The returned slice is independent of the input; the input is not
+// mutated. Decisions whose Subject is a non-*Subject value or whose
+// *Subject is nil are treated as having a nil Series (appended at
+// the end) — matches the C# nil-Series predicate which a malformed
+// RemoteEpisode would also satisfy.
+//
+// Slice 4.BP (C-cleanup [C8]).
+func (c *DecisionComparer) PrioritizeDecisions(decisions []Decision) []Decision {
+	if len(decisions) == 0 {
+		return nil
+	}
+
+	// First pass: bucket per Series.ID, preserve first-seen group order
+	// for the seriesOrder slice. nil-Series decisions accumulate in a
+	// parallel tail slice.
+	type group struct {
+		seriesID int
+		items    []Decision
+	}
+	groups := make(map[int]*group)
+	var order []int
+	var tail []Decision
+
+	for _, d := range decisions {
+		s := subjectOf(d)
+		if s == nil || s.Series == nil {
+			tail = append(tail, d)
+			continue
+		}
+		id := s.Series.ID
+		g, ok := groups[id]
+		if !ok {
+			g = &group{seriesID: id}
+			groups[id] = g
+			order = append(order, id)
+		}
+		g.items = append(g.items, d)
+	}
+
+	out := make([]Decision, 0, len(decisions))
+	for _, id := range order {
+		g := groups[id]
+		if len(g.items) > 1 {
+			sort.SliceStable(g.items, func(i, j int) bool {
+				return c.Compare(g.items[i], g.items[j]) > 0
+			})
+		}
+		out = append(out, g.items...)
+	}
+	out = append(out, tail...)
+	return out
+}
+
 // === stage helpers ===
 
 // subjectOf extracts the *Subject from a Decision, returning nil for
