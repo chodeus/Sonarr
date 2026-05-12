@@ -532,8 +532,10 @@ func (s *Service) dispatchSearch(ctx context.Context, criteria criteriaWithBase)
 	// Slice 4.BV (C-cleanup [C13]): wrap raw reports → Decisions.
 	// The C# equivalent at `ReleaseSearchService.cs:549` is
 	// `_makeDownloadDecision.GetSearchDecision(reports, criteriaBase).ToList()`.
-	criteriaForDecisions := criteriaFromBase(base)
-	return s.decisionMaker.GetSearchDecision(ctx, releases, criteriaForDecisions), nil
+	// Slice 4.BW (C-cleanup [C14]) merged CriteriaBase into
+	// decisionengine.SearchCriteria; pass `&base` directly now that
+	// the two are the same underlying type.
+	return s.decisionMaker.GetSearchDecision(ctx, releases, &base), nil
 }
 
 // criteriaWithBase is the small "I'm a typed criteria value with a

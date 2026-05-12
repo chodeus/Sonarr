@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"sonarr.tv/sonarr/internal/decisionengine"
-	"sonarr.tv/sonarr/internal/episodes"
 )
 
 // DecisionMaker is the narrow surface [Service.dispatchSearch]
@@ -18,7 +17,10 @@ import (
 // can inject a stub that returns decisions wrapping the supplied
 // reports without exercising the full spec pipeline.
 //
-// Slice 4.BV (C-cleanup [C13]).
+// Slice 4.BV (C-cleanup [C13]) introduced the interface; slice 4.BW
+// (C-cleanup [C14]) retired the criteriaFromBase projection helper —
+// post-merge [CriteriaBase] IS [decisionengine.SearchCriteria] (type
+// alias), so dispatchSearch passes `&base` directly.
 type DecisionMaker interface {
 	GetSearchDecision(ctx context.Context, reports []any, criteria *decisionengine.SearchCriteria) []decisionengine.Decision
 }
@@ -38,24 +40,4 @@ func (passthroughDecisionMaker) GetSearchDecision(_ context.Context, reports []a
 		out = append(out, decisionengine.NewDecision(r))
 	}
 	return out
-}
-
-// criteriaFromBase projects a CriteriaBase into the
-// [decisionengine.SearchCriteria] shape the DecisionMaker consumes.
-// Mirrors the C# pattern where the same `SearchCriteriaBase` value
-// is passed straight through to `GetSearchDecision`. The Go port has
-// a separate decisionengine.SearchCriteria type (with a narrower set
-// of fields — the C14 sub-arc will unify them); for now the
-// projection picks the four fields the spec engine actually reads:
-// Series, Episodes, UserInvokedSearch, InteractiveSearch.
-func criteriaFromBase(base CriteriaBase) *decisionengine.SearchCriteria {
-	if base.Series == nil {
-		return nil
-	}
-	return &decisionengine.SearchCriteria{
-		Series:            base.Series,
-		Episodes:          append([]episodes.Episode(nil), base.Episodes...),
-		UserInvokedSearch: base.UserInvokedSearch,
-		InteractiveSearch: base.InteractiveSearch,
-	}
 }
