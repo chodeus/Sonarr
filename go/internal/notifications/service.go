@@ -9,6 +9,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/messaging"
@@ -82,6 +83,10 @@ func NewService(factory *Factory, recorder serviceRecorder, logger *slog.Logger)
 // Mapping table (C# event → Go event):
 //
 //   - EpisodeGrabbedEvent → decisionengine.EpisodeGrabbedEvent
+//   - EpisodeImportedEvent → episodeimport.EpisodeImportedEvent
+//     (slice 4.BU / C-cleanup [C6]). Fires OnDownload per imported
+//     file. OnImportComplete batch dispatch waits on the
+//     DownloadCompletedEvent upstream port.
 //   - SeriesAddCompletedEvent → series.SeriesAddedEvent
 //   - SeriesDeletedEvent → series.SeriesDeletedEvent
 //   - EpisodeFileDeletedEvent → episodefiles.EpisodeFileDeletedEvent
@@ -90,22 +95,29 @@ func NewService(factory *Factory, recorder serviceRecorder, logger *slog.Logger)
 //   - HealthCheckCompleteEvent (async) → healthcheck.CompleteEvent
 //     (drives ProcessQueue drain)
 //
-// Deferred until upstream events port:
+// Deferred until upstream events port (slice 4.BU C-cleanup [C6]
+// closure note — the Go tree has no equivalent event type yet, so
+// these wires are tracked here for re-evaluation when the upstream
+// event lands):
 //
-//   - EpisodeImportedEvent / DownloadCompletedEvent /
-//     UntrackedDownloadCompletedEvent — OnDownload + OnImportComplete
-//     dispatch. Tracked as follow-up.
-//   - UpdateInstalledEvent — OnApplicationUpdate dispatch.
+//   - DownloadCompletedEvent — OnImportComplete batch dispatch.
+//     Needs trackeddownloads.TrackedDownload.RemoteEpisode rehydration
+//     which is gated on the C12 customformats port.
+//   - UntrackedDownloadCompletedEvent — OnImportComplete dispatch
+//     for the manual-import path. Same C12 gate.
+//   - UpdateInstalledEvent — OnApplicationUpdate dispatch. Waits on
+//     the update.Service port (no Go-tree equivalent yet).
 //   - ManualInteractionRequiredEvent — OnManualInteractionRequired
-//     dispatch.
+//     dispatch. Waits on the trackeddownloads manual-interaction
+//     emit point.
 //   - SeriesRenamedEvent (batch) — OnRename dispatch. The per-file
-//     episodefiles.EpisodeFileRenamedEvent exists but the C# event
-//     is the batch-summary shape; the Go port defers until the
-//     batch event lands.
+//     episodefiles.EpisodeFileRenamedEvent exists; the C# event is
+//     the batch-summary shape — defers until the batch event lands.
 //   - DeleteCompletedEvent / DownloadsProcessedEvent /
 //     RenameCompletedEvent — drain ProcessQueue.
 //     HealthCheckCompleteEvent already covers the
-//     ProcessQueue-drain pattern.
+//     ProcessQueue-drain pattern; the additional drains land when
+//     their upstream events port.
 //
 // Subscribe is idempotent only insofar as messaging.Subscribe is —
 // calling it twice on the same bus produces two subscriptions.
@@ -114,6 +126,7 @@ func (s *Service) Subscribe(bus *messaging.Bus) {
 		return
 	}
 	messaging.Subscribe(bus, "notifications.HandleEpisodeGrabbedEvent", s.HandleEpisodeGrabbedEvent)
+	messaging.Subscribe(bus, "notifications.HandleEpisodeImportedEvent", s.HandleEpisodeImportedEvent)
 	messaging.Subscribe(bus, "notifications.HandleSeriesAddedEvent", s.HandleSeriesAddedEvent)
 	messaging.Subscribe(bus, "notifications.HandleSeriesDeletedEvent", s.HandleSeriesDeletedEvent)
 	messaging.Subscribe(bus, "notifications.HandleEpisodeFileDeletedEvent", s.HandleEpisodeFileDeletedEvent)
@@ -154,6 +167,105 @@ func (s *Service) HandleEpisodeGrabbedEvent(ctx context.Context, ev decisionengi
 		return p.OnGrab(ctx, msg)
 	})
 	return nil
+}
+
+// HandleEpisodeImportedEvent ports the C# `Handle(EpisodeImportedEvent)`
+// at `NotificationService.cs:163-202`. Builds a [DownloadMessage] from
+// the imported file + LocalEpisode + DownloadClientItem and fans out
+// to every OnDownloadEnabled provider, gated by ShouldHandleSeries +
+// the per-provider OnUpgrade flag.
+//
+// Bail-outs:
+//
+//   - NewDownload == false (matches C# `:165-168`). Manual-rescan
+//     re-emissions don't fire OnDownload.
+//   - nil LocalEpisode / nil LocalEpisode.Series (defensive).
+//
+// OnUpgrade gate (C# `:189`): when OldFiles is non-empty AND the
+// provider's OnUpgrade flag is false, suppress. Empty OldFiles AND
+// any OnUpgrade value → fire. The C# `OnUpgrade` is a typed bool
+// (defaults false on row creation); the Go port's *bool nil is
+// treated as false to match.
+//
+// Slice 4.BU (C-cleanup [C6]).
+func (s *Service) HandleEpisodeImportedEvent(ctx context.Context, ev episodeimport.EpisodeImportedEvent) error {
+	if !ev.NewDownload {
+		return nil
+	}
+	if ev.LocalEpisode == nil || ev.LocalEpisode.Series == nil {
+		return nil
+	}
+
+	providers, err := s.factory.OnDownloadEnabled(ctx, true)
+	if err != nil {
+		s.logger.Warn("notifications: load OnDownload providers", slog.Any("err", err))
+		return nil
+	}
+
+	le := ev.LocalEpisode
+	episodesCopy := materialiseEpisodes(le.Episodes)
+	qual := le.Quality
+	msg := DownloadMessage{
+		Message:     getMessage(le.Series, episodesCopy, &qual),
+		Series:      le.Series,
+		EpisodeInfo: le,
+		EpisodeFile: ev.EpisodeFile,
+		OldFiles:    materialiseDeletedFiles(ev.OldFiles),
+		SourcePath:  le.Path,
+		Release:     le.Release,
+	}
+	if ev.DownloadClientItem != nil {
+		msg.DownloadClientInfo = ev.DownloadClientItem.DownloadClientInfo
+		msg.DownloadID = ev.DownloadClientItem.DownloadID
+	}
+
+	upgrade := len(msg.OldFiles) > 0
+	tags := le.Series.Tags
+	for _, p := range providers {
+		def := p.Definition()
+		if def == nil {
+			continue
+		}
+		if !ShouldHandleSeries(def.Tags, tags) {
+			s.logger.Debug("notifications: tags mismatch",
+				slog.Int("provider_id", def.ID),
+				slog.String("provider_name", def.Name),
+				slog.String("hook", "OnDownload"))
+			continue
+		}
+		// OnUpgrade gate. C# `:189`: when OldFiles is non-empty, only
+		// fire if the provider's OnUpgrade is true. Empty OldFiles →
+		// always fire.
+		if upgrade {
+			if def.OnUpgrade == nil || !*def.OnUpgrade {
+				s.logger.Debug("notifications: OnDownload suppressed by OnUpgrade=false on upgrade path",
+					slog.Int("provider_id", def.ID))
+				continue
+			}
+		}
+		if err := p.OnDownload(ctx, msg); err != nil {
+			s.recordFailure(ctx, def, "OnDownload", err)
+			continue
+		}
+		s.recordSuccess(ctx, def)
+	}
+	return nil
+}
+
+// materialiseDeletedFiles converts the event's value-slice into the
+// pointer-slice the DownloadMessage carries. Returns nil for empty
+// input so the upgrade gate at the call site works on len() rather
+// than a defensive nil-check.
+func materialiseDeletedFiles(in []episodefiles.DeletedFile) []*episodefiles.DeletedFile {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*episodefiles.DeletedFile, len(in))
+	for i := range in {
+		df := in[i]
+		out[i] = &df
+	}
+	return out
 }
 
 // HandleSeriesAddedEvent ports the C# Handle(SeriesAddCompletedEvent)

@@ -11,10 +11,12 @@ import (
 
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/notifications"
 	"sonarr.tv/sonarr/internal/parser"
+	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -406,6 +408,125 @@ func TestHandleEpisodeFileDeletedEvent_FiresWithLinkedEpisodes(t *testing.T) {
 	})
 	if hooks[1].episodeDelCalls != 1 {
 		t.Errorf("OnEpisodeFileDelete: got %d want 1", hooks[1].episodeDelCalls)
+	}
+}
+
+// boolPtr returns a *bool pointing at v. Used by the OnUpgrade gate
+// tests to disambiguate between nil-OnUpgrade (treated as false) and
+// explicit-false vs explicit-true.
+func boolPtr(v bool) *bool { return &v }
+
+// TestHandleEpisodeImportedEvent_FiresOnDownload — slice 4.BU (C6):
+// successful import emits OnDownload to every OnDownloadEnabled
+// provider gated by ShouldHandleSeries.
+func TestHandleEpisodeImportedEvent_FiresOnDownload(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Name: "dl-A", Implementation: "Stub", ConfigContract: stubContract(), OnDownload: true},
+		{ID: 2, Name: "dl-B", Implementation: "Stub", ConfigContract: stubContract(), OnDownload: true},
+		{ID: 3, Name: "skip", Implementation: "Stub", ConfigContract: stubContract(), OnGrab: true}, // OnDownload=false
+	}
+	svc, hooks, rec := buildService(t, rows, nil)
+	ev := episodeimport.EpisodeImportedEvent{
+		NewDownload: true,
+		LocalEpisode: &episodeimport.LocalEpisode{
+			Series:   &series.Series{Title: "Show"},
+			Episodes: []episodes.Episode{{SeasonNumber: 1, EpisodeNumber: 1, Title: "Pilot"}},
+			Path:     "/data/incoming/foo.mkv",
+			Quality:  quality.Model{Quality: quality.SDTV, Revision: quality.NewRevision()},
+		},
+		EpisodeFile: &episodefiles.File{},
+	}
+	if err := svc.HandleEpisodeImportedEvent(t.Context(), ev); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if hooks[1].downloadCalls != 1 || hooks[2].downloadCalls != 1 {
+		t.Errorf("OnDownload: A=%d B=%d, want 1 each", hooks[1].downloadCalls, hooks[2].downloadCalls)
+	}
+	if _, ok := hooks[3]; ok {
+		t.Errorf("Skip provider should not have been constructed")
+	}
+	if len(rec.successes) != 2 {
+		t.Errorf("recorder successes = %d, want 2", len(rec.successes))
+	}
+}
+
+// TestHandleEpisodeImportedEvent_NewDownloadFalseSuppresses — slice
+// 4.BU (C6): re-emissions from rescans (NewDownload=false) don't fire
+// OnDownload. Mirrors C# `NotificationService.cs:165-168`.
+func TestHandleEpisodeImportedEvent_NewDownloadFalseSuppresses(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnDownload: true},
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	ev := episodeimport.EpisodeImportedEvent{
+		NewDownload: false,
+		LocalEpisode: &episodeimport.LocalEpisode{
+			Series: &series.Series{Title: "X"},
+		},
+	}
+	_ = svc.HandleEpisodeImportedEvent(t.Context(), ev)
+	if h, ok := hooks[1]; ok && h.downloadCalls != 0 {
+		t.Errorf("expected zero OnDownload calls with NewDownload=false, got %d", h.downloadCalls)
+	}
+}
+
+// TestHandleEpisodeImportedEvent_OnUpgradeGate — slice 4.BU (C6): when
+// OldFiles is non-empty (upgrade path), only providers with
+// OnUpgrade=true fire. Mirrors C# `:189`.
+func TestHandleEpisodeImportedEvent_OnUpgradeGate(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Name: "upgrade-ok", Implementation: "Stub", ConfigContract: stubContract(), OnDownload: true, OnUpgrade: boolPtr(true)},
+		{ID: 2, Name: "no-upgrade", Implementation: "Stub", ConfigContract: stubContract(), OnDownload: true, OnUpgrade: boolPtr(false)},
+		{ID: 3, Name: "nil-upgrade", Implementation: "Stub", ConfigContract: stubContract(), OnDownload: true}, // nil → treated as false
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	ev := episodeimport.EpisodeImportedEvent{
+		NewDownload: true,
+		LocalEpisode: &episodeimport.LocalEpisode{
+			Series:   &series.Series{Title: "Show"},
+			Episodes: []episodes.Episode{{}},
+		},
+		// Non-empty OldFiles → upgrade path.
+		OldFiles: []episodefiles.DeletedFile{{}, {}},
+	}
+	if err := svc.HandleEpisodeImportedEvent(t.Context(), ev); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if hooks[1].downloadCalls != 1 {
+		t.Errorf("OnUpgrade=true provider should fire on upgrade path, got %d", hooks[1].downloadCalls)
+	}
+	if hooks[2].downloadCalls != 0 {
+		t.Errorf("OnUpgrade=false provider should suppress on upgrade path, got %d", hooks[2].downloadCalls)
+	}
+	if hooks[3].downloadCalls != 0 {
+		t.Errorf("OnUpgrade=nil provider should suppress on upgrade path (nil→false), got %d", hooks[3].downloadCalls)
+	}
+}
+
+// TestHandleEpisodeImportedEvent_FiresOnFreshDownloadEvenWhenOnUpgradeFalse —
+// slice 4.BU (C6): empty OldFiles → every OnDownloadEnabled fires
+// regardless of OnUpgrade value (the gate only applies on upgrades).
+func TestHandleEpisodeImportedEvent_FiresOnFreshDownloadEvenWhenOnUpgradeFalse(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnDownload: true, OnUpgrade: boolPtr(false)},
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	ev := episodeimport.EpisodeImportedEvent{
+		NewDownload: true,
+		LocalEpisode: &episodeimport.LocalEpisode{
+			Series:   &series.Series{Title: "Show"},
+			Episodes: []episodes.Episode{{}},
+		},
+	}
+	if err := svc.HandleEpisodeImportedEvent(t.Context(), ev); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if hooks[1].downloadCalls != 1 {
+		t.Errorf("expected fresh-download to fire regardless of OnUpgrade, got %d", hooks[1].downloadCalls)
 	}
 }
 
