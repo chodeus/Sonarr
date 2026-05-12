@@ -156,13 +156,6 @@ func (p *Proxy) addTorrent(ctx context.Context, args map[string]any, settings Se
 	return "", ErrNoHashReturned
 }
 
-// configResponse is the subset of `session-get` we read for the
-// version-floor self-check. Mirrors C# `TransmissionConfig.cs:1-21`.
-type configResponse struct {
-	Version    string `json:"version"`
-	RPCVersion string `json:"rpc-version"`
-}
-
 // GetClientVersion fires `session-get` and returns the Transmission
 // version string (e.g. "3.00 (bb6b5a062e)"). Mirrors C# `:139-149`.
 //
@@ -170,15 +163,79 @@ type configResponse struct {
 // caching to the caller — the Test path fires this exactly once
 // per Test() call so caching here would be premature.
 func (p *Proxy) GetClientVersion(ctx context.Context, settings Settings) (string, error) {
-	resp, err := p.processRequest(ctx, "session-get", nil, settings)
+	cfg, err := p.GetConfig(ctx, settings)
 	if err != nil {
 		return "", err
 	}
-	var cfg configResponse
-	if err := json.Unmarshal(resp.Arguments, &cfg); err != nil {
-		return "", fmt.Errorf("transmission: parse session-get response: %w", err)
-	}
 	return cfg.Version, nil
+}
+
+// GetConfig fires `session-get` and returns the full
+// [TransmissionConfig] payload. Mirrors C# `:151-157`. Slice 4.BT
+// (C-cleanup sub-arc C2b).
+func (p *Proxy) GetConfig(ctx context.Context, settings Settings) (*TransmissionConfig, error) {
+	resp, err := p.processRequest(ctx, "session-get", nil, settings)
+	if err != nil {
+		return nil, err
+	}
+	var cfg TransmissionConfig
+	if err := json.Unmarshal(resp.Arguments, &cfg); err != nil {
+		return nil, fmt.Errorf("transmission: parse session-get response: %w", err)
+	}
+	return &cfg, nil
+}
+
+// GetTorrents fires `torrent-get` with the canonical field-list the
+// C# tree requests at `TransmissionProxy.cs:203-243`. Pass a nil
+// `hashes` slice to fetch every torrent; pass a non-empty slice to
+// restrict to those hashes. Slice 4.BT (C-cleanup sub-arc C2b).
+func (p *Proxy) GetTorrents(ctx context.Context, hashes []string, settings Settings) ([]TransmissionTorrent, error) {
+	fields := []string{
+		"id", "hashString", "name", "downloadDir", "totalSize",
+		"leftUntilDone", "isFinished", "eta", "status",
+		"secondsDownloading", "secondsSeeding", "errorString",
+		"uploadedEver", "downloadedEver",
+		"seedRatioLimit", "seedRatioMode",
+		"seedIdleLimit", "seedIdleMode",
+		"fileCount", "file-count", "labels",
+	}
+	args := map[string]any{"fields": fields}
+	if len(hashes) > 0 {
+		args["ids"] = hashes
+	}
+	resp, err := p.processRequest(ctx, "torrent-get", args, settings)
+	if err != nil {
+		return nil, err
+	}
+	var payload torrentGetResponse
+	if err := json.Unmarshal(resp.Arguments, &payload); err != nil {
+		return nil, fmt.Errorf("transmission: parse torrent-get response: %w", err)
+	}
+	return payload.Torrents, nil
+}
+
+// RemoveTorrent fires `torrent-remove`. The deleteData flag controls
+// whether Transmission also deletes the on-disk payload. Mirrors C#
+// `:159-168`. Slice 4.BT.
+func (p *Proxy) RemoveTorrent(ctx context.Context, hash string, deleteData bool, settings Settings) error {
+	args := map[string]any{
+		"ids":               []string{hash},
+		"delete-local-data": deleteData,
+	}
+	_, err := p.processRequest(ctx, "torrent-remove", args, settings)
+	return err
+}
+
+// SetTorrentLabels fires `torrent-set` with the per-torrent labels
+// array. Mirrors C# `:180-189`. Used by [Transmission.MarkItemAsImported]
+// to swap in the post-import category. Slice 4.BT.
+func (p *Proxy) SetTorrentLabels(ctx context.Context, hash string, labels []string, settings Settings) error {
+	args := map[string]any{
+		"ids":    []string{hash},
+		"labels": labels,
+	}
+	_, err := p.processRequest(ctx, "torrent-set", args, settings)
+	return err
 }
 
 // SetTorrentSeedingConfiguration ports C# `:99-130`. No-op when no
