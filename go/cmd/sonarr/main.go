@@ -80,6 +80,9 @@ import (
 	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/mediainfoupdater"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/metadata"
+	"sonarr.tv/sonarr/internal/metadatafiles"
+	"sonarr.tv/sonarr/internal/metadataservice"
 	"sonarr.tv/sonarr/internal/metadatasource"
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/notifications"
@@ -97,6 +100,17 @@ import (
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 	"sonarr.tv/sonarr/internal/upgrademediafiles"
 	"sonarr.tv/sonarr/internal/videofileinforeader"
+
+	// Slice 4.BK (sub-arc W6c of queue [W6]): blank-import the 4
+	// concrete metadata-writer packages so their init() blocks
+	// register the (Implementation, ConfigContract) constructors
+	// with metadata.Default at startup. Pattern-mirror of the
+	// notifications + importlists blank-import pattern (when those
+	// land — currently still TODO per slice 4.AY/4.AZ).
+	_ "sonarr.tv/sonarr/internal/metadata/plex"
+	_ "sonarr.tv/sonarr/internal/metadata/roksbox"
+	_ "sonarr.tv/sonarr/internal/metadata/wdtv"
+	_ "sonarr.tv/sonarr/internal/metadata/xbmc"
 )
 
 func main() {
@@ -2054,6 +2068,73 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// Slice 4.Q (queue [9]): wire the RssSync handler. Below in
 	// handlers.RegisterAll the indexerSearchSvc satisfies the narrow
 	// handlers.RssFetcher interface via Go's structural typing.
+
+	// Slice 4.BK (sub-arc W6c of queue [W6] — CLOSES [W6]): construct
+	// the metadata-writer orchestrator. The 4 concrete writers
+	// (xbmc/plex/roksbox/wdtv) register themselves with
+	// metadata.Default at init() time via the blank imports near
+	// the top of this file. The metadataWriterFactoryAdapter walks
+	// the persisted Metadata rows + filters by Enable to fan out
+	// across the registered writers.
+	//
+	// Required deps are wired:
+	//   - DiskWriter        ← metadataDiskAdapter over *disk.Provider
+	//                         (WriteAllText is a thin os.WriteFile
+	//                         shim because *disk.Provider doesn't
+	//                         expose a public text-writer today).
+	//   - HTTPDownloader    ← metadataHTTPAdapter over httpclient.Client.
+	//   - MetadataFileStore ← metadataFileStoreAdapter over
+	//                         *metadatafiles.Repo with the new
+	//                         AllBySeriesID query + Upsert
+	//                         insert-or-update fan-out.
+	//   - Attrs             ← metadataAttrsNoop (TODO: real per-file
+	//                         chmod helper).
+	//   - Bin               ← metadataRecycleBinAdapter over
+	//                         *recyclebin.Service.
+	//   - OtherRenamer      ← metadataOtherRenamerNoop (no
+	//                         other-extras subsystem ports yet).
+	//   - Transfer          ← metadataTransferAdapter over
+	//                         *disk.Provider.MoveFile.
+	//   - Seasons           ← metadataSeasonsAdapter (decodes
+	//                         series.Seasons JSON-blob).
+	//   - Writers           ← metadataWriterFactoryAdapter over
+	//                         *metadata.Repo + metadata.Default.
+	//   - Cleaner           ← nil (the C# CleanMetadataService
+	//                         hasn't ported; nil-tolerant per W6a).
+	metadataRepo, err := metadata.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("metadata repo: %w", err)
+	}
+	metadataFilesRepo, err := metadatafiles.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("metadatafiles repo: %w", err)
+	}
+	metadataWriterDeps := metadata.Dependencies{
+		HTTPClient:   httpClient,
+		DiskProvider: diskProv,
+		Logger:       logger,
+	}
+	metadataSvc, err := metadataservice.NewService(metadataservice.Deps{
+		Disk:         newMetadataDiskAdapter(diskProv),
+		HTTP:         newMetadataHTTPAdapter(httpClient),
+		Files:        newMetadataFileStoreAdapter(metadataFilesRepo),
+		Attrs:        metadataAttrsNoop{},
+		Bin:          newMetadataRecycleBinAdapter(recycleBinSvc),
+		OtherRenamer: metadataOtherRenamerNoop{},
+		Transfer:     newMetadataTransferAdapter(diskProv),
+		Seasons:      metadataSeasonsAdapter{},
+		Writers:      newMetadataWriterFactoryAdapter(metadataRepo, metadataWriterDeps),
+		Log:          logger,
+	})
+	if err != nil {
+		return fmt.Errorf("metadataservice: %w", err)
+	}
+	// metadataSvc held here as the orchestrator surface. The Phase-5
+	// ExtraService port + the IHandle event-dispatcher fan-out will
+	// publish to this service when they land; until then the
+	// orchestrator is reachable but no event source drives it. The
+	// blank-ident retains it across the linter check.
+	_ = metadataSvc
 
 	registry := commands.NewRegistry()
 	queue := commands.NewQueue(registry.Properties)
