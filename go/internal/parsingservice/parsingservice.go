@@ -52,6 +52,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/episodes"
@@ -234,16 +235,16 @@ func (noopSceneMappingFinder) GetSceneSeasonNumber(_, _ string) *int { return ni
 
 // SeriesFinder narrows `ISeriesService` for the lookup methods the
 // parsing service reaches for. The C# class at
-// `Parser/ParsingService.cs:43-73, 405-555` calls five `ISeriesService`
-// methods: FindByTitle (1-arg + 2-arg overloads), FindByTvdbId,
-// FindByTvRageId, and FindByImdbId — that's the entire surface needed
-// to resolve a release-title string + ID hints + (optional)
-// SearchCriteria to a [series.Series].
+// `Parser/ParsingService.cs:43-73, 313-555` calls six `ISeriesService`
+// methods: FindByTitle (1-arg + 2-arg overloads), FindByTitleInexact,
+// FindByTvdbId, FindByTvRageId, and FindByImdbId — that's the entire
+// surface needed to resolve a release-title string + ID hints +
+// (optional) SearchCriteria to a [series.Series].
 //
 // Production binds [series.Service] directly via Go's structural typing:
 // every method signature matches exactly. Tests pass a per-method stub.
 //
-// Method semantics — all five return (nil, nil) on no-match (mirrors
+// Method semantics — all six return (nil, nil) on no-match (mirrors
 // C# `null`) and propagate any underlying lookup error:
 //
 //   - FindByTitle takes the RAW (uncleaned) title; the production
@@ -253,12 +254,17 @@ func (noopSceneMappingFinder) GetSceneSeasonNumber(_, _ string) *int { return ni
 //   - FindByTitleAndYear takes a raw title + year; the production
 //     binding cleans the title before the repo lookup. Matches
 //     `SeriesService.cs:158-161`.
+//   - FindByTitleInexact takes the raw title and runs the C#
+//     longest-leftmost substring match at `SeriesService.cs:109-151`.
+//     Used by the 6-arg [Service.ParseSpecialEpisodeTitleByIDs]
+//     overload at C# `ParsingService.cs:337` after the parser-driven
+//     GetSeriesFromTitle misses.
 //   - FindByTvdbID takes the integer TvdbId; matches the C# overload
-//     used at `ParsingService.cs:55,499`.
+//     used at `ParsingService.cs:55,342,499`.
 //   - FindByTvRageID takes the integer TvRageId; matches the C#
-//     overload used at `ParsingService.cs:516`. Slice 4.S added.
+//     overload used at `ParsingService.cs:347,516`. Slice 4.S added.
 //   - FindByImdbID takes the IMDb id string (tt-prefixed); matches the
-//     C# overload used at `ParsingService.cs:533`. Slice 4.S added.
+//     C# overload used at `ParsingService.cs:352,533`. Slice 4.S added.
 //
 // Returns [series.ErrNotFound] (not a sentinel nil) when the row
 // isn't present — both [Service.GetSeriesFromTitle] and
@@ -267,6 +273,7 @@ func (noopSceneMappingFinder) GetSceneSeasonNumber(_, _ string) *int { return ni
 type SeriesFinder interface {
 	FindByTitle(ctx context.Context, title string) (*series.Series, error)
 	FindByTitleAndYear(ctx context.Context, title string, year int) (*series.Series, error)
+	FindByTitleInexact(ctx context.Context, title string) (*series.Series, error)
 	FindByTvdbID(ctx context.Context, tvdbID int) (*series.Series, error)
 	FindByTvRageID(ctx context.Context, tvRageID int) (*series.Series, error)
 	FindByImdbID(ctx context.Context, imdbID string) (*series.Series, error)
@@ -291,6 +298,11 @@ func (noopSeriesFinder) FindByTitle(_ context.Context, _ string) (*series.Series
 
 // FindByTitleAndYear always returns (nil, nil).
 func (noopSeriesFinder) FindByTitleAndYear(_ context.Context, _ string, _ int) (*series.Series, error) {
+	return nil, nil
+}
+
+// FindByTitleInexact always returns (nil, nil).
+func (noopSeriesFinder) FindByTitleInexact(_ context.Context, _ string) (*series.Series, error) {
 	return nil, nil
 }
 
@@ -669,6 +681,117 @@ func (s *Service) ParseSpecialEpisodeTitle(ctx context.Context, parsedEpisodeInf
 		"series", ser.Title, "season", out.SeasonNumber,
 		"episode", episode.EpisodeNumber, "release", releaseTitle)
 	return out, nil
+}
+
+// ParseSpecialEpisodeTitleByIDs ports the 6-arg
+// `IParsingService.ParseSpecialEpisodeTitle` overload at C#
+// `Parser/ParsingService.cs:313-362`. Resolves a series from any
+// combination of (releaseTitle, tvdbID, tvRageID, imdbID, criteria)
+// then delegates to the 3-arg [Service.ParseSpecialEpisodeTitle].
+//
+// Decision tree (line-aligned with C# `:315-361`):
+//
+//  1. If criteria != nil AND its Series matches by any non-zero ID:
+//     - criteria.Series.TvdbID equals a non-zero tvdbID OR
+//     - criteria.Series.TvRageID equals a non-zero tvRageID OR
+//     - imdbID is non-empty AND equals criteria.Series.ImdbID
+//     (StringComparison.Ordinal in C# — direct == in Go),
+//     dispatch to 3-arg ParseSpecialEpisodeTitle with criteria.Series.
+//  2. Otherwise [Service.GetSeriesFromTitle](releaseTitle).
+//  3. If nil, [SeriesFinder.FindByTitleInexact](releaseTitle).
+//  4. If still nil AND tvdbID > 0, FindByTvdbID.
+//  5. If still nil AND tvRageID > 0, FindByTvRageID.
+//  6. If still nil AND imdbID is non-empty, FindByImdbID.
+//  7. If still nil, log Debug and return (nil, nil) — the C# `:357`
+//     "No matching series" arm. Callers (DownloadDecisionMaker /
+//     MatchesFolderSpecification / TrackedDownloadService) treat the
+//     null/nil return as "couldn't resolve; fall through".
+//  8. Otherwise dispatch to 3-arg ParseSpecialEpisodeTitle.
+//
+// Errors from any of the lookup paths propagate wrapped EXCEPT
+// [series.ErrNotFound], which is treated as the C# null arm. The
+// findSeries-style `errors.Is` classification matches
+// [Service.GetSeriesFromTitle].
+//
+// nil receiver / nil prev are tolerated (mirrors C#: `parsedEpisodeInfo`
+// is optional in the C# overload — it is forwarded to the 3-arg
+// overload which only reads it inside the step-1 TheXEM short-circuit
+// guarded by `parsedEpisodeInfo != null`).
+//
+// Slice 4.BO (C-cleanup [C11]).
+func (s *Service) ParseSpecialEpisodeTitleByIDs(
+	ctx context.Context,
+	prev *parser.ParsedEpisodeInfo,
+	releaseTitle string,
+	tvdbID, tvRageID int,
+	imdbID string,
+	criteria *decisionengine.SearchCriteria,
+) (*parser.ParsedEpisodeInfo, error) {
+	if s == nil {
+		return nil, errors.New("parsingservice: ParseSpecialEpisodeTitleByIDs on nil receiver")
+	}
+
+	// Step 1: SearchCriteria short-circuits (C# `:315-330`).
+	if criteria != nil && criteria.Series != nil {
+		cs := criteria.Series
+		switch {
+		case tvdbID != 0 && tvdbID == cs.TvdbID:
+			return s.ParseSpecialEpisodeTitle(ctx, prev, releaseTitle, cs)
+		case tvRageID != 0 && tvRageID == cs.TvRageID:
+			return s.ParseSpecialEpisodeTitle(ctx, prev, releaseTitle, cs)
+		case imdbID != "" && strings.TrimSpace(imdbID) != "" && imdbID == cs.ImdbID:
+			return s.ParseSpecialEpisodeTitle(ctx, prev, releaseTitle, cs)
+		}
+	}
+
+	// Step 2: title-driven resolution (C# `:333`).
+	ser, err := s.GetSeriesFromTitle(ctx, releaseTitle)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 3: inexact title fallback (C# `:335-338`).
+	if ser == nil {
+		ser, err = s.seriesFinder.FindByTitleInexact(ctx, releaseTitle)
+		if err != nil && !errors.Is(err, series.ErrNotFound) {
+			return nil, fmt.Errorf("parsingservice: ParseSpecialEpisodeTitleByIDs: FindByTitleInexact(%q): %w", releaseTitle, err)
+		}
+	}
+
+	// Step 4: TvdbID fallback (C# `:340-343`).
+	if ser == nil && tvdbID > 0 {
+		ser, err = s.seriesFinder.FindByTvdbID(ctx, tvdbID)
+		if err != nil && !errors.Is(err, series.ErrNotFound) {
+			return nil, fmt.Errorf("parsingservice: ParseSpecialEpisodeTitleByIDs: FindByTvdbID(%d): %w", tvdbID, err)
+		}
+	}
+
+	// Step 5: TvRageID fallback (C# `:345-348`).
+	if ser == nil && tvRageID > 0 {
+		ser, err = s.seriesFinder.FindByTvRageID(ctx, tvRageID)
+		if err != nil && !errors.Is(err, series.ErrNotFound) {
+			return nil, fmt.Errorf("parsingservice: ParseSpecialEpisodeTitleByIDs: FindByTvRageID(%d): %w", tvRageID, err)
+		}
+	}
+
+	// Step 6: ImdbID fallback (C# `:350-353`). C# `IsNotNullOrWhiteSpace`
+	// rejects whitespace-only — match with strings.TrimSpace.
+	if ser == nil && imdbID != "" && strings.TrimSpace(imdbID) != "" {
+		ser, err = s.seriesFinder.FindByImdbID(ctx, imdbID)
+		if err != nil && !errors.Is(err, series.ErrNotFound) {
+			return nil, fmt.Errorf("parsingservice: ParseSpecialEpisodeTitleByIDs: FindByImdbID(%q): %w", imdbID, err)
+		}
+	}
+
+	// Step 7: no match (C# `:355-359`).
+	if ser == nil {
+		s.log.Debug("parsingservice: no matching series for special episode",
+			"release", releaseTitle, "tvdbId", tvdbID, "tvRageId", tvRageID, "imdbId", imdbID)
+		return nil, nil
+	}
+
+	// Step 8: delegate to the 3-arg overload (C# `:361`).
+	return s.ParseSpecialEpisodeTitle(ctx, prev, releaseTitle, ser)
 }
 
 // GetEpisodes ports `Parser/ParsingService.cs:247-257` — the public

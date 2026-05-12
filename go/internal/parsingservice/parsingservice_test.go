@@ -492,6 +492,239 @@ func TestParseSpecialEpisodeTitleTitleLookupGetsSeason0Pinned(t *testing.T) {
 	}
 }
 
+// --- ParseSpecialEpisodeTitleByIDs (slice 4.BO / C-cleanup [C11]) --
+
+// makeIDsSvc builds a Service wired with episode + series finder stubs.
+// A no-op SceneMappingFinder is bound (the SearchCriteria + ID-fallback
+// arms exercised here never touch the scene-mapping layer).
+func makeIDsSvc(t *testing.T, ef parsingservice.EpisodeFinder, sf parsingservice.SeriesFinder) *parsingservice.Service {
+	t.Helper()
+	return mkSvcAll(t, ef, &stubInfos{}, stubScene{}, sf)
+}
+
+func TestParseSpecialEpisodeTitleByIDs_NilReceiverErrors(t *testing.T) {
+	t.Parallel()
+	var svc *parsingservice.Service
+	_, err := svc.ParseSpecialEpisodeTitleByIDs(context.Background(), nil, "rt", 0, 0, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "nil receiver") {
+		t.Errorf("got %v, want nil-receiver error", err)
+	}
+}
+
+func TestParseSpecialEpisodeTitleByIDs_SearchCriteriaTvdbHitDelegates(t *testing.T) {
+	t.Parallel()
+	// criteria.Series.TvdbID matches → bypass all lookups + delegate.
+	finder := &stubFinder{
+		titleCallReturns: &episodes.Episode{ID: 1, SeriesID: 99, SeasonNumber: 0, EpisodeNumber: 4, Title: "Bonus"},
+	}
+	sf := &stubSeriesFinder{}
+	svc := makeIDsSvc(t, finder, sf)
+
+	cs := &series.Series{ID: 99, Title: "Catalog Show", TvdbID: 555}
+	crit := &decisionengine.SearchCriteria{Series: cs}
+
+	got, err := svc.ParseSpecialEpisodeTitleByIDs(context.Background(), nil, "rt", 555, 0, "", crit)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("expected non-nil ParsedEpisodeInfo")
+	}
+	if got.SeriesTitle != "Catalog Show" {
+		t.Errorf("SeriesTitle = %q, want catalog match", got.SeriesTitle)
+	}
+	if len(sf.byTitleCalls)+len(sf.byTitleInexactCalls)+len(sf.byTvdbIDCalls)+len(sf.byTvRageIDCalls)+len(sf.byImdbIDCalls) != 0 {
+		t.Errorf("expected zero seriesFinder lookups on short-circuit (got %d / %d / %d / %d / %d)",
+			len(sf.byTitleCalls), len(sf.byTitleInexactCalls), len(sf.byTvdbIDCalls), len(sf.byTvRageIDCalls), len(sf.byImdbIDCalls))
+	}
+}
+
+func TestParseSpecialEpisodeTitleByIDs_SearchCriteriaTvRageHitDelegates(t *testing.T) {
+	t.Parallel()
+	finder := &stubFinder{
+		titleCallReturns: &episodes.Episode{ID: 1, SeriesID: 99, SeasonNumber: 0, EpisodeNumber: 4, Title: "Bonus"},
+	}
+	sf := &stubSeriesFinder{}
+	svc := makeIDsSvc(t, finder, sf)
+
+	cs := &series.Series{ID: 99, Title: "Rage Show", TvRageID: 123}
+	crit := &decisionengine.SearchCriteria{Series: cs}
+
+	got, err := svc.ParseSpecialEpisodeTitleByIDs(context.Background(), nil, "rt", 0, 123, "", crit)
+	if err != nil || got == nil || got.SeriesTitle != "Rage Show" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+}
+
+func TestParseSpecialEpisodeTitleByIDs_SearchCriteriaImdbHitDelegates(t *testing.T) {
+	t.Parallel()
+	finder := &stubFinder{
+		titleCallReturns: &episodes.Episode{ID: 1, SeriesID: 99, SeasonNumber: 0, EpisodeNumber: 4, Title: "Bonus"},
+	}
+	sf := &stubSeriesFinder{}
+	svc := makeIDsSvc(t, finder, sf)
+
+	cs := &series.Series{ID: 99, Title: "Imdb Show", ImdbID: "tt0011"}
+	crit := &decisionengine.SearchCriteria{Series: cs}
+
+	got, err := svc.ParseSpecialEpisodeTitleByIDs(context.Background(), nil, "rt", 0, 0, "tt0011", crit)
+	if err != nil || got == nil || got.SeriesTitle != "Imdb Show" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+}
+
+func TestParseSpecialEpisodeTitleByIDs_SearchCriteriaMismatchFallsThrough(t *testing.T) {
+	t.Parallel()
+	// criteria.Series doesn't match any ID → continue to GetSeriesFromTitle.
+	finder := &stubFinder{}
+	sf := &stubSeriesFinder{}
+	svc := makeIDsSvc(t, finder, sf)
+
+	cs := &series.Series{ID: 99, TvdbID: 7}
+	crit := &decisionengine.SearchCriteria{Series: cs}
+
+	_, err := svc.ParseSpecialEpisodeTitleByIDs(context.Background(), nil, "title.no.parse", 0, 0, "", crit)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	// GetSeriesFromTitle on an unparseable title falls back to FindByTitle.
+	if len(sf.byTitleCalls) == 0 {
+		t.Errorf("expected FindByTitle fall-through on mismatched criteria, got 0 calls")
+	}
+}
+
+func TestParseSpecialEpisodeTitleByIDs_GetSeriesFromTitleHit(t *testing.T) {
+	t.Parallel()
+	// FindByTitle wins on the unparseable input → step 8 delegate.
+	finder := &stubFinder{
+		titleCallReturns: &episodes.Episode{ID: 1, SeriesID: 42, SeasonNumber: 0, EpisodeNumber: 7, Title: "Behind the Scenes"},
+	}
+	hit := &series.Series{ID: 42, Title: "Title Show"}
+	sf := &stubSeriesFinder{byTitle: map[string]*series.Series{"unparseable.input": hit}}
+	svc := makeIDsSvc(t, finder, sf)
+
+	got, err := svc.ParseSpecialEpisodeTitleByIDs(context.Background(), nil, "unparseable.input", 0, 0, "", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got == nil || got.SeriesTitle != "Title Show" {
+		t.Fatalf("got=%+v, want SeriesTitle=Title Show", got)
+	}
+}
+
+func TestParseSpecialEpisodeTitleByIDs_FindByTitleInexactFallback(t *testing.T) {
+	t.Parallel()
+	// GetSeriesFromTitle misses → step 3 FindByTitleInexact hits.
+	finder := &stubFinder{
+		titleCallReturns: &episodes.Episode{ID: 1, SeriesID: 88, SeasonNumber: 0, EpisodeNumber: 1, Title: "Special"},
+	}
+	hit := &series.Series{ID: 88, Title: "Inexact Show"}
+	sf := &stubSeriesFinder{
+		byTitleInexact: map[string]*series.Series{"unparseable.rt": hit},
+	}
+	svc := makeIDsSvc(t, finder, sf)
+
+	got, err := svc.ParseSpecialEpisodeTitleByIDs(context.Background(), nil, "unparseable.rt", 0, 0, "", nil)
+	if err != nil || got == nil || got.SeriesTitle != "Inexact Show" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	if len(sf.byTitleInexactCalls) == 0 {
+		t.Errorf("expected FindByTitleInexact to be called")
+	}
+}
+
+func TestParseSpecialEpisodeTitleByIDs_TvdbFallback(t *testing.T) {
+	t.Parallel()
+	finder := &stubFinder{
+		titleCallReturns: &episodes.Episode{ID: 1, SeriesID: 77, SeasonNumber: 0, EpisodeNumber: 1, Title: "Special"},
+	}
+	hit := &series.Series{ID: 77, Title: "Tvdb Show"}
+	sf := &stubSeriesFinder{byTvdbID: map[int]*series.Series{555: hit}}
+	svc := makeIDsSvc(t, finder, sf)
+
+	got, err := svc.ParseSpecialEpisodeTitleByIDs(context.Background(), nil, "nope.rt", 555, 0, "", nil)
+	if err != nil || got == nil || got.SeriesTitle != "Tvdb Show" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	if len(sf.byTvdbIDCalls) != 1 || sf.byTvdbIDCalls[0] != 555 {
+		t.Errorf("byTvdbIDCalls = %v", sf.byTvdbIDCalls)
+	}
+}
+
+func TestParseSpecialEpisodeTitleByIDs_TvRageFallback(t *testing.T) {
+	t.Parallel()
+	finder := &stubFinder{
+		titleCallReturns: &episodes.Episode{ID: 1, SeriesID: 77, SeasonNumber: 0, EpisodeNumber: 1, Title: "Special"},
+	}
+	hit := &series.Series{ID: 77, Title: "Rage Show"}
+	sf := &stubSeriesFinder{byTvRageID: map[int]*series.Series{888: hit}}
+	svc := makeIDsSvc(t, finder, sf)
+
+	got, err := svc.ParseSpecialEpisodeTitleByIDs(context.Background(), nil, "nope.rt", 0, 888, "", nil)
+	if err != nil || got == nil || got.SeriesTitle != "Rage Show" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+}
+
+func TestParseSpecialEpisodeTitleByIDs_ImdbFallback(t *testing.T) {
+	t.Parallel()
+	finder := &stubFinder{
+		titleCallReturns: &episodes.Episode{ID: 1, SeriesID: 77, SeasonNumber: 0, EpisodeNumber: 1, Title: "Special"},
+	}
+	hit := &series.Series{ID: 77, Title: "Imdb Show"}
+	sf := &stubSeriesFinder{byImdbID: map[string]*series.Series{"tt0099": hit}}
+	svc := makeIDsSvc(t, finder, sf)
+
+	got, err := svc.ParseSpecialEpisodeTitleByIDs(context.Background(), nil, "nope.rt", 0, 0, "tt0099", nil)
+	if err != nil || got == nil || got.SeriesTitle != "Imdb Show" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+}
+
+func TestParseSpecialEpisodeTitleByIDs_ImdbWhitespaceRejected(t *testing.T) {
+	t.Parallel()
+	// Whitespace-only imdbID matches C# `IsNotNullOrWhiteSpace` reject:
+	// no FindByImdbID call.
+	sf := &stubSeriesFinder{}
+	svc := makeIDsSvc(t, &stubFinder{}, sf)
+
+	got, err := svc.ParseSpecialEpisodeTitleByIDs(context.Background(), nil, "nope.rt", 0, 0, "   ", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != nil {
+		t.Errorf("got=%+v, want nil (no series resolved)", got)
+	}
+	if len(sf.byImdbIDCalls) != 0 {
+		t.Errorf("byImdbIDCalls = %v, want zero on whitespace imdbID", sf.byImdbIDCalls)
+	}
+}
+
+func TestParseSpecialEpisodeTitleByIDs_NoMatchReturnsNil(t *testing.T) {
+	t.Parallel()
+	sf := &stubSeriesFinder{}
+	svc := makeIDsSvc(t, &stubFinder{}, sf)
+
+	got, err := svc.ParseSpecialEpisodeTitleByIDs(context.Background(), nil, "nope.rt", 0, 0, "", nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != nil {
+		t.Errorf("got=%+v, want nil (no series resolved)", got)
+	}
+}
+
+func TestParseSpecialEpisodeTitleByIDs_TvdbFallbackErrPropagates(t *testing.T) {
+	t.Parallel()
+	sf := &stubSeriesFinder{byTvdbIDErr: errors.New("EIO")}
+	svc := makeIDsSvc(t, &stubFinder{}, sf)
+
+	_, err := svc.ParseSpecialEpisodeTitleByIDs(context.Background(), nil, "nope.rt", 555, 0, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "FindByTvdbID") {
+		t.Errorf("got %v, want wrapped FindByTvdbID error", err)
+	}
+}
+
 // --- GetEpisodes: nil-receiver / nil-arg guards --------------------
 
 func TestGetEpisodesNilParsedInfoErrors(t *testing.T) {
@@ -909,6 +1142,10 @@ type stubSeriesFinder struct {
 		year  int
 	}
 
+	byTitleInexact      map[string]*series.Series
+	byTitleInexactErr   error
+	byTitleInexactCalls []string
+
 	byTvdbID      map[int]*series.Series
 	byTvdbIDErr   error
 	byTvdbIDCalls []int
@@ -943,6 +1180,17 @@ func (s *stubSeriesFinder) FindByTitleAndYear(_ context.Context, title string, y
 	}
 	key := title + "\x00" + fmtIntForKey(year)
 	if v, ok := s.byTitleAndYear[key]; ok {
+		return v, nil
+	}
+	return nil, series.ErrNotFound
+}
+
+func (s *stubSeriesFinder) FindByTitleInexact(_ context.Context, title string) (*series.Series, error) {
+	s.byTitleInexactCalls = append(s.byTitleInexactCalls, title)
+	if s.byTitleInexactErr != nil {
+		return nil, s.byTitleInexactErr
+	}
+	if v, ok := s.byTitleInexact[title]; ok {
 		return v, nil
 	}
 	return nil, series.ErrNotFound
