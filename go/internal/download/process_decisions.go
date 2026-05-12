@@ -171,12 +171,38 @@ func (p *ProcessDownloadDecisions) ProcessDecisions(ctx context.Context, decisio
 }
 
 // dispatch runs one Decision through the available providers for
-// its protocol. Returns the per-decision result.
+// its protocol, walking the prioritized client list and returning
+// on the first successful grab. Mirrors C# `DownloadService.DownloadReport`
+// at `DownloadService.cs:55-119` — the prioritized-clients failover
+// loop that tries each client, tracks already-tried Definition.Id
+// values (the C# `triedClients` HashSet), and finally throws
+// `DownloadClientUnavailableException` when every client errored.
 //
-// Mirrors C# `ProcessDecisionInternal` at `:196-226`. The C#
-// version's first-tried-client / next-client fallback isn't directly
-// ported here — the Go orchestrator uses the first available
-// Provider only. Multi-client failover is queue [15] sub-arc territory.
+// Per-client error semantics (slice 4.BR / C-cleanup [C9]):
+//
+//   - nil error → ResultGrabbed; stamp DownloadID; return immediately.
+//   - [downloadclients.ErrNotImplementedYet] → log + try next. A stub
+//     client among other working clients should not stop the loop.
+//     If it's the only client, the loop exhausts → ResultFailed.
+//   - [isUnavailable](err) (transport/auth failure) → log + try next.
+//     This is the C# `DownloadClientException` catch arm at `:100-104`.
+//   - any other error → log + try next. The C# `:105-115` arm
+//     rethrows `ReleaseDownloadException` (permanent failure) before
+//     adding to the tried set; the Go port doesn't have a typed
+//     equivalent at the orchestrator layer yet (concrete clients
+//     surface release-rejection variants but they're not unified),
+//     so we widen to "try next" — refine when typed errors land.
+//
+// After the loop exhausts: ResultFailed (the C#
+// `DownloadClientUnavailableException` outcome — the per-protocol
+// short-circuit at the caller will then mark subsequent decisions
+// of the same protocol as Pending without trying).
+//
+// Tried-client dedup: when [Provider.Definition] returns a non-nil
+// row with a non-zero ID, repeated entries with that ID are skipped.
+// Matches the C# `triedClients` HashSet at `:80,84,103,114`.
+// Providers with a nil Definition (test stubs, future in-memory
+// providers) always attempt — the dedup is defensive only.
 func (p *ProcessDownloadDecisions) dispatch(ctx context.Context, decision *decisionengine.Decision) ProcessedDecisionResult {
 	protocol, release := p.protocolOf(decision)
 	if release == nil {
@@ -196,34 +222,52 @@ func (p *ProcessDownloadDecisions) dispatch(ctx context.Context, decision *decis
 		return ResultFailed
 	}
 
-	provider := clients[0]
 	req := buildGrabRequest(decision, release)
+	tried := make(map[int]struct{}, len(clients))
+	var lastErr error
+	var lastClient string
 
-	p.log.Debug("download: dispatching grab",
-		"title", release.Title, "indexer", release.Indexer, "client", provider.Name())
+	for _, provider := range clients {
+		if def := provider.Definition(); def != nil && def.ID != 0 {
+			if _, dup := tried[def.ID]; dup {
+				continue
+			}
+			tried[def.ID] = struct{}{}
+		}
 
-	id, err := provider.Download(ctx, req)
-	switch {
-	case err == nil:
-		// Stamp the DownloadID onto the Subject so downstream
-		// (history + tracked-downloads) can pick it up. The
-		// in-flight Subject pointer is shared with the Grabbed
-		// list entry the caller iterates.
-		p.stampDownloadID(decision, id, provider)
-		return ResultGrabbed
-	case errors.Is(err, downloadclients.ErrNotImplementedYet):
-		p.log.Warn("download: provider Download not implemented yet",
-			"client", provider.Name(), "err", err)
-		return ResultSkipped
-	case isUnavailable(err):
-		p.log.Warn("download: client unavailable, will retry",
-			"client", provider.Name(), "err", err)
-		return ResultFailed
-	default:
-		p.log.Warn("download: dispatch failed",
-			"client", provider.Name(), "title", release.Title, "err", err)
-		return ResultSkipped
+		p.log.Debug("download: dispatching grab",
+			"title", release.Title, "indexer", release.Indexer, "client", provider.Name())
+
+		id, err := provider.Download(ctx, req)
+		if err == nil {
+			// Stamp the DownloadID onto the Subject so downstream
+			// (history + tracked-downloads) can pick it up. The
+			// in-flight Subject pointer is shared with the Grabbed
+			// list entry the caller iterates.
+			p.stampDownloadID(decision, id, provider)
+			return ResultGrabbed
+		}
+
+		lastErr = err
+		lastClient = provider.Name()
+
+		switch {
+		case errors.Is(err, downloadclients.ErrNotImplementedYet):
+			p.log.Warn("download: provider Download not implemented yet, trying next client",
+				"client", provider.Name(), "err", err)
+		case isUnavailable(err):
+			p.log.Warn("download: client unavailable, trying next client",
+				"client", provider.Name(), "err", err)
+		default:
+			p.log.Warn("download: dispatch failed on client, trying next client",
+				"client", provider.Name(), "title", release.Title, "err", err)
+		}
 	}
+
+	p.log.Warn("download: all clients failed for protocol",
+		"protocol", protocol, "title", release.Title,
+		"lastClient", lastClient, "lastErr", lastErr)
+	return ResultFailed
 }
 
 // isQualified ports C# `IsQualifiedReport` at `:161-165` —

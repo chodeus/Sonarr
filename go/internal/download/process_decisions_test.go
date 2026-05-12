@@ -25,11 +25,12 @@ type stubProvider struct {
 	downloadErr error
 	calls       int
 	lastReq     *downloadclients.GrabRequest
+	definition  *downloadclients.DownloadClient
 }
 
 func (p *stubProvider) Name() string                                { return p.name }
 func (p *stubProvider) Protocol() indexers.DownloadProtocol         { return p.protocol }
-func (p *stubProvider) Definition() *downloadclients.DownloadClient { return nil }
+func (p *stubProvider) Definition() *downloadclients.DownloadClient { return p.definition }
 
 func (p *stubProvider) Download(_ context.Context, req *downloadclients.GrabRequest) (string, error) {
 	p.calls++
@@ -328,7 +329,14 @@ func TestProcessDecisions_PerProtocolFailureShortCircuit(t *testing.T) {
 	}
 }
 
-func TestProcessDecisions_NotImplementedYetBucketsToSkipped(t *testing.T) {
+// TestProcessDecisions_LoneStubBucketsToPending — slice 4.BR (C9):
+// a single ErrNotImplementedYet client used to drop into ResultSkipped
+// (silent drop). With the multi-client failover loop, exhausting the
+// client list — even a list of length 1 — yields ResultFailed →
+// Pending bucket. Matches C#
+// `DownloadClientUnavailableException("All clients failed")` at
+// `DownloadService.cs:118`.
+func TestProcessDecisions_LoneStubBucketsToPending(t *testing.T) {
 	t.Parallel()
 	prov := &stubProvider{name: "sab", protocol: indexers.DownloadProtocolUsenet, downloadErr: downloadclients.ErrNotImplementedYet}
 	pdd := newPDD(t, &stubClientLister{usenet: []downloadclients.Provider{prov}})
@@ -336,9 +344,87 @@ func TestProcessDecisions_NotImplementedYetBucketsToSkipped(t *testing.T) {
 	dec := mkDecision("Show.S01E01", indexers.DownloadProtocolUsenet, 1)
 	out := pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
 
-	// ResultSkipped is silent — neither Grabbed nor Pending nor Rejected.
-	if len(out.Grabbed)+len(out.Pending)+len(out.Rejected) != 0 {
-		t.Errorf("expected all zero-state, got %s", out)
+	if len(out.Pending) != 1 {
+		t.Errorf("Pending = %d, want 1 (all clients exhausted → Pending); full result: %s", len(out.Pending), out)
+	}
+	if len(out.Grabbed)+len(out.Rejected) != 0 {
+		t.Errorf("Grabbed+Rejected should be 0, got %s", out)
+	}
+}
+
+// TestProcessDecisions_MultiClientFailoverGrabsSecond — slice 4.BR (C9):
+// when the first client errors, dispatch must try the next client in
+// the prioritized list. Verifies the C# loop semantics at
+// `DownloadService.cs:82-116`.
+func TestProcessDecisions_MultiClientFailoverGrabsSecond(t *testing.T) {
+	t.Parallel()
+	firstClient := &stubProvider{name: "sab-A", protocol: indexers.DownloadProtocolUsenet, downloadErr: errors.New("unavailable: connection refused")}
+	secondClient := &stubProvider{name: "sab-B", protocol: indexers.DownloadProtocolUsenet, downloadID: "nzo_ok"}
+	pdd := newPDD(t, &stubClientLister{
+		usenet: []downloadclients.Provider{firstClient, secondClient},
+	})
+
+	dec := mkDecision("Show.S01E01.NZB", indexers.DownloadProtocolUsenet, 1)
+	out := pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
+
+	if len(out.Grabbed) != 1 {
+		t.Fatalf("Grabbed = %d, want 1 (second client should succeed); full result: %s", len(out.Grabbed), out)
+	}
+	if firstClient.calls != 1 {
+		t.Errorf("firstClient.calls = %d, want 1", firstClient.calls)
+	}
+	if secondClient.calls != 1 {
+		t.Errorf("secondClient.calls = %d, want 1", secondClient.calls)
+	}
+}
+
+// TestProcessDecisions_AllClientsFailedTripsProtocolShortCircuit —
+// slice 4.BR (C9): when every client errors, dispatch returns
+// ResultFailed which both buckets the decision into Pending AND
+// trips the per-protocol short-circuit. Subsequent same-protocol
+// decisions land in Pending without re-attempting any client.
+func TestProcessDecisions_AllClientsFailedTripsProtocolShortCircuit(t *testing.T) {
+	t.Parallel()
+	clientA := &stubProvider{name: "sab-A", protocol: indexers.DownloadProtocolUsenet, downloadErr: errors.New("unavailable: dial tcp")}
+	clientB := &stubProvider{name: "sab-B", protocol: indexers.DownloadProtocolUsenet, downloadErr: errors.New("unavailable: refused")}
+	pdd := newPDD(t, &stubClientLister{
+		usenet: []downloadclients.Provider{clientA, clientB},
+	})
+
+	decs := []decisionengine.Decision{
+		mkDecision("Show.S01E01.NZB", indexers.DownloadProtocolUsenet, 1),
+		mkDecision("Show.S01E02.NZB", indexers.DownloadProtocolUsenet, 2),
+	}
+	out := pdd.ProcessDecisions(context.Background(), decs)
+
+	if len(out.Pending) != 2 {
+		t.Errorf("Pending = %d, want 2; full result: %s", len(out.Pending), out)
+	}
+	if clientA.calls != 1 {
+		t.Errorf("clientA.calls = %d, want 1 (only first decision tries — short-circuit suppresses second)", clientA.calls)
+	}
+	if clientB.calls != 1 {
+		t.Errorf("clientB.calls = %d, want 1 (failover from clientA on first decision)", clientB.calls)
+	}
+}
+
+// TestProcessDecisions_TriedClientDedup — slice 4.BR (C9):
+// when the lister returns the same Provider twice (same Definition.ID),
+// dispatch attempts only ONCE. Mirrors the C# `triedClients` HashSet
+// at `DownloadService.cs:80,84`.
+func TestProcessDecisions_TriedClientDedup(t *testing.T) {
+	t.Parallel()
+	def := &downloadclients.DownloadClient{ID: 42, Name: "sab-shared"}
+	prov := &stubProvider{name: "sab", protocol: indexers.DownloadProtocolUsenet, downloadErr: errors.New("unavailable: refused"), definition: def}
+	pdd := newPDD(t, &stubClientLister{
+		usenet: []downloadclients.Provider{prov, prov, prov},
+	})
+
+	dec := mkDecision("Show.S01E01.NZB", indexers.DownloadProtocolUsenet, 1)
+	pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
+
+	if prov.calls != 1 {
+		t.Errorf("prov.calls = %d, want 1 (Definition.ID dedup should prevent retries)", prov.calls)
 	}
 }
 
