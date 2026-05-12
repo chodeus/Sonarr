@@ -93,18 +93,18 @@ type versionResponse struct {
 // jsonError is the SAB error envelope. Mirrors C# `SabnzbdJsonError`
 // at `SabnzbdJsonError.cs:1-13`. SAB returns `{"status":"false",
 // "error":"<msg>"}` on validation failures (e.g. wrong API key).
-//
-// Note the C# `Failed` getter returns `Status == "false"` —
-// case-sensitive on a string literal. The Go port mirrors this.
 type jsonError struct {
 	Status string `json:"status"`
 	Error  string `json:"error"`
 }
 
 // Failed reports whether SAB returned a failure envelope. Mirrors
-// the C# `SabnzbdJsonError.Failed` getter at `:9` — case-sensitive
-// comparison against "false".
-func (e jsonError) Failed() bool { return e.Status == "false" }
+// the C# `SabnzbdJsonError.Failed` getter at `SabnzbdJsonError.cs:10-11`
+// which uses `Status.Equals("false", InvariantCultureIgnoreCase)`.
+// EqualFold yields the case-insensitive match and naturally returns
+// false for the empty/whitespace inputs the C# guard handled with
+// `!IsNullOrWhiteSpace`.
+func (e jsonError) Failed() bool { return strings.EqualFold(e.Status, "false") }
 
 // DownloadNzb POSTs an NZB body to the SAB `addfile` endpoint and
 // returns the assigned nzo_id. Mirrors C# `SabnzbdProxy.DownloadNzb`
