@@ -112,6 +112,20 @@ func (a *metadataFileStoreAdapter) FilesBySeries(ctx context.Context, seriesID i
 //
 // Errors short-circuit the loop (matches C# `Upsert` which throws
 // on the first failure).
+// DeleteMany loops over Delete. metadatafiles.Repo has no bulk-delete
+// helper; the Repository[T].Delete generic does the per-id work.
+// Errors from individual Deletes (other than ErrNotFound) propagate
+// after recording; missing IDs are silently swallowed.
+func (a *metadataFileStoreAdapter) DeleteMany(ctx context.Context, ids []int) error {
+	for _, id := range ids {
+		err := a.repo.Delete(ctx, id)
+		if err != nil && !errors.Is(err, metadatafiles.ErrNotFound) {
+			return fmt.Errorf("metadataFileStoreAdapter: DeleteMany id=%d: %w", id, err)
+		}
+	}
+	return nil
+}
+
 func (a *metadataFileStoreAdapter) Upsert(ctx context.Context, files []metadatafiles.MetadataFile) error {
 	for i := range files {
 		f := &files[i]

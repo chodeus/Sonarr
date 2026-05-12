@@ -149,6 +149,14 @@ func (f *fakeFiles) Upsert(_ context.Context, files []metadatafiles.MetadataFile
 	return nil
 }
 
+func (f *fakeFiles) DeleteMany(_ context.Context, ids []int) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, ids...)
+	return nil
+}
+
 // fakeAttrs no-op + injectable err.
 type fakeAttrs struct {
 	calls []string

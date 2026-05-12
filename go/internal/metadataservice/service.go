@@ -87,6 +87,13 @@ type MetadataFileStore interface {
 	// at `:80`, `:113`, `:138`, `:153`, `:185`, `:226`. The Go port
 	// dispatches on `f.ID == 0` to decide Insert vs Update.
 	Upsert(ctx context.Context, files []metadatafiles.MetadataFile) error
+
+	// DeleteMany removes the given row IDs. Mirrors C#
+	// `IExtraFileService<TExtraFile>.DeleteMany(IEnumerable<int>)`
+	// at the base ImportExistingExtraFilesBase. Missing IDs are
+	// silently ignored (matches the C# bulk-delete behaviour on the
+	// generic IExtraFileService surface).
+	DeleteMany(ctx context.Context, ids []int) error
 }
 
 // MediaFileAttributes narrows the helper that adjusts the file's
