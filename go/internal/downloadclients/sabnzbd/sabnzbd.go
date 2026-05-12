@@ -8,9 +8,12 @@ import (
 	"log/slog"
 	"regexp"
 	"strconv"
+	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // Implementation + ConfigContract are the persisted-row identifiers
@@ -94,10 +97,162 @@ func (s *Sabnzbd) Download(ctx context.Context, req *downloadclients.GrabRequest
 	return id, nil
 }
 
-// GetItems returns the in-flight downloads visible to SAB. Sub-arc
-// 14b territory.
-func (s *Sabnzbd) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+// defaultHistoryLimit caps SAB's GetHistory page size. C# pulls this
+// from `IConfigService.DownloadClientHistoryLimit` (HostConfig
+// keyvalues, default 30); the Go port hard-codes the default until
+// HostConfig keyvalues ports.
+const defaultHistoryLimit = 30
+
+// GetItems ports C# `Sabnzbd.GetItems` at `Sabnzbd.cs:186-195` — the
+// union of queue + history, filtered to items in the configured
+// TvCategory (or the SAB "*" wildcard when TvCategory is unset).
+//
+// Slice 4.BS (C-cleanup sub-arc C2a).
+func (s *Sabnzbd) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
+	queue, err := s.proxy.GetQueue(ctx, 0, 0, s.settings)
+	if err != nil {
+		return nil, fmt.Errorf("sabnzbd: GetItems: GetQueue: %w", err)
+	}
+	history, err := s.proxy.GetHistory(ctx, 0, defaultHistoryLimit, s.settings)
+	if err != nil {
+		return nil, fmt.Errorf("sabnzbd: GetItems: GetHistory: %w", err)
+	}
+
+	info := s.itemClientInfo()
+	wantCat := strings.TrimSpace(s.settings.TvCategory)
+	out := make([]*downloadclients.Item, 0, len(queue.Items)+len(history.Items))
+
+	for _, q := range queue.Items {
+		if !sabCategoryMatches(q.Category, wantCat) {
+			continue
+		}
+		if q.Status == SabStatusDeleted {
+			continue
+		}
+		out = append(out, queueItemToItem(q, queue.Paused, info))
+	}
+	for _, h := range history.Items {
+		if !sabCategoryMatches(h.Category, wantCat) {
+			continue
+		}
+		if h.Status == SabStatusDeleted {
+			continue
+		}
+		out = append(out, historyItemToItem(h, info))
+	}
+	return out, nil
+}
+
+// sabCategoryMatches mirrors the C# predicate at `Sabnzbd.cs:190`:
+// item.Category == TvCategory OR (item.Category == "*" AND TvCategory is blank).
+func sabCategoryMatches(itemCategory, wantCategory string) bool {
+	if itemCategory == wantCategory {
+		return true
+	}
+	if itemCategory == "*" && wantCategory == "" {
+		return true
+	}
+	return false
+}
+
+// queueItemToItem ports the per-item projection at `Sabnzbd.cs:60-103`.
+// IsEncrypted detection (the "ENCRYPTED /" prefix) and the Paused
+// vs Queued vs Downloading status arms are preserved.
+func queueItemToItem(q SabnzbdQueueItem, queuePaused bool, info *downloadclients.ItemClientInfo) *downloadclients.Item {
+	title := q.Title
+	isEncrypted := false
+	if strings.HasPrefix(title, "ENCRYPTED /") {
+		title = title[len("ENCRYPTED /"):]
+		isEncrypted = true
+	}
+	timeLeft := q.Timeleft.Duration()
+	item := &downloadclients.Item{
+		DownloadClientInfo: info,
+		DownloadID:         q.ID,
+		Category:           q.Category,
+		Title:              title,
+		TotalSize:          int64(q.SizeMB * 1024 * 1024),
+		RemainingSize:      int64(q.SizeLeftMB * 1024 * 1024),
+		IsEncrypted:        isEncrypted,
+		CanBeRemoved:       true,
+		CanMoveFiles:       true,
+	}
+	// Status. Mirrors the C# branches at `:78-94`.
+	switch {
+	case (queuePaused && !q.IsPriorityForce()) || q.Status == SabStatusPaused:
+		item.Status = downloadclients.DownloadItemStatusPaused
+		// Paused → no meaningful ETA.
+	case q.Status == SabStatusQueued || q.Status == SabStatusGrabbing || q.Status == SabStatusPropagating:
+		item.Status = downloadclients.DownloadItemStatusQueued
+		item.RemainingTime = &timeLeft
+	default:
+		item.Status = downloadclients.DownloadItemStatusDownloading
+		item.RemainingTime = &timeLeft
+	}
+	return item
+}
+
+// historyItemToItem ports the per-item projection at `Sabnzbd.cs:108-178`.
+// The OutputPath remote-path-mapping step is deferred — the Go port
+// stores the SAB-side Storage path verbatim until the
+// RemotePathMappingService dep lands on the [Sabnzbd] constructor
+// (separate slice once boot wiring needs it).
+func historyItemToItem(h SabnzbdHistoryItem, info *downloadclients.ItemClientInfo) *downloadclients.Item {
+	zero := time.Duration(0)
+	item := &downloadclients.Item{
+		DownloadClientInfo: info,
+		DownloadID:         h.ID,
+		Category:           h.Category,
+		Title:              h.Title,
+		TotalSize:          h.Size,
+		RemainingSize:      0,
+		RemainingTime:      &zero,
+		Message:            h.FailMessage,
+		CanBeRemoved:       true,
+		CanMoveFiles:       true,
+	}
+	switch h.Status {
+	case SabStatusFailed:
+		// C# `:138-148` — the "Unpacking failed, write error or disk
+		// is full?" message demotes Failed to Warning.
+		if strings.EqualFold(h.FailMessage, "Unpacking failed, write error or disk is full?") {
+			item.Status = downloadclients.DownloadItemStatusWarning
+		} else {
+			item.Status = downloadclients.DownloadItemStatusFailed
+		}
+	case SabStatusCompleted:
+		item.Status = downloadclients.DownloadItemStatusCompleted
+	default:
+		// Verifying / Moving / Extracting etc.
+		item.Status = downloadclients.DownloadItemStatusDownloading
+	}
+	// OutputPath: pass the SAB storage path through unchanged. Once
+	// RemotePathMappingService is wired into the Sabnzbd constructor,
+	// the C# `:160-176` remap + parent-walk step lands here.
+	if h.Storage != "" {
+		item.OutputPath = ospath.New(h.Storage)
+	}
+	return item
+}
+
+// itemClientInfo builds the ItemClientInfo stamp that every emitted
+// Item carries. Mirrors C# `DownloadClientItemClientInfo.FromDownloadClient`
+// at `DownloadClientItem.cs:33-56`. RemoveCompletedDownloads is the
+// per-definition flag, defaulting to false (the HostConfig key isn't
+// ported yet — the field on the persisted DownloadClient row would
+// drive it once the v3 API exposes it).
+func (s *Sabnzbd) itemClientInfo() *downloadclients.ItemClientInfo {
+	info := &downloadclients.ItemClientInfo{
+		Protocol: s.Protocol(),
+		Type:     Implementation,
+		Name:     s.Name(),
+	}
+	if s.def != nil {
+		info.ID = s.def.ID
+		info.Name = s.def.Name
+		info.RemoveCompletedDownloads = s.def.RemoveCompletedDownloads
+	}
+	return info
 }
 
 // GetImportItem mirrors C# `Sabnzbd` override at
@@ -109,25 +264,203 @@ func (s *Sabnzbd) GetImportItem(_ context.Context, item, _ *downloadclients.Item
 	return item, nil
 }
 
-// RemoveItem routes to queue/delete or history/delete depending on
-// the item's current stage. Sub-arc 14b.
-func (s *Sabnzbd) RemoveItem(_ context.Context, _ *downloadclients.Item, _ bool) error {
-	return downloadclients.ErrNotImplementedYet
+// RemoveItem ports C# `Sabnzbd.RemoveItem` at `Sabnzbd.cs:197-214`.
+// Routes to queue/delete when the item is still in SAB's active
+// queue, otherwise history/delete. deleteData controls whether SAB
+// also deletes the partial files on disk.
+//
+// Slice 4.BS (C-cleanup sub-arc C2a).
+func (s *Sabnzbd) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
+	if item == nil {
+		return errors.New("sabnzbd: RemoveItem: nil item")
+	}
+	queue, err := s.proxy.GetQueue(ctx, 0, 0, s.settings)
+	if err != nil {
+		return fmt.Errorf("sabnzbd: RemoveItem: GetQueue: %w", err)
+	}
+	inQueue := false
+	for _, q := range queue.Items {
+		if q.ID == item.DownloadID {
+			inQueue = true
+			break
+		}
+	}
+	if inQueue {
+		if err := s.proxy.RemoveFromQueue(ctx, item.DownloadID, deleteData, s.settings); err != nil {
+			return fmt.Errorf("sabnzbd: RemoveItem: RemoveFromQueue: %w", err)
+		}
+		return nil
+	}
+	// Not in queue → history. C# `:203-205`: if deleteData && Completed,
+	// delete on-disk data via DeleteItemData first. The DeleteItemData
+	// step calls into the disk provider; the Go port defers that to a
+	// follow-up — for now we pass deleteData through to SAB which also
+	// has its own RemoveFromHistory del_files arm.
+	deletePermanently := item.Status == downloadclients.DownloadItemStatusFailed
+	if err := s.proxy.RemoveFromHistory(ctx, item.DownloadID, deleteData, deletePermanently, s.settings); err != nil {
+		return fmt.Errorf("sabnzbd: RemoveItem: RemoveFromHistory: %w", err)
+	}
+	return nil
 }
 
-// GetStatus returns the SAB-side configuration snapshot. Sub-arc 14b.
-func (s *Sabnzbd) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+// GetStatus ports C# `Sabnzbd.GetStatus` at `:246-284`. Resolves the
+// per-instance ClientInfo: IsLocalhost, SortingMode (TV/Movie/Date
+// when the user's TvCategory falls under SAB's sorter rules), and
+// OutputRootFolders (the absolute path SAB writes completed
+// downloads into).
+//
+// The C# RemotePathMappingService.RemapRemoteToLocal step is deferred
+// — without RemotePathMappingService wired into the constructor, the
+// OutputRootFolders entries are the raw SAB-side paths.
+//
+// Slice 4.BS (C-cleanup sub-arc C2a).
+func (s *Sabnzbd) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
+	cfg, err := s.proxy.GetConfig(ctx, s.settings)
+	if err != nil {
+		return nil, fmt.Errorf("sabnzbd: GetStatus: GetConfig: %w", err)
+	}
+	categories, err := s.resolveCategories(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	info := &downloadclients.ClientInfo{
+		IsLocalhost: s.settings.Host == "127.0.0.1" || strings.EqualFold(s.settings.Host, "localhost"),
+	}
+
+	wantCat := s.settings.TvCategory
+	var matched *SabnzbdCategory
+	for i := range categories {
+		if categories[i].Name == wantCat {
+			matched = &categories[i]
+			break
+		}
+	}
+	if matched == nil {
+		for i := range categories {
+			if categories[i].Name == "*" {
+				matched = &categories[i]
+				break
+			}
+		}
+	}
+
+	if matched != nil {
+		// SortingMode resolution: TV trumps Movie trumps Date — same
+		// branch order the C# code uses at `:265-275`.
+		switch {
+		case (cfg.Misc.EnableTvSorting && containsCategory(cfg.Misc.TvCategories, wantCat)) ||
+			anyActiveSorterCovers(cfg.Sorters, wantCat):
+			info.SortingMode = "TV"
+		case cfg.Misc.EnableMovieSorting && containsCategory(cfg.Misc.MovieCategories, wantCat):
+			info.SortingMode = "Movie"
+		case cfg.Misc.EnableDateSorting && containsCategory([]string(cfg.Misc.DateCategories), wantCat):
+			info.SortingMode = "Date"
+		}
+
+		if matched.FullPath != "" {
+			info.OutputRootFolders = []ospath.OsPath{ospath.New(matched.FullPath)}
+		}
+	}
+	return info, nil
 }
 
-// MarkItemAsImported moves a SAB completion into the configured
-// post-import category. SAB supports this via the history/move
-// endpoint; sub-arc 14b will wire it. The default for clients that
-// don't support the operation is [downloadclients.ErrMarkAsImportedUnsupported]
-// — sub-arc 14b decides which sentinel to return based on the actual
-// move support in HEAD's C# code.
+// resolveCategories ports C# `Sabnzbd.GetCategories` at `:216-244`.
+// Resolves each category's FullPath against SAB's complete_dir,
+// fetching SabnzbdFullStatus when the configured complete_dir is
+// relative (SAB >= 2.0).
+func (s *Sabnzbd) resolveCategories(ctx context.Context, cfg *SabnzbdConfig) ([]SabnzbdCategory, error) {
+	completeDir := cfg.Misc.CompleteDir
+	if !isAbsolutePath(completeDir) {
+		// Fetch FullStatus to resolve the absolute complete_dir
+		// (SAB >= 2.0 path). C# `:222-226`.
+		status, err := s.proxy.GetFullStatus(ctx, s.settings)
+		if err != nil {
+			return nil, fmt.Errorf("sabnzbd: GetStatus: GetFullStatus: %w", err)
+		}
+		completeDir = status.CompleteDir
+	}
+
+	out := make([]SabnzbdCategory, len(cfg.Categories))
+	for i, c := range cfg.Categories {
+		c.FullPath = joinPath(completeDir, strings.TrimRight(c.Dir, "*"))
+		out[i] = c
+	}
+	return out, nil
+}
+
+// MarkItemAsImported reports the SAB-doesn't-override case. C#
+// `Sabnzbd` doesn't override the base class's `MarkItemAsImported`;
+// the base `DownloadClientBase.MarkItemAsImported` is a no-op for
+// clients without a post-import move endpoint. The Go port returns
+// [downloadclients.ErrMarkAsImportedUnsupported] so the orchestrator
+// can branch — a no-op fallback would silently miss the user's
+// "moved after import" expectation.
+//
+// Slice 4.BS (C-cleanup sub-arc C2a).
 func (s *Sabnzbd) MarkItemAsImported(_ context.Context, _ *downloadclients.Item) error {
-	return downloadclients.ErrNotImplementedYet
+	return downloadclients.ErrMarkAsImportedUnsupported
+}
+
+// isAbsolutePath returns true when p is an OS-absolute filesystem
+// path. Mirrors the C# `OsPath.IsRooted` check at `:220`. Tolerates
+// both Unix-style (`/...`) and Windows-style (`C:\...`) prefixes
+// without depending on the runtime OS.
+func isAbsolutePath(p string) bool {
+	if p == "" {
+		return false
+	}
+	if p[0] == '/' || p[0] == '\\' {
+		return true
+	}
+	if len(p) >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/') {
+		return true
+	}
+	return false
+}
+
+// joinPath glues a relative tail onto a base path using whichever
+// separator the base uses. Mirrors the OsPath `+` operator at C#
+// `:240` without dragging in a full OsPath port.
+func joinPath(base, tail string) string {
+	if base == "" {
+		return tail
+	}
+	if tail == "" {
+		return base
+	}
+	sep := "/"
+	if strings.ContainsRune(base, '\\') {
+		sep = "\\"
+	}
+	b := strings.TrimRight(base, "/\\")
+	t := strings.TrimLeft(tail, "/\\")
+	return b + sep + t
+}
+
+// containsCategory reports whether haystack contains needle. Mirrors
+// the C# `ContainsCategory` helper used at `Sabnzbd.cs:265-275`.
+func containsCategory(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// anyActiveSorterCovers reports whether any active sorter lists the
+// requested category. Mirrors the C# inline predicate at `:265`.
+func anyActiveSorterCovers(sorters []SabnzbdSorter, category string) bool {
+	for _, s := range sorters {
+		if !s.IsActive {
+			continue
+		}
+		if containsCategory(s.SortCategories, category) {
+			return true
+		}
+	}
+	return false
 }
 
 // Test runs the SAB connection + version self-check. Ports the

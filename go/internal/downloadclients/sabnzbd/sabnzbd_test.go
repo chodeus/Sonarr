@@ -421,20 +421,15 @@ func TestSabnzbd_DownloadRejectsEmptyBody(t *testing.T) {
 	}
 }
 
-func TestSabnzbd_StubbedMethodsReturnNotImplementedYet(t *testing.T) {
+// TestSabnzbd_RemoveItemNilItemErrors locks the nil-item guard added
+// in slice 4.BS. Other previously-stubbed methods (GetItems / GetStatus
+// / MarkItemAsImported) are now ported — their behavior is exercised
+// in the dedicated tests above.
+func TestSabnzbd_RemoveItemNilItemErrors(t *testing.T) {
 	t.Parallel()
 	prov := newSabnzbdForURL(t, nil)
-	if _, err := prov.GetItems(context.Background()); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("GetItems err = %v, want ErrNotImplementedYet", err)
-	}
-	if _, err := prov.GetStatus(context.Background()); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("GetStatus err = %v, want ErrNotImplementedYet", err)
-	}
-	if err := prov.RemoveItem(context.Background(), nil, false); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("RemoveItem err = %v, want ErrNotImplementedYet", err)
-	}
-	if err := prov.MarkItemAsImported(context.Background(), nil); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("MarkItemAsImported err = %v, want ErrNotImplementedYet", err)
+	if err := prov.RemoveItem(context.Background(), nil, false); err == nil {
+		t.Errorf("RemoveItem(nil) should error")
 	}
 }
 
@@ -523,4 +518,385 @@ func mustMarshal(v any) string {
 		panic(err)
 	}
 	return string(b)
+}
+
+// ============================================================================
+// Slice 4.BS (C-cleanup sub-arc C2a): SAB Proxy.GetQueue / GetHistory /
+// GetConfig / GetFullStatus / RemoveFromQueue / RemoveFromHistory +
+// Sabnzbd.GetItems / RemoveItem / GetStatus / MarkItemAsImported.
+// ============================================================================
+
+func TestProxy_GetQueueDecodesItems(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("mode"); got != "queue" {
+			t.Errorf("mode = %q, want queue", got)
+		}
+		if got := r.URL.Query().Get("start"); got != "0" {
+			t.Errorf("start = %q, want 0", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"queue":{"paused":false,"slots":[{"status":"Downloading","filename":"Show.S01E01","mb":100.5,"mbleft":42.25,"timeleft":"1:30:00","priority":"Normal","cat":"tv","nzo_id":"nzo_001"}]}}`))
+	}))
+	defer srv.Close()
+	settings := buildSettings(srv.URL, "k3y")
+	p, _ := sabnzbd.NewProxy(srv.Client(), slog.Default())
+	got, err := p.GetQueue(context.Background(), 0, 0, settings)
+	if err != nil {
+		t.Fatalf("GetQueue: %v", err)
+	}
+	if len(got.Items) != 1 {
+		t.Fatalf("Items = %d, want 1", len(got.Items))
+	}
+	if got.Items[0].ID != "nzo_001" || got.Items[0].Status != sabnzbd.SabStatusDownloading {
+		t.Errorf("unexpected first item: %+v", got.Items[0])
+	}
+}
+
+func TestProxy_GetHistoryDecodesItems(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("mode"); got != "history" {
+			t.Errorf("mode = %q, want history", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"history":{"paused":false,"slots":[{"name":"Show.S01E02","bytes":1048576,"category":"tv","nzo_id":"nzo_002","status":"Completed","storage":"/data/complete/Show.S01E02"}]}}`))
+	}))
+	defer srv.Close()
+	settings := buildSettings(srv.URL, "k3y")
+	p, _ := sabnzbd.NewProxy(srv.Client(), slog.Default())
+	got, err := p.GetHistory(context.Background(), 0, 30, settings)
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	if len(got.Items) != 1 {
+		t.Fatalf("Items = %d, want 1", len(got.Items))
+	}
+	if got.Items[0].ID != "nzo_002" || got.Items[0].Status != sabnzbd.SabStatusCompleted {
+		t.Errorf("unexpected item: %+v", got.Items[0])
+	}
+}
+
+func TestProxy_GetConfigDecodesCategoriesAndMisc(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"config":{"misc":{"complete_dir":"/data/complete","tv_categories":["tv","tv-sonarr"],"enable_tv_sorting":true,"date_categories":"daily"},"categories":[{"name":"tv","priority":0,"dir":"tv/"}],"sorters":[{"name":"S1","is_active":true,"sort_cats":["tv"]}]}}`))
+	}))
+	defer srv.Close()
+	settings := buildSettings(srv.URL, "k3y")
+	p, _ := sabnzbd.NewProxy(srv.Client(), slog.Default())
+	got, err := p.GetConfig(context.Background(), settings)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if got.Misc.CompleteDir != "/data/complete" {
+		t.Errorf("CompleteDir = %q", got.Misc.CompleteDir)
+	}
+	if len(got.Categories) != 1 || got.Categories[0].Name != "tv" {
+		t.Errorf("Categories = %+v", got.Categories)
+	}
+	if len(got.Misc.DateCategories) != 1 || got.Misc.DateCategories[0] != "daily" {
+		t.Errorf("DateCategories unmarshal (single-string form): %+v", got.Misc.DateCategories)
+	}
+}
+
+func TestProxy_GetFullStatusDecodesCompleteDir(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("skip_dashboard"); got != "1" {
+			t.Errorf("skip_dashboard = %q, want 1", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":{"completedir":"/data/done"}}`))
+	}))
+	defer srv.Close()
+	settings := buildSettings(srv.URL, "k3y")
+	p, _ := sabnzbd.NewProxy(srv.Client(), slog.Default())
+	got, err := p.GetFullStatus(context.Background(), settings)
+	if err != nil {
+		t.Fatalf("GetFullStatus: %v", err)
+	}
+	if got.CompleteDir != "/data/done" {
+		t.Errorf("CompleteDir = %q", got.CompleteDir)
+	}
+}
+
+func TestProxy_RemoveFromQueueEncodesParams(t *testing.T) {
+	t.Parallel()
+	var seenQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":true}`))
+	}))
+	defer srv.Close()
+	settings := buildSettings(srv.URL, "k3y")
+	p, _ := sabnzbd.NewProxy(srv.Client(), slog.Default())
+	if err := p.RemoveFromQueue(context.Background(), "nzo_x", true, settings); err != nil {
+		t.Fatalf("RemoveFromQueue: %v", err)
+	}
+	if !strings.Contains(seenQuery, "name=delete") || !strings.Contains(seenQuery, "del_files=1") || !strings.Contains(seenQuery, "value=nzo_x") {
+		t.Errorf("seenQuery = %q", seenQuery)
+	}
+}
+
+func TestProxy_RemoveFromHistoryArchiveFlag(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		permanent bool
+		wantArch  string
+	}{
+		{"PermanentSetsArchiveZero", true, "archive=0"},
+		{"NonPermanentSetsArchiveOne", false, "archive=1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var seenQuery string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seenQuery = r.URL.RawQuery
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"status":true}`))
+			}))
+			defer srv.Close()
+			settings := buildSettings(srv.URL, "k3y")
+			p, _ := sabnzbd.NewProxy(srv.Client(), slog.Default())
+			if err := p.RemoveFromHistory(context.Background(), "nzo_y", false, tc.permanent, settings); err != nil {
+				t.Fatalf("RemoveFromHistory: %v", err)
+			}
+			if !strings.Contains(seenQuery, tc.wantArch) {
+				t.Errorf("seenQuery = %q, missing %q", seenQuery, tc.wantArch)
+			}
+		})
+	}
+}
+
+// fakeSAB serves canned queue + history + config replies based on the
+// mode query param. Lets multi-call tests verify the combined SAB
+// methods (GetItems / RemoveItem / GetStatus) in one server.
+type fakeSAB struct {
+	queueJSON   string
+	historyJSON string
+	configJSON  string
+	deleteQuery string
+}
+
+func (f *fakeSAB) serve(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	w.Header().Set("Content-Type", "application/json")
+	switch q.Get("mode") {
+	case "queue":
+		if q.Get("name") == "delete" {
+			f.deleteQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"status":true}`))
+			return
+		}
+		_, _ = w.Write([]byte(f.queueJSON))
+	case "history":
+		if q.Get("name") == "delete" {
+			f.deleteQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"status":true}`))
+			return
+		}
+		_, _ = w.Write([]byte(f.historyJSON))
+	case "get_config":
+		_, _ = w.Write([]byte(f.configJSON))
+	default:
+		_, _ = w.Write([]byte(`{"status":true}`))
+	}
+}
+
+func TestSabnzbd_GetItemsUnionsQueueAndHistory(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":false,"slots":[{"status":"Downloading","filename":"Show.S01E01","mb":100,"mbleft":42,"timeleft":"0:10:00","priority":"Normal","cat":"tv","nzo_id":"q_001"},{"status":"Deleted","filename":"Skip","cat":"tv","nzo_id":"skip"},{"status":"Downloading","filename":"Other.S01E01","cat":"other","nzo_id":"q_other"}]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[{"name":"Show.S01E02","bytes":1048576,"category":"tv","nzo_id":"h_001","status":"Completed","storage":"/data/complete/x"}]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fake.serve(w, r)
+	}))
+	defer srv.Close()
+
+	sab := newSabnzbdForURL(t, srv)
+	got, err := sab.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("GetItems: %v", err)
+	}
+	// Expect 2 items: q_001 + h_001. The "Deleted" and the wrong-category
+	// "q_other" should both be filtered out.
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2; got=%+v", len(got), got)
+	}
+	if got[0].DownloadID != "q_001" || got[0].Status != downloadclients.DownloadItemStatusDownloading {
+		t.Errorf("first item = %+v", got[0])
+	}
+	if got[1].DownloadID != "h_001" || got[1].Status != downloadclients.DownloadItemStatusCompleted {
+		t.Errorf("second item = %+v", got[1])
+	}
+}
+
+func TestSabnzbd_GetItemsTitleStripsEncryptedPrefix(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":false,"slots":[{"status":"Downloading","filename":"ENCRYPTED /Real.Title","cat":"tv","nzo_id":"e_001","priority":"Normal"}]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+
+	sab := newSabnzbdForURL(t, srv)
+	got, _ := sab.GetItems(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].Title != "Real.Title" || !got[0].IsEncrypted {
+		t.Errorf("Title=%q IsEncrypted=%v", got[0].Title, got[0].IsEncrypted)
+	}
+}
+
+func TestSabnzbd_GetItemsPausedQueueMarksItemsPaused(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":true,"slots":[{"status":"Downloading","filename":"Show.S01E01","cat":"tv","nzo_id":"p_001","priority":"Normal"}]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+	sab := newSabnzbdForURL(t, srv)
+	got, _ := sab.GetItems(context.Background())
+	if len(got) != 1 || got[0].Status != downloadclients.DownloadItemStatusPaused {
+		t.Errorf("expected single Paused item, got %+v", got)
+	}
+}
+
+func TestSabnzbd_GetItemsForceOverridesQueuePause(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":true,"slots":[{"status":"Downloading","filename":"Force.S01E01","cat":"tv","nzo_id":"f_001","priority":"Force"}]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+	sab := newSabnzbdForURL(t, srv)
+	got, _ := sab.GetItems(context.Background())
+	if len(got) != 1 || got[0].Status != downloadclients.DownloadItemStatusDownloading {
+		t.Errorf("Force priority should bypass paused-queue; got %+v", got)
+	}
+}
+
+func TestSabnzbd_GetItemsHistoryFailDemotedToWarning(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":false,"slots":[]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[{"name":"Show.X","bytes":1,"category":"tv","nzo_id":"h_warn","status":"Failed","fail_message":"Unpacking failed, write error or disk is full?"}]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+	sab := newSabnzbdForURL(t, srv)
+	got, _ := sab.GetItems(context.Background())
+	if len(got) != 1 || got[0].Status != downloadclients.DownloadItemStatusWarning {
+		t.Errorf("Unpacking-failed message should demote to Warning; got %+v", got)
+	}
+}
+
+func TestSabnzbd_RemoveItemQueueBranch(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":false,"slots":[{"status":"Downloading","filename":"Live.S01E01","cat":"tv","nzo_id":"live_1","priority":"Normal"}]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+	sab := newSabnzbdForURL(t, srv)
+	item := &downloadclients.Item{DownloadID: "live_1"}
+	if err := sab.RemoveItem(context.Background(), item, true); err != nil {
+		t.Fatalf("RemoveItem: %v", err)
+	}
+	if !strings.Contains(fake.deleteQuery, "mode=queue") {
+		t.Errorf("deleteQuery = %q, want a queue mode call", fake.deleteQuery)
+	}
+}
+
+func TestSabnzbd_RemoveItemHistoryBranchPermanentFlagOnFailed(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":false,"slots":[]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+	sab := newSabnzbdForURL(t, srv)
+	item := &downloadclients.Item{DownloadID: "gone_1", Status: downloadclients.DownloadItemStatusFailed}
+	if err := sab.RemoveItem(context.Background(), item, false); err != nil {
+		t.Fatalf("RemoveItem: %v", err)
+	}
+	if !strings.Contains(fake.deleteQuery, "mode=history") {
+		t.Errorf("deleteQuery = %q, want a history mode call", fake.deleteQuery)
+	}
+	if !strings.Contains(fake.deleteQuery, "archive=0") {
+		t.Errorf("deleteQuery = %q, want archive=0 for permanent-delete on Failed", fake.deleteQuery)
+	}
+}
+
+func TestSabnzbd_MarkItemAsImportedReturnsUnsupportedSentinel(t *testing.T) {
+	t.Parallel()
+	sab := newSabnzbdForURL(t, nil)
+	err := sab.MarkItemAsImported(context.Background(), &downloadclients.Item{DownloadID: "x"})
+	if !errors.Is(err, downloadclients.ErrMarkAsImportedUnsupported) {
+		t.Errorf("err = %v, want ErrMarkAsImportedUnsupported", err)
+	}
+}
+
+func TestSabnzbd_GetStatusResolvesAbsoluteCompleteDir(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		configJSON: `{"config":{"misc":{"complete_dir":"/data/done","tv_categories":["tv"],"enable_tv_sorting":true},"categories":[{"name":"tv","priority":0,"dir":"sonarr"}],"sorters":[]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+	sab := newSabnzbdForURL(t, srv)
+	// Override TvCategory to "tv" to match the test fixture.
+	got, err := sab.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if !got.IsLocalhost {
+		t.Errorf("IsLocalhost = false, want true (Host=127.0.0.1)")
+	}
+	// SortingMode "TV": enable_tv_sorting=true && tv in tv_categories.
+	if got.SortingMode != "TV" {
+		t.Errorf("SortingMode = %q, want TV", got.SortingMode)
+	}
+	if len(got.OutputRootFolders) != 1 {
+		t.Errorf("OutputRootFolders = %+v, want 1 entry", got.OutputRootFolders)
+	}
+}
+
+func TestSabnzbd_GetStatusFetchesFullStatusForRelativeCompleteDir(t *testing.T) {
+	t.Parallel()
+	served := struct {
+		gotFullStatus bool
+	}{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("mode") {
+		case "get_config":
+			_, _ = w.Write([]byte(`{"config":{"misc":{"complete_dir":"relative/Downloads","tv_categories":["tv"]},"categories":[{"name":"tv","dir":"sonarr"}],"sorters":[]}}`))
+		case "fullstatus":
+			served.gotFullStatus = true
+			_, _ = w.Write([]byte(`{"status":{"completedir":"/abs/Downloads"}}`))
+		default:
+			_, _ = w.Write([]byte(`{"status":true}`))
+		}
+	}))
+	defer srv.Close()
+	sab := newSabnzbdForURL(t, srv)
+	if _, err := sab.GetStatus(context.Background()); err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if !served.gotFullStatus {
+		t.Errorf("expected fullstatus call when complete_dir is relative")
+	}
 }

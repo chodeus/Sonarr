@@ -160,6 +160,155 @@ func (p *Proxy) DownloadNzb(ctx context.Context, nzbData []byte, filename, categ
 	return addResp.IDs[0], nil
 }
 
+// GetQueue ports C# `SabnzbdProxy.GetQueue` at `SabnzbdProxy.cs:116-130`.
+// Returns the SAB queue paginated by (start, limit). When start==0 +
+// limit==0, SAB returns every queued item.
+//
+// Slice 4.BS (C-cleanup sub-arc C2a).
+func (p *Proxy) GetQueue(ctx context.Context, start, limit int, settings Settings) (*SabnzbdQueue, error) {
+	q := url.Values{}
+	q.Set("start", strconv.Itoa(start))
+	q.Set("limit", strconv.Itoa(limit))
+	if cat := strings.TrimSpace(settings.TvCategory); cat != "" {
+		q.Set("category", cat)
+	}
+	body, err := p.callGet(ctx, "queue", q, settings)
+	if err != nil {
+		return nil, err
+	}
+	var env queueResponse
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("sabnzbd: GetQueue: unmarshal: %w", err)
+	}
+	return &env.Queue, nil
+}
+
+// GetHistory ports C# `SabnzbdProxy.GetHistory` at `:132-146`.
+// SAB caps history requests at the per-instance DownloadClientHistoryLimit
+// (default 30); the caller (Sabnzbd.GetItems) supplies the configured
+// limit. start=0 + limit=0 yields the SAB-default page.
+//
+// Slice 4.BS (C-cleanup sub-arc C2a).
+func (p *Proxy) GetHistory(ctx context.Context, start, limit int, settings Settings) (*SabnzbdHistory, error) {
+	q := url.Values{}
+	q.Set("start", strconv.Itoa(start))
+	q.Set("limit", strconv.Itoa(limit))
+	if cat := strings.TrimSpace(settings.TvCategory); cat != "" {
+		q.Set("category", cat)
+	}
+	body, err := p.callGet(ctx, "history", q, settings)
+	if err != nil {
+		return nil, err
+	}
+	var env historyResponse
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("sabnzbd: GetHistory: unmarshal: %w", err)
+	}
+	return &env.History, nil
+}
+
+// GetConfig ports C# `SabnzbdProxy.GetConfig` at `:97-104`. Returns
+// the SAB global-config sub-tree (Misc + Categories + Sorters) used
+// by [Sabnzbd.GetStatus] for the OutputRootFolders + SortingMode
+// projection.
+//
+// Slice 4.BS (C-cleanup sub-arc C2a).
+func (p *Proxy) GetConfig(ctx context.Context, settings Settings) (*SabnzbdConfig, error) {
+	body, err := p.callGet(ctx, "get_config", nil, settings)
+	if err != nil {
+		return nil, err
+	}
+	var env configResponse
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("sabnzbd: GetConfig: unmarshal: %w", err)
+	}
+	return &env.Config, nil
+}
+
+// GetFullStatus ports C# `SabnzbdProxy.GetFullStatus` at `:106-114`.
+// Adds the `skip_dashboard=1` query param the C# code uses to avoid
+// returning the heavy dashboard payload. Used by [Sabnzbd.GetStatus]
+// to resolve the absolute complete_dir when the SAB-side value is
+// relative (SAB >= 2.0).
+//
+// Slice 4.BS (C-cleanup sub-arc C2a).
+func (p *Proxy) GetFullStatus(ctx context.Context, settings Settings) (*SabnzbdFullStatus, error) {
+	q := url.Values{}
+	q.Set("skip_dashboard", "1")
+	body, err := p.callGet(ctx, "fullstatus", q, settings)
+	if err != nil {
+		return nil, err
+	}
+	var env fullStatusResponse
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("sabnzbd: GetFullStatus: unmarshal: %w", err)
+	}
+	return &env.Status, nil
+}
+
+// RemoveFromQueue ports C# `SabnzbdProxy.RemoveFromQueue` at `:64-72`.
+// Tells SAB to drop the in-progress download. deleteData=true also
+// deletes the partial files on disk.
+//
+// Slice 4.BS (C-cleanup sub-arc C2a).
+func (p *Proxy) RemoveFromQueue(ctx context.Context, id string, deleteData bool, settings Settings) error {
+	q := url.Values{}
+	q.Set("name", "delete")
+	q.Set("del_files", boolToZeroOne(deleteData))
+	q.Set("value", id)
+	_, err := p.callGet(ctx, "queue", q, settings)
+	return err
+}
+
+// RemoveFromHistory ports C# `SabnzbdProxy.RemoveFromHistory` at
+// `:74-83`. Drops a completed item from SAB's history. The
+// `archive` param is the C# inverse-of-deletePermanently mapping
+// (deletePermanently=true → archive=0 → fully purged;
+// deletePermanently=false → archive=1 → moved to history's archive).
+//
+// Slice 4.BS (C-cleanup sub-arc C2a).
+func (p *Proxy) RemoveFromHistory(ctx context.Context, id string, deleteData, deletePermanently bool, settings Settings) error {
+	q := url.Values{}
+	q.Set("name", "delete")
+	q.Set("del_files", boolToZeroOne(deleteData))
+	q.Set("value", id)
+	if deletePermanently {
+		q.Set("archive", "0")
+	} else {
+		q.Set("archive", "1")
+	}
+	_, err := p.callGet(ctx, "history", q, settings)
+	return err
+}
+
+// callGet is the shared GET-then-checkForError helper for the
+// JSON-API endpoints. Mirrors the C# `ProcessRequest` happy path at
+// `SabnzbdProxy.cs:187-220` minus the request-builder ceremony.
+func (p *Proxy) callGet(ctx context.Context, mode string, extraQuery url.Values, settings Settings) ([]byte, error) {
+	if extraQuery == nil {
+		extraQuery = url.Values{}
+	}
+	req, err := p.buildRequest(ctx, http.MethodGet, mode, extraQuery, settings, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	body, err := p.execute(req)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkForError(body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+func boolToZeroOne(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
+}
+
 // GetVersion returns the SAB version string (e.g. "3.7.2"). Mirrors
 // C# `SabnzbdProxy.GetVersion` at `:85-95`. Used by [Sabnzbd.Test]
 // for the version-check FluentValidation rule.
