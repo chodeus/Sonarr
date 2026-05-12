@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -105,7 +106,7 @@ func newSearchSvc(t *testing.T, ser *series.Series, idx Indexer) (*Service, *stu
 	src := &stubSource{indexers: []Indexer{idx}}
 	sg := &stubSeriesGetter{byID: map[int]*series.Series{ser.ID: ser}}
 	er := &stubEpisodeRepo{episodes: map[int]*episodes.Episode{}, bySeason: map[[2]int][]episodes.Episode{}}
-	svc := NewService(src, nil, sg, er, &stubMapper{}, nil)
+	svc := NewService(src, nil, sg, er, &stubMapper{}, nil, nil)
 	return svc, er
 }
 
@@ -210,7 +211,7 @@ func TestEpisodeSearch_Season0SpecialUsesSpecialEpisodeCriteria(t *testing.T) {
 
 func TestEpisodeSearch_NilEpisodeErrors(t *testing.T) {
 	src := &stubSource{}
-	svc := NewService(src, nil, nil, nil, nil, nil)
+	svc := NewService(src, nil, nil, nil, nil, nil, nil)
 	if _, err := svc.EpisodeSearchByEpisode(context.Background(), nil, SearchSettings{}); err == nil {
 		t.Fatalf("expected error for nil episode")
 	}
@@ -364,7 +365,7 @@ func TestDispatchSearch_UpdateLastSearchTimeErrorIsLogged(t *testing.T) {
 func TestEpisodeSearch_LoadEpisodeErrorPropagates(t *testing.T) {
 	src := &stubSource{}
 	er := &stubEpisodeRepo{getErr: errors.New("db gone")}
-	svc := NewService(src, nil, nil, er, &stubMapper{}, nil)
+	svc := NewService(src, nil, nil, er, &stubMapper{}, nil, nil)
 	if _, err := svc.EpisodeSearch(context.Background(), 1, SearchSettings{}); err == nil {
 		t.Fatalf("expected error to propagate")
 	}
@@ -375,7 +376,7 @@ func TestEpisodeSearch_LoadSeriesErrorPropagates(t *testing.T) {
 		1: {ID: 1, SeriesID: 10, SeasonNumber: 1, EpisodeNumber: 1},
 	}}
 	sg := &stubSeriesGetter{err: errors.New("series db down")}
-	svc := NewService(&stubSource{}, nil, sg, er, &stubMapper{}, nil)
+	svc := NewService(&stubSource{}, nil, sg, er, &stubMapper{}, nil, nil)
 	if _, err := svc.EpisodeSearch(context.Background(), 1, SearchSettings{}); err == nil {
 		t.Fatalf("expected series error to propagate")
 	}
@@ -402,7 +403,7 @@ func TestCriteriaForEpisodes_AppendsSeriesTitleWhenAbsent(t *testing.T) {
 	src := &stubSource{indexers: []Indexer{idx}}
 	sg := &stubSeriesGetter{byID: map[int]*series.Series{ser.ID: ser}}
 	er := &stubEpisodeRepo{episodes: map[int]*episodes.Episode{ep.ID: ep}}
-	svc := NewService(src, nil, sg, er, mapper, nil)
+	svc := NewService(src, nil, sg, er, mapper, nil, nil)
 
 	// Daily series → criteriaForEpisodes path.
 	prevType := ser.SeriesType
@@ -430,7 +431,7 @@ func TestCriteriaForEpisodes_DoesNotDuplicateSeriesTitle(t *testing.T) {
 	src := &stubSource{indexers: []Indexer{idx}}
 	sg := &stubSeriesGetter{byID: map[int]*series.Series{ser.ID: ser}}
 	er := &stubEpisodeRepo{episodes: map[int]*episodes.Episode{ep.ID: ep}}
-	svc := NewService(src, nil, sg, er, mapper, nil)
+	svc := NewService(src, nil, sg, er, mapper, nil, nil)
 
 	if _, err := svc.EpisodeSearch(context.Background(), ep.ID, SearchSettings{}); err != nil {
 		t.Fatalf("EpisodeSearch: %v", err)
@@ -439,5 +440,86 @@ func TestCriteriaForEpisodes_DoesNotDuplicateSeriesTitle(t *testing.T) {
 	titles := c.SceneTitles
 	if len(titles) != 1 {
 		t.Errorf("expected 1 (case-insensitive dedup), got %v", titles)
+	}
+}
+
+// --- Slice 4.BV (C-cleanup [C13]) DecisionMaker wiring -----------
+
+// recordingDecisionMaker satisfies DecisionMaker. Captures the
+// (reports, criteria) pair passed in + returns one Decision per
+// report so tests can verify the wiring without exercising the full
+// spec pipeline.
+type recordingDecisionMaker struct {
+	calls    int
+	reports  []any
+	criteria []*decisionengine.SearchCriteria
+}
+
+func (r *recordingDecisionMaker) GetSearchDecision(_ context.Context, reports []any, criteria *decisionengine.SearchCriteria) []decisionengine.Decision {
+	r.calls++
+	r.reports = append(r.reports, reports...)
+	r.criteria = append(r.criteria, criteria)
+	out := make([]decisionengine.Decision, 0, len(reports))
+	for _, rep := range reports {
+		out = append(out, decisionengine.NewDecision(rep))
+	}
+	return out
+}
+
+func TestDispatchSearch_InvokesDecisionMakerWithCriteria(t *testing.T) {
+	ser := &series.Series{ID: 10, Title: "Std", TvdbID: 1, SeriesType: series.SeriesTypeStandard}
+	ep := &episodes.Episode{ID: 100, SeriesID: 10, SeasonNumber: 2, EpisodeNumber: 5}
+	idx := &capturingIndexer{id: 1, released: []any{"r1", "r2"}}
+	src := &stubSource{indexers: []Indexer{idx}}
+	sg := &stubSeriesGetter{byID: map[int]*series.Series{ser.ID: ser}}
+	er := &stubEpisodeRepo{episodes: map[int]*episodes.Episode{ep.ID: ep}}
+	rec := &recordingDecisionMaker{}
+
+	svc := NewService(src, nil, sg, er, &stubMapper{}, rec, nil)
+	got, err := svc.EpisodeSearch(context.Background(), ep.ID, SearchSettings{UserInvokedSearch: true})
+	if err != nil {
+		t.Fatalf("EpisodeSearch: %v", err)
+	}
+	if rec.calls != 1 {
+		t.Fatalf("decisionMaker.GetSearchDecision calls = %d, want 1", rec.calls)
+	}
+	if len(rec.reports) != 2 {
+		t.Errorf("reports passed = %d, want 2", len(rec.reports))
+	}
+	if len(rec.criteria) != 1 || rec.criteria[0] == nil {
+		t.Fatalf("criteria = %+v, want non-nil pointer", rec.criteria)
+	}
+	if rec.criteria[0].Series == nil || rec.criteria[0].Series.ID != 10 {
+		t.Errorf("criteria.Series = %+v, want ID=10", rec.criteria[0].Series)
+	}
+	if !rec.criteria[0].UserInvokedSearch {
+		t.Errorf("criteria.UserInvokedSearch lost in projection")
+	}
+	if len(got) != 2 {
+		t.Errorf("decisions returned = %d, want 2", len(got))
+	}
+}
+
+func TestDispatchSearch_NilDecisionMakerFallsBackToPassthrough(t *testing.T) {
+	ser := &series.Series{ID: 10, Title: "Std", TvdbID: 1, SeriesType: series.SeriesTypeStandard}
+	ep := &episodes.Episode{ID: 100, SeriesID: 10, SeasonNumber: 2, EpisodeNumber: 5}
+	idx := &capturingIndexer{id: 1, released: []any{"r1", "r2", "r3"}}
+	src := &stubSource{indexers: []Indexer{idx}}
+	sg := &stubSeriesGetter{byID: map[int]*series.Series{ser.ID: ser}}
+	er := &stubEpisodeRepo{episodes: map[int]*episodes.Episode{ep.ID: ep}}
+
+	svc := NewService(src, nil, sg, er, &stubMapper{}, nil, nil)
+	got, err := svc.EpisodeSearch(context.Background(), ep.ID, SearchSettings{})
+	if err != nil {
+		t.Fatalf("EpisodeSearch: %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("passthrough wraps each report; got %d decisions, want 3", len(got))
+	}
+	// Each Decision's Subject is the raw report from the indexer.
+	for i, d := range got {
+		if d.Subject != idx.released[i] {
+			t.Errorf("decision[%d].Subject = %v, want %v", i, d.Subject, idx.released[i])
+		}
 	}
 }

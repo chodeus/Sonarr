@@ -2078,6 +2078,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		seriesSvc,
 		episodesSvc,
 		scenemappingsSvc,
+		downloadDecider,
 		logger,
 	)
 	// Slice 4.Q (queue [9]): wire the RssSync handler. Below in

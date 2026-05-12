@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -43,7 +44,7 @@ type SearchSettings struct {
 // deferred to queue [7c] (decisionengine wire-through); mirroring the
 // C# DownloadDecision return shape requires the parsing/aggregation
 // front-end which hasn't landed yet.
-func (s *Service) EpisodeSearch(ctx context.Context, episodeID int, settings SearchSettings) ([]any, error) {
+func (s *Service) EpisodeSearch(ctx context.Context, episodeID int, settings SearchSettings) ([]decisionengine.Decision, error) {
 	episode, err := s.episodeGet.GetEpisode(ctx, episodeID)
 	if err != nil {
 		return nil, fmt.Errorf("indexersearch: load episode %d: %w", episodeID, err)
@@ -59,7 +60,7 @@ func (s *Service) EpisodeSearch(ctx context.Context, episodeID int, settings Sea
 // Errors mirror the C# SearchFailedException for daily-without-airdate
 // — returned via plain `errors.New` here since the Go port lacks a
 // typed search-exception hierarchy at this layer.
-func (s *Service) EpisodeSearchByEpisode(ctx context.Context, episode *episodes.Episode, settings SearchSettings) ([]any, error) {
+func (s *Service) EpisodeSearchByEpisode(ctx context.Context, episode *episodes.Episode, settings SearchSettings) ([]decisionengine.Decision, error) {
 	if episode == nil {
 		return nil, errors.New("indexersearch: nil episode")
 	}
@@ -97,7 +98,7 @@ func (s *Service) EpisodeSearchByEpisode(ctx context.Context, episode *episodes.
 // monitoredOnly, ...) overload at ReleaseSearchService.cs:96-112 —
 // loads the season's episodes, optionally filters to !HasFile, and
 // hands off to SeasonSearchByEpisodes.
-func (s *Service) SeasonSearch(ctx context.Context, seriesID, seasonNumber int, missingOnly bool, settings SearchSettings) ([]any, error) {
+func (s *Service) SeasonSearch(ctx context.Context, seriesID, seasonNumber int, missingOnly bool, settings SearchSettings) ([]decisionengine.Decision, error) {
 	eps, err := s.episodeGet.GetEpisodesBySeason(ctx, seriesID, seasonNumber)
 	if err != nil {
 		return nil, fmt.Errorf("indexersearch: load season %d/%d: %w", seriesID, seasonNumber, err)
@@ -127,7 +128,7 @@ func (s *Service) SeasonSearch(ctx context.Context, seriesID, seasonNumber int, 
 // monitoredOnly, ...) overload at ReleaseSearchService.cs:114-161.
 // Branches on the series type, then for standard series iterates the
 // per-mapping search using single/season criteria.
-func (s *Service) SeasonSearchByEpisodes(ctx context.Context, seriesID, seasonNumber int, eps []episodes.Episode, settings SearchSettings) ([]any, error) {
+func (s *Service) SeasonSearchByEpisodes(ctx context.Context, seriesID, seasonNumber int, eps []episodes.Episode, settings SearchSettings) ([]decisionengine.Decision, error) {
 	ser, err := s.seriesGet.GetSeries(ctx, seriesID)
 	if err != nil {
 		return nil, fmt.Errorf("indexersearch: load series %d: %w", seriesID, err)
@@ -145,7 +146,7 @@ func (s *Service) SeasonSearchByEpisodes(ctx context.Context, seriesID, seasonNu
 		return nil, fmt.Errorf("indexersearch: scene-season mappings: %w", err)
 	}
 
-	var aggregated []any
+	var aggregated []decisionengine.Decision
 	for _, m := range mappings {
 		if m.SeasonNumber == 0 {
 			rs, err := s.searchSpecial(ctx, ser, m.Episodes, settings.MonitoredOnly, settings)
@@ -185,13 +186,13 @@ func (s *Service) SeasonSearchByEpisodes(ctx context.Context, seriesID, seasonNu
 
 // searchSingle ports SearchSingle :323-340 — iterate the per-episode
 // mappings, build a SingleEpisodeCriteria per mapping, dispatch.
-func (s *Service) searchSingle(ctx context.Context, ser *series.Series, episode *episodes.Episode, monitoredOnly bool, settings SearchSettings) ([]any, error) {
+func (s *Service) searchSingle(ctx context.Context, ser *series.Series, episode *episodes.Episode, monitoredOnly bool, settings SearchSettings) ([]decisionengine.Decision, error) {
 	mappings, err := getSceneEpisodeMappingsForEpisode(ctx, s.sceneMapper, ser, episode)
 	if err != nil {
 		return nil, err
 	}
 	settings.MonitoredOnly = monitoredOnly
-	var aggregated []any
+	var aggregated []decisionengine.Decision
 	for _, m := range mappings {
 		spec := SingleEpisodeCriteria{
 			CriteriaBase:  s.criteriaForEpisodeMapping(ser, m, settings),
@@ -208,7 +209,7 @@ func (s *Service) searchSingle(ctx context.Context, ser *series.Series, episode 
 }
 
 // searchDaily ports SearchDaily :342-351.
-func (s *Service) searchDaily(ctx context.Context, ser *series.Series, episode *episodes.Episode, monitoredOnly bool, settings SearchSettings) ([]any, error) {
+func (s *Service) searchDaily(ctx context.Context, ser *series.Series, episode *episodes.Episode, monitoredOnly bool, settings SearchSettings) ([]decisionengine.Decision, error) {
 	settings.MonitoredOnly = monitoredOnly
 	airDate, err := time.Parse("2006-01-02", episode.AirDate)
 	if err != nil {
@@ -223,7 +224,7 @@ func (s *Service) searchDaily(ctx context.Context, ser *series.Series, episode *
 }
 
 // searchAnime ports SearchAnime :353-366.
-func (s *Service) searchAnime(ctx context.Context, ser *series.Series, episode *episodes.Episode, monitoredOnly bool, settings SearchSettings, isSeasonSearch bool) ([]any, error) {
+func (s *Service) searchAnime(ctx context.Context, ser *series.Series, episode *episodes.Episode, monitoredOnly bool, settings SearchSettings, isSeasonSearch bool) ([]decisionengine.Decision, error) {
 	settings.MonitoredOnly = monitoredOnly
 	base, err := s.criteriaForEpisodes(ctx, ser, []episodes.Episode{*episode}, settings)
 	if err != nil {
@@ -258,7 +259,7 @@ func (s *Service) searchAnime(ctx context.Context, ser *series.Series, episode *
 // "<series> <episode-title>" query list per :375-379, dispatches the
 // SpecialEpisodeCriteria, then per-episode falls through to
 // searchSingle for season/episode-number coverage.
-func (s *Service) searchSpecial(ctx context.Context, ser *series.Series, eps []episodes.Episode, monitoredOnly bool, settings SearchSettings) ([]any, error) {
+func (s *Service) searchSpecial(ctx context.Context, ser *series.Series, eps []episodes.Episode, monitoredOnly bool, settings SearchSettings) ([]decisionengine.Decision, error) {
 	settings.MonitoredOnly = monitoredOnly
 	base, err := s.criteriaForEpisodes(ctx, ser, eps, settings)
 	if err != nil {
@@ -310,7 +311,7 @@ func (s *Service) searchSpecial(ctx context.Context, ser *series.Series, eps []e
 }
 
 // searchAnimeSeason ports SearchAnimeSeason :398-430.
-func (s *Service) searchAnimeSeason(ctx context.Context, ser *series.Series, eps []episodes.Episode, settings SearchSettings) ([]any, error) {
+func (s *Service) searchAnimeSeason(ctx context.Context, ser *series.Series, eps []episodes.Episode, settings SearchSettings) ([]decisionengine.Decision, error) {
 	base, err := s.criteriaForEpisodes(ctx, ser, eps, settings)
 	if err != nil {
 		return nil, err
@@ -336,7 +337,7 @@ func (s *Service) searchAnimeSeason(ctx context.Context, ser *series.Series, eps
 	// C# at :413: GroupBy(SeasonNumber).Select(g => g.First()).
 	// Walk in order, skip duplicates.
 	seenSeason := make(map[int]struct{}, len(seasonsToSearch))
-	var aggregated []any
+	var aggregated []decisionengine.Decision
 	for _, sm := range seasonsToSearch {
 		if _, ok := seenSeason[sm.SeasonNumber]; ok {
 			continue
@@ -363,7 +364,7 @@ func (s *Service) searchAnimeSeason(ctx context.Context, ser *series.Series, eps
 }
 
 // searchDailySeason ports SearchDailySeason :432-461.
-func (s *Service) searchDailySeason(ctx context.Context, ser *series.Series, eps []episodes.Episode, settings SearchSettings) ([]any, error) {
+func (s *Service) searchDailySeason(ctx context.Context, ser *series.Series, eps []episodes.Episode, settings SearchSettings) ([]decisionengine.Decision, error) {
 	episodesToSearch := make([]episodes.Episode, 0, len(eps))
 	for _, e := range eps {
 		if !settings.InteractiveSearch && settings.MonitoredOnly && !e.Monitored {
@@ -397,7 +398,7 @@ func (s *Service) searchDailySeason(ctx context.Context, ser *series.Series, eps
 		groups[idx].eps = append(groups[idx].eps, e)
 	}
 
-	var aggregated []any
+	var aggregated []decisionengine.Decision
 	for _, g := range groups {
 		if len(g.eps) > 1 {
 			base, err := s.criteriaForEpisodes(ctx, ser, g.eps, settings)
@@ -498,9 +499,13 @@ func (s *Service) criteriaForSeasonMapping(ser *series.Series, m SceneSeasonMapp
 
 // dispatchSearch is the per-criteria dispatch helper. Wraps
 // Service.Dispatch with a SearchAction that calls FetchSearch on each
-// indexer, and stamps LastSearchTime on the criteria's episodes after
-// dispatch (mirrors C# :540-547).
-func (s *Service) dispatchSearch(ctx context.Context, criteria criteriaWithBase) ([]any, error) {
+// indexer, stamps LastSearchTime on the criteria's episodes after
+// dispatch (mirrors C# :540-547), then runs the collected raw reports
+// through [DecisionMaker.GetSearchDecision] to produce typed
+// [decisionengine.Decision] values (slice 4.BV / C-cleanup [C13]).
+// Mirrors C# `ReleaseSearchService.Dispatch` at :520-550 — the C#
+// version returns `List<DownloadDecision>` after the same sequence.
+func (s *Service) dispatchSearch(ctx context.Context, criteria criteriaWithBase) ([]decisionengine.Decision, error) {
 	base := criteria.Base()
 	releases, err := s.Dispatch(ctx, func(ctx context.Context, idx Indexer) ([]any, error) {
 		return idx.FetchSearch(ctx, criteria)
@@ -523,7 +528,12 @@ func (s *Service) dispatchSearch(ctx context.Context, criteria criteriaWithBase)
 			)
 		}
 	}
-	return releases, nil
+
+	// Slice 4.BV (C-cleanup [C13]): wrap raw reports → Decisions.
+	// The C# equivalent at `ReleaseSearchService.cs:549` is
+	// `_makeDownloadDecision.GetSearchDecision(reports, criteriaBase).ToList()`.
+	criteriaForDecisions := criteriaFromBase(base)
+	return s.decisionMaker.GetSearchDecision(ctx, releases, criteriaForDecisions), nil
 }
 
 // criteriaWithBase is the small "I'm a typed criteria value with a

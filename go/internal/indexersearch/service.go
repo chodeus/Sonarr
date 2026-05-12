@@ -92,34 +92,50 @@ type SearchAction func(ctx context.Context, idx Indexer) ([]any, error)
 // search.go) consume. They may be nil when the Service is used only
 // for the dispatcher core (the queue [9] RssSync feeder uses
 // FetchRSS directly without touching them).
+//
+// `decisionMaker` (slice 4.BV / C-cleanup [C13]) bridges the search
+// path to the decisionengine — every dispatchSearch invocation runs
+// the collected raw reports through GetSearchDecision to produce
+// typed [decisionengine.Decision] values. May be nil for
+// dispatcher-only test setups; production wiring MUST supply a real
+// [*decisionengine.DownloadDecisionMaker]. When nil, dispatchSearch
+// falls back to [passthroughDecisionMaker] which wraps each report
+// in an APPROVED Decision without spec evaluation.
 type Service struct {
-	source      IndexerSource
-	recorder    providerstatus.Recorder
-	seriesGet   SeriesGetter
-	episodeGet  EpisodeRepo
-	sceneMapper SceneMapper
-	log         *slog.Logger
+	source        IndexerSource
+	recorder      providerstatus.Recorder
+	seriesGet     SeriesGetter
+	episodeGet    EpisodeRepo
+	sceneMapper   SceneMapper
+	decisionMaker DecisionMaker
+	log           *slog.Logger
 }
 
 // NewService binds the dispatcher dependencies. log defaults to
 // slog.Default when nil. recorder / seriesGet / episodeGet /
-// sceneMapper may be nil for use cases that don't exercise that
-// surface (recorder=nil disables status-recording; the search-side
-// deps may be nil when only the FetchRSS feeder is wanted).
+// sceneMapper / decisionMaker may be nil for use cases that don't
+// exercise that surface (recorder=nil disables status-recording; the
+// search-side deps may be nil when only the FetchRSS feeder is
+// wanted; decisionMaker=nil falls back to [passthroughDecisionMaker]
+// — see the Service doc-comment).
 //
-// Use NewService(source, recorder, nil, nil, nil, log) for the
+// Use NewService(source, recorder, nil, nil, nil, nil, log) for the
 // dispatcher-only shape that slice 4.M's tests exercise.
-func NewService(source IndexerSource, recorder providerstatus.Recorder, seriesGet SeriesGetter, episodeGet EpisodeRepo, sceneMapper SceneMapper, log *slog.Logger) *Service {
+func NewService(source IndexerSource, recorder providerstatus.Recorder, seriesGet SeriesGetter, episodeGet EpisodeRepo, sceneMapper SceneMapper, decisionMaker DecisionMaker, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
+	if decisionMaker == nil {
+		decisionMaker = passthroughDecisionMaker{}
+	}
 	return &Service{
-		source:      source,
-		recorder:    recorder,
-		seriesGet:   seriesGet,
-		episodeGet:  episodeGet,
-		sceneMapper: sceneMapper,
-		log:         log,
+		source:        source,
+		recorder:      recorder,
+		seriesGet:     seriesGet,
+		episodeGet:    episodeGet,
+		sceneMapper:   sceneMapper,
+		decisionMaker: decisionMaker,
+		log:           log,
 	}
 }
 
