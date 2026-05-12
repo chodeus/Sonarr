@@ -14,19 +14,24 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 )
 
-// fakeDisk satisfies metadataservice.DiskWriter with an in-memory map.
+// fakeDisk satisfies metadataservice.DiskWriter with in-memory maps
+// for both files and folders.
 type fakeDisk struct {
-	files map[string]string
-	// writeErr / copyErr injectable per-path.
+	files   map[string]string
+	folders map[string]bool
+	// per-path error injection:
 	writeErr map[string]error
 	copyErr  map[string]error
+	moveErr  map[string]error
 }
 
 func newFakeDisk() *fakeDisk {
 	return &fakeDisk{
 		files:    map[string]string{},
+		folders:  map[string]bool{},
 		writeErr: map[string]error{},
 		copyErr:  map[string]error{},
+		moveErr:  map[string]error{},
 	}
 }
 
@@ -43,6 +48,10 @@ func (f *fakeDisk) FileExists(path string) bool {
 	return ok
 }
 
+func (f *fakeDisk) FolderExists(path string) bool {
+	return f.folders[path]
+}
+
 func (f *fakeDisk) CopyFile(src, dst string) error {
 	if err, ok := f.copyErr[src]; ok {
 		return err
@@ -51,6 +60,19 @@ func (f *fakeDisk) CopyFile(src, dst string) error {
 	if !ok {
 		return fmt.Errorf("copy source not found: %s", src)
 	}
+	f.files[dst] = content
+	return nil
+}
+
+func (f *fakeDisk) MoveFile(src, dst string) error {
+	if err, ok := f.moveErr[src]; ok {
+		return err
+	}
+	content, ok := f.files[src]
+	if !ok {
+		return fmt.Errorf("move source not found: %s", src)
+	}
+	delete(f.files, src)
 	f.files[dst] = content
 	return nil
 }
@@ -74,12 +96,16 @@ func (f *fakeHTTP) DownloadFile(_ context.Context, url, dst string) error {
 
 // fakeFiles records persistence calls.
 type fakeFiles struct {
-	inserts   []metadatafiles.MetadataFile
-	updates   []metadatafiles.MetadataFile
-	deleted   []int
-	insertErr error
-	updateErr error
-	deleteErr error
+	inserts     []metadatafiles.MetadataFile
+	updates     []metadatafiles.MetadataFile
+	deleted     []int
+	upserts     [][]metadatafiles.MetadataFile
+	bySeries    map[int][]metadatafiles.MetadataFile
+	insertErr   error
+	updateErr   error
+	deleteErr   error
+	upsertErr   error
+	bySeriesErr error
 }
 
 func (f *fakeFiles) Insert(_ context.Context, m *metadatafiles.MetadataFile) (int, error) {
@@ -105,6 +131,21 @@ func (f *fakeFiles) Delete(_ context.Context, id int) error {
 		return f.deleteErr
 	}
 	f.deleted = append(f.deleted, id)
+	return nil
+}
+
+func (f *fakeFiles) FilesBySeries(_ context.Context, seriesID int) ([]metadatafiles.MetadataFile, error) {
+	if f.bySeriesErr != nil {
+		return nil, f.bySeriesErr
+	}
+	return f.bySeries[seriesID], nil
+}
+
+func (f *fakeFiles) Upsert(_ context.Context, files []metadatafiles.MetadataFile) error {
+	if f.upsertErr != nil {
+		return f.upsertErr
+	}
+	f.upserts = append(f.upserts, files)
 	return nil
 }
 
@@ -174,6 +215,39 @@ func (f *fakeSeasons) SeasonsForSeries(_ *series.Series) ([]metadata.Season, err
 	return f.seasons, f.err
 }
 
+// fakeWriters stub for [metadataservice.WriterFactory].
+type fakeWriters struct {
+	enabled    []metadata.Provider
+	all        []metadata.Provider
+	enabledErr error
+	allErr     error
+}
+
+func (f *fakeWriters) Enabled(_ context.Context) ([]metadata.Provider, error) {
+	return f.enabled, f.enabledErr
+}
+
+func (f *fakeWriters) All(_ context.Context) ([]metadata.Provider, error) {
+	if f.all != nil {
+		return f.all, f.allErr
+	}
+	return f.enabled, f.allErr
+}
+
+// fakeCleaner stub.
+type fakeCleaner struct {
+	calls []int
+	err   error
+}
+
+func (f *fakeCleaner) Clean(_ context.Context, sr *series.Series) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.calls = append(f.calls, sr.ID)
+	return nil
+}
+
 // fakeProvider implements metadata.Provider.
 type fakeProvider struct {
 	consumerImpl string
@@ -236,6 +310,7 @@ func newService(t *testing.T, extra func(deps *metadataservice.Deps)) (*metadata
 		Bin:          bin,
 		OtherRenamer: renamer,
 		Transfer:     transfer,
+		Writers:      &fakeWriters{},
 	}
 	if extra != nil {
 		extra(&deps)
@@ -256,6 +331,7 @@ func TestNewService_RejectsNilRequiredDeps(t *testing.T) {
 		Attrs:    &fakeAttrs{},
 		Bin:      &fakeBin{},
 		Transfer: &fakeTransfer{},
+		Writers:  &fakeWriters{},
 	}
 	if _, err := metadataservice.NewService(full); err != nil {
 		t.Fatalf("full deps should succeed: %v", err)
@@ -270,6 +346,7 @@ func TestNewService_RejectsNilRequiredDeps(t *testing.T) {
 		{"nil Attrs", func(d *metadataservice.Deps) { d.Attrs = nil }},
 		{"nil Bin", func(d *metadataservice.Deps) { d.Bin = nil }},
 		{"nil Transfer", func(d *metadataservice.Deps) { d.Transfer = nil }},
+		{"nil Writers", func(d *metadataservice.Deps) { d.Writers = nil }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -287,6 +364,7 @@ func TestNewService_NilOtherRenamerOK(t *testing.T) {
 	deps := metadataservice.Deps{
 		Disk: newFakeDisk(), HTTP: &fakeHTTP{}, Files: &fakeFiles{},
 		Attrs: &fakeAttrs{}, Bin: &fakeBin{}, Transfer: &fakeTransfer{},
+		Writers:      &fakeWriters{},
 		OtherRenamer: nil,
 	}
 	if _, err := metadataservice.NewService(deps); err != nil {

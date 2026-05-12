@@ -37,17 +37,23 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 )
 
-// DiskWriter narrows the disk surface [Service] needs to write
-// metadata bodies + check / copy image files. Mirrors the C# `IDiskProvider`
-// methods at:
+// DiskWriter narrows the disk surface [Service] needs. Mirrors the C#
+// `IDiskProvider` methods at:
 //   - `WriteAllText(path, contents)` → C# `:509`.
 //   - `FileExists(path)` → C# `:350`, `:387`, `:425`, `:479`.
 //   - `CopyFile(src, dst)` → C# `:481`.
-//   - `GetParentFolder(path)` → C# `:529` for recyclebin sub-folder.
+//   - `FolderExists(path)` → C# `:65`, `:90`, `:123` for series-folder
+//     existence checks before any per-event write attempt.
+//   - `MoveFile(src, dst)` → C# `:213` for MoveFilesAfterRename.
+//
+// Production binding wraps `*disk.Provider`; all 5 methods exist on
+// the provider already.
 type DiskWriter interface {
 	WriteAllText(path, contents string) error
 	FileExists(path string) bool
+	FolderExists(path string) bool
 	CopyFile(src, dst string) error
+	MoveFile(src, dst string) error
 }
 
 // HTTPDownloader narrows the HTTP client surface — only the
@@ -57,9 +63,9 @@ type HTTPDownloader interface {
 	DownloadFile(ctx context.Context, url, fileName string) error
 }
 
-// MetadataFileStore narrows the [metadatafiles.Repo] surface to the
-// Insert / Update / Delete methods [Service] needs for the MetadataFiles
-// table writes. Production binding is `*metadatafiles.Repo` directly.
+// MetadataFileStore narrows the [metadatafiles.Repo] surface
+// [Service] needs. Production binding is `*metadatafiles.Repo`
+// directly (the structural-typing match is exact).
 type MetadataFileStore interface {
 	// Insert adds a new row + populates its ID via SetID.
 	Insert(ctx context.Context, m *metadatafiles.MetadataFile) (int, error)
@@ -69,6 +75,18 @@ type MetadataFileStore interface {
 
 	// Delete removes the row by ID; ErrNotFound on missing.
 	Delete(ctx context.Context, id int) error
+
+	// FilesBySeries returns every MetadataFile row for the given
+	// series. Mirrors C# `IMetadataFileService.GetFilesBySeries(seriesId)`
+	// at `:62`, `:87`, `:120`, `:160`, `:192`. Empty slice on no
+	// matches.
+	FilesBySeries(ctx context.Context, seriesID int) ([]metadatafiles.MetadataFile, error)
+
+	// Upsert performs an Insert-or-Update fan-out for every row in
+	// `files`. Mirrors C# `IMetadataFileService.Upsert(IEnumerable)`
+	// at `:80`, `:113`, `:138`, `:153`, `:185`, `:226`. The Go port
+	// dispatches on `f.ID == 0` to decide Insert vs Update.
+	Upsert(ctx context.Context, files []metadatafiles.MetadataFile) error
 }
 
 // MediaFileAttributes narrows the helper that adjusts the file's
@@ -118,6 +136,38 @@ const (
 	TransferModeCopy
 )
 
+// WriterFactory narrows the [metadata.Registry] facade [Service]
+// consults to enumerate enabled writers (for emission events) and
+// the full registered set (for rename events). Mirrors the C#
+// `IMetadataFactory` interface — `Enabled()` and `GetAvailableProviders()`.
+//
+// Production binding wraps a small adapter that walks
+// `metadata.Default()` and the persisted Metadata.Enable column to
+// produce the two views.
+type WriterFactory interface {
+	// Enabled returns every writer with Metadata.Enable=true.
+	// Mirrors C# `IMetadataFactory.Enabled()` at `:73`, `:98`, etc.
+	Enabled(ctx context.Context) ([]metadata.Provider, error)
+
+	// All returns every registered writer regardless of Enable.
+	// Mirrors C# `IMetadataFactory.GetAvailableProviders()` at
+	// `:198`. Used by MoveFilesAfterRename so disabled writers
+	// still get a chance to move existing on-disk sidecars.
+	All(ctx context.Context) ([]metadata.Provider, error)
+}
+
+// CleanMetadataService narrows the orphan-row pruner [Service]
+// consults before each per-event emission. Mirrors C#
+// `ICleanMetadataService.Clean(series)` at `:63`, `:88`, `:121`.
+//
+// nil-tolerant — when nil, the Service skips the prune step and
+// continues. Production binding wraps the C#-port equivalent of
+// CleanMetadataService (not yet ported in the Go tree; nil-skip
+// keeps the orchestrator functional in the interim).
+type CleanMetadataService interface {
+	Clean(ctx context.Context, sr *series.Series) error
+}
+
 // SeasonsLister narrows the per-series seasons enumerator
 // [Service.ProcessSeasonImages] consults. Mirrors C# `series.Seasons`
 // — a list of `Tv.Season` rows the C# class iterates at `:381`.
@@ -162,6 +212,13 @@ type Deps struct {
 	// silently skipped.
 	Seasons SeasonsLister
 
+	// Writers is the [WriterFactory] adapter the public per-event
+	// methods consult to fan out across enabled writers. Required.
+	Writers WriterFactory
+
+	// Cleaner is the orphan-metadata-row pruner. nil-tolerant.
+	Cleaner CleanMetadataService
+
 	// Log is the slog.Logger. nil → slog.Default.
 	Log *slog.Logger
 }
@@ -181,6 +238,8 @@ type Service struct {
 	otherRenamer OtherExtraRenamer
 	transfer     DiskTransfer
 	seasons      SeasonsLister
+	writers      WriterFactory
+	cleaner      CleanMetadataService
 	log          *slog.Logger
 }
 
@@ -205,6 +264,9 @@ func NewService(deps Deps) (*Service, error) {
 	if deps.Transfer == nil {
 		return nil, errors.New("metadataservice: NewService: Transfer is nil")
 	}
+	if deps.Writers == nil {
+		return nil, errors.New("metadataservice: NewService: Writers is nil")
+	}
 	log := deps.Log
 	if log == nil {
 		log = slog.Default()
@@ -218,6 +280,8 @@ func NewService(deps Deps) (*Service, error) {
 		otherRenamer: deps.OtherRenamer,
 		transfer:     deps.Transfer,
 		seasons:      deps.Seasons,
+		writers:      deps.Writers,
+		cleaner:      deps.Cleaner,
 		log:          log,
 	}, nil
 }
