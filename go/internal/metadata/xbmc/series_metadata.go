@@ -101,17 +101,6 @@ func (m *XbmcMetadata) SeriesMetadata(ctx context.Context, s *series.Series, rea
 // port absorbs the I/O-error class to match the spirit of "writer
 // emits as much as it can".
 func (m *XbmcMetadata) buildSeriesXML(ctx context.Context, s *series.Series) (string, error) {
-	type uniqueIDXML struct {
-		Type    string `xml:"type,attr"`
-		Default string `xml:"default,attr,omitempty"`
-		Value   string `xml:",chardata"`
-	}
-	type actorXML struct {
-		Name  string `xml:"name"`
-		Role  string `xml:"role"`
-		Thumb string `xml:"thumb,omitempty"`
-	}
-
 	var root struct {
 		XMLName      xml.Name      `xml:"tvshow"`
 		Title        string        `xml:"title"`

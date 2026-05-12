@@ -311,17 +311,7 @@ func (m *XbmcMetadata) FindMetadataFile(s *series.Series, path string) (*metadat
 	return nil, nil
 }
 
-// EpisodeMetadata is the W2a STUB for the per-episode `<filename>.nfo`
-// emitter. Returns the zero-value [metadata.MetadataFileResult].
-// Sub-arc W2c-ii (slice 4.BE) fills the body.
-//
-// Ports C# `XbmcMetadata.EpisodeMetadata` at `XbmcMetadata.cs:278-423`
-// — ~145 LOC of XElement build-up including the MediaInfo
-// streamdetails sub-document.
-func (m *XbmcMetadata) EpisodeMetadata(_ context.Context, _ *series.Series, _ *episodefiles.File) (metadata.MetadataFileResult, error) {
-	// STUB — slice 4.BB sub-arc W2a. Body lands in sub-arc W2c-ii (slice 4.BE).
-	return metadata.MetadataFileResult{}, nil
-}
+// EpisodeMetadata lives in episode_metadata.go (slice 4.BE).
 
 // SeriesImages emits one [metadata.ImageFileResult] per cover in
 // series.Images (decoded from the JSON-blob `series.Series.Images`).
