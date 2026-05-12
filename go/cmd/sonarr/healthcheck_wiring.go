@@ -278,6 +278,35 @@ func (a skyHookProberAdapter) ProbeKnownSeries(ctx context.Context) error {
 	return err
 }
 
+// proxyHostConfigStub satisfies [healthcheck.ProxyCheckConfig] until
+// the C# `HostConfig` keyvalues-backed `IConfigService` ports. C#
+// reads `ProxyEnabled` + `ProxyHostname` from the keyvalues table
+// (`IConfigService.ProxyEnabled` / `IConfigService.ProxyHostname`);
+// the Go-port hasn't ported that persistence layer yet, so the stub
+// reports the proxy as disabled — which short-circuits
+// `ProxyCheck.Run` at C# `ProxyCheck.cs:35` and yields OK every
+// cadence. Once HostConfig keyvalues lands, swap this stub for a
+// real adapter; the call sites here are the only consumers.
+//
+// Slice 4.BN (C-cleanup [C10]).
+type proxyHostConfigStub struct{}
+
+func (proxyHostConfigStub) ProxyEnabled() bool    { return false }
+func (proxyHostConfigStub) ProxyHostname() string { return "" }
+
+// newProxyPingerStub returns a pinger that always errors. It is never
+// invoked while `proxyHostConfigStub.ProxyEnabled()` returns false
+// (the check short-circuits at the enable gate), so the error path
+// here is purely defensive — it will only surface if a future wiring
+// change flips ProxyEnabled on without first swapping the pinger.
+// Mirrors the pattern of the "wires when X ports" deferred adapters
+// elsewhere in serve().
+func newProxyPingerStub() healthcheck.ProxyCheckPinger {
+	return func(_ context.Context) (int, error) {
+		return 0, fmt.Errorf("proxy pinger not yet wired: hostconfig keyvalues + cloud-request-builder ports pending")
+	}
+}
+
 // Compile-time guards. Adapter shapes wire into the healthcheck
 // constructors via Go's structural typing.
 var (
@@ -285,4 +314,5 @@ var (
 	_ healthcheck.AllImportListLister            = importListListerAdapter{}
 	_ healthcheck.ImportListRootFolderPathLister = rootFolderPathListerAdapter{}
 	_ healthcheck.SkyHookProber                  = skyHookProberAdapter{}
+	_ healthcheck.ProxyCheckConfig               = proxyHostConfigStub{}
 )

@@ -1468,6 +1468,20 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("healthcheck systemTime: %w", err)
 	}
 
+	// Slice 4.BN (C-cleanup [C10]): wire the existing ProxyCheck. The
+	// stub adapter reports ProxyEnabled=false until the HostConfig
+	// keyvalues persistence layer ports, so the check short-circuits to
+	// OK every cadence — mirrors C# behavior for a freshly-installed
+	// instance with no proxy configured.
+	proxyCheck, err := healthcheck.NewProxyCheck(
+		proxyHostConfigStub{},
+		nil, // resolver: defaults to net.LookupIP
+		newProxyPingerStub(),
+	)
+	if err != nil {
+		return fmt.Errorf("healthcheck proxy: %w", err)
+	}
+
 	// Slice 4.AZ (sub-arc M6b-ii of queue [M6]): construct the
 	// scene-mapping cloud-fetch Provider + chain it onto the existing
 	// scenemappingsSvc via WithProviders. The service was built earlier
@@ -1500,6 +1514,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		importListRootFolderCheck,
 		skyHookCheck,
 		systemTimeCheck,
+		proxyCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)
