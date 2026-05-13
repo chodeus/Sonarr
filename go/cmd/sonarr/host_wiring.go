@@ -61,6 +61,30 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 	), nil
 }
 
+// emptyTagDetailLister stands in for the future tag-detail join.
+// /api/v3/tag/detail's empty-DB recording shows 0 entries — the
+// full C# projection joins Tag rows with every consumer table
+// (DelayProfile/ImportList/Notification/Restriction/ReleaseProfile-
+// excluded/Indexer/DownloadClient/AutoTagging/Series). Today no
+// tags exist in the recording, so an honest zero result matches
+// byte-eq. Populated-row join DEFERRED.
+type emptyTagDetailLister struct{}
+
+func (emptyTagDetailLister) AllTagDetails(context.Context) ([]apiv3.TagDetailsResource, error) {
+	return nil, nil
+}
+
+// emptyUpdateLister stands in for the future Update package
+// provider. /api/v3/update's empty-DB recording shows 0 entries.
+// The C# UpdateController fetches recent packages via
+// RecentUpdateProvider; that provider isn't ported yet, so the
+// stub keeps byte-eq while the wider Update sub-arc lands later.
+type emptyUpdateLister struct{}
+
+func (emptyUpdateLister) RecentUpdates(context.Context) ([]apiv3.UpdateResource, error) {
+	return nil, nil
+}
+
 // emptyQueuePagedLister stands in for the future queue.Service paged
 // projection. /api/v3/queue's empty-DB recording shows 0 records, so
 // an honest zero result matches byte-eq today; populated-row mapping
@@ -369,6 +393,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, qualityDefS
 		{Method: "GET", Path: "/api/v3/rootfolder", Handler: apiv3.RootFolderHandler(rootFoldersSvc)},
 		{Method: "GET", Path: "/api/v3/system/status", Handler: apiv3.SystemStatusHandler(systemStatus, cfg)},
 		{Method: "GET", Path: "/api/v3/tag", Handler: apiv3.TagHandler(tagsSvc)},
+		{Method: "GET", Path: "/api/v3/tag/detail", Handler: apiv3.TagDetailHandler(emptyTagDetailLister{})},
+		{Method: "GET", Path: "/api/v3/update", Handler: apiv3.UpdateHandler(emptyUpdateLister{})},
 		{Method: "GET", Path: "/api/v3/wanted/cutoff", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedCutoff)},
 		{Method: "GET", Path: "/api/v3/wanted/missing", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedMissing)},
 	}
