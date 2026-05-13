@@ -2314,7 +2314,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		}
 	}()
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc)
+	// SystemStatusContext (slice 4.EA) — boot-static snapshot the
+	// /api/v3/system/status handler bakes into every response.
+	// Built here after the database is migrated so MigrationVersion
+	// + DatabaseVersion are queryable.
+	systemStatus, err := buildSystemStatusContext(ctx, db, folder, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("system status context: %w", err)
+	}
+
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, systemStatus)
 	if err != nil {
 		return err
 	}
