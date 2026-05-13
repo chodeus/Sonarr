@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/episodeimport"
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/notifications"
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
@@ -157,21 +159,48 @@ func buildShowFromSeries(s *series.Series) CollectShow {
 }
 
 // buildEpisodeFileShow assembles a CollectShow shell with the
-// per-episode payload from the EpisodeFile. Mirrors the
-// AddEpisodeToCollection / RemoveEpisodeFromCollection construction.
+// per-episode payload from the EpisodeFile + linked episodes.
+// Mirrors C# `AddEpisodeToCollection` / `RemoveEpisodeFromCollection`
+// at `:165-225` / `:233-295`. Per-episode entries carry the
+// MediaInfo / Quality / HDR / audio fields populated via
+// [BuildEpisodeResource]. Episodes grouped by SeasonNumber so the
+// emitted JSON nests as `seasons: [{number, episodes: [...]}]`.
 //
-// Episodes carried via the C# code's `EpisodeFile.Episodes.Value`
-// aren't on the Go EpisodeFile row (the Episodes link is computed
-// via a separate lookup not yet wired). For now this still emits
-// show-level updates only — the per-episode payload + MediaInfo
-// decode lands when the episode-list dep gets plumbed at the
-// orchestrator level; see [BuildEpisodeResource] for the per-episode
-// payload assembly that follow-up wiring can call.
-func buildEpisodeFileShow(s *series.Series, f *episodefiles.File, withCollectedAt bool, now time.Time) CollectShow {
+// When linkedEpisodes is empty the per-episode Seasons slice is
+// omitted (omitempty drops it) and the payload degrades to a
+// show-level update — preserves the pre-B4e behaviour for the
+// rare case where the orchestrator can't resolve linked episodes.
+func buildEpisodeFileShow(s *series.Series, f *episodefiles.File, linkedEpisodes []*episodes.Episode, withCollectedAt bool, now time.Time) CollectShow {
 	show := buildShowFromSeries(s)
-	_ = withCollectedAt
-	_ = now
-	_ = f
+	if len(linkedEpisodes) == 0 {
+		return show
+	}
+	// Group episodes by SeasonNumber preserving stable order. C#
+	// uses LINQ GroupBy which preserves first-occurrence order — Go
+	// port preserves the same by walking the slice once and
+	// appending to the matching SeasonResrc.
+	type seasonBucket struct {
+		idx     int
+		entries []EpisodeResource
+	}
+	buckets := make(map[int]*seasonBucket, len(linkedEpisodes))
+	var seasonOrder []int
+	for _, e := range linkedEpisodes {
+		if e == nil {
+			continue
+		}
+		b, ok := buckets[e.SeasonNumber]
+		if !ok {
+			b = &seasonBucket{idx: len(seasonOrder)}
+			buckets[e.SeasonNumber] = b
+			seasonOrder = append(seasonOrder, e.SeasonNumber)
+		}
+		b.entries = append(b.entries, BuildEpisodeResource(f, e.EpisodeNumber, withCollectedAt, now))
+	}
+	show.Seasons = make([]SeasonResrc, 0, len(seasonOrder))
+	for _, n := range seasonOrder {
+		show.Seasons = append(show.Seasons, SeasonResrc{Number: n, Episodes: buckets[n].entries})
+	}
 	return show
 }
 
@@ -240,19 +269,28 @@ func unmarshalQualityModel(blob string) *quality.Model {
 // OnGrab — not overridden in C#; no-op.
 func (t *Trakt) OnGrab(_ context.Context, _ notifications.GrabMessage) error { return nil }
 
-// OnDownload mirrors C# `:36-40`. Adds the episode-file to collection.
+// OnDownload mirrors C# `:36-40`. Adds the episode-file to collection
+// with the per-episode payload assembled from
+// `msg.EpisodeInfo.(*episodeimport.LocalEpisode).Episodes` (the
+// just-imported episode set the orchestrator attached to the
+// LocalEpisode). When the assertion fails, falls back to a show-level
+// update (matches C# behaviour when EpisodeFile.Episodes.Value is
+// empty).
 func (t *Trakt) OnDownload(ctx context.Context, msg notifications.DownloadMessage) error {
 	if msg.Series == nil || msg.EpisodeFile == nil {
 		return nil
 	}
 	return t.withRefresh(ctx, func(accessToken string) error {
 		now := t.now()
-		payload := &CollectShowsPayload{Shows: []CollectShow{buildEpisodeFileShow(msg.Series, msg.EpisodeFile, true, now)}}
+		payload := &CollectShowsPayload{Shows: []CollectShow{buildEpisodeFileShow(msg.Series, msg.EpisodeFile, episodesFromDownload(msg), true, now)}}
 		return addToCollection(ctx, t.doer, accessToken, payload)
 	})
 }
 
-// OnImportComplete mirrors C# `:42-47`. Adds each file to collection.
+// OnImportComplete mirrors C# `:42-47`. Adds each file to collection
+// with per-file episodes filtered from `msg.Episodes` by
+// EpisodeFileID matching the file's ID (Go-side equivalent of the
+// C# `EpisodeFile.Episodes.Value` lazy-load).
 func (t *Trakt) OnImportComplete(ctx context.Context, msg notifications.ImportCompleteMessage) error {
 	if msg.Series == nil || len(msg.EpisodeFiles) == 0 {
 		return nil
@@ -264,7 +302,7 @@ func (t *Trakt) OnImportComplete(ctx context.Context, msg notifications.ImportCo
 			if f == nil {
 				continue
 			}
-			shows = append(shows, buildEpisodeFileShow(msg.Series, f, true, now))
+			shows = append(shows, buildEpisodeFileShow(msg.Series, f, episodesForFile(msg.Episodes, f.ID), true, now))
 		}
 		return addToCollection(ctx, t.doer, accessToken, &CollectShowsPayload{Shows: shows})
 	})
@@ -274,15 +312,58 @@ func (t *Trakt) OnImportComplete(ctx context.Context, msg notifications.ImportCo
 func (t *Trakt) OnRename(_ context.Context, _ notifications.RenameMessage) error { return nil }
 
 // OnEpisodeFileDelete mirrors C# `:49-53`. Removes the file from
-// collection.
+// collection with the per-episode payload built from
+// `msg.Episodes` (the orchestrator wires the LinkedEpisodes from
+// EpisodeFileDeletedEvent into the message).
 func (t *Trakt) OnEpisodeFileDelete(ctx context.Context, msg notifications.EpisodeDeleteMessage) error {
 	if msg.Series == nil || msg.EpisodeFile == nil {
 		return nil
 	}
 	return t.withRefresh(ctx, func(accessToken string) error {
-		payload := &CollectShowsPayload{Shows: []CollectShow{buildEpisodeFileShow(msg.Series, msg.EpisodeFile, false, t.now())}}
+		payload := &CollectShowsPayload{Shows: []CollectShow{buildEpisodeFileShow(msg.Series, msg.EpisodeFile, msg.Episodes, false, t.now())}}
 		return removeFromCollection(ctx, t.doer, accessToken, payload)
 	})
+}
+
+// episodesFromDownload extracts the linked episodes for the
+// just-imported file from `msg.EpisodeInfo`. The C# code reaches
+// through `EpisodeFile.Episodes.Value` which lazy-loads; the Go
+// port carries the resolved set on the LocalEpisode the import
+// pipeline assembled. Returns empty when the assertion fails OR
+// when the EpisodeInfo is nil — buildEpisodeFileShow then degrades
+// to a show-level update.
+func episodesFromDownload(msg notifications.DownloadMessage) []*episodes.Episode {
+	le, ok := msg.EpisodeInfo.(*episodeimport.LocalEpisode)
+	if !ok || le == nil {
+		return nil
+	}
+	out := make([]*episodes.Episode, 0, len(le.Episodes))
+	for i := range le.Episodes {
+		e := le.Episodes[i]
+		out = append(out, &e)
+	}
+	return out
+}
+
+// episodesForFile filters a batch's episode list to those linked to
+// the given file id. Used by OnImportComplete which receives the
+// flat batch-wide Episodes slice but emits per-file CollectShow
+// entries. Episodes whose EpisodeFileID is nil OR doesn't match are
+// skipped.
+func episodesForFile(all []*episodes.Episode, fileID int) []*episodes.Episode {
+	if len(all) == 0 || fileID == 0 {
+		return nil
+	}
+	out := make([]*episodes.Episode, 0, len(all))
+	for _, e := range all {
+		if e == nil || e.EpisodeFileID == nil {
+			continue
+		}
+		if *e.EpisodeFileID == fileID {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // OnSeriesAdd mirrors C# `:55-59`. Adds the series shell to collection.

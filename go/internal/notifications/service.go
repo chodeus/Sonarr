@@ -338,6 +338,7 @@ func (s *Service) HandleEpisodeFileDeletedEvent(ctx context.Context, ev episodef
 		Message:     getMessage(ev.Series, episodesCopy, nil),
 		Series:      ev.Series,
 		EpisodeFile: ev.EpisodeFile,
+		Episodes:    episodesCopy,
 		Reason:      ev.Reason,
 	}
 	var seriesTags []int

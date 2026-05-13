@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/episodeimport"
+	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/mediainfo"
 	"sonarr.tv/sonarr/internal/notifications"
 	"sonarr.tv/sonarr/internal/notifications/trakt"
 	"sonarr.tv/sonarr/internal/series"
@@ -544,5 +547,166 @@ func TestTrakt_RequestAction_GetOAuthToken_UserSettingsErrorFallsBack(t *testing
 	m := out.(map[string]any)
 	if m["authUser"] != "" {
 		t.Errorf("authUser=%v want empty fallback", m["authUser"])
+	}
+}
+
+// ------------------------------------------------------------------
+// Per-episode payload assembly (B4e wiring)
+// ------------------------------------------------------------------
+
+func TestTrakt_OnDownload_EmitsPerEpisodePayloadFromLocalEpisode(t *testing.T) {
+	var capture []captured
+	srv := capturingServer(t, nil, &capture)
+	defer srv.Close()
+	prov := makeTrakt(t, srv, nil)
+	file := &episodefiles.File{
+		ID:      77,
+		Quality: `{"quality":7}`, // Bluray1080p
+		MediaInfo: &mediainfo.Model{
+			ScanType:     "Progressive",
+			AudioStreams: []mediainfo.AudioStream{{Format: "ac3", Channels: 6, ChannelPositions: "5.1 / 5.1"}},
+		},
+	}
+	localEp := &episodeimport.LocalEpisode{
+		Episodes: []episodes.Episode{
+			{SeasonNumber: 2, EpisodeNumber: 5},
+			{SeasonNumber: 2, EpisodeNumber: 6},
+		},
+	}
+	msg := notifications.DownloadMessage{
+		Series:      &series.Series{Title: "Show", Year: 2024, TvdbID: 9, ImdbID: "tt009"},
+		EpisodeFile: file,
+		EpisodeInfo: localEp,
+	}
+	if err := prov.OnDownload(t.Context(), msg); err != nil {
+		t.Fatalf("OnDownload: %v", err)
+	}
+	if len(capture) != 1 {
+		t.Fatalf("calls=%d", len(capture))
+	}
+	var p trakt.CollectShowsPayload
+	if err := json.Unmarshal(capture[0].Body, &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(p.Shows) != 1 || len(p.Shows[0].Seasons) != 1 {
+		t.Fatalf("Shows[0].Seasons=%+v want 1 season", p.Shows[0].Seasons)
+	}
+	season := p.Shows[0].Seasons[0]
+	if season.Number != 2 || len(season.Episodes) != 2 {
+		t.Errorf("Season=%+v want Number=2 with 2 episodes", season)
+	}
+	if season.Episodes[0].Number != 5 || season.Episodes[1].Number != 6 {
+		t.Errorf("episode numbers: %+v", season.Episodes)
+	}
+	// MediaInfo fields populated per BuildEpisodeResource.
+	for i, er := range season.Episodes {
+		if er.Resolution != "hd_1080p" || er.MediaType != "bluray" || er.Audio != "dolby_digital" || er.AudioChannels != "5.1" {
+			t.Errorf("episode %d MediaInfo missing: %+v", i, er)
+		}
+		if er.CollectedAt == nil {
+			t.Errorf("episode %d CollectedAt should be set for OnDownload", i)
+		}
+	}
+}
+
+func TestTrakt_OnImportComplete_FiltersEpisodesByFileID(t *testing.T) {
+	var capture []captured
+	srv := capturingServer(t, nil, &capture)
+	defer srv.Close()
+	prov := makeTrakt(t, srv, nil)
+	fileA := &episodefiles.File{ID: 10, Quality: `{"quality":4}`} // HDTV720p
+	fileB := &episodefiles.File{ID: 20, Quality: `{"quality":7}`} // Bluray1080p
+	id10, id20 := 10, 20
+	msg := notifications.ImportCompleteMessage{
+		Series:       &series.Series{Title: "Show"},
+		EpisodeFiles: []*episodefiles.File{fileA, fileB},
+		Episodes: []*episodes.Episode{
+			{SeasonNumber: 1, EpisodeNumber: 1, EpisodeFileID: &id10},
+			{SeasonNumber: 1, EpisodeNumber: 2, EpisodeFileID: &id10},
+			{SeasonNumber: 1, EpisodeNumber: 3, EpisodeFileID: &id20},
+			{SeasonNumber: 2, EpisodeNumber: 1, EpisodeFileID: nil}, // unlinked — should be skipped
+		},
+	}
+	if err := prov.OnImportComplete(t.Context(), msg); err != nil {
+		t.Fatalf("OnImportComplete: %v", err)
+	}
+	var p trakt.CollectShowsPayload
+	if err := json.Unmarshal(capture[0].Body, &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(p.Shows) != 2 {
+		t.Fatalf("Shows=%d want 2", len(p.Shows))
+	}
+	// Shows[0] (fileA, id=10) should carry episodes 1+2; Shows[1] (fileB, id=20) episode 3.
+	if len(p.Shows[0].Seasons) != 1 || len(p.Shows[0].Seasons[0].Episodes) != 2 {
+		t.Errorf("Show[0] episodes wrong: %+v", p.Shows[0].Seasons)
+	}
+	if len(p.Shows[1].Seasons) != 1 || len(p.Shows[1].Seasons[0].Episodes) != 1 {
+		t.Errorf("Show[1] episodes wrong: %+v", p.Shows[1].Seasons)
+	}
+	if p.Shows[0].Seasons[0].Episodes[0].Resolution != "hd_720p" {
+		t.Errorf("Show[0] resolution should track fileA's Quality (HDTV720p): %+v", p.Shows[0].Seasons[0].Episodes[0])
+	}
+	if p.Shows[1].Seasons[0].Episodes[0].Resolution != "hd_1080p" {
+		t.Errorf("Show[1] resolution should track fileB's Quality (Bluray1080p): %+v", p.Shows[1].Seasons[0].Episodes[0])
+	}
+}
+
+func TestTrakt_OnEpisodeFileDelete_EmitsPerEpisodeRemovePayload(t *testing.T) {
+	var capture []captured
+	srv := capturingServer(t, nil, &capture)
+	defer srv.Close()
+	prov := makeTrakt(t, srv, nil)
+	id5 := 5
+	msg := notifications.EpisodeDeleteMessage{
+		Series:      &series.Series{Title: "Show"},
+		EpisodeFile: &episodefiles.File{ID: 5, Quality: `{"quality":7}`},
+		Episodes: []*episodes.Episode{
+			{SeasonNumber: 3, EpisodeNumber: 1, EpisodeFileID: &id5},
+		},
+	}
+	if err := prov.OnEpisodeFileDelete(t.Context(), msg); err != nil {
+		t.Fatalf("OnEpisodeFileDelete: %v", err)
+	}
+	if capture[0].Path != "/sync/collection/remove" {
+		t.Errorf("path=%q", capture[0].Path)
+	}
+	var p trakt.CollectShowsPayload
+	if err := json.Unmarshal(capture[0].Body, &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(p.Shows[0].Seasons) != 1 || p.Shows[0].Seasons[0].Number != 3 {
+		t.Fatalf("Seasons=%+v want one season 3", p.Shows[0].Seasons)
+	}
+	// Remove path: CollectedAt MUST be nil (mirrors C# `withCollectedAt=false`).
+	if p.Shows[0].Seasons[0].Episodes[0].CollectedAt != nil {
+		t.Errorf("CollectedAt should be nil on remove path: %+v", p.Shows[0].Seasons[0].Episodes[0])
+	}
+}
+
+func TestTrakt_OnDownload_FallsBackToShowLevelWhenNoEpisodes(t *testing.T) {
+	var capture []captured
+	srv := capturingServer(t, nil, &capture)
+	defer srv.Close()
+	prov := makeTrakt(t, srv, nil)
+	// EpisodeInfo is nil (not a *LocalEpisode) — episodesFromDownload
+	// returns nil → buildEpisodeFileShow degrades to show-level.
+	msg := notifications.DownloadMessage{
+		Series:      &series.Series{Title: "Show", TvdbID: 11},
+		EpisodeFile: &episodefiles.File{ID: 99, Quality: `{"quality":7}`},
+		EpisodeInfo: nil,
+	}
+	if err := prov.OnDownload(t.Context(), msg); err != nil {
+		t.Fatalf("OnDownload: %v", err)
+	}
+	var p trakt.CollectShowsPayload
+	if err := json.Unmarshal(capture[0].Body, &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(p.Shows[0].Seasons) != 0 {
+		t.Errorf("Seasons should be empty when no episodes are resolved, got %+v", p.Shows[0].Seasons)
+	}
+	if p.Shows[0].IDs.Tvdb != 11 {
+		t.Errorf("show-level update should still carry IDs: %+v", p.Shows[0])
 	}
 }

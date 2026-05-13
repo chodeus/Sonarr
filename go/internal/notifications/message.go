@@ -187,6 +187,14 @@ type EpisodeDeleteMessage struct {
 	// AFTER deletion so the payload still has the metadata).
 	EpisodeFile *episodefiles.File
 
+	// Episodes are the episodes that were linked to the deleted
+	// EpisodeFile. Populated from `EpisodeFileDeletedEvent.
+	// LinkedEpisodes` — the orchestrator looks them up once at
+	// event-build time so per-provider handlers don't each query.
+	// Used by providers that emit per-episode payloads (Trakt
+	// AddEpisodeToCollection-style flows).
+	Episodes []*episodes.Episode
+
 	// Reason is the trigger that caused the deletion (manual,
 	// upgrade, missing-from-disk, etc.). Mirrors the C# enum
 	// `MediaFiles.DeleteMediaFileReason`.
