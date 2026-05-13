@@ -143,6 +143,9 @@ func (h *hookRecorder) SupportsOnHealthIssue() bool                 { return tru
 func (h *hookRecorder) SupportsOnHealthRestored() bool              { return true }
 func (h *hookRecorder) SupportsOnApplicationUpdate() bool           { return true }
 func (h *hookRecorder) SupportsOnManualInteractionRequired() bool   { return true }
+func (h *hookRecorder) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return struct{}{}, nil
+}
 
 // buildService builds a notifications.Service backed by an
 // in-memory stub repo populated with the given rows. The registry

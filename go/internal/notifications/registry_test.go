@@ -68,6 +68,9 @@ func (p *stubProvider) SupportsOnHealthIssue() bool                             
 func (p *stubProvider) SupportsOnHealthRestored() bool                            { return true }
 func (p *stubProvider) SupportsOnApplicationUpdate() bool                         { return true }
 func (p *stubProvider) SupportsOnManualInteractionRequired() bool                 { return true }
+func (p *stubProvider) RequestAction(context.Context, string, map[string]string) (any, error) {
+	return struct{}{}, nil
+}
 
 // Compile-time assertion: stubProvider satisfies notifications.Provider.
 var _ notifications.Provider = (*stubProvider)(nil)

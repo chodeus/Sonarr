@@ -196,6 +196,13 @@ func (p *Pushover) SupportsOnApplicationUpdate() bool { return true }
 // SupportsOnManualInteractionRequired — see [Pushover.SupportsOnGrab].
 func (p *Pushover) SupportsOnManualInteractionRequired() bool { return true }
 
+// RequestAction is a no-op — the C# `Pushover` does not
+// override RequestAction; the base `NotificationBase.cs` default
+// returns null. Return an empty struct so v3-UI callers see {}.
+func (p *Pushover) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return struct{}{}, nil
+}
+
 // init registers the Pushover constructor.
 func init() {
 	notifications.Default().MustRegister(Implementation, ConfigContract, New)

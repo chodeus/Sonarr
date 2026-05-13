@@ -209,6 +209,13 @@ func (a *Apprise) SupportsOnApplicationUpdate() bool { return true }
 // SupportsOnManualInteractionRequired — see [Apprise.SupportsOnGrab].
 func (a *Apprise) SupportsOnManualInteractionRequired() bool { return true }
 
+// RequestAction is a no-op — the C# `Apprise` does not
+// override RequestAction; the base `NotificationBase.cs` default
+// returns null. Return an empty struct so v3-UI callers see {}.
+func (a *Apprise) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return struct{}{}, nil
+}
+
 // init registers the Apprise constructor.
 func init() {
 	notifications.Default().MustRegister(Implementation, ConfigContract, New)

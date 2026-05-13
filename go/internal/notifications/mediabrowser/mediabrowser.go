@@ -312,6 +312,13 @@ func (m *MediaBrowser) SupportsOnApplicationUpdate() bool { return true }
 // doesn't override this hook.
 func (m *MediaBrowser) SupportsOnManualInteractionRequired() bool { return false }
 
+// RequestAction is a no-op — the C# `MediaBrowser` does not
+// override RequestAction; the base `NotificationBase.cs` default
+// returns null. Return an empty struct so v3-UI callers see {}.
+func (m *MediaBrowser) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return struct{}{}, nil
+}
+
 // init registers the MediaBrowser constructor.
 func init() {
 	notifications.Default().MustRegister(Implementation, ConfigContract, New)

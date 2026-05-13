@@ -8,14 +8,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 )
 
 // Trakt + servarr auth URLs. Mirror C# constants at
 // `TraktProxy.cs:22-26`.
 const (
-	apiBaseURL = "https://api.trakt.tv"
-	renewURL   = "https://auth.servarr.com/v1/trakt_sonarr/renew"
-	clientID   = "d44ba57cab40c31eb3f797dcfccd203500796539125b333883ec1d94aa62ed4c"
+	apiBaseURL    = "https://api.trakt.tv"
+	oauthAuthURL  = "https://trakt.tv/oauth/authorize"
+	oauthRedirect = "https://auth.servarr.com/v1/trakt_sonarr/auth"
+	renewURL      = "https://auth.servarr.com/v1/trakt_sonarr/renew"
+	clientID      = "d44ba57cab40c31eb3f797dcfccd203500796539125b333883ec1d94aa62ed4c"
 )
 
 // Test seam mutables — default to production URLs. Tests override via
@@ -44,6 +47,25 @@ var ErrSendFailed = errors.New("trakt: send failed")
 // ErrInvalidAccessToken is the distinguished sentinel for 401 — mirrors
 // C# Test() 401 branch at `Trakt.cs:79-83`.
 var ErrInvalidAccessToken = errors.New("trakt: access token is invalid")
+
+// ErrBadRequest wraps a v3-UI RequestAction call that's missing or
+// has malformed query parameters. Mirrors C# `BadRequestException`
+// thrown from `Trakt.RequestAction`.
+var ErrBadRequest = errors.New("trakt: bad request")
+
+// buildOAuthAuthorizeURL composes the trakt.tv `/oauth/authorize`
+// URL pinned to the servarr redirect proxy. Mirrors C#
+// `TraktProxy.GetOAuthRequest` at `:65-73`. The `state` param round-
+// trips the v3-UI callback URL so the redirect proxy can hand the
+// final token tuple back to the right tab.
+func buildOAuthAuthorizeURL(callbackURL string) string {
+	q := url.Values{}
+	q.Set("client_id", clientID)
+	q.Set("response_type", "code")
+	q.Set("redirect_uri", oauthRedirect)
+	q.Set("state", callbackURL)
+	return oauthAuthURL + "?" + q.Encode()
+}
 
 // addToCollection POSTs the payload to /sync/collection with Bearer
 // auth. Mirrors C# `TraktProxy.AddToCollection` at `:37-45`.

@@ -317,6 +317,13 @@ func (p *PlexServer) SupportsOnApplicationUpdate() bool { return false }
 // SupportsOnManualInteractionRequired — see [PlexServer.SupportsOnGrab].
 func (p *PlexServer) SupportsOnManualInteractionRequired() bool { return false }
 
+// RequestAction is a no-op — the C# `PlexServer` does not
+// override RequestAction; the base `NotificationBase.cs` default
+// returns null. Return an empty struct so v3-UI callers see {}.
+func (p *PlexServer) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return struct{}{}, nil
+}
+
 // init registers the PlexServer constructor.
 func init() {
 	notifications.Default().MustRegister(Implementation, ConfigContract, New)

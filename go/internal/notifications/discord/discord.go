@@ -509,6 +509,13 @@ func (d *Discord) SupportsOnApplicationUpdate() bool { return true }
 // SupportsOnManualInteractionRequired — see [Discord.SupportsOnGrab].
 func (d *Discord) SupportsOnManualInteractionRequired() bool { return true }
 
+// RequestAction is a no-op — the C# `Discord` does not
+// override RequestAction; the base `NotificationBase.cs` default
+// returns null. Return an empty struct so v3-UI callers see {}.
+func (d *Discord) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return struct{}{}, nil
+}
+
 // init registers the Discord constructor into the package-global
 // [notifications.Default] registry — same idiom as the webhook
 // package precedent at

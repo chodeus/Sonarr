@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -338,6 +339,66 @@ func (t *Trakt) SupportsOnApplicationUpdate() bool { return false }
 
 // SupportsOnManualInteractionRequired — see [Trakt.SupportsOnGrab].
 func (t *Trakt) SupportsOnManualInteractionRequired() bool { return false }
+
+// RequestAction implements the C# `Trakt.RequestAction` admin path
+// at `:102-125`. Two actions: startOAuth (builds the trakt.tv
+// authorize URL pinned to the servarr redirect proxy) and
+// getOAuthToken (resolves the redirect-returned tuple to a usable
+// settings triple plus the trakt slug via GET /users/settings).
+// Unknown actions return `{}` (mirrors C# `:124`).
+//
+// startOAuth output: `{"OauthUrl": "<trakt.tv/oauth/authorize?...>"}`
+// — preserves PascalCase `OauthUrl` key per C# anonymous object at
+// `:110`. Query params: client_id (pinned ClientId), response_type=
+// "code", redirect_uri (pinned servarr proxy), state (caller-supplied
+// callbackUrl for redirect round-trip).
+//
+// getOAuthToken output: `{accessToken, expires, refreshToken,
+// authUser}` — `expires` is now+expires_in seconds, `authUser` is
+// the trakt slug fetched via GetUserName. Missing access_token /
+// expires_in / refresh_token query params return ErrBadRequest.
+// expires_in must be a positive int — non-int values return
+// ErrBadRequest. A failed GetUserName call is swallowed and
+// authUser falls back to "" (mirrors C# leaving the field
+// unpopulated when the call errors).
+func (t *Trakt) RequestAction(ctx context.Context, action string, query map[string]string) (any, error) {
+	switch action {
+	case "startOAuth":
+		callbackURL := query["callbackUrl"]
+		if callbackURL == "" {
+			return nil, fmt.Errorf("%w: callbackUrl invalid", ErrBadRequest)
+		}
+		u := buildOAuthAuthorizeURL(callbackURL)
+		return map[string]any{"OauthUrl": u}, nil
+	case "getOAuthToken":
+		accessToken := query["access_token"]
+		expiresIn := query["expires_in"]
+		refreshToken := query["refresh_token"]
+		if accessToken == "" {
+			return nil, fmt.Errorf("%w: access_token invalid", ErrBadRequest)
+		}
+		if expiresIn == "" {
+			return nil, fmt.Errorf("%w: expires_in invalid", ErrBadRequest)
+		}
+		if refreshToken == "" {
+			return nil, fmt.Errorf("%w: refresh_token invalid", ErrBadRequest)
+		}
+		secs, err := strconv.Atoi(expiresIn)
+		if err != nil || secs <= 0 {
+			return nil, fmt.Errorf("%w: expires_in not a positive int", ErrBadRequest)
+		}
+		expires := t.now().Add(time.Duration(secs) * time.Second)
+		authUser, _ := getUserName(ctx, t.doer, accessToken)
+		return map[string]any{
+			"accessToken":  accessToken,
+			"expires":      expires,
+			"refreshToken": refreshToken,
+			"authUser":     authUser,
+		}, nil
+	default:
+		return map[string]any{}, nil
+	}
+}
 
 // init registers the Trakt constructor.
 func init() {

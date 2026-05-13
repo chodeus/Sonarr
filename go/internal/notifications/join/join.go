@@ -196,6 +196,13 @@ func (j *Join) SupportsOnApplicationUpdate() bool { return true }
 // SupportsOnManualInteractionRequired — see [Join.SupportsOnGrab].
 func (j *Join) SupportsOnManualInteractionRequired() bool { return true }
 
+// RequestAction is a no-op — the C# `Join` does not
+// override RequestAction; the base `NotificationBase.cs` default
+// returns null. Return an empty struct so v3-UI callers see {}.
+func (j *Join) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return struct{}{}, nil
+}
+
 // init registers the Join constructor.
 func init() {
 	notifications.Default().MustRegister(Implementation, ConfigContract, New)

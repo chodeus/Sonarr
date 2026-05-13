@@ -191,6 +191,13 @@ func (e *Email) SupportsOnApplicationUpdate() bool { return true }
 // SupportsOnManualInteractionRequired — see [Email.SupportsOnGrab].
 func (e *Email) SupportsOnManualInteractionRequired() bool { return true }
 
+// RequestAction is a no-op — the C# `Email` does not
+// override RequestAction; the base `NotificationBase.cs` default
+// returns null. Return an empty struct so v3-UI callers see {}.
+func (e *Email) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return struct{}{}, nil
+}
+
 // init registers the Email constructor.
 func init() {
 	notifications.Default().MustRegister(Implementation, ConfigContract, New)

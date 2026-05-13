@@ -230,6 +230,13 @@ func (s *Synology) SupportsOnApplicationUpdate() bool { return false }
 // SupportsOnManualInteractionRequired — see [Synology.SupportsOnGrab].
 func (s *Synology) SupportsOnManualInteractionRequired() bool { return false }
 
+// RequestAction is a no-op — the C# `Synology` does not
+// override RequestAction; the base `NotificationBase.cs` default
+// returns null. Return an empty struct so v3-UI callers see {}.
+func (s *Synology) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return struct{}{}, nil
+}
+
 // seriesPathFromAny extracts series.Path from the RenameMessage's
 // any-typed Series field. Returns "" when the assertion fails —
 // the hook then no-ops rather than synoindex-erroring on an empty

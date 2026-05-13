@@ -191,6 +191,13 @@ func (m *Mailgun) SupportsOnApplicationUpdate() bool { return true }
 // SupportsOnManualInteractionRequired — see [Mailgun.SupportsOnGrab].
 func (m *Mailgun) SupportsOnManualInteractionRequired() bool { return true }
 
+// RequestAction is a no-op — the C# `Mailgun` does not
+// override RequestAction; the base `NotificationBase.cs` default
+// returns null. Return an empty struct so v3-UI callers see {}.
+func (m *Mailgun) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return struct{}{}, nil
+}
+
 // init registers the Mailgun constructor.
 func init() {
 	notifications.Default().MustRegister(Implementation, ConfigContract, New)

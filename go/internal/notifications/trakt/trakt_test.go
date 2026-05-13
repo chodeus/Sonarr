@@ -413,3 +413,136 @@ func TestTrakt_RefreshSkipsPersisterWhenRowIDZero(t *testing.T) {
 		t.Errorf("repo Update should not fire when row ID == 0, got %d", len(repo.calls))
 	}
 }
+
+func TestTrakt_RequestAction_StartOAuth_BuildsAuthorizeURL(t *testing.T) {
+	srv := capturingServer(t, nil, &[]captured{})
+	defer srv.Close()
+	prov := makeTrakt(t, srv, nil)
+	out, err := prov.RequestAction(t.Context(), "startOAuth", map[string]string{"callbackUrl": "http://example.com/cb"})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %T", out)
+	}
+	urlStr, _ := m["OauthUrl"].(string)
+	if !strings.HasPrefix(urlStr, "https://trakt.tv/oauth/authorize?") {
+		t.Errorf("OauthUrl=%q", urlStr)
+	}
+	if !strings.Contains(urlStr, "response_type=code") || !strings.Contains(urlStr, "redirect_uri=https%3A%2F%2Fauth.servarr.com") || !strings.Contains(urlStr, "state=http%3A%2F%2Fexample.com%2Fcb") || !strings.Contains(urlStr, "client_id=d44ba57") {
+		t.Errorf("OauthUrl missing required params: %s", urlStr)
+	}
+}
+
+func TestTrakt_RequestAction_StartOAuth_MissingCallback(t *testing.T) {
+	srv := capturingServer(t, nil, &[]captured{})
+	defer srv.Close()
+	prov := makeTrakt(t, srv, nil)
+	_, err := prov.RequestAction(t.Context(), "startOAuth", map[string]string{})
+	if !errors.Is(err, trakt.ErrBadRequest) {
+		t.Errorf("err=%v want ErrBadRequest", err)
+	}
+}
+
+func TestTrakt_RequestAction_GetOAuthToken_ResolvesTuple(t *testing.T) {
+	var capture []captured
+	srv := capturingServer(t, nil, &capture)
+	defer srv.Close()
+	prov := makeTrakt(t, srv, nil)
+	before := time.Now()
+	out, err := prov.RequestAction(t.Context(), "getOAuthToken", map[string]string{
+		"access_token":  "new-tok",
+		"expires_in":    "3600",
+		"refresh_token": "new-ref",
+	})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map, got %T", out)
+	}
+	if m["accessToken"] != "new-tok" {
+		t.Errorf("accessToken=%v", m["accessToken"])
+	}
+	if m["refreshToken"] != "new-ref" {
+		t.Errorf("refreshToken=%v", m["refreshToken"])
+	}
+	if m["authUser"] != "sonarruser" {
+		t.Errorf("authUser=%v want sonarruser (fetched via GetUserName)", m["authUser"])
+	}
+	expires, ok := m["expires"].(time.Time)
+	if !ok {
+		t.Fatalf("expires not time.Time: %T", m["expires"])
+	}
+	want := before.Add(3600 * time.Second)
+	if expires.Before(want.Add(-2*time.Second)) || expires.After(want.Add(5*time.Second)) {
+		t.Errorf("expires=%v not within window around %v", expires, want)
+	}
+	// Verify /users/settings was called with the supplied token.
+	var settingsCall *captured
+	for i := range capture {
+		if capture[i].Path == "/users/settings" {
+			settingsCall = &capture[i]
+			break
+		}
+	}
+	if settingsCall == nil {
+		t.Fatalf("getOAuthToken should call /users/settings, captures=%+v", capture)
+	}
+	if settingsCall.Auth != "Bearer new-tok" {
+		t.Errorf("Authorization=%q want Bearer new-tok", settingsCall.Auth)
+	}
+}
+
+func TestTrakt_RequestAction_GetOAuthToken_MissingFields(t *testing.T) {
+	srv := capturingServer(t, nil, &[]captured{})
+	defer srv.Close()
+	prov := makeTrakt(t, srv, nil)
+	cases := []map[string]string{
+		{"expires_in": "3600", "refresh_token": "x"},                     // missing access_token
+		{"access_token": "x", "refresh_token": "x"},                      // missing expires_in
+		{"access_token": "x", "expires_in": "3600"},                      // missing refresh_token
+		{"access_token": "x", "expires_in": "bad", "refresh_token": "x"}, // non-int expires_in
+		{"access_token": "x", "expires_in": "0", "refresh_token": "x"},   // zero expires_in
+	}
+	for i, q := range cases {
+		_, err := prov.RequestAction(t.Context(), "getOAuthToken", q)
+		if !errors.Is(err, trakt.ErrBadRequest) {
+			t.Errorf("case %d: err=%v want ErrBadRequest", i, err)
+		}
+	}
+}
+
+func TestTrakt_RequestAction_UnknownActionReturnsEmpty(t *testing.T) {
+	srv := capturingServer(t, nil, &[]captured{})
+	defer srv.Close()
+	prov := makeTrakt(t, srv, nil)
+	out, err := prov.RequestAction(t.Context(), "bogusAction", nil)
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok || len(m) != 0 {
+		t.Errorf("unknown action should return empty map, got %T %+v", out, out)
+	}
+}
+
+func TestTrakt_RequestAction_GetOAuthToken_UserSettingsErrorFallsBack(t *testing.T) {
+	srv := capturingServer(t, map[string]int{"/users/settings": http.StatusInternalServerError}, &[]captured{})
+	defer srv.Close()
+	prov := makeTrakt(t, srv, nil)
+	out, err := prov.RequestAction(t.Context(), "getOAuthToken", map[string]string{
+		"access_token":  "x",
+		"expires_in":    "3600",
+		"refresh_token": "x",
+	})
+	if err != nil {
+		t.Fatalf("user-settings failure should NOT propagate: %v", err)
+	}
+	m := out.(map[string]any)
+	if m["authUser"] != "" {
+		t.Errorf("authUser=%v want empty fallback", m["authUser"])
+	}
+}

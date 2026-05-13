@@ -291,6 +291,13 @@ func (s *Slack) SupportsOnApplicationUpdate() bool { return true }
 // SupportsOnManualInteractionRequired — see [Slack.SupportsOnGrab].
 func (s *Slack) SupportsOnManualInteractionRequired() bool { return true }
 
+// RequestAction is a no-op — the C# `Slack` does not
+// override RequestAction; the base `NotificationBase.cs` default
+// returns null. Return an empty struct so v3-UI callers see {}.
+func (s *Slack) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return struct{}{}, nil
+}
+
 // init registers the Slack constructor with the package-global
 // [notifications.Default] registry.
 func init() {

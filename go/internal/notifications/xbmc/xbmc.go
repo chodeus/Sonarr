@@ -304,6 +304,13 @@ func (x *Xbmc) SupportsOnApplicationUpdate() bool { return true }
 // SupportsOnManualInteractionRequired — see [Xbmc.SupportsOnGrab].
 func (x *Xbmc) SupportsOnManualInteractionRequired() bool { return true }
 
+// RequestAction is a no-op — the C# `Xbmc` does not
+// override RequestAction; the base `NotificationBase.cs` default
+// returns null. Return an empty struct so v3-UI callers see {}.
+func (x *Xbmc) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return struct{}{}, nil
+}
+
 // init registers the Xbmc constructor.
 func init() {
 	notifications.Default().MustRegister(Implementation, ConfigContract, New)

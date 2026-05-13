@@ -192,6 +192,22 @@ type Provider interface {
 
 	// SupportsOnManualInteractionRequired — see [Provider.SupportsOnGrab].
 	SupportsOnManualInteractionRequired() bool
+
+	// RequestAction handles the OAuth-style v3-UI handshake some
+	// notification providers (Trakt, Twitter, PlexServer, PushBullet)
+	// expose. Mirrors C# `object RequestAction(string action,
+	// IDictionary<string,string> query)` at
+	// `src/NzbDrone.Core/ThingiProvider/IProvider.cs:15` and the
+	// no-op default at `NotificationBase.cs` (returns null).
+	//
+	// Providers that don't override return an empty struct. Common
+	// actions across the four overriding providers include
+	// startOAuth/continueOAuth/pollOAuth/getOAuthToken (Plex device
+	// pin flow), getDevices (PushBullet target enumeration), and
+	// the Twitter OAuth1 PIN dance. Unknown actions return `{}` per
+	// the C# convention. Query-param validation errors return an
+	// error that wraps a per-package BadRequest sentinel.
+	RequestAction(ctx context.Context, action string, query map[string]string) (any, error)
 }
 
 // RenameMessage wraps the (Series, []RenamedFile) pair the C#
