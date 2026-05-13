@@ -88,6 +88,7 @@ import (
 	"sonarr.tv/sonarr/internal/notifications"
 	"sonarr.tv/sonarr/internal/notificationstatus"
 	"sonarr.tv/sonarr/internal/parsingservice"
+	"sonarr.tv/sonarr/internal/qualitydefinitions"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/recyclebin"
@@ -509,6 +510,22 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// structural typing on AutoUnmonitorPreviouslyDownloadedEpisodes()
 	// bool.
 	episodesSvc.SetAutoUnmonitorMissingProvider(configProv)
+
+	// QualityDefinitions service (slice 4.DJ — first read-side
+	// surface needed by GET /api/v3/qualitydefinition). C# wires
+	// this on app start via the IExecute<...Command> handler
+	// (`QualityDefinitionService.Handle(ApplicationStartedEvent)`);
+	// the Go port calls EnsureDefaults inline here so the table is
+	// seeded before any route serves it. Idempotent — re-running on
+	// each boot is the same code path C# uses.
+	qualityDefRepo, err := qualitydefinitions.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("qualitydefinitions repo: %w", err)
+	}
+	qualityDefSvc := qualitydefinitions.NewService(qualityDefRepo)
+	if err := qualityDefSvc.EnsureDefaults(ctx); err != nil {
+		return fmt.Errorf("qualitydefinitions ensureDefaults: %w", err)
+	}
 	// Naming-config wiring (Phase 3.94). Singleton-row Service that
 	// the slice-3.94 fileNamerAdapter reaches for to compute
 	// RequiresAbsoluteEpisodeNumber / RequiresEpisodeTitle for the
@@ -2260,7 +2277,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		}
 	}()
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv)
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc)
 	if err != nil {
 		return err
 	}

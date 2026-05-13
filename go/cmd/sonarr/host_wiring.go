@@ -10,6 +10,7 @@ import (
 	"sonarr.tv/sonarr/internal/configfile"
 	"sonarr.tv/sonarr/internal/host"
 	"sonarr.tv/sonarr/internal/language"
+	"sonarr.tv/sonarr/internal/qualitydefinitions"
 )
 
 // buildHostServer assembles the *host.Server from the runtime
@@ -19,7 +20,7 @@ import (
 // Mirrors `src/NzbDrone.Host/Bootstrap.cs:CreateConsoleHostBuilder`
 // where BindAddress + Port are pulled from the configuration before
 // the URL list is handed to Kestrel.
-func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider) (*host.Server, error) {
+func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service) (*host.Server, error) {
 	bind, err := cfg.BindAddress(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: bind address: %w", err)
@@ -36,7 +37,7 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 		// its APIKey(ctx) (string, error) method — no adapter
 		// needed.
 		cfg,
-		host.WithRoutes(v3Routes(configProv)...),
+		host.WithRoutes(v3Routes(configProv, qualityDefSvc)...),
 	), nil
 }
 
@@ -46,11 +47,14 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 // configProv carries the persistent config table (cached by
 // *config.Provider with bus invalidation), so closures that read
 // UILanguage / other Config table keys re-resolve on every request.
-func v3Routes(configProv *config.Provider) []host.Route {
+// qualityDefSvc carries the seeded quality-definitions table with a
+// 5-second cache, mirroring `QualityDefinitionService.All`.
+func v3Routes(configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service) []host.Route {
 	langs := language.All()
 	return []host.Route{
 		{Method: "GET", Path: "/api/v3/language", Handler: apiv3.LanguageHandler(langs)},
 		{Method: "GET", Path: "/api/v3/localization/language", Handler: apiv3.LocalizationLanguageHandler(configProv.UILanguage)},
+		{Method: "GET", Path: "/api/v3/qualitydefinition", Handler: apiv3.QualityDefinitionHandler(qualityDefSvc)},
 	}
 }
 
