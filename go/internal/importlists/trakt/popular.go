@@ -272,9 +272,9 @@ func (p *PopularImport) Test(ctx context.Context) ([]importlists.TestFailure, er
 	return nil, nil
 }
 
-// RequestAction is a no-op.
-func (p *PopularImport) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
-	return struct{}{}, nil
+// RequestAction delegates to [baseImport.RequestAction].
+func (p *PopularImport) RequestAction(ctx context.Context, action string, query map[string]string) (any, error) {
+	return p.baseImport.RequestAction(ctx, p.settings.BaseURL, action, query)
 }
 
 func init() {

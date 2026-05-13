@@ -18,9 +18,44 @@ import (
 // Mutable via [SetRenewURLForTest] for httptest seams.
 var renewURL = "https://auth.servarr.com/oauth/myanimelist/renew"
 
+// oauthAuthorizeURL is the servarr cloud-proxied MAL authorize URL.
+// Mirrors C# `OAuthPath` at `MyAnimeListImport.cs:16` joined to the
+// `ISonarrCloudRequestBuilder.Services` root.
+//
+// Mutable via [SetOAuthURLsForTest] for httptest seams.
+var oauthAuthorizeURL = "https://auth.servarr.com/oauth/myanimelist/authorize"
+
+// oauthRedirectURI is the servarr cloud redirect target the MAL
+// authorize page forwards the user to after consent. Mirrors C#
+// `RedirectUriPath` at `MyAnimeListImport.cs:17`.
+var oauthRedirectURI = "https://auth.servarr.com/oauth/myanimelist/auth"
+
 // SetRenewURLForTest swaps the renew endpoint. Tests redirect outbound
 // calls to an httptest.Server.
 func SetRenewURLForTest(u string) { renewURL = u }
+
+// SetOAuthURLsForTest swaps the authorize + redirect URLs. Tests use
+// this when exercising the RequestAction handshake.
+func SetOAuthURLsForTest(authorize, redirect string) {
+	oauthAuthorizeURL = authorize
+	oauthRedirectURI = redirect
+}
+
+// ErrBadRequest wraps a v3-UI RequestAction call with missing or
+// malformed query parameters. Mirrors C# `BadRequestException`.
+var ErrBadRequest = errors.New("myanimelist: bad request")
+
+// buildOAuthAuthorizeURL composes the servarr-proxied MAL authorize
+// URL. Mirrors C# `MyAnimeListImport.RequestAction` startOAuth
+// branch at `:49-60`. Note the C# code routes through
+// `ISonarrCloudRequestBuilder.Services` so the host is the cloud
+// services root, not myanimelist.net directly.
+func buildOAuthAuthorizeURL(callbackURL string) string {
+	q := url.Values{}
+	q.Set("state", callbackURL)
+	q.Set("redirect_uri", oauthRedirectURI)
+	return oauthAuthorizeURL + "?" + q.Encode()
+}
 
 // httpDoer is the minimal HTTP-client surface the proxy needs.
 type httpDoer interface {

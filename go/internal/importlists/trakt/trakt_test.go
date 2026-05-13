@@ -3,6 +3,7 @@ package trakt_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -616,4 +617,211 @@ func TestUserImport_Fetch_RefreshSkipsPersisterWhenRowIDZero(t *testing.T) {
 	if len(repo.calls) != 0 {
 		t.Errorf("repo Update should not fire when row ID == 0, got %d", len(repo.calls))
 	}
+}
+
+// ------------------------------------------------------------------
+// RequestAction OAuth handshake — shared across all three variants
+// ------------------------------------------------------------------
+
+func TestUserImport_RequestAction_StartOAuth_BuildsAuthorizeURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newUser(t, userSettings(srv.URL), srv.Client())
+	out, err := p.RequestAction(t.Context(), "startOAuth", map[string]string{"callbackUrl": "http://example.com/cb"})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map, got %T", out)
+	}
+	urlStr, _ := m["OauthUrl"].(string)
+	if !strings.HasPrefix(urlStr, "https://trakt.tv/oauth/authorize?") {
+		t.Errorf("OauthUrl=%q", urlStr)
+	}
+	if !strings.Contains(urlStr, "response_type=code") ||
+		!strings.Contains(urlStr, "redirect_uri=https%3A%2F%2Fauth.servarr.com") ||
+		!strings.Contains(urlStr, "state=http%3A%2F%2Fexample.com%2Fcb") ||
+		!strings.Contains(urlStr, "client_id=d44ba57") {
+		t.Errorf("OauthUrl missing required params: %s", urlStr)
+	}
+}
+
+func TestUserImport_RequestAction_StartOAuth_MissingCallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newUser(t, userSettings(srv.URL), srv.Client())
+	_, err := p.RequestAction(t.Context(), "startOAuth", map[string]string{})
+	if !errors.Is(err, trakt.ErrBadRequest) {
+		t.Errorf("err=%v want ErrBadRequest", err)
+	}
+}
+
+func TestUserImport_RequestAction_GetOAuthToken_ResolvesTuple(t *testing.T) {
+	var capture []capturedTrakt
+	srv := capturingTraktServer(t, &capture, "/users/settings",
+		`{"user":{"ids":{"slug":"oauthuser"}}}`)
+	defer srv.Close()
+	p := newUser(t, userSettings(srv.URL), srv.Client())
+	before := time.Now()
+	out, err := p.RequestAction(t.Context(), "getOAuthToken", map[string]string{
+		"access_token":  "new-tok",
+		"expires_in":    "3600",
+		"refresh_token": "new-ref",
+	})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map, got %T", out)
+	}
+	if m["accessToken"] != "new-tok" {
+		t.Errorf("accessToken=%v", m["accessToken"])
+	}
+	if m["refreshToken"] != "new-ref" {
+		t.Errorf("refreshToken=%v", m["refreshToken"])
+	}
+	if m["authUser"] != "oauthuser" {
+		t.Errorf("authUser=%v want oauthuser (fetched via /users/settings)", m["authUser"])
+	}
+	expires, ok := m["expires"].(time.Time)
+	if !ok {
+		t.Fatalf("expires not time.Time: %T", m["expires"])
+	}
+	want := before.Add(3600 * time.Second)
+	if expires.Before(want.Add(-2*time.Second)) || expires.After(want.Add(5*time.Second)) {
+		t.Errorf("expires=%v not within window around %v", expires, want)
+	}
+	// Verify the /users/settings call carried the new access token as
+	// the Bearer.
+	var settingsCall *capturedTrakt
+	for i := range capture {
+		if capture[i].Path == "/users/settings" {
+			settingsCall = &capture[i]
+			break
+		}
+	}
+	if settingsCall == nil || settingsCall.Auth != "Bearer new-tok" {
+		t.Errorf("/users/settings call missing or wrong Auth: %+v", capture)
+	}
+}
+
+func TestUserImport_RequestAction_GetOAuthToken_MissingOrBadFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newUser(t, userSettings(srv.URL), srv.Client())
+	cases := []map[string]string{
+		{"expires_in": "3600", "refresh_token": "x"},                     // missing access_token
+		{"access_token": "x", "refresh_token": "x"},                      // missing expires_in
+		{"access_token": "x", "expires_in": "3600"},                      // missing refresh_token
+		{"access_token": "x", "expires_in": "bad", "refresh_token": "x"}, // non-int expires_in
+		{"access_token": "x", "expires_in": "0", "refresh_token": "x"},   // zero expires_in
+	}
+	for i, q := range cases {
+		_, err := p.RequestAction(t.Context(), "getOAuthToken", q)
+		if !errors.Is(err, trakt.ErrBadRequest) {
+			t.Errorf("case %d: err=%v want ErrBadRequest", i, err)
+		}
+	}
+}
+
+func TestUserImport_RequestAction_GetOAuthToken_UserSettingsFailureFallsBack(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/users/settings" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newUser(t, userSettings(srv.URL), srv.Client())
+	out, err := p.RequestAction(t.Context(), "getOAuthToken", map[string]string{
+		"access_token":  "x",
+		"expires_in":    "3600",
+		"refresh_token": "x",
+	})
+	if err != nil {
+		t.Fatalf("user-settings failure should NOT propagate: %v", err)
+	}
+	m := out.(map[string]any)
+	if m["authUser"] != "" {
+		t.Errorf("authUser=%v want empty fallback", m["authUser"])
+	}
+}
+
+func TestUserImport_RequestAction_UnknownActionReturnsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newUser(t, userSettings(srv.URL), srv.Client())
+	out, err := p.RequestAction(t.Context(), "bogus", nil)
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok || len(m) != 0 {
+		t.Errorf("unknown action should return empty map, got %T %+v", out, out)
+	}
+}
+
+// Smoke test the Popular + List variants too — they delegate to the
+// same baseImport.RequestAction so this just verifies no surprises
+// in the embedded-struct call routing.
+func TestPopularImport_RequestAction_StartOAuth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newPopular(t, popularSettings(srv.URL), srv.Client())
+	out, err := p.RequestAction(t.Context(), "startOAuth", map[string]string{"callbackUrl": "cb"})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	if _, ok := out.(map[string]any); !ok {
+		t.Errorf("expected map, got %T", out)
+	}
+}
+
+func TestListImport_RequestAction_StartOAuth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newList(t, listSettings(srv.URL), srv.Client())
+	out, err := p.RequestAction(t.Context(), "startOAuth", map[string]string{"callbackUrl": "cb"})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	if _, ok := out.(map[string]any); !ok {
+		t.Errorf("expected map, got %T", out)
+	}
+}
+
+// capturedTrakt mirrors `captured` but is named differently so we
+// don't collide with the existing trakt_test.go captured-type.
+type capturedTrakt struct {
+	Path string
+	Auth string
+}
+
+// capturingTraktServer dispatches a per-path body for paths matching
+// targetPath; records the Authorization header per request.
+func capturingTraktServer(t *testing.T, capture *[]capturedTrakt, targetPath, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*capture = append(*capture, capturedTrakt{Path: r.URL.Path, Auth: r.Header.Get("Authorization")})
+		if r.URL.Path == targetPath {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
 }

@@ -18,9 +18,44 @@ import (
 // Mutable via [SetRenewURLForTest] for httptest seams.
 var renewURL = "https://auth.servarr.com/v1/anilist_sonarr/renew"
 
+// OAuth URLs. Mirror C# `AniListImportBase.OAuthUrl/RedirectUri` at
+// `:18-19`. The AniList ClientId at `:22` is "13780".
+var (
+	oauthAuthURLVar  = "https://anilist.co/api/v2/oauth/authorize"
+	oauthRedirectVar = "https://auth.servarr.com/v1/anilist_sonarr/auth"
+)
+
+// anilistClientID is the Sonarr application's AniList OAuth client
+// ID. Mirrors C# `AniListImportBase.ClientId` at `:22`.
+const anilistClientID = "13780"
+
 // SetRenewURLForTest swaps the renew endpoint. Tests redirect outbound
 // calls to an httptest.Server.
 func SetRenewURLForTest(u string) { renewURL = u }
+
+// SetOAuthURLsForTest swaps the authorize + redirect URLs. Intended
+// only for tests.
+func SetOAuthURLsForTest(authorize, redirect string) {
+	oauthAuthURLVar = authorize
+	oauthRedirectVar = redirect
+}
+
+// ErrBadRequest wraps a v3-UI RequestAction call with missing or
+// malformed query parameters. Mirrors C# `BadRequestException`.
+var ErrBadRequest = errors.New("anilist: bad request")
+
+// buildOAuthAuthorizeURL composes the anilist.co
+// `/api/v2/oauth/authorize` URL pinned to the servarr redirect
+// proxy. Mirrors C# `AniListImportBase.RequestAction` startOAuth
+// branch at `:42-47`.
+func buildOAuthAuthorizeURL(callbackURL string) string {
+	q := url.Values{}
+	q.Set("client_id", anilistClientID)
+	q.Set("response_type", "code")
+	q.Set("redirect_uri", oauthRedirectVar)
+	q.Set("state", callbackURL)
+	return oauthAuthURLVar + "?" + q.Encode()
+}
 
 // httpDoer is the minimal HTTP-client surface the proxy needs.
 type httpDoer interface {

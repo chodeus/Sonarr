@@ -163,9 +163,9 @@ func (l *ListImport) Test(ctx context.Context) ([]importlists.TestFailure, error
 	return nil, nil
 }
 
-// RequestAction is a no-op.
-func (l *ListImport) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
-	return struct{}{}, nil
+// RequestAction delegates to [baseImport.RequestAction].
+func (l *ListImport) RequestAction(ctx context.Context, action string, query map[string]string) (any, error) {
+	return l.baseImport.RequestAction(ctx, l.settings.BaseURL, action, query)
 }
 
 func init() {

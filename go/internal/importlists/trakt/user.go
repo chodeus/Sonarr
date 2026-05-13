@@ -287,9 +287,12 @@ func (u *UserImport) Test(ctx context.Context) ([]importlists.TestFailure, error
 	return nil, nil
 }
 
-// RequestAction is a no-op — OAuth handshake admin path DEFERRED.
-func (u *UserImport) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
-	return struct{}{}, nil
+// RequestAction delegates to [baseImport.RequestAction] passing the
+// variant's Settings.BaseURL for the GetUserName lookup. See
+// [baseImport.RequestAction] for the action semantics — common to
+// all three Trakt import variants per C# `TraktImportBase`.
+func (u *UserImport) RequestAction(ctx context.Context, action string, query map[string]string) (any, error) {
+	return u.baseImport.RequestAction(ctx, u.settings.BaseURL, action, query)
 }
 
 // init registers the User variant.

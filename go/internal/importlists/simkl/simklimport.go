@@ -239,10 +239,57 @@ func (s *SimklUserImport) Test(ctx context.Context) ([]importlists.TestFailure, 
 	return nil, nil
 }
 
-// RequestAction is a no-op — the OAuth handshake admin path is
-// DEFERRED.
-func (s *SimklUserImport) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
-	return struct{}{}, nil
+// RequestAction implements the C# `SimklImportBase.RequestAction`
+// admin path at `:70-98`. Two actions:
+//
+//   - startOAuth — composes the simkl.com `/oauth/authorize` URL
+//     pinned to the servarr redirect proxy with client_id +
+//     response_type=code + state=callbackUrl. Returns
+//     `{OauthUrl: "..."}` (PascalCase per C# `:83`).
+//   - getOAuthToken — accepts the redirect-returned (access_token,
+//     expires_in, refresh_token) triple; resolves the simkl account
+//     ID via getUserID using the supplied access token. Returns
+//     `{accessToken, expires, refreshToken, authUser}`.
+//     getUserID failure falls back to empty authUser.
+//
+// Missing fields / non-int expires_in / zero expires_in / missing
+// callbackUrl all return [ErrBadRequest]. Unknown actions return
+// `{}` (mirrors C# `:97`).
+func (s *SimklUserImport) RequestAction(ctx context.Context, action string, query map[string]string) (any, error) {
+	switch action {
+	case "startOAuth":
+		callbackURL := query["callbackUrl"]
+		if callbackURL == "" {
+			return nil, fmt.Errorf("%w: callbackUrl invalid", ErrBadRequest)
+		}
+		return map[string]any{"OauthUrl": buildOAuthAuthorizeURL(callbackURL)}, nil
+	case "getOAuthToken":
+		accessToken := query["access_token"]
+		expiresIn := query["expires_in"]
+		refreshToken := query["refresh_token"]
+		if accessToken == "" {
+			return nil, fmt.Errorf("%w: access_token invalid", ErrBadRequest)
+		}
+		if expiresIn == "" {
+			return nil, fmt.Errorf("%w: expires_in invalid", ErrBadRequest)
+		}
+		if refreshToken == "" {
+			return nil, fmt.Errorf("%w: refresh_token invalid", ErrBadRequest)
+		}
+		secs, err := strconv.Atoi(expiresIn)
+		if err != nil || secs <= 0 {
+			return nil, fmt.Errorf("%w: expires_in not a positive int", ErrBadRequest)
+		}
+		expires := s.now().Add(time.Duration(secs) * time.Second)
+		return map[string]any{
+			"accessToken":  accessToken,
+			"expires":      expires,
+			"refreshToken": refreshToken,
+			"authUser":     getUserID(ctx, s.doer, s.settings.BaseURL, accessToken),
+		}, nil
+	default:
+		return map[string]any{}, nil
+	}
 }
 
 func (s *SimklUserImport) recordSuccess(ctx context.Context) {

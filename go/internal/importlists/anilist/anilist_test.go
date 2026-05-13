@@ -3,6 +3,7 @@ package anilist_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -411,5 +412,71 @@ func TestAniListImport_Fetch_RefreshPersistsNewTokenToRepo(t *testing.T) {
 	}
 	if persisted.AccessToken != "new-token" {
 		t.Errorf("persisted AccessToken=%q want new-token", persisted.AccessToken)
+	}
+}
+
+func TestAniListImport_RequestAction_StartOAuth_BuildsAuthorizeURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newImport(t, srv.URL, defaultSettings(), &fakeStatusRecorder{}, srv.Client())
+	out, err := p.RequestAction(t.Context(), "startOAuth", map[string]string{"callbackUrl": "http://cb/x"})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m := out.(map[string]any)
+	u, _ := m["OauthUrl"].(string)
+	if !strings.HasPrefix(u, "https://anilist.co/api/v2/oauth/authorize?") {
+		t.Errorf("OauthUrl=%q", u)
+	}
+	if !strings.Contains(u, "client_id=13780") || !strings.Contains(u, "response_type=code") || !strings.Contains(u, "state=http%3A%2F%2Fcb%2Fx") {
+		t.Errorf("OauthUrl missing required params: %s", u)
+	}
+}
+
+func TestAniListImport_RequestAction_GetOAuthToken_NoAuthUser(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newImport(t, srv.URL, defaultSettings(), &fakeStatusRecorder{}, srv.Client())
+	out, err := p.RequestAction(t.Context(), "getOAuthToken", map[string]string{
+		"access_token":  "new-tok",
+		"expires_in":    "3600",
+		"refresh_token": "new-ref",
+	})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m := out.(map[string]any)
+	if m["accessToken"] != "new-tok" || m["refreshToken"] != "new-ref" {
+		t.Errorf("tuple wrong: %+v", m)
+	}
+	if _, has := m["authUser"]; has {
+		t.Errorf("AniList does not return authUser per C# `:56-61`, got %+v", m)
+	}
+}
+
+func TestAniListImport_RequestAction_BadRequestCases(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newImport(t, srv.URL, defaultSettings(), &fakeStatusRecorder{}, srv.Client())
+	if _, err := p.RequestAction(t.Context(), "startOAuth", map[string]string{}); !errors.Is(err, anilist.ErrBadRequest) {
+		t.Errorf("startOAuth missing callback: err=%v", err)
+	}
+	cases := []map[string]string{
+		{"expires_in": "3600", "refresh_token": "x"},
+		{"access_token": "x", "refresh_token": "x"},
+		{"access_token": "x", "expires_in": "3600"},
+		{"access_token": "x", "expires_in": "bad", "refresh_token": "x"},
+	}
+	for i, q := range cases {
+		_, err := p.RequestAction(t.Context(), "getOAuthToken", q)
+		if !errors.Is(err, anilist.ErrBadRequest) {
+			t.Errorf("case %d: err=%v want ErrBadRequest", i, err)
+		}
 	}
 }

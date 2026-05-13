@@ -3,6 +3,7 @@ package simkl_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -392,5 +393,110 @@ func TestSimklImport_Fetch_RefreshPersistsNewTokenToRepo(t *testing.T) {
 	}
 	if persisted.AccessToken != "new-token" {
 		t.Errorf("persisted AccessToken=%q want new-token", persisted.AccessToken)
+	}
+}
+
+func TestSimklImport_RequestAction_StartOAuth_BuildsAuthorizeURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newImport(t, srv.URL, simkl.Settings{
+		AccessToken: "tok", RefreshToken: "ref",
+		Expires: time.Now().Add(time.Hour),
+	}, &fakeStatusRecorder{}, srv.Client())
+	out, err := p.RequestAction(t.Context(), "startOAuth", map[string]string{"callbackUrl": "http://cb/x"})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m := out.(map[string]any)
+	u, _ := m["OauthUrl"].(string)
+	if !strings.HasPrefix(u, "https://simkl.com/oauth/authorize?") {
+		t.Errorf("OauthUrl=%q", u)
+	}
+	if !strings.Contains(u, "response_type=code") || !strings.Contains(u, "state=http%3A%2F%2Fcb%2Fx") || !strings.Contains(u, "client_id=3281c139") {
+		t.Errorf("OauthUrl missing required params: %s", u)
+	}
+}
+
+func TestSimklImport_RequestAction_GetOAuthToken_ResolvesAuthUser(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/users/settings" {
+			_, _ = w.Write([]byte(`{"account":{"id":42}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newImport(t, srv.URL, simkl.Settings{
+		AccessToken: "tok", RefreshToken: "ref",
+		Expires: time.Now().Add(time.Hour),
+	}, &fakeStatusRecorder{}, srv.Client())
+	out, err := p.RequestAction(t.Context(), "getOAuthToken", map[string]string{
+		"access_token":  "new-tok",
+		"expires_in":    "3600",
+		"refresh_token": "new-ref",
+	})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m := out.(map[string]any)
+	if m["accessToken"] != "new-tok" || m["refreshToken"] != "new-ref" {
+		t.Errorf("tuple wrong: %+v", m)
+	}
+	if m["authUser"] != "42" {
+		t.Errorf("authUser=%v want \"42\" (stringified account.id)", m["authUser"])
+	}
+}
+
+func TestSimklImport_RequestAction_GetOAuthToken_UserSettingsFailureFallsBack(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/users/settings" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newImport(t, srv.URL, simkl.Settings{
+		AccessToken: "tok", RefreshToken: "ref",
+		Expires: time.Now().Add(time.Hour),
+	}, &fakeStatusRecorder{}, srv.Client())
+	out, err := p.RequestAction(t.Context(), "getOAuthToken", map[string]string{
+		"access_token":  "x",
+		"expires_in":    "3600",
+		"refresh_token": "x",
+	})
+	if err != nil {
+		t.Fatalf("user-settings failure should NOT propagate: %v", err)
+	}
+	if m := out.(map[string]any); m["authUser"] != "" {
+		t.Errorf("authUser=%v want empty fallback", m["authUser"])
+	}
+}
+
+func TestSimklImport_RequestAction_BadRequestCases(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newImport(t, srv.URL, simkl.Settings{
+		AccessToken: "tok", RefreshToken: "ref",
+		Expires: time.Now().Add(time.Hour),
+	}, &fakeStatusRecorder{}, srv.Client())
+	if _, err := p.RequestAction(t.Context(), "startOAuth", map[string]string{}); !errors.Is(err, simkl.ErrBadRequest) {
+		t.Errorf("startOAuth missing callback: err=%v", err)
+	}
+	cases := []map[string]string{
+		{"expires_in": "3600", "refresh_token": "x"},
+		{"access_token": "x", "refresh_token": "x"},
+		{"access_token": "x", "expires_in": "3600"},
+		{"access_token": "x", "expires_in": "bad", "refresh_token": "x"},
+	}
+	for i, q := range cases {
+		_, err := p.RequestAction(t.Context(), "getOAuthToken", q)
+		if !errors.Is(err, simkl.ErrBadRequest) {
+			t.Errorf("case %d: err=%v want ErrBadRequest", i, err)
+		}
 	}
 }

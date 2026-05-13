@@ -3,6 +3,7 @@ package myanimelist_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -367,5 +368,128 @@ func TestMALImport_Fetch_RefreshPersistsNewTokenToRepo(t *testing.T) {
 	}
 	if persisted.RefreshToken != "new-refresh" {
 		t.Errorf("persisted RefreshToken=%q want new-refresh", persisted.RefreshToken)
+	}
+}
+
+func TestMALImport_RequestAction_StartOAuth_BuildsAuthorizeURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	myanimelist.SetOAuthURLsForTest(
+		"https://test-auth/oauth/myanimelist/authorize",
+		"https://test-auth/oauth/myanimelist/auth",
+	)
+	t.Cleanup(func() {
+		myanimelist.SetOAuthURLsForTest(
+			"https://auth.servarr.com/oauth/myanimelist/authorize",
+			"https://auth.servarr.com/oauth/myanimelist/auth",
+		)
+	})
+	p := newImport(t, srv.URL, myanimelist.Settings{
+		AccessToken: "tok", RefreshToken: "ref",
+		Expires: time.Now().Add(time.Hour),
+	}, &fakeStatusRecorder{}, srv.Client())
+	out, err := p.RequestAction(t.Context(), "startOAuth", map[string]string{"callbackUrl": "http://cb/x"})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map, got %T", out)
+	}
+	u, _ := m["OauthUrl"].(string)
+	if !strings.HasPrefix(u, "https://test-auth/oauth/myanimelist/authorize?") {
+		t.Errorf("OauthUrl=%q", u)
+	}
+	if !strings.Contains(u, "state=http%3A%2F%2Fcb%2Fx") || !strings.Contains(u, "redirect_uri=https%3A%2F%2Ftest-auth%2Foauth%2Fmyanimelist%2Fauth") {
+		t.Errorf("OauthUrl missing required params: %s", u)
+	}
+}
+
+func TestMALImport_RequestAction_StartOAuth_MissingCallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newImport(t, srv.URL, myanimelist.Settings{
+		AccessToken: "tok", RefreshToken: "ref",
+		Expires: time.Now().Add(time.Hour),
+	}, &fakeStatusRecorder{}, srv.Client())
+	_, err := p.RequestAction(t.Context(), "startOAuth", map[string]string{})
+	if !errors.Is(err, myanimelist.ErrBadRequest) {
+		t.Errorf("err=%v want ErrBadRequest", err)
+	}
+}
+
+func TestMALImport_RequestAction_GetOAuthToken_ResolvesTuple(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newImport(t, srv.URL, myanimelist.Settings{
+		AccessToken: "tok", RefreshToken: "ref",
+		Expires: time.Now().Add(time.Hour),
+	}, &fakeStatusRecorder{}, srv.Client())
+	before := time.Now()
+	out, err := p.RequestAction(t.Context(), "getOAuthToken", map[string]string{
+		"access_token":  "new-tok",
+		"expires_in":    "3600",
+		"refresh_token": "new-ref",
+	})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m := out.(map[string]any)
+	if m["accessToken"] != "new-tok" || m["refreshToken"] != "new-ref" {
+		t.Errorf("tuple wrong: %+v", m)
+	}
+	// MAL does NOT return authUser — verify the key isn't present.
+	if _, has := m["authUser"]; has {
+		t.Errorf("authUser key should not be present in MAL response: %+v", m)
+	}
+	expires := m["expires"].(time.Time)
+	want := before.Add(3600 * time.Second)
+	if expires.Before(want.Add(-2*time.Second)) || expires.After(want.Add(5*time.Second)) {
+		t.Errorf("expires=%v not within window around %v", expires, want)
+	}
+}
+
+func TestMALImport_RequestAction_GetOAuthToken_MissingOrBadFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newImport(t, srv.URL, myanimelist.Settings{
+		AccessToken: "tok", RefreshToken: "ref",
+		Expires: time.Now().Add(time.Hour),
+	}, &fakeStatusRecorder{}, srv.Client())
+	cases := []map[string]string{
+		{"expires_in": "3600", "refresh_token": "x"},
+		{"access_token": "x", "refresh_token": "x"},
+		{"access_token": "x", "expires_in": "3600"},
+		{"access_token": "x", "expires_in": "bad", "refresh_token": "x"},
+		{"access_token": "x", "expires_in": "0", "refresh_token": "x"},
+	}
+	for i, q := range cases {
+		_, err := p.RequestAction(t.Context(), "getOAuthToken", q)
+		if !errors.Is(err, myanimelist.ErrBadRequest) {
+			t.Errorf("case %d: err=%v want ErrBadRequest", i, err)
+		}
+	}
+}
+
+func TestMALImport_RequestAction_UnknownActionReturnsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	p := newImport(t, srv.URL, myanimelist.Settings{
+		AccessToken: "tok", RefreshToken: "ref",
+		Expires: time.Now().Add(time.Hour),
+	}, &fakeStatusRecorder{}, srv.Client())
+	out, _ := p.RequestAction(t.Context(), "bogus", nil)
+	if m, ok := out.(map[string]any); !ok || len(m) != 0 {
+		t.Errorf("unknown action should return empty map, got %T %+v", out, out)
 	}
 }

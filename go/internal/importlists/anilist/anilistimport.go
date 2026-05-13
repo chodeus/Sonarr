@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -257,9 +258,55 @@ func (a *AniListImport) Test(ctx context.Context) ([]importlists.TestFailure, er
 	return nil, nil
 }
 
-// RequestAction is a no-op — the OAuth handshake admin path is DEFERRED.
-func (a *AniListImport) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
-	return struct{}{}, nil
+// RequestAction implements the C# `AniListImportBase.RequestAction`
+// admin path at `:38-65`. Two actions:
+//
+//   - startOAuth — composes the anilist.co `/api/v2/oauth/authorize`
+//     URL with client_id + response_type=code + redirect_uri (pinned
+//     to the servarr proxy) + state=callbackUrl. Returns
+//     `{OauthUrl: "..."}` (PascalCase per C# `:51`).
+//   - getOAuthToken — accepts the redirect-returned (access_token,
+//     expires_in, refresh_token) triple and returns
+//     `{accessToken, expires, refreshToken}` (NO authUser per
+//     C# `:56-61`).
+//
+// Missing fields / non-int expires_in / zero expires_in / missing
+// callbackUrl all return [ErrBadRequest]. Unknown actions return
+// `{}` (mirrors C# `:64`).
+func (a *AniListImport) RequestAction(_ context.Context, action string, query map[string]string) (any, error) {
+	switch action {
+	case "startOAuth":
+		callbackURL := query["callbackUrl"]
+		if callbackURL == "" {
+			return nil, fmt.Errorf("%w: callbackUrl invalid", ErrBadRequest)
+		}
+		return map[string]any{"OauthUrl": buildOAuthAuthorizeURL(callbackURL)}, nil
+	case "getOAuthToken":
+		accessToken := query["access_token"]
+		expiresIn := query["expires_in"]
+		refreshToken := query["refresh_token"]
+		if accessToken == "" {
+			return nil, fmt.Errorf("%w: access_token invalid", ErrBadRequest)
+		}
+		if expiresIn == "" {
+			return nil, fmt.Errorf("%w: expires_in invalid", ErrBadRequest)
+		}
+		if refreshToken == "" {
+			return nil, fmt.Errorf("%w: refresh_token invalid", ErrBadRequest)
+		}
+		secs, err := strconv.Atoi(expiresIn)
+		if err != nil || secs <= 0 {
+			return nil, fmt.Errorf("%w: expires_in not a positive int", ErrBadRequest)
+		}
+		expires := a.now().Add(time.Duration(secs) * time.Second)
+		return map[string]any{
+			"accessToken":  accessToken,
+			"expires":      expires,
+			"refreshToken": refreshToken,
+		}, nil
+	default:
+		return map[string]any{}, nil
+	}
 }
 
 func (a *AniListImport) recordSuccess(ctx context.Context) {

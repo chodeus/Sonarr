@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -210,10 +211,55 @@ func (m *MyAnimeListImport) Test(ctx context.Context) ([]importlists.TestFailure
 	return nil, nil
 }
 
-// RequestAction is a no-op for the Provider interface — the C#
-// startOAuth/getOAuthToken admin paths are DEFERRED.
-func (m *MyAnimeListImport) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
-	return struct{}{}, nil
+// RequestAction implements the C# `MyAnimeListImport.RequestAction`
+// admin path at `:47-73`. Two actions:
+//
+//   - startOAuth — composes the MAL authorize URL through the
+//     servarr cloud proxy with state = callbackUrl and redirect_uri
+//     = the cloud's auth callback path. Returns `{OauthUrl: "..."}`
+//     (PascalCase per C# `:59`).
+//   - getOAuthToken — accepts the redirect-returned (access_token,
+//     expires_in, refresh_token) triple and returns
+//     `{accessToken, expires, refreshToken}` (NO authUser — MAL
+//     doesn't surface a user-handle resolution per C# `:62-69`).
+//
+// Missing fields / non-int expires_in / zero expires_in / missing
+// callbackUrl all return [ErrBadRequest]. Unknown actions return
+// `{}` (mirrors C# `:72`).
+func (m *MyAnimeListImport) RequestAction(_ context.Context, action string, query map[string]string) (any, error) {
+	switch action {
+	case "startOAuth":
+		callbackURL := query["callbackUrl"]
+		if callbackURL == "" {
+			return nil, fmt.Errorf("%w: callbackUrl invalid", ErrBadRequest)
+		}
+		return map[string]any{"OauthUrl": buildOAuthAuthorizeURL(callbackURL)}, nil
+	case "getOAuthToken":
+		accessToken := query["access_token"]
+		expiresIn := query["expires_in"]
+		refreshToken := query["refresh_token"]
+		if accessToken == "" {
+			return nil, fmt.Errorf("%w: access_token invalid", ErrBadRequest)
+		}
+		if expiresIn == "" {
+			return nil, fmt.Errorf("%w: expires_in invalid", ErrBadRequest)
+		}
+		if refreshToken == "" {
+			return nil, fmt.Errorf("%w: refresh_token invalid", ErrBadRequest)
+		}
+		secs, err := strconv.Atoi(expiresIn)
+		if err != nil || secs <= 0 {
+			return nil, fmt.Errorf("%w: expires_in not a positive int", ErrBadRequest)
+		}
+		expires := m.now().Add(time.Duration(secs) * time.Second)
+		return map[string]any{
+			"accessToken":  accessToken,
+			"expires":      expires,
+			"refreshToken": refreshToken,
+		}, nil
+	default:
+		return map[string]any{}, nil
+	}
 }
 
 func (m *MyAnimeListImport) recordSuccess(ctx context.Context) {
