@@ -26,6 +26,7 @@ package mediacover
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -331,6 +332,65 @@ func ResizeHeights(t CoverType) []int {
 	default:
 		return nil
 	}
+}
+
+// DecodeSeriesImages decodes the JSON blob stored on
+// [series.Series.Images] into a typed Cover slice. Empty blob /
+// pure-whitespace / "[]" all yield (nil, nil) — matches the C#
+// behaviour where unparsed Images defaults to an empty list.
+// Decode failures propagate; callers that want a swallow-and-continue
+// semantic should pattern: `covers, _ := DecodeSeriesImages(s)`.
+//
+// Notifications providers that surface a per-series poster
+// (Pushcut, Discord embed thumbnails) call this once per fan-out
+// and then [FindCover] to locate the desired CoverType.
+func DecodeSeriesImages(s *series.Series) ([]Cover, error) {
+	if s == nil {
+		return nil, nil
+	}
+	trimmed := strings.TrimSpace(s.Images)
+	if trimmed == "" || trimmed == "[]" || trimmed == "null" {
+		return nil, nil
+	}
+	var out []Cover
+	if err := json.Unmarshal([]byte(s.Images), &out); err != nil {
+		return nil, fmt.Errorf("mediacover: decode series.Images: %w", err)
+	}
+	return out, nil
+}
+
+// FindCover returns the first Cover matching the given CoverType,
+// or nil when no match exists. The C# tree's
+// `series.Images.SingleOrDefault(c => c.CoverType == t)` is the
+// same shape — a series carries at most one cover per type.
+func FindCover(covers []Cover, t CoverType) *Cover {
+	for i := range covers {
+		if covers[i].CoverType == t {
+			return &covers[i]
+		}
+	}
+	return nil
+}
+
+// FindPosterURL returns the best per-series poster URL for
+// notification payloads that want a single URL. Prefers
+// CoverTypePoster's RemoteUrl (the upstream metadata source URL —
+// publicly reachable from notification destinations) over Url
+// (which routes through the Sonarr API and isn't accessible from
+// external services like Pushbullet/Pushcut/Discord). Returns
+// empty string when no poster is set.
+//
+// Callers that need the local-URL semantic (in-Sonarr UI consumers)
+// should use FindCover + Url directly.
+func FindPosterURL(covers []Cover) string {
+	c := FindCover(covers, CoverTypePoster)
+	if c == nil {
+		return ""
+	}
+	if c.RemoteUrl != "" {
+		return c.RemoteUrl
+	}
+	return c.Url
 }
 
 // ParseCoverType maps a lowercased name (`"poster"` etc.) back to

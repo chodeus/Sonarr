@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"sonarr.tv/sonarr/internal/mediacover"
 	"sonarr.tv/sonarr/internal/notifications"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -75,7 +76,11 @@ func (p *Pushcut) Link() string { return "https://www.pushcut.io" }
 func (p *Pushcut) Definition() *notifications.Notification { return p.def }
 
 // buildPayload mirrors the inline payload composition at
-// `PushcutProxy.cs:45-62`. Poster IS deferred — see package doc.
+// `PushcutProxy.cs:45-62` + GetPosterUrl at `Pushcut.cs:82-85`.
+// When IncludePoster is on and the series carries a Poster
+// MediaCover entry, the RemoteUrl is surfaced as Payload.Image.
+// Decode failures swallow to no-poster (log-only): notification
+// dispatch shouldn't fail on a bad Images blob.
 func (p *Pushcut) buildPayload(title, message string, ser *series.Series) *Payload {
 	ts := p.settings.TimeSensitive
 	payload := &Payload{
@@ -87,7 +92,10 @@ func (p *Pushcut) buildPayload(title, message string, ser *series.Series) *Paylo
 	for _, l := range notifications.GenerateMetadataLinks(ser, p.settings.MetadataLinks) {
 		payload.Actions = append(payload.Actions, Action{Name: l.Label, URL: l.URL})
 	}
-	// IncludePoster path deferred (no typed series.Images blob yet).
+	if p.settings.IncludePoster && ser != nil {
+		covers, _ := mediacover.DecodeSeriesImages(ser)
+		payload.Image = mediacover.FindPosterURL(covers)
+	}
 	return payload
 }
 

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"sonarr.tv/sonarr/internal/mediacover"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 type stubFS struct {
@@ -290,5 +291,105 @@ func TestService_NilReceiver_PathOps(t *testing.T) {
 	}
 	if got := s.GetSeriesCoverPath(1); got != "" {
 		t.Errorf("nil GetSeriesCoverPath: %q", got)
+	}
+}
+
+func TestDecodeSeriesImages_RoundTrips(t *testing.T) {
+	t.Parallel()
+	ser := &series.Series{
+		Images: `[{"coverType":1,"url":"/MediaCover/9/poster.jpg","remoteUrl":"https://cdn/poster.jpg"},{"coverType":3,"url":"/MediaCover/9/fanart.jpg","remoteUrl":"https://cdn/fanart.jpg"}]`,
+	}
+	covers, err := mediacover.DecodeSeriesImages(ser)
+	if err != nil {
+		t.Fatalf("DecodeSeriesImages: %v", err)
+	}
+	if len(covers) != 2 {
+		t.Fatalf("len=%d want 2", len(covers))
+	}
+	if covers[0].CoverType != mediacover.CoverTypePoster || covers[0].RemoteUrl != "https://cdn/poster.jpg" {
+		t.Errorf("covers[0]=%+v", covers[0])
+	}
+	if covers[1].CoverType != mediacover.CoverTypeFanart {
+		t.Errorf("covers[1]=%+v", covers[1])
+	}
+}
+
+func TestDecodeSeriesImages_EmptyOrNilSafe(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		s    *series.Series
+	}{
+		{"nil-series", nil},
+		{"empty-blob", &series.Series{Images: ""}},
+		{"whitespace", &series.Series{Images: "   "}},
+		{"empty-array", &series.Series{Images: "[]"}},
+		{"null-literal", &series.Series{Images: "null"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := mediacover.DecodeSeriesImages(c.s)
+			if err != nil {
+				t.Errorf("err=%v", err)
+			}
+			if got != nil {
+				t.Errorf("got=%+v want nil", got)
+			}
+		})
+	}
+}
+
+func TestDecodeSeriesImages_BadJSONPropagates(t *testing.T) {
+	t.Parallel()
+	_, err := mediacover.DecodeSeriesImages(&series.Series{Images: `not valid json`})
+	if err == nil {
+		t.Errorf("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestFindCover(t *testing.T) {
+	t.Parallel()
+	covers := []mediacover.Cover{
+		{CoverType: mediacover.CoverTypeBanner, RemoteUrl: "b"},
+		{CoverType: mediacover.CoverTypePoster, RemoteUrl: "p"},
+		{CoverType: mediacover.CoverTypeFanart, RemoteUrl: "f"},
+	}
+	got := mediacover.FindCover(covers, mediacover.CoverTypePoster)
+	if got == nil || got.RemoteUrl != "p" {
+		t.Errorf("FindCover(Poster)=%+v want RemoteUrl=p", got)
+	}
+	if mediacover.FindCover(covers, mediacover.CoverTypeClearlogo) != nil {
+		t.Errorf("FindCover should return nil for missing type")
+	}
+	if mediacover.FindCover(nil, mediacover.CoverTypePoster) != nil {
+		t.Errorf("FindCover(nil) should return nil")
+	}
+}
+
+func TestFindPosterURL_PrefersRemoteOverLocal(t *testing.T) {
+	t.Parallel()
+	covers := []mediacover.Cover{
+		{CoverType: mediacover.CoverTypePoster, Url: "/local/poster.jpg", RemoteUrl: "https://remote/poster.jpg"},
+	}
+	if got := mediacover.FindPosterURL(covers); got != "https://remote/poster.jpg" {
+		t.Errorf("FindPosterURL=%q want remote", got)
+	}
+}
+
+func TestFindPosterURL_FallsBackToLocalWhenNoRemote(t *testing.T) {
+	t.Parallel()
+	covers := []mediacover.Cover{
+		{CoverType: mediacover.CoverTypePoster, Url: "/local/poster.jpg"},
+	}
+	if got := mediacover.FindPosterURL(covers); got != "/local/poster.jpg" {
+		t.Errorf("FindPosterURL=%q want local fallback", got)
+	}
+}
+
+func TestFindPosterURL_EmptyWhenNoPoster(t *testing.T) {
+	t.Parallel()
+	covers := []mediacover.Cover{{CoverType: mediacover.CoverTypeBanner, RemoteUrl: "b"}}
+	if got := mediacover.FindPosterURL(covers); got != "" {
+		t.Errorf("FindPosterURL=%q want empty (no poster)", got)
 	}
 }

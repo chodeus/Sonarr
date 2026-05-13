@@ -239,3 +239,82 @@ func TestPushcut_RegisteredInDefault(t *testing.T) {
 		t.Errorf("registry missing %s/%s", pushcut.Implementation, pushcut.ConfigContract)
 	}
 }
+
+const seriesImagesPosterFanart = `[{"coverType":1,"url":"/MediaCover/9/poster.jpg","remoteUrl":"https://cdn/poster.jpg"},{"coverType":3,"url":"/MediaCover/9/fanart.jpg","remoteUrl":"https://cdn/fanart.jpg"}]`
+
+func TestPushcut_OnGrab_IncludesPosterWhenEnabled(t *testing.T) {
+	var capture []captured
+	srv := capturingServer(t, 0, "", &capture)
+	defer srv.Close()
+	prov := makePushcut(t, srv, func(s *pushcut.Settings) {
+		s.IncludePoster = true
+	})
+	msg := notifications.GrabMessage{
+		Series:  &series.Series{Title: "Show", Images: seriesImagesPosterFanart},
+		Message: "Show.S01E01",
+	}
+	if err := prov.OnGrab(t.Context(), msg); err != nil {
+		t.Fatalf("OnGrab: %v", err)
+	}
+	var p pushcut.Payload
+	if err := json.Unmarshal(capture[0].BodyBytes, &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if p.Image != "https://cdn/poster.jpg" {
+		t.Errorf("Image=%q want cdn/poster.jpg", p.Image)
+	}
+}
+
+func TestPushcut_OnGrab_OmitsPosterWhenDisabled(t *testing.T) {
+	var capture []captured
+	srv := capturingServer(t, 0, "", &capture)
+	defer srv.Close()
+	prov := makePushcut(t, srv, nil) // IncludePoster default false
+	msg := notifications.GrabMessage{
+		Series:  &series.Series{Images: seriesImagesPosterFanart},
+		Message: "x",
+	}
+	_ = prov.OnGrab(t.Context(), msg)
+	var p pushcut.Payload
+	_ = json.Unmarshal(capture[0].BodyBytes, &p)
+	if p.Image != "" {
+		t.Errorf("Image=%q want empty (IncludePoster off)", p.Image)
+	}
+}
+
+func TestPushcut_OnGrab_NoPosterWhenSeriesHasNoCoverEntry(t *testing.T) {
+	var capture []captured
+	srv := capturingServer(t, 0, "", &capture)
+	defer srv.Close()
+	prov := makePushcut(t, srv, func(s *pushcut.Settings) { s.IncludePoster = true })
+	// Banner only — no poster row.
+	msg := notifications.GrabMessage{
+		Series:  &series.Series{Images: `[{"coverType":2,"remoteUrl":"https://cdn/banner.jpg"}]`},
+		Message: "x",
+	}
+	_ = prov.OnGrab(t.Context(), msg)
+	var p pushcut.Payload
+	_ = json.Unmarshal(capture[0].BodyBytes, &p)
+	if p.Image != "" {
+		t.Errorf("Image=%q want empty (no poster in series)", p.Image)
+	}
+}
+
+func TestPushcut_OnGrab_BadImagesBlobNoFailure(t *testing.T) {
+	var capture []captured
+	srv := capturingServer(t, 0, "", &capture)
+	defer srv.Close()
+	prov := makePushcut(t, srv, func(s *pushcut.Settings) { s.IncludePoster = true })
+	msg := notifications.GrabMessage{
+		Series:  &series.Series{Images: "not valid json"},
+		Message: "x",
+	}
+	if err := prov.OnGrab(t.Context(), msg); err != nil {
+		t.Fatalf("OnGrab should not fail on bad Images blob: %v", err)
+	}
+	var p pushcut.Payload
+	_ = json.Unmarshal(capture[0].BodyBytes, &p)
+	if p.Image != "" {
+		t.Errorf("Image=%q want empty fallback on bad blob", p.Image)
+	}
+}
