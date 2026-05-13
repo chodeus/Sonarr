@@ -69,13 +69,28 @@ func defaultNonce() string {
 // urlencoded payload key/value set; both keys and values must NOT
 // be pre-percent-encoded — the signer encodes them once per RFC 5849.
 func (o *oauthSigner) AuthorizationHeader(method, endpoint string, bodyParams map[string]string) string {
+	return o.authorizationHeaderWithExtras(method, endpoint, bodyParams, nil)
+}
+
+// authorizationHeaderWithExtras allows the OAuth1 request-token /
+// access-token flows to inject `oauth_callback` / `oauth_verifier`
+// into the protocol params. extras keys must start with `oauth_` to
+// be useful; they MUST be excluded from the body params.
+func (o *oauthSigner) authorizationHeaderWithExtras(method, endpoint string, bodyParams, extras map[string]string) string {
 	oauthParams := map[string]string{
 		"oauth_consumer_key":     o.consumerKey,
 		"oauth_nonce":            o.nonceFn(),
 		"oauth_signature_method": "HMAC-SHA1",
 		"oauth_timestamp":        strconv.FormatInt(o.nowFn().Unix(), 10),
-		"oauth_token":            o.tokenKey,
 		"oauth_version":          "1.0",
+	}
+	// oauth_token is OMITTED in the request_token flow (per RFC 5849).
+	// Only include it when the signer carries a non-empty token key.
+	if o.tokenKey != "" {
+		oauthParams["oauth_token"] = o.tokenKey
+	}
+	for k, v := range extras {
+		oauthParams[k] = v
 	}
 	signature := o.sign(method, endpoint, oauthParams, bodyParams)
 	oauthParams["oauth_signature"] = signature

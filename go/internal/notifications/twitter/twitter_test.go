@@ -234,3 +234,173 @@ func TestTwitter_RegisteredInDefault(t *testing.T) {
 		t.Errorf("registry missing %s/%s", twitter.Implementation, twitter.ConfigContract)
 	}
 }
+
+// oauthHandshakeServer dispatches /oauth/request_token and
+// /oauth/access_token. requestBody is the form-encoded body returned
+// for /oauth/request_token; accessBody for /oauth/access_token. If
+// status is nonzero, applies to BOTH endpoints.
+func oauthHandshakeServer(t *testing.T, requestBody, accessBody string, status int, capture *[]captured) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		*capture = append(*capture, captured{
+			URL:        r.URL.Path,
+			AuthHeader: r.Header.Get("Authorization"),
+			Body:       body,
+		})
+		if status != 0 && status != http.StatusOK {
+			w.WriteHeader(status)
+			return
+		}
+		switch r.URL.Path {
+		case "/oauth/request_token":
+			_, _ = w.Write([]byte(requestBody))
+		case "/oauth/access_token":
+			_, _ = w.Write([]byte(accessBody))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	twitter.SetOAuthURLsForTest(
+		srv.URL+"/oauth/request_token",
+		srv.URL+"/oauth/access_token",
+		srv.URL+"/oauth/authorize",
+	)
+	t.Cleanup(func() {
+		twitter.SetOAuthURLsForTest(
+			"https://api.twitter.com/oauth/request_token",
+			"https://api.twitter.com/oauth/access_token",
+			"https://api.twitter.com/oauth/authorize",
+		)
+	})
+	return srv
+}
+
+func TestTwitter_RequestAction_StartOAuth_BuildsAuthorizeURL(t *testing.T) {
+	var capture []captured
+	srv := oauthHandshakeServer(t,
+		"oauth_token=req-tok&oauth_token_secret=req-sec&oauth_callback_confirmed=true",
+		"", 0, &capture)
+	defer srv.Close()
+	prov := makeTwitter(t, srv, nil)
+	out, err := prov.RequestAction(t.Context(), "startOAuth", map[string]string{"callbackUrl": "http://cb/ret"})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map, got %T", out)
+	}
+	urlStr, _ := m["oauthUrl"].(string)
+	if !strings.HasSuffix(urlStr, "/oauth/authorize?oauth_token=req-tok") {
+		t.Errorf("oauthUrl=%q want authorize?oauth_token=req-tok suffix", urlStr)
+	}
+	// Verify the request_token call was OAuth1-signed and carried
+	// oauth_callback in the Authorization header.
+	if len(capture) != 1 || capture[0].URL != "/oauth/request_token" {
+		t.Fatalf("expected single /oauth/request_token call, got %+v", capture)
+	}
+	auth := capture[0].AuthHeader
+	if !strings.HasPrefix(auth, "OAuth ") {
+		t.Errorf("Authorization=%q lacks OAuth prefix", auth)
+	}
+	if !strings.Contains(auth, `oauth_callback="http%3A%2F%2Fcb%2Fret"`) {
+		t.Errorf("Authorization missing percent-encoded oauth_callback: %s", auth)
+	}
+	if !strings.Contains(auth, `oauth_signature=`) {
+		t.Errorf("Authorization missing oauth_signature: %s", auth)
+	}
+}
+
+func TestTwitter_RequestAction_StartOAuth_MissingCallback(t *testing.T) {
+	var capture []captured
+	srv := oauthHandshakeServer(t, "", "", 0, &capture)
+	defer srv.Close()
+	prov := makeTwitter(t, srv, nil)
+	_, err := prov.RequestAction(t.Context(), "startOAuth", map[string]string{})
+	if !errors.Is(err, twitter.ErrBadRequest) {
+		t.Errorf("err=%v want ErrBadRequest", err)
+	}
+}
+
+func TestTwitter_RequestAction_GetOAuthToken_ResolvesTokenPair(t *testing.T) {
+	var capture []captured
+	srv := oauthHandshakeServer(t,
+		"",
+		"oauth_token=final-tok&oauth_token_secret=final-sec&screen_name=sonarr",
+		0, &capture)
+	defer srv.Close()
+	prov := makeTwitter(t, srv, nil)
+	out, err := prov.RequestAction(t.Context(), "getOAuthToken", map[string]string{
+		"oauth_token":    "tmp-tok",
+		"oauth_verifier": "verify-123",
+	})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map, got %T", out)
+	}
+	if m["accessToken"] != "final-tok" {
+		t.Errorf("accessToken=%v", m["accessToken"])
+	}
+	if m["accessTokenSecret"] != "final-sec" {
+		t.Errorf("accessTokenSecret=%v", m["accessTokenSecret"])
+	}
+	// Verify the access_token call carried oauth_verifier + the
+	// temporary oauth_token in the Authorization header.
+	if len(capture) != 1 || capture[0].URL != "/oauth/access_token" {
+		t.Fatalf("expected single /oauth/access_token call, got %+v", capture)
+	}
+	auth := capture[0].AuthHeader
+	if !strings.Contains(auth, `oauth_verifier="verify-123"`) {
+		t.Errorf("Authorization missing oauth_verifier: %s", auth)
+	}
+	if !strings.Contains(auth, `oauth_token="tmp-tok"`) {
+		t.Errorf("Authorization missing temporary oauth_token: %s", auth)
+	}
+}
+
+func TestTwitter_RequestAction_GetOAuthToken_MissingParams(t *testing.T) {
+	var capture []captured
+	srv := oauthHandshakeServer(t, "", "", 0, &capture)
+	defer srv.Close()
+	prov := makeTwitter(t, srv, nil)
+	cases := []map[string]string{
+		{"oauth_verifier": "v"}, // missing oauth_token
+		{"oauth_token": "t"},    // missing oauth_verifier
+	}
+	for i, q := range cases {
+		_, err := prov.RequestAction(t.Context(), "getOAuthToken", q)
+		if !errors.Is(err, twitter.ErrBadRequest) {
+			t.Errorf("case %d: err=%v want ErrBadRequest", i, err)
+		}
+	}
+}
+
+func TestTwitter_RequestAction_StartOAuth_ServerErrorPropagates(t *testing.T) {
+	var capture []captured
+	srv := oauthHandshakeServer(t, "", "", http.StatusInternalServerError, &capture)
+	defer srv.Close()
+	prov := makeTwitter(t, srv, nil)
+	_, err := prov.RequestAction(t.Context(), "startOAuth", map[string]string{"callbackUrl": "http://cb"})
+	if !errors.Is(err, twitter.ErrSendFailed) {
+		t.Errorf("err=%v want ErrSendFailed", err)
+	}
+}
+
+func TestTwitter_RequestAction_UnknownActionReturnsEmpty(t *testing.T) {
+	var capture []captured
+	srv := oauthHandshakeServer(t, "", "", 0, &capture)
+	defer srv.Close()
+	prov := makeTwitter(t, srv, nil)
+	out, err := prov.RequestAction(t.Context(), "bogus", nil)
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok || len(m) != 0 {
+		t.Errorf("expected empty map, got %T %+v", out, out)
+	}
+}

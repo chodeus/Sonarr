@@ -334,3 +334,187 @@ func TestPlex_RegisteredInDefault(t *testing.T) {
 		t.Errorf("registry missing %s/%s", plex.Implementation, plex.ConfigContract)
 	}
 }
+
+// oauthServer dispatches /api/v2/pins/{id} GETs and records calls.
+// authToken="" means the pin is not yet redeemed (returns
+// {"authToken":""}); 500 simulates a server failure.
+func oauthServer(t *testing.T, pinID int, authToken string, status int) (*httptest.Server, *[]string) {
+	t.Helper()
+	calls := &[]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*calls = append(*calls, r.URL.Path+"?"+r.URL.RawQuery)
+		if status != 0 && status != http.StatusOK {
+			w.WriteHeader(status)
+			return
+		}
+		want := "/api/v2/pins/" + strconv.Itoa(pinID)
+		if r.URL.Path == want {
+			_, _ = w.Write([]byte(`{"authToken":"` + authToken + `"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	plex.SetOAuthURLsForTest(srv.URL, srv.URL)
+	t.Cleanup(func() {
+		plex.SetOAuthURLsForTest("https://plex.tv", "https://app.plex.tv")
+	})
+	return srv, calls
+}
+
+func TestPlex_RequestAction_StartOAuth_BuildsPinPostURL(t *testing.T) {
+	srv, _ := oauthServer(t, 0, "", 0)
+	defer srv.Close()
+	prov := makePlex(t, srv, nil)
+	out, err := prov.RequestAction(t.Context(), "startOAuth", nil)
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	r, ok := out.(plex.PinURLResponse)
+	if !ok {
+		t.Fatalf("expected PinURLResponse, got %T", out)
+	}
+	if !r.Poll {
+		t.Errorf("Poll=false")
+	}
+	if !strings.Contains(r.URL, "/api/v2/pins?") {
+		t.Errorf("URL=%q lacks /api/v2/pins suffix", r.URL)
+	}
+	if !strings.Contains(r.URL, "strong=true") || !strings.Contains(r.URL, "X-Plex-Product=Sonarr") {
+		t.Errorf("URL=%q missing required params", r.URL)
+	}
+	if r.Headers["Accept"] != "application/json" {
+		t.Errorf("Headers=%v", r.Headers)
+	}
+}
+
+func TestPlex_RequestAction_ContinueOAuth_BuildsSignInURL(t *testing.T) {
+	srv, _ := oauthServer(t, 0, "", 0)
+	defer srv.Close()
+	prov := makePlex(t, srv, nil)
+	out, err := prov.RequestAction(t.Context(), "continueOAuth", map[string]string{
+		"callbackUrl": "http://cb/return",
+		"id":          "42",
+		"code":        "abc123",
+	})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	r, ok := out.(plex.SignInURLResponse)
+	if !ok {
+		t.Fatalf("expected SignInURLResponse, got %T", out)
+	}
+	if r.PinID != 42 {
+		t.Errorf("PinID=%d want 42", r.PinID)
+	}
+	if !strings.Contains(r.OauthURL, "/auth/hashBang/#!?") {
+		t.Errorf("OauthURL=%q missing hashBang anchor", r.OauthURL)
+	}
+	if !strings.Contains(r.OauthURL, "forwardUrl=http%3A%2F%2Fcb%2Freturn") || !strings.Contains(r.OauthURL, "code=abc123") {
+		t.Errorf("OauthURL=%q missing required params", r.OauthURL)
+	}
+}
+
+func TestPlex_RequestAction_ContinueOAuth_MissingParams(t *testing.T) {
+	srv, _ := oauthServer(t, 0, "", 0)
+	defer srv.Close()
+	prov := makePlex(t, srv, nil)
+	cases := []map[string]string{
+		{"id": "1", "code": "x"},                        // missing callbackUrl
+		{"callbackUrl": "cb", "code": "x"},              // missing id
+		{"callbackUrl": "cb", "id": "1"},                // missing code
+		{"callbackUrl": "cb", "id": "bad", "code": "x"}, // non-int id
+	}
+	for i, q := range cases {
+		_, err := prov.RequestAction(t.Context(), "continueOAuth", q)
+		if !errors.Is(err, plex.ErrBadRequest) {
+			t.Errorf("case %d: err=%v want ErrBadRequest", i, err)
+		}
+	}
+}
+
+func TestPlex_RequestAction_PollOAuth_Success(t *testing.T) {
+	srv, calls := oauthServer(t, 99, "redeemed-token", 0)
+	defer srv.Close()
+	prov := makePlex(t, srv, nil)
+	out, err := prov.RequestAction(t.Context(), "pollOAuth", map[string]string{"pinId": "99"})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok || m["success"] != true {
+		t.Errorf("pollOAuth=%+v want {success:true}", out)
+	}
+	if len(*calls) != 1 || !strings.HasPrefix((*calls)[0], "/api/v2/pins/99?") {
+		t.Errorf("expected single GET /api/v2/pins/99, got %+v", *calls)
+	}
+}
+
+func TestPlex_RequestAction_PollOAuth_PendingPinReturnsFalse(t *testing.T) {
+	srv, _ := oauthServer(t, 99, "", 0)
+	defer srv.Close()
+	prov := makePlex(t, srv, nil)
+	out, _ := prov.RequestAction(t.Context(), "pollOAuth", map[string]string{"pinId": "99"})
+	m := out.(map[string]any)
+	if m["success"] != false {
+		t.Errorf("pollOAuth pending=%+v want {success:false}", out)
+	}
+}
+
+func TestPlex_RequestAction_GetOAuthToken_ReturnsAuthToken(t *testing.T) {
+	srv, _ := oauthServer(t, 99, "the-token", 0)
+	defer srv.Close()
+	prov := makePlex(t, srv, nil)
+	out, err := prov.RequestAction(t.Context(), "getOAuthToken", map[string]string{"pinId": "99"})
+	if err != nil {
+		t.Fatalf("RequestAction: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	// Field name MUST be `authToken` (not `accessToken`) — preserves
+	// the C# notifications PlexServer at `:160` which differs from
+	// the importlists PlexImport at the matching call-site.
+	if !ok || m["authToken"] != "the-token" {
+		t.Errorf("getOAuthToken=%+v want {authToken:the-token}", out)
+	}
+}
+
+func TestPlex_RequestAction_PollOrGetOAuthToken_MissingPinId(t *testing.T) {
+	srv, _ := oauthServer(t, 0, "", 0)
+	defer srv.Close()
+	prov := makePlex(t, srv, nil)
+	for _, action := range []string{"pollOAuth", "getOAuthToken"} {
+		_, err := prov.RequestAction(t.Context(), action, map[string]string{})
+		if !errors.Is(err, plex.ErrBadRequest) {
+			t.Errorf("%s missing pinId err=%v want ErrBadRequest", action, err)
+		}
+		_, err = prov.RequestAction(t.Context(), action, map[string]string{"pinId": "bad"})
+		if !errors.Is(err, plex.ErrBadRequest) {
+			t.Errorf("%s non-int pinId err=%v want ErrBadRequest", action, err)
+		}
+	}
+}
+
+func TestPlex_RequestAction_PollOAuth_ServerErrorPropagates(t *testing.T) {
+	srv, _ := oauthServer(t, 99, "", http.StatusInternalServerError)
+	defer srv.Close()
+	prov := makePlex(t, srv, nil)
+	_, err := prov.RequestAction(t.Context(), "pollOAuth", map[string]string{"pinId": "99"})
+	if !errors.Is(err, plex.ErrSendFailed) {
+		t.Errorf("err=%v want ErrSendFailed", err)
+	}
+}
+
+func TestPlex_RequestAction_ServersAndUnknownReturnEmpty(t *testing.T) {
+	srv, _ := oauthServer(t, 0, "", 0)
+	defer srv.Close()
+	prov := makePlex(t, srv, nil)
+	for _, action := range []string{"servers", "bogus"} {
+		out, err := prov.RequestAction(t.Context(), action, nil)
+		if err != nil {
+			t.Errorf("%s: %v", action, err)
+		}
+		m, ok := out.(map[string]any)
+		if !ok || len(m) != 0 {
+			t.Errorf("%s should return empty map, got %T %+v", action, out, out)
+		}
+	}
+}

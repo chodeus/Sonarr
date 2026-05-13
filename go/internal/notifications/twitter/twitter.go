@@ -199,11 +199,59 @@ func (t *Twitter) SupportsOnApplicationUpdate() bool { return true }
 // SupportsOnManualInteractionRequired — see [Twitter.SupportsOnGrab].
 func (t *Twitter) SupportsOnManualInteractionRequired() bool { return true }
 
-// RequestAction is a no-op — the C# `Twitter` does not
-// override RequestAction; the base `NotificationBase.cs` default
-// returns null. Return an empty struct so v3-UI callers see {}.
-func (t *Twitter) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
-	return struct{}{}, nil
+// RequestAction implements the C# `Twitter.RequestAction` admin
+// path at `:71-111`. Two actions drive the Twitter OAuth1 PIN dance:
+//
+//   - startOAuth — POSTs /oauth/request_token with the supplied
+//     callbackUrl as oauth_callback, then returns
+//     `{oauthUrl: "https://api.twitter.com/oauth/authorize?
+//     oauth_token=..."}` for the v3 UI to redirect the browser to.
+//     Missing callbackUrl returns [ErrBadRequest].
+//   - getOAuthToken — POSTs /oauth/access_token with the
+//     redirect-returned oauth_token + oauth_verifier; returns the
+//     persisted-token tuple `{accessToken, accessTokenSecret}`.
+//     Missing oauth_token / oauth_verifier returns [ErrBadRequest].
+//
+// Settings.Validate().Filter("ConsumerKey", "ConsumerSecret") at
+// C# `:75/90` would filter validation failures to those two
+// property names — but the v3 UI surfaces those failures via the
+// pre-RequestAction form-load Validate call, so the filter is a
+// belt-and-suspenders guard. The Go port omits it (matches the
+// notifications/plex + importlists/plex decisions).
+//
+// Unknown actions return `{}` (mirrors C# `:110`).
+func (t *Twitter) RequestAction(ctx context.Context, action string, query map[string]string) (any, error) {
+	switch action {
+	case "startOAuth":
+		callbackURL := query["callbackUrl"]
+		if callbackURL == "" {
+			return nil, fmt.Errorf("%w: callbackUrl invalid", ErrBadRequest)
+		}
+		oauthURL, err := getOAuthRedirect(ctx, t.doer, t.settings.ConsumerKey, t.settings.ConsumerSecret, callbackURL)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"oauthUrl": oauthURL}, nil
+	case "getOAuthToken":
+		oauthToken := query["oauth_token"]
+		oauthVerifier := query["oauth_verifier"]
+		if oauthToken == "" {
+			return nil, fmt.Errorf("%w: oauth_token invalid", ErrBadRequest)
+		}
+		if oauthVerifier == "" {
+			return nil, fmt.Errorf("%w: oauth_verifier invalid", ErrBadRequest)
+		}
+		accessToken, accessTokenSecret, err := getOAuthAccessToken(ctx, t.doer, t.settings.ConsumerKey, t.settings.ConsumerSecret, oauthToken, oauthVerifier)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"accessToken":       accessToken,
+			"accessTokenSecret": accessTokenSecret,
+		}, nil
+	default:
+		return map[string]any{}, nil
+	}
 }
 
 // init registers the Twitter constructor.

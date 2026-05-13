@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
 	"sonarr.tv/sonarr/internal/notifications"
 )
@@ -195,11 +197,44 @@ func (p *Pushbullet) SupportsOnApplicationUpdate() bool { return true }
 // SupportsOnManualInteractionRequired — see [Pushbullet.SupportsOnGrab].
 func (p *Pushbullet) SupportsOnManualInteractionRequired() bool { return true }
 
-// RequestAction is a no-op — the C# `Pushbullet` does not
-// override RequestAction; the base `NotificationBase.cs` default
-// returns null. Return an empty struct so v3-UI callers see {}.
-func (p *Pushbullet) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
-	return struct{}{}, nil
+// RequestAction implements the C# `PushBullet.RequestAction` admin
+// path at `:81-110`. One action:
+//
+//   - getDevices — enumerates the user's Pushbullet devices via
+//     GET /v2/devices with HTTP Basic auth (ApiKey, ""). Returns
+//     `{options: [{id, name}, ...]}` filtered to non-empty
+//     Nicknames and sorted case-insensitively by Nickname. When
+//     ApiKey is empty, returns `{devices: []}` early (mirrors the
+//     C# guard at `:86-92`).
+//
+// Unknown actions return `{}` (mirrors C# `:109`).
+func (p *Pushbullet) RequestAction(ctx context.Context, action string, _ map[string]string) (any, error) {
+	if action != "getDevices" {
+		return map[string]any{}, nil
+	}
+	if p.settings.ApiKey == "" {
+		// C# `:88-92` — early return with the matching legacy key
+		// shape (not `options`). The v3 UI tolerates both.
+		return map[string]any{"devices": []any{}}, nil
+	}
+	devices, err := GetDevices(ctx, p.doer, &p.settings)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]Device, 0, len(devices))
+	for _, d := range devices {
+		if d.Nickname != "" {
+			filtered = append(filtered, d)
+		}
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		return strings.ToLower(filtered[i].Nickname) < strings.ToLower(filtered[j].Nickname)
+	})
+	options := make([]map[string]any, 0, len(filtered))
+	for _, d := range filtered {
+		options = append(options, map[string]any{"id": d.ID, "name": d.Nickname})
+	}
+	return map[string]any{"options": options}, nil
 }
 
 // init registers the Pushbullet constructor.

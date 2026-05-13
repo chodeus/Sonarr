@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"sonarr.tv/sonarr/internal/notifications"
@@ -317,11 +318,87 @@ func (p *PlexServer) SupportsOnApplicationUpdate() bool { return false }
 // SupportsOnManualInteractionRequired — see [PlexServer.SupportsOnGrab].
 func (p *PlexServer) SupportsOnManualInteractionRequired() bool { return false }
 
-// RequestAction is a no-op — the C# `PlexServer` does not
-// override RequestAction; the base `NotificationBase.cs` default
-// returns null. Return an empty struct so v3-UI callers see {}.
-func (p *PlexServer) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
-	return struct{}{}, nil
+// RequestAction implements the C# `PlexServer.RequestAction` admin
+// path at `:102-231`. Four OAuth-handshake actions + one `servers`
+// enumeration. The OAuth actions exactly mirror the equivalent
+// importlists/plex package since both consume the same C#
+// `IPlexTvService` surface; the response shape differs slightly:
+//   - pollOAuth returns `{success: bool}` (C# `:144`).
+//   - getOAuthToken returns `{authToken: string}` (C# `:160` — note
+//     the C# importlists port uses `accessToken` for the same field
+//     name; the notifications port preserves the C# `authToken`
+//     spelling here).
+//
+// The `servers` action is DEFERRED — needs GetServers which lists
+// the user's claimed Plex Media Servers via plex.tv. Returns `{}`
+// for now so callers don't error. C# `:164-228` for the full
+// enumeration shape.
+//
+// Settings.Validate().Filter("ConsumerKey", "ConsumerSecret") at C#
+// `:106/112/133/149` filters validation failures down to those two
+// property names — but PlexServerSettings does NOT carry
+// ConsumerKey/ConsumerSecret fields, so the filter never produces
+// failures in practice. The Go port omits this vestigial guard
+// (same decision as the importlists/plex port).
+//
+// Unknown actions return `{}` (mirrors C# `:230`).
+func (p *PlexServer) RequestAction(ctx context.Context, action string, query map[string]string) (any, error) {
+	switch action {
+	case "startOAuth":
+		return getPinURL(), nil
+	case "continueOAuth":
+		callbackURL := query["callbackUrl"]
+		id := query["id"]
+		code := query["code"]
+		if callbackURL == "" {
+			return nil, fmt.Errorf("%w: callbackUrl invalid", ErrBadRequest)
+		}
+		if id == "" {
+			return nil, fmt.Errorf("%w: id invalid", ErrBadRequest)
+		}
+		if code == "" {
+			return nil, fmt.Errorf("%w: code invalid", ErrBadRequest)
+		}
+		pinID, err := strconv.Atoi(id)
+		if err != nil {
+			return nil, fmt.Errorf("%w: id not an int: %w", ErrBadRequest, err)
+		}
+		return getSignInURL(callbackURL, pinID, code), nil
+	case "pollOAuth":
+		pinIDStr := query["pinId"]
+		if pinIDStr == "" {
+			return nil, fmt.Errorf("%w: pinId invalid", ErrBadRequest)
+		}
+		pinID, err := strconv.Atoi(pinIDStr)
+		if err != nil {
+			return nil, fmt.Errorf("%w: pinId not an int: %w", ErrBadRequest, err)
+		}
+		authToken, err := getAuthToken(ctx, p.doer, pinID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"success": authToken != ""}, nil
+	case "getOAuthToken":
+		pinIDStr := query["pinId"]
+		if pinIDStr == "" {
+			return nil, fmt.Errorf("%w: pinId invalid", ErrBadRequest)
+		}
+		pinID, err := strconv.Atoi(pinIDStr)
+		if err != nil {
+			return nil, fmt.Errorf("%w: pinId not an int: %w", ErrBadRequest, err)
+		}
+		authToken, err := getAuthToken(ctx, p.doer, pinID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"authToken": authToken}, nil
+	case "servers":
+		// DEFERRED — needs GetServers (plex.tv server-list
+		// enumeration). C# `:164-228` for the full shape.
+		return map[string]any{}, nil
+	default:
+		return map[string]any{}, nil
+	}
 }
 
 // init registers the PlexServer constructor.
