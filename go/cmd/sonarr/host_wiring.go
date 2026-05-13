@@ -387,6 +387,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, qualityDefS
 		{Method: "GET", Path: "/api/v3/notification", Handler: apiv3.NotificationHandler(notificationsRepo)},
 		{Method: "GET", Path: "/api/v3/qualitydefinition", Handler: apiv3.QualityDefinitionHandler(qualityDefSvc)},
 		{Method: "GET", Path: "/api/v3/qualityprofile", Handler: apiv3.QualityProfileListHandler(qualityProfilesSvc, customFormatsSvc)},
+		{Method: "GET", Path: "/api/v3/qualityprofile/schema", Handler: apiv3.QualityProfileSchemaHandler(qualityProfilesSvc, customFormatsSvc)},
 		{Method: "GET", Path: "/api/v3/queue", Handler: apiv3.QueueHandler(emptyQueuePagedLister{})},
 		{Method: "GET", Path: "/api/v3/queue/status", Handler: apiv3.QueueStatusHandler(queueSvc, pendingCountLister{repo: pendingReleasesRepo})},
 		{Method: "GET", Path: "/api/v3/releaseprofile", Handler: apiv3.ReleaseProfileHandler(releaseProfilesSvc)},

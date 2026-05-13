@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"sonarr.tv/sonarr/internal/customformats"
+	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 )
 
@@ -95,6 +96,15 @@ type QualityProfileLister interface {
 	All(ctx context.Context) ([]qualityprofiles.Profile, error)
 }
 
+// QualityProfileSchemaLister narrows the qualityprofiles service to
+// the GetDefaultProfile call /api/v3/qualityprofile/schema needs.
+// *qualityprofiles.Service satisfies it via GetDefaultProfile —
+// signature takes (name, *Quality, ...Quality). The schema handler
+// always passes ("", nil) so the variadic tail is empty.
+type QualityProfileSchemaLister interface {
+	GetDefaultProfile(ctx context.Context, name string, cutoff *quality.Quality, allowed ...quality.Quality) (*qualityprofiles.Profile, error)
+}
+
 // CustomFormatNameLister narrows the customformats service to the
 // FormatItems Name-join surface. *customformats.Service satisfies
 // it via All(ctx) ([]*customformats.Format, error).
@@ -180,6 +190,56 @@ func toQualityProfileResource(p qualityprofiles.Profile, formatNames map[int]str
 		MinUpgradeFormatScore: p.MinUpgradeFormatScore,
 		FormatItems:           resFormats,
 	}, nil
+}
+
+// QualityProfileSchemaHandler returns the http.Handler for
+// GET /api/v3/qualityprofile/schema. Mirrors
+// `QualityProfileSchemaController.GetSchema` at
+// `src/Sonarr.Api.V3/Profiles/Quality/QualityProfileSchemaController.cs:18-22`
+// — emits a single template QualityProfileResource produced by
+// `Service.GetDefaultProfile("", nil)` (no cutoff, no allowed
+// qualities). The result is what the UI uses to build a brand-new
+// profile against; allowed defaults to false everywhere, MinSize/
+// MaxSize/PreferredSize default to the runtime size table.
+//
+// The handler shares the FormatProvider plumbing with the list
+// handler — FormatItems on the schema response are seeded with
+// Score=0 for every known CustomFormat (the Name-join read happens
+// here too so a populated CustomFormat row's Name flows through).
+//
+// Output is a SINGLE QualityProfileResource (object, not list) — the
+// C# controller returns `QualityProfileResource`, not `List<...>`.
+func QualityProfileSchemaHandler(schema QualityProfileSchemaLister, formats CustomFormatNameLister) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		profile, err := schema.GetDefaultProfile(r.Context(), "", nil)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("qualityprofile/schema: %v", err), http.StatusInternalServerError)
+			return
+		}
+		formatRows, err := formats.All(r.Context())
+		if err != nil {
+			http.Error(w, fmt.Sprintf("customformats: %v", err), http.StatusInternalServerError)
+			return
+		}
+		formatNames := make(map[int]string, len(formatRows))
+		for _, f := range formatRows {
+			if f != nil {
+				formatNames[f.ID] = f.Name
+			}
+		}
+		res, err := toQualityProfileResource(*profile, formatNames)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("qualityprofile/schema: project: %v", err), http.StatusInternalServerError)
+			return
+		}
+		// The schema response carries no Id (the profile is unpersisted);
+		// the omitempty tag on ID handles that automatically. Likewise
+		// UpgradeAllowed defaults to false (matches the C# value).
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(res)
+		_, _ = w.Write(buf)
+	})
 }
 
 // toQualityProfileItemResource projects one parsed QualityItem into

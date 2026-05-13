@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"sonarr.tv/sonarr/internal/customformats"
+	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 )
 
@@ -138,6 +139,69 @@ func TestQualityProfileListHandler_FormatNameJoin(t *testing.T) {
 	}
 	if got[0].FormatItems[1].Name != "" || got[0].FormatItems[1].Format != 99 {
 		t.Errorf("formatItem[1] orphan: %+v", got[0].FormatItems[1])
+	}
+}
+
+type fakeSchemaLister struct {
+	profile *qualityprofiles.Profile
+	gotName string
+	err     error
+}
+
+func (f *fakeSchemaLister) GetDefaultProfile(_ context.Context, name string, _ *quality.Quality, _ ...quality.Quality) (*qualityprofiles.Profile, error) {
+	f.gotName = name
+	return f.profile, f.err
+}
+
+func TestQualityProfileSchemaHandler_EmitsTemplate(t *testing.T) {
+	t.Parallel()
+	// The schema handler always calls GetDefaultProfile("", nil) —
+	// the resulting Profile is passed through toQualityProfileResource
+	// and emitted as a single object (not a list). For the unit gate
+	// we hand in a tiny fixture profile and confirm the handler emits
+	// a JSON OBJECT with the right top-level keys + the empty Id is
+	// omitted (the schema response has no Id).
+	itemsJSON := `[{"id":0,"name":"","quality":1,"items":[],"allowed":false,"minSize":2,"maxSize":100,"preferredSize":95}]`
+	schema := &fakeSchemaLister{profile: &qualityprofiles.Profile{
+		Name: "", Cutoff: 0, UpgradeAllowed: false, Items: itemsJSON, FormatItems: "[]",
+		MinFormatScore: 0, CutoffFormatScore: 0, MinUpgradeFormatScore: 1,
+	}}
+	rr := httptest.NewRecorder()
+	QualityProfileSchemaHandler(schema, &fakeFormatLister{}).ServeHTTP(rr,
+		httptest.NewRequest(http.MethodGet, "/api/v3/qualityprofile/schema", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200", rr.Code)
+	}
+	if schema.gotName != "" {
+		t.Errorf("schema handler should pass empty name; got %q", schema.gotName)
+	}
+	body := rr.Body.String()
+	if !strings.HasPrefix(body, "{") {
+		t.Errorf("schema body must be an object (not a list): %s", body)
+	}
+	if strings.Contains(body, `"id":0`) {
+		t.Errorf("schema body must omit zero Id: %s", body)
+	}
+
+	var got QualityProfileResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.MinUpgradeFormatScore != 1 || len(got.Items) != 1 {
+		t.Errorf("shape: %+v", got)
+	}
+}
+
+func TestQualityProfileSchemaHandler_ListerError(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	QualityProfileSchemaHandler(
+		&fakeSchemaLister{err: errors.New("boom")},
+		&fakeFormatLister{},
+	).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/qualityprofile/schema", nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: got %d want 500", rr.Code)
 	}
 }
 
