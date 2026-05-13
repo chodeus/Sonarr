@@ -6,10 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
+	"sonarr.tv/sonarr/internal/customformats"
+	"sonarr.tv/sonarr/internal/decisionengine"
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/notifications"
+	"sonarr.tv/sonarr/internal/parser"
+	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -130,22 +136,79 @@ func (d *Discord) emit(ctx context.Context, embed Embed) error {
 	})
 }
 
-// OnGrab mirrors C# `OnGrab` at `Discord.cs:34-150`. Rich field-
-// rendering (Overview/Rating/Genres/Quality/Group/Size/Release/
-// Links/CustomFormats/Indexer) deferred — see the Discord struct
-// scope-of-port note.
+// OnGrab mirrors C# `OnGrab` at `Discord.cs:34-150`. Slice 4.CA
+// (C-cleanup [C5]) ports the field-by-field Embed.Fields rendering
+// for the REACHABLE field types — Overview / Quality / Group / Size
+// / Release / CustomFormats / CustomFormatScore / Indexer. The
+// upstream-blocked field types (Poster / Fanart / Rating / Genres /
+// Links) remain deferred per the package scope note in settings.go;
+// each is silently skipped when present in Settings.GrabFields so
+// the persisted user config doesn't error.
 func (d *Discord) OnGrab(ctx context.Context, msg notifications.GrabMessage) error {
 	embed := d.baseEmbed(seriesTvdbURL(msg.Series))
 	embed.Description = "Episode Grabbed"
 	embed.Color = int(ColorStandard)
 	embed.Title = titleFromSeries(msg.Series)
+
+	sub := subjectFromAny(msg.Episode)
+	rel := releaseFromSubject(sub)
+	for _, fieldID := range d.settings.GrabFields {
+		switch GrabField(fieldID) {
+		case GrabFieldOverview:
+			if sub != nil && len(sub.Episodes) > 0 {
+				appendIfPresent(&embed, "Overview", truncateOverview(sub.Episodes[0].Overview))
+			}
+		case GrabFieldQuality:
+			if msg.Quality != nil && msg.Quality.Quality.Name != "" {
+				embed.Fields = append(embed.Fields, Field{
+					Name: "Quality", Value: msg.Quality.Quality.Name, Inline: true,
+				})
+			}
+		case GrabFieldGroup:
+			if sub != nil && sub.ParsedEpisodeInfo != nil {
+				appendIfPresent(&embed, "Group", sub.ParsedEpisodeInfo.ReleaseGroup)
+			}
+		case GrabFieldSize:
+			if rel != nil && rel.Size > 0 {
+				embed.Fields = append(embed.Fields, Field{
+					Name: "Size", Value: bytesToString(rel.Size), Inline: true,
+				})
+			}
+		case GrabFieldRelease:
+			if rel != nil {
+				appendIfPresent(&embed, "Release", fmt.Sprintf("```%s```", rel.Title))
+			}
+		case GrabFieldCustomFormats:
+			if sub != nil && len(sub.CustomFormats) > 0 {
+				appendIfPresent(&embed, "Custom Formats", joinCustomFormatNames(sub.CustomFormats, "|"))
+			}
+		case GrabFieldCustomFormatScore:
+			if sub != nil {
+				embed.Fields = append(embed.Fields, Field{
+					Name: "Custom Format Score", Value: fmt.Sprintf("%d", sub.CustomFormatScore),
+				})
+			}
+		case GrabFieldIndexer:
+			if rel != nil {
+				appendIfPresent(&embed, "Indexer", rel.Indexer)
+			}
+		}
+		// Poster / Fanart / Rating / Genres / Links — upstream-blocked
+		// per the package scope note; silently skip.
+	}
 	return d.emit(ctx, embed)
 }
 
 // OnDownload mirrors C# `OnDownload` at `Discord.cs:152-280` —
 // "Episode Imported" for new files, "Episode Imported Upgrade"
 // when OldFiles is non-empty (C# `:160-163`). Color flips from
-// Standard → Upgrade on the upgrade path (C# `:184`).
+// Standard → Upgrade on the upgrade path (C# `:184`). Slice 4.CA
+// (C-cleanup [C5]) ports the field-by-field rendering for the
+// REACHABLE field types from EpisodeFile — Quality / Group / Size /
+// Release. Overview / Rating / Genres / Codecs / Languages /
+// Subtitles / Links / CustomFormats / CustomFormatScore / Poster /
+// Fanart remain deferred (MediaInfo + series.Images/Ratings/Genres +
+// LocalEpisode CustomFormats type-assertion are upstream blockers).
 func (d *Discord) OnDownload(ctx context.Context, msg notifications.DownloadMessage) error {
 	embed := d.baseEmbed(seriesTvdbURL(msg.Series))
 	if len(msg.OldFiles) > 0 {
@@ -156,16 +219,70 @@ func (d *Discord) OnDownload(ctx context.Context, msg notifications.DownloadMess
 		embed.Color = int(ColorStandard)
 	}
 	embed.Title = titleFromSeries(msg.Series)
+
+	for _, fieldID := range d.settings.ImportFields {
+		switch ImportField(fieldID) {
+		case ImportFieldQuality:
+			if msg.EpisodeFile != nil {
+				if name := decodeQualityName(msg.EpisodeFile.Quality); name != "" {
+					embed.Fields = append(embed.Fields, Field{
+						Name: "Quality", Value: name, Inline: true,
+					})
+				}
+			}
+		case ImportFieldGroup:
+			if msg.EpisodeFile != nil {
+				appendIfPresent(&embed, "Group", msg.EpisodeFile.ReleaseGroup)
+			}
+		case ImportFieldSize:
+			if msg.EpisodeFile != nil && msg.EpisodeFile.Size > 0 {
+				embed.Fields = append(embed.Fields, Field{
+					Name: "Size", Value: bytesToString(msg.EpisodeFile.Size), Inline: true,
+				})
+			}
+		case ImportFieldRelease:
+			if msg.EpisodeFile != nil {
+				appendIfPresent(&embed, "Release", fmt.Sprintf("```%s```", msg.EpisodeFile.SceneName))
+			}
+		}
+		// Overview / Rating / Genres / Codecs / Languages / Subtitles /
+		// Links / CustomFormats / CustomFormatScore / Poster / Fanart —
+		// upstream-blocked per the package scope note; silently skip.
+	}
 	return d.emit(ctx, embed)
 }
 
 // OnImportComplete mirrors C# `OnImportComplete` at
-// `Discord.cs:282-403`.
+// `Discord.cs:282-403`. Slice 4.CA (C-cleanup [C5]) ports the
+// REACHABLE field-by-field rendering — Quality (from
+// msg.ReleaseQuality) / Group (from msg.ReleaseGroup) / Size (sum
+// of msg.EpisodeFiles[i].Size since msg.Release is typed `any`
+// pending parser.GrabbedReleaseInfo). Other fields stay deferred.
 func (d *Discord) OnImportComplete(ctx context.Context, msg notifications.ImportCompleteMessage) error {
 	embed := d.baseEmbed(seriesTvdbURL(msg.Series))
 	embed.Description = "Import Complete"
 	embed.Color = int(ColorStandard)
 	embed.Title = titleFromSeries(msg.Series)
+
+	for _, fieldID := range d.settings.ImportFields {
+		switch ImportField(fieldID) {
+		case ImportFieldQuality:
+			if msg.ReleaseQuality != nil && msg.ReleaseQuality.Quality.Name != "" {
+				embed.Fields = append(embed.Fields, Field{
+					Name: "Quality", Value: msg.ReleaseQuality.Quality.Name, Inline: true,
+				})
+			}
+		case ImportFieldGroup:
+			appendIfPresent(&embed, "Group", msg.ReleaseGroup)
+		case ImportFieldSize:
+			if size := sumEpisodeFileSizes(msg.EpisodeFiles); size > 0 {
+				embed.Fields = append(embed.Fields, Field{
+					Name: "Size", Value: bytesToString(size), Inline: true,
+				})
+			}
+		}
+		// Other field types: upstream-blocked per package scope note.
+	}
 	return d.emit(ctx, embed)
 }
 
@@ -181,13 +298,22 @@ func (d *Discord) OnRename(ctx context.Context, msg notifications.RenameMessage)
 }
 
 // OnEpisodeFileDelete mirrors C# `OnEpisodeFileDelete` at
-// `Discord.cs:424-441`.
+// `Discord.cs:424-441`. Slice 4.CA (C-cleanup [C5]) adds the
+// "File name" Field per C# `:377` — renders msg.EpisodeFile
+// .RelativePath wrapped in triple-backticks to match the C# embed
+// formatting.
 func (d *Discord) OnEpisodeFileDelete(ctx context.Context, msg notifications.EpisodeDeleteMessage) error {
 	embed := d.baseEmbed(seriesTvdbURL(msg.Series))
 	embed.Description = "Episode Deleted"
 	embed.Color = int(ColorDanger)
 	embed.Title = titleFromSeries(msg.Series)
 	embed.Fields = []Field{{Name: "Reason", Value: msg.Reason.String()}}
+	if msg.EpisodeFile != nil && strings.TrimSpace(msg.EpisodeFile.RelativePath) != "" {
+		embed.Fields = append(embed.Fields, Field{
+			Name:  "File name",
+			Value: fmt.Sprintf("```%s```", msg.EpisodeFile.RelativePath),
+		})
+	}
 	return d.emit(ctx, embed)
 }
 
@@ -389,4 +515,130 @@ func (d *Discord) SupportsOnManualInteractionRequired() bool { return true }
 // `internal/notifications/webhook/webhook.go:init`.
 func init() {
 	notifications.Default().MustRegister(Implementation, ConfigContract, New)
+}
+
+// ---------------------------------------------------------------------
+// Slice 4.CA (C-cleanup [C5]) field-rendering helpers.
+// ---------------------------------------------------------------------
+
+// subjectFromAny type-asserts an `any` GrabMessage.Episode payload
+// into the [*decisionengine.Subject] shape the field-render reads.
+// Returns nil when the assertion fails (test stubs typically pass a
+// matching pointer; production wiring always does).
+func subjectFromAny(v any) *decisionengine.Subject {
+	if v == nil {
+		return nil
+	}
+	if s, ok := v.(*decisionengine.Subject); ok {
+		return s
+	}
+	return nil
+}
+
+// releaseFromSubject extracts the underlying [*parser.ReleaseInfo]
+// from a Subject's Release field regardless of whether the value is
+// a bare ReleaseInfo or a *parser.TorrentInfo that embeds it.
+// Mirrors the package-private helper in
+// internal/decisionengine/spec_raw_disk.go (same C# pattern at
+// `ReleaseInfo` consumer sites).
+func releaseFromSubject(s *decisionengine.Subject) *parser.ReleaseInfo {
+	if s == nil {
+		return nil
+	}
+	switch r := s.Release.(type) {
+	case *parser.ReleaseInfo:
+		return r
+	case *parser.TorrentInfo:
+		if r == nil {
+			return nil
+		}
+		return &r.ReleaseInfo
+	}
+	return nil
+}
+
+// appendIfPresent appends a Field to embed.Fields when value is
+// non-empty after trimming. Mirrors the C# guard at
+// `Discord.cs:125-128` that gates Field add on
+// `Name.IsNotNullOrWhiteSpace() && Value.IsNotNullOrWhiteSpace()`.
+func appendIfPresent(embed *Embed, name, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	embed.Fields = append(embed.Fields, Field{Name: name, Value: value})
+}
+
+// truncateOverview clamps an Overview string to the C# embed Field
+// limit (300 chars + "..."). Mirrors `Discord.cs:79`.
+func truncateOverview(overview string) string {
+	if len(overview) <= 300 {
+		return overview
+	}
+	return overview[:300] + "..."
+}
+
+// bytesToString renders a byte count in the Discord-embed-friendly
+// form (the C# `BytesToString` helper at the Discord class — humanises
+// to KB/MB/GB with two decimals). Returns "0 B" for zero or negative
+// inputs.
+func bytesToString(b int64) string {
+	if b <= 0 {
+		return "0 B"
+	}
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.2f %sB", float64(b)/float64(div), "KMGTPE"[exp:exp+1])
+}
+
+// joinCustomFormatNames mirrors the C# `string.Join("|", ...)` at
+// `Discord.cs:113`. Returns the names of the [customformats.CustomFormat]
+// rows joined by sep.
+func joinCustomFormatNames(formats []customformats.CustomFormat, sep string) string {
+	if len(formats) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(formats))
+	for _, f := range formats {
+		if strings.TrimSpace(f.Name) != "" {
+			names = append(names, f.Name)
+		}
+	}
+	return strings.Join(names, sep)
+}
+
+// decodeQualityName decodes the EpisodeFile.Quality JSON column
+// into the per-quality Name string the Discord embed displays.
+// Returns "" on empty / malformed input — the appendIfPresent guard
+// then suppresses the Field entirely.
+func decodeQualityName(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	var m quality.Model
+	if err := m.UnmarshalJSON([]byte(raw)); err != nil {
+		return ""
+	}
+	return m.Quality.Name
+}
+
+// sumEpisodeFileSizes returns the sum of all File.Size values. Used
+// by OnImportComplete when msg.Release is unset (Release is typed
+// `any` pending parser.GrabbedReleaseInfo; falling back to the
+// per-file sum matches the C# `:317` behavior).
+func sumEpisodeFileSizes(files []*episodefiles.File) int64 {
+	var sum int64
+	for _, f := range files {
+		if f == nil {
+			continue
+		}
+		sum += f.Size
+	}
+	return sum
 }
