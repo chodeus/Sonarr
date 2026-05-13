@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 
+	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/config"
 	"sonarr.tv/sonarr/internal/configfile"
 	"sonarr.tv/sonarr/internal/host"
+	"sonarr.tv/sonarr/internal/language"
 )
 
 // buildHostServer assembles the *host.Server from the runtime
@@ -34,7 +36,19 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 		// its APIKey(ctx) (string, error) method — no adapter
 		// needed.
 		cfg,
+		host.WithRoutes(v3Routes()...),
 	), nil
+}
+
+// v3Routes collects the v3 controllers wired in this slice. As more
+// controllers port, they're added here in alphabetical order. The
+// language registry is constant (every Language is a package-level
+// var in internal/language), so the slice is captured once at boot.
+func v3Routes() []host.Route {
+	langs := language.All()
+	return []host.Route{
+		{Method: "GET", Path: "/api/v3/language", Handler: apiv3.LanguageHandler(langs)},
+	}
 }
 
 // configRepoProbe adapts *config.Repo to host.ConfigProbe. The

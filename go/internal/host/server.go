@@ -58,6 +58,24 @@ func (c Config) Listen() string {
 	return net.JoinHostPort(host, strconv.Itoa(c.Port))
 }
 
+// Route is a single mountable endpoint contributed by a controller
+// package. Anonymous routes bypass the requireAPIKey middleware;
+// every C# controller without `[AllowAnonymous]` should leave it
+// false so the auth wrap mirrors the Startup FallbackPolicy.
+//
+// Pattern follows `net/http.ServeMux` semantics — method prefix is
+// optional (`"GET /api/v3/language"`) and path wildcards (`"{id}"`)
+// are supported on Go 1.22+. Keep the Method field explicit even
+// when it duplicates the prefix; downstream tooling (the future
+// `/api/v3/system/routes` controller) reads it without parsing the
+// pattern.
+type Route struct {
+	Method    string
+	Path      string
+	Handler   http.Handler
+	Anonymous bool
+}
+
 // Server is the HTTP host. Construct via New and drive via Run.
 // Run blocks until the caller's context is cancelled, then drains
 // in-flight requests with shutdownTimeout before returning.
@@ -66,6 +84,7 @@ type Server struct {
 	logger *slog.Logger
 	probe  ConfigProbe
 	apiKey APIKeyResolver
+	routes []Route
 	now    func() time.Time
 
 	shutdownTimeout time.Duration
@@ -97,6 +116,13 @@ func WithClock(now func() time.Time) Option {
 // is 5 seconds, matching the implicit Kestrel default.
 func WithShutdownTimeout(d time.Duration) Option {
 	return func(s *Server) { s.shutdownTimeout = d }
+}
+
+// WithRoutes registers additional routes. Called once at boot from
+// the cmd/sonarr wiring layer; the host package owns no Route values
+// itself so each per-controller package is fully decoupled.
+func WithRoutes(routes ...Route) Option {
+	return func(s *Server) { s.routes = append(s.routes, routes...) }
 }
 
 // New builds a Server. probe is required so /ping has a DB liveness
@@ -197,5 +223,17 @@ func (s *Server) buildMux() *http.ServeMux {
 	// ApiInfoController, so the Startup fallback policy enforces
 	// API-key auth. Wrap explicitly here.
 	mux.Handle("GET /api", s.requireAPIKey(s.apiInfoHandler()))
+
+	for _, r := range s.routes {
+		h := r.Handler
+		if !r.Anonymous {
+			h = s.requireAPIKey(h)
+		}
+		pattern := r.Path
+		if r.Method != "" {
+			pattern = r.Method + " " + r.Path
+		}
+		mux.Handle(pattern, h)
+	}
 	return mux
 }
