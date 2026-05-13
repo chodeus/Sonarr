@@ -88,6 +88,19 @@ func NewRepo(db *datastore.DB) (*Repo, error) {
 	return &Repo{Repository: r}, nil
 }
 
+// Count returns the total number of rows in PendingReleases. Used
+// by the /api/v3/queue/status endpoint (slice 4.EB) to fold the
+// pending tally into the queue summary without dragging in the full
+// row shape.
+func (r *Repo) Count(ctx context.Context) (int, error) {
+	db := r.DB()
+	var n int
+	if err := db.SQL.QueryRowContext(ctx, `SELECT COUNT(*) FROM "PendingReleases"`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("pendingreleases: count: %w", err)
+	}
+	return n, nil
+}
+
 // AllBySeriesID returns every queued release for the given Series,
 // ordered by Added ascending. Used when the user views the queue panel
 // for a specific series.

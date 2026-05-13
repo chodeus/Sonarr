@@ -90,6 +90,7 @@ import (
 	"sonarr.tv/sonarr/internal/notifications"
 	"sonarr.tv/sonarr/internal/notificationstatus"
 	"sonarr.tv/sonarr/internal/parsingservice"
+	"sonarr.tv/sonarr/internal/pendingreleases"
 	"sonarr.tv/sonarr/internal/qualitydefinitions"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
@@ -538,6 +539,17 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	qualityDefSvc := qualitydefinitions.NewService(qualityDefRepo)
 	if err := qualityDefSvc.EnsureDefaults(ctx); err != nil {
 		return fmt.Errorf("qualitydefinitions ensureDefaults: %w", err)
+	}
+
+	// PendingReleases repo (slice 4.EB — first wiring; existed but
+	// nothing consumed it until the /api/v3/queue/status pending
+	// count needed a real source). The full pendingreleases.Service
+	// has many dependencies (parsingservice, indexers, etc.) — this
+	// slice only needs Repo.Count for the queue summary, so the
+	// fuller Service wiring stays DEFERRED.
+	pendingReleasesRepo, err := pendingreleases.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("pendingreleases repo: %w", err)
 	}
 	// Naming-config wiring (Phase 3.94). Singleton-row Service that
 	// the slice-3.94 fileNamerAdapter reaches for to compute
@@ -2323,7 +2335,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("system status context: %w", err)
 	}
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, systemStatus)
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, systemStatus, pendingReleasesRepo)
 	if err != nil {
 		return err
 	}

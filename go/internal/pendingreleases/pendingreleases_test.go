@@ -90,6 +90,14 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 		t.Errorf("series 50: got %d, want 2", len(bySeries50))
 	}
 
+	cnt, err := repo.Count(t.Context())
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if cnt != 3 {
+		t.Errorf("Count after 3 inserts: got %d want 3", cnt)
+	}
+
 	if err := repo.Update(t.Context(), &pendingreleases.Release{ID: 99999, SeriesID: 1, Title: "x", Added: now}); !errors.Is(err, pendingreleases.ErrNotFound) {
 		t.Errorf("Update(missing): %v", err)
 	}
