@@ -369,6 +369,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, qualityDefS
 	hostCfg := hostConfigGetter{cfg: configProv, xmlCfg: cfg}
 	return []host.Route{
 		{Method: "GET", Path: "/api/v3/autotagging", Handler: apiv3.AutoTaggingHandler(autoTagsSvc)},
+		{Method: "GET", Path: "/api/v3/autotagging/schema", Handler: apiv3.AutoTaggingSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/blocklist", Handler: apiv3.BlocklistHandler(blocklistPagedAdapter{repo: blocklistRepo})},
 		{Method: "GET", Path: "/api/v3/calendar", Handler: apiv3.CalendarHandler(episodesSvc)},
 		{Method: "GET", Path: "/api/v3/config/downloadclient", Handler: apiv3.DownloadClientConfigHandler(configProv)},
