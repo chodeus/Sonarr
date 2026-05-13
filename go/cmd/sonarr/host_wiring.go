@@ -68,6 +68,18 @@ type emptyPendingLister struct{}
 
 func (emptyPendingLister) PendingCount(context.Context) (int, error) { return 0, nil }
 
+// emptyWantedLister stands in for a future wanted-episodes service.
+// C# `IWantedEpisodeService` returns paged Missing/CutoffUnmet
+// projections — the Go port doesn't have a parallel service yet, so
+// this stub reports 0 records (correct for a fresh DB; degenerate
+// for populated DBs until the wanted port lands — DEFERRED in
+// STATUS).
+type emptyWantedLister struct{}
+
+func (emptyWantedLister) PagedWanted(context.Context, apiv3.PagingRequest, apiv3.WantedScope) ([]apiv3.EpisodeResource, int, error) {
+	return nil, 0, nil
+}
+
 // v3Routes collects the v3 controllers wired in this slice. As more
 // controllers port, they're added here in alphabetical order.
 //
@@ -105,6 +117,8 @@ func v3Routes(configProv *config.Provider, qualityDefSvc *qualitydefinitions.Ser
 		{Method: "GET", Path: "/api/v3/remotepathmapping", Handler: apiv3.RemotePathMappingHandler(remotePathMappingsSvc)},
 		{Method: "GET", Path: "/api/v3/rootfolder", Handler: apiv3.RootFolderHandler(rootFoldersSvc)},
 		{Method: "GET", Path: "/api/v3/tag", Handler: apiv3.TagHandler(tagsSvc)},
+		{Method: "GET", Path: "/api/v3/wanted/cutoff", Handler: apiv3.WantedHandler(emptyWantedLister{}, apiv3.WantedCutoff)},
+		{Method: "GET", Path: "/api/v3/wanted/missing", Handler: apiv3.WantedHandler(emptyWantedLister{}, apiv3.WantedMissing)},
 	}
 }
 
