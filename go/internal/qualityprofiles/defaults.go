@@ -80,8 +80,11 @@ func (s *Service) GetDefaultProfile(ctx context.Context, name string, cutoff *qu
 		if len(g) == 1 {
 			d := g[0]
 			items = append(items, QualityItem{
-				Quality: d.Quality,
-				Allowed: allowedSet[d.Quality.ID],
+				Quality:       d.Quality,
+				Allowed:       allowedSet[d.Quality.ID],
+				MinSize:       d.MinSize,
+				MaxSize:       d.MaxSize,
+				PreferredSize: d.PreferredSize,
 			})
 			continue
 		}
@@ -98,8 +101,11 @@ func (s *Service) GetDefaultProfile(ctx context.Context, name string, cutoff *qu
 		nested := make([]QualityItem, 0, len(g))
 		for _, d := range g {
 			nested = append(nested, QualityItem{
-				Quality: d.Quality,
-				Allowed: groupAllowed,
+				Quality:       d.Quality,
+				Allowed:       groupAllowed,
+				MinSize:       d.MinSize,
+				MaxSize:       d.MaxSize,
+				PreferredSize: d.PreferredSize,
 			})
 		}
 

@@ -1133,6 +1133,19 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if customFormatsSvc == nil {
 		return fmt.Errorf("customformats service: nil — required dep regressed")
 	}
+	// Slice 4.EE: bind the FormatProvider hook so SeedDefaults can
+	// populate every default profile's FormatItems list against the
+	// known CustomFormat set. Mirrors C# `QualityProfileService`'s
+	// constructor-injected `ICustomFormatService`.
+	qualityProfilesSvc.SetFormatProvider(customFormatsSvc)
+	// Seed the six default profiles (Any / SD / HD-720p / HD-1080p /
+	// Ultra-HD / HD - 720p/1080p) on a fresh DB. No-op when rows
+	// already exist (the C# `if (All().Any()) return;` guard ports
+	// verbatim). Mirrors C# `QualityProfileService.Handle(
+	// ApplicationStartedEvent)` at `QualityProfileService.cs:91-157`.
+	if err := qualityProfilesSvc.SeedDefaults(ctx); err != nil {
+		return fmt.Errorf("qualityprofiles seed defaults: %w", err)
+	}
 	messaging.Subscribe(bus, "qualityprofiles.OnCustomFormatAdded",
 		func(ctx context.Context, ev customformats.CustomFormatAddedEvent) error {
 			return qualityProfilesSvc.OnCustomFormatAdded(ctx, ev.Format)
@@ -2335,7 +2348,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("system status context: %w", err)
 	}
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo)
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo)
 	if err != nil {
 		return err
 	}
