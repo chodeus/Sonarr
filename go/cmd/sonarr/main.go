@@ -58,6 +58,7 @@ import (
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/delayprofiles"
 	"sonarr.tv/sonarr/internal/disk"
+	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclientstatus"
 	"sonarr.tv/sonarr/internal/downloadedimport"
 	"sonarr.tv/sonarr/internal/downloadhistory"
@@ -1336,6 +1337,14 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// ready when the provider entries appear. The compile-time guards
 	// in internal/downloadclientstatus/recorder.go pin the
 	// providerstatus.Recorder + BlockedView interfaces.
+	// DownloadClients repo (slice 4.DT — first wiring; the
+	// package existed but nothing consumed it until the
+	// /api/v3/downloadclient route landed).
+	downloadClientsRepo, err := downloadclients.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("downloadclients repo: %w", err)
+	}
+
 	downloadClientStatusRepo, err := downloadclientstatus.NewRepo(db)
 	if err != nil {
 		return fmt.Errorf("downloadclientstatus repo: %w", err)
@@ -2305,7 +2314,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		}
 	}()
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo)
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo)
 	if err != nil {
 		return err
 	}
