@@ -101,7 +101,7 @@ func (l *ListImport) Fetch(ctx context.Context) (importlists.FetchResult, error)
 	l.settingsMu.Lock()
 	defer l.settingsMu.Unlock()
 	out := importlists.FetchResult{}
-	if err := l.refreshIfNeeded(ctx, &l.settings.SettingsBase); err != nil {
+	if err := l.refreshIfNeeded(ctx, &l.settings.SettingsBase, func() ([]byte, error) { return json.Marshal(l.settings) }); err != nil {
 		out.AnyFailure = true
 		l.logger.Debug("trakt-list refresh failed", "list", l.definitionName(), "err", err)
 		l.recordFailure(ctx)
@@ -143,7 +143,7 @@ func (l *ListImport) Test(ctx context.Context) ([]importlists.TestFailure, error
 	if v := l.settings.Validate(); len(v) > 0 {
 		return v, nil
 	}
-	if err := l.refreshIfNeeded(ctx, &l.settings.SettingsBase); err != nil {
+	if err := l.refreshIfNeeded(ctx, &l.settings.SettingsBase, func() ([]byte, error) { return json.Marshal(l.settings) }); err != nil {
 		return []importlists.TestFailure{{
 			PropertyName:        "SignIn",
 			ErrorMessage:        fmt.Sprintf("Unable to refresh token: %v", err),

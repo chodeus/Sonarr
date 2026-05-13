@@ -16,6 +16,13 @@ type statusRecorder interface {
 	RecordFailure(ctx context.Context, providerID int, minimumBackOff time.Duration) error
 }
 
+// settingsPersister is the narrow surface each variant needs from the
+// importlists.Repo. *importlists.Repo satisfies it via its embedded
+// repo.Repository[ImportList].Update method.
+type settingsPersister interface {
+	Update(ctx context.Context, def *importlists.ImportList) error
+}
+
 // refreshSkew is the renewal window — C# `TraktImportBase.Fetch:43`
 // refreshes when Expires < UtcNow.AddMinutes(5).
 const refreshSkew = 5 * time.Minute
@@ -27,6 +34,7 @@ type baseImport struct {
 	def        *importlists.ImportList
 	doer       httpDoer
 	status     statusRecorder
+	persister  settingsPersister
 	logger     *slog.Logger
 	now        func() time.Time
 	settingsMu sync.Mutex
@@ -37,26 +45,38 @@ type baseImport struct {
 func newBaseImport(def *importlists.ImportList, deps importlists.Dependencies) *baseImport {
 	doer, _ := deps.HTTPClient.(httpDoer)
 	status, _ := deps.StatusService.(statusRecorder)
+	persister, _ := deps.ImportListsRepo.(settingsPersister)
 	logger, _ := deps.Logger.(*slog.Logger)
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &baseImport{
-		def:    def,
-		doer:   doer,
-		status: status,
-		logger: logger,
-		now:    time.Now,
+		def:       def,
+		doer:      doer,
+		status:    status,
+		persister: persister,
+		logger:    logger,
+		now:       time.Now,
 	}
 }
 
 // refreshIfNeeded refreshes the access token when Expires is within
 // the 5-minute renewal window. Mirrors C# `TraktImportBase.Fetch`
-// refresh branch + `RefreshToken` body. Caller MUST hold settingsMu.
+// refresh branch + `RefreshToken` body. After a successful refresh
+// the new triple is round-tripped back to the DB via the persister
+// (Dependencies.ImportListsRepo) using marshalSettings — mirrors C#
+// `_importListRepository.UpdateSettings(...)` at
+// `TraktImportBase.cs:143`.
 //
-// settings is a pointer to the variant's embedded SettingsBase to
-// allow in-place updates of AccessToken/Expires/RefreshToken.
-func (b *baseImport) refreshIfNeeded(ctx context.Context, settings *SettingsBase) error {
+// marshalSettings is supplied by the variant since the wrapping
+// settings type carries variant-specific fields the base doesn't
+// know about (UserSettings.Username, PopularSettings.Rating, ...).
+// A nil persister, row-id == 0, or marshal failure all short-circuit
+// the persistence step (mirrors C# `Definition.Id > 0` guard).
+//
+// Caller MUST hold settingsMu. settings is a pointer to the
+// variant's embedded SettingsBase to allow in-place updates.
+func (b *baseImport) refreshIfNeeded(ctx context.Context, settings *SettingsBase, marshalSettings func() ([]byte, error)) error {
 	if settings.RefreshToken == "" {
 		return nil
 	}
@@ -75,7 +95,27 @@ func (b *baseImport) refreshIfNeeded(ctx context.Context, settings *SettingsBase
 	if tok.RefreshToken != "" {
 		settings.RefreshToken = tok.RefreshToken
 	}
+	b.persistSettingsLocked(ctx, marshalSettings)
 	return nil
+}
+
+// persistSettingsLocked round-trips the variant's typed Settings back
+// to the DB via the persister. Marshal failures + persister errors
+// are intentionally swallowed (mirrors C# fire-and-forget
+// UpdateSettings) — the next refresh attempt will retry.
+//
+// Caller MUST hold settingsMu.
+func (b *baseImport) persistSettingsLocked(ctx context.Context, marshalSettings func() ([]byte, error)) {
+	if b.persister == nil || b.def == nil || b.def.ID == 0 || marshalSettings == nil {
+		return
+	}
+	raw, err := marshalSettings()
+	if err != nil {
+		return
+	}
+	s := string(raw)
+	b.def.Settings = &s
+	_ = b.persister.Update(ctx, b.def)
 }
 
 // recordSuccess fires the status recorder when wired.

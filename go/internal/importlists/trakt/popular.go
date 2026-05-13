@@ -192,7 +192,7 @@ func (p *PopularImport) Fetch(ctx context.Context) (importlists.FetchResult, err
 	p.settingsMu.Lock()
 	defer p.settingsMu.Unlock()
 	out := importlists.FetchResult{}
-	if err := p.refreshIfNeeded(ctx, &p.settings.SettingsBase); err != nil {
+	if err := p.refreshIfNeeded(ctx, &p.settings.SettingsBase, func() ([]byte, error) { return json.Marshal(p.settings) }); err != nil {
 		out.AnyFailure = true
 		p.logger.Debug("trakt-popular refresh failed", "list", p.definitionName(), "err", err)
 		p.recordFailure(ctx)
@@ -252,7 +252,7 @@ func (p *PopularImport) Test(ctx context.Context) ([]importlists.TestFailure, er
 	if v := p.settings.Validate(); len(v) > 0 {
 		return v, nil
 	}
-	if err := p.refreshIfNeeded(ctx, &p.settings.SettingsBase); err != nil {
+	if err := p.refreshIfNeeded(ctx, &p.settings.SettingsBase, func() ([]byte, error) { return json.Marshal(p.settings) }); err != nil {
 		return []importlists.TestFailure{{
 			PropertyName:        "SignIn",
 			ErrorMessage:        fmt.Sprintf("Unable to refresh token: %v", err),

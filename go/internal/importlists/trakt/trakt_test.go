@@ -515,3 +515,105 @@ func TestUserImport_Fetch_RefreshesNearExpiry(t *testing.T) {
 		t.Errorf("first call should be renew, got %q", capture[0].Path)
 	}
 }
+
+// ------------------------------------------------------------------
+// Refresh-token DB persistence (B1 — shared baseImport path covers
+// all 3 variants; tested via User variant).
+// ------------------------------------------------------------------
+
+type fakeRepo struct {
+	calls []recordedUpdate
+}
+
+type recordedUpdate struct {
+	ID       int
+	Settings string
+}
+
+func (r *fakeRepo) Update(_ context.Context, def *importlists.ImportList) error {
+	settings := ""
+	if def.Settings != nil {
+		settings = *def.Settings
+	}
+	r.calls = append(r.calls, recordedUpdate{ID: def.ID, Settings: settings})
+	return nil
+}
+
+func TestUserImport_Fetch_RefreshPersistsNewTokenToRepo(t *testing.T) {
+	var capture []captured
+	srv := traktServer(t, map[string]string{"/users/": "[]"}, false, &capture)
+	defer srv.Close()
+	defer setupBase(srv.URL)()
+	s := userSettings(srv.URL)
+	s.Expires = time.Now().Add(1 * time.Minute) // inside refresh window
+	row := &importlists.ImportList{
+		ID:             21,
+		Name:           "TraktUser",
+		Implementation: trakt.UserImplementation,
+		Settings:       ptrStr(t, s),
+	}
+	repo := &fakeRepo{}
+	p, err := trakt.NewUser(row, importlists.Dependencies{
+		HTTPClient:      srv.Client(),
+		StatusService:   &fakeStatusRecorder{},
+		ImportListsRepo: repo,
+	})
+	if err != nil {
+		t.Fatalf("NewUser: %v", err)
+	}
+	if _, err := p.Fetch(t.Context()); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(repo.calls) != 1 {
+		t.Fatalf("repo Update calls = %d, want 1", len(repo.calls))
+	}
+	if repo.calls[0].ID != 21 {
+		t.Errorf("repo update fired against ID=%d, want 21", repo.calls[0].ID)
+	}
+	// Verify the persisted Settings carries BOTH the refreshed token
+	// triple AND the variant-specific Username field (proves the
+	// marshalSettings closure marshals the wrapping UserSettings,
+	// not just the embedded SettingsBase).
+	var persisted trakt.UserSettings
+	if err := json.Unmarshal([]byte(repo.calls[0].Settings), &persisted); err != nil {
+		t.Fatalf("unmarshal persisted: %v", err)
+	}
+	if persisted.AccessToken != "new-token" {
+		t.Errorf("persisted AccessToken=%q want new-token", persisted.AccessToken)
+	}
+	if persisted.RefreshToken != "new-refresh" {
+		t.Errorf("persisted RefreshToken=%q want new-refresh", persisted.RefreshToken)
+	}
+	if persisted.Username != "user1" {
+		t.Errorf("persisted Username=%q want user1 (variant-specific field round-trip)", persisted.Username)
+	}
+}
+
+func TestUserImport_Fetch_RefreshSkipsPersisterWhenRowIDZero(t *testing.T) {
+	var capture []captured
+	srv := traktServer(t, map[string]string{"/users/": "[]"}, false, &capture)
+	defer srv.Close()
+	defer setupBase(srv.URL)()
+	s := userSettings(srv.URL)
+	s.Expires = time.Now().Add(1 * time.Minute)
+	row := &importlists.ImportList{
+		// ID = 0 — guard short-circuits the persistence call.
+		Implementation: trakt.UserImplementation,
+		Settings:       ptrStr(t, s),
+	}
+	repo := &fakeRepo{}
+	p, err := trakt.NewUser(row, importlists.Dependencies{
+		HTTPClient:      srv.Client(),
+		StatusService:   &fakeStatusRecorder{},
+		ImportListsRepo: repo,
+	})
+	if err != nil {
+		t.Fatalf("NewUser: %v", err)
+	}
+	if _, err := p.Fetch(t.Context()); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(repo.calls) != 0 {
+		t.Errorf("repo Update should not fire when row ID == 0, got %d", len(repo.calls))
+	}
+}

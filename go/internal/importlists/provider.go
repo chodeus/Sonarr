@@ -191,4 +191,18 @@ type Dependencies struct {
 	// Nil-tolerated: when nil, the Go port falls back to the
 	// English template.
 	LocalizationService any
+
+	// ImportListsRepo is the persistence handle the OAuth2 providers
+	// (Trakt × 3 variants, Simkl, AniList, MyAnimeList) use to round-
+	// trip a refreshed AccessToken / RefreshToken / Expires triple
+	// back to the DB row. Bound to `*importlists.Repo` in production.
+	// Without this dep, refreshed tokens live in process memory only
+	// — next provider construction reads the stale token from DB and
+	// refreshes again. Nil is tolerated; providers fall back to in-
+	// memory-only updates.
+	//
+	// Mirrors C# `_importListRepository.UpdateSettings(...)` at
+	// `Trakt/TraktImportBase.cs:143` + `AniList/AniListImportBase.cs:101`
+	// + `Simkl/SimklImportBase.cs:176` + `MyAnimeList/MyAnimeListImport.cs:111`.
+	ImportListsRepo any
 }
