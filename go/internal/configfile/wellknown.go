@@ -149,6 +149,21 @@ func (p *Provider) Branch(ctx context.Context) (string, error) {
 	return strings.ToLower(strings.TrimSpace(v)), nil
 }
 
+// Theme returns the configured UI theme, defaulting to "auto".
+// Mirrors `ConfigFileProvider.Theme` at
+// `src/NzbDrone.Core/Configuration/ConfigFileProvider.cs:258`. C#
+// reads `_appOptions.Theme ?? GetValue("Theme", "auto", persist:
+// false)` — the AppOptions env-var override slot belongs in the
+// Overrides struct in a follow-up; this getter currently reads the
+// XML value with the same persist=false discipline.
+func (p *Provider) Theme(ctx context.Context) (string, error) {
+	v, err := p.String(ctx, "Theme", "auto", false)
+	if err != nil {
+		return "", err
+	}
+	return v, nil
+}
+
 // AuthenticationMethod returns the configured auth scheme. Mirrors
 // the C# AuthenticationMethod getter:
 //   - if the legacy AuthenticationEnabled flag is true → Forms

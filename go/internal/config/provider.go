@@ -398,6 +398,109 @@ func (p *Provider) SetAutoRedownloadFailed(ctx context.Context, v bool) error {
 	return err
 }
 
+// FirstDayOfWeek mirrors `ConfigService.cs:FirstDayOfWeek`. C# reads
+// `CultureInfo.CurrentCulture.DateTimeFormat.FirstDayOfWeek`, so the
+// effective default depends on the host's locale. The Go port hard-
+// codes 1 (Monday) to match the value the recorded contract golden
+// captured (the recording host's culture had Monday as the first
+// day). Operators on a Sunday-first locale should explicitly set
+// the value via the API after install.
+func (p *Provider) FirstDayOfWeek() int {
+	return p.getInt("FirstDayOfWeek", 1)
+}
+
+// SetFirstDayOfWeek writes the new value, publishing
+// ConfigSavedEvent on change.
+func (p *Provider) SetFirstDayOfWeek(ctx context.Context, v int) error {
+	_, err := p.setInt(ctx, "FirstDayOfWeek", v)
+	return err
+}
+
+// CalendarWeekColumnHeader mirrors
+// `ConfigService.cs:CalendarWeekColumnHeader`. Default "ddd M/D" —
+// the moment.js-style format the calendar week-view column header.
+func (p *Provider) CalendarWeekColumnHeader() string {
+	return p.getString("CalendarWeekColumnHeader", "ddd M/D")
+}
+
+// SetCalendarWeekColumnHeader writes the new value.
+func (p *Provider) SetCalendarWeekColumnHeader(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "CalendarWeekColumnHeader", v)
+	return err
+}
+
+// ShortDateFormat mirrors `ConfigService.cs:ShortDateFormat`. Default
+// "MMM D YYYY".
+func (p *Provider) ShortDateFormat() string {
+	return p.getString("ShortDateFormat", "MMM D YYYY")
+}
+
+// SetShortDateFormat writes the new value.
+func (p *Provider) SetShortDateFormat(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "ShortDateFormat", v)
+	return err
+}
+
+// LongDateFormat mirrors `ConfigService.cs:LongDateFormat`. Default
+// "dddd, MMMM D YYYY".
+func (p *Provider) LongDateFormat() string {
+	return p.getString("LongDateFormat", "dddd, MMMM D YYYY")
+}
+
+// SetLongDateFormat writes the new value.
+func (p *Provider) SetLongDateFormat(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "LongDateFormat", v)
+	return err
+}
+
+// TimeFormat mirrors `ConfigService.cs:TimeFormat`. Default
+// "h(:mm)a".
+func (p *Provider) TimeFormat() string {
+	return p.getString("TimeFormat", "h(:mm)a")
+}
+
+// SetTimeFormat writes the new value.
+func (p *Provider) SetTimeFormat(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "TimeFormat", v)
+	return err
+}
+
+// TimeZone mirrors `ConfigService.cs:TimeZone`. Default "" (server
+// timezone).
+func (p *Provider) TimeZone() string {
+	return p.getString("TimeZone", "")
+}
+
+// SetTimeZone writes the new value.
+func (p *Provider) SetTimeZone(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "TimeZone", v)
+	return err
+}
+
+// ShowRelativeDates mirrors `ConfigService.cs:ShowRelativeDates`.
+// Default true.
+func (p *Provider) ShowRelativeDates() bool {
+	return p.getBool("ShowRelativeDates", true)
+}
+
+// SetShowRelativeDates writes the new value.
+func (p *Provider) SetShowRelativeDates(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "ShowRelativeDates", v)
+	return err
+}
+
+// EnableColorImpairedMode mirrors
+// `ConfigService.cs:EnableColorImpairedMode`. Default false.
+func (p *Provider) EnableColorImpairedMode() bool {
+	return p.getBool("EnableColorImpairedMode", false)
+}
+
+// SetEnableColorImpairedMode writes the new value.
+func (p *Provider) SetEnableColorImpairedMode(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "EnableColorImpairedMode", v)
+	return err
+}
+
 // AutoRedownloadFailedFromInteractiveSearch mirrors the C#
 // `ConfigService.cs:AutoRedownloadFailedFromInteractiveSearch` flag.
 // Default true — controls whether failed downloads originally pushed
