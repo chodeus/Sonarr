@@ -398,6 +398,46 @@ func (p *Provider) SetAutoRedownloadFailed(ctx context.Context, v bool) error {
 	return err
 }
 
+// ExtraFileExtensions mirrors `ConfigService.cs:ExtraFileExtensions`.
+// Default "srt" — the pipe/comma-separated list of file extensions
+// that are imported alongside the primary media file.
+func (p *Provider) ExtraFileExtensions() string {
+	return p.getString("ExtraFileExtensions", "srt")
+}
+
+// SetExtraFileExtensions writes the new value.
+func (p *Provider) SetExtraFileExtensions(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "ExtraFileExtensions", v)
+	return err
+}
+
+// ImportExtraFiles mirrors `ConfigService.cs:ImportExtraFiles`. When
+// true, files with extensions in ExtraFileExtensions are imported
+// alongside the primary media file. Default false.
+func (p *Provider) ImportExtraFiles() bool {
+	return p.getBool("ImportExtraFiles", false)
+}
+
+// SetImportExtraFiles writes the new value.
+func (p *Provider) SetImportExtraFiles(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "ImportExtraFiles", v)
+	return err
+}
+
+// RescanAfterRefresh mirrors `ConfigService.cs:RescanAfterRefresh`.
+// Returns the raw stored enum identifier ("Always", "AfterManual",
+// "Never"); the consumer parses it locally. Default "Always" per the
+// C# `GetValueEnum("RescanAfterRefresh", Always)`.
+func (p *Provider) RescanAfterRefresh() string {
+	return p.getString("RescanAfterRefresh", "Always")
+}
+
+// SetRescanAfterRefresh writes the new value.
+func (p *Provider) SetRescanAfterRefresh(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "RescanAfterRefresh", v)
+	return err
+}
+
 // FirstDayOfWeek mirrors `ConfigService.cs:FirstDayOfWeek`. C# reads
 // `CultureInfo.CurrentCulture.DateTimeFormat.FirstDayOfWeek`, so the
 // effective default depends on the host's locale. The Go port hard-
