@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/notifications"
+	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -158,23 +160,81 @@ func buildShowFromSeries(s *series.Series) CollectShow {
 // per-episode payload from the EpisodeFile. Mirrors the
 // AddEpisodeToCollection / RemoveEpisodeFromCollection construction.
 //
-// MediaInfo-derived fields (resolution / hdr / audio / audioChannels)
-// are DEFERRED — see package doc. Episodes carried via the C# code's
-// `EpisodeFile.Episodes.Value` aren't on the Go EpisodeFile row
-// (the Episodes link is computed via a separate lookup not yet wired).
-// For now we emit no per-episode entries; the show-level collection
-// path still updates Trakt.
+// Episodes carried via the C# code's `EpisodeFile.Episodes.Value`
+// aren't on the Go EpisodeFile row (the Episodes link is computed
+// via a separate lookup not yet wired). For now this still emits
+// show-level updates only — the per-episode payload + MediaInfo
+// decode lands when the episode-list dep gets plumbed at the
+// orchestrator level; see [BuildEpisodeResource] for the per-episode
+// payload assembly that follow-up wiring can call.
 func buildEpisodeFileShow(s *series.Series, f *episodefiles.File, withCollectedAt bool, now time.Time) CollectShow {
 	show := buildShowFromSeries(s)
-	// Episode list lookup is deferred — emit a season entry with an
-	// empty Episodes slice would diverge from C# (which iterates the
-	// resolved list). The fallback: emit the show-level update only.
-	// When the Episodes link ports, the per-episode payload can drop
-	// in here.
 	_ = withCollectedAt
 	_ = now
 	_ = f
 	return show
+}
+
+// BuildEpisodeResource assembles a per-episode trakt payload entry
+// from an [episodefiles.File] + an episode number. Mirrors the
+// inner loop body of C# `AddEpisodeToCollection` at `:165-203`:
+// every per-episode entry carries the MediaInfo-derived resolution
+// / hdr / media_type / audio / audio_channels fields. Pure function
+// — exported so the future episode-list dep can call it per
+// resolved episode.
+//
+// withCollectedAt=true emits a CollectedAt = now for the
+// AddEpisodeToCollection flow; false omits it for
+// RemoveEpisodeFromCollection (mirrors C# branching on the same
+// boolean).
+func BuildEpisodeResource(f *episodefiles.File, episodeNumber int, withCollectedAt bool, now time.Time) EpisodeResource {
+	er := EpisodeResource{Number: episodeNumber}
+	if withCollectedAt {
+		t := now
+		er.CollectedAt = &t
+	}
+	if f == nil {
+		return er
+	}
+	// Quality + MediaInfo decode. Quality.Source/Resolution come
+	// from the persisted Quality blob; HDR / audio fields come
+	// from MediaInfo (nil-safe via the mapper helpers).
+	if q := unmarshalQualityModel(f.Quality); q != nil {
+		er.Resolution = MapResolution(q.Quality.Resolution, mediaInfoScanType(f))
+		er.MediaType = MapMediaType(q.Quality.Source)
+	}
+	er.Hdr = MapHdr(f)
+	audio := MapAudio(f)
+	er.Audio = audio
+	er.AudioChannels = MapAudioChannels(f, audio)
+	return er
+}
+
+// mediaInfoScanType returns f.MediaInfo.ScanType safely with
+// nil-tolerance. Extracted so [BuildEpisodeResource] can call
+// [MapResolution] without an inline nil check.
+func mediaInfoScanType(f *episodefiles.File) string {
+	if f == nil || f.MediaInfo == nil {
+		return ""
+	}
+	return f.MediaInfo.ScanType
+}
+
+// unmarshalQualityModel decodes the Quality JSON blob carried by
+// [episodefiles.File.Quality]. Returns nil for empty/zero blobs
+// (matches C# behaviour where un-parsed Quality defaults to Unknown).
+// Decode failures swallow to nil — payload emission skips the
+// per-episode entry's MediaType/Resolution rather than propagating
+// the error.
+func unmarshalQualityModel(blob string) *quality.Model {
+	if strings.TrimSpace(blob) == "" || blob == "{}" {
+		return nil
+	}
+	var m quality.Model
+	if err := json.Unmarshal([]byte(blob), &m); err != nil {
+		return nil
+	}
+	return &m
 }
 
 // OnGrab — not overridden in C#; no-op.
