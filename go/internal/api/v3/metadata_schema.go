@@ -1,8 +1,13 @@
 package v3
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sort"
+
+	"sonarr.tv/sonarr/internal/metadata"
 )
 
 // MetadataSchemaResource is the JSON shape produced by
@@ -38,7 +43,7 @@ type MetadataSchemaResource struct {
 	ConfigContract     string     `json:"configContract"`
 	InfoLink           string     `json:"infoLink"`
 	Tags               []int      `json:"tags"`
-	Presets            []any      `json:"presets"`
+	Presets            *[]any     `json:"presets,omitempty"`
 	Enable             bool       `json:"enable"`
 }
 
@@ -59,7 +64,7 @@ func xbmcMetadataSchema() MetadataSchemaResource {
 		ConfigContract:     "XbmcMetadataSettings",
 		InfoLink:           "https://wiki.servarr.com/sonarr/supported#xbmcmetadata",
 		Tags:               []int{},
-		Presets:            []any{},
+		Presets:            &[]any{},
 		Fields: []FieldDef{
 			metaCheckboxField(0, "seriesMetadata", "Series Metadata", "tvshow.nfo with full series metadata", "metadata", true, false),
 			metaCheckboxField(1, "seriesMetadataEpisodeGuide", "Series Metadata Episode Guide", "Include JSON formatted episode guide element in tvshow.nfo (Requires 'Series Metadata')", "metadata", false, true),
@@ -80,7 +85,7 @@ func plexMetadataSchema() MetadataSchemaResource {
 		ConfigContract:     "PlexMetadataSettings",
 		InfoLink:           "https://wiki.servarr.com/sonarr/supported#plexmetadata",
 		Tags:               []int{},
-		Presets:            []any{},
+		Presets:            &[]any{},
 		Fields: []FieldDef{
 			metaCheckboxField(0, "seriesPlexMatchFile", "Series Plex Match File", "Creates a .plexmatch file in the series folder", "metadata", true, false),
 			metaCheckboxField(1, "episodeMappings", "Episode Mappings", "Include episode mappings for all files in .plexmatch file", "metadata", false, false),
@@ -95,7 +100,7 @@ func roksboxMetadataSchema() MetadataSchemaResource {
 		ConfigContract:     "RoksboxMetadataSettings",
 		InfoLink:           "https://wiki.servarr.com/sonarr/supported#roksboxmetadata",
 		Tags:               []int{},
-		Presets:            []any{},
+		Presets:            &[]any{},
 		Fields: []FieldDef{
 			metaCheckboxField(0, "episodeMetadata", "Episode Metadata", `Season##\filename.xml`, "metadata", true, false),
 			metaCheckboxField(1, "seriesImages", "Series Images", "Series Title.jpg", "image", true, false),
@@ -112,7 +117,7 @@ func wdtvMetadataSchema() MetadataSchemaResource {
 		ConfigContract:     "WdtvMetadataSettings",
 		InfoLink:           "https://wiki.servarr.com/sonarr/supported#wdtvmetadata",
 		Tags:               []int{},
-		Presets:            []any{},
+		Presets:            &[]any{},
 		Fields: []FieldDef{
 			metaCheckboxField(0, "episodeMetadata", "Episode Metadata", `Season##\filename.xml`, "metadata", true, false),
 			metaCheckboxField(1, "seriesImages", "Series Images", "folder.jpg", "image", true, false),
@@ -148,6 +153,69 @@ func MetadataSchemaHandler() http.Handler {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		buf, _ := json.Marshal(metadataSchemas)
+		_, _ = w.Write(buf)
+	})
+}
+
+// MetadataRowsLister narrows the metadata.Repo surface to the
+// All-rows read the list handler needs.
+type MetadataRowsLister interface {
+	All(ctx context.Context) ([]metadata.Metadata, error)
+}
+
+// MetadataListHandler returns the http.Handler for GET /api/v3/metadata.
+// Mirrors the C# `MetadataController` GetAll inherited from
+// `ProviderControllerBase`. Emits one MetadataSchemaResource per
+// persisted row, with Id+Name+Enable from the row plus the per-
+// implementation schema template's Fields list. Sort order is the
+// row's Name ASC (matches the C# wire-order which originates from a
+// `_metadataFactory.All()` DB read followed by alphabetical-by-Name
+// in the resource projection).
+//
+// On a fresh DB with no metadata rows the response is `[]`. Once
+// SeedDefaults runs (4 default-disabled providers Xbmc/Wdtv/Roksbox/
+// Plex inserted in DI-scan order), the response carries the four
+// recording entries byte-equal to the C# golden.
+//
+// Per-row field-value injection: the recording's seeded rows carry
+// the IProviderConfig constructor defaults — identical to the schema
+// template's per-FieldDef Value. So the list response's Fields list
+// is byte-identical to the schema response's per-implementation
+// Fields. A future write path (POST/PUT /api/v3/metadata) will need
+// per-row Settings decode + value injection; for the empty-DB byte-
+// eq this slice covers, the schema-template defaults suffice.
+func MetadataListHandler(lister MetadataRowsLister) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rows, err := lister.All(r.Context())
+		if err != nil {
+			http.Error(w, fmt.Sprintf("metadata: %v", err), http.StatusInternalServerError)
+			return
+		}
+		schemaByImpl := make(map[string]MetadataSchemaResource, len(metadataSchemas))
+		for _, s := range metadataSchemas {
+			schemaByImpl[s.Implementation] = s
+		}
+		out := make([]MetadataSchemaResource, 0, len(rows))
+		for _, row := range rows {
+			schema, ok := schemaByImpl[row.Implementation]
+			if !ok {
+				// Unknown implementation — skip rather than emit a
+				// broken row. Same posture the C# tree takes when a
+				// row references a removed-provider implementation.
+				continue
+			}
+			schema.ID = row.ID
+			schema.Name = row.Name
+			schema.Enable = row.Enable
+			// List entries omit `presets` entirely — the C# wire
+			// shape only carries presets on the schema endpoint.
+			schema.Presets = nil
+			out = append(out, schema)
+		}
+		sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(out)
 		_, _ = w.Write(buf)
 	})
 }

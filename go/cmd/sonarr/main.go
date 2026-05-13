@@ -2221,6 +2221,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("metadata repo: %w", err)
 	}
+	// Slice 4.EO: seed the 4 default metadata providers (Xbmc, Wdtv,
+	// Roksbox, Plex inserted in that order so the recording's IDs
+	// 1/2/3/4 match) on a fresh DB. No-op when rows already exist
+	// per the SeedDefaults Implementation-presence guard. Mirrors C#
+	// MetadataFactory.InitializeProviders at
+	// src/NzbDrone.Core/Extras/Metadata/MetadataFactory.cs:25-48.
+	if err := metadataRepo.SeedDefaults(ctx); err != nil {
+		return fmt.Errorf("metadata seed defaults: %w", err)
+	}
 	metadataFilesRepo, err := metadatafiles.NewRepo(db)
 	if err != nil {
 		return fmt.Errorf("metadatafiles repo: %w", err)
@@ -2369,7 +2378,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("system status context: %w", err)
 	}
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo)
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo)
 	if err != nil {
 		return err
 	}
