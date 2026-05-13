@@ -112,6 +112,17 @@ var ErrHandshakeMalformed = errors.New("signalr: client handshake malformed")
 // HandshakeResponse with the error message, then closes.
 var ErrHandshakeUnsupported = errors.New("signalr: client handshake protocol unsupported")
 
+// parseHandshakeBytes decodes a ClientHandshake JSON object from
+// bytes. Shared between the streaming ReadHandshake path and the
+// WebSocket transport which receives a pre-framed message.
+func parseHandshakeBytes(b []byte) (ClientHandshake, error) {
+	var h ClientHandshake
+	if err := json.Unmarshal(b, &h); err != nil {
+		return ClientHandshake{}, fmt.Errorf("%w: %w", ErrHandshakeMalformed, err)
+	}
+	return h, nil
+}
+
 // ReadHandshake consumes the first RS-terminated frame from r,
 // parses the ClientHandshake, and validates that the requested
 // protocol/version is supported. Returns the parsed handshake on

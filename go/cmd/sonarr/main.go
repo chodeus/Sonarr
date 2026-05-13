@@ -101,6 +101,7 @@ import (
 	"sonarr.tv/sonarr/internal/scenemappings"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 	"sonarr.tv/sonarr/internal/upgrademediafiles"
@@ -2378,7 +2379,14 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("system status context: %w", err)
 	}
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo)
+	// SignalR hub (slice 4.EU). The hub is the in-process fan-out
+	// pipeline that owns the live WebSocket connection registry.
+	// hostVersion is sourced from buildinfo so the connection-
+	// handshake version event matches the /api/v3/system/status
+	// version field.
+	signalRHub := signalr.NewHub(signalr.WithHostVersion(buildinfo.Version))
+
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo)
 	if err != nil {
 		return err
 	}
