@@ -97,85 +97,44 @@ func (w *Webhook) Definition() *notifications.Notification { return w.def }
 // raw `any` values from [notifications.GrabMessage] — see the
 // package-level out-of-scope note.
 func (w *Webhook) OnGrab(ctx context.Context, msg notifications.GrabMessage) error {
-	return w.send(ctx, GrabPayload{
-		BasePayload:        BasePayload{EventType: EventTypeGrab},
-		Series:             msg.Series,
-		Episodes:           msg.Episode,
-		Release:            msg.Episode,
-		DownloadClient:     msg.DownloadClientName,
-		DownloadClientType: msg.DownloadClientType,
-		DownloadID:         msg.DownloadID,
-	})
+	return w.send(ctx, BuildGrabPayload(msg))
 }
 
 // OnDownload mirrors C# `OnDownload` at `Webhook.cs:31-34` +
 // `BuildOnDownloadPayload` at `WebhookBase.cs:52-85`.
 func (w *Webhook) OnDownload(ctx context.Context, msg notifications.DownloadMessage) error {
-	return w.send(ctx, ImportPayload{
-		BasePayload:  BasePayload{EventType: EventTypeDownload},
-		Series:       msg.Series,
-		EpisodeFile:  msg.EpisodeFile,
-		IsUpgrade:    len(msg.OldFiles) > 0,
-		DeletedFiles: msg.OldFiles,
-		DownloadID:   msg.DownloadID,
-		Release:      msg.Release,
-	})
+	return w.send(ctx, BuildDownloadPayload(msg))
 }
 
 // OnImportComplete mirrors C# `OnImportComplete` at `Webhook.cs:36-39`
 // + `BuildOnImportCompletePayload` at `WebhookBase.cs:87-108`.
 func (w *Webhook) OnImportComplete(ctx context.Context, msg notifications.ImportCompleteMessage) error {
-	return w.send(ctx, ImportCompletePayload{
-		BasePayload:     BasePayload{EventType: EventTypeDownload},
-		Series:          msg.Series,
-		Episodes:        msg.Episodes,
-		EpisodeFiles:    msg.EpisodeFiles,
-		DownloadID:      msg.DownloadID,
-		SourcePath:      msg.SourcePath,
-		DestinationPath: msg.DestinationPath,
-		Release:         msg.Release,
-	})
+	return w.send(ctx, BuildImportCompletePayload(msg))
 }
 
 // OnRename mirrors C# `OnRename` at `Webhook.cs:41-44` +
 // `BuildOnRenamePayload` at `WebhookBase.cs:147-157`.
 func (w *Webhook) OnRename(ctx context.Context, msg notifications.RenameMessage) error {
-	return w.send(ctx, RenamePayload{
-		BasePayload:         BasePayload{EventType: EventTypeRename},
-		Series:              msg.Series,
-		RenamedEpisodeFiles: msg.RenamedFiles,
-	})
+	return w.send(ctx, BuildRenamePayload(msg))
 }
 
 // OnEpisodeFileDelete mirrors C# `OnEpisodeFileDelete` at
 // `Webhook.cs:46-49` + `BuildOnEpisodeFileDelete` at
 // `WebhookBase.cs:110-122`.
 func (w *Webhook) OnEpisodeFileDelete(ctx context.Context, msg notifications.EpisodeDeleteMessage) error {
-	return w.send(ctx, EpisodeDeletePayload{
-		BasePayload:  BasePayload{EventType: EventTypeEpisodeFileDelete},
-		Series:       msg.Series,
-		EpisodeFile:  msg.EpisodeFile,
-		DeleteReason: msg.Reason.String(),
-	})
+	return w.send(ctx, BuildEpisodeFileDeletePayload(msg))
 }
 
 // OnSeriesAdd mirrors C# `OnSeriesAdd` at `Webhook.cs:51-54` +
 // `BuildOnSeriesAdd` at `WebhookBase.cs:124-133`.
 func (w *Webhook) OnSeriesAdd(ctx context.Context, msg notifications.SeriesAddMessage) error {
-	return w.send(ctx, SeriesAddPayload{
-		BasePayload: BasePayload{EventType: EventTypeSeriesAdd},
-		Series:      msg.Series,
-	})
+	return w.send(ctx, BuildSeriesAddPayload(msg))
 }
 
 // OnSeriesDelete mirrors C# `OnSeriesDelete` at `Webhook.cs:56-59`
 // + `BuildOnSeriesDelete` at `WebhookBase.cs:135-145`.
 func (w *Webhook) OnSeriesDelete(ctx context.Context, msg notifications.SeriesDeleteMessage) error {
-	return w.send(ctx, SeriesDeletePayload{
-		BasePayload:  BasePayload{EventType: EventTypeSeriesDelete},
-		Series:       msg.Series,
-		DeletedFiles: msg.DeletedFiles,
-	})
+	return w.send(ctx, BuildSeriesDeletePayload(msg))
 }
 
 // OnHealthIssue mirrors C# `OnHealthIssue` at `Webhook.cs:61-64` +
@@ -186,13 +145,7 @@ func (w *Webhook) OnSeriesDelete(ctx context.Context, msg notifications.SeriesDe
 // a `HealthCheckResult` enum value. The Go port reads the same
 // field through [healthcheck.HealthCheck.Result.String].
 func (w *Webhook) OnHealthIssue(ctx context.Context, msg notifications.HealthCheckMessage) error {
-	return w.send(ctx, HealthPayload{
-		BasePayload: BasePayload{EventType: EventTypeHealth},
-		Level:       msg.Check.Type.String(),
-		Message:     msg.Check.Message,
-		Type:        msg.Check.Source,
-		WikiURL:     msg.Check.WikiURL,
-	})
+	return w.send(ctx, BuildHealthPayload(msg))
 }
 
 // OnHealthRestored mirrors C# `OnHealthRestored` at
@@ -200,38 +153,20 @@ func (w *Webhook) OnHealthIssue(ctx context.Context, msg notifications.HealthChe
 // `WebhookBase.cs:172-183`. Identical payload shape to
 // OnHealthIssue, distinct EventType.
 func (w *Webhook) OnHealthRestored(ctx context.Context, msg notifications.HealthCheckMessage) error {
-	return w.send(ctx, HealthPayload{
-		BasePayload: BasePayload{EventType: EventTypeHealthRestored},
-		Level:       msg.Check.Type.String(),
-		Message:     msg.Check.Message,
-		Type:        msg.Check.Source,
-		WikiURL:     msg.Check.WikiURL,
-	})
+	return w.send(ctx, BuildHealthRestoredPayload(msg))
 }
 
 // OnApplicationUpdate mirrors C# `OnApplicationUpdate` at
 // `Webhook.cs:71-74` + `BuildApplicationUpdatePayload` at
 // `WebhookBase.cs:185-195`.
 func (w *Webhook) OnApplicationUpdate(ctx context.Context, msg notifications.ApplicationUpdateMessage) error {
-	return w.send(ctx, ApplicationUpdatePayload{
-		BasePayload:     BasePayload{EventType: EventTypeApplicationUpdate},
-		Message:         msg.Message,
-		PreviousVersion: msg.PreviousVersion,
-		NewVersion:      msg.NewVersion,
-	})
+	return w.send(ctx, BuildApplicationUpdatePayload(msg))
 }
 
 // OnManualInteractionRequired mirrors C# at `Webhook.cs:76-79` +
 // `BuildManualInteractionRequiredPayload` at `WebhookBase.cs:197-218`.
 func (w *Webhook) OnManualInteractionRequired(ctx context.Context, msg notifications.ManualInteractionRequiredMessage) error {
-	return w.send(ctx, ManualInteractionPayload{
-		BasePayload:    BasePayload{EventType: EventTypeManualInteractionRequired},
-		Series:         msg.Series,
-		Episodes:       msg.Episode,
-		DownloadID:     msg.DownloadID,
-		Release:        msg.Release,
-		DownloadClient: "",
-	})
+	return w.send(ctx, BuildManualInteractionPayload(msg))
 }
 
 // ProcessQueue is a no-op — Webhook has no library-refresh
@@ -254,25 +189,7 @@ func (w *Webhook) ProcessQueue(_ context.Context) error { return nil }
 // produces an equivalent BasePayload-rooted payload with the same
 // synthetic values.
 func (w *Webhook) Test(ctx context.Context) ([]notifications.TestFailure, error) {
-	payload := GrabPayload{
-		BasePayload: BasePayload{EventType: EventTypeTest},
-		Series: map[string]any{
-			"id":     1,
-			"title":  "Test Title",
-			"path":   "C:\\testpath",
-			"tvdbId": 1234,
-			"tags":   []string{"test-tag"},
-		},
-		Episodes: []map[string]any{
-			{
-				"id":            123,
-				"episodeNumber": 1,
-				"seasonNumber":  1,
-				"title":         "Test title",
-			},
-		},
-	}
-	if err := w.send(ctx, payload); err != nil {
+	if err := w.send(ctx, BuildTestPayload()); err != nil {
 		return []notifications.TestFailure{{
 			PropertyName: "Url",
 			ErrorMessage: fmt.Sprintf("Unable to send test webhook: %s", err.Error()),
