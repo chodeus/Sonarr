@@ -2241,10 +2241,12 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 
 	// Bring up the dispatcher + scheduler goroutines. Both exit
 	// cleanly on ctx cancellation; we wait for both via wg below.
+	// Slice 4.DF adds the HTTP host as a third goroutine — same
+	// lifecycle (cancel ctx → graceful drain → workers.Wait).
 	workerCtx, workerCancel := context.WithCancel(ctx)
 	defer workerCancel()
 	var workers sync.WaitGroup
-	workers.Add(2)
+	workers.Add(3)
 	go func() {
 		defer workers.Done()
 		if err := dispatcher.Run(workerCtx); err != nil {
@@ -2258,6 +2260,17 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		}
 	}()
 
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo)
+	if err != nil {
+		return err
+	}
+	go func() {
+		defer workers.Done()
+		if err := hostSrv.Run(workerCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Warn("host server exited with error", "err", err)
+		}
+	}()
+
 	// Bus is hot — fan out the start signal so subscribers (auth
 	// service seed, future health checks, etc.) can do their lazy
 	// init.
@@ -2266,7 +2279,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	logger.Info("daemon ready", "version", buildinfo.Version,
-		"hint", "HTTP server / SignalR arrive in Phase 5")
+		"hint", "Phase 5 OPENED — host shell + /ping live; REST surface + SignalR + frontend wiring incoming")
 	<-ctx.Done()
 
 	// Shutdown sequence — publish the signal BEFORE BeginShutdown

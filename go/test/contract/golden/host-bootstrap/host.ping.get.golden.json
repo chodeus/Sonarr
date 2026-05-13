@@ -1,0 +1,8 @@
+{
+  "entry_id": "host.ping.get",
+  "status": 200,
+  "body_json": {
+    "status": "OK"
+  },
+  "body_is_json": true
+}

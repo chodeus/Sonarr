@@ -110,6 +110,28 @@ func LoadGolden(path string) (*Golden, error) {
 	return &g, nil
 }
 
+// CompactJSON returns the body's JSON-compact form (no whitespace
+// between tokens) so byte-equality is robust to the indent shift
+// json.Encoder.Encode applies when re-encoding the parent Golden
+// struct with SetIndent. The runner pretty-prints body_json at root
+// (2-space indent, 0-space outer); SaveGolden then re-indents the
+// embedded RawMessage to match the parent's nest level (4-space
+// inner, 2-space outer); LoadGolden hands back those indented bytes.
+// Comparing compact-vs-compact dodges the asymmetry without changing
+// the human-readable file format.
+//
+// Empty input returns nil to preserve "no body" semantics.
+func CompactJSON(b []byte) []byte {
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, b); err != nil {
+		return b
+	}
+	return buf.Bytes()
+}
+
 func validMethod(m string) bool {
 	switch m {
 	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,

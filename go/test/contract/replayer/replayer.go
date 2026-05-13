@@ -99,7 +99,7 @@ func compare(got, want *spec.Golden) string {
 	if got.BodyIsJSON != want.BodyIsJSON {
 		fmt.Fprintf(&b, "  body kind: got json=%t want json=%t\n", got.BodyIsJSON, want.BodyIsJSON)
 	}
-	if !bytes.Equal(bytes.TrimSpace(got.BodyJSON), bytes.TrimSpace(want.BodyJSON)) {
+	if !bytes.Equal(spec.CompactJSON(got.BodyJSON), spec.CompactJSON(want.BodyJSON)) {
 		fmt.Fprintf(&b, "  body json:\n    got=%s\n    want=%s\n", got.BodyJSON, want.BodyJSON)
 	}
 	if !bytes.Equal(got.BodyRaw, want.BodyRaw) {

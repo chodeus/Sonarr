@@ -1,0 +1,20 @@
+{
+  "entries": [
+    {
+      "id": "host.ping.get",
+      "comment": "Unauthenticated GET /ping — health probe used by external monitors. PingController.cs:23 marks [AllowAnonymous]; the response body is the literal {\"status\":\"OK\"} when ConfigRepository.All() succeeds.",
+      "request": {
+        "method": "GET",
+        "path": "/ping"
+      }
+    },
+    {
+      "id": "host.ping.head",
+      "comment": "Unauthenticated HEAD /ping — same probe path, body omitted per RFC 9110. PingController.cs binds both [HttpGet] and [HttpHead] to the same handler.",
+      "request": {
+        "method": "HEAD",
+        "path": "/ping"
+      }
+    }
+  ]
+}
