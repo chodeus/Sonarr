@@ -372,6 +372,47 @@ func (p *Provider) UILanguage() int {
 	return p.getInt("UILanguage", 1)
 }
 
+// RssSyncInterval mirrors `ConfigService.cs:RssSyncInterval`. Default
+// 15 minutes — the indexer RSS poll cadence.
+func (p *Provider) RssSyncInterval() int {
+	return p.getInt("RssSyncInterval", 15)
+}
+
+// SetRssSyncInterval writes the new value, publishing ConfigSavedEvent on change.
+func (p *Provider) SetRssSyncInterval(ctx context.Context, v int) error {
+	_, err := p.setInt(ctx, "RssSyncInterval", v)
+	return err
+}
+
+// AutoRedownloadFailed mirrors `ConfigService.cs:AutoRedownloadFailed`.
+// Default true — when a download fails, automatically search for a
+// replacement.
+func (p *Provider) AutoRedownloadFailed() bool {
+	return p.getBool("AutoRedownloadFailed", true)
+}
+
+// SetAutoRedownloadFailed writes the new value, publishing
+// ConfigSavedEvent on change.
+func (p *Provider) SetAutoRedownloadFailed(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "AutoRedownloadFailed", v)
+	return err
+}
+
+// AutoRedownloadFailedFromInteractiveSearch mirrors the C#
+// `ConfigService.cs:AutoRedownloadFailedFromInteractiveSearch` flag.
+// Default true — controls whether failed downloads originally pushed
+// via interactive search trigger an auto-redownload.
+func (p *Provider) AutoRedownloadFailedFromInteractiveSearch() bool {
+	return p.getBool("AutoRedownloadFailedFromInteractiveSearch", true)
+}
+
+// SetAutoRedownloadFailedFromInteractiveSearch writes the new value,
+// publishing ConfigSavedEvent on change.
+func (p *Provider) SetAutoRedownloadFailedFromInteractiveSearch(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "AutoRedownloadFailedFromInteractiveSearch", v)
+	return err
+}
+
 // SetUILanguage writes the new value, publishing ConfigSavedEvent on
 // change.
 func (p *Provider) SetUILanguage(ctx context.Context, v int) error {

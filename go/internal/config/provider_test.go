@@ -61,6 +61,22 @@ func TestProvider_DefaultsWhenMissing(t *testing.T) {
 	}
 }
 
+func TestProvider_NewGetters_Defaults(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	prov, _, _ := providerFixture(t, db)
+
+	if got := prov.RssSyncInterval(); got != 15 {
+		t.Errorf("RssSyncInterval default = %d, want 15", got)
+	}
+	if got := prov.AutoRedownloadFailed(); got != true {
+		t.Errorf("AutoRedownloadFailed default = %v, want true", got)
+	}
+	if got := prov.AutoRedownloadFailedFromInteractiveSearch(); got != true {
+		t.Errorf("AutoRedownloadFailedFromInteractiveSearch default = %v, want true", got)
+	}
+}
+
 func TestProvider_UILanguage_DefaultAndRoundTrip(t *testing.T) {
 	t.Parallel()
 	db := datastoretest.OpenSQLite(t)
