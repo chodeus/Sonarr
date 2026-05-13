@@ -23,6 +23,13 @@ type statusRecorder interface {
 // refreshes when Expires < UtcNow.AddMinutes(5).
 const refreshSkew = 5 * time.Minute
 
+// settingsPersister is the narrow Update surface the provider needs
+// from the importlists.Repo. Satisfied by *importlists.Repo via its
+// embedded repo.Repository[ImportList].Update method.
+type settingsPersister interface {
+	Update(ctx context.Context, def *importlists.ImportList) error
+}
+
 // MyAnimeListImport ports the C# `MyAnimeListImport` concrete
 // import-list at `ImportLists/MyAnimeList/MyAnimeListImport.cs:14-121`.
 //
@@ -34,6 +41,7 @@ type MyAnimeListImport struct {
 	settingsMu sync.Mutex
 	doer       httpDoer
 	status     statusRecorder
+	persister  settingsPersister
 	logger     *slog.Logger
 	now        func() time.Time
 }
@@ -55,17 +63,19 @@ func New(def *importlists.ImportList, deps importlists.Dependencies) (importlist
 	}
 	doer, _ := deps.HTTPClient.(httpDoer)
 	status, _ := deps.StatusService.(statusRecorder)
+	persister, _ := deps.ImportListsRepo.(settingsPersister)
 	logger, _ := deps.Logger.(*slog.Logger)
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &MyAnimeListImport{
-		def:      def,
-		settings: settings,
-		doer:     doer,
-		status:   status,
-		logger:   logger,
-		now:      time.Now,
+		def:       def,
+		settings:  settings,
+		doer:      doer,
+		status:    status,
+		persister: persister,
+		logger:    logger,
+		now:       time.Now,
 	}, nil
 }
 
@@ -83,7 +93,9 @@ func (m *MyAnimeListImport) MinRefreshInterval() time.Duration { return 6 * time
 
 // refreshIfNeeded refreshes the access token if it's within the
 // 5-minute renewal window. Mirrors C# `Fetch:37-40` + `RefreshToken:88-119`.
-// Refresh-back-to-DB is deferred — in-memory only.
+// After a successful refresh the new triple is round-tripped back to
+// the DB via the persister (Dependencies.ImportListsRepo) — mirrors
+// C# `_importListRepository.UpdateSettings(...)` at `:111`.
 //
 // settingsMu MUST be held by the caller.
 func (m *MyAnimeListImport) refreshIfNeeded(ctx context.Context) error {
@@ -105,7 +117,27 @@ func (m *MyAnimeListImport) refreshIfNeeded(ctx context.Context) error {
 	if tok.RefreshToken != "" {
 		m.settings.RefreshToken = tok.RefreshToken
 	}
+	m.persistSettingsLocked(ctx)
 	return nil
+}
+
+// persistSettingsLocked round-trips the in-memory Settings back to
+// the DB row. Marshal failures + persister errors are swallowed
+// (mirrors C# fire-and-forget UpdateSettings). C# `Definition.Id > 0`
+// guard preserved.
+//
+// settingsMu MUST be held by the caller.
+func (m *MyAnimeListImport) persistSettingsLocked(ctx context.Context) {
+	if m.persister == nil || m.def == nil || m.def.ID == 0 {
+		return
+	}
+	raw, err := json.Marshal(m.settings)
+	if err != nil {
+		return
+	}
+	s := string(raw)
+	m.def.Settings = &s
+	_ = m.persister.Update(ctx, m.def)
 }
 
 // Fetch refreshes the token (if needed) then walks the MAL animelist

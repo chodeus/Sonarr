@@ -30,6 +30,13 @@ const refreshSkew = 5 * time.Minute
 // user list.
 const pageHardCap = 100
 
+// settingsPersister is the narrow Update surface the provider needs
+// from the importlists.Repo. Satisfied by *importlists.Repo via its
+// embedded repo.Repository[ImportList].Update method.
+type settingsPersister interface {
+	Update(ctx context.Context, def *importlists.ImportList) error
+}
+
 // AniListImport ports the C# `AniListImport` concrete import-list at
 // `AniList/List/AniListImport.cs:20-216` + the `AniListImportBase`
 // fetch/refresh machinery at `AniListImportBase.cs:67-110`.
@@ -42,6 +49,7 @@ type AniListImport struct {
 	settingsMu sync.Mutex
 	doer       httpDoer
 	status     statusRecorder
+	persister  settingsPersister
 	logger     *slog.Logger
 	now        func() time.Time
 }
@@ -63,17 +71,19 @@ func New(def *importlists.ImportList, deps importlists.Dependencies) (importlist
 	}
 	doer, _ := deps.HTTPClient.(httpDoer)
 	status, _ := deps.StatusService.(statusRecorder)
+	persister, _ := deps.ImportListsRepo.(settingsPersister)
 	logger, _ := deps.Logger.(*slog.Logger)
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &AniListImport{
-		def:      def,
-		settings: settings,
-		doer:     doer,
-		status:   status,
-		logger:   logger,
-		now:      time.Now,
+		def:       def,
+		settings:  settings,
+		doer:      doer,
+		status:    status,
+		persister: persister,
+		logger:    logger,
+		now:       time.Now,
 	}, nil
 }
 
@@ -90,8 +100,11 @@ func (a *AniListImport) ListType() importlists.ListType { return importlists.Lis
 func (a *AniListImport) MinRefreshInterval() time.Duration { return 12 * time.Hour }
 
 // refreshIfNeeded refreshes the access token if Expires is within the
-// 5-minute renewal window. Mirrors C# `:73-109`. Refresh-back-to-DB
-// is DEFERRED — in-memory only.
+// 5-minute renewal window. Mirrors C# `:73-109`. After a successful
+// refresh the new triple is round-tripped back to the DB via the
+// persister — mirrors C# `_importListRepository.UpdateSettings(...)`
+// at `:101`.
+//
 // settingsMu MUST be held by the caller.
 func (a *AniListImport) refreshIfNeeded(ctx context.Context) error {
 	if a.settings.RefreshToken == "" {
@@ -112,7 +125,27 @@ func (a *AniListImport) refreshIfNeeded(ctx context.Context) error {
 	if tok.RefreshToken != "" {
 		a.settings.RefreshToken = tok.RefreshToken
 	}
+	a.persistSettingsLocked(ctx)
 	return nil
+}
+
+// persistSettingsLocked round-trips the in-memory Settings back to
+// the DB row. Marshal failures + persister errors are swallowed
+// (mirrors C# fire-and-forget UpdateSettings). C# `Definition.Id > 0`
+// guard preserved.
+//
+// settingsMu MUST be held by the caller.
+func (a *AniListImport) persistSettingsLocked(ctx context.Context) {
+	if a.persister == nil || a.def == nil || a.def.ID == 0 {
+		return
+	}
+	raw, err := json.Marshal(a.settings)
+	if err != nil {
+		return
+	}
+	s := string(raw)
+	a.def.Settings = &s
+	_ = a.persister.Update(ctx, a.def)
 }
 
 // Fetch refreshes the token (if needed) then paginates the AniList

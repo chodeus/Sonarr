@@ -24,6 +24,13 @@ type statusRecorder interface {
 // refreshes when Expires < UtcNow.AddMinutes(5).
 const refreshSkew = 5 * time.Minute
 
+// settingsPersister is the narrow Update surface the provider needs
+// from the importlists.Repo. Satisfied by *importlists.Repo via its
+// embedded repo.Repository[ImportList].Update method.
+type settingsPersister interface {
+	Update(ctx context.Context, def *importlists.ImportList) error
+}
+
 // SimklUserImport ports the C# `SimklUserImport` concrete import-list
 // at `Simkl/User/SimklUserImport.cs:9-33` + the `SimklImportBase`
 // fetch/refresh machinery at `SimklImportBase.cs:39-184`.
@@ -36,6 +43,7 @@ type SimklUserImport struct {
 	settingsMu sync.Mutex
 	doer       httpDoer
 	status     statusRecorder
+	persister  settingsPersister
 	logger     *slog.Logger
 	now        func() time.Time
 }
@@ -57,17 +65,19 @@ func New(def *importlists.ImportList, deps importlists.Dependencies) (importlist
 	}
 	doer, _ := deps.HTTPClient.(httpDoer)
 	status, _ := deps.StatusService.(statusRecorder)
+	persister, _ := deps.ImportListsRepo.(settingsPersister)
 	logger, _ := deps.Logger.(*slog.Logger)
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &SimklUserImport{
-		def:      def,
-		settings: settings,
-		doer:     doer,
-		status:   status,
-		logger:   logger,
-		now:      time.Now,
+		def:       def,
+		settings:  settings,
+		doer:      doer,
+		status:    status,
+		persister: persister,
+		logger:    logger,
+		now:       time.Now,
 	}, nil
 }
 
@@ -84,7 +94,11 @@ func (s *SimklUserImport) ListType() importlists.ListType { return importlists.L
 func (s *SimklUserImport) MinRefreshInterval() time.Duration { return 6 * time.Hour }
 
 // refreshIfNeeded refreshes the access token if both RefreshToken is
-// set AND Expires < now+5min. Mirrors C# `:45-48`.
+// set AND Expires < now+5min. Mirrors C# `:45-48`. After a successful
+// refresh the new triple is round-tripped back to the DB via the
+// persister — mirrors C# `_importListRepository.UpdateSettings(...)`
+// at `:176`.
+//
 // settingsMu MUST be held by the caller.
 func (s *SimklUserImport) refreshIfNeeded(ctx context.Context) error {
 	if s.settings.RefreshToken == "" {
@@ -105,7 +119,27 @@ func (s *SimklUserImport) refreshIfNeeded(ctx context.Context) error {
 	if tok.RefreshToken != "" {
 		s.settings.RefreshToken = tok.RefreshToken
 	}
+	s.persistSettingsLocked(ctx)
 	return nil
+}
+
+// persistSettingsLocked round-trips the in-memory Settings back to
+// the DB row. Marshal failures + persister errors are swallowed
+// (mirrors C# fire-and-forget UpdateSettings). C# `Definition.Id > 0`
+// guard preserved.
+//
+// settingsMu MUST be held by the caller.
+func (s *SimklUserImport) persistSettingsLocked(ctx context.Context) {
+	if s.persister == nil || s.def == nil || s.def.ID == 0 {
+		return
+	}
+	raw, err := json.Marshal(s.settings)
+	if err != nil {
+		return
+	}
+	str := string(raw)
+	s.def.Settings = &str
+	_ = s.persister.Update(ctx, s.def)
 }
 
 // Fetch refreshes the token (if needed) then walks the Simkl user

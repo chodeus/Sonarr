@@ -328,3 +328,69 @@ func TestSimklImport_RegisteredInDefault(t *testing.T) {
 		t.Errorf("registry missing %s/%s", simkl.Implementation, simkl.ConfigContract)
 	}
 }
+
+// fakeRepo records Update calls + the persisted Settings JSON.
+type fakeRepo struct {
+	calls []recordedUpdate
+}
+
+type recordedUpdate struct {
+	ID       int
+	Settings string
+}
+
+func (r *fakeRepo) Update(_ context.Context, def *importlists.ImportList) error {
+	settings := ""
+	if def.Settings != nil {
+		settings = *def.Settings
+	}
+	r.calls = append(r.calls, recordedUpdate{ID: def.ID, Settings: settings})
+	return nil
+}
+
+func TestSimklImport_Fetch_RefreshPersistsNewTokenToRepo(t *testing.T) {
+	// Shares newImport global state — not parallel.
+	var capture []string
+	srv := simklServer(t, false, `{"shows":[]}`, &capture)
+	defer srv.Close()
+	settings := simkl.Settings{
+		BaseURL:      srv.URL,
+		AccessToken:  "old-tok",
+		RefreshToken: "ref",
+		Expires:      time.Now().Add(1 * time.Minute),
+		ListType:     int(simkl.ListTypeWatching),
+		ShowType:     int(simkl.ShowTypeShows),
+	}
+	simkl.SetRenewURLForTest(srv.URL + "/v1/simkl_sonarr/renew")
+	t.Cleanup(func() {
+		simkl.SetRenewURLForTest("https://auth.servarr.com/v1/simkl_sonarr/renew")
+	})
+	row := &importlists.ImportList{
+		ID:             32,
+		Name:           "Simkl",
+		Implementation: simkl.Implementation,
+		Settings:       settingsJSON(t, settings),
+	}
+	repo := &fakeRepo{}
+	p, err := simkl.New(row, importlists.Dependencies{
+		HTTPClient:      srv.Client(),
+		StatusService:   &fakeStatusRecorder{},
+		ImportListsRepo: repo,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := p.Fetch(t.Context()); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(repo.calls) != 1 {
+		t.Fatalf("repo.Update calls=%d, want 1", len(repo.calls))
+	}
+	var persisted simkl.Settings
+	if err := json.Unmarshal([]byte(repo.calls[0].Settings), &persisted); err != nil {
+		t.Fatalf("unmarshal persisted: %v", err)
+	}
+	if persisted.AccessToken != "new-token" {
+		t.Errorf("persisted AccessToken=%q want new-token", persisted.AccessToken)
+	}
+}
