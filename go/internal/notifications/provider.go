@@ -282,4 +282,16 @@ type Dependencies struct {
 	// Webhook/Discord pair shipped in queue [N3] — they have no
 	// library-refresh coalescing.
 	CacheManager any
+
+	// NotificationsRepo is the persistence handle the OAuth2 provider
+	// (Trakt) uses to round-trip a refreshed AccessToken /
+	// RefreshToken / Expires triple back to the DB row. Bound to
+	// `*notifications.Repo` in production. Without this dep, refreshed
+	// tokens live in process memory only — next provider construction
+	// reads the stale token from DB and refreshes again. Nil is
+	// tolerated; providers fall back to in-memory-only updates.
+	//
+	// Mirrors C# `_notificationRepository.UpdateSettings(...)` at
+	// `Notifications/Trakt/Trakt.cs:155`.
+	NotificationsRepo any
 }

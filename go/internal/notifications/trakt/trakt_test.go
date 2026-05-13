@@ -285,3 +285,131 @@ func TestTrakt_RegisteredInDefault(t *testing.T) {
 		t.Errorf("registry missing %s/%s", trakt.Implementation, trakt.ConfigContract)
 	}
 }
+
+// fakeRepo records Update calls + the AccessToken/RefreshToken from
+// the def.Settings JSON at the time of each call. Used to verify
+// the persister fires post-refresh and that the row-side Settings
+// JSON carries the refreshed token triple.
+type fakeRepo struct {
+	calls []recordedUpdate
+}
+
+type recordedUpdate struct {
+	ID       int
+	Settings string
+}
+
+func (r *fakeRepo) Update(_ context.Context, def *notifications.Notification) error {
+	r.calls = append(r.calls, recordedUpdate{ID: def.ID, Settings: def.Settings})
+	return nil
+}
+
+func TestTrakt_RefreshPersistsNewTokenToRepo(t *testing.T) {
+	var capture []captured
+	srv := capturingServer(t, nil, &capture)
+	defer srv.Close()
+	trakt.SetURLsForTest(srv.URL, srv.URL+"/v1/trakt_sonarr/renew")
+	t.Cleanup(func() {
+		trakt.SetURLsForTest("https://api.trakt.tv", "https://auth.servarr.com/v1/trakt_sonarr/renew")
+	})
+
+	// Settings expire in 1 minute → inside the 5-minute refresh window.
+	s := trakt.Settings{
+		AccessToken:  "old-token",
+		RefreshToken: "old-refresh",
+		Expires:      time.Now().Add(1 * time.Minute),
+	}
+	def := &notifications.Notification{
+		ID:             42,
+		Implementation: trakt.Implementation,
+		Settings:       settingsJSON(t, s),
+	}
+	repo := &fakeRepo{}
+	p, err := trakt.New(def, notifications.Dependencies{
+		HTTPClient:        srv.Client(),
+		NotificationsRepo: repo,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Fire OnSeriesAdd → triggers refresh → triggers persister.
+	if err := p.OnSeriesAdd(t.Context(), notifications.SeriesAddMessage{Series: &series.Series{Title: "Show"}}); err != nil {
+		t.Fatalf("OnSeriesAdd: %v", err)
+	}
+
+	if len(repo.calls) != 1 {
+		t.Fatalf("repo Update calls = %d, want 1", len(repo.calls))
+	}
+	got := repo.calls[0]
+	if got.ID != 42 {
+		t.Errorf("repo update fired against ID=%d, want 42", got.ID)
+	}
+	var persisted trakt.Settings
+	if err := json.Unmarshal([]byte(got.Settings), &persisted); err != nil {
+		t.Fatalf("unmarshal persisted: %v", err)
+	}
+	if persisted.AccessToken != "new-token" {
+		t.Errorf("persisted AccessToken=%q want new-token", persisted.AccessToken)
+	}
+	if persisted.RefreshToken != "new-refresh" {
+		t.Errorf("persisted RefreshToken=%q want new-refresh", persisted.RefreshToken)
+	}
+	if persisted.Expires.Before(time.Now()) {
+		t.Errorf("persisted Expires should be in the future, got %v", persisted.Expires)
+	}
+}
+
+func TestTrakt_RefreshSkipsPersisterWhenNotWired(t *testing.T) {
+	var capture []captured
+	srv := capturingServer(t, nil, &capture)
+	defer srv.Close()
+	// Use makeTrakt which doesn't wire a repo — refresh should still
+	// succeed in-memory without panicking.
+	prov := makeTrakt(t, srv, func(s *trakt.Settings) {
+		s.Expires = time.Now().Add(1 * time.Minute)
+	})
+	if err := prov.OnSeriesAdd(t.Context(), notifications.SeriesAddMessage{Series: &series.Series{Title: "Show"}}); err != nil {
+		t.Fatalf("OnSeriesAdd: %v", err)
+	}
+	// The refresh + collection POST should both have fired.
+	if len(capture) < 2 {
+		t.Errorf("expected refresh + collection calls, got %d", len(capture))
+	}
+}
+
+func TestTrakt_RefreshSkipsPersisterWhenRowIDZero(t *testing.T) {
+	var capture []captured
+	srv := capturingServer(t, nil, &capture)
+	defer srv.Close()
+	trakt.SetURLsForTest(srv.URL, srv.URL+"/v1/trakt_sonarr/renew")
+	t.Cleanup(func() {
+		trakt.SetURLsForTest("https://api.trakt.tv", "https://auth.servarr.com/v1/trakt_sonarr/renew")
+	})
+
+	s := trakt.Settings{
+		AccessToken:  "tok",
+		RefreshToken: "ref",
+		Expires:      time.Now().Add(1 * time.Minute),
+	}
+	def := &notifications.Notification{
+		// ID = 0 — the C# `Definition.Id > 0` guard at `:153` skips
+		// the persistence call.
+		Implementation: trakt.Implementation,
+		Settings:       settingsJSON(t, s),
+	}
+	repo := &fakeRepo{}
+	p, err := trakt.New(def, notifications.Dependencies{
+		HTTPClient:        srv.Client(),
+		NotificationsRepo: repo,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := p.OnSeriesAdd(t.Context(), notifications.SeriesAddMessage{Series: &series.Series{Title: "Show"}}); err != nil {
+		t.Fatalf("OnSeriesAdd: %v", err)
+	}
+	if len(repo.calls) != 0 {
+		t.Errorf("repo Update should not fire when row ID == 0, got %d", len(repo.calls))
+	}
+}

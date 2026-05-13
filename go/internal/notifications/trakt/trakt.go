@@ -26,6 +26,13 @@ const ConfigContract = "TraktSettings"
 // Expires < now+5min.
 const refreshSkew = 5 * time.Minute
 
+// settingsPersister is the narrow surface the provider needs from the
+// notifications.Repo. *notifications.Repo satisfies it via its
+// embedded repo.Repository[Notification].Update method.
+type settingsPersister interface {
+	Update(ctx context.Context, def *notifications.Notification) error
+}
+
 // Trakt ports the C# `Trakt` notification provider at
 // `Notifications/Trakt/Trakt.cs:18-382`.
 //
@@ -37,6 +44,7 @@ type Trakt struct {
 	settings   Settings
 	settingsMu sync.Mutex
 	doer       httpDoer
+	persister  settingsPersister
 	now        func() time.Time
 }
 
@@ -59,7 +67,8 @@ func New(def *notifications.Notification, deps notifications.Dependencies) (noti
 	if doer == nil {
 		doer = http.DefaultClient
 	}
-	return &Trakt{def: def, settings: s, doer: doer, now: time.Now}, nil
+	persister, _ := deps.NotificationsRepo.(settingsPersister)
+	return &Trakt{def: def, settings: s, doer: doer, persister: persister, now: time.Now}, nil
 }
 
 // Name returns the provider display label. C# `:34`.
@@ -73,8 +82,12 @@ func (t *Trakt) Definition() *notifications.Notification { return t.def }
 
 // refreshIfNeeded refreshes the access token if it's within the
 // 5-minute renewal window. Mirrors C# `RefreshTokenIfNecessary` +
-// `RefreshToken` at `:127-163`. Persistence-back-to-DB is deferred
-// — the in-memory Settings update lives for the provider lifetime.
+// `RefreshToken` at `:127-163`. After a successful refresh the new
+// AccessToken/Expires/RefreshToken triple is round-tripped back to
+// the DB via the persister (Dependencies.NotificationsRepo) — mirrors
+// C# `_notificationRepository.UpdateSettings(...)` at `:155`. A nil
+// persister or row-id == 0 skips the persistence step (matches the
+// C# `Definition.Id > 0` guard at `:153`).
 //
 // settingsMu MUST be held by the caller.
 func (t *Trakt) refreshIfNeeded(ctx context.Context) error {
@@ -96,7 +109,26 @@ func (t *Trakt) refreshIfNeeded(ctx context.Context) error {
 	if resp.RefreshToken != "" {
 		t.settings.RefreshToken = resp.RefreshToken
 	}
+	t.persistSettingsLocked(ctx)
 	return nil
+}
+
+// persistSettingsLocked round-trips the in-memory Settings struct
+// back to the DB row via the persister. Marshal failures + persister
+// errors are intentionally swallowed (mirrors the C# fire-and-forget
+// `UpdateSettings` semantics) — the next refresh attempt will retry.
+//
+// settingsMu MUST be held by the caller.
+func (t *Trakt) persistSettingsLocked(ctx context.Context) {
+	if t.persister == nil || t.def == nil || t.def.ID == 0 {
+		return
+	}
+	raw, err := json.Marshal(t.settings)
+	if err != nil {
+		return
+	}
+	t.def.Settings = string(raw)
+	_ = t.persister.Update(ctx, t.def)
 }
 
 // withRefresh wraps an action with the refresh + lock sequence.
