@@ -18,8 +18,10 @@ import (
 	"net/http"
 	"time"
 
+	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/importlists"
+	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/metadatasource"
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/notifications"
@@ -307,6 +309,103 @@ func newProxyPingerStub() healthcheck.ProxyCheckPinger {
 	}
 }
 
+// rssIndexerCountAdapter implements healthcheck.RssEnabledLister.
+// Wraps indexers.Repo.All and counts rows with EnableRss=true.
+// requireActive currently has no effect — the per-indexer status/
+// backoff store hasn't ported yet, so the active count equals the
+// enabled count. When the status filter lands, requireActive=true
+// will cross-join indexerstatus to drop blocked rows.
+type rssIndexerCountAdapter struct {
+	repo *indexers.Repo
+}
+
+func newRssIndexerCountAdapter(repo *indexers.Repo) rssIndexerCountAdapter {
+	return rssIndexerCountAdapter{repo: repo}
+}
+
+func (a rssIndexerCountAdapter) RssEnabledCount(ctx context.Context, _ bool) (int, error) {
+	rows, err := a.repo.All(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("indexers.All: %w", err)
+	}
+	count := 0
+	for i := range rows {
+		row := &rows[i]
+		if row.EnableRss != nil && *row.EnableRss {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// searchIndexerCountAdapter implements healthcheck.SearchEnabledLister.
+// Counts rows by per-flag filters. requireActive is a no-op until the
+// indexer status filter ports (parity with rssIndexerCountAdapter).
+type searchIndexerCountAdapter struct {
+	repo *indexers.Repo
+}
+
+func newSearchIndexerCountAdapter(repo *indexers.Repo) searchIndexerCountAdapter {
+	return searchIndexerCountAdapter{repo: repo}
+}
+
+func (a searchIndexerCountAdapter) AutomaticSearchEnabledCount(ctx context.Context, _ bool) (int, error) {
+	rows, err := a.repo.All(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("indexers.All: %w", err)
+	}
+	count := 0
+	for i := range rows {
+		row := &rows[i]
+		if row.EnableAutomaticSearch != nil && *row.EnableAutomaticSearch {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (a searchIndexerCountAdapter) InteractiveSearchEnabledCount(ctx context.Context) (int, error) {
+	rows, err := a.repo.All(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("indexers.All: %w", err)
+	}
+	count := 0
+	for i := range rows {
+		if rows[i].EnableInteractiveSearch {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// enabledDownloadClientCountAdapter implements
+// healthcheck.DownloadClientLister. Counts rows with Enable=true.
+// The C# `_downloadClientProvider.GetDownloadClients()` returns the
+// LIST of active clients; the Go port flattens to a count since
+// DownloadClientCheck only consumes the count today (per-client
+// `GetItems()` probing is DEFERRED — see DownloadClientCheck doc).
+type enabledDownloadClientCountAdapter struct {
+	repo *downloadclients.Repo
+}
+
+func newEnabledDownloadClientCountAdapter(repo *downloadclients.Repo) enabledDownloadClientCountAdapter {
+	return enabledDownloadClientCountAdapter{repo: repo}
+}
+
+func (a enabledDownloadClientCountAdapter) EnabledDownloadClientCount(ctx context.Context) (int, error) {
+	rows, err := a.repo.All(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("downloadclients.All: %w", err)
+	}
+	count := 0
+	for i := range rows {
+		if rows[i].Enable {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // Compile-time guards. Adapter shapes wire into the healthcheck
 // constructors via Go's structural typing.
 var (
@@ -315,4 +414,7 @@ var (
 	_ healthcheck.ImportListRootFolderPathLister = rootFolderPathListerAdapter{}
 	_ healthcheck.SkyHookProber                  = skyHookProberAdapter{}
 	_ healthcheck.ProxyCheckConfig               = proxyHostConfigStub{}
+	_ healthcheck.RssEnabledLister               = rssIndexerCountAdapter{}
+	_ healthcheck.SearchEnabledLister            = searchIndexerCountAdapter{}
+	_ healthcheck.DownloadClientLister           = enabledDownloadClientCountAdapter{}
 )

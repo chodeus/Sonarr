@@ -1581,6 +1581,24 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 	scenemappingsSvc.WithProviders(scenemappingsProxy)
 
+	// Slice 4.EJ wires three additional checks the C# tree fires on a
+	// fresh DB: IndexerRssCheck (no indexers with RSS enabled →
+	// Error), DownloadClientCheck (no clients → Warning),
+	// IndexerSearchCheck (no auto-search indexers → Warning). All
+	// three feed /api/v3/health and reach byte-eq with the recording.
+	indexerRssCheck, err := healthcheck.NewIndexerRssCheck(newRssIndexerCountAdapter(indexersRepo))
+	if err != nil {
+		return fmt.Errorf("healthcheck indexerRss: %w", err)
+	}
+	indexerSearchCheck, err := healthcheck.NewIndexerSearchCheck(newSearchIndexerCountAdapter(indexersRepo))
+	if err != nil {
+		return fmt.Errorf("healthcheck indexerSearch: %w", err)
+	}
+	downloadClientCheck, err := healthcheck.NewDownloadClientCheck(newEnabledDownloadClientCountAdapter(downloadClientsRepo))
+	if err != nil {
+		return fmt.Errorf("healthcheck downloadClient: %w", err)
+	}
+
 	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
 		healthcheck.NewAppDataLocationCheck(folder),
 		apiKeyCheck,
@@ -1594,6 +1612,9 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		skyHookCheck,
 		systemTimeCheck,
 		proxyCheck,
+		indexerRssCheck,
+		indexerSearchCheck,
+		downloadClientCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)
@@ -2348,7 +2369,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("system status context: %w", err)
 	}
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo)
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo)
 	if err != nil {
 		return err
 	}
