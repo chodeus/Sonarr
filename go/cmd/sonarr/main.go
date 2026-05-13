@@ -2277,7 +2277,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		}
 	}()
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc)
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc)
 	if err != nil {
 		return err
 	}

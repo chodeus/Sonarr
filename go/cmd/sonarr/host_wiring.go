@@ -9,6 +9,8 @@ import (
 	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/config"
 	"sonarr.tv/sonarr/internal/configfile"
+	"sonarr.tv/sonarr/internal/customformats"
+	"sonarr.tv/sonarr/internal/delayprofiles"
 	"sonarr.tv/sonarr/internal/host"
 	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/qualitydefinitions"
@@ -23,7 +25,7 @@ import (
 // Mirrors `src/NzbDrone.Host/Bootstrap.cs:CreateConsoleHostBuilder`
 // where BindAddress + Port are pulled from the configuration before
 // the URL list is handed to Kestrel.
-func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service) (*host.Server, error) {
+func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service) (*host.Server, error) {
 	bind, err := cfg.BindAddress(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: bind address: %w", err)
@@ -40,7 +42,7 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 		// its APIKey(ctx) (string, error) method — no adapter
 		// needed.
 		cfg,
-		host.WithRoutes(v3Routes(configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc)...),
+		host.WithRoutes(v3Routes(configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc)...),
 	), nil
 }
 
@@ -57,10 +59,12 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 // autoTagsSvc + releaseProfilesSvc own their respective tables; both
 // expose All directly via Go's structural typing on the Lister
 // interfaces.
-func v3Routes(configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service) []host.Route {
+func v3Routes(configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service) []host.Route {
 	langs := language.All()
 	return []host.Route{
 		{Method: "GET", Path: "/api/v3/autotagging", Handler: apiv3.AutoTaggingHandler(autoTagsSvc)},
+		{Method: "GET", Path: "/api/v3/customformat", Handler: apiv3.CustomFormatHandler(customFormatsSvc)},
+		{Method: "GET", Path: "/api/v3/delayprofile", Handler: apiv3.DelayProfileHandler(delayProfilesSvc)},
 		{Method: "GET", Path: "/api/v3/language", Handler: apiv3.LanguageHandler(langs)},
 		{Method: "GET", Path: "/api/v3/localization/language", Handler: apiv3.LocalizationLanguageHandler(configProv.UILanguage)},
 		{Method: "GET", Path: "/api/v3/qualitydefinition", Handler: apiv3.QualityDefinitionHandler(qualityDefSvc)},
