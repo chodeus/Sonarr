@@ -6,11 +6,13 @@ import (
 	"log/slog"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
+	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/config"
 	"sonarr.tv/sonarr/internal/configfile"
 	"sonarr.tv/sonarr/internal/host"
 	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/qualitydefinitions"
+	"sonarr.tv/sonarr/internal/releaseprofiles"
 	"sonarr.tv/sonarr/internal/tags"
 )
 
@@ -21,7 +23,7 @@ import (
 // Mirrors `src/NzbDrone.Host/Bootstrap.cs:CreateConsoleHostBuilder`
 // where BindAddress + Port are pulled from the configuration before
 // the URL list is handed to Kestrel.
-func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service) (*host.Server, error) {
+func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service) (*host.Server, error) {
 	bind, err := cfg.BindAddress(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: bind address: %w", err)
@@ -38,7 +40,7 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 		// its APIKey(ctx) (string, error) method — no adapter
 		// needed.
 		cfg,
-		host.WithRoutes(v3Routes(configProv, qualityDefSvc, tagsSvc)...),
+		host.WithRoutes(v3Routes(configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc)...),
 	), nil
 }
 
@@ -52,12 +54,17 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 // 5-second cache, mirroring `QualityDefinitionService.All`.
 // tagsSvc owns the tag table (no cache — *tags.Service hits the repo
 // per call, matching the C# IRepository<Tag> behavior).
-func v3Routes(configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service) []host.Route {
+// autoTagsSvc + releaseProfilesSvc own their respective tables; both
+// expose All directly via Go's structural typing on the Lister
+// interfaces.
+func v3Routes(configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service) []host.Route {
 	langs := language.All()
 	return []host.Route{
+		{Method: "GET", Path: "/api/v3/autotagging", Handler: apiv3.AutoTaggingHandler(autoTagsSvc)},
 		{Method: "GET", Path: "/api/v3/language", Handler: apiv3.LanguageHandler(langs)},
 		{Method: "GET", Path: "/api/v3/localization/language", Handler: apiv3.LocalizationLanguageHandler(configProv.UILanguage)},
 		{Method: "GET", Path: "/api/v3/qualitydefinition", Handler: apiv3.QualityDefinitionHandler(qualityDefSvc)},
+		{Method: "GET", Path: "/api/v3/releaseprofile", Handler: apiv3.ReleaseProfileHandler(releaseProfilesSvc)},
 		{Method: "GET", Path: "/api/v3/tag", Handler: apiv3.TagHandler(tagsSvc)},
 	}
 }
