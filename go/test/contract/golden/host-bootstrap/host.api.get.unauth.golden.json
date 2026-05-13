@@ -1,0 +1,5 @@
+{
+  "entry_id": "host.api.get.unauth",
+  "status": 401,
+  "body_is_json": false
+}

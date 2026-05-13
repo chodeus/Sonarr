@@ -65,6 +65,7 @@ type Server struct {
 	cfg    Config
 	logger *slog.Logger
 	probe  ConfigProbe
+	apiKey APIKeyResolver
 	now    func() time.Time
 
 	shutdownTimeout time.Duration
@@ -101,11 +102,16 @@ func WithShutdownTimeout(d time.Duration) Option {
 // New builds a Server. probe is required so /ping has a DB liveness
 // signal; mirrors the `IConfigRepository` argument the C#
 // PingController takes (`src/Sonarr.Http/Ping/PingController.cs:14`).
-func New(cfg Config, logger *slog.Logger, probe ConfigProbe, opts ...Option) *Server {
+// apiKey is required for the authed routes — C#'s Startup fallback
+// policy gates every non-[AllowAnonymous] controller, so the Go port
+// requires a resolver up front rather than allowing a nil-deny
+// fallback that would silently disable auth.
+func New(cfg Config, logger *slog.Logger, probe ConfigProbe, apiKey APIKeyResolver, opts ...Option) *Server {
 	s := &Server{
 		cfg:             cfg,
 		logger:          logger,
 		probe:           probe,
+		apiKey:          apiKey,
 		now:             time.Now,
 		shutdownTimeout: 5 * time.Second,
 	}
@@ -182,8 +188,14 @@ func (s *Server) buildMux() *http.ServeMux {
 	ping := s.pingHandler()
 	// C# `PingController.GetStatus` binds both `[HttpGet("/ping")]`
 	// and `[HttpHead("/ping")]`; ServeMux requires explicit
-	// per-method registration.
+	// per-method registration. /ping is [AllowAnonymous] in C# —
+	// no requireAPIKey wrapping.
 	mux.Handle("GET /ping", ping)
 	mux.Handle("HEAD /ping", ping)
+
+	// /api: C# does not declare [AllowAnonymous] on
+	// ApiInfoController, so the Startup fallback policy enforces
+	// API-key auth. Wrap explicitly here.
+	mux.Handle("GET /api", s.requireAPIKey(s.apiInfoHandler()))
 	return mux
 }

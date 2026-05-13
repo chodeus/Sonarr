@@ -18,11 +18,18 @@ type Corpus struct {
 
 // Entry pairs a request with optional normalization applied to its response
 // before equality is checked.
+//
+// SkipAPIKey suppresses the runner's default X-Api-Key injection so a
+// corpus entry can record an unauthenticated response shape (e.g. the
+// 401 envelope). The field is opt-in because most endpoints require
+// the key — leaving it false on a typical entry preserves the current
+// runner contract.
 type Entry struct {
-	ID        string    `json:"id"`
-	Comment   string    `json:"comment,omitempty"`
-	Request   Request   `json:"request"`
-	Normalize Normalize `json:"normalize,omitempty"`
+	ID         string    `json:"id"`
+	Comment    string    `json:"comment,omitempty"`
+	Request    Request   `json:"request"`
+	Normalize  Normalize `json:"normalize,omitempty"`
+	SkipAPIKey bool      `json:"skip_api_key,omitempty"`
 }
 
 // Request describes a single HTTP request to issue against either backend.

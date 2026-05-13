@@ -51,7 +51,8 @@ func TestHostBootstrapContract(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := host.New(host.Config{}, logger, okProbe{})
+	const testKey = "host-bootstrap-test-key"
+	srv := host.New(host.Config{}, logger, okProbe{}, fixedAPIKey(testKey))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -59,7 +60,7 @@ func TestHostBootstrapContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse test URL: %v", err)
 	}
-	client := &runner.Client{Base: base}
+	client := &runner.Client{Base: base, APIKey: testKey}
 
 	for _, e := range corpus.Entries {
 		t.Run(e.ID, func(t *testing.T) {
@@ -107,6 +108,11 @@ func TestHostBootstrapContract(t *testing.T) {
 type okProbe struct{}
 
 func (okProbe) All(context.Context) error { return nil }
+
+// fixedAPIKey satisfies host.APIKeyResolver with a constant value.
+type fixedAPIKey string
+
+func (k fixedAPIKey) APIKey(context.Context) (string, error) { return string(k), nil }
 
 // findRepoRoot walks upward from the test's CWD until it finds the
 // go.mod that declares this module. Test working directory is the

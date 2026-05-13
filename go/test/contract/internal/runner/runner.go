@@ -56,7 +56,7 @@ func (c *Client) Run(ctx context.Context, e spec.Entry) (*spec.Golden, error) {
 	for k, v := range e.Request.Headers {
 		req.Header.Set(k, v)
 	}
-	if c.APIKey != "" {
+	if c.APIKey != "" && !e.SkipAPIKey {
 		req.Header.Set("X-Api-Key", c.APIKey)
 	}
 	if body != nil && req.Header.Get("Content-Type") == "" {

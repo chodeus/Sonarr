@@ -18,8 +18,14 @@ func (f probeFn) All(ctx context.Context) error { return f(ctx) }
 func newTestServer(t *testing.T, probe ConfigProbe) *Server {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(Config{BindAddress: "127.0.0.1", Port: 0}, logger, probe)
+	return New(Config{BindAddress: "127.0.0.1", Port: 0}, logger, probe, staticAPIKey("test-key"))
 }
+
+// staticAPIKey is a tiny APIKeyResolver for tests that don't care
+// about runtime key rotation.
+type staticAPIKey string
+
+func (k staticAPIKey) APIKey(context.Context) (string, error) { return string(k), nil }
 
 func TestPingHandler(t *testing.T) {
 	t.Parallel()

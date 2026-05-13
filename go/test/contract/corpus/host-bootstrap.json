@@ -15,6 +15,23 @@
         "method": "HEAD",
         "path": "/ping"
       }
+    },
+    {
+      "id": "host.api.get.authed",
+      "comment": "GET /api with a valid X-Api-Key — ApiInfoController.cs:8 returns the constant {current:v5,deprecated:[v3]} body. Auth is enforced by Startup's FallbackPolicy since the controller has no [AllowAnonymous].",
+      "request": {
+        "method": "GET",
+        "path": "/api"
+      }
+    },
+    {
+      "id": "host.api.get.unauth",
+      "comment": "GET /api without an API key — ApiKeyAuthenticationHandler.HandleChallengeAsync sets StatusCode=401 with no body or Content-Type. skip_api_key keeps the runner from injecting its default X-Api-Key.",
+      "request": {
+        "method": "GET",
+        "path": "/api"
+      },
+      "skip_api_key": true
     }
   ]
 }

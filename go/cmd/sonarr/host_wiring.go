@@ -30,6 +30,10 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 		host.Config{BindAddress: bind, Port: port},
 		logger,
 		configRepoProbe{configRepo},
+		// *configfile.Provider satisfies host.APIKeyResolver via
+		// its APIKey(ctx) (string, error) method — no adapter
+		// needed.
+		cfg,
 	), nil
 }
 

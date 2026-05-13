@@ -21,6 +21,7 @@ func TestServer_RunListenAndShutdown(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(Config{}, logger, probeFn(func(context.Context) error { return nil }),
+		staticAPIKey("test-key"),
 		WithListener(listener),
 		WithShutdownTimeout(time.Second))
 
