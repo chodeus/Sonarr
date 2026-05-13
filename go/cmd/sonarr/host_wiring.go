@@ -19,7 +19,7 @@ import (
 // Mirrors `src/NzbDrone.Host/Bootstrap.cs:CreateConsoleHostBuilder`
 // where BindAddress + Port are pulled from the configuration before
 // the URL list is handed to Kestrel.
-func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo) (*host.Server, error) {
+func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider) (*host.Server, error) {
 	bind, err := cfg.BindAddress(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: bind address: %w", err)
@@ -36,18 +36,21 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 		// its APIKey(ctx) (string, error) method — no adapter
 		// needed.
 		cfg,
-		host.WithRoutes(v3Routes()...),
+		host.WithRoutes(v3Routes(configProv)...),
 	), nil
 }
 
 // v3Routes collects the v3 controllers wired in this slice. As more
-// controllers port, they're added here in alphabetical order. The
-// language registry is constant (every Language is a package-level
-// var in internal/language), so the slice is captured once at boot.
-func v3Routes() []host.Route {
+// controllers port, they're added here in alphabetical order.
+//
+// configProv carries the persistent config table (cached by
+// *config.Provider with bus invalidation), so closures that read
+// UILanguage / other Config table keys re-resolve on every request.
+func v3Routes(configProv *config.Provider) []host.Route {
 	langs := language.All()
 	return []host.Route{
 		{Method: "GET", Path: "/api/v3/language", Handler: apiv3.LanguageHandler(langs)},
+		{Method: "GET", Path: "/api/v3/localization/language", Handler: apiv3.LocalizationLanguageHandler(configProv.UILanguage)},
 	}
 }
 

@@ -364,6 +364,21 @@ func (p *Provider) SetRetention(ctx context.Context, v int) error {
 	return err
 }
 
+// UILanguage mirrors `ConfigService.cs:372-376`. Default is the int
+// value of `Language.English` (1). The stored row is an int Language
+// Id; rendering layers (LocalizationService.GetLanguageIdentifier)
+// translate it into a BCP-47-style identifier like "en" or "pt-BR".
+func (p *Provider) UILanguage() int {
+	return p.getInt("UILanguage", 1)
+}
+
+// SetUILanguage writes the new value, publishing ConfigSavedEvent on
+// change.
+func (p *Provider) SetUILanguage(ctx context.Context, v int) error {
+	_, err := p.setInt(ctx, "UILanguage", v)
+	return err
+}
+
 // MinimumFreeSpaceWhenImporting mirrors `ConfigService.cs:202-207`. The
 // stored unit is megabytes; default 100 per C# `:204`.
 func (p *Provider) MinimumFreeSpaceWhenImporting() int {

@@ -61,6 +61,23 @@ func TestProvider_DefaultsWhenMissing(t *testing.T) {
 	}
 }
 
+func TestProvider_UILanguage_DefaultAndRoundTrip(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	prov, _, _ := providerFixture(t, db)
+	ctx := t.Context()
+
+	if got := prov.UILanguage(); got != 1 {
+		t.Errorf("UILanguage default = %d, want 1 (English)", got)
+	}
+	if err := prov.SetUILanguage(ctx, 33); err != nil {
+		t.Fatalf("SetUILanguage: %v", err)
+	}
+	if got := prov.UILanguage(); got != 33 {
+		t.Errorf("UILanguage after Set(33) = %d", got)
+	}
+}
+
 func TestProvider_EpisodeTitleRequired_RoundTrip(t *testing.T) {
 	t.Parallel()
 	db := datastoretest.OpenSQLite(t)
