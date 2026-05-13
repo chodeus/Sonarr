@@ -52,6 +52,7 @@ import (
 	"sonarr.tv/sonarr/internal/commands/handlers"
 	"sonarr.tv/sonarr/internal/config"
 	"sonarr.tv/sonarr/internal/configfile"
+	"sonarr.tv/sonarr/internal/customfilters"
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/decisionengine"
@@ -510,6 +511,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// structural typing on AutoUnmonitorPreviouslyDownloadedEpisodes()
 	// bool.
 	episodesSvc.SetAutoUnmonitorMissingProvider(configProv)
+
+	// CustomFilters service (slice 4.DO — first wiring; the package
+	// existed but nothing consumed it until the /api/v3/customfilter
+	// route landed). No seed pass; the table starts empty and the
+	// frontend populates it as users save filters.
+	customFiltersRepo, err := customfilters.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("customfilters repo: %w", err)
+	}
+	customFiltersSvc := customfilters.NewService(customFiltersRepo)
 
 	// QualityDefinitions service (slice 4.DJ — first read-side
 	// surface needed by GET /api/v3/qualitydefinition). C# wires
@@ -2277,7 +2288,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		}
 	}()
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc)
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc)
 	if err != nil {
 		return err
 	}
