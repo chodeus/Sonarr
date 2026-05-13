@@ -149,6 +149,90 @@ func (p *Provider) Branch(ctx context.Context) (string, error) {
 	return strings.ToLower(strings.TrimSpace(v)), nil
 }
 
+// AnalyticsEnabled mirrors `ConfigFileProvider.cs:246`. Default true
+// (C# `GetValueBoolean("AnalyticsEnabled", true, persist: false)`).
+// The recording host had it disabled; production Go default stays
+// true to match C# behaviour.
+func (p *Provider) AnalyticsEnabled(ctx context.Context) (bool, error) {
+	return p.Bool(ctx, "AnalyticsEnabled", true, false)
+}
+
+// ConsoleLogLevel mirrors `ConfigFileProvider.cs:251`. Default "".
+func (p *Provider) ConsoleLogLevel(ctx context.Context) (string, error) {
+	return p.String(ctx, "ConsoleLogLevel", "", false)
+}
+
+// LogSizeLimit mirrors `ConfigFileProvider.cs:271` (clamped 0..10 in
+// C# — the Go port preserves the clamp). Default 1 MB.
+func (p *Provider) LogSizeLimit(ctx context.Context) (int, error) {
+	v, err := p.Int(ctx, "LogSizeLimit", 1, false)
+	if err != nil {
+		return 0, err
+	}
+	if v < 0 {
+		v = 0
+	}
+	if v > 10 {
+		v = 10
+	}
+	return v, nil
+}
+
+// AuthenticationRequired mirrors `ConfigFileProvider.cs:239-242`. C#
+// returns an enum; the Go port emits the persisted PascalCase
+// identifier ("Enabled" / "DisabledForLocalAddresses") for callers
+// to camelCase at the API edge. Default "Enabled".
+func (p *Provider) AuthenticationRequired(ctx context.Context) (string, error) {
+	if p.over.AuthRequired != nil {
+		return *p.over.AuthRequired, nil
+	}
+	return p.String(ctx, "AuthenticationRequired", "Enabled", true)
+}
+
+// TrustCgnatIpAddresses mirrors `ConfigFileProvider.cs:244`. Default
+// false.
+func (p *Provider) TrustCgnatIpAddresses(ctx context.Context) (bool, error) {
+	return p.Bool(ctx, "TrustCgnatIpAddresses", false, false)
+}
+
+// SslCertPath mirrors `ConfigFileProvider.cs:273`. Default "".
+// The Overrides struct doesn't carry an SslCertPath/Key/Password
+// override slot yet — a follow-up adds them when the AppOptions env-
+// var path lands.
+func (p *Provider) SslCertPath(ctx context.Context) (string, error) {
+	return p.String(ctx, "SslCertPath", "", true)
+}
+
+// SslKeyPath mirrors `ConfigFileProvider.cs:274`. Default "".
+func (p *Provider) SslKeyPath(ctx context.Context) (string, error) {
+	return p.String(ctx, "SslKeyPath", "", true)
+}
+
+// SslCertPassword mirrors `ConfigFileProvider.cs:275`. Default "".
+func (p *Provider) SslCertPassword(ctx context.Context) (string, error) {
+	return p.String(ctx, "SslCertPassword", "", true)
+}
+
+// UpdateAutomatically mirrors `ConfigFileProvider.cs:309`. C# uses
+// `OsInfo.IsWindows` as the default — the Go port pins false (matches
+// the non-Windows recording host); a follow-up can introduce host-
+// platform-aware defaulting when needed.
+func (p *Provider) UpdateAutomatically(ctx context.Context) (bool, error) {
+	return p.Bool(ctx, "UpdateAutomatically", false, false)
+}
+
+// UpdateMechanism mirrors `ConfigFileProvider.cs:311-314`. Returns
+// the persisted PascalCase identifier ("BuiltIn" / "Script" /
+// "External" / "Apt" / "Docker"). Default "BuiltIn".
+func (p *Provider) UpdateMechanism(ctx context.Context) (string, error) {
+	return p.String(ctx, "UpdateMechanism", "BuiltIn", false)
+}
+
+// UpdateScriptPath mirrors `ConfigFileProvider.cs:316`. Default "".
+func (p *Provider) UpdateScriptPath(ctx context.Context) (string, error) {
+	return p.String(ctx, "UpdateScriptPath", "", false)
+}
+
 // Theme returns the configured UI theme, defaulting to "auto".
 // Mirrors `ConfigFileProvider.Theme` at
 // `src/NzbDrone.Core/Configuration/ConfigFileProvider.cs:258`. C#

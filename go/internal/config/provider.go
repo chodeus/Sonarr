@@ -874,6 +874,112 @@ func (p *Provider) SetBackupRetention(ctx context.Context, v int) error {
 	return err
 }
 
+// BackupInterval mirrors `ConfigService.cs:414`. Default 7 days.
+func (p *Provider) BackupInterval() int {
+	return p.getInt("BackupInterval", 7)
+}
+
+// SetBackupInterval writes the new value.
+func (p *Provider) SetBackupInterval(ctx context.Context, v int) error {
+	_, err := p.setInt(ctx, "BackupInterval", v)
+	return err
+}
+
+// CertificateValidation mirrors `ConfigService.cs:418`. Returns the
+// persisted PascalCase enum identifier ("Enabled" / "Disabled" /
+// "DisabledForLocalAddresses"); the API edge camelCases. Default
+// "Enabled".
+func (p *Provider) CertificateValidation() string {
+	return p.getString("CertificateValidation", "Enabled")
+}
+
+// SetCertificateValidation writes the new value.
+func (p *Provider) SetCertificateValidation(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "CertificateValidation", v)
+	return err
+}
+
+// ProxyEnabled mirrors `ConfigService.cs:396`. Default false.
+func (p *Provider) ProxyEnabled() bool {
+	return p.getBool("ProxyEnabled", false)
+}
+
+// SetProxyEnabled writes the new value.
+func (p *Provider) SetProxyEnabled(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "ProxyEnabled", v)
+	return err
+}
+
+// ProxyType mirrors `ConfigService.cs:398`. Returns the persisted
+// PascalCase enum identifier ("Http" / "Socks4" / "Socks5"); camelCase
+// at the API edge. Default "Http".
+func (p *Provider) ProxyType() string {
+	return p.getString("ProxyType", "Http")
+}
+
+// SetProxyType writes the new value.
+func (p *Provider) SetProxyType(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "ProxyType", v)
+	return err
+}
+
+// ProxyHostname mirrors `ConfigService.cs:400`. Default "".
+func (p *Provider) ProxyHostname() string { return p.getString("ProxyHostname", "") }
+
+// SetProxyHostname writes the new value.
+func (p *Provider) SetProxyHostname(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "ProxyHostname", v)
+	return err
+}
+
+// ProxyPort mirrors `ConfigService.cs:402`. Default 8080.
+func (p *Provider) ProxyPort() int { return p.getInt("ProxyPort", 8080) }
+
+// SetProxyPort writes the new value.
+func (p *Provider) SetProxyPort(ctx context.Context, v int) error {
+	_, err := p.setInt(ctx, "ProxyPort", v)
+	return err
+}
+
+// ProxyUsername mirrors `ConfigService.cs:404`. Default "".
+func (p *Provider) ProxyUsername() string { return p.getString("ProxyUsername", "") }
+
+// SetProxyUsername writes the new value.
+func (p *Provider) SetProxyUsername(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "ProxyUsername", v)
+	return err
+}
+
+// ProxyPassword mirrors `ConfigService.cs:406`. Default "".
+func (p *Provider) ProxyPassword() string { return p.getString("ProxyPassword", "") }
+
+// SetProxyPassword writes the new value.
+func (p *Provider) SetProxyPassword(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "ProxyPassword", v)
+	return err
+}
+
+// ProxyBypassFilter mirrors `ConfigService.cs:408`. Default "".
+func (p *Provider) ProxyBypassFilter() string { return p.getString("ProxyBypassFilter", "") }
+
+// SetProxyBypassFilter writes the new value.
+func (p *Provider) SetProxyBypassFilter(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "ProxyBypassFilter", v)
+	return err
+}
+
+// ProxyBypassLocalAddresses mirrors `ConfigService.cs:410`. Default
+// true.
+func (p *Provider) ProxyBypassLocalAddresses() bool {
+	return p.getBool("ProxyBypassLocalAddresses", true)
+}
+
+// SetProxyBypassLocalAddresses writes the new value.
+func (p *Provider) SetProxyBypassLocalAddresses(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "ProxyBypassLocalAddresses", v)
+	return err
+}
+
 // getFloat64 parses the cached value as float64, falling back to def
 // for missing / empty / unparseable entries. Mirrors the strconv-based
 // posture of [getInt] / [getBool].

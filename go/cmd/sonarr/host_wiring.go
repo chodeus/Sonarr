@@ -102,6 +102,93 @@ func (u uiConfigGetter) Theme(ctx context.Context) (string, error) {
 	return u.xmlCfg.Theme(ctx)
 }
 
+// hostConfigGetter composes *configfile.Provider and *config.Provider
+// into the single interface /api/v3/config/host needs. The two C#
+// services (IConfigFileProvider + IConfigService) are collapsed into
+// one getter at the Go REST boundary.
+type hostConfigGetter struct {
+	cfg    *config.Provider
+	xmlCfg *configfile.Provider
+}
+
+func (h hostConfigGetter) BindAddress(ctx context.Context) (string, error) {
+	return h.xmlCfg.BindAddress(ctx)
+}
+func (h hostConfigGetter) Port(ctx context.Context) (int, error) { return h.xmlCfg.Port(ctx) }
+func (h hostConfigGetter) SslPort(ctx context.Context) (int, error) {
+	return h.xmlCfg.SslPort(ctx)
+}
+func (h hostConfigGetter) EnableSsl(ctx context.Context) (bool, error) {
+	return h.xmlCfg.EnableSsl(ctx)
+}
+func (h hostConfigGetter) LaunchBrowser(ctx context.Context) (bool, error) {
+	return h.xmlCfg.LaunchBrowser(ctx)
+}
+func (h hostConfigGetter) AuthenticationMethod(ctx context.Context) (string, error) {
+	return h.xmlCfg.AuthenticationMethod(ctx)
+}
+func (h hostConfigGetter) AuthenticationRequired(ctx context.Context) (string, error) {
+	return h.xmlCfg.AuthenticationRequired(ctx)
+}
+func (h hostConfigGetter) AnalyticsEnabled(ctx context.Context) (bool, error) {
+	return h.xmlCfg.AnalyticsEnabled(ctx)
+}
+func (h hostConfigGetter) LogLevel(ctx context.Context) (string, error) {
+	return h.xmlCfg.LogLevel(ctx)
+}
+func (h hostConfigGetter) LogSizeLimit(ctx context.Context) (int, error) {
+	return h.xmlCfg.LogSizeLimit(ctx)
+}
+func (h hostConfigGetter) ConsoleLogLevel(ctx context.Context) (string, error) {
+	return h.xmlCfg.ConsoleLogLevel(ctx)
+}
+func (h hostConfigGetter) Branch(ctx context.Context) (string, error) {
+	return h.xmlCfg.Branch(ctx)
+}
+func (h hostConfigGetter) APIKey(ctx context.Context) (string, error) {
+	return h.xmlCfg.APIKey(ctx)
+}
+func (h hostConfigGetter) SslCertPath(ctx context.Context) (string, error) {
+	return h.xmlCfg.SslCertPath(ctx)
+}
+func (h hostConfigGetter) SslKeyPath(ctx context.Context) (string, error) {
+	return h.xmlCfg.SslKeyPath(ctx)
+}
+func (h hostConfigGetter) SslCertPassword(ctx context.Context) (string, error) {
+	return h.xmlCfg.SslCertPassword(ctx)
+}
+func (h hostConfigGetter) URLBase(ctx context.Context) (string, error) {
+	return h.xmlCfg.URLBase(ctx)
+}
+func (h hostConfigGetter) InstanceName(ctx context.Context) (string, error) {
+	return h.xmlCfg.InstanceName(ctx)
+}
+func (h hostConfigGetter) TrustCgnatIpAddresses(ctx context.Context) (bool, error) {
+	return h.xmlCfg.TrustCgnatIpAddresses(ctx)
+}
+func (h hostConfigGetter) UpdateAutomatically(ctx context.Context) (bool, error) {
+	return h.xmlCfg.UpdateAutomatically(ctx)
+}
+func (h hostConfigGetter) UpdateMechanism(ctx context.Context) (string, error) {
+	return h.xmlCfg.UpdateMechanism(ctx)
+}
+func (h hostConfigGetter) UpdateScriptPath(ctx context.Context) (string, error) {
+	return h.xmlCfg.UpdateScriptPath(ctx)
+}
+func (h hostConfigGetter) ApplicationUrl() string          { return h.cfg.ApplicationUrl() }
+func (h hostConfigGetter) BackupFolder() string            { return h.cfg.BackupFolder() }
+func (h hostConfigGetter) BackupInterval() int             { return h.cfg.BackupInterval() }
+func (h hostConfigGetter) BackupRetention() int            { return h.cfg.BackupRetention() }
+func (h hostConfigGetter) CertificateValidation() string   { return h.cfg.CertificateValidation() }
+func (h hostConfigGetter) ProxyEnabled() bool              { return h.cfg.ProxyEnabled() }
+func (h hostConfigGetter) ProxyType() string               { return h.cfg.ProxyType() }
+func (h hostConfigGetter) ProxyHostname() string           { return h.cfg.ProxyHostname() }
+func (h hostConfigGetter) ProxyPort() int                  { return h.cfg.ProxyPort() }
+func (h hostConfigGetter) ProxyUsername() string           { return h.cfg.ProxyUsername() }
+func (h hostConfigGetter) ProxyPassword() string           { return h.cfg.ProxyPassword() }
+func (h hostConfigGetter) ProxyBypassFilter() string       { return h.cfg.ProxyBypassFilter() }
+func (h hostConfigGetter) ProxyBypassLocalAddresses() bool { return h.cfg.ProxyBypassLocalAddresses() }
+
 // v3Routes collects the v3 controllers wired in this slice. As more
 // controllers port, they're added here in alphabetical order.
 //
@@ -118,10 +205,12 @@ func (u uiConfigGetter) Theme(ctx context.Context) (string, error) {
 func v3Routes(configProv *config.Provider, cfg *configfile.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service) []host.Route {
 	langs := language.All()
 	uiCfg := uiConfigGetter{cfg: configProv, xmlCfg: cfg}
+	hostCfg := hostConfigGetter{cfg: configProv, xmlCfg: cfg}
 	return []host.Route{
 		{Method: "GET", Path: "/api/v3/autotagging", Handler: apiv3.AutoTaggingHandler(autoTagsSvc)},
 		{Method: "GET", Path: "/api/v3/calendar", Handler: apiv3.CalendarHandler(episodesSvc)},
 		{Method: "GET", Path: "/api/v3/config/downloadclient", Handler: apiv3.DownloadClientConfigHandler(configProv)},
+		{Method: "GET", Path: "/api/v3/config/host", Handler: apiv3.HostConfigHandler(hostCfg)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/mediamanagement", Handler: apiv3.MediaManagementConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/naming", Handler: apiv3.NamingConfigHandler(namingConfigSvc)},
