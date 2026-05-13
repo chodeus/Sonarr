@@ -1,0 +1,87 @@
+package v3
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+)
+
+// QueueResource is the per-record shape in the
+// PagingResource[QueueResource] envelope. Mirrors
+// `src/Sonarr.Api.V3/Queue/QueueResource.cs`.
+//
+// This slice ships the wire-shape skeleton; populated-row mapping
+// awaits the queue.Service paged-projection port (the full C#
+// QueueResource carries ~25 fields joining QueueItem + Series +
+// Episode + TrackedDownload + DownloadClient + Indexer +
+// CustomFormat — none of that is needed for the empty-DB byte-eq
+// gate). The empty-DB golden has zero records so the gap is
+// unobservable today (DEFERRED — STATUS line 9 carries a note).
+//
+// Field-source mapping (C# → Go) for the minimal subset:
+//
+//	id            → QueueItem.ID (omitempty per RestResource base)
+//	seriesId      → nullable Series link
+//	episodeId     → nullable Episode link
+//	title         → QueueItem.Title
+//	status        → QueueItem.Status (camelCase enum string)
+//	downloadId    → QueueItem.DownloadID
+//	protocol      → QueueItem.Protocol (camelCase enum string)
+//
+// Pointers for the nullable int fields preserve the C# `int?`
+// semantic — null when unset on the wire, populated when the queue
+// row is tied to a Series/Episode.
+type QueueResource struct {
+	ID         int    `json:"id,omitempty"`
+	SeriesID   *int   `json:"seriesId,omitempty"`
+	EpisodeID  *int   `json:"episodeId,omitempty"`
+	Title      string `json:"title,omitempty"`
+	Status     string `json:"status,omitempty"`
+	DownloadID string `json:"downloadId,omitempty"`
+	Protocol   string `json:"protocol,omitempty"`
+}
+
+// QueuePagedLister is the read side the handler depends on. The
+// production Go *queue.Service does not yet expose a paged surface,
+// so cmd/sonarr substitutes an empty fixture today. When the paged
+// port lands, *queue.Service grows a method that satisfies this
+// interface and the production wiring takes effect — same shape
+// the blocklist + history adapters use.
+type QueuePagedLister interface {
+	PagedQueue(ctx context.Context, req PagingRequest) ([]QueueResource, int, error)
+}
+
+// QueueHandler returns the http.Handler for GET /api/v3/queue.
+// Mirrors `QueueController.GetQueue` at
+// `src/Sonarr.Api.V3/Queue/QueueController.cs:139-171`. Default
+// sortKey is "timeleft" (the C# controller's hard-coded fallback
+// inside MapToPagingSpec); default direction "descending" comes
+// from the shared paging-request defaults.
+//
+// The full C# controller dispatches on includeSeries /
+// includeEpisode / seriesIds / protocol / languages / quality /
+// status query params; only the default-paging branch is exercised
+// by the recorded corpus today, so the other branches are DEFERRED.
+func QueueHandler(lister QueuePagedLister) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := parsePagingRequest(r, "timeleft")
+		records, total, err := lister.PagedQueue(r.Context(), req)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("queue: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if records == nil {
+			records = []QueueResource{}
+		}
+		resp := PagingResource[QueueResource]{
+			Page: req.Page, PageSize: req.PageSize,
+			Records: records, SortDirection: req.SortDirection,
+			SortKey: req.SortKey, TotalRecords: total,
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(resp)
+		_, _ = w.Write(buf)
+	})
+}
