@@ -42,7 +42,7 @@ func CalendarHandler(lister CalendarEpisodeLister) http.Handler {
 		}
 		out := make([]EpisodeResource, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, toEpisodeResource(row))
+			out = append(out, ToEpisodeResource(row))
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)

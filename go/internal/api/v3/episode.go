@@ -88,7 +88,7 @@ func EpisodeListHandler(lister EpisodeBySeriesLister) http.Handler {
 		}
 		out := make([]EpisodeResource, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, toEpisodeResource(row))
+			out = append(out, ToEpisodeResource(row))
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -97,11 +97,13 @@ func EpisodeListHandler(lister EpisodeBySeriesLister) http.Handler {
 	})
 }
 
-// toEpisodeResource maps the persisted Episode to the wire shape.
+// ToEpisodeResource maps the persisted Episode to the wire shape.
+// Exported so the cmd/sonarr wanted-episodes adapter can reuse the
+// same projection rather than re-rolling the field copy.
 // The optional embedded resources (series/episodeFile/images) are
 // DEFERRED — they're nil on the wire today and the empty-DB recording
 // has zero rows so the gap is unobservable.
-func toEpisodeResource(e episodes.Episode) EpisodeResource {
+func ToEpisodeResource(e episodes.Episode) EpisodeResource {
 	r := EpisodeResource{
 		ID:                       e.ID,
 		SeriesID:                 e.SeriesID,

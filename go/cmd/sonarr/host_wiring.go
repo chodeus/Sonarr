@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/autotagging"
@@ -38,7 +39,7 @@ import (
 // Mirrors `src/NzbDrone.Host/Bootstrap.cs:CreateConsoleHostBuilder`
 // where BindAddress + Port are pulled from the configuration before
 // the URL list is handed to Kestrel.
-func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo) (*host.Server, error) {
+func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo) (*host.Server, error) {
 	bind, err := cfg.BindAddress(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: bind address: %w", err)
@@ -55,7 +56,7 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 		// its APIKey(ctx) (string, error) method — no adapter
 		// needed.
 		cfg,
-		host.WithRoutes(v3Routes(configProv, cfg, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo)...),
+		host.WithRoutes(v3Routes(configProv, cfg, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo)...),
 	), nil
 }
 
@@ -153,16 +154,52 @@ func paginateInMemory[T any](all []T, req apiv3.PagingRequest) []T {
 	return all[start:end]
 }
 
-// emptyWantedLister stands in for a future wanted-episodes service.
-// C# `IWantedEpisodeService` returns paged Missing/CutoffUnmet
-// projections — the Go port doesn't have a parallel service yet, so
-// this stub reports 0 records (correct for a fresh DB; degenerate
-// for populated DBs until the wanted port lands — DEFERRED in
-// STATUS).
-type emptyWantedLister struct{}
+// wantedRepoLister bridges /api/v3/wanted/{missing,cutoff} to the
+// real episodes-repo predicate query introduced in slice 4.ED. Closes
+// the `emptyWantedLister` DEFERRED note carried since slice 4.DV.
+//
+// Missing branch: routes to `episodes.Repo.WantedMissing` —
+// monitored-only is honoured (the C# controller's default), Episode
+// rows are mapped via the same `apiv3.ToEpisodeResource` projection the
+// /api/v3/episode handler uses, and the result is paged in memory.
+// SortKey + SortDirection at the SQL level remain DEFERRED (same
+// posture as the blocklist + history adapters that slice 4.EC
+// production-wired).
+//
+// Cutoff branch: returns an empty page. C# `EpisodeCutoffService`
+// resolves the quality-cutoff predicate from quality profiles +
+// episode-files metadata — the qualityprofile port hasn't landed
+// yet, so an honest empty result matches the fresh-DB recording
+// byte-eq and avoids returning false positives in populated DBs.
+// Tracked DEFERRED until the qualityprofile port lands.
+//
+// `now` is a function rather than a captured `time.Time` so each
+// request observes the live wall clock (matching C#
+// `DateTime.UtcNow` per invocation).
+type wantedRepoLister struct {
+	episodes *episodes.Repo
+	now      func() time.Time
+}
 
-func (emptyWantedLister) PagedWanted(context.Context, apiv3.PagingRequest, apiv3.WantedScope) ([]apiv3.EpisodeResource, int, error) {
-	return nil, 0, nil
+func (w wantedRepoLister) PagedWanted(ctx context.Context, req apiv3.PagingRequest, scope apiv3.WantedScope) ([]apiv3.EpisodeResource, int, error) {
+	if scope == apiv3.WantedCutoff {
+		return nil, 0, nil
+	}
+	// MissingController's default — `monitored=true`. The recorded
+	// corpus exercises only the default, so the boolean toggle stays
+	// pinned here until query-string parsing for the alternate branch
+	// lands.
+	rows, err := w.episodes.WantedMissing(ctx, w.now(), true)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := len(rows)
+	page := paginateInMemory(rows, req)
+	out := make([]apiv3.EpisodeResource, 0, len(page))
+	for _, e := range page {
+		out = append(out, apiv3.ToEpisodeResource(e))
+	}
+	return out, total, nil
 }
 
 // uiConfigGetter composes the two underlying providers
@@ -287,7 +324,7 @@ func (h hostConfigGetter) ProxyBypassLocalAddresses() bool { return h.cfg.ProxyB
 // autoTagsSvc + releaseProfilesSvc own their respective tables; both
 // expose All directly via Go's structural typing on the Lister
 // interfaces.
-func v3Routes(configProv *config.Provider, cfg *configfile.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo) []host.Route {
+func v3Routes(configProv *config.Provider, cfg *configfile.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo) []host.Route {
 	langs := language.All()
 	uiCfg := uiConfigGetter{cfg: configProv, xmlCfg: cfg}
 	hostCfg := hostConfigGetter{cfg: configProv, xmlCfg: cfg}
@@ -319,8 +356,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, qualityDefS
 		{Method: "GET", Path: "/api/v3/rootfolder", Handler: apiv3.RootFolderHandler(rootFoldersSvc)},
 		{Method: "GET", Path: "/api/v3/system/status", Handler: apiv3.SystemStatusHandler(systemStatus, cfg)},
 		{Method: "GET", Path: "/api/v3/tag", Handler: apiv3.TagHandler(tagsSvc)},
-		{Method: "GET", Path: "/api/v3/wanted/cutoff", Handler: apiv3.WantedHandler(emptyWantedLister{}, apiv3.WantedCutoff)},
-		{Method: "GET", Path: "/api/v3/wanted/missing", Handler: apiv3.WantedHandler(emptyWantedLister{}, apiv3.WantedMissing)},
+		{Method: "GET", Path: "/api/v3/wanted/cutoff", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedCutoff)},
+		{Method: "GET", Path: "/api/v3/wanted/missing", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedMissing)},
 	}
 }
 
