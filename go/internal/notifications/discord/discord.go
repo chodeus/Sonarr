@@ -193,9 +193,14 @@ func (d *Discord) OnGrab(ctx context.Context, msg notifications.GrabMessage) err
 				appendIfPresent(&embed, "Indexer", rel.Indexer)
 			}
 		}
-		// Poster / Fanart / Rating / Genres / Links — upstream-blocked
-		// per the package scope note; silently skip.
+		// Rating / Genres / Links — upstream-blocked per the package
+		// scope note; silently skip. Poster/Fanart applied below via
+		// applySeriesCoverImages.
 	}
+	applySeriesCoverImages(&embed, msg.Series,
+		fieldsContain(d.settings.GrabFields, int(GrabFieldPoster)),
+		fieldsContain(d.settings.GrabFields, int(GrabFieldFanart)),
+	)
 	return d.emit(ctx, embed)
 }
 
@@ -244,11 +249,33 @@ func (d *Discord) OnDownload(ctx context.Context, msg notifications.DownloadMess
 			if msg.EpisodeFile != nil {
 				appendIfPresent(&embed, "Release", fmt.Sprintf("```%s```", msg.EpisodeFile.SceneName))
 			}
+		case ImportFieldCodecs:
+			if msg.EpisodeFile != nil && msg.EpisodeFile.MediaInfo != nil {
+				if v := mediaInfoCodecsString(msg.EpisodeFile); v != "" {
+					embed.Fields = append(embed.Fields, Field{Name: "Codecs", Value: v, Inline: true})
+				}
+			}
+		case ImportFieldLanguages:
+			if msg.EpisodeFile != nil && msg.EpisodeFile.MediaInfo != nil {
+				if v := streamLanguagesString(msg.EpisodeFile.MediaInfo.AudioStreams, audioLanguage); v != "" {
+					embed.Fields = append(embed.Fields, Field{Name: "Languages", Value: v})
+				}
+			}
+		case ImportFieldSubtitles:
+			if msg.EpisodeFile != nil && msg.EpisodeFile.MediaInfo != nil {
+				if v := streamLanguagesString(msg.EpisodeFile.MediaInfo.SubtitleStreams, subtitleLanguage); v != "" {
+					embed.Fields = append(embed.Fields, Field{Name: "Subtitles", Value: v})
+				}
+			}
 		}
-		// Overview / Rating / Genres / Codecs / Languages / Subtitles /
-		// Links / CustomFormats / CustomFormatScore / Poster / Fanart —
-		// upstream-blocked per the package scope note; silently skip.
+		// Overview / Rating / Genres / Links / CustomFormats /
+		// CustomFormatScore — upstream-blocked per package scope note;
+		// silently skip. Poster/Fanart applied below.
 	}
+	applySeriesCoverImages(&embed, msg.Series,
+		fieldsContain(d.settings.ImportFields, int(ImportFieldPoster)),
+		fieldsContain(d.settings.ImportFields, int(ImportFieldFanart)),
+	)
 	return d.emit(ctx, embed)
 }
 
@@ -283,6 +310,10 @@ func (d *Discord) OnImportComplete(ctx context.Context, msg notifications.Import
 		}
 		// Other field types: upstream-blocked per package scope note.
 	}
+	applySeriesCoverImages(&embed, msg.Series,
+		fieldsContain(d.settings.ImportFields, int(ImportFieldPoster)),
+		fieldsContain(d.settings.ImportFields, int(ImportFieldFanart)),
+	)
 	return d.emit(ctx, embed)
 }
 

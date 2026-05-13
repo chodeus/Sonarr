@@ -14,6 +14,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/healthcheck"
+	"sonarr.tv/sonarr/internal/mediainfo"
 	"sonarr.tv/sonarr/internal/notifications"
 	"sonarr.tv/sonarr/internal/notifications/discord"
 	"sonarr.tv/sonarr/internal/parser"
@@ -526,11 +527,10 @@ func TestDiscord_OnGrab_SilentlySkipsDeferredFields(t *testing.T) {
 
 	settings := discord.DefaultSettings()
 	settings.WebHookURL = srv.URL
-	// Include ONLY the upstream-blocked field types to verify they
-	// silently skip without erroring or producing Field entries.
+	// Include ONLY the upstream-blocked field types — Rating, Genres,
+	// Links remain deferred. Poster/Fanart moved to active in B4b but
+	// are covered by separate tests below.
 	settings.GrabFields = []int{
-		int(discord.GrabFieldPoster),
-		int(discord.GrabFieldFanart),
 		int(discord.GrabFieldRating),
 		int(discord.GrabFieldGenres),
 		int(discord.GrabFieldLinks),
@@ -702,4 +702,155 @@ func fieldNames(fields []discord.Field) []string {
 		out = append(out, f.Name)
 	}
 	return out
+}
+
+const seriesImagesBlobPosterFanart = `[{"coverType":1,"url":"/local/poster.jpg","remoteUrl":"https://cdn/poster.jpg"},{"coverType":3,"url":"/local/fanart.jpg","remoteUrl":"https://cdn/fanart.jpg"}]`
+
+func TestDiscord_OnGrab_AppliesPosterAndFanartFromSeriesImages(t *testing.T) {
+	t.Parallel()
+	var payload discord.Payload
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &payload)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	settings := discord.DefaultSettings()
+	settings.WebHookURL = srv.URL
+	settings.GrabFields = []int{int(discord.GrabFieldPoster), int(discord.GrabFieldFanart)}
+	def := &notifications.Notification{
+		Implementation: discord.Implementation,
+		Settings:       settingsJSON(t, settings),
+	}
+	prov, _ := discord.New(def, notifications.Dependencies{HTTPClient: srv.Client()})
+	ser := &series.Series{ID: 1, Title: "X", Images: seriesImagesBlobPosterFanart}
+	sub := decisionengine.NewSubject()
+	sub.Series = ser
+	sub.Episodes = []episodes.Episode{{}}
+	if err := prov.OnGrab(t.Context(), notifications.GrabMessage{Series: ser, Episode: sub}); err != nil {
+		t.Fatalf("OnGrab: %v", err)
+	}
+	e := payload.Embeds[0]
+	if e.Thumbnail == nil || e.Thumbnail.URL != "https://cdn/poster.jpg" {
+		t.Errorf("Thumbnail=%+v want cdn/poster.jpg", e.Thumbnail)
+	}
+	if e.Image == nil || e.Image.URL != "https://cdn/fanart.jpg" {
+		t.Errorf("Image=%+v want cdn/fanart.jpg", e.Image)
+	}
+}
+
+func TestDiscord_OnGrab_PosterOnlyWhenFanartFieldOmitted(t *testing.T) {
+	t.Parallel()
+	var payload discord.Payload
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &payload)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	settings := discord.DefaultSettings()
+	settings.WebHookURL = srv.URL
+	settings.GrabFields = []int{int(discord.GrabFieldPoster)} // no fanart
+	def := &notifications.Notification{Implementation: discord.Implementation, Settings: settingsJSON(t, settings)}
+	prov, _ := discord.New(def, notifications.Dependencies{HTTPClient: srv.Client()})
+	ser := &series.Series{Images: seriesImagesBlobPosterFanart}
+	sub := decisionengine.NewSubject()
+	sub.Series = ser
+	sub.Episodes = []episodes.Episode{{}}
+	_ = prov.OnGrab(t.Context(), notifications.GrabMessage{Series: ser, Episode: sub})
+	if payload.Embeds[0].Thumbnail == nil {
+		t.Error("Thumbnail should be set when Poster field is enabled")
+	}
+	if payload.Embeds[0].Image != nil {
+		t.Errorf("Image should be nil when Fanart field is NOT enabled, got %+v", payload.Embeds[0].Image)
+	}
+}
+
+func TestDiscord_OnDownload_AppliesPosterAndCodecsAndLanguages(t *testing.T) {
+	t.Parallel()
+	var payload discord.Payload
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &payload)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	settings := discord.DefaultSettings()
+	settings.WebHookURL = srv.URL
+	settings.ImportFields = []int{
+		int(discord.ImportFieldPoster),
+		int(discord.ImportFieldFanart),
+		int(discord.ImportFieldCodecs),
+		int(discord.ImportFieldLanguages),
+		int(discord.ImportFieldSubtitles),
+	}
+	def := &notifications.Notification{Implementation: discord.Implementation, Settings: settingsJSON(t, settings)}
+	prov, _ := discord.New(def, notifications.Dependencies{HTTPClient: srv.Client()})
+	file := &episodefiles.File{
+		MediaInfo: &mediainfo.Model{
+			VideoFormat: "h264",
+			AudioStreams: []mediainfo.AudioStream{
+				{Format: "ac3", Channels: 6, ChannelPositions: "5.1 / 5.1", Language: "eng"},
+				{Format: "aac", Channels: 2, Language: "fre"},
+			},
+			SubtitleStreams: []mediainfo.SubtitleStream{
+				{Language: "eng"},
+				{Language: "spa"},
+			},
+		},
+	}
+	msg := notifications.DownloadMessage{
+		Series:      &series.Series{Images: seriesImagesBlobPosterFanart},
+		EpisodeFile: file,
+	}
+	if err := prov.OnDownload(t.Context(), msg); err != nil {
+		t.Fatalf("OnDownload: %v", err)
+	}
+	e := payload.Embeds[0]
+	if e.Thumbnail == nil || e.Thumbnail.URL != "https://cdn/poster.jpg" {
+		t.Errorf("Thumbnail=%+v", e.Thumbnail)
+	}
+	if e.Image == nil || e.Image.URL != "https://cdn/fanart.jpg" {
+		t.Errorf("Image=%+v", e.Image)
+	}
+	idx := fieldMap(e.Fields)
+	codecs := idx["Codecs"]
+	if !strings.Contains(codecs.Value, "/") || !strings.Contains(codecs.Value, "AC3") {
+		t.Errorf("Codecs=%q want 'video / audio channels' format with AC3", codecs.Value)
+	}
+	if !codecs.Inline {
+		t.Errorf("Codecs should be inline")
+	}
+	if idx["Languages"].Value != "eng/fre" {
+		t.Errorf("Languages=%q want eng/fre", idx["Languages"].Value)
+	}
+	if idx["Subtitles"].Value != "eng/spa" {
+		t.Errorf("Subtitles=%q want eng/spa", idx["Subtitles"].Value)
+	}
+}
+
+func TestDiscord_OnDownload_BadImagesBlobDoesNotPropagate(t *testing.T) {
+	t.Parallel()
+	var payload discord.Payload
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &payload)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	settings := discord.DefaultSettings()
+	settings.WebHookURL = srv.URL
+	settings.ImportFields = []int{int(discord.ImportFieldPoster)}
+	def := &notifications.Notification{Implementation: discord.Implementation, Settings: settingsJSON(t, settings)}
+	prov, _ := discord.New(def, notifications.Dependencies{HTTPClient: srv.Client()})
+	msg := notifications.DownloadMessage{
+		Series:      &series.Series{Images: "not valid json"},
+		EpisodeFile: &episodefiles.File{},
+	}
+	if err := prov.OnDownload(t.Context(), msg); err != nil {
+		t.Fatalf("OnDownload should not fail on bad Images blob: %v", err)
+	}
+	if payload.Embeds[0].Thumbnail != nil {
+		t.Errorf("Thumbnail should be nil after decode failure, got %+v", payload.Embeds[0].Thumbnail)
+	}
 }

@@ -8,7 +8,10 @@ import (
 	"strconv"
 	"strings"
 
+	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/mediainfo"
 	"sonarr.tv/sonarr/internal/notifications"
+	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -111,8 +114,11 @@ func (c *CustomScript) OnGrab(ctx context.Context, msg notifications.GrabMessage
 	return execScript(ctx, &c.settings, env)
 }
 
-// OnDownload mirrors C# `:93-150`. Many env vars (MediaInfo /
-// IndexerFlags / CustomFormatScore / Release.*) are deferred.
+// OnDownload mirrors C# `:93-150`. Quality + MediaInfo env vars
+// are wired from typed surfaces (slice 4.DE). Release.* /
+// CustomFormat / IndexerFlags / Download_Client env vars remain
+// deferred behind parser.RemoteEpisode + GrabbedReleaseInfo +
+// LocalEpisode.CustomFormats / DownloadClientInfo typed ports.
 func (c *CustomScript) OnDownload(ctx context.Context, msg notifications.DownloadMessage) error {
 	env := instanceVars("Download")
 	seriesVars(env, msg.Series)
@@ -124,9 +130,10 @@ func (c *CustomScript) OnDownload(ctx context.Context, msg notifications.Downloa
 			env["Sonarr_EpisodeFile_Path"] = msg.Series.Path + "/" + msg.EpisodeFile.RelativePath
 		}
 		env["Sonarr_EpisodeFile_SeasonNumber"] = strconv.Itoa(msg.EpisodeFile.SeasonNumber)
-		// Quality decoded from the raw JSON blob is DEFERRED.
+		applyEpisodeFileQuality(env, msg.EpisodeFile)
 		env["Sonarr_EpisodeFile_ReleaseGroup"] = msg.EpisodeFile.ReleaseGroup
 		env["Sonarr_EpisodeFile_SceneName"] = msg.EpisodeFile.SceneName
+		applyEpisodeFileMediaInfo(env, msg.EpisodeFile)
 	}
 	env["Sonarr_EpisodeFile_SourcePath"] = msg.SourcePath
 	env["Sonarr_Download_Id"] = msg.DownloadID
@@ -171,7 +178,8 @@ func (c *CustomScript) OnRename(ctx context.Context, msg notifications.RenameMes
 	return execScript(ctx, &c.settings, env)
 }
 
-// OnEpisodeFileDelete mirrors C# `:215-242`.
+// OnEpisodeFileDelete mirrors C# `:215-242`. Quality + MediaInfo env
+// vars wired from typed surfaces (slice 4.DE).
 func (c *CustomScript) OnEpisodeFileDelete(ctx context.Context, msg notifications.EpisodeDeleteMessage) error {
 	env := instanceVars("EpisodeFileDelete")
 	seriesVars(env, msg.Series)
@@ -182,9 +190,10 @@ func (c *CustomScript) OnEpisodeFileDelete(ctx context.Context, msg notification
 			env["Sonarr_EpisodeFile_Path"] = msg.Series.Path + "/" + msg.EpisodeFile.RelativePath
 		}
 		env["Sonarr_EpisodeFile_SeasonNumber"] = strconv.Itoa(msg.EpisodeFile.SeasonNumber)
-		// Quality decoded from the raw JSON blob is DEFERRED.
+		applyEpisodeFileQuality(env, msg.EpisodeFile)
 		env["Sonarr_EpisodeFile_ReleaseGroup"] = msg.EpisodeFile.ReleaseGroup
 		env["Sonarr_EpisodeFile_SceneName"] = msg.EpisodeFile.SceneName
+		applyEpisodeFileMediaInfo(env, msg.EpisodeFile)
 	}
 	env["Sonarr_EpisodeFile_DeleteReason"] = msg.Reason.String()
 	return execScript(ctx, &c.settings, env)
@@ -316,6 +325,95 @@ func (c *CustomScript) SupportsOnManualInteractionRequired() bool { return true 
 // returns null. Return an empty struct so v3-UI callers see {}.
 func (c *CustomScript) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
 	return struct{}{}, nil
+}
+
+// applyEpisodeFileQuality stamps the Sonarr_EpisodeFile_Quality +
+// Sonarr_EpisodeFile_QualityVersion env vars from the file's decoded
+// Quality blob. Mirrors C# `:116-117`. Decode failures + empty blobs
+// silently skip both vars (matches the appendIfPresent semantic
+// elsewhere in the package).
+func applyEpisodeFileQuality(env map[string]string, f *episodefiles.File) {
+	if f == nil || strings.TrimSpace(f.Quality) == "" {
+		return
+	}
+	var m quality.Model
+	if err := m.UnmarshalJSON([]byte(f.Quality)); err != nil {
+		return
+	}
+	if m.Quality.Name != "" {
+		env["Sonarr_EpisodeFile_Quality"] = m.Quality.Name
+	}
+	env["Sonarr_EpisodeFile_QualityVersion"] = strconv.Itoa(m.Revision.Version)
+}
+
+// applyEpisodeFileMediaInfo stamps the Sonarr_EpisodeFile_MediaInfo_*
+// env vars from the file's decoded MediaInfo. Mirrors C# `:125-133`.
+// nil MediaInfo silently skips (no vars set — matches C#'s
+// IsNotNullOrWhiteSpace gating downstream).
+func applyEpisodeFileMediaInfo(env map[string]string, f *episodefiles.File) {
+	if f == nil || f.MediaInfo == nil {
+		return
+	}
+	mi := f.MediaInfo
+	env["Sonarr_EpisodeFile_MediaInfo_Height"] = strconv.Itoa(mi.Height)
+	env["Sonarr_EpisodeFile_MediaInfo_Width"] = strconv.Itoa(mi.Width)
+	env["Sonarr_EpisodeFile_MediaInfo_VideoCodec"] = mediainfo.FormatVideoCodec(mi, f.SceneName)
+	env["Sonarr_EpisodeFile_MediaInfo_VideoDynamicRangeType"] = mediainfo.FormatVideoDynamicRangeType(mi)
+	if stream := mi.PrimaryAudioStream(); stream != nil {
+		env["Sonarr_EpisodeFile_MediaInfo_AudioCodec"] = mediainfo.FormatAudioCodec(stream, f.SceneName)
+		env["Sonarr_EpisodeFile_MediaInfo_AudioChannels"] = fmt.Sprintf("%g", mediainfo.FormatAudioChannels(stream))
+	}
+	env["Sonarr_EpisodeFile_MediaInfo_AudioLanguages"] = distinctAudioLanguages(mi.AudioStreams)
+	env["Sonarr_EpisodeFile_MediaInfo_Languages"] = audioLanguages(mi.AudioStreams)
+	env["Sonarr_EpisodeFile_MediaInfo_Subtitles"] = subtitleLanguages(mi.SubtitleStreams)
+}
+
+// audioLanguages joins per-stream Language values with " / " in
+// order, no deduplication. Mirrors C# `:128`
+// `episodeFile.MediaInfo.AudioStreams?.Select(l => l.Language).
+// ConcatToString(" / ")`. Empty slice → empty string.
+func audioLanguages(streams []mediainfo.AudioStream) string {
+	if len(streams) == 0 {
+		return ""
+	}
+	parts := make([]string, len(streams))
+	for i := range streams {
+		parts[i] = streams[i].Language
+	}
+	return strings.Join(parts, " / ")
+}
+
+// distinctAudioLanguages joins per-stream Language values with " / "
+// after deduplication. Mirrors C# `:127`
+// `.Select(l => l.Language).Distinct().ConcatToString(" / ")`.
+// Preserves first-occurrence order.
+func distinctAudioLanguages(streams []mediainfo.AudioStream) string {
+	if len(streams) == 0 {
+		return ""
+	}
+	seen := make(map[string]struct{}, len(streams))
+	parts := make([]string, 0, len(streams))
+	for _, s := range streams {
+		if _, ok := seen[s.Language]; ok {
+			continue
+		}
+		seen[s.Language] = struct{}{}
+		parts = append(parts, s.Language)
+	}
+	return strings.Join(parts, " / ")
+}
+
+// subtitleLanguages joins per-stream Language values with " / ".
+// Mirrors C# `:131`.
+func subtitleLanguages(streams []mediainfo.SubtitleStream) string {
+	if len(streams) == 0 {
+		return ""
+	}
+	parts := make([]string, len(streams))
+	for i := range streams {
+		parts[i] = streams[i].Language
+	}
+	return strings.Join(parts, " / ")
 }
 
 // init registers the CustomScript constructor.

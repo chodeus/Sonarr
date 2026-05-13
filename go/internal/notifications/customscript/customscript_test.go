@@ -6,7 +6,9 @@ import (
 	"errors"
 	"testing"
 
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/healthcheck"
+	"sonarr.tv/sonarr/internal/mediainfo"
 	"sonarr.tv/sonarr/internal/notifications"
 	"sonarr.tv/sonarr/internal/notifications/customscript"
 	"sonarr.tv/sonarr/internal/series"
@@ -214,5 +216,120 @@ func TestCustomScript_RegisteredInDefault(t *testing.T) {
 	t.Parallel()
 	if !notifications.Default().Has(customscript.Implementation, customscript.ConfigContract) {
 		t.Errorf("registry missing %s/%s", customscript.Implementation, customscript.ConfigContract)
+	}
+}
+
+func TestCustomScript_OnDownload_WiresQualityAndMediaInfoEnvVars(t *testing.T) {
+	prov, fr := makeCustomScript(t)
+	file := &episodefiles.File{
+		ID:           99,
+		Quality:      `{"quality":7,"revision":{"version":1,"real":0,"isRepack":false}}`, // Bluray-1080p v1
+		ReleaseGroup: "RELGRP",
+		SceneName:    "Show.S01E01.1080p",
+		SeasonNumber: 1,
+		RelativePath: "Season 01/E01.mkv",
+		MediaInfo: &mediainfo.Model{
+			VideoFormat: "h264",
+			Width:       1920, Height: 1080,
+			VideoHdrFormat: mediainfo.Hdr10,
+			AudioStreams: []mediainfo.AudioStream{
+				{Format: "ac3", Channels: 6, ChannelPositions: "5.1 / 5.1", Language: "eng"},
+				{Format: "aac", Channels: 2, Language: "fre"},
+				{Format: "aac", Channels: 2, Language: "eng"}, // duplicate eng — Distinct should dedupe
+			},
+			SubtitleStreams: []mediainfo.SubtitleStream{
+				{Language: "eng"},
+				{Language: "spa"},
+			},
+		},
+	}
+	msg := notifications.DownloadMessage{
+		Series:      &series.Series{ID: 7, Title: "Show", Path: "/srv/Show"},
+		EpisodeFile: file,
+	}
+	if err := prov.OnDownload(t.Context(), msg); err != nil {
+		t.Fatalf("OnDownload: %v", err)
+	}
+	env := fr.calls[0].Env
+	if env["Sonarr_EpisodeFile_Quality"] != "Bluray-1080p" {
+		t.Errorf("Quality=%q want Bluray-1080p", env["Sonarr_EpisodeFile_Quality"])
+	}
+	if env["Sonarr_EpisodeFile_QualityVersion"] != "1" {
+		t.Errorf("QualityVersion=%q", env["Sonarr_EpisodeFile_QualityVersion"])
+	}
+	if env["Sonarr_EpisodeFile_MediaInfo_Width"] != "1920" || env["Sonarr_EpisodeFile_MediaInfo_Height"] != "1080" {
+		t.Errorf("Width/Height: %q/%q", env["Sonarr_EpisodeFile_MediaInfo_Width"], env["Sonarr_EpisodeFile_MediaInfo_Height"])
+	}
+	if env["Sonarr_EpisodeFile_MediaInfo_AudioCodec"] != "AC3" {
+		t.Errorf("AudioCodec=%q", env["Sonarr_EpisodeFile_MediaInfo_AudioCodec"])
+	}
+	if env["Sonarr_EpisodeFile_MediaInfo_AudioChannels"] != "5.1" {
+		t.Errorf("AudioChannels=%q want 5.1", env["Sonarr_EpisodeFile_MediaInfo_AudioChannels"])
+	}
+	// Languages = order-preserved with duplicates retained.
+	if env["Sonarr_EpisodeFile_MediaInfo_Languages"] != "eng / fre / eng" {
+		t.Errorf("Languages=%q", env["Sonarr_EpisodeFile_MediaInfo_Languages"])
+	}
+	// AudioLanguages = order-preserved Distinct.
+	if env["Sonarr_EpisodeFile_MediaInfo_AudioLanguages"] != "eng / fre" {
+		t.Errorf("AudioLanguages=%q want 'eng / fre' (Distinct)", env["Sonarr_EpisodeFile_MediaInfo_AudioLanguages"])
+	}
+	if env["Sonarr_EpisodeFile_MediaInfo_Subtitles"] != "eng / spa" {
+		t.Errorf("Subtitles=%q", env["Sonarr_EpisodeFile_MediaInfo_Subtitles"])
+	}
+	// VideoCodec + VideoDynamicRangeType come from the formatter
+	// helpers; verify they're non-empty (exact value depends on
+	// formatter internals).
+	if env["Sonarr_EpisodeFile_MediaInfo_VideoCodec"] == "" {
+		t.Errorf("VideoCodec should be non-empty for VideoFormat=h264")
+	}
+}
+
+func TestCustomScript_OnDownload_NoMediaInfoSkipsAllMediaVars(t *testing.T) {
+	prov, fr := makeCustomScript(t)
+	file := &episodefiles.File{
+		ID:      99,
+		Quality: `{"quality":1}`, // SDTV
+	}
+	msg := notifications.DownloadMessage{
+		Series:      &series.Series{ID: 7, Title: "Show"},
+		EpisodeFile: file,
+	}
+	if err := prov.OnDownload(t.Context(), msg); err != nil {
+		t.Fatalf("OnDownload: %v", err)
+	}
+	env := fr.calls[0].Env
+	if env["Sonarr_EpisodeFile_Quality"] != "SDTV" {
+		t.Errorf("Quality=%q", env["Sonarr_EpisodeFile_Quality"])
+	}
+	// No MediaInfo → none of the MediaInfo_ vars should be set.
+	for k := range env {
+		if len(k) >= 26 && k[:26] == "Sonarr_EpisodeFile_MediaInf" {
+			t.Errorf("unexpected MediaInfo var %q=%q (MediaInfo was nil)", k, env[k])
+		}
+	}
+}
+
+func TestCustomScript_OnEpisodeFileDelete_WiresQualityAndMediaInfo(t *testing.T) {
+	prov, fr := makeCustomScript(t)
+	file := &episodefiles.File{
+		ID:           99,
+		Quality:      `{"quality":4}`, // HDTV-720p
+		MediaInfo:    &mediainfo.Model{Width: 1280, Height: 720},
+		SeasonNumber: 2,
+	}
+	msg := notifications.EpisodeDeleteMessage{
+		Series:      &series.Series{ID: 7, Title: "Show", Path: "/srv/Show"},
+		EpisodeFile: file,
+	}
+	if err := prov.OnEpisodeFileDelete(t.Context(), msg); err != nil {
+		t.Fatalf("OnEpisodeFileDelete: %v", err)
+	}
+	env := fr.calls[0].Env
+	if env["Sonarr_EpisodeFile_Quality"] != "HDTV-720p" {
+		t.Errorf("Quality=%q", env["Sonarr_EpisodeFile_Quality"])
+	}
+	if env["Sonarr_EpisodeFile_MediaInfo_Width"] != "1280" {
+		t.Errorf("Width=%q", env["Sonarr_EpisodeFile_MediaInfo_Width"])
 	}
 }
