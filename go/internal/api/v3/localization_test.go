@@ -37,6 +37,30 @@ func TestLanguageIdentifier(t *testing.T) {
 	}
 }
 
+type fakeStringsLister struct {
+	dict map[string]string
+}
+
+func (f *fakeStringsLister) GetLocalizationDictionary() map[string]string { return f.dict }
+
+func TestLocalizationHandler_StringsEnvelope(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	LocalizationHandler(&fakeStringsLister{dict: map[string]string{"About": "About", "X": "Y"}}).
+		ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/localization", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200", rr.Code)
+	}
+	var got LocalizationResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Strings["About"] != "About" || got.Strings["X"] != "Y" {
+		t.Errorf("strings passthrough: %+v", got.Strings)
+	}
+}
+
 func TestLocalizationLanguageHandler_Body(t *testing.T) {
 	t.Parallel()
 	handler := LocalizationLanguageHandler(func() int { return 33 }) // PortugueseBrazil
