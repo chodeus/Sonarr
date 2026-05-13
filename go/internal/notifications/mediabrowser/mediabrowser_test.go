@@ -110,7 +110,7 @@ func TestSettings_Validate(t *testing.T) {
 	}
 }
 
-func TestMB_OnDownload_NotifyAndUpdate(t *testing.T) {
+func TestMB_OnDownload_NotifyImmediatelyAndQueuesUpdate(t *testing.T) {
 	var capture []captured
 	srv := capturingServer(t, nil, &capture)
 	defer srv.Close()
@@ -122,8 +122,10 @@ func TestMB_OnDownload_NotifyAndUpdate(t *testing.T) {
 	if err := prov.OnDownload(t.Context(), msg); err != nil {
 		t.Fatalf("OnDownload: %v", err)
 	}
-	if len(capture) != 2 {
-		t.Fatalf("calls=%d", len(capture))
+	// Notify fires synchronously; the library-update is queued for
+	// the next ProcessQueue tick (mirrors C# MediaServerUpdateQueue).
+	if len(capture) != 1 {
+		t.Fatalf("after OnDownload: calls=%d want 1 (notify only)", len(capture))
 	}
 	if capture[0].Path != "/Notifications/Admin" {
 		t.Errorf("notify path=%q", capture[0].Path)
@@ -131,8 +133,18 @@ func TestMB_OnDownload_NotifyAndUpdate(t *testing.T) {
 	if capture[0].Token != "key-xyz" {
 		t.Errorf("token=%q", capture[0].Token)
 	}
+	if err := prov.ProcessQueue(t.Context()); err != nil {
+		t.Fatalf("ProcessQueue: %v", err)
+	}
+	if len(capture) != 2 {
+		t.Fatalf("after ProcessQueue: calls=%d want 2", len(capture))
+	}
 	if capture[1].Path != "/Library/Media/Updated" {
 		t.Errorf("update path=%q", capture[1].Path)
+	}
+	// Single accumulated update-type should round-trip into the body.
+	if !strings.Contains(string(capture[1].Body), `"UpdateType":"Created"`) {
+		t.Errorf("expected Created, got %s", string(capture[1].Body))
 	}
 }
 
@@ -144,6 +156,14 @@ func TestMB_NotifyDisabled_OnlyUpdateFires(t *testing.T) {
 	msg := notifications.SeriesAddMessage{Series: &series.Series{Path: "/srv/Show"}}
 	if err := prov.OnSeriesAdd(t.Context(), msg); err != nil {
 		t.Fatalf("OnSeriesAdd: %v", err)
+	}
+	// OnSeriesAdd only queues the update — nothing fires until
+	// ProcessQueue.
+	if len(capture) != 0 {
+		t.Fatalf("OnSeriesAdd should have queued only, got %+v", capture)
+	}
+	if err := prov.ProcessQueue(t.Context()); err != nil {
+		t.Fatalf("ProcessQueue: %v", err)
 	}
 	if len(capture) != 1 || capture[0].Path != "/Library/Media/Updated" {
 		t.Errorf("calls=%+v", capture)
@@ -167,7 +187,7 @@ func TestMB_UpdateLibraryDisabled_OnlyNotifyFires(t *testing.T) {
 	}
 }
 
-func TestMB_PathMapping_Applied(t *testing.T) {
+func TestMB_PathMapping_AppliedAtDrain(t *testing.T) {
 	var capture []captured
 	srv := capturingServer(t, nil, &capture)
 	defer srv.Close()
@@ -177,6 +197,7 @@ func TestMB_PathMapping_Applied(t *testing.T) {
 	})
 	msg := notifications.SeriesAddMessage{Series: &series.Series{Path: "/srv/series/Show"}}
 	_ = prov.OnSeriesAdd(t.Context(), msg)
+	_ = prov.ProcessQueue(t.Context())
 	if len(capture) != 1 {
 		t.Fatalf("calls=%d", len(capture))
 	}
@@ -186,7 +207,7 @@ func TestMB_PathMapping_Applied(t *testing.T) {
 	}
 }
 
-func TestMB_OnRename_FiresModifiedUpdate(t *testing.T) {
+func TestMB_OnRename_QueuesModifiedUpdate(t *testing.T) {
 	var capture []captured
 	srv := capturingServer(t, nil, &capture)
 	defer srv.Close()
@@ -194,6 +215,12 @@ func TestMB_OnRename_FiresModifiedUpdate(t *testing.T) {
 	msg := notifications.RenameMessage{Series: &series.Series{Path: "/srv/Show"}}
 	if err := prov.OnRename(t.Context(), msg); err != nil {
 		t.Fatalf("OnRename: %v", err)
+	}
+	if len(capture) != 0 {
+		t.Fatalf("OnRename should defer the update to ProcessQueue, got %d immediate calls", len(capture))
+	}
+	if err := prov.ProcessQueue(t.Context()); err != nil {
+		t.Fatalf("ProcessQueue: %v", err)
 	}
 	if len(capture) != 1 {
 		t.Fatalf("calls=%d", len(capture))
@@ -241,15 +268,43 @@ func TestMB_Test_Notify404MapsToJellyfinAdvice(t *testing.T) {
 	}
 }
 
-func TestMB_500SurfacesSendFailed(t *testing.T) {
+func TestMB_500SurfacesSendFailedFromProcessQueue(t *testing.T) {
 	var capture []captured
 	srv := capturingServer(t, map[string]int{"/Library/Media/Updated": http.StatusInternalServerError}, &capture)
 	defer srv.Close()
 	prov := makeMB(t, srv, nil)
 	msg := notifications.SeriesAddMessage{Series: &series.Series{Path: "/srv/Show"}}
-	err := prov.OnSeriesAdd(t.Context(), msg)
+	if err := prov.OnSeriesAdd(t.Context(), msg); err != nil {
+		t.Fatalf("OnSeriesAdd should queue without error, got %v", err)
+	}
+	err := prov.ProcessQueue(t.Context())
 	if !errors.Is(err, mediabrowser.ErrSendFailed) {
-		t.Errorf("err=%v want ErrSendFailed", err)
+		t.Errorf("err=%v want ErrSendFailed (drain-time failure)", err)
+	}
+}
+
+func TestMB_OnDownloadThenOnSeriesDelete_CoalescesToEmptyUpdateType(t *testing.T) {
+	var capture []captured
+	srv := capturingServer(t, nil, &capture)
+	defer srv.Close()
+	prov := makeMB(t, srv, nil)
+	ser := &series.Series{ID: 17, Path: "/srv/Show"}
+	if err := prov.OnDownload(t.Context(), notifications.DownloadMessage{Series: ser}); err != nil {
+		t.Fatalf("OnDownload: %v", err)
+	}
+	if err := prov.OnSeriesDelete(t.Context(), notifications.SeriesDeleteMessage{Series: ser}); err != nil {
+		t.Fatalf("OnSeriesDelete: %v", err)
+	}
+	if err := prov.ProcessQueue(t.Context()); err != nil {
+		t.Fatalf("ProcessQueue: %v", err)
+	}
+	if len(capture) != 1 {
+		t.Fatalf("calls=%d want 1 coalesced", len(capture))
+	}
+	// Multiple distinct UpdateTypes accumulated against the same
+	// series ⇒ C# `:130` emits null/empty so Emby decides.
+	if !strings.Contains(string(capture[0].Body), `"UpdateType":""`) {
+		t.Errorf("expected empty UpdateType for multi-info coalesce, got %s", string(capture[0].Body))
 	}
 }
 

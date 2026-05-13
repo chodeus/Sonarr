@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"sonarr.tv/sonarr/internal/notifications"
+	"sonarr.tv/sonarr/internal/notifications/mediaserverqueue"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -40,6 +41,7 @@ type Xbmc struct {
 	def      *notifications.Notification
 	settings Settings
 	doer     httpDoer
+	queue    *mediaserverqueue.Queue[bool]
 }
 
 // Compile-time guard.
@@ -64,7 +66,12 @@ func New(def *notifications.Notification, deps notifications.Dependencies) (noti
 	if doer == nil {
 		doer = http.DefaultClient
 	}
-	return &Xbmc{def: def, settings: s, doer: doer}, nil
+	return &Xbmc{
+		def:      def,
+		settings: s,
+		doer:     doer,
+		queue:    mediaserverqueue.New[bool](),
+	}, nil
 }
 
 // Name returns the provider display label. C# `:103`.
@@ -88,43 +95,21 @@ func (x *Xbmc) notifyIfEnabled(ctx context.Context, header, message string) erro
 	return notify(ctx, x.doer, &x.settings, header, message)
 }
 
-// updateAndClean fires VideoLibrary.Scan (when UpdateLibrary is on)
-// and optionally VideoLibrary.Clean (when CleanLibrary AND clean=true).
-// Mirrors C# `UpdateAndClean` at `:159-166` + `ProcessQueue` at
-// `:105-132` — the queue coalescing buffer is deferred (see package
-// doc) so the work fires per event.
+// updateAndClean enqueues a per-(host,series) library-refresh +
+// clean-flag pair. Mirrors C# `UpdateAndClean` at `:159-166`. The
+// actual Player.GetActivePlayers / VideoLibrary.Scan / .Clean calls
+// happen later in [Xbmc.ProcessQueue].
 //
-// Pre-checks Player.GetActivePlayers when AlwaysUpdate is false —
-// skips the scan when a video player is busy per C# `XbmcService.Update`
-// at `:37-47`.
-func (x *Xbmc) updateAndClean(ctx context.Context, ser *series.Series, clean bool) error {
+// Returns error for signature parity with the OnX hooks; enqueue is
+// in-process and cannot fail.
+func (x *Xbmc) updateAndClean(_ context.Context, ser *series.Series, clean bool) error {
 	if !x.settings.UpdateLibrary && !x.settings.CleanLibrary {
 		return nil
 	}
 	if ser == nil {
 		return nil
 	}
-	if !x.settings.AlwaysUpdate {
-		busy, err := videoPlayerActive(ctx, x.doer, &x.settings)
-		if err != nil {
-			return err
-		}
-		if busy {
-			return nil
-		}
-	}
-	if x.settings.UpdateLibrary {
-		// GetSeriesPath discovery is deferred (see package doc) — pass
-		// empty path to trigger a full library scan.
-		if err := updateLibrary(ctx, x.doer, &x.settings, ""); err != nil {
-			return err
-		}
-	}
-	if clean && x.settings.CleanLibrary {
-		if err := cleanLibrary(ctx, x.doer, &x.settings); err != nil {
-			return err
-		}
-	}
+	x.queue.Add(x.settings.Host, ser, clean)
 	return nil
 }
 
@@ -208,9 +193,56 @@ func (x *Xbmc) OnManualInteractionRequired(ctx context.Context, msg notification
 	return x.notifyIfEnabled(ctx, titleManualInteractionRequired, msg.Message)
 }
 
-// ProcessQueue is currently a no-op — the C# `:105-132` library-
-// refresh coalescing buffer is deferred (see package doc).
-func (x *Xbmc) ProcessQueue(_ context.Context) error { return nil }
+// ProcessQueue drains the per-host coalescing buffer and fires the
+// VideoLibrary.Scan + optional .Clean RPCs per batched series. Mirrors
+// C# `:105-132` + the player-busy gate from C# `XbmcService.Update`
+// at `:37-47`.
+//
+// For each drained series:
+//   - When AlwaysUpdate is false, Player.GetActivePlayers gates the
+//     update — a busy video player short-circuits the whole iteration.
+//   - VideoLibrary.Scan fires when UpdateLibrary is on.
+//   - VideoLibrary.Clean fires when CleanLibrary is on AND any
+//     accumulated clean flag for the series was true (mirrors C#
+//     `:120` `item.Info.Contains(true)`).
+//
+// First per-series error is returned; remaining items are still
+// attempted (mirrors C# catch-and-continue at `:125-129`).
+func (x *Xbmc) ProcessQueue(ctx context.Context) error {
+	var firstErr error
+	x.queue.Process(x.settings.Host, func(items []*mediaserverqueue.Item[bool]) {
+		for _, item := range items {
+			if !x.settings.AlwaysUpdate {
+				busy, err := videoPlayerActive(ctx, x.doer, &x.settings)
+				if err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					continue
+				}
+				if busy {
+					continue
+				}
+			}
+			if x.settings.UpdateLibrary {
+				// GetSeriesPath discovery is deferred (see package
+				// doc) — pass empty path to trigger a full library
+				// scan.
+				if err := updateLibrary(ctx, x.doer, &x.settings, ""); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
+			if x.settings.CleanLibrary {
+				if _, ok := item.Info[true]; ok {
+					if err := cleanLibrary(ctx, x.doer, &x.settings); err != nil && firstErr == nil {
+						firstErr = err
+					}
+				}
+			}
+		}
+	})
+	return firstErr
+}
 
 // Test sends a synthetic Kodi notification. Mirrors C# `Xbmc.Test`
 // at `:134-141` + `XbmcService.Test` at `:127-140`. The C# test

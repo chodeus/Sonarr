@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"sonarr.tv/sonarr/internal/notifications"
+	"sonarr.tv/sonarr/internal/notifications/mediaserverqueue"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -37,6 +38,7 @@ type PlexServer struct {
 	def      *notifications.Notification
 	settings Settings
 	doer     httpDoer
+	queue    *mediaserverqueue.Queue[bool]
 }
 
 // Compile-time guard.
@@ -60,7 +62,12 @@ func New(def *notifications.Notification, deps notifications.Dependencies) (noti
 	if doer == nil {
 		doer = http.DefaultClient
 	}
-	return &PlexServer{def: def, settings: s, doer: doer}, nil
+	return &PlexServer{
+		def:      def,
+		settings: s,
+		doer:     doer,
+		queue:    mediaserverqueue.New[bool](),
+	}, nil
 }
 
 // Name returns the provider display label. C# `:33`.
@@ -72,8 +79,29 @@ func (p *PlexServer) Link() string { return "https://www.plex.tv/" }
 // Definition returns the persisted row.
 func (p *PlexServer) Definition() *notifications.Notification { return p.def }
 
-// updateLibrary mirrors C# `PlexServerService.UpdateLibrary` + the
-// section-matching `UpdateSections` at `:42-150`. Per-series flow:
+// updateIfEnabled enqueues a per-(host,series) library-refresh.
+// Mirrors C# `UpdateIfEnabled` at `:68-77` minus the PlexTv ping (the
+// `_plexTvService.Ping` call is deferred — see package doc). The
+// actual section discovery + per-path refresh HTTP work happens later
+// in [PlexServer.ProcessQueue].
+//
+// Returns nil for signature parity with the OnX hooks; enqueue is
+// in-process and cannot fail.
+func (p *PlexServer) updateIfEnabled(_ context.Context, ser *series.Series) error {
+	if !p.settings.UpdateLibrary || ser == nil || ser.Path == "" {
+		return nil
+	}
+	// C# adds (host, series, false) at `:75` — the bool is unused at
+	// drain time (Plex doesn't have a clean-library concept). We
+	// preserve the false marker for parity.
+	p.queue.Add(p.settings.Host, ser, false)
+	return nil
+}
+
+// refreshSeries fires the section-discovery + per-path Plex refresh
+// for a single series. Mirrors C# `PlexServerService.UpdateLibrary`
+// + the section-matching `UpdateSections` at `:42-150`. Per-series
+// flow:
 //
 //  1. Fetch the show-type sections from Plex.
 //  2. Compute the rootFolderPath as filepath.Dir(series.Path) — the
@@ -85,8 +113,8 @@ func (p *PlexServer) Definition() *notifications.Notification { return p.def }
 //     update only that section, scoped to the series-relative path.
 //  5. If no section matches, fall back to updating every section's
 //     locations with the series-relative path.
-func (p *PlexServer) updateLibrary(ctx context.Context, ser *series.Series) error {
-	if !p.settings.UpdateLibrary || ser == nil || ser.Path == "" {
+func (p *PlexServer) refreshSeries(ctx context.Context, ser *series.Series) error {
+	if ser == nil || ser.Path == "" {
 		return nil
 	}
 	sections, err := getTvSections(ctx, p.doer, &p.settings)
@@ -144,31 +172,29 @@ func (p *PlexServer) OnGrab(_ context.Context, _ notifications.GrabMessage) erro
 
 // OnDownload mirrors C# `:35-38`.
 func (p *PlexServer) OnDownload(ctx context.Context, msg notifications.DownloadMessage) error {
-	return p.updateLibrary(ctx, msg.Series)
+	return p.updateIfEnabled(ctx, msg.Series)
 }
 
 // OnImportComplete mirrors C# `:40-43`.
 func (p *PlexServer) OnImportComplete(ctx context.Context, msg notifications.ImportCompleteMessage) error {
-	return p.updateLibrary(ctx, msg.Series)
+	return p.updateIfEnabled(ctx, msg.Series)
 }
 
 // OnRename mirrors C# `:45-48`. Series is `any` per the RenameMessage
 // signature; assert to *series.Series.
 func (p *PlexServer) OnRename(ctx context.Context, msg notifications.RenameMessage) error {
-	if ser, ok := msg.Series.(*series.Series); ok && ser != nil {
-		return p.updateLibrary(ctx, ser)
-	}
-	return nil
+	ser, _ := msg.Series.(*series.Series)
+	return p.updateIfEnabled(ctx, ser)
 }
 
 // OnEpisodeFileDelete mirrors C# `:50-53`.
 func (p *PlexServer) OnEpisodeFileDelete(ctx context.Context, msg notifications.EpisodeDeleteMessage) error {
-	return p.updateLibrary(ctx, msg.Series)
+	return p.updateIfEnabled(ctx, msg.Series)
 }
 
 // OnSeriesAdd mirrors C# `:55-58`.
 func (p *PlexServer) OnSeriesAdd(ctx context.Context, msg notifications.SeriesAddMessage) error {
-	return p.updateLibrary(ctx, msg.Series)
+	return p.updateIfEnabled(ctx, msg.Series)
 }
 
 // OnSeriesDelete mirrors C# `:60-66`. Only fires when DeletedFiles is
@@ -177,7 +203,7 @@ func (p *PlexServer) OnSeriesDelete(ctx context.Context, msg notifications.Serie
 	if !msg.DeletedFiles {
 		return nil
 	}
-	return p.updateLibrary(ctx, msg.Series)
+	return p.updateIfEnabled(ctx, msg.Series)
 }
 
 // OnHealthIssue — not overridden in C#; no-op.
@@ -200,9 +226,25 @@ func (p *PlexServer) OnManualInteractionRequired(_ context.Context, _ notificati
 	return nil
 }
 
-// ProcessQueue is currently a no-op — the C# `:79-89` library-refresh
-// coalescing buffer is DEFERRED (see package doc).
-func (p *PlexServer) ProcessQueue(_ context.Context) error { return nil }
+// ProcessQueue drains the per-host coalescing buffer and fires the
+// section-discovery + per-path Plex refresh for each batched series.
+// Mirrors C# `:79-89`. The whole drain is gated on Settings.
+// UpdateLibrary (matches C# `:83`). First per-series error is
+// returned; remaining items are still attempted.
+func (p *PlexServer) ProcessQueue(ctx context.Context) error {
+	if !p.settings.UpdateLibrary {
+		return nil
+	}
+	var firstErr error
+	p.queue.Process(p.settings.Host, func(items []*mediaserverqueue.Item[bool]) {
+		for _, item := range items {
+			if err := p.refreshSeries(ctx, item.Series); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	})
+	return firstErr
+}
 
 // Test mirrors C# `PlexServerService.Test` at `:152-184`. Fetches the
 // sections list; returns the appropriate property failure on 401

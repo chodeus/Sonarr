@@ -146,7 +146,7 @@ func TestXbmc_NotifyDisabled_OnGrabIsSilent(t *testing.T) {
 	}
 }
 
-func TestXbmc_OnImportComplete_UpdateLibraryAndClean(t *testing.T) {
+func TestXbmc_OnImportComplete_NotifyImmediateLibraryWorkDeferred(t *testing.T) {
 	var capture []captured
 	srv := rpcServer(t, map[string]string{
 		"Player.GetActivePlayers": `{"result":[],"id":1,"jsonrpc":"2.0"}`,
@@ -161,9 +161,17 @@ func TestXbmc_OnImportComplete_UpdateLibraryAndClean(t *testing.T) {
 	if err := prov.OnImportComplete(t.Context(), msg); err != nil {
 		t.Fatalf("OnImportComplete: %v", err)
 	}
+	// Notify fires immediately; library work is queued for the next
+	// ProcessQueue tick (mirrors C# MediaServerUpdateQueue).
+	if got := methodsOf(capture); !equal(got, []string{"GUI.ShowNotification"}) {
+		t.Fatalf("after OnImportComplete: methods=%v want GUI.ShowNotification only", got)
+	}
+	if err := prov.ProcessQueue(t.Context()); err != nil {
+		t.Fatalf("ProcessQueue: %v", err)
+	}
 	want := []string{"GUI.ShowNotification", "Player.GetActivePlayers", "VideoLibrary.Scan", "VideoLibrary.Clean"}
 	if got := methodsOf(capture); !equal(got, want) {
-		t.Errorf("methods=%v want %v", got, want)
+		t.Errorf("after ProcessQueue: methods=%v want %v", got, want)
 	}
 }
 
@@ -177,6 +185,7 @@ func TestXbmc_AlwaysUpdate_SkipsActivePlayerCheck(t *testing.T) {
 	})
 	msg := notifications.ImportCompleteMessage{Series: &series.Series{Path: "/srv/Show"}}
 	_ = prov.OnImportComplete(t.Context(), msg)
+	_ = prov.ProcessQueue(t.Context())
 	for _, m := range methodsOf(capture) {
 		if m == "Player.GetActivePlayers" {
 			t.Errorf("Player.GetActivePlayers should not fire with AlwaysUpdate=true, got %v", methodsOf(capture))
@@ -196,6 +205,7 @@ func TestXbmc_VideoPlayerBusy_SkipsLibraryWork(t *testing.T) {
 	})
 	msg := notifications.ImportCompleteMessage{Series: &series.Series{Path: "/srv/Show"}}
 	_ = prov.OnImportComplete(t.Context(), msg)
+	_ = prov.ProcessQueue(t.Context())
 	for _, m := range methodsOf(capture) {
 		if m == "VideoLibrary.Scan" || m == "VideoLibrary.Clean" {
 			t.Errorf("library work should be skipped while video plays, got %v", methodsOf(capture))

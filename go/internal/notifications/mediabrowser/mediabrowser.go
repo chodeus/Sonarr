@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"sonarr.tv/sonarr/internal/notifications"
+	"sonarr.tv/sonarr/internal/notifications/mediaserverqueue"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -46,6 +47,7 @@ type MediaBrowser struct {
 	def      *notifications.Notification
 	settings Settings
 	doer     httpDoer
+	queue    *mediaserverqueue.Queue[string]
 }
 
 // Compile-time guard.
@@ -69,7 +71,12 @@ func New(def *notifications.Notification, deps notifications.Dependencies) (noti
 	if doer == nil {
 		doer = http.DefaultClient
 	}
-	return &MediaBrowser{def: def, settings: s, doer: doer}, nil
+	return &MediaBrowser{
+		def:      def,
+		settings: s,
+		doer:     doer,
+		queue:    mediaserverqueue.New[string](),
+	}, nil
 }
 
 // Name returns the provider display label. C# `:30`.
@@ -81,18 +88,20 @@ func (m *MediaBrowser) Link() string { return "https://emby.media/" }
 // Definition returns the persisted row.
 func (m *MediaBrowser) Definition() *notifications.Notification { return m.def }
 
-// updateIfEnabled fires a per-series library-update with the given
-// update-type. Mirrors C# `UpdateIfEnabled` at `:138-145`. Skips when
-// UpdateLibrary is disabled or series is nil.
+// updateIfEnabled enqueues a per-series library-update keyed by host.
+// Mirrors C# `UpdateIfEnabled` at `:138-145`. The actual library-
+// refresh HTTP call is deferred to [MediaBrowser.ProcessQueue] which
+// the orchestrator drains periodically — exactly mirrors the C#
+// MediaServerUpdateQueue flow.
 //
-// Coalescing-queue is deferred — see package doc. The C# code routes
-// through MediaServerUpdateQueue which batches multiple events per
-// series; the Go port calls update() per event directly.
-func (m *MediaBrowser) updateIfEnabled(ctx context.Context, ser *series.Series, updateType string) error {
+// Returns error for signature parity with the OnX hooks; enqueue is
+// in-process and cannot fail.
+func (m *MediaBrowser) updateIfEnabled(_ context.Context, ser *series.Series, updateType string) error {
 	if !m.settings.UpdateLibrary || ser == nil || ser.Path == "" {
 		return nil
 	}
-	return update(ctx, m.doer, &m.settings, m.settings.applyMapping(ser.Path), updateType)
+	m.queue.Add(m.settings.Host, ser, updateType)
+	return nil
 }
 
 // OnGrab mirrors C# `:32-38`.
@@ -123,16 +132,11 @@ func (m *MediaBrowser) OnImportComplete(ctx context.Context, msg notifications.I
 	return m.updateIfEnabled(ctx, msg.Series, updateCreated)
 }
 
-// OnRename mirrors C# `:60-63`. Only fires the library-update — no
+// OnRename mirrors C# `:60-63`. Only enqueues the library-update — no
 // notify. Series carried as `any` per RenameMessage signature.
 func (m *MediaBrowser) OnRename(ctx context.Context, msg notifications.RenameMessage) error {
-	if !m.settings.UpdateLibrary {
-		return nil
-	}
-	if ser, ok := msg.Series.(*series.Series); ok && ser != nil && ser.Path != "" {
-		return update(ctx, m.doer, &m.settings, m.settings.applyMapping(ser.Path), updateModified)
-	}
-	return nil
+	ser, _ := msg.Series.(*series.Series)
+	return m.updateIfEnabled(ctx, ser, updateModified)
 }
 
 // OnEpisodeFileDelete mirrors C# `:65-73`.
@@ -196,9 +200,35 @@ func (m *MediaBrowser) OnManualInteractionRequired(_ context.Context, _ notifica
 	return nil
 }
 
-// ProcessQueue is currently a no-op — the C# `:119-136` library-
-// refresh coalescing buffer is deferred (see package doc).
-func (m *MediaBrowser) ProcessQueue(_ context.Context) error { return nil }
+// ProcessQueue drains the per-host coalescing buffer and fires one
+// /Library/Media/Updated POST per batched series. Mirrors C#
+// `:119-136`. Per the C# branch at `:130`: when the series has a
+// single accumulated UpdateType across the batch window, that
+// specific type is sent; otherwise an empty UpdateType is sent and
+// Emby decides. The first per-series error is returned; remaining
+// items are still attempted (mirrors C# foreach without break).
+func (m *MediaBrowser) ProcessQueue(ctx context.Context) error {
+	if !m.settings.UpdateLibrary {
+		return nil
+	}
+	var firstErr error
+	m.queue.Process(m.settings.Host, func(items []*mediaserverqueue.Item[string]) {
+		for _, item := range items {
+			updateType := ""
+			if len(item.Info) == 1 {
+				for k := range item.Info {
+					updateType = k
+				}
+			}
+			if err := update(ctx, m.doer, &m.settings, m.settings.applyMapping(item.Series.Path), updateType); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+	})
+	return firstErr
+}
 
 // Test mirrors C# `MediaBrowserService.Test` at `:60-105`. Connection
 // check via /System/Configuration, then (when Notify is enabled) a

@@ -131,6 +131,14 @@ func TestPlex_OnSeriesAdd_MatchedSectionFiresRefresh(t *testing.T) {
 	if err := prov.OnSeriesAdd(t.Context(), msg); err != nil {
 		t.Fatalf("OnSeriesAdd: %v", err)
 	}
+	// OnSeriesAdd only queues — the section discovery + refresh fire
+	// at the next ProcessQueue tick (mirrors C# MediaServerUpdateQueue).
+	if len(capture) != 0 {
+		t.Fatalf("OnSeriesAdd should defer HTTP work, got %+v", capture)
+	}
+	if err := prov.ProcessQueue(t.Context()); err != nil {
+		t.Fatalf("ProcessQueue: %v", err)
+	}
 	// Expect: GET /library/sections, GET /library/sections/1/refresh
 	if len(capture) != 2 {
 		t.Fatalf("calls=%d want 2: %+v", len(capture), capture)
@@ -158,6 +166,9 @@ func TestPlex_PathMapping_TranslatesRootFolder(t *testing.T) {
 	if err := prov.OnSeriesAdd(t.Context(), msg); err != nil {
 		t.Fatalf("OnSeriesAdd: %v", err)
 	}
+	if err := prov.ProcessQueue(t.Context()); err != nil {
+		t.Fatalf("ProcessQueue: %v", err)
+	}
 	// The mapped rootFolder /srv/tv should match section 1's Location;
 	// refresh path uses the location root + series-relative.
 	if !strings.HasSuffix(capture[1].Path, "/library/sections/1/refresh") {
@@ -180,6 +191,9 @@ func TestPlex_NoMatch_FallsBackToAllSections(t *testing.T) {
 	if err := prov.OnSeriesAdd(t.Context(), msg); err != nil {
 		t.Fatalf("OnSeriesAdd: %v", err)
 	}
+	if err := prov.ProcessQueue(t.Context()); err != nil {
+		t.Fatalf("ProcessQueue: %v", err)
+	}
 	// One sections call + one refresh against the lone section.
 	if len(capture) != 2 || !strings.HasSuffix(capture[1].Path, "/library/sections/1/refresh") {
 		t.Errorf("fallback should refresh the single non-matching section, got %+v", capture)
@@ -194,6 +208,9 @@ func TestPlex_LegacyChildrenEnvelope_Parses(t *testing.T) {
 	msg := notifications.SeriesAddMessage{Series: &series.Series{Title: "Show", Path: "/srv/tv/Show"}}
 	if err := prov.OnSeriesAdd(t.Context(), msg); err != nil {
 		t.Fatalf("OnSeriesAdd: %v", err)
+	}
+	if err := prov.ProcessQueue(t.Context()); err != nil {
+		t.Fatalf("ProcessQueue: %v", err)
 	}
 	if !strings.HasSuffix(capture[1].Path, "/library/sections/1/refresh") {
 		t.Errorf("legacy envelope should yield same refresh call, got %+v", capture)
@@ -272,6 +289,7 @@ func TestPlex_XPlexTokenAttachedAsQueryParam(t *testing.T) {
 	defer srv.Close()
 	prov := makePlex(t, srv, nil)
 	_ = prov.OnSeriesAdd(t.Context(), notifications.SeriesAddMessage{Series: &series.Series{Path: "/srv/tv/Show"}})
+	_ = prov.ProcessQueue(t.Context())
 	if got := capture[0].Query.Get("X-Plex-Token"); got != "tok" {
 		t.Errorf("X-Plex-Token=%q want tok", got)
 	}
@@ -280,24 +298,30 @@ func TestPlex_XPlexTokenAttachedAsQueryParam(t *testing.T) {
 	}
 }
 
-func TestPlex_500SurfacesSendFailed(t *testing.T) {
+func TestPlex_500SurfacesSendFailedFromProcessQueue(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 	prov := makePlex(t, srv, nil)
-	err := prov.OnSeriesAdd(t.Context(), notifications.SeriesAddMessage{Series: &series.Series{Path: "/srv/tv/Show"}})
+	if err := prov.OnSeriesAdd(t.Context(), notifications.SeriesAddMessage{Series: &series.Series{Path: "/srv/tv/Show"}}); err != nil {
+		t.Fatalf("OnSeriesAdd should only queue, got %v", err)
+	}
+	err := prov.ProcessQueue(t.Context())
 	if !errors.Is(err, plex.ErrSendFailed) {
-		t.Errorf("err=%v want ErrSendFailed", err)
+		t.Errorf("err=%v want ErrSendFailed (drain-time failure)", err)
 	}
 }
 
-func TestPlex_APIError_SurfacesTypedSentinel(t *testing.T) {
+func TestPlex_APIError_SurfacesTypedSentinelFromProcessQueue(t *testing.T) {
 	var capture []captured
 	srv := plexServer(t, `{"MediaContainer":{"error":"section not found"}}`, false, &capture)
 	defer srv.Close()
 	prov := makePlex(t, srv, nil)
-	err := prov.OnSeriesAdd(t.Context(), notifications.SeriesAddMessage{Series: &series.Series{Path: "/srv/tv/Show"}})
+	if err := prov.OnSeriesAdd(t.Context(), notifications.SeriesAddMessage{Series: &series.Series{Path: "/srv/tv/Show"}}); err != nil {
+		t.Fatalf("OnSeriesAdd should only queue, got %v", err)
+	}
+	err := prov.ProcessQueue(t.Context())
 	var apiErr *plex.ErrAPIError
 	if !errors.As(err, &apiErr) || !strings.Contains(apiErr.Message, "section not found") {
 		t.Errorf("err=%v want ErrAPIError with message", err)
