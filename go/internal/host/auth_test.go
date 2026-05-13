@@ -29,6 +29,11 @@ func TestParseAPIKey(t *testing.T) {
 		{"bearer_no_space", "", map[string]string{"Authorization": "BearerAbc"}, "BearerAbc"},
 		{"bearer_global_replace", "", map[string]string{"Authorization": "Bearer foo Bearer bar"}, "foo bar"},
 		{"empty_query_falls_through", "apikey=", map[string]string{"X-Api-Key": "h-key"}, "h-key"},
+		// SignalR JS client passes the API key via `?access_token`
+		// because WebSocket upgrades can't carry custom headers.
+		{"signalr_access_token", "access_token=sr-key", nil, "sr-key"},
+		// `?apikey` wins over `?access_token` when both supplied.
+		{"apikey_beats_access_token", "apikey=q-key&access_token=sr-key", nil, "q-key"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

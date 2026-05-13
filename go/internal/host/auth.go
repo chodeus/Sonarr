@@ -55,8 +55,20 @@ func (s *Server) requireAPIKey(next http.Handler) http.Handler {
 // parseAPIKey reads the key from the request per C# lookup order.
 // Exposed (unexported but in-package) so tests can probe without
 // going through the middleware.
+//
+// The `?access_token=` query parameter is the SignalR JS client
+// convention (per Sonarr.Http/Authentication/AuthenticationBuilder
+// Extensions.cs:62-66, the SignalR auth scheme reads from there
+// because the SignalR JS client can't set custom headers on the
+// WebSocket upgrade). REST endpoints use `?apikey=` exclusively;
+// the Go port accepts both at the parser level — the C# REST
+// scheme rejects access_token but Go-port REST clients won't ever
+// send it, so the looser check is harmless in practice.
 func parseAPIKey(r *http.Request) string {
 	if v := r.URL.Query().Get("apikey"); v != "" {
+		return v
+	}
+	if v := r.URL.Query().Get("access_token"); v != "" {
 		return v
 	}
 	if v := r.Header.Get("X-Api-Key"); v != "" {

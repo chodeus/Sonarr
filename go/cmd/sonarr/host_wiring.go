@@ -34,6 +34,7 @@ import (
 	"sonarr.tv/sonarr/internal/remotepathmappings"
 	"sonarr.tv/sonarr/internal/rootfolders"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
 )
 
@@ -410,6 +411,15 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, qualityDefS
 		{Method: "GET", Path: "/api/v3/update", Handler: apiv3.UpdateHandler(emptyUpdateLister{})},
 		{Method: "GET", Path: "/api/v3/wanted/cutoff", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedCutoff)},
 		{Method: "GET", Path: "/api/v3/wanted/missing", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedMissing)},
+		// SignalR negotiate endpoint — the JS client posts here
+		// first to discover the per-connection id and the available
+		// transports before opening the WebSocket. Auth is the
+		// shared requireAPIKey middleware; the SignalR-specific
+		// `?access_token=` query was added to parseAPIKey in this
+		// slice (4.ES). The actual WebSocket transport at
+		// `/signalr/messages` is DEFERRED.
+		{Method: "POST", Path: "/signalr/messages/negotiate", Handler: signalr.NegotiateHandler(nil)},
+		{Method: "OPTIONS", Path: "/signalr/messages/negotiate", Handler: signalr.NegotiateHandler(nil), Anonymous: true},
 	}
 }
 
