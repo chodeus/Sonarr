@@ -17,6 +17,8 @@ import (
 	"sonarr.tv/sonarr/internal/qualitydefinitions"
 	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
+	"sonarr.tv/sonarr/internal/remotepathmappings"
+	"sonarr.tv/sonarr/internal/rootfolders"
 	"sonarr.tv/sonarr/internal/tags"
 )
 
@@ -27,7 +29,7 @@ import (
 // Mirrors `src/NzbDrone.Host/Bootstrap.cs:CreateConsoleHostBuilder`
 // where BindAddress + Port are pulled from the configuration before
 // the URL list is handed to Kestrel.
-func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service) (*host.Server, error) {
+func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service) (*host.Server, error) {
 	bind, err := cfg.BindAddress(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: bind address: %w", err)
@@ -44,7 +46,7 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 		// its APIKey(ctx) (string, error) method — no adapter
 		// needed.
 		cfg,
-		host.WithRoutes(v3Routes(configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc)...),
+		host.WithRoutes(v3Routes(configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc)...),
 	), nil
 }
 
@@ -73,7 +75,7 @@ func (emptyPendingLister) PendingCount(context.Context) (int, error) { return 0,
 // autoTagsSvc + releaseProfilesSvc own their respective tables; both
 // expose All directly via Go's structural typing on the Lister
 // interfaces.
-func v3Routes(configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service) []host.Route {
+func v3Routes(configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service) []host.Route {
 	langs := language.All()
 	return []host.Route{
 		{Method: "GET", Path: "/api/v3/autotagging", Handler: apiv3.AutoTaggingHandler(autoTagsSvc)},
@@ -85,6 +87,8 @@ func v3Routes(configProv *config.Provider, qualityDefSvc *qualitydefinitions.Ser
 		{Method: "GET", Path: "/api/v3/qualitydefinition", Handler: apiv3.QualityDefinitionHandler(qualityDefSvc)},
 		{Method: "GET", Path: "/api/v3/queue/status", Handler: apiv3.QueueStatusHandler(queueSvc, emptyPendingLister{})},
 		{Method: "GET", Path: "/api/v3/releaseprofile", Handler: apiv3.ReleaseProfileHandler(releaseProfilesSvc)},
+		{Method: "GET", Path: "/api/v3/remotepathmapping", Handler: apiv3.RemotePathMappingHandler(remotePathMappingsSvc)},
+		{Method: "GET", Path: "/api/v3/rootfolder", Handler: apiv3.RootFolderHandler(rootFoldersSvc)},
 		{Method: "GET", Path: "/api/v3/tag", Handler: apiv3.TagHandler(tagsSvc)},
 	}
 }

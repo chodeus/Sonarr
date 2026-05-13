@@ -94,6 +94,7 @@ import (
 	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/recyclebin"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
+	"sonarr.tv/sonarr/internal/remotepathmappings"
 	"sonarr.tv/sonarr/internal/rootfolders"
 	"sonarr.tv/sonarr/internal/scenemappings"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
@@ -609,6 +610,22 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	)
 	if err != nil {
 		return fmt.Errorf("rootfolders service: %w", err)
+	}
+
+	// RemotePathMappings service (slice 4.DP — first wiring; the
+	// package existed but nothing consumed it until the
+	// /api/v3/remotepathmapping route landed). DiskProvider here is
+	// the same disk.Provider used by rootfolders; the service's
+	// LocalPath-FolderExists validation runs only on write paths,
+	// so the read-only handler shipped this slice doesn't exercise
+	// it.
+	remotePathMappingsRepo, err := remotepathmappings.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("remotepathmappings repo: %w", err)
+	}
+	remotePathMappingsSvc, err := remotepathmappings.NewService(remotePathMappingsRepo, diskProv)
+	if err != nil {
+		return fmt.Errorf("remotepathmappings service: %w", err)
 	}
 	// Slice 3.AE relocated mediafiles.NewService construction down to
 	// after importApprovedSvc + importDecisionMaker so the real
@@ -2288,7 +2305,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		}
 	}()
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc)
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc)
 	if err != nil {
 		return err
 	}
