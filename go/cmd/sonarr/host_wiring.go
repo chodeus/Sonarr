@@ -7,6 +7,7 @@ import (
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/autotagging"
+	"sonarr.tv/sonarr/internal/blocklist"
 	"sonarr.tv/sonarr/internal/config"
 	"sonarr.tv/sonarr/internal/configfile"
 	"sonarr.tv/sonarr/internal/customfilters"
@@ -14,6 +15,7 @@ import (
 	"sonarr.tv/sonarr/internal/delayprofiles"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/host"
 	"sonarr.tv/sonarr/internal/importlists"
 	"sonarr.tv/sonarr/internal/indexers"
@@ -36,7 +38,7 @@ import (
 // Mirrors `src/NzbDrone.Host/Bootstrap.cs:CreateConsoleHostBuilder`
 // where BindAddress + Port are pulled from the configuration before
 // the URL list is handed to Kestrel.
-func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo) (*host.Server, error) {
+func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo) (*host.Server, error) {
 	bind, err := cfg.BindAddress(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: bind address: %w", err)
@@ -53,7 +55,7 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 		// its APIKey(ctx) (string, error) method — no adapter
 		// needed.
 		cfg,
-		host.WithRoutes(v3Routes(configProv, cfg, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, systemStatus, pendingReleasesRepo)...),
+		host.WithRoutes(v3Routes(configProv, cfg, qualityDefSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo)...),
 	), nil
 }
 
@@ -68,6 +70,87 @@ type pendingCountLister struct{ repo *pendingreleases.Repo }
 
 func (p pendingCountLister) PendingCount(ctx context.Context) (int, error) {
 	return p.repo.Count(ctx)
+}
+
+// blocklistPagedAdapter wraps *blocklist.Repo to satisfy
+// apiv3.BlocklistPagedLister. The fresh-DB contract gate is the
+// empty-array shape; for populated DBs the adapter reads All() and
+// slices in-memory by Page/PageSize. SortKey/SortDirection params
+// are honoured at the envelope level but not yet applied to the
+// underlying query — DEFERRED until a richer paged repo method
+// lands (`SELECT ... ORDER BY ... LIMIT N OFFSET M`). Per-record
+// fields beyond the skeleton (Title from Episode join, etc.) are
+// also DEFERRED.
+type blocklistPagedAdapter struct{ repo *blocklist.Repo }
+
+func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.PagingRequest) ([]apiv3.BlocklistResource, int, error) {
+	rows, err := a.repo.All(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := len(rows)
+	page := paginateInMemory(rows, req)
+	out := make([]apiv3.BlocklistResource, 0, len(page))
+	for _, e := range page {
+		out = append(out, apiv3.BlocklistResource{
+			ID:          e.ID,
+			SeriesID:    e.SeriesID,
+			SourceTitle: e.SourceTitle,
+			Date:        e.Date.UTC().Format("2006-01-02T15:04:05Z"),
+			// Title is derived from Episode.Title in C# — DEFERRED
+			// until the episode-join wiring lands.
+		})
+	}
+	return out, total, nil
+}
+
+// historyPagedAdapter wraps *history.Repo. Same caveats as blocklist:
+// in-memory paging, skeleton fields only, sort params unused.
+type historyPagedAdapter struct{ repo *history.Repo }
+
+func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingRequest) ([]apiv3.HistoryResource, int, error) {
+	rows, err := a.repo.All(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := len(rows)
+	page := paginateInMemory(rows, req)
+	out := make([]apiv3.HistoryResource, 0, len(page))
+	for _, e := range page {
+		out = append(out, apiv3.HistoryResource{
+			ID:          e.ID,
+			SeriesID:    e.SeriesID,
+			EpisodeID:   e.EpisodeID,
+			SourceTitle: e.SourceTitle,
+			Date:        e.Date.UTC().Format("2006-01-02T15:04:05Z"),
+			DownloadID:  e.DownloadID,
+			// EventType in C# is JsonStringEnumConverter+CamelCase
+			// on EpisodeHistoryEventType; the Go-port mapping is
+			// DEFERRED until the event-type-name table lands.
+		})
+	}
+	return out, total, nil
+}
+
+// paginateInMemory clamps the page window to the slice and returns
+// the requested rows. Pure helper; works for any slice type so both
+// adapters share it via Go generics.
+func paginateInMemory[T any](all []T, req apiv3.PagingRequest) []T {
+	if req.PageSize <= 0 {
+		return nil
+	}
+	start := (req.Page - 1) * req.PageSize
+	if start < 0 {
+		start = 0
+	}
+	if start >= len(all) {
+		return nil
+	}
+	end := start + req.PageSize
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[start:end]
 }
 
 // emptyWantedLister stands in for a future wanted-episodes service.
@@ -204,12 +287,13 @@ func (h hostConfigGetter) ProxyBypassLocalAddresses() bool { return h.cfg.ProxyB
 // autoTagsSvc + releaseProfilesSvc own their respective tables; both
 // expose All directly via Go's structural typing on the Lister
 // interfaces.
-func v3Routes(configProv *config.Provider, cfg *configfile.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo) []host.Route {
+func v3Routes(configProv *config.Provider, cfg *configfile.Provider, qualityDefSvc *qualitydefinitions.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo) []host.Route {
 	langs := language.All()
 	uiCfg := uiConfigGetter{cfg: configProv, xmlCfg: cfg}
 	hostCfg := hostConfigGetter{cfg: configProv, xmlCfg: cfg}
 	return []host.Route{
 		{Method: "GET", Path: "/api/v3/autotagging", Handler: apiv3.AutoTaggingHandler(autoTagsSvc)},
+		{Method: "GET", Path: "/api/v3/blocklist", Handler: apiv3.BlocklistHandler(blocklistPagedAdapter{repo: blocklistRepo})},
 		{Method: "GET", Path: "/api/v3/calendar", Handler: apiv3.CalendarHandler(episodesSvc)},
 		{Method: "GET", Path: "/api/v3/config/downloadclient", Handler: apiv3.DownloadClientConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/host", Handler: apiv3.HostConfigHandler(hostCfg)},
@@ -222,6 +306,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, qualityDefS
 		{Method: "GET", Path: "/api/v3/delayprofile", Handler: apiv3.DelayProfileHandler(delayProfilesSvc)},
 		{Method: "GET", Path: "/api/v3/downloadclient", Handler: apiv3.DownloadClientHandler(downloadClientsRepo)},
 		{Method: "GET", Path: "/api/v3/episode", Handler: apiv3.EpisodeListHandler(episodesSvc)},
+		{Method: "GET", Path: "/api/v3/history", Handler: apiv3.HistoryHandler(historyPagedAdapter{repo: historyRepo})},
 		{Method: "GET", Path: "/api/v3/importlist", Handler: apiv3.ImportListHandler(importListsRepo)},
 		{Method: "GET", Path: "/api/v3/indexer", Handler: apiv3.IndexerHandler(indexersRepo)},
 		{Method: "GET", Path: "/api/v3/language", Handler: apiv3.LanguageHandler(langs)},
