@@ -17,6 +17,7 @@ import (
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/pendingreleases"
 	"sonarr.tv/sonarr/internal/queue"
+	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
 )
@@ -309,6 +310,124 @@ func (emptyQueueLister) GetQueue() []queue.Queue { return nil }
 type emptyPendingLister struct{}
 
 func (emptyPendingLister) PendingCount(_ context.Context) (int, error) { return 0, nil }
+
+// TestWireSignalRSubscribers_SeriesAddedFires_Created exercises
+// the series Added path: publishing a SeriesAddedEvent carrying a
+// *Series produces a `series/created` envelope with the projected
+// SeriesResource body on the WS.
+func TestWireSignalRSubscribers_SeriesAddedFires_Created(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	wireSignalRSubscribers(bus, hub, logger, nil)
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=series-added")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second) // handshake reply
+	_ = readFrame(t, c, time.Second) // version event
+
+	s := &series.Series{ID: 42, Title: "Demo", Monitored: true, Path: "/tv/Demo"}
+	_ = messaging.Publish(t.Context(), bus, series.SeriesAddedEvent{Series: s})
+
+	frame := readFrame(t, c, 2*time.Second)
+	var inv signalr.InvocationMessage
+	_ = json.Unmarshal(frame, &inv)
+	argBytes, _ := json.Marshal(inv.Arguments[0])
+	body := string(argBytes)
+	if !strings.Contains(body, `"name":"series"`) {
+		t.Errorf("envelope name: %s", body)
+	}
+	if !strings.Contains(body, `"action":"created"`) {
+		t.Errorf("action: %s", body)
+	}
+	if !strings.Contains(body, `"id":42`) || !strings.Contains(body, `"title":"Demo"`) {
+		t.Errorf("resource projection: %s", body)
+	}
+}
+
+// TestWireSignalRSubscribers_SeriesEditedFires_Updated covers the
+// Edited path.
+func TestWireSignalRSubscribers_SeriesEditedFires_Updated(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	wireSignalRSubscribers(bus, hub, logger, nil)
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=series-edited")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second)
+	_ = readFrame(t, c, time.Second)
+
+	s := &series.Series{ID: 7, Title: "Updated"}
+	_ = messaging.Publish(t.Context(), bus, series.SeriesEditedEvent{Series: s})
+
+	frame := readFrame(t, c, 2*time.Second)
+	var inv signalr.InvocationMessage
+	_ = json.Unmarshal(frame, &inv)
+	argBytes, _ := json.Marshal(inv.Arguments[0])
+	body := string(argBytes)
+	if !strings.Contains(body, `"action":"updated"`) || !strings.Contains(body, `"id":7`) {
+		t.Errorf("edited envelope: %s", body)
+	}
+}
+
+// TestWireSignalRSubscribers_SeriesDeletedFansPerRow asserts a
+// SeriesDeletedEvent carrying N series produces N `series/deleted`
+// envelopes (one per row).
+func TestWireSignalRSubscribers_SeriesDeletedFansPerRow(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	wireSignalRSubscribers(bus, hub, logger, nil)
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=series-deleted")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second)
+	_ = readFrame(t, c, time.Second)
+
+	_ = messaging.Publish(t.Context(), bus, series.SeriesDeletedEvent{
+		Series: []series.Series{{ID: 1, Title: "A"}, {ID: 2, Title: "B"}},
+	})
+
+	seenIDs := map[int]bool{}
+	for range 2 {
+		frame := readFrame(t, c, 2*time.Second)
+		var inv signalr.InvocationMessage
+		_ = json.Unmarshal(frame, &inv)
+		argBytes, _ := json.Marshal(inv.Arguments[0])
+		body := string(argBytes)
+		if !strings.Contains(body, `"action":"deleted"`) {
+			t.Errorf("not deleted: %s", body)
+		}
+		switch {
+		case strings.Contains(body, `"id":1`):
+			seenIDs[1] = true
+		case strings.Contains(body, `"id":2`):
+			seenIDs[2] = true
+		}
+	}
+	if !seenIDs[1] || !seenIDs[2] {
+		t.Errorf("expected both ids; got %+v", seenIDs)
+	}
+}
 
 // TestWireSignalRSubscribers_NilDepsSafe asserts the wiring is a
 // no-op when called with nil dependencies — main.go calls this

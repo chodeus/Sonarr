@@ -29,6 +29,7 @@ import (
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/pendingreleases"
 	"sonarr.tv/sonarr/internal/queue"
+	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
 )
@@ -191,6 +192,53 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 		// a host-level shutdown hook can call .Stop() then.
 		_ = queueStatusDebouncer
 	}
+
+	// `series` family: populated-body emits with the projected
+	// apiv3.SeriesResource. Three triggers:
+	//   - SeriesAddedEvent → Created (Resource = the inserted series)
+	//   - SeriesEditedEvent → Updated (Resource = the new series)
+	//   - SeriesDeletedEvent → Deleted, fanned per row in the batch
+	//     (the C# V3 path emits a full SeriesResource on delete,
+	//     not just an Id — preserves UI state for transient
+	//     deletions where the resource still has data)
+	// Sync emits would come from SeriesBulkEditedEvent /
+	// SeriesImportedEvent / SeriesRenamedEvent / MediaCoversUpdated
+	// but those events aren't ported (or aren't easily projected
+	// from the batch shape) — DEFERRED to follow-up slices.
+	seriesBroadcaster := &signalr.ResourceBroadcaster[apiv3.SeriesResource]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "series",
+		Version:     signalr.V3Version,
+	}
+	messaging.Subscribe(bus, "signalr.series.Added",
+		func(ctx context.Context, ev series.SeriesAddedEvent) error {
+			if ev.Series == nil {
+				return nil
+			}
+			if err := seriesBroadcaster.Created(ctx, apiv3.ToSeriesResource(*ev.Series)); err != nil {
+				logger.Warn("signalr: series created broadcast failed", "err", err)
+			}
+			return nil
+		})
+	messaging.Subscribe(bus, "signalr.series.Edited",
+		func(ctx context.Context, ev series.SeriesEditedEvent) error {
+			if ev.Series == nil {
+				return nil
+			}
+			if err := seriesBroadcaster.Updated(ctx, apiv3.ToSeriesResource(*ev.Series)); err != nil {
+				logger.Warn("signalr: series updated broadcast failed", "err", err)
+			}
+			return nil
+		})
+	messaging.Subscribe(bus, "signalr.series.Deleted",
+		func(ctx context.Context, ev series.SeriesDeletedEvent) error {
+			for _, s := range ev.Series {
+				if err := seriesBroadcaster.Deleted(ctx, apiv3.ToSeriesResource(s)); err != nil {
+					logger.Warn("signalr: series deleted broadcast failed", "id", s.ID, "err", err)
+				}
+			}
+			return nil
+		})
 }
 
 // tagSyncPayload is the placeholder TResource for the `tag` Sync

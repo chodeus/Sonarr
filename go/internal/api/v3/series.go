@@ -114,7 +114,7 @@ func SeriesListHandler(lister SeriesLister) http.Handler {
 		}
 		out := make([]SeriesResource, 0, len(rows))
 		for _, s := range rows {
-			out = append(out, toSeriesResource(s))
+			out = append(out, ToSeriesResource(s))
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -123,7 +123,7 @@ func SeriesListHandler(lister SeriesLister) http.Handler {
 	})
 }
 
-// toSeriesResource maps the persisted Series to the wire shape's
+// ToSeriesResource maps the persisted Series to the wire shape's
 // scalar subset. Joined/projected fields (alternateTitles,
 // statistics, seasons, images, original-language full DTO) are
 // DEFERRED — see the SeriesResource doc comment for the full list.
@@ -134,7 +134,7 @@ func SeriesListHandler(lister SeriesLister) http.Handler {
 // live alongside the per-domain conversion helpers (qualitySource
 // in qualitydefinition.go; the series-side ones land here so the
 // table stays close to the only caller).
-func toSeriesResource(s series.Series) SeriesResource {
+func ToSeriesResource(s series.Series) SeriesResource {
 	tags := s.Tags
 	if tags == nil {
 		tags = []int{}
