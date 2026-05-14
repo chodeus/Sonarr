@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -100,6 +101,11 @@ type Server struct {
 	// requests outside the prefix 404. Set via WithURLBase.
 	urlBase string
 
+	// staticFS is the optional fs.FS-backed frontend-bundle root.
+	// Mutually-exclusive with staticDir at boot — set ONE, not
+	// both. Used for single-binary distribution via go:embed.
+	staticFS fs.FS
+
 	// listenerOverride lets tests inject a pre-bound listener so
 	// they can run against a randomly assigned port. nil means
 	// `net.Listen("tcp", cfg.Listen())` is called inside Run.
@@ -163,6 +169,20 @@ func normaliseURLBase(b string) string {
 		return ""
 	}
 	return "/" + b
+}
+
+// WithStaticFS mounts an fs.FS as the frontend bundle root. The
+// fs.FS argument MUST contain index.html at its root (typically
+// obtained via fs.Sub on a //go:embed all:<path>/build directive).
+// Mutually-exclusive with WithStaticDir at boot — if both are set,
+// WithStaticDir wins (the disk-backed mount is more useful for
+// development iteration; go:embed is for production binaries).
+//
+// Use case: single-binary distribution. cmd/sonarr can compile the
+// React build into the executable + mount it without a runtime
+// --frontenddir flag.
+func WithStaticFS(filesystem fs.FS) Option {
+	return func(s *Server) { s.staticFS = filesystem }
 }
 
 // WithStaticDir mounts a directory as the frontend bundle root.
@@ -335,13 +355,21 @@ func (s *Server) buildMux() *http.ServeMux {
 	// Anonymous — the frontend bundle is the entry point users hit
 	// before they've supplied an API key; auth gates the API
 	// surface, not the HTML/CSS/JS shell.
-	if s.staticDir != "" {
+	//
+	// Precedence: WithStaticDir wins over WithStaticFS when both
+	// are set (disk-backed mount is the development-iteration path
+	// and should take priority over the embedded production
+	// fallback).
+	switch {
+	case s.staticDir != "":
 		static, err := staticHandler(s.staticDir)
 		if err != nil {
 			s.logger.Error("static handler init failed", "err", err, "dir", s.staticDir)
 		} else {
 			mux.Handle("/", static)
 		}
+	case s.staticFS != nil:
+		mux.Handle("/", staticHandlerFS(s.staticFS))
 	}
 	return mux
 }
