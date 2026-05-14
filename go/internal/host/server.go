@@ -89,6 +89,11 @@ type Server struct {
 
 	shutdownTimeout time.Duration
 
+	// staticDir is the optional frontend-bundle root mounted under
+	// "/" after the per-method API routes. Empty means no static
+	// surface — non-API paths get 404. Set via WithStaticDir.
+	staticDir string
+
 	// listenerOverride lets tests inject a pre-bound listener so
 	// they can run against a randomly assigned port. nil means
 	// `net.Listen("tcp", cfg.Listen())` is called inside Run.
@@ -123,6 +128,19 @@ func WithShutdownTimeout(d time.Duration) Option {
 // itself so each per-controller package is fully decoupled.
 func WithRoutes(routes ...Route) Option {
 	return func(s *Server) { s.routes = append(s.routes, routes...) }
+}
+
+// WithStaticDir mounts a directory as the frontend bundle root.
+// The handler serves files under the path; missing files fall back
+// to <root>/index.html so the SPA's client-side router can resolve
+// the requested route. Empty path disables static serving (default).
+//
+// API routes (`/api/...`, `/signalr/...`, `/ping`) are registered
+// FIRST in the ServeMux, so they take precedence over the static
+// fallback even though the static handler nominally matches every
+// path.
+func WithStaticDir(root string) Option {
+	return func(s *Server) { s.staticDir = root }
 }
 
 // New builds a Server. probe is required so /ping has a DB liveness
@@ -234,6 +252,20 @@ func (s *Server) buildMux() *http.ServeMux {
 			pattern = r.Method + " " + r.Path
 		}
 		mux.Handle(pattern, h)
+	}
+
+	// Static frontend bundle mounted under "/". Registered LAST so
+	// the API routes above take precedence on path collisions.
+	// Anonymous — the frontend bundle is the entry point users hit
+	// before they've supplied an API key; auth gates the API
+	// surface, not the HTML/CSS/JS shell.
+	if s.staticDir != "" {
+		static, err := staticHandler(s.staticDir)
+		if err != nil {
+			s.logger.Error("static handler init failed", "err", err, "dir", s.staticDir)
+		} else {
+			mux.Handle("/", static)
+		}
 	}
 	return mux
 }
