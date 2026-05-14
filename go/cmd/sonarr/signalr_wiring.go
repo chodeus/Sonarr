@@ -23,7 +23,10 @@ import (
 	"log/slog"
 
 	"sonarr.tv/sonarr/internal/autotagging"
+	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/pendingreleases"
+	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
 )
@@ -66,12 +69,68 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 			}
 			return nil
 		})
+
+	// `health` family: HealthCheckCompleteEvent fires once per
+	// scheduled-batch completion + once per event-driven re-check
+	// batch. The C# wire-shape emits `sync` with no body — the
+	// frontend re-fetches /api/v3/health to discover the new
+	// failing-result set.
+	healthBroadcaster := &signalr.ResourceBroadcaster[emptySyncPayload]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "health",
+		Version:     signalr.V3Version,
+	}
+	messaging.Subscribe(bus, "signalr.health.Complete",
+		func(ctx context.Context, _ healthcheck.CompleteEvent) error {
+			if err := healthBroadcaster.Sync(ctx); err != nil {
+				logger.Warn("signalr: health sync broadcast failed", "err", err)
+			}
+			return nil
+		})
+
+	// `queue` + `queue/details` families: same triggers (every
+	// QueueUpdatedEvent or PendingReleasesUpdatedEvent) but
+	// different broadcaster names so the JS client can subscribe
+	// to either or both. queue/status uses a 5s debouncer in the
+	// C# tree (BroadcastDebounce.Execute) — DEFERRED until the Go-
+	// port adds a per-broadcaster debouncer layer.
+	queueBroadcaster := &signalr.ResourceBroadcaster[emptySyncPayload]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "queue",
+		Version:     signalr.V3Version,
+	}
+	queueDetailsBroadcaster := &signalr.ResourceBroadcaster[emptySyncPayload]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "queue/details",
+		Version:     signalr.V3Version,
+	}
+	publishQueueSync := func(ctx context.Context, source string) {
+		if err := queueBroadcaster.Sync(ctx); err != nil {
+			logger.Warn("signalr: queue sync broadcast failed", "source", source, "err", err)
+		}
+		if err := queueDetailsBroadcaster.Sync(ctx); err != nil {
+			logger.Warn("signalr: queue/details sync broadcast failed", "source", source, "err", err)
+		}
+	}
+	messaging.Subscribe(bus, "signalr.queue.QueueUpdated",
+		func(ctx context.Context, _ queue.QueueUpdatedEvent) error {
+			publishQueueSync(ctx, "queue.QueueUpdated")
+			return nil
+		})
+	messaging.Subscribe(bus, "signalr.queue.PendingReleasesUpdated",
+		func(ctx context.Context, _ pendingreleases.PendingReleasesUpdatedEvent) error {
+			publishQueueSync(ctx, "pendingreleases.PendingReleasesUpdated")
+			return nil
+		})
 }
 
 // tagSyncPayload is the placeholder TResource for the `tag` Sync
-// path — Sync bodies carry no resource on the wire so the type
-// parameter only needs to satisfy the generic constraint. A future
-// Per-tag Created/Updated/Deleted slice will introduce a richer
-// type wired to the v3 TagResource projection; for now an empty
-// struct keeps the ResourceBroadcaster contract minimal.
+// path. A future per-tag Created/Updated/Deleted slice will introduce
+// a richer type wired to the v3 TagResource projection.
 type tagSyncPayload struct{}
+
+// emptySyncPayload is the shared placeholder TResource for resource
+// families whose SignalR envelope is Sync-only — health, queue,
+// queue/details. Sync bodies carry no resource on the wire so the
+// generic type parameter only needs to satisfy the constraint.
+type emptySyncPayload struct{}

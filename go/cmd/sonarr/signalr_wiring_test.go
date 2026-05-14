@@ -13,7 +13,10 @@ import (
 	"github.com/coder/websocket"
 
 	"sonarr.tv/sonarr/internal/autotagging"
+	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/pendingreleases"
+	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
 )
@@ -105,6 +108,130 @@ func TestWireSignalRSubscribers_AutoTagsUpdatedAlsoFiresTag(t *testing.T) {
 	body := string(argBytes)
 	if !strings.Contains(body, `"name":"tag"`) || !strings.Contains(body, `"action":"sync"`) {
 		t.Errorf("autotag should fan to tag/sync: %s", body)
+	}
+}
+
+// TestWireSignalRSubscribers_HealthCompleteFiresSync exercises the
+// health subscriber end-to-end. Publishing healthcheck.CompleteEvent
+// must produce a `health/sync` envelope on the WS.
+func TestWireSignalRSubscribers_HealthCompleteFiresSync(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	wireSignalRSubscribers(bus, hub, logger)
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=health-test")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second) // handshake reply
+	_ = readFrame(t, c, time.Second) // version event
+
+	_ = messaging.Publish(t.Context(), bus, healthcheck.CompleteEvent{})
+
+	got := readFrame(t, c, 2*time.Second)
+	var inv signalr.InvocationMessage
+	_ = json.Unmarshal(got, &inv)
+	argBytes, _ := json.Marshal(inv.Arguments[0])
+	body := string(argBytes)
+	if !strings.Contains(body, `"name":"health"`) || !strings.Contains(body, `"action":"sync"`) {
+		t.Errorf("health/sync envelope: %s", body)
+	}
+}
+
+// TestWireSignalRSubscribers_QueueUpdatedFansBoth asserts a single
+// queue.QueueUpdatedEvent fans out to BOTH `queue` and
+// `queue/details` namespaces (the C# tree publishes the same
+// trigger to both controllers; the Go-port wires both subscribers
+// off the one bus event).
+func TestWireSignalRSubscribers_QueueUpdatedFansBoth(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	wireSignalRSubscribers(bus, hub, logger)
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=queue-test")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second) // handshake reply
+	_ = readFrame(t, c, time.Second) // version event
+
+	_ = messaging.Publish(t.Context(), bus, queue.QueueUpdatedEvent{})
+
+	// Expect TWO envelopes on the wire, one for `queue` + one for
+	// `queue/details`. Order is the subscriber-fan order (queue
+	// first inside publishQueueSync).
+	names := make(map[string]int)
+	for range 2 {
+		got := readFrame(t, c, 2*time.Second)
+		var inv signalr.InvocationMessage
+		_ = json.Unmarshal(got, &inv)
+		argBytes, _ := json.Marshal(inv.Arguments[0])
+		body := string(argBytes)
+		if !strings.Contains(body, `"action":"sync"`) {
+			t.Errorf("non-sync action: %s", body)
+		}
+		switch {
+		case strings.Contains(body, `"name":"queue"`) && !strings.Contains(body, `"name":"queue/details"`):
+			names["queue"]++
+		case strings.Contains(body, `"name":"queue/details"`):
+			names["queue/details"]++
+		default:
+			t.Errorf("unexpected envelope name: %s", body)
+		}
+	}
+	if names["queue"] != 1 || names["queue/details"] != 1 {
+		t.Errorf("expected one of each name; got %+v", names)
+	}
+}
+
+// TestWireSignalRSubscribers_PendingReleasesAlsoFansQueue asserts
+// pendingreleases.PendingReleasesUpdatedEvent triggers the same
+// queue/queue-details fan-out (the C# tree subscribes both
+// QueueController and QueueDetailsController to this event).
+func TestWireSignalRSubscribers_PendingReleasesAlsoFansQueue(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	wireSignalRSubscribers(bus, hub, logger)
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=pending-test")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second)
+	_ = readFrame(t, c, time.Second)
+
+	_ = messaging.Publish(t.Context(), bus, pendingreleases.PendingReleasesUpdatedEvent{})
+
+	saw := make(map[string]bool)
+	for range 2 {
+		got := readFrame(t, c, 2*time.Second)
+		var inv signalr.InvocationMessage
+		_ = json.Unmarshal(got, &inv)
+		argBytes, _ := json.Marshal(inv.Arguments[0])
+		body := string(argBytes)
+		if strings.Contains(body, `"name":"queue/details"`) {
+			saw["queue/details"] = true
+		} else if strings.Contains(body, `"name":"queue"`) {
+			saw["queue"] = true
+		}
+	}
+	if !saw["queue"] || !saw["queue/details"] {
+		t.Errorf("pendingreleases should fan to queue + queue/details; saw %+v", saw)
 	}
 }
 
