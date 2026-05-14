@@ -13,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 
 	"sonarr.tv/sonarr/internal/autotagging"
+	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/messaging"
@@ -510,6 +511,38 @@ func TestWireSignalRSubscribers_EpisodeFileDeletedJoinsSeriesPath(t *testing.T) 
 	}
 	if !strings.Contains(body, `"path":"/tv/Demo/Season 01/x.mkv"`) {
 		t.Errorf("path join: %s", body)
+	}
+}
+
+// TestWireSignalRSubscribers_SystemTaskCommandExecutedSync asserts
+// publishing commands.CommandExecutedEvent triggers a
+// `system/task/sync` envelope on the WS.
+func TestWireSignalRSubscribers_SystemTaskCommandExecutedSync(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	wireSignalRSubscribers(bus, hub, logger, nil)
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=systask-test")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second)
+	_ = readFrame(t, c, time.Second)
+
+	_ = messaging.Publish(t.Context(), bus, commands.CommandExecutedEvent{Command: nil})
+
+	frame := readFrame(t, c, 2*time.Second)
+	var inv signalr.InvocationMessage
+	_ = json.Unmarshal(frame, &inv)
+	argBytes, _ := json.Marshal(inv.Arguments[0])
+	body := string(argBytes)
+	if !strings.Contains(body, `"name":"system/task"`) || !strings.Contains(body, `"action":"sync"`) {
+		t.Errorf("system/task sync envelope: %s", body)
 	}
 }
 

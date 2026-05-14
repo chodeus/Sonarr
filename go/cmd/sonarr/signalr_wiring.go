@@ -25,6 +25,7 @@ import (
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/autotagging"
+	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/messaging"
@@ -284,6 +285,27 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 			res := apiv3.ToEpisodeFileResource(*ev.EpisodeFile, seriesPath)
 			if err := episodeFileBroadcaster.Deleted(ctx, res); err != nil {
 				logger.Warn("signalr: episodefile deleted broadcast failed", "err", err)
+			}
+			return nil
+		})
+
+	// `system/task` family: scheduled-task state changes. The C#
+	// inventory lists two drivers — ModelEvent<ScheduledTask> +
+	// CommandExecutedEvent — both emitting `sync`. The Go port has
+	// commands.CommandExecutedEvent (fired after every command's
+	// Complete/Fail call); ModelEvent<ScheduledTask> isn't wired
+	// because the Go scheduledtasks package doesn't publish per-
+	// row mutation events today. Single subscriber wires the
+	// half we have.
+	systemTaskBroadcaster := &signalr.ResourceBroadcaster[emptySyncPayload]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "system/task",
+		Version:     signalr.V3Version,
+	}
+	messaging.Subscribe(bus, "signalr.systemTask.CommandExecuted",
+		func(ctx context.Context, _ commands.CommandExecutedEvent) error {
+			if err := systemTaskBroadcaster.Sync(ctx); err != nil {
+				logger.Warn("signalr: system/task sync broadcast failed", "err", err)
 			}
 			return nil
 		})
