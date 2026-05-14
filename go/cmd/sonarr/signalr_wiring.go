@@ -25,6 +25,7 @@ import (
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/autotagging"
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/pendingreleases"
@@ -236,6 +237,53 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 				if err := seriesBroadcaster.Deleted(ctx, apiv3.ToSeriesResource(s)); err != nil {
 					logger.Warn("signalr: series deleted broadcast failed", "id", s.ID, "err", err)
 				}
+			}
+			return nil
+		})
+
+	// `episodefile` family: populated-body emits via the projected
+	// apiv3.EpisodeFileResource. Two triggers wired today:
+	//   - EpisodeFileAddedEvent → Created (resource projected from
+	//     the event's EpisodeFile, with seriesPath="" since the
+	//     event doesn't carry it — Path on the wire is the bare
+	//     RelativePath for now; full Series.Path join DEFERRED)
+	//   - EpisodeFileDeletedEvent → Deleted (resource projected
+	//     from the event's EpisodeFile + the carried Series.Path
+	//     if Series is non-nil — the C# delete payload includes
+	//     the full Path so subscribers can render "X deleted"
+	//     toasts with the absolute path)
+	// EpisodeFileRenamedEvent + the ModelEvent<EpisodeFile> Updated
+	// path DEFERRED — Renamed needs an "updated path" envelope
+	// shape the C# wire-spec doesn't pin precisely; Updated
+	// happens via the ModelEvent which the Go port doesn't fire.
+	episodeFileBroadcaster := &signalr.ResourceBroadcaster[apiv3.EpisodeFileResource]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "episodefile",
+		Version:     signalr.V3Version,
+	}
+	messaging.Subscribe(bus, "signalr.episodefile.Added",
+		func(ctx context.Context, ev episodefiles.EpisodeFileAddedEvent) error {
+			if ev.EpisodeFile == nil {
+				return nil
+			}
+			res := apiv3.ToEpisodeFileResource(*ev.EpisodeFile, "")
+			if err := episodeFileBroadcaster.Created(ctx, res); err != nil {
+				logger.Warn("signalr: episodefile created broadcast failed", "err", err)
+			}
+			return nil
+		})
+	messaging.Subscribe(bus, "signalr.episodefile.Deleted",
+		func(ctx context.Context, ev episodefiles.EpisodeFileDeletedEvent) error {
+			if ev.EpisodeFile == nil {
+				return nil
+			}
+			seriesPath := ""
+			if ev.Series != nil {
+				seriesPath = ev.Series.Path
+			}
+			res := apiv3.ToEpisodeFileResource(*ev.EpisodeFile, seriesPath)
+			if err := episodeFileBroadcaster.Deleted(ctx, res); err != nil {
+				logger.Warn("signalr: episodefile deleted broadcast failed", "err", err)
 			}
 			return nil
 		})

@@ -13,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 
 	"sonarr.tv/sonarr/internal/autotagging"
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/pendingreleases"
@@ -426,6 +427,89 @@ func TestWireSignalRSubscribers_SeriesDeletedFansPerRow(t *testing.T) {
 	}
 	if !seenIDs[1] || !seenIDs[2] {
 		t.Errorf("expected both ids; got %+v", seenIDs)
+	}
+}
+
+// TestWireSignalRSubscribers_EpisodeFileAddedFires_Created exercises
+// the episodefile Added path: publish event carrying *File → assert
+// `episodefile/created` envelope with the projected resource on the WS.
+func TestWireSignalRSubscribers_EpisodeFileAddedFires_Created(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	wireSignalRSubscribers(bus, hub, logger, nil)
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=ef-added")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second)
+	_ = readFrame(t, c, time.Second)
+
+	f := &episodefiles.File{
+		ID: 11, SeriesID: 5, SeasonNumber: 2, RelativePath: "Season 02/Demo S02E03.mkv",
+		Size: 12345, SceneName: "Demo.S02E03.SCENE",
+	}
+	_ = messaging.Publish(t.Context(), bus, episodefiles.EpisodeFileAddedEvent{EpisodeFile: f})
+
+	frame := readFrame(t, c, 2*time.Second)
+	var inv signalr.InvocationMessage
+	_ = json.Unmarshal(frame, &inv)
+	argBytes, _ := json.Marshal(inv.Arguments[0])
+	body := string(argBytes)
+	if !strings.Contains(body, `"name":"episodefile"`) {
+		t.Errorf("envelope name: %s", body)
+	}
+	if !strings.Contains(body, `"action":"created"`) {
+		t.Errorf("action: %s", body)
+	}
+	if !strings.Contains(body, `"id":11`) || !strings.Contains(body, `"size":12345`) {
+		t.Errorf("resource projection: %s", body)
+	}
+}
+
+// TestWireSignalRSubscribers_EpisodeFileDeletedJoinsSeriesPath
+// asserts that when the event carries the parent Series the
+// emitted resource's Path is the joined Series.Path +
+// RelativePath; without Series the Path falls back to just
+// RelativePath.
+func TestWireSignalRSubscribers_EpisodeFileDeletedJoinsSeriesPath(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	wireSignalRSubscribers(bus, hub, logger, nil)
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=ef-deleted")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second)
+	_ = readFrame(t, c, time.Second)
+
+	f := &episodefiles.File{ID: 22, RelativePath: "Season 01/x.mkv"}
+	s := &series.Series{ID: 9, Path: "/tv/Demo"}
+	_ = messaging.Publish(t.Context(), bus, episodefiles.EpisodeFileDeletedEvent{
+		EpisodeFile: f, Series: s,
+	})
+
+	frame := readFrame(t, c, 2*time.Second)
+	var inv signalr.InvocationMessage
+	_ = json.Unmarshal(frame, &inv)
+	argBytes, _ := json.Marshal(inv.Arguments[0])
+	body := string(argBytes)
+	if !strings.Contains(body, `"action":"deleted"`) {
+		t.Errorf("action: %s", body)
+	}
+	if !strings.Contains(body, `"path":"/tv/Demo/Season 01/x.mkv"`) {
+		t.Errorf("path join: %s", body)
 	}
 }
 
