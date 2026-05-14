@@ -2390,7 +2390,14 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		Pending: pendingCountLister{repo: pendingReleasesRepo},
 	})
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo)
+	// Slice 4.FD: optional frontend-bundle mount. `--frontenddir=
+	// /path/to/frontend/build` makes the host serve the React shell
+	// under `/` with SPA-fallback routing (per slice 4.FC). Empty
+	// disables the static surface — the API + SignalR still
+	// respond, just without an HTML/CSS/JS shell.
+	frontendDir, _ := startup.Arg(appenv.StartupArgFrontendDir)
+
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, frontendDir)
 	if err != nil {
 		return err
 	}

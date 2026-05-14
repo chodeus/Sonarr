@@ -102,6 +102,14 @@ func TestParseStartupArgs(t *testing.T) {
 			args: map[string]string{},
 			flag: []string{},
 		},
+		{
+			// Slice 4.FD's new --frontenddir flag — same parser
+			// path as `data`; the slot is exercised here to lock in
+			// the constant's lowercase name.
+			name: "frontenddir",
+			argv: []string{"--frontenddir=/srv/sonarr/frontend/build"},
+			args: map[string]string{appenv.StartupArgFrontendDir: "/srv/sonarr/frontend/build"},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

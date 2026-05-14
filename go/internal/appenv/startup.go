@@ -39,6 +39,14 @@ const (
 	// StartupFlagTerminateExisting tells the host to kill an existing
 	// Sonarr process holding the config dir before starting.
 	StartupFlagTerminateExisting = "terminateexisting"
+	// StartupArgFrontendDir overrides the built-frontend bundle
+	// path the host serves under `/`. Empty / unset disables the
+	// static surface; non-empty mounts the directory with SPA
+	// fallback to <dir>/index.html. C# parallel: the dotnet build
+	// embeds `wwwroot` next to the binary; the Go port externalises
+	// it via this flag because go:embed isn't wired yet.
+	// (`--frontenddir=/path/to/frontend/build`)
+	StartupArgFrontendDir = "frontenddir"
 )
 
 // ParseStartupArgs returns a StartupContext from the given argv-style
