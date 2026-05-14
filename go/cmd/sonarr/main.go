@@ -2385,7 +2385,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// handshake version event matches the /api/v3/system/status
 	// version field.
 	signalRHub := signalr.NewHub(signalr.WithHostVersion(buildinfo.Version))
-	wireSignalRSubscribers(bus, signalRHub, logger)
+	wireSignalRSubscribers(bus, signalRHub, logger, &QueueStatusBroadcastDeps{
+		Queue:   queueSvc,
+		Pending: pendingCountLister{repo: pendingReleasesRepo},
+	})
 
 	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo)
 	if err != nil {

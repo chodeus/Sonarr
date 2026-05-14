@@ -32,7 +32,7 @@ func TestWireSignalRSubscribers_TagsUpdatedEventReachesClient(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub(signalr.WithHostVersion("test-build"))
-	wireSignalRSubscribers(bus, hub, logger)
+	wireSignalRSubscribers(bus, hub, logger, nil)
 
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
@@ -88,7 +88,7 @@ func TestWireSignalRSubscribers_AutoTagsUpdatedAlsoFiresTag(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger)
+	wireSignalRSubscribers(bus, hub, logger, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=autotag-test")
@@ -120,7 +120,7 @@ func TestWireSignalRSubscribers_HealthCompleteFiresSync(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger)
+	wireSignalRSubscribers(bus, hub, logger, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=health-test")
@@ -154,7 +154,7 @@ func TestWireSignalRSubscribers_QueueUpdatedFansBoth(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger)
+	wireSignalRSubscribers(bus, hub, logger, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=queue-test")
@@ -204,7 +204,7 @@ func TestWireSignalRSubscribers_PendingReleasesAlsoFansQueue(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger)
+	wireSignalRSubscribers(bus, hub, logger, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=pending-test")
@@ -235,6 +235,81 @@ func TestWireSignalRSubscribers_PendingReleasesAlsoFansQueue(t *testing.T) {
 	}
 }
 
+// TestWireSignalRSubscribers_QueueStatusDebouncedUpdate exercises
+// the 5s-debounced queue/status broadcaster end-to-end: publishes
+// many rapid QueueUpdatedEvent / PendingReleasesUpdatedEvent
+// triggers, asserts EXACTLY ONE `queue/status` Invocation envelope
+// arrives on the WS with the populated QueueStatusResource body.
+//
+// Uses a 30ms debounce so the test completes in <100ms; production
+// leaves DebounceDuration=0 → 5s default.
+func TestWireSignalRSubscribers_QueueStatusDebouncedUpdate(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	wireSignalRSubscribers(bus, hub, logger, &QueueStatusBroadcastDeps{
+		Queue:            emptyQueueLister{},
+		Pending:          emptyPendingLister{},
+		DebounceDuration: 30 * time.Millisecond,
+	})
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=qs-test")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second) // handshake reply
+	_ = readFrame(t, c, time.Second) // version event
+
+	// Burst 10 triggers within the debounce window.
+	for range 10 {
+		_ = messaging.Publish(t.Context(), bus, queue.QueueUpdatedEvent{})
+	}
+	// Drain the immediate Sync envelopes from the queue/queue-details
+	// subscribers (those don't debounce — they fire once per event).
+	// 10 events → 20 sync envelopes (queue + queue/details per event).
+	// We don't assert each one here; just drain until the debounced
+	// queue/status envelope shows up.
+	deadline := time.After(2 * time.Second)
+	gotQueueStatus := false
+	for !gotQueueStatus {
+		select {
+		case <-deadline:
+			t.Fatalf("queue/status update envelope not delivered within 2s")
+		default:
+		}
+		frame := readFrame(t, c, 2*time.Second)
+		var inv signalr.InvocationMessage
+		_ = json.Unmarshal(frame, &inv)
+		argBytes, _ := json.Marshal(inv.Arguments[0])
+		body := string(argBytes)
+		if strings.Contains(body, `"name":"queue/status"`) {
+			gotQueueStatus = true
+			if !strings.Contains(body, `"action":"updated"`) {
+				t.Errorf("queue/status should emit `updated`, got %s", body)
+			}
+			if !strings.Contains(body, `"totalCount":0`) {
+				t.Errorf("queue/status body should carry populated resource: %s", body)
+			}
+		}
+	}
+}
+
+// emptyQueueLister + emptyPendingLister are test-local fixtures
+// satisfying the apiv3 narrow interfaces. Both return zero state so
+// the projected QueueStatusResource has all-zero counts +
+// all-false flags.
+type emptyQueueLister struct{}
+
+func (emptyQueueLister) GetQueue() []queue.Queue { return nil }
+
+type emptyPendingLister struct{}
+
+func (emptyPendingLister) PendingCount(_ context.Context) (int, error) { return 0, nil }
+
 // TestWireSignalRSubscribers_NilDepsSafe asserts the wiring is a
 // no-op when called with nil dependencies — main.go calls this
 // during boot before every service is up and nil-handling keeps
@@ -242,9 +317,9 @@ func TestWireSignalRSubscribers_PendingReleasesAlsoFansQueue(t *testing.T) {
 func TestWireSignalRSubscribers_NilDepsSafe(t *testing.T) {
 	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	wireSignalRSubscribers(nil, nil, logger)
-	wireSignalRSubscribers(messaging.New(logger), nil, logger)
-	wireSignalRSubscribers(nil, signalr.NewHub(), logger)
+	wireSignalRSubscribers(nil, nil, logger, nil)
+	wireSignalRSubscribers(messaging.New(logger), nil, logger, nil)
+	wireSignalRSubscribers(nil, signalr.NewHub(), logger, nil)
 }
 
 // dialWSToServer + readFrame are the test-local WS roundtrip

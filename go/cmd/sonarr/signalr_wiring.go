@@ -21,7 +21,9 @@ package main
 import (
 	"context"
 	"log/slog"
+	"time"
 
+	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/messaging"
@@ -30,6 +32,20 @@ import (
 	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
 )
+
+// QueueStatusBroadcastDeps bundles the dependencies the queue/status
+// debounced broadcaster needs to project the live QueueStatusResource
+// snapshot on each fire. Decoupled into its own struct so the main
+// wireSignalRSubscribers signature doesn't grow per-resource.
+//
+// DebounceDuration overrides the 5s C# default — production leaves
+// it 0 (use the default); tests pass a short value (e.g. 30ms) so
+// the debounced fire can be observed without slowing the suite.
+type QueueStatusBroadcastDeps struct {
+	Queue            apiv3.QueueLister
+	Pending          apiv3.PendingLister
+	DebounceDuration time.Duration
+}
 
 // wireSignalRSubscribers attaches every per-resource bus subscriber
 // the SignalR sub-arc needs. Called once at boot from main.go's
@@ -41,7 +57,7 @@ import (
 // upstream event handler (the underlying domain event has
 // downstream consumers that don't care about the SignalR fan-out
 // outcome).
-func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.Logger) {
+func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.Logger, queueStatus *QueueStatusBroadcastDeps) {
 	if hub == nil || bus == nil {
 		return
 	}
@@ -122,6 +138,59 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 			publishQueueSync(ctx, "pendingreleases.PendingReleasesUpdated")
 			return nil
 		})
+
+	// `queue/status` family: same triggers as `queue` BUT the
+	// emission is debounced 5s + carries a populated
+	// QueueStatusResource body (not Sync). The C# wire-shape:
+	// `{name:"queue/status", version:3, body:{resource:<status>,
+	// action:"updated"}}`. The debouncer's fire callback rebuilds
+	// the snapshot from the live queue + pending listers; bursty
+	// triggers within the 5s window coalesce into one wire emit.
+	//
+	// queueStatus may be nil during early boot — without the
+	// projection deps we skip wiring the debounced broadcaster
+	// (Sync via the `queue` namespace still fires; only the
+	// populated-body `updated` envelope is missed).
+	if queueStatus != nil && queueStatus.Queue != nil {
+		queueStatusBroadcaster := &signalr.ResourceBroadcaster[apiv3.QueueStatusResource]{
+			Broadcaster: signalr.HubBroadcaster{Hub: hub},
+			Name:        "queue/status",
+			Version:     signalr.V3Version,
+		}
+		// Capture the deps + broadcaster in the closure so the
+		// debouncer's no-arg fire callback can project the
+		// snapshot on demand. The 5s window matches the C#
+		// QueueStatusController's `_broadcastDebounce =
+		// new Debouncer(BroadcastUpdated, TimeSpan.FromSeconds(5))`
+		// at `src/Sonarr.Api.V3/Queue/QueueStatusController.cs:31`.
+		debounceDur := queueStatus.DebounceDuration
+		if debounceDur <= 0 {
+			debounceDur = 5 * time.Second
+		}
+		queueStatusDebouncer := signalr.NewDebouncer(func() {
+			ctx := context.Background()
+			body := apiv3.BuildQueueStatus(ctx, queueStatus.Queue, queueStatus.Pending)
+			if err := queueStatusBroadcaster.Updated(ctx, body); err != nil {
+				logger.Warn("signalr: queue/status updated broadcast failed", "err", err)
+			}
+		}, debounceDur)
+		messaging.Subscribe(bus, "signalr.queueStatus.QueueUpdated",
+			func(_ context.Context, _ queue.QueueUpdatedEvent) error {
+				queueStatusDebouncer.Execute()
+				return nil
+			})
+		messaging.Subscribe(bus, "signalr.queueStatus.PendingReleasesUpdated",
+			func(_ context.Context, _ pendingreleases.PendingReleasesUpdatedEvent) error {
+				queueStatusDebouncer.Execute()
+				return nil
+			})
+		// The debouncer's Stop is intentionally NOT wired into
+		// graceful shutdown today — the entire process exits on
+		// teardown so a stray fire after Stop would just exercise
+		// the no-op-when-stopped guard. A future slice that adds
+		// a host-level shutdown hook can call .Stop() then.
+		_ = queueStatusDebouncer
+	}
 }
 
 // tagSyncPayload is the placeholder TResource for the `tag` Sync

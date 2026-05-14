@@ -64,49 +64,56 @@ type PendingLister interface {
 // recorded golden's exact shape.
 func QueueStatusHandler(queueLister QueueLister, pending PendingLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rows := queueLister.GetQueue()
-		pendingCount := 0
-		if pending != nil {
-			if n, err := pending.PendingCount(r.Context()); err == nil {
-				pendingCount = n
-			}
-			// Errors from the pending lister fall back to "0
-			// pending" rather than 500 — the C# code reads the
-			// pending queue defensively (the service caches it
-			// in-process and never fails over a network).
-		}
-		body := QueueStatusResource{
-			TotalCount: len(rows) + pendingCount,
-		}
-		for _, q := range rows {
-			hasSeries := q.Series != nil
-			status := trackeddownloads.StatusOK
-			if q.TrackedDownloadStatus != nil {
-				status = *q.TrackedDownloadStatus
-			}
-			if hasSeries {
-				body.Count++
-				if status == trackeddownloads.StatusError {
-					body.Errors = true
-				}
-				if status == trackeddownloads.StatusWarning {
-					body.Warnings = true
-				}
-			} else {
-				body.UnknownCount++
-				if status == trackeddownloads.StatusError {
-					body.UnknownErrors = true
-				}
-				if status == trackeddownloads.StatusWarning {
-					body.UnknownWarnings = true
-				}
-			}
-		}
-		body.Count += pendingCount // pending releases always count as Series-known per C# `pending.Count`
-
+		body := BuildQueueStatus(r.Context(), queueLister, pending)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		buf, _ := json.Marshal(body)
 		_, _ = w.Write(buf)
 	})
+}
+
+// BuildQueueStatus projects the current queue + pending-release
+// state into a QueueStatusResource. Extracted from QueueStatusHandler
+// so the SignalR queue/status subscriber can re-use the same
+// projection logic without re-rolling the field-by-field summing.
+//
+// Errors from the pending lister fall back to "0 pending" rather
+// than propagating — matches the C# defensive read posture (the
+// pending service caches in-process and never fails over a
+// network).
+func BuildQueueStatus(ctx context.Context, queueLister QueueLister, pending PendingLister) QueueStatusResource {
+	rows := queueLister.GetQueue()
+	pendingCount := 0
+	if pending != nil {
+		if n, err := pending.PendingCount(ctx); err == nil {
+			pendingCount = n
+		}
+	}
+	body := QueueStatusResource{TotalCount: len(rows) + pendingCount}
+	for _, q := range rows {
+		hasSeries := q.Series != nil
+		status := trackeddownloads.StatusOK
+		if q.TrackedDownloadStatus != nil {
+			status = *q.TrackedDownloadStatus
+		}
+		if hasSeries {
+			body.Count++
+			if status == trackeddownloads.StatusError {
+				body.Errors = true
+			}
+			if status == trackeddownloads.StatusWarning {
+				body.Warnings = true
+			}
+		} else {
+			body.UnknownCount++
+			if status == trackeddownloads.StatusError {
+				body.UnknownErrors = true
+			}
+			if status == trackeddownloads.StatusWarning {
+				body.UnknownWarnings = true
+			}
+		}
+	}
+	body.Count += pendingCount // pending releases always count as Series-known per C# `pending.Count`
+	return body
 }
