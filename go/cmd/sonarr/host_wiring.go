@@ -16,6 +16,7 @@ import (
 	"sonarr.tv/sonarr/internal/delayprofiles"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/frontend"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/host"
@@ -60,6 +61,14 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 	if frontendDir != "" {
 		opts = append(opts, host.WithStaticDir(frontendDir))
 		logger.Info("host static mount", "dir", frontendDir)
+	} else {
+		// Slice 4.FG: --frontenddir unset → fall back to the
+		// embedded bundle. Production builds replace
+		// go/internal/frontend/bundle/ with the real React build
+		// before `go build`; the shipped placeholder explains
+		// itself when an operator forgets the copy step.
+		opts = append(opts, host.WithStaticFS(frontend.FS()))
+		logger.Info("host static mount", "source", "embedded")
 	}
 	// Slice 4.FE: ConfigFile.UrlBase prefix support — when set,
 	// every route is served under <base>/. The host's stripURLBase

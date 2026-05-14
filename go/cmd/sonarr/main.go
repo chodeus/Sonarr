@@ -2392,9 +2392,12 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 
 	// Slice 4.FD: optional frontend-bundle mount. `--frontenddir=
 	// /path/to/frontend/build` makes the host serve the React shell
-	// under `/` with SPA-fallback routing (per slice 4.FC). Empty
-	// disables the static surface — the API + SignalR still
-	// respond, just without an HTML/CSS/JS shell.
+	// under `/` with SPA-fallback routing (per slice 4.FC). When
+	// the flag is unset, the host falls back to the embedded
+	// bundle in internal/frontend (slice 4.FG) — the shipped
+	// placeholder explains itself; production builds copy the
+	// real frontend/build/* into go/internal/frontend/bundle/
+	// before `go build`.
 	frontendDir, _ := startup.Arg(appenv.StartupArgFrontendDir)
 
 	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, frontendDir)

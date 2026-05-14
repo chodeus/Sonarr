@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sonarr — Frontend Not Yet Built</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 2rem; max-width: 40rem; margin: 0 auto; color: #1a1a1a; }
+    code { background: #f4f4f4; padding: 0.1rem 0.3rem; border-radius: 3px; }
+    pre { background: #f4f4f4; padding: 1rem; border-radius: 4px; overflow-x: auto; }
+    .note { background: #fffbea; border-left: 4px solid #facc15; padding: 0.75rem 1rem; margin: 1rem 0; }
+  </style>
+</head>
+<body>
+  <h1>Sonarr</h1>
+  <p>This binary was built without an embedded frontend bundle. The placeholder you're reading lives in <code>go/internal/frontend/bundle/index.html</code>; the production build replaces this whole directory.</p>
+  <p class="note"><strong>For developers:</strong> run <code>npm run build</code> in the repo root, then <code>cp -r frontend/build/* go/internal/frontend/bundle/</code>, then <code>go build ./cmd/sonarr</code> to produce a single-binary distribution with the React UI embedded. Alternatively, pass <code>--frontenddir=./frontend/build</code> at runtime to mount the build output without an embed step.</p>
+  <p>The REST API at <code>/api/v3/*</code> and the SignalR hub at <code>/signalr/messages</code> are live regardless — they don't depend on the frontend bundle.</p>
+</body>
+</html>
