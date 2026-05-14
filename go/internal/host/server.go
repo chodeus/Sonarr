@@ -94,6 +94,12 @@ type Server struct {
 	// surface — non-API paths get 404. Set via WithStaticDir.
 	staticDir string
 
+	// urlBase is the optional sub-path the server runs under
+	// (e.g. "/sonarr"). When non-empty, every incoming request's
+	// URL.Path has this prefix stripped BEFORE dispatching, and
+	// requests outside the prefix 404. Set via WithURLBase.
+	urlBase string
+
 	// listenerOverride lets tests inject a pre-bound listener so
 	// they can run against a randomly assigned port. nil means
 	// `net.Listen("tcp", cfg.Listen())` is called inside Run.
@@ -128,6 +134,35 @@ func WithShutdownTimeout(d time.Duration) Option {
 // itself so each per-controller package is fully decoupled.
 func WithRoutes(routes ...Route) Option {
 	return func(s *Server) { s.routes = append(s.routes, routes...) }
+}
+
+// WithURLBase pins the sub-path the host runs under. Mirrors
+// `ConfigFile.UrlBase` (e.g. `/sonarr` to expose the UI at
+// `https://host/sonarr/`). The value is normalised the same way
+// configfile.Provider.URLBase normalises the stored XML value:
+// trim trailing slashes, ensure leading slash. Empty disables
+// sub-path serving and runs at root.
+//
+// Implementation: a thin middleware in buildMux strips the
+// configured prefix from every incoming request's URL.Path
+// BEFORE the ServeMux dispatches — so route registrations stay
+// prefix-free (`/api/v3/...`, not `/<base>/api/v3/...`). Requests
+// that don't carry the prefix return 404 (matches C# behaviour at
+// `Startup.cs` where the host's UsePathBase rejects out-of-base
+// requests once `UrlBase` is set).
+func WithURLBase(base string) Option {
+	return func(s *Server) { s.urlBase = normaliseURLBase(base) }
+}
+
+// normaliseURLBase mirrors configfile.Provider.URLBase normalisation
+// — trim slashes from both ends, prepend a single leading slash.
+// Empty / "/" → "" (no prefix).
+func normaliseURLBase(b string) string {
+	b = strings.Trim(b, "/")
+	if b == "" {
+		return ""
+	}
+	return "/" + b
 }
 
 // WithStaticDir mounts a directory as the frontend bundle root.
@@ -223,8 +258,49 @@ func (s *Server) Run(ctx context.Context) error {
 // callers that don't want a network listener (notably the contract
 // harness's `httptest.Server` wrapper) can plug the same routing
 // surface in directly.
+//
+// When urlBase is set, the mux is wrapped in a strip-prefix
+// middleware so route registrations stay prefix-free. Requests
+// outside the prefix 404 (matches the C# Kestrel UsePathBase
+// semantic).
 func (s *Server) Handler() http.Handler {
-	return s.buildMux()
+	h := http.Handler(s.buildMux())
+	if s.urlBase != "" {
+		h = stripURLBase(s.urlBase, h)
+	}
+	return h
+}
+
+// stripURLBase is the middleware WithURLBase installs. Strips the
+// prefix from r.URL.Path (and RawPath when set so encoded segments
+// pass through cleanly), then delegates to next. Requests outside
+// the prefix return 404 without invoking next.
+func stripURLBase(prefix string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		switch {
+		case p == prefix:
+			// Bare prefix → SPA root.
+			r2 := *r
+			u := *r.URL
+			u.Path = "/"
+			u.RawPath = ""
+			r2.URL = &u
+			next.ServeHTTP(w, &r2)
+			return
+		case strings.HasPrefix(p, prefix+"/"):
+			r2 := *r
+			u := *r.URL
+			u.Path = strings.TrimPrefix(p, prefix)
+			if u.RawPath != "" {
+				u.RawPath = strings.TrimPrefix(u.RawPath, prefix)
+			}
+			r2.URL = &u
+			next.ServeHTTP(w, &r2)
+		default:
+			http.NotFound(w, r)
+		}
+	})
 }
 
 func (s *Server) buildMux() *http.ServeMux {

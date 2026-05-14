@@ -61,6 +61,14 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 		opts = append(opts, host.WithStaticDir(frontendDir))
 		logger.Info("host static mount", "dir", frontendDir)
 	}
+	// Slice 4.FE: ConfigFile.UrlBase prefix support — when set,
+	// every route is served under <base>/. The host's stripURLBase
+	// middleware peels the prefix before dispatching so the route
+	// registrations above stay prefix-free.
+	if urlBase, err := cfg.URLBase(ctx); err == nil && urlBase != "" {
+		opts = append(opts, host.WithURLBase(urlBase))
+		logger.Info("host urlbase mount", "base", urlBase)
+	}
 	return host.New(
 		host.Config{BindAddress: bind, Port: port},
 		logger,
