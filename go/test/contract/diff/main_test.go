@@ -152,7 +152,111 @@ func TestDiffCorpus_NilCorpus(t *testing.T) {
 func TestDiffCorpus_NilBaseURL(t *testing.T) {
 	t.Parallel()
 	if _, _, err := diffCorpus(context.Background(), Options{Corpus: &spec.Corpus{}}); err == nil {
-		t.Error("expected error on nil base URLs")
+		t.Error("expected error on nil primary URL")
+	}
+}
+
+func TestDiffCorpus_RequiresExactlyOneReference(t *testing.T) {
+	t.Parallel()
+	pURL, _ := buildPair(t, jsonHandler(`{}`), jsonHandler(`{}`))
+	corpus := &spec.Corpus{Entries: []spec.Entry{fooEntry()}}
+
+	// Neither secondary nor golden → error.
+	if _, _, err := diffCorpus(context.Background(), Options{Primary: pURL, Corpus: corpus}); err == nil {
+		t.Error("expected error when neither reference is set")
+	}
+	// Both → error.
+	sURL, _ := url.Parse("http://example.invalid")
+	if _, _, err := diffCorpus(context.Background(), Options{
+		Primary: pURL, Secondary: sURL, GoldenDir: "/tmp/x", Corpus: corpus,
+	}); err == nil {
+		t.Error("expected error when both references are set")
+	}
+}
+
+// TestDiffCorpus_GoldenDirMatching writes a golden to a temp dir
+// that matches the primary's response shape exactly — the diff
+// should be empty.
+func TestDiffCorpus_GoldenDirMatching(t *testing.T) {
+	t.Parallel()
+	primaryHandler := jsonHandler(`{"a":1,"b":[1,2]}`)
+	pURL, _ := buildPair(t, primaryHandler, jsonHandler(`{}`)) // sURL unused
+
+	dir := t.TempDir()
+	golden := &spec.Golden{
+		EntryID:    "foo",
+		Status:     http.StatusOK,
+		BodyJSON:   []byte(`{"a":1,"b":[1,2]}`),
+		BodyIsJSON: true,
+	}
+	if err := spec.SaveGolden(dir+"/foo.golden.json", golden); err != nil {
+		t.Fatalf("save golden: %v", err)
+	}
+
+	results, summary, err := diffCorpus(context.Background(), Options{
+		Primary:   pURL,
+		GoldenDir: dir,
+		Corpus:    &spec.Corpus{Entries: []spec.Entry{fooEntry()}},
+	})
+	if err != nil {
+		t.Fatalf("diffCorpus: %v", err)
+	}
+	if summary.Matched != 1 || summary.Mismatched != 0 || summary.Errored != 0 {
+		t.Errorf("summary %+v results %+v", summary, results)
+	}
+}
+
+// TestDiffCorpus_GoldenDirDivergent writes a golden that differs
+// from the live primary's response — diff should surface the field
+// drift at the path level.
+func TestDiffCorpus_GoldenDirDivergent(t *testing.T) {
+	t.Parallel()
+	pURL, _ := buildPair(t, jsonHandler(`{"a":1,"b":[1,9]}`), jsonHandler(`{}`))
+	dir := t.TempDir()
+	golden := &spec.Golden{
+		EntryID:    "foo",
+		Status:     http.StatusOK,
+		BodyJSON:   []byte(`{"a":1,"b":[1,2]}`),
+		BodyIsJSON: true,
+	}
+	if err := spec.SaveGolden(dir+"/foo.golden.json", golden); err != nil {
+		t.Fatalf("save golden: %v", err)
+	}
+	results, summary, err := diffCorpus(context.Background(), Options{
+		Primary:   pURL,
+		GoldenDir: dir,
+		Corpus:    &spec.Corpus{Entries: []spec.Entry{fooEntry()}},
+	})
+	if err != nil {
+		t.Fatalf("diffCorpus: %v", err)
+	}
+	if summary.Mismatched != 1 {
+		t.Errorf("summary %+v", summary)
+	}
+	if len(results[0].Diffs) != 1 || results[0].Diffs[0].Path != "$.b[1]" {
+		t.Errorf("expected one diff at $.b[1]; got %+v", results[0].Diffs)
+	}
+}
+
+// TestDiffCorpus_GoldenDirMissingFileErrors asserts a missing
+// golden file lands as a per-entry error rather than crashing the
+// whole replay.
+func TestDiffCorpus_GoldenDirMissingFileErrors(t *testing.T) {
+	t.Parallel()
+	pURL, _ := buildPair(t, jsonHandler(`{}`), jsonHandler(`{}`))
+	results, summary, err := diffCorpus(context.Background(), Options{
+		Primary:   pURL,
+		GoldenDir: t.TempDir(), // empty dir → file not found per entry
+		Corpus:    &spec.Corpus{Entries: []spec.Entry{fooEntry()}},
+	})
+	if err != nil {
+		t.Fatalf("diffCorpus: %v", err)
+	}
+	if summary.Errored != 1 {
+		t.Errorf("expected 1 errored; got %+v", summary)
+	}
+	if results[0].Err == nil {
+		t.Errorf("expected per-entry error")
 	}
 }
 

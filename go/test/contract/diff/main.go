@@ -33,6 +33,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -63,11 +64,51 @@ type Summary struct {
 	Errored    int // network/parse error on either backend
 }
 
+// goldenSource is the per-entry reference response the primary
+// (live Go backend) is diffed against. Two production
+// implementations:
+//
+//   - liveSource wraps a runner.Client → hits a second backend
+//     (typically a running C# Sonarr on staging).
+//   - diskSource wraps spec.LoadGolden → reads a recorded golden
+//     from disk so an operator can diagnose drift without a running
+//     reference backend.
+//
+// The interface is unexported because diff is a binary, not a
+// library — external consumers either invoke the CLI or import the
+// underlying spec.LoadGolden / runner.Client directly.
+type goldenSource interface {
+	Fetch(ctx context.Context, e spec.Entry) (*spec.Golden, error)
+}
+
+// liveSource hits a live backend via runner.Client.
+type liveSource struct{ client *runner.Client }
+
+func (l liveSource) Fetch(ctx context.Context, e spec.Entry) (*spec.Golden, error) {
+	return l.client.Run(ctx, e)
+}
+
+// diskSource resolves <dir>/<entryID>.golden.json via spec.LoadGolden.
+// Path layout mirrors the contract-replayer (replayer.go:77) so the
+// existing per-corpus golden trees Just Work.
+type diskSource struct{ dir string }
+
+func (d diskSource) Fetch(_ context.Context, e spec.Entry) (*spec.Golden, error) {
+	// filepath.FromSlash keeps Windows operators happy when entry
+	// IDs contain forward slashes (uncommon today; defensive).
+	return spec.LoadGolden(filepath.Join(d.dir, filepath.FromSlash(e.ID)+".golden.json"))
+}
+
 // Options carries the diffCorpus inputs. Lifted out of main() so tests
 // can drive the package without a process spawn.
+//
+// Either Secondary OR GoldenDir must be set — not both. The CLI
+// translates -secondary / -golden into the corresponding source
+// internally; tests can set either field directly.
 type Options struct {
 	Primary, Secondary       *url.URL
 	PrimaryKey, SecondaryKey string
+	GoldenDir                string
 	Corpus                   *spec.Corpus
 	Timeout                  time.Duration
 }
@@ -81,11 +122,19 @@ func diffCorpus(ctx context.Context, opts Options) ([]Result, Summary, error) {
 	if opts.Corpus == nil {
 		return nil, Summary{}, errors.New("diff: nil corpus")
 	}
-	if opts.Primary == nil || opts.Secondary == nil {
-		return nil, Summary{}, errors.New("diff: primary and secondary base URLs required")
+	if opts.Primary == nil {
+		return nil, Summary{}, errors.New("diff: primary base URL required")
+	}
+	if (opts.Secondary == nil) == (opts.GoldenDir == "") {
+		return nil, Summary{}, errors.New("diff: exactly one of secondary URL or GoldenDir must be set")
 	}
 	pClient := &runner.Client{Base: opts.Primary, APIKey: opts.PrimaryKey}
-	sClient := &runner.Client{Base: opts.Secondary, APIKey: opts.SecondaryKey}
+	var bSource goldenSource = liveSource{client: pClient} // shadowed below
+	if opts.Secondary != nil {
+		bSource = liveSource{client: &runner.Client{Base: opts.Secondary, APIKey: opts.SecondaryKey}}
+	} else {
+		bSource = diskSource{dir: opts.GoldenDir}
+	}
 
 	results := make([]Result, 0, len(opts.Corpus.Entries))
 	var summary Summary
@@ -100,14 +149,14 @@ func diffCorpus(ctx context.Context, opts Options) ([]Result, Summary, error) {
 		}
 		r := Result{ID: e.ID}
 		pG, pErr := pClient.Run(entryCtx, e)
-		sG, sErr := sClient.Run(entryCtx, e)
+		sG, sErr := bSource.Fetch(entryCtx, e)
 		switch {
 		case pErr != nil && sErr != nil:
-			r.Err = fmt.Errorf("both backends failed: primary=%w secondary=%w", pErr, sErr)
+			r.Err = fmt.Errorf("both sides failed: primary=%w reference=%w", pErr, sErr)
 		case pErr != nil:
 			r.Err = fmt.Errorf("primary failed: %w", pErr)
 		case sErr != nil:
-			r.Err = fmt.Errorf("secondary failed: %w", sErr)
+			r.Err = fmt.Errorf("reference failed: %w", sErr)
 		}
 		if r.Err != nil {
 			summary.Errored++
@@ -180,16 +229,22 @@ func printReport(w io.Writer, results []Result, summary Summary, verbose bool) {
 
 func main() {
 	primary := flag.String("primary", "", "Primary backend URL (e.g. http://localhost:8989)")
-	secondary := flag.String("secondary", "", "Secondary backend URL (e.g. http://localhost:8990)")
+	secondary := flag.String("secondary", "", "Secondary backend URL — exactly one of -secondary or -golden required")
+	golden := flag.String("golden", "", "Directory of recorded golden JSON files (e.g. ./test/contract/golden/v3-empty-state); the per-corpus subdir matching -corpus")
 	primaryKey := flag.String("primary-key", "", "X-Api-Key for primary backend")
-	secondaryKey := flag.String("secondary-key", "", "X-Api-Key for secondary; defaults to primary-key when blank")
+	secondaryKey := flag.String("secondary-key", "", "X-Api-Key for secondary; defaults to primary-key when blank (ignored when -golden is set)")
 	corpusPath := flag.String("corpus", "", "Path to corpus JSON file")
 	timeout := flag.Duration("timeout", 30*time.Second, "Per-entry request timeout")
 	verbose := flag.Bool("v", false, "Print per-entry OK lines + expand each diff path")
 	flag.Parse()
 
-	if *primary == "" || *secondary == "" || *corpusPath == "" {
-		fmt.Fprintln(os.Stderr, "diff: -primary, -secondary, and -corpus are required")
+	if *primary == "" || *corpusPath == "" {
+		fmt.Fprintln(os.Stderr, "diff: -primary and -corpus are required")
+		flag.Usage()
+		os.Exit(2)
+	}
+	if (*secondary == "") == (*golden == "") {
+		fmt.Fprintln(os.Stderr, "diff: exactly one of -secondary or -golden is required")
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -198,10 +253,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "diff: parse -primary: %v\n", err)
 		os.Exit(2)
 	}
-	sURL, err := url.Parse(*secondary)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "diff: parse -secondary: %v\n", err)
-		os.Exit(2)
+	var sURL *url.URL
+	if *secondary != "" {
+		sURL, err = url.Parse(*secondary)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "diff: parse -secondary: %v\n", err)
+			os.Exit(2)
+		}
 	}
 	corpus, err := spec.LoadCorpus(*corpusPath)
 	if err != nil {
@@ -218,6 +276,7 @@ func main() {
 		Secondary:    sURL,
 		PrimaryKey:   *primaryKey,
 		SecondaryKey: skey,
+		GoldenDir:    *golden,
 		Corpus:       corpus,
 		Timeout:      *timeout,
 	})
