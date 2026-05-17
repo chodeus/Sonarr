@@ -397,6 +397,89 @@ func TestPrintReportJSON_SerialisesErr(t *testing.T) {
 	}
 }
 
+// TestDiffCorpus_ParallelismProducesSameResultsAsSerial drives a
+// 5-entry corpus through diffCorpus with parallelism=1 and =8 and
+// asserts both runs produce identical summaries + identical per-
+// entry Result data after sorting by ID. The parallel pool must
+// not introduce drift or lose entries.
+func TestDiffCorpus_ParallelismProducesSameResultsAsSerial(t *testing.T) {
+	t.Parallel()
+	// Five distinct entry IDs, each backed by a handler that
+	// returns a body keyed to its ID so a worker mixing up the
+	// per-entry assignment would produce the wrong diff.
+	mux1 := http.NewServeMux()
+	mux2 := http.NewServeMux()
+	entries := []spec.Entry{}
+	for _, id := range []string{"a", "b", "c", "d", "e"} {
+		path := "/api/v3/" + id
+		mux1.Handle(path, jsonHandler(fmt.Sprintf(`{"id":%q,"v":1}`, id)))
+		mux2.Handle(path, jsonHandler(fmt.Sprintf(`{"id":%q,"v":2}`, id)))
+		entries = append(entries, spec.Entry{
+			ID:      id,
+			Request: spec.Request{Method: http.MethodGet, Path: path},
+		})
+	}
+	pServer := httptest.NewServer(mux1)
+	t.Cleanup(pServer.Close)
+	sServer := httptest.NewServer(mux2)
+	t.Cleanup(sServer.Close)
+	pURL, _ := url.Parse(pServer.URL)
+	sURL, _ := url.Parse(sServer.URL)
+
+	makeOpts := func(par int) Options {
+		return Options{
+			Primary: pURL, Secondary: sURL,
+			Corpus:      &spec.Corpus{Entries: entries},
+			Parallelism: par,
+		}
+	}
+	serial, sSum, err := diffCorpus(context.Background(), makeOpts(1))
+	if err != nil {
+		t.Fatalf("serial: %v", err)
+	}
+	parallel, pSum, err := diffCorpus(context.Background(), makeOpts(8))
+	if err != nil {
+		t.Fatalf("parallel: %v", err)
+	}
+	if sSum != pSum {
+		t.Errorf("summary mismatch: serial=%+v parallel=%+v", sSum, pSum)
+	}
+	// Sort both so order isn't part of the comparison.
+	serial = sortedByID(serial)
+	parallel = sortedByID(parallel)
+	if len(serial) != len(parallel) {
+		t.Fatalf("len mismatch: serial=%d parallel=%d", len(serial), len(parallel))
+	}
+	for i := range serial {
+		if serial[i].ID != parallel[i].ID {
+			t.Errorf("[%d] id mismatch: serial=%q parallel=%q", i, serial[i].ID, parallel[i].ID)
+		}
+		if len(serial[i].Diffs) != len(parallel[i].Diffs) {
+			t.Errorf("[%d] diff count: serial=%d parallel=%d", i, len(serial[i].Diffs), len(parallel[i].Diffs))
+		}
+	}
+}
+
+// TestDiffCorpus_ParallelismDefaultsToSerial asserts that
+// Parallelism=0 (the zero value) is normalised to serial replay,
+// preserving the pre-4.FS behaviour for callers that haven't opted
+// into the new flag.
+func TestDiffCorpus_ParallelismDefaultsToSerial(t *testing.T) {
+	t.Parallel()
+	pURL, sURL := buildPair(t, jsonHandler(`{"a":1}`), jsonHandler(`{"a":2}`))
+	_, summary, err := diffCorpus(context.Background(), Options{
+		Primary: pURL, Secondary: sURL,
+		Corpus: &spec.Corpus{Entries: []spec.Entry{fooEntry()}},
+		// Parallelism intentionally omitted → 0.
+	})
+	if err != nil {
+		t.Fatalf("diffCorpus: %v", err)
+	}
+	if summary.Mismatched != 1 {
+		t.Errorf("summary %+v", summary)
+	}
+}
+
 // TestPrintReportJSON_StableOrdering pairs with the text-mode
 // TestPrintReport_StableOrdering — JSON output sorts by ID too.
 func TestPrintReportJSON_StableOrdering(t *testing.T) {

@@ -32,10 +32,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"sonarr.tv/sonarr/test/contract/internal/normalize"
@@ -112,6 +114,12 @@ type Options struct {
 	GoldenDir                string
 	Corpus                   *spec.Corpus
 	Timeout                  time.Duration
+	// Parallelism caps in-flight entries. 0 or 1 → serial replay
+	// (the original 4.FN behaviour). >1 → bounded worker pool.
+	// Reasonable production default for a typical 51-entry corpus
+	// with ~100ms round-trip is 4 — caps wall-clock at ~corpus/4
+	// without slamming the upstream with bursts.
+	Parallelism int
 }
 
 // diffCorpus walks every corpus entry, hits both backends, and
@@ -119,6 +127,13 @@ type Options struct {
 // catastrophic misconfiguration (nil corpus / nil base URLs); per-
 // entry failures land in Result.Err so the summary still reports a
 // full pass.
+//
+// When Options.Parallelism > 1, entries are processed by a bounded
+// worker pool; the returned Results slice is still ordered by the
+// original corpus order (sorting for display happens in sortedByID
+// / the report printers). Per-entry timeouts apply per-entry — a
+// slow request from one worker doesn't extend the budget for any
+// other worker.
 func diffCorpus(ctx context.Context, opts Options) ([]Result, Summary, error) {
 	if opts.Corpus == nil {
 		return nil, Summary{}, errors.New("diff: nil corpus")
@@ -129,69 +144,103 @@ func diffCorpus(ctx context.Context, opts Options) ([]Result, Summary, error) {
 	if (opts.Secondary == nil) == (opts.GoldenDir == "") {
 		return nil, Summary{}, errors.New("diff: exactly one of secondary URL or GoldenDir must be set")
 	}
-	pClient := &runner.Client{Base: opts.Primary, APIKey: opts.PrimaryKey}
+	// HTTP is set up-front (not via runner.Client's lazy default)
+	// so concurrent Run() calls don't race on the lazy-init write
+	// to c.HTTP. The race detector catches this even though
+	// repeated nil→DefaultClient assignments would converge.
+	httpClient := http.DefaultClient
+	pClient := &runner.Client{Base: opts.Primary, APIKey: opts.PrimaryKey, HTTP: httpClient}
 	var bSource goldenSource = liveSource{client: pClient} // shadowed below
 	if opts.Secondary != nil {
-		bSource = liveSource{client: &runner.Client{Base: opts.Secondary, APIKey: opts.SecondaryKey}}
+		bSource = liveSource{client: &runner.Client{Base: opts.Secondary, APIKey: opts.SecondaryKey, HTTP: httpClient}}
 	} else {
 		bSource = diskSource{dir: opts.GoldenDir}
 	}
 
-	results := make([]Result, 0, len(opts.Corpus.Entries))
+	results := make([]Result, len(opts.Corpus.Entries))
 	var summary Summary
 	summary.Total = len(opts.Corpus.Entries)
 
-	for _, e := range opts.Corpus.Entries {
-		entryCtx := ctx
-		if opts.Timeout > 0 {
-			var cancel context.CancelFunc
-			entryCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
-			defer cancel()
-		}
-		r := Result{ID: e.ID}
-		pG, pErr := pClient.Run(entryCtx, e)
-		sG, sErr := bSource.Fetch(entryCtx, e)
-		switch {
-		case pErr != nil && sErr != nil:
-			r.Err = fmt.Errorf("both sides failed: primary=%w reference=%w", pErr, sErr)
-		case pErr != nil:
-			r.Err = fmt.Errorf("primary failed: %w", pErr)
-		case sErr != nil:
-			r.Err = fmt.Errorf("reference failed: %w", sErr)
-		}
-		if r.Err != nil {
-			summary.Errored++
-			results = append(results, r)
-			continue
-		}
+	// Bounded-concurrency semaphore. The token channel doubles as
+	// a wait-for-completion barrier (drain by acquiring N tokens
+	// at the end).
+	parallelism := opts.Parallelism
+	if parallelism < 1 {
+		parallelism = 1
+	}
+	sem := make(chan struct{}, parallelism)
+	var wg sync.WaitGroup
+	for i, e := range opts.Corpus.Entries {
+		wg.Add(1)
+		go func(i int, e spec.Entry) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[i] = runEntry(ctx, e, opts.Timeout, pClient, bSource)
+		}(i, e)
+	}
+	wg.Wait()
 
-		r.StatusA = pG.Status
-		r.StatusB = sG.Status
-		r.StatusMatch = pG.Status == sG.Status
-		r.BothJSON = pG.BodyIsJSON && sG.BodyIsJSON
-		if r.BothJSON {
-			diffs, derr := normalize.JSONDiff(pG.BodyJSON, sG.BodyJSON)
-			if derr != nil {
-				r.Err = fmt.Errorf("diff %s: %w", e.ID, derr)
-				summary.Errored++
-				results = append(results, r)
-				continue
-			}
-			r.Diffs = diffs
-			r.BodyMismatch = len(diffs) > 0
-		} else if pG.BodyIsJSON != sG.BodyIsJSON {
-			// One side returned JSON, the other didn't. Treat as a
-			// content-type drift — count as mismatch.
-			r.BodyMismatch = true
-		}
-		if !r.StatusMatch || r.BodyMismatch {
+	// Aggregate the summary after all workers complete — avoids
+	// the lock-per-entry overhead a streaming counter would need
+	// and keeps the result type free of synchronisation guts.
+	for _, r := range results {
+		switch {
+		case r.Err != nil:
+			summary.Errored++
+		case !r.StatusMatch || r.BodyMismatch:
 			summary.Mismatched++
-		} else {
+		default:
 			summary.Matched++
 		}
-		results = append(results, r)
 	}
 	return results, summary, nil
+}
+
+// runEntry processes a single corpus entry against the primary +
+// reference source and returns the populated Result. Extracted from
+// diffCorpus so per-entry context cancellation lives in its own
+// stack frame — no defer-in-loop accumulation.
+func runEntry(ctx context.Context, e spec.Entry, timeout time.Duration, pClient *runner.Client, bSource goldenSource) Result {
+	entryCtx := ctx
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		entryCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	r := Result{ID: e.ID}
+	pG, pErr := pClient.Run(entryCtx, e)
+	sG, sErr := bSource.Fetch(entryCtx, e)
+	switch {
+	case pErr != nil && sErr != nil:
+		r.Err = fmt.Errorf("both sides failed: primary=%w reference=%w", pErr, sErr)
+	case pErr != nil:
+		r.Err = fmt.Errorf("primary failed: %w", pErr)
+	case sErr != nil:
+		r.Err = fmt.Errorf("reference failed: %w", sErr)
+	}
+	if r.Err != nil {
+		return r
+	}
+
+	r.StatusA = pG.Status
+	r.StatusB = sG.Status
+	r.StatusMatch = pG.Status == sG.Status
+	r.BothJSON = pG.BodyIsJSON && sG.BodyIsJSON
+	if r.BothJSON {
+		diffs, derr := normalize.JSONDiff(pG.BodyJSON, sG.BodyJSON)
+		if derr != nil {
+			r.Err = fmt.Errorf("diff %s: %w", e.ID, derr)
+			return r
+		}
+		r.Diffs = diffs
+		r.BodyMismatch = len(diffs) > 0
+	} else if pG.BodyIsJSON != sG.BodyIsJSON {
+		// One side returned JSON, the other didn't. Treat as a
+		// content-type drift — count as mismatch.
+		r.BodyMismatch = true
+	}
+	return r
 }
 
 // sortedByID returns a copy of results sorted alphabetically by ID
@@ -314,6 +363,7 @@ func main() {
 	timeout := flag.Duration("timeout", 30*time.Second, "Per-entry request timeout")
 	verbose := flag.Bool("v", false, "Print per-entry OK lines + expand each diff path (text format only)")
 	format := flag.String("format", "text", "Output format: text | json")
+	parallelism := flag.Int("parallelism", 4, "Max in-flight entries (1 = serial, matches the original 4.FN replay shape)")
 	flag.Parse()
 
 	if *format != "text" && *format != "json" {
@@ -362,6 +412,7 @@ func main() {
 		GoldenDir:    *golden,
 		Corpus:       corpus,
 		Timeout:      *timeout,
+		Parallelism:  *parallelism,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "diff: %v\n", err)
