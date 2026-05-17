@@ -194,11 +194,12 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 				queueStatusDebouncer.Execute()
 				return nil
 			})
-		// The debouncer's Stop is intentionally NOT wired into
-		// graceful shutdown today — the entire process exits on
-		// teardown so a stray fire after Stop would just exercise
-		// the no-op-when-stopped guard. A future slice that adds
-		// a host-level shutdown hook can call .Stop() then.
+		// The returned debouncer is wired into graceful shutdown
+		// at cmd/sonarr/main.go (slice 4.FJ): after the worker
+		// goroutines exit but before the bus drains, main.go
+		// calls debouncer.Stop() to release the pending timer.
+		// Stop is idempotent + a no-op on subsequent Execute()s
+		// so any stray bus event mid-shutdown won't re-arm it.
 	}
 
 	// `series` family: populated-body emits with the projected

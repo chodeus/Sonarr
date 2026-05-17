@@ -553,9 +553,81 @@ func TestWireSignalRSubscribers_SystemTaskCommandExecutedSync(t *testing.T) {
 func TestWireSignalRSubscribers_NilDepsSafe(t *testing.T) {
 	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	wireSignalRSubscribers(nil, nil, logger, nil)
-	wireSignalRSubscribers(messaging.New(logger), nil, logger, nil)
-	wireSignalRSubscribers(nil, signalr.NewHub(), logger, nil)
+	// Each early-return path returns a nil *signalr.Debouncer so
+	// main.go's shutdown branch (`if queueStatusDebouncer != nil`)
+	// short-circuits cleanly when wiring was skipped.
+	if d := wireSignalRSubscribers(nil, nil, logger, nil); d != nil {
+		t.Errorf("nil bus + hub: got non-nil debouncer")
+	}
+	if d := wireSignalRSubscribers(messaging.New(logger), nil, logger, nil); d != nil {
+		t.Errorf("nil hub: got non-nil debouncer")
+	}
+	if d := wireSignalRSubscribers(nil, signalr.NewHub(), logger, nil); d != nil {
+		t.Errorf("nil bus: got non-nil debouncer")
+	}
+}
+
+// TestWireSignalRSubscribers_QueueStatusStopSilencesFire is the
+// slice 4.FJ shutdown contract: after Stop() returns, subsequent
+// bus events must NOT trigger a queue/status broadcast. main.go
+// calls Stop in its shutdown sequence right before tearing down
+// the bus + hub; this test asserts the no-fire-after-Stop
+// guarantee the production path depends on.
+func TestWireSignalRSubscribers_QueueStatusStopSilencesFire(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	debouncer := wireSignalRSubscribers(bus, hub, logger, &QueueStatusBroadcastDeps{
+		Queue:            emptyQueueLister{},
+		Pending:          emptyPendingLister{},
+		DebounceDuration: 20 * time.Millisecond,
+	})
+	if debouncer == nil {
+		t.Fatal("expected non-nil queue/status debouncer when QueueStatusBroadcastDeps supplied")
+	}
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=qs-stop-test")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second) // handshake reply
+	_ = readFrame(t, c, time.Second) // version event
+
+	// Drive a trigger, immediately Stop the debouncer.
+	_ = messaging.Publish(t.Context(), bus, queue.QueueUpdatedEvent{})
+	debouncer.Stop()
+
+	// Drain the immediate Sync envelopes from queue + queue/details
+	// (those don't go through the debouncer). Anything that arrives
+	// in the window MUST NOT be the queue/status updated envelope.
+	deadline := time.After(150 * time.Millisecond)
+	for {
+		select {
+		case <-deadline:
+			return // No queue/status frame — Stop honoured.
+		default:
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		_, data, err := c.Read(ctx)
+		cancel()
+		if err != nil {
+			return // Read timeout → no more frames → Stop honoured.
+		}
+		frames := signalr.SplitFrames(data)
+		for _, frame := range frames {
+			var inv signalr.InvocationMessage
+			if err := json.Unmarshal(frame, &inv); err != nil || len(inv.Arguments) == 0 {
+				continue
+			}
+			argBytes, _ := json.Marshal(inv.Arguments[0])
+			if strings.Contains(string(argBytes), `"name":"queue/status"`) {
+				t.Fatalf("queue/status fired after Stop: %s", argBytes)
+			}
+		}
+	}
 }
 
 // dialWSToServer + readFrame are the test-local WS roundtrip

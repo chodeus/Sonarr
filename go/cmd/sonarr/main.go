@@ -2456,6 +2456,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	workerCancel()
 	queue.Close()
 	workers.Wait()
+	// Slice 4.FJ: release the queue/status broadcaster debouncer
+	// timer (if wired) before the bus + hub tear down. Stop is
+	// idempotent + does not wait for any in-flight fire — a
+	// broadcast already-scheduled within ~5s before Stop will
+	// still execute, but the hub/bus are still live at this point
+	// so the broadcast lands cleanly. Subsequent Execute()s no-op.
+	if queueStatusDebouncer != nil {
+		queueStatusDebouncer.Stop()
+	}
 	bus.BeginShutdown()
 	bus.Wait()
 	return ctx.Err()
