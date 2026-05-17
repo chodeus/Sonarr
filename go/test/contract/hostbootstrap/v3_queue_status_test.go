@@ -50,7 +50,7 @@ func TestV3QueueStatusContract(t *testing.T) {
 	srv := host.New(host.Config{}, logger, okProbe{}, fixedAPIKey(testKey),
 		host.WithRoutes(host.Route{
 			Method: "GET", Path: "/api/v3/queue/status",
-			Handler: apiv3.QueueStatusHandler(emptyQueueLister{}, emptyPending{}),
+			Handler: apiv3.QueueStatusHandler(emptyQueueLister{}, emptyPending{}, nil),
 		}))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

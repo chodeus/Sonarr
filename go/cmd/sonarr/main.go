@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/aggregation"
+	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/appenv"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
@@ -2385,10 +2386,23 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// handshake version event matches the /api/v3/system/status
 	// version field.
 	signalRHub := signalr.NewHub(signalr.WithHostVersion(buildinfo.Version))
-	wireSignalRSubscribers(bus, signalRHub, logger, &QueueStatusBroadcastDeps{
+	// wireSignalRSubscribers returns the queue/status debouncer
+	// (slice 4.FH): the GET /api/v3/queue/status handler brackets
+	// its projection in Pause/Resume on this shared instance so
+	// the read doesn't re-arm the broadcaster timer with the
+	// snapshot it already serves.
+	queueStatusDebouncer := wireSignalRSubscribers(bus, signalRHub, logger, &QueueStatusBroadcastDeps{
 		Queue:   queueSvc,
 		Pending: pendingCountLister{repo: pendingReleasesRepo},
 	})
+	// Lift to apiv3.Pauser only when non-nil — a typed-nil
+	// *signalr.Debouncer wrapped in an interface would survive the
+	// `if pauser != nil` guard inside QueueStatusHandler and panic on
+	// the first method call.
+	var queueStatusPauser apiv3.Pauser
+	if queueStatusDebouncer != nil {
+		queueStatusPauser = queueStatusDebouncer
+	}
 
 	// Slice 4.FD: optional frontend-bundle mount. `--frontenddir=
 	// /path/to/frontend/build` makes the host serve the React shell
@@ -2400,7 +2414,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// before `go build`.
 	frontendDir, _ := startup.Arg(appenv.StartupArgFrontendDir)
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, frontendDir)
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, frontendDir)
 	if err != nil {
 		return err
 	}

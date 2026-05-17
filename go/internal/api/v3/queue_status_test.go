@@ -26,7 +26,7 @@ func (f *fakePending) PendingCount(context.Context) (int, error) { return f.n, f
 func TestQueueStatusHandler_EmptyAllZero(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	QueueStatusHandler(&fakeQueueLister{rows: nil}, &fakePending{n: 0}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/status", nil))
+	QueueStatusHandler(&fakeQueueLister{rows: nil}, &fakePending{n: 0}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/status", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200", rr.Code)
 	}
@@ -43,7 +43,7 @@ func TestQueueStatusHandler_EmptyAllZero(t *testing.T) {
 func TestQueueStatusHandler_NilPendingTolerated(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	QueueStatusHandler(&fakeQueueLister{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/status", nil))
+	QueueStatusHandler(&fakeQueueLister{}, nil, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/status", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200", rr.Code)
 	}
@@ -61,7 +61,7 @@ func TestQueueStatusHandler_TalliesByStatus(t *testing.T) {
 		{Series: nil, TrackedDownloadStatus: nil},                    // unknown, ok (no status)
 	}
 	rr := httptest.NewRecorder()
-	QueueStatusHandler(&fakeQueueLister{rows: rows}, &fakePending{n: 3}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/status", nil))
+	QueueStatusHandler(&fakeQueueLister{rows: rows}, &fakePending{n: 3}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/status", nil))
 	var got QueueStatusResource
 	_ = json.Unmarshal(rr.Body.Bytes(), &got)
 	want := QueueStatusResource{
@@ -78,10 +78,42 @@ func TestQueueStatusHandler_TalliesByStatus(t *testing.T) {
 	}
 }
 
+// recordingPauser counts Pause/Resume calls + records their order
+// (1 for Pause, 2 for Resume) so the test can assert the GET handler
+// brackets the read with Pause-before, Resume-after.
+type recordingPauser struct {
+	pause  int
+	resume int
+	order  []int
+}
+
+func (p *recordingPauser) Pause()  { p.pause++; p.order = append(p.order, 1) }
+func (p *recordingPauser) Resume() { p.resume++; p.order = append(p.order, 2) }
+
+func TestQueueStatusHandler_PauserBracketsRead(t *testing.T) {
+	t.Parallel()
+	p := &recordingPauser{}
+	rr := httptest.NewRecorder()
+	QueueStatusHandler(&fakeQueueLister{}, &fakePending{n: 0}, p).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/status", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200", rr.Code)
+	}
+	if p.pause != 1 || p.resume != 1 {
+		t.Errorf("pauser counts: pause=%d resume=%d want 1/1", p.pause, p.resume)
+	}
+	// Pause must come before Resume — the read sits inside the
+	// bracket so a producer that fires mid-read can't re-arm the
+	// debouncer's 5s timer with the snapshot the GET already
+	// covers.
+	if len(p.order) != 2 || p.order[0] != 1 || p.order[1] != 2 {
+		t.Errorf("pause/resume order: %v want [1,2]", p.order)
+	}
+}
+
 func TestQueueStatusHandler_PendingErrorFallsBackToZero(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	QueueStatusHandler(&fakeQueueLister{}, &fakePending{n: 0, err: context.Canceled}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/status", nil))
+	QueueStatusHandler(&fakeQueueLister{}, &fakePending{n: 0, err: context.Canceled}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/status", nil))
 	if rr.Code != http.StatusOK {
 		t.Errorf("pending error should still 200; got %d", rr.Code)
 	}

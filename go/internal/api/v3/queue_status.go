@@ -55,15 +55,44 @@ type PendingLister interface {
 	PendingCount(ctx context.Context) (int, error)
 }
 
+// Pauser is the read-side handle the queue/status GET wraps the
+// broadcaster debouncer with. `*signalr.Debouncer` satisfies it.
+//
+// The C# QueueStatusController shares a single Debouncer instance
+// between the bus subscriber (Execute on QueueUpdatedEvent /
+// PendingReleasesUpdatedEvent → trailing-edge BroadcastChange) and
+// the GET handler (Pause around the projection, Resume after). The
+// Pause/Resume bracket prevents the GET-handler's own projection
+// from accidentally triggering the same debouncer when a producer
+// fires mid-read — without it, every GET would re-arm the 5s timer
+// even though the snapshot it serves already reflects the
+// just-published change.
+//
+// Mirrors `_broadcastDebounce.Pause()` + `.Resume()` at
+// `src/Sonarr.Api.V3/Queue/QueueStatusController.cs:49,65`.
+type Pauser interface {
+	Pause()
+	Resume()
+}
+
 // QueueStatusHandler returns the http.Handler for
 // GET /api/v3/queue/status. Mirrors
 // `QueueStatusController.GetQueueStatus` at
 // `src/Sonarr.Api.V3/Queue/QueueStatusController.cs:45-68`.
 //
+// pauser is optional; pass nil when no SignalR debouncer is wired
+// (early-boot paths, tests). When non-nil, the read is bracketed in
+// Pause / Resume to prevent the GET from re-arming the broadcaster
+// debouncer with its own projection.
+//
 // On an empty DB every count is zero and every bool is false — the
 // recorded golden's exact shape.
-func QueueStatusHandler(queueLister QueueLister, pending PendingLister) http.Handler {
+func QueueStatusHandler(queueLister QueueLister, pending PendingLister, pauser Pauser) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if pauser != nil {
+			pauser.Pause()
+			defer pauser.Resume()
+		}
 		body := BuildQueueStatus(r.Context(), queueLister, pending)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)

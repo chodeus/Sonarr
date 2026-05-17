@@ -54,15 +54,21 @@ type QueueStatusBroadcastDeps struct {
 // the SignalR sub-arc needs. Called once at boot from main.go's
 // serve() after the Hub + bus are constructed.
 //
-// The function returns nothing — subscribers live for the lifetime
-// of the bus. Each subscriber logs its broadcast errors at Warn
-// level; a single broadcast failure must not propagate back to the
-// upstream event handler (the underlying domain event has
-// downstream consumers that don't care about the SignalR fan-out
-// outcome).
-func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.Logger, queueStatus *QueueStatusBroadcastDeps) {
+// Subscribers live for the lifetime of the bus. Each subscriber
+// logs its broadcast errors at Warn level; a single broadcast
+// failure must not propagate back to the upstream event handler
+// (the underlying domain event has downstream consumers that don't
+// care about the SignalR fan-out outcome).
+//
+// Returns the queue/status debouncer when queueStatus deps were
+// supplied; nil otherwise. The GET /api/v3/queue/status handler
+// wraps its projection in this debouncer's Pause / Resume so the
+// read doesn't re-arm the broadcaster (matches the C#
+// QueueStatusController shared-Debouncer pattern at
+// `src/Sonarr.Api.V3/Queue/QueueStatusController.cs:49,65`).
+func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.Logger, queueStatus *QueueStatusBroadcastDeps) *signalr.Debouncer {
 	if hub == nil || bus == nil {
-		return
+		return nil
 	}
 
 	// `tag` family: both TagsUpdatedEvent (from internal/tags) and
@@ -154,6 +160,7 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 	// projection deps we skip wiring the debounced broadcaster
 	// (Sync via the `queue` namespace still fires; only the
 	// populated-body `updated` envelope is missed).
+	var queueStatusDebouncer *signalr.Debouncer
 	if queueStatus != nil && queueStatus.Queue != nil {
 		queueStatusBroadcaster := &signalr.ResourceBroadcaster[apiv3.QueueStatusResource]{
 			Broadcaster: signalr.HubBroadcaster{Hub: hub},
@@ -170,7 +177,7 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 		if debounceDur <= 0 {
 			debounceDur = 5 * time.Second
 		}
-		queueStatusDebouncer := signalr.NewDebouncer(func() {
+		queueStatusDebouncer = signalr.NewDebouncer(func() {
 			ctx := context.Background()
 			body := apiv3.BuildQueueStatus(ctx, queueStatus.Queue, queueStatus.Pending)
 			if err := queueStatusBroadcaster.Updated(ctx, body); err != nil {
@@ -192,7 +199,6 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 		// teardown so a stray fire after Stop would just exercise
 		// the no-op-when-stopped guard. A future slice that adds
 		// a host-level shutdown hook can call .Stop() then.
-		_ = queueStatusDebouncer
 	}
 
 	// `series` family: populated-body emits with the projected
@@ -309,6 +315,8 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 			}
 			return nil
 		})
+
+	return queueStatusDebouncer
 }
 
 // tagSyncPayload is the placeholder TResource for the `tag` Sync
