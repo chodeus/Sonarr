@@ -22,6 +22,7 @@ test/contract/
     ...
   recorder/                        # CLI that drives a C# binary and writes golden/
   replayer/                        # Go test helper that hits a running Go binary
+  diff/                            # CLI for ad-hoc drift diagnostics (slice 4.FN–FQ)
   internal/                        # request/response types, normalizer, diff
 ```
 
@@ -51,6 +52,59 @@ go test ./test/contract/replayer/... \
 ```
 
 CI runs the replay step in the `vet-lint-test` job once a Go API surface exists.
+
+### Diagnose drift with the diff CLI
+
+When the replayer fails it surfaces structured diffs in the test log (slice 4.FO). For wider-scope drift inspection — e.g. "show me every endpoint that diverges right now" — use the standalone `diff` CLI:
+
+```sh
+# Mode A: live Go vs recorded C# goldens. Useful without a staging host.
+go run ./test/contract/diff \
+    -primary   http://127.0.0.1:8989 \
+    -primary-key $SONARR_API_KEY \
+    -corpus    ./test/contract/corpus/v3-empty-state.json \
+    -golden    ./test/contract/golden/v3-empty-state \
+    -v
+
+# Mode B: live Go vs live C# (Phase 6 shadow-traffic / staging).
+go run ./test/contract/diff \
+    -primary   http://127.0.0.1:8990 \
+    -secondary http://127.0.0.1:8989 \
+    -primary-key   $GO_API_KEY \
+    -secondary-key $CSHARP_API_KEY \
+    -corpus    ./test/contract/corpus/v3-empty-state.json
+```
+
+The CLI exits 0 on no drift, 1 on drift or per-entry errors, 2 on flag misuse. For machine consumption (nightly CI, dashboards, trend analysis) add `-format json`:
+
+```sh
+go run ./test/contract/diff \
+    -primary http://127.0.0.1:8989 -primary-key $SONARR_API_KEY \
+    -corpus  ./test/contract/corpus/v3-empty-state.json \
+    -golden  ./test/contract/golden/v3-empty-state \
+    -format json > drift-report.json
+```
+
+Output shape:
+
+```json
+{
+  "summary": {"total": 51, "matched": 41, "mismatched": 10, "errored": 0},
+  "results": [
+    {
+      "id": "v3.diskspace",
+      "statusA": 200, "statusB": 200,
+      "statusMatch": true,
+      "bodyMismatch": true,
+      "diffs": [{"path": "$", "kind": "value", "a": 5, "b": 3}]
+    }
+  ]
+}
+```
+
+Empty `diffs` arrays are omitted; per-entry `err` strings appear as `"err": "..."` when a backend / golden read fails. Results are sorted alphabetically by `id` in both output modes so the report is greppable + diff-able across runs.
+
+The underlying primitive (`normalize.JSONDiff`) is also what the replayer's failure renderer uses (slice 4.FO), so the replayer's test-log diffs and the CLI's report speak the same language: same path notation, same Kind enum, same value formatting.
 
 ## Authoring corpus entries
 
