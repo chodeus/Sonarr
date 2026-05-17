@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -35,7 +36,7 @@ func TestWireSignalRSubscribers_TagsUpdatedEventReachesClient(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub(signalr.WithHostVersion("test-build"))
-	wireSignalRSubscribers(bus, hub, logger, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil)
 
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
@@ -91,7 +92,7 @@ func TestWireSignalRSubscribers_AutoTagsUpdatedAlsoFiresTag(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=autotag-test")
@@ -123,7 +124,7 @@ func TestWireSignalRSubscribers_HealthCompleteFiresSync(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=health-test")
@@ -157,7 +158,7 @@ func TestWireSignalRSubscribers_QueueUpdatedFansBoth(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=queue-test")
@@ -207,7 +208,7 @@ func TestWireSignalRSubscribers_PendingReleasesAlsoFansQueue(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=pending-test")
@@ -256,7 +257,7 @@ func TestWireSignalRSubscribers_QueueStatusDebouncedUpdate(t *testing.T) {
 		Queue:            emptyQueueLister{},
 		Pending:          emptyPendingLister{},
 		DebounceDuration: 30 * time.Millisecond,
-	})
+	}, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=qs-test")
@@ -323,7 +324,7 @@ func TestWireSignalRSubscribers_SeriesAddedFires_Created(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=series-added")
@@ -361,7 +362,7 @@ func TestWireSignalRSubscribers_SeriesEditedFires_Updated(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=series-edited")
@@ -394,7 +395,7 @@ func TestWireSignalRSubscribers_SeriesDeletedFansPerRow(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=series-deleted")
@@ -440,7 +441,7 @@ func TestWireSignalRSubscribers_EpisodeFileAddedFires_Created(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=ef-added")
@@ -473,6 +474,139 @@ func TestWireSignalRSubscribers_EpisodeFileAddedFires_Created(t *testing.T) {
 	}
 }
 
+// fakeSeriesPathLookup satisfies SeriesPathLookup for tests. Returns
+// the configured Series row for matching ID; ErrNotFound otherwise.
+type fakeSeriesPathLookup struct {
+	rows map[int]*series.Series
+	err  error
+}
+
+func (f *fakeSeriesPathLookup) GetSeries(_ context.Context, id int) (*series.Series, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if s, ok := f.rows[id]; ok {
+		return s, nil
+	}
+	return nil, errors.New("not found")
+}
+
+// TestWireSignalRSubscribers_EpisodeFileAddedJoinsSeriesPathViaLookup
+// is the slice 4.FL contract: EpisodeFileAddedEvent doesn't carry
+// Series, so the subscriber must look it up via the supplied
+// SeriesPathLookup and emit the joined Path on the wire.
+//
+// Pre-4.FL the projection used seriesPath="" → the wire Path was
+// just RelativePath, diverging from C# `Path.Combine(Series.Path,
+// RelativePath)`. This test pins the joined behaviour.
+func TestWireSignalRSubscribers_EpisodeFileAddedJoinsSeriesPathViaLookup(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	lookup := &fakeSeriesPathLookup{rows: map[int]*series.Series{
+		5: {ID: 5, Path: "/tv/Demo"},
+	}}
+	wireSignalRSubscribers(bus, hub, logger, nil, lookup)
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=ef-added-lookup")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second)
+	_ = readFrame(t, c, time.Second)
+
+	f := &episodefiles.File{ID: 33, SeriesID: 5, RelativePath: "Season 02/x.mkv"}
+	_ = messaging.Publish(t.Context(), bus, episodefiles.EpisodeFileAddedEvent{EpisodeFile: f})
+
+	frame := readFrame(t, c, 2*time.Second)
+	var inv signalr.InvocationMessage
+	_ = json.Unmarshal(frame, &inv)
+	argBytes, _ := json.Marshal(inv.Arguments[0])
+	body := string(argBytes)
+	if !strings.Contains(body, `"action":"created"`) {
+		t.Errorf("action: %s", body)
+	}
+	if !strings.Contains(body, `"path":"/tv/Demo/Season 02/x.mkv"`) {
+		t.Errorf("joined path missing: %s", body)
+	}
+}
+
+// TestWireSignalRSubscribers_EpisodeFileAddedLookupErrorFallsBack
+// asserts that when the lookup errors (e.g. series row vanished
+// between insert and broadcast), the projection falls back to the
+// bare RelativePath rather than dropping the event. Matches the
+// defensive "broadcast best-effort" posture every other family
+// uses.
+func TestWireSignalRSubscribers_EpisodeFileAddedLookupErrorFallsBack(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	lookup := &fakeSeriesPathLookup{err: errors.New("db down")}
+	wireSignalRSubscribers(bus, hub, logger, nil, lookup)
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=ef-added-err")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second)
+	_ = readFrame(t, c, time.Second)
+
+	f := &episodefiles.File{ID: 44, SeriesID: 5, RelativePath: "x.mkv"}
+	_ = messaging.Publish(t.Context(), bus, episodefiles.EpisodeFileAddedEvent{EpisodeFile: f})
+
+	frame := readFrame(t, c, 2*time.Second)
+	var inv signalr.InvocationMessage
+	_ = json.Unmarshal(frame, &inv)
+	argBytes, _ := json.Marshal(inv.Arguments[0])
+	body := string(argBytes)
+	if !strings.Contains(body, `"path":"x.mkv"`) {
+		t.Errorf("fallback path: %s", body)
+	}
+}
+
+// TestWireSignalRSubscribers_EpisodeFileDeletedFallsBackToLookup
+// asserts that when EpisodeFileDeletedEvent.Series is nil but a
+// SeriesPathLookup is supplied, the projection still produces a
+// joined Path. Mirrors the producer flexibility: some delete sites
+// populate Series, some don't.
+func TestWireSignalRSubscribers_EpisodeFileDeletedFallsBackToLookup(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := messaging.New(logger)
+	defer bus.BeginShutdown()
+	hub := signalr.NewHub()
+	lookup := &fakeSeriesPathLookup{rows: map[int]*series.Series{
+		7: {ID: 7, Path: "/tv/Other"},
+	}}
+	wireSignalRSubscribers(bus, hub, logger, nil, lookup)
+	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
+	defer ts.Close()
+	c := dialWSToServer(t, ts, "id=ef-deleted-lookup")
+	defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+	hs, _ := signalr.MarshalFrame(signalr.ClientHandshake{Protocol: "json", Version: 1})
+	_ = c.Write(t.Context(), websocket.MessageText, hs)
+	_ = readFrame(t, c, time.Second)
+	_ = readFrame(t, c, time.Second)
+
+	f := &episodefiles.File{ID: 55, SeriesID: 7, RelativePath: "a.mkv"}
+	_ = messaging.Publish(t.Context(), bus, episodefiles.EpisodeFileDeletedEvent{EpisodeFile: f})
+
+	frame := readFrame(t, c, 2*time.Second)
+	var inv signalr.InvocationMessage
+	_ = json.Unmarshal(frame, &inv)
+	argBytes, _ := json.Marshal(inv.Arguments[0])
+	body := string(argBytes)
+	if !strings.Contains(body, `"path":"/tv/Other/a.mkv"`) {
+		t.Errorf("delete-without-Series should still join via lookup: %s", body)
+	}
+}
+
 // TestWireSignalRSubscribers_EpisodeFileDeletedJoinsSeriesPath
 // asserts that when the event carries the parent Series the
 // emitted resource's Path is the joined Series.Path +
@@ -484,7 +618,7 @@ func TestWireSignalRSubscribers_EpisodeFileDeletedJoinsSeriesPath(t *testing.T) 
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=ef-deleted")
@@ -523,7 +657,7 @@ func TestWireSignalRSubscribers_SystemTaskCommandExecutedSync(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=systask-test")
@@ -556,13 +690,13 @@ func TestWireSignalRSubscribers_NilDepsSafe(t *testing.T) {
 	// Each early-return path returns a nil *signalr.Debouncer so
 	// main.go's shutdown branch (`if queueStatusDebouncer != nil`)
 	// short-circuits cleanly when wiring was skipped.
-	if d := wireSignalRSubscribers(nil, nil, logger, nil); d != nil {
+	if d := wireSignalRSubscribers(nil, nil, logger, nil, nil); d != nil {
 		t.Errorf("nil bus + hub: got non-nil debouncer")
 	}
-	if d := wireSignalRSubscribers(messaging.New(logger), nil, logger, nil); d != nil {
+	if d := wireSignalRSubscribers(messaging.New(logger), nil, logger, nil, nil); d != nil {
 		t.Errorf("nil hub: got non-nil debouncer")
 	}
-	if d := wireSignalRSubscribers(nil, signalr.NewHub(), logger, nil); d != nil {
+	if d := wireSignalRSubscribers(nil, signalr.NewHub(), logger, nil, nil); d != nil {
 		t.Errorf("nil bus: got non-nil debouncer")
 	}
 }
@@ -583,7 +717,7 @@ func TestWireSignalRSubscribers_QueueStatusStopSilencesFire(t *testing.T) {
 		Queue:            emptyQueueLister{},
 		Pending:          emptyPendingLister{},
 		DebounceDuration: 20 * time.Millisecond,
-	})
+	}, nil)
 	if debouncer == nil {
 		t.Fatal("expected non-nil queue/status debouncer when QueueStatusBroadcastDeps supplied")
 	}

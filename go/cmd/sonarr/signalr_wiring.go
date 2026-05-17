@@ -50,6 +50,21 @@ type QueueStatusBroadcastDeps struct {
 	DebounceDuration time.Duration
 }
 
+// SeriesPathLookup is the narrow series-lookup surface the
+// EpisodeFile broadcasters use at fan-out time to join
+// Series.Path onto the projected EpisodeFileResource.Path
+// (otherwise the wire carries the bare RelativePath, diverging
+// from the C# `Path.Combine(Series.Path, RelativePath)` projection
+// at `src/Sonarr.Api.V3/EpisodeFiles/EpisodeFileResourceMapper.cs`).
+//
+// *series.Service satisfies this via its GetSeries(ctx, id)
+// (*Series, error) method — no adapter needed. Pass nil to opt out
+// (the projection falls back to bare RelativePath, matching the
+// pre-slice-4.FL behaviour).
+type SeriesPathLookup interface {
+	GetSeries(ctx context.Context, id int) (*series.Series, error)
+}
+
 // wireSignalRSubscribers attaches every per-resource bus subscriber
 // the SignalR sub-arc needs. Called once at boot from main.go's
 // serve() after the Hub + bus are constructed.
@@ -66,9 +81,25 @@ type QueueStatusBroadcastDeps struct {
 // read doesn't re-arm the broadcaster (matches the C#
 // QueueStatusController shared-Debouncer pattern at
 // `src/Sonarr.Api.V3/Queue/QueueStatusController.cs:49,65`).
-func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.Logger, queueStatus *QueueStatusBroadcastDeps) *signalr.Debouncer {
+func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.Logger, queueStatus *QueueStatusBroadcastDeps, seriesPathLookup SeriesPathLookup) *signalr.Debouncer {
 	if hub == nil || bus == nil {
 		return nil
+	}
+
+	// seriesPathFor is the per-event helper the EpisodeFile
+	// broadcasters call to resolve Series.Path. Returns "" on any
+	// failure path (nil lookup, lookup error, nil result) so the
+	// broadcast falls back to the bare RelativePath rather than
+	// dropping the event.
+	seriesPathFor := func(ctx context.Context, seriesID int) string {
+		if seriesPathLookup == nil || seriesID == 0 {
+			return ""
+		}
+		s, err := seriesPathLookup.GetSeries(ctx, seriesID)
+		if err != nil || s == nil {
+			return ""
+		}
+		return s.Path
 	}
 
 	// `tag` family: both TagsUpdatedEvent (from internal/tags) and
@@ -252,14 +283,19 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 	// `episodefile` family: populated-body emits via the projected
 	// apiv3.EpisodeFileResource. Two triggers wired today:
 	//   - EpisodeFileAddedEvent → Created (resource projected from
-	//     the event's EpisodeFile, with seriesPath="" since the
-	//     event doesn't carry it — Path on the wire is the bare
-	//     RelativePath for now; full Series.Path join DEFERRED)
+	//     the event's EpisodeFile; the event itself doesn't carry
+	//     Series, so slice 4.FL looks it up at broadcast time via
+	//     SeriesPathLookup to produce the C# `Path.Combine(Series.Path,
+	//     RelativePath)` wire shape. When the lookup is nil or fails
+	//     the projection falls back to the bare RelativePath, matching
+	//     the pre-4.FL behaviour and the Path.Combine("", path) C#
+	//     edge case at EpisodeFileResourceMapper.cs.)
 	//   - EpisodeFileDeletedEvent → Deleted (resource projected
 	//     from the event's EpisodeFile + the carried Series.Path
-	//     if Series is non-nil — the C# delete payload includes
-	//     the full Path so subscribers can render "X deleted"
-	//     toasts with the absolute path)
+	//     if Series is non-nil — preferred over the lookup since the
+	//     event captures Series as of delete-time; falls through to
+	//     the lookup when Series is nil so producers that don't
+	//     populate it still get the joined path)
 	// EpisodeFileRenamedEvent + the ModelEvent<EpisodeFile> Updated
 	// path DEFERRED — Renamed needs an "updated path" envelope
 	// shape the C# wire-spec doesn't pin precisely; Updated
@@ -274,7 +310,7 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 			if ev.EpisodeFile == nil {
 				return nil
 			}
-			res := apiv3.ToEpisodeFileResource(*ev.EpisodeFile, "")
+			res := apiv3.ToEpisodeFileResource(*ev.EpisodeFile, seriesPathFor(ctx, ev.EpisodeFile.SeriesID))
 			if err := episodeFileBroadcaster.Created(ctx, res); err != nil {
 				logger.Warn("signalr: episodefile created broadcast failed", "err", err)
 			}
@@ -288,6 +324,8 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 			seriesPath := ""
 			if ev.Series != nil {
 				seriesPath = ev.Series.Path
+			} else {
+				seriesPath = seriesPathFor(ctx, ev.EpisodeFile.SeriesID)
 			}
 			res := apiv3.ToEpisodeFileResource(*ev.EpisodeFile, seriesPath)
 			if err := episodeFileBroadcaster.Deleted(ctx, res); err != nil {

@@ -2394,7 +2394,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	queueStatusDebouncer := wireSignalRSubscribers(bus, signalRHub, logger, &QueueStatusBroadcastDeps{
 		Queue:   queueSvc,
 		Pending: pendingCountLister{repo: pendingReleasesRepo},
-	})
+	}, seriesSvc)
 	// Lift to apiv3.Pauser only when non-nil — a typed-nil
 	// *signalr.Debouncer wrapped in an interface would survive the
 	// `if pauser != nil` guard inside QueueStatusHandler and panic on
