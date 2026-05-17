@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"sonarr.tv/sonarr/test/contract/internal/normalize"
 	"sonarr.tv/sonarr/test/contract/internal/runner"
 	"sonarr.tv/sonarr/test/contract/internal/spec"
 )
@@ -91,6 +92,14 @@ func Replay(t *testing.T) {
 	}
 }
 
+// maxStructuredDiffs caps the per-entry diff lines printed in
+// failure output. A schema endpoint with hundreds of fields can
+// produce a wall of diffs that obscures the first useful signal;
+// truncating at 50 keeps the most-significant entries (sorted
+// alphabetically by path inside JSONDiff) visible without burying
+// the rest of the test log.
+const maxStructuredDiffs = 50
+
 func compare(got, want *spec.Golden) string {
 	var b strings.Builder
 	if got.Status != want.Status {
@@ -100,7 +109,33 @@ func compare(got, want *spec.Golden) string {
 		fmt.Fprintf(&b, "  body kind: got json=%t want json=%t\n", got.BodyIsJSON, want.BodyIsJSON)
 	}
 	if !bytes.Equal(spec.CompactJSON(got.BodyJSON), spec.CompactJSON(want.BodyJSON)) {
-		fmt.Fprintf(&b, "  body json:\n    got=%s\n    want=%s\n", got.BodyJSON, want.BodyJSON)
+		// Slice 4.FO: prefer the structured JSONDiff (slice 4.FM)
+		// over the raw got/want dump — failing tests show the
+		// exact path that drifted instead of a wall of bytes. Falls
+		// back to the raw dump when either side is malformed JSON
+		// or both sides are empty (JSONDiff returns nil + nil).
+		if diffs, derr := normalize.JSONDiff(got.BodyJSON, want.BodyJSON); derr == nil && len(diffs) > 0 {
+			fmt.Fprintf(&b, "  body json: %d structured diff(s)\n", len(diffs))
+			limit := len(diffs)
+			if limit > maxStructuredDiffs {
+				limit = maxStructuredDiffs
+			}
+			for i := 0; i < limit; i++ {
+				d := diffs[i]
+				fmt.Fprintf(&b, "    %-10s %s: got=%v want=%v\n", d.Kind, d.Path, d.A, d.B)
+			}
+			if len(diffs) > limit {
+				fmt.Fprintf(&b, "    ... (%d more; rerun with the diff CLI for the full list)\n", len(diffs)-limit)
+			}
+		} else {
+			// Either JSONDiff errored (malformed JSON, unlikely
+			// after normalize.JSON has already round-tripped it)
+			// or the byte-compare flagged a difference JSONDiff
+			// considers structurally equal (e.g. trailing whitespace
+			// inside a body_raw blob). Surface the raw dump so the
+			// failure isn't silent.
+			fmt.Fprintf(&b, "  body json:\n    got=%s\n    want=%s\n", got.BodyJSON, want.BodyJSON)
+		}
 	}
 	if !bytes.Equal(got.BodyRaw, want.BodyRaw) {
 		fmt.Fprintf(&b, "  body raw differs (%d vs %d bytes)\n", len(got.BodyRaw), len(want.BodyRaw))
