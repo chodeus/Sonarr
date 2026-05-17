@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -310,5 +311,113 @@ func TestPrintReport_VerboseExpandsDiffs(t *testing.T) {
 	}
 	if !strings.Contains(loud.String(), "$.a") {
 		t.Errorf("verbose mode should include $.a: %q", loud.String())
+	}
+}
+
+// TestPrintReportJSON_Shape asserts the JSON document shape is
+// stable and parseable end-to-end — nightly CI and dashboard
+// consumers will round-trip it via json.Unmarshal.
+func TestPrintReportJSON_Shape(t *testing.T) {
+	t.Parallel()
+	pURL, sURL := buildPair(t, jsonHandler(`{"a":1,"b":[1,9]}`), jsonHandler(`{"a":1,"b":[1,2]}`))
+	results, summary, err := diffCorpus(context.Background(), Options{
+		Primary: pURL, Secondary: sURL,
+		Corpus: &spec.Corpus{Entries: []spec.Entry{fooEntry()}},
+	})
+	if err != nil {
+		t.Fatalf("diffCorpus: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := printReportJSON(&buf, results, summary); err != nil {
+		t.Fatalf("printReportJSON: %v", err)
+	}
+	var got jsonReport
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("re-unmarshal: %v body=%s", err, buf.String())
+	}
+	if got.Summary.Total != 1 || got.Summary.Mismatched != 1 {
+		t.Errorf("summary %+v", got.Summary)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("results len: %d", len(got.Results))
+	}
+	r := got.Results[0]
+	if r.ID != "foo" {
+		t.Errorf("id %q", r.ID)
+	}
+	if !r.BodyMismatch {
+		t.Errorf("expected bodyMismatch=true")
+	}
+	if len(r.Diffs) != 1 {
+		t.Fatalf("diffs len: %d", len(r.Diffs))
+	}
+	if r.Diffs[0].Path != "$.b[1]" || r.Diffs[0].Kind != "value" {
+		t.Errorf("first diff: %+v", r.Diffs[0])
+	}
+}
+
+// TestPrintReportJSON_OmitsDiffsWhenEmpty asserts the diffs key is
+// absent (not null) on entries with no field-level differences,
+// keeping the per-run JSON small on the typical clean case.
+func TestPrintReportJSON_OmitsDiffsWhenEmpty(t *testing.T) {
+	t.Parallel()
+	pURL, sURL := buildPair(t, jsonHandler(`{"a":1}`), jsonHandler(`{"a":1}`))
+	results, summary, err := diffCorpus(context.Background(), Options{
+		Primary: pURL, Secondary: sURL,
+		Corpus: &spec.Corpus{Entries: []spec.Entry{fooEntry()}},
+	})
+	if err != nil {
+		t.Fatalf("diffCorpus: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := printReportJSON(&buf, results, summary); err != nil {
+		t.Fatalf("printReportJSON: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, `"diffs"`) {
+		t.Errorf("clean run should omit diffs key; got %s", out)
+	}
+	if !strings.Contains(out, `"bodyMismatch": false`) {
+		t.Errorf("expected bodyMismatch:false marker; got %s", out)
+	}
+}
+
+// TestPrintReportJSON_SerialisesErr asserts a per-entry Err lands
+// as a non-empty err string in the JSON output.
+func TestPrintReportJSON_SerialisesErr(t *testing.T) {
+	t.Parallel()
+	results := []Result{{ID: "x", Err: fmt.Errorf("boom")}}
+	var buf bytes.Buffer
+	if err := printReportJSON(&buf, results, Summary{Total: 1, Errored: 1}); err != nil {
+		t.Fatalf("printReportJSON: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"err": "boom"`) {
+		t.Errorf("missing err field: %s", buf.String())
+	}
+}
+
+// TestPrintReportJSON_StableOrdering pairs with the text-mode
+// TestPrintReport_StableOrdering — JSON output sorts by ID too.
+func TestPrintReportJSON_StableOrdering(t *testing.T) {
+	t.Parallel()
+	results := []Result{
+		{ID: "z.last", StatusMatch: true},
+		{ID: "a.first", StatusMatch: true},
+		{ID: "m.middle", StatusMatch: true},
+	}
+	var buf bytes.Buffer
+	if err := printReportJSON(&buf, results, Summary{Total: 3, Matched: 3}); err != nil {
+		t.Fatalf("printReportJSON: %v", err)
+	}
+	var got jsonReport
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := []string{"a.first", "m.middle", "z.last"}
+	for i, r := range got.Results {
+		if r.ID != want[i] {
+			t.Errorf("results[%d].ID = %q want %q", i, r.ID, want[i])
+		}
 	}
 }

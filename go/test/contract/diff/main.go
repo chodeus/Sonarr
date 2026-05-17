@@ -27,6 +27,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -193,17 +194,21 @@ func diffCorpus(ctx context.Context, opts Options) ([]Result, Summary, error) {
 	return results, summary, nil
 }
 
+// sortedByID returns a copy of results sorted alphabetically by ID
+// so every render path emits in a deterministic order. The two
+// printers (text + JSON) share this helper.
+func sortedByID(results []Result) []Result {
+	out := make([]Result, len(results))
+	copy(out, results)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 // printReport renders the per-entry result list + a final summary
 // line to w. verbose=true expands every Diff into a path-by-path
 // listing; otherwise only the count surfaces per entry.
 func printReport(w io.Writer, results []Result, summary Summary, verbose bool) {
-	// Sort by entry ID so the report is deterministic regardless of
-	// corpus order. Stable across runs makes the report greppable.
-	sorted := make([]Result, len(results))
-	copy(sorted, results)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
-
-	for _, r := range sorted {
+	for _, r := range sortedByID(results) {
 		switch {
 		case r.Err != nil:
 			_, _ = fmt.Fprintf(w, "ERROR  %s: %v\n", r.ID, r.Err)
@@ -227,6 +232,78 @@ func printReport(w io.Writer, results []Result, summary Summary, verbose bool) {
 		summary.Total, summary.Matched, summary.Mismatched, summary.Errored)
 }
 
+// jsonReport mirrors printReport's structure but as a single JSON
+// document — for nightly CI / dashboards / drift-trend analysis. The
+// JSON shape is intentionally flat so jq + simple tools can hop in
+// without a schema package.
+//
+// Per-entry result kinds (statusMismatch / bodyMismatch / err) are
+// all rendered explicitly; consumers don't need to recompute them
+// from raw fields. diffs is omitted (not null) when no diffs apply,
+// keeping the document small for the typical clean-run case.
+type jsonReport struct {
+	Summary jsonSummary  `json:"summary"`
+	Results []jsonResult `json:"results"`
+}
+
+type jsonSummary struct {
+	Total      int `json:"total"`
+	Matched    int `json:"matched"`
+	Mismatched int `json:"mismatched"`
+	Errored    int `json:"errored"`
+}
+
+type jsonResult struct {
+	ID           string     `json:"id"`
+	StatusA      int        `json:"statusA"`
+	StatusB      int        `json:"statusB"`
+	StatusMatch  bool       `json:"statusMatch"`
+	BodyMismatch bool       `json:"bodyMismatch"`
+	Diffs        []jsonDiff `json:"diffs,omitempty"`
+	Err          string     `json:"err,omitempty"`
+}
+
+type jsonDiff struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+	A    any    `json:"a,omitempty"`
+	B    any    `json:"b,omitempty"`
+}
+
+// printReportJSON serialises a report as JSON. Pretty-printed (2sp
+// indent) so the artefact is human-greppable as well as
+// machine-parseable.
+func printReportJSON(w io.Writer, results []Result, summary Summary) error {
+	out := jsonReport{
+		Summary: jsonSummary(summary),
+		Results: make([]jsonResult, 0, len(results)),
+	}
+	for _, r := range sortedByID(results) {
+		jr := jsonResult{
+			ID:           r.ID,
+			StatusA:      r.StatusA,
+			StatusB:      r.StatusB,
+			StatusMatch:  r.StatusMatch,
+			BodyMismatch: r.BodyMismatch,
+		}
+		if r.Err != nil {
+			jr.Err = r.Err.Error()
+		}
+		if len(r.Diffs) > 0 {
+			jr.Diffs = make([]jsonDiff, 0, len(r.Diffs))
+			for _, d := range r.Diffs {
+				jr.Diffs = append(jr.Diffs, jsonDiff{
+					Path: d.Path, Kind: d.Kind.String(), A: d.A, B: d.B,
+				})
+			}
+		}
+		out.Results = append(out.Results, jr)
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
+
 func main() {
 	primary := flag.String("primary", "", "Primary backend URL (e.g. http://localhost:8989)")
 	secondary := flag.String("secondary", "", "Secondary backend URL — exactly one of -secondary or -golden required")
@@ -235,8 +312,14 @@ func main() {
 	secondaryKey := flag.String("secondary-key", "", "X-Api-Key for secondary; defaults to primary-key when blank (ignored when -golden is set)")
 	corpusPath := flag.String("corpus", "", "Path to corpus JSON file")
 	timeout := flag.Duration("timeout", 30*time.Second, "Per-entry request timeout")
-	verbose := flag.Bool("v", false, "Print per-entry OK lines + expand each diff path")
+	verbose := flag.Bool("v", false, "Print per-entry OK lines + expand each diff path (text format only)")
+	format := flag.String("format", "text", "Output format: text | json")
 	flag.Parse()
+
+	if *format != "text" && *format != "json" {
+		fmt.Fprintf(os.Stderr, "diff: -format must be text or json (got %q)\n", *format)
+		os.Exit(2)
+	}
 
 	if *primary == "" || *corpusPath == "" {
 		fmt.Fprintln(os.Stderr, "diff: -primary and -corpus are required")
@@ -285,7 +368,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	printReport(os.Stdout, results, summary, *verbose)
+	switch *format {
+	case "json":
+		if err := printReportJSON(os.Stdout, results, summary); err != nil {
+			fmt.Fprintf(os.Stderr, "diff: encode json report: %v\n", err)
+			os.Exit(1)
+		}
+	default:
+		printReport(os.Stdout, results, summary, *verbose)
+	}
 	if summary.Mismatched > 0 || summary.Errored > 0 {
 		os.Exit(1)
 	}
