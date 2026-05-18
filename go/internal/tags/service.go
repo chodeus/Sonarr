@@ -135,6 +135,23 @@ func (s *Service) Add(ctx context.Context, tag *Tag) (*Tag, error) {
 	return inserted, nil
 }
 
+// Delete removes a tag by ID and publishes TagsUpdatedEvent. Mirrors
+// `TagService.Delete(int tagId)` at
+// `src/NzbDrone.Core/Tags/TagService.cs:185-189`. Returns ErrNotFound
+// if the row does not exist (per the underlying repo.Delete contract).
+//
+// The C# `Delete` does NOT check Details() for in-use rejection — the
+// V3 route exposes a plain DELETE that proceeds regardless; the
+// front-end is responsible for pre-flighting with /tag/detail. The Go
+// port preserves that posture for V3 wire compatibility.
+func (s *Service) Delete(ctx context.Context, id int) error {
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return fmt.Errorf("tags: delete %d: %w", id, err)
+	}
+	s.publishUpdated(ctx)
+	return nil
+}
+
 // Update ports `TagService.Update(Tag)` at `:175-183`. Lowercases
 // the label, persists, publishes TagsUpdatedEvent.
 func (s *Service) Update(ctx context.Context, tag *Tag) error {
