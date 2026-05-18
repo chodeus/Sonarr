@@ -555,3 +555,123 @@ func TestImportListTestAllHandler_ValidationFailuresNonNil(t *testing.T) {
 		t.Errorf("validationFailures should be [] not null: body=%s", rr.Body.String())
 	}
 }
+
+// fakeImportListActioner implements ImportListActioner.
+type fakeImportListActioner struct {
+	seenName  string
+	seenQuery map[string]string
+	seenRow   *importlists.ImportList
+	result    any
+	err       error
+}
+
+func (f *fakeImportListActioner) RequestAction(_ context.Context, n *importlists.ImportList, name string, query map[string]string) (any, error) {
+	f.seenName = name
+	f.seenQuery = query
+	f.seenRow = n
+	return f.result, f.err
+}
+
+func TestImportListRequestActionHandler_Success(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeImportListActioner{result: map[string]any{"profiles": []any{"any", "hd"}}}
+	body := validImportListBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/importlist/action/getQualityProfiles?type=tv", bytes.NewReader(buf))
+	req.SetPathValue("name", "getQualityProfiles")
+	rr := httptest.NewRecorder()
+	ImportListRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body shape: %v body=%s", err, rr.Body.String())
+	}
+	if _, ok := got["profiles"]; !ok {
+		t.Errorf("body: %+v", got)
+	}
+	if actioner.seenName != "getQualityProfiles" {
+		t.Errorf("action name: %q", actioner.seenName)
+	}
+	if actioner.seenQuery["type"] != "tv" {
+		t.Errorf("query map: %+v", actioner.seenQuery)
+	}
+	if actioner.seenRow == nil || actioner.seenRow.Implementation != "SonarrImport" {
+		t.Errorf("row not built: %+v", actioner.seenRow)
+	}
+}
+
+func TestImportListRequestActionHandler_NilResult_EmitsJSONNull(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeImportListActioner{result: nil}
+	body := validImportListBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/importlist/action/noop", bytes.NewReader(buf))
+	req.SetPathValue("name", "noop")
+	rr := httptest.NewRecorder()
+	ImportListRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if rr.Body.String() != `null` {
+		t.Errorf("body: %q", rr.Body.String())
+	}
+}
+
+func TestImportListRequestActionHandler_ErrNotRegistered_400(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeImportListActioner{err: importlists.ErrNotRegistered}
+	body := validImportListBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/importlist/action/x", bytes.NewReader(buf))
+	req.SetPathValue("name", "x")
+	rr := httptest.NewRecorder()
+	ImportListRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var failures []map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &failures)
+	if len(failures) != 1 || failures[0]["propertyName"] != "Implementation" {
+		t.Errorf("expected Implementation failure: %+v", failures)
+	}
+}
+
+func TestImportListRequestActionHandler_OtherError_500(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeImportListActioner{err: errors.New("upstream down")}
+	body := validImportListBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/importlist/action/x", bytes.NewReader(buf))
+	req.SetPathValue("name", "x")
+	rr := httptest.NewRecorder()
+	ImportListRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestImportListRequestActionHandler_EmptyName_400(t *testing.T) {
+	t.Parallel()
+	body := validImportListBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/importlist/action/", bytes.NewReader(buf))
+	req.SetPathValue("name", "")
+	rr := httptest.NewRecorder()
+	ImportListRequestActionHandler(&fakeImportListActioner{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestImportListRequestActionHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/importlist/action/x", bytes.NewReader([]byte(`{nope`)))
+	req.SetPathValue("name", "x")
+	rr := httptest.NewRecorder()
+	ImportListRequestActionHandler(&fakeImportListActioner{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}

@@ -372,6 +372,70 @@ func ImportListTestHandler(tester ImportListTester) http.Handler {
 	})
 }
 
+// ImportListActioner invokes a per-row provider RequestAction. The
+// cmd-side adapter wires this against importlists.Registry.Construct
+// + importlists.Provider.RequestAction under host-supplied
+// importlists.Dependencies.
+//
+// Common import-list actions: Plex OAuth handshake
+// (startOAuth/continueOAuth/getOAuthToken from the Plex import-list
+// provider RequestAction map) and Sonarr provider helpers
+// (getQualityProfiles / getRootFolders / getTags /
+// getLanguageProfiles) for the React UI's Sonarr-import setup
+// wizard's ID-to-name resolution.
+type ImportListActioner interface {
+	RequestAction(ctx context.Context, n *importlists.ImportList, action string, query map[string]string) (any, error)
+}
+
+// ImportListRequestActionHandler returns POST /api/v3/importlist/action/{name}.
+// Same shape as 5.C1d/5.C2d.
+func ImportListRequestActionHandler(actioner ImportListActioner) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if strings.TrimSpace(name) == "" {
+			httperr.BadRequest(w, "importlist/action: empty name")
+			return
+		}
+		body, err := decodeImportListBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("importlist: malformed body: %v", err))
+			return
+		}
+		row, err := fromImportListResource(body, nil)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("importlist: invalid fields: %v", err))
+			return
+		}
+		query := make(map[string]string, len(r.URL.Query()))
+		for k, vs := range r.URL.Query() {
+			if len(vs) > 0 {
+				query[k] = vs[0]
+			}
+		}
+		data, err := actioner.RequestAction(r.Context(), row, name, query)
+		if err != nil {
+			if errors.Is(err, importlists.ErrNotRegistered) {
+				httperr.WriteValidation(w, []httperr.Failure{{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q (configContract %q)", body.Implementation, body.ConfigContract),
+					Severity:     "error",
+				}})
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlist: action %q: %w", name, err), nil)
+			return
+		}
+		buf, err := json.Marshal(data)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlist: action %q: marshal: %w", name, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf)
+	})
+}
+
 // ImportListTestAllHandler returns POST /api/v3/importlist/testall.
 // Mirrors C# ProviderControllerBase.TestAll at :233-257 and the
 // 5.C1c / 5.C2c twins. Iterates every persisted row, runs per-row

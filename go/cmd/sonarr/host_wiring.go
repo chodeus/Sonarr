@@ -323,6 +323,15 @@ func (a *registryImportListTester) Test(ctx context.Context, n *importlists.Impo
 	return provider.Test(ctx)
 }
 
+// RequestAction satisfies apiv3.ImportListActioner.
+func (a *registryImportListTester) RequestAction(ctx context.Context, n *importlists.ImportList, action string, query map[string]string) (any, error) {
+	provider, err := a.registry.Construct(n, a.deps)
+	if err != nil {
+		return nil, err
+	}
+	return provider.RequestAction(ctx, action, query)
+}
+
 // apiv3FileExists + apiv3DeleteFile defer to os.Stat / os.Remove.
 // Named with the apiv3 prefix to keep the cmd-package surface clean
 // since the v3 layer's unexported osFileExists / osDeleteFile aren't
@@ -941,6 +950,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "POST", Path: "/api/v3/importlist", Handler: apiv3.ImportListCreateHandler(importListsRepo, importListEmitter)},
 		{Method: "POST", Path: "/api/v3/importlist/test", Handler: apiv3.ImportListTestHandler(importListTester)},
 		{Method: "POST", Path: "/api/v3/importlist/testall", Handler: apiv3.ImportListTestAllHandler(importListsRepo, importListTester)},
+		{Method: "POST", Path: "/api/v3/importlist/action/{name}", Handler: apiv3.ImportListRequestActionHandler(importListTester)},
 		{Method: "PUT", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListUpdateHandler(importListsRepo, importListEmitter)},
 		{Method: "DELETE", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListDeleteHandler(importListsRepo, importListEmitter)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion", Handler: apiv3.ImportListExclusionHandler(importListExclusionsRepo)},
