@@ -828,6 +828,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/series", Handler: apiv3.SeriesListHandler(seriesSvc)},
 		{Method: "GET", Path: "/api/v3/series/{id}", Handler: apiv3.SeriesByIDHandler(seriesSvc)},
 		{Method: "GET", Path: "/api/v3/series/{id}/folder", Handler: apiv3.SeriesFolderHandler(seriesSvc, namingConfigSvc)},
+		{Method: "GET", Path: "/api/v3/series/lookup", Handler: apiv3.SeriesLookupHandler()},
 		{Method: "GET", Path: "/api/v3/system/backup", Handler: apiv3.BackupListHandler(backupAdmin{svc: backupSvc})},
 		{Method: "DELETE", Path: "/api/v3/system/backup/{id}", Handler: apiv3.BackupDeleteHandler(backupAdmin{svc: backupSvc})},
 		{Method: "POST", Path: "/api/v3/system/backup/restore/{id}", Handler: apiv3.BackupRestoreHandler(backupAdmin{svc: backupSvc})},
