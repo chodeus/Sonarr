@@ -309,6 +309,140 @@ func TestNotificationUpdateHandler_OmittedFields_KeepsExistingSettings(t *testin
 	}
 }
 
+// fakeNotifTester implements NotificationTester. result and err are
+// returned verbatim. seen records the last Notification it was asked
+// to test so the handler-side fromResource projection can be verified.
+type fakeNotifTester struct {
+	seen   *notifications.Notification
+	result []notifications.TestFailure
+	err    error
+}
+
+func (f *fakeNotifTester) Test(_ context.Context, n *notifications.Notification) ([]notifications.TestFailure, error) {
+	f.seen = n
+	return f.result, f.err
+}
+
+func TestNotificationTestHandler_Success_Returns200EmptyObject(t *testing.T) {
+	t.Parallel()
+	tester := &fakeNotifTester{}
+	body := validNotificationBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/notification/test", bytes.NewReader(buf))
+	rr := httptest.NewRecorder()
+	NotificationTestHandler(tester).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `{}` {
+		t.Errorf("body: %q want {}", rr.Body.String())
+	}
+	if tester.seen == nil || tester.seen.Implementation != "Webhook" {
+		t.Errorf("Test should be invoked with built Notification: seen=%+v", tester.seen)
+	}
+	// Settings JSON must be reconstructed from fields[] before Test runs.
+	if tester.seen != nil {
+		var settings map[string]any
+		if err := json.Unmarshal([]byte(tester.seen.Settings), &settings); err != nil {
+			t.Fatalf("Settings JSON: %v", err)
+		}
+		if settings["url"] != "https://example.com/hook" {
+			t.Errorf("settings url not packed: %v", settings["url"])
+		}
+	}
+}
+
+func TestNotificationTestHandler_FailuresProjectTo400Array(t *testing.T) {
+	t.Parallel()
+	tester := &fakeNotifTester{result: []notifications.TestFailure{
+		{PropertyName: "Url", ErrorMessage: "could not connect"},
+		{PropertyName: "", ErrorMessage: "Test failed: timeout"},
+	}}
+	body := validNotificationBody()
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	NotificationTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var failures []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &failures); err != nil {
+		t.Fatalf("body must be FluentValidation array: %v body=%s", err, rr.Body.String())
+	}
+	if len(failures) != 2 {
+		t.Fatalf("len: %d", len(failures))
+	}
+	if failures[0]["propertyName"] != "Url" || failures[0]["errorMessage"] != "could not connect" {
+		t.Errorf("first failure: %+v", failures[0])
+	}
+	if failures[0]["severity"] != "error" {
+		t.Errorf("severity must default to error: %+v", failures[0])
+	}
+	if failures[1]["propertyName"] != "" || failures[1]["errorMessage"] != "Test failed: timeout" {
+		t.Errorf("second failure: %+v", failures[1])
+	}
+}
+
+func TestNotificationTestHandler_UnknownImplementation_400Validation(t *testing.T) {
+	t.Parallel()
+	tester := &fakeNotifTester{err: notifications.ErrNotRegistered}
+	body := validNotificationBody()
+	body.Implementation = "NoSuchProvider"
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	NotificationTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var failures []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &failures); err != nil {
+		t.Fatalf("body shape: %v", err)
+	}
+	if len(failures) != 1 || failures[0]["propertyName"] != "Implementation" {
+		t.Errorf("expected single Implementation failure: %+v", failures)
+	}
+}
+
+func TestNotificationTestHandler_OtherError_500(t *testing.T) {
+	t.Parallel()
+	tester := &fakeNotifTester{err: errors.New("transport broke")}
+	body := validNotificationBody()
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	NotificationTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestNotificationTestHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	NotificationTestHandler(&fakeNotifTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification/test", bytes.NewReader([]byte(`{not json`))))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// TestNotificationTestHandler_SkipsSharedValidator confirms the
+// SharedValidator name-non-empty + name-unique + implementation-in-
+// registry rules are bypassed at this endpoint. C# uses
+// [SkipValidation(true,false)] at :220 to disable PostValidator; the
+// Go port skips the entire SharedValidator chain because the Tester
+// receives the raw resource and decides what to return.
+func TestNotificationTestHandler_SkipsSharedValidator(t *testing.T) {
+	t.Parallel()
+	tester := &fakeNotifTester{}
+	body := validNotificationBody()
+	body.Name = "" // SharedValidator would 400 this on POST/PUT
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	NotificationTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Errorf("name-missing should pass through to Test() (skip-validation): status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestNotificationDeleteHandler_Success(t *testing.T) {
 	t.Parallel()
 	w := &fakeNotifWriter{rows: []notifications.Notification{{ID: 7, Name: "victim"}}}

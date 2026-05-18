@@ -257,6 +257,103 @@ func NotificationUpdateHandler(svc NotificationWriter, reg NotificationRegistryC
 	})
 }
 
+// NotificationTester invokes a per-row provider Test against the
+// (Implementation, ConfigContract, Settings) trio. The cmd-side
+// adapter wires this against [notifications.Registry.Construct] +
+// [notifications.Provider.Test] under the host-supplied
+// [notifications.Dependencies]. Tests can pass a stub returning the
+// desired TestFailure list without dragging the registry or any
+// concrete provider package into v3.
+//
+// An error return is reserved for "the provider couldn't be
+// constructed" (unknown impl, malformed settings); these are
+// projected to 400 with the C# unknown-implementation envelope. A
+// successful Test with no failures returns (nil, nil). A non-empty
+// failures slice projects to a 400 FluentValidation array.
+type NotificationTester interface {
+	Test(ctx context.Context, n *notifications.Notification) ([]notifications.TestFailure, error)
+}
+
+// NotificationTestHandler returns POST /api/v3/notification/test.
+// Mirrors `ProviderControllerBase.Test([FromBody] resource, [FromQuery] forceTest=false)`
+// at C# `ProviderControllerBase.cs:220-231`. The C#
+// `[SkipValidation(true,false)]` attribute at :220 disables the
+// PostValidator (Fields-not-null check) but keeps the per-Settings
+// `Settings.Validate()` invocation that runs inside the provider's
+// own Test() under the hood — the Go port mirrors that by skipping
+// the [validateNotificationResource] call here and relying on the
+// tester to surface settings-shape failures via [TestFailure]s.
+//
+// Wire shape: success returns 200 with `"{}"` (string-equal C# `return "{}"`).
+// Failures project to a 400 FluentValidation array. An unknown
+// implementation (Construct returns ErrNotRegistered) returns 400
+// with a single PropertyName=Implementation failure to match the
+// 5.C1a [validateNotificationResource] shape.
+//
+// The `?forceTest=` query parameter is currently parsed and ignored
+// — the C# action only uses it to gate include-warnings behavior on
+// the SharedValidator. With the SharedValidator skipped at this
+// endpoint the flag is moot until 5.C1b grows a warning-vs-error
+// distinction (DEFERRED).
+func NotificationTestHandler(tester NotificationTester) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeNotificationBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("notification: malformed body: %v", err))
+			return
+		}
+		row, err := fromNotificationResource(body, nil)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("notification: invalid fields: %v", err))
+			return
+		}
+		failures, err := tester.Test(r.Context(), row)
+		if err != nil {
+			// Construct/setup errors are 400 with a synthesised
+			// Implementation-field failure — matches the FluentValidation
+			// envelope clients expect on the test endpoint. Distinguish
+			// `notifications.ErrNotRegistered` from other unexpected errors
+			// so future 500s have somewhere to land if they appear.
+			if errors.Is(err, notifications.ErrNotRegistered) {
+				httperr.WriteValidation(w, []httperr.Failure{{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q (configContract %q)", body.Implementation, body.ConfigContract),
+					Severity:     "error",
+				}})
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("notification: test: %w", err), nil)
+			return
+		}
+		if len(failures) > 0 {
+			httperr.WriteValidation(w, testFailuresToFluentArray(failures))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+}
+
+// testFailuresToFluentArray ports the projection
+// `STJson.ToJson(validationException.Errors)` at C#
+// `SonarrErrorPipeline.cs:52` for the [notifications.TestFailure]
+// shape. The DetailedDescription field has no FluentValidation
+// equivalent in `httperr.Failure` — it's dropped here pending a
+// shared cross-family failure type. Severity defaults to "error" via
+// the [httperr.WriteValidation] helper.
+func testFailuresToFluentArray(failures []notifications.TestFailure) []httperr.Failure {
+	out := make([]httperr.Failure, 0, len(failures))
+	for _, f := range failures {
+		out = append(out, httperr.Failure{
+			PropertyName: f.PropertyName,
+			ErrorMessage: f.ErrorMessage,
+			Severity:     "error",
+		})
+	}
+	return out
+}
+
 // NotificationDeleteHandler returns DELETE /api/v3/notification/{id}.
 // Mirrors `ProviderControllerBase.DeleteProvider` at `:181-186`.
 // Returns 200 with `{}` body (matches the C# `return new { };`).

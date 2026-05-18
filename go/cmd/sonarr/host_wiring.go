@@ -238,6 +238,31 @@ func (a backupUploader) SaveStream(r io.Reader, path string) error {
 func (a backupUploader) Restore(backupFileName string) error { return a.svc.Restore(backupFileName) }
 func (a backupUploader) DeleteFile(path string) error        { return apiv3DeleteFile(path) }
 
+// registryNotificationTester adapts notifications.Registry +
+// notifications.Dependencies to apiv3.NotificationTester. Construct
+// runs the registry lookup + per-provider factory; Test runs the
+// constructed provider's per-row connection self-check.
+//
+// Mirrors C# `ProviderFactory.Test(definition)` at
+// `src/NzbDrone.Core/ThingiProvider/ProviderFactoryBase.cs:148-186`
+// where the factory builds an instance of the concrete provider
+// class and invokes its Test() method. The Go port collapses the C#
+// factory cache (which keeps a single instance per definition for
+// notifications.Service) into a per-call Construct — Test is a
+// non-hot path and avoiding the cache simplifies the wiring.
+type registryNotificationTester struct {
+	registry *notifications.Registry
+	deps     notifications.Dependencies
+}
+
+func (a *registryNotificationTester) Test(ctx context.Context, n *notifications.Notification) ([]notifications.TestFailure, error) {
+	provider, err := a.registry.Construct(n, a.deps)
+	if err != nil {
+		return nil, err
+	}
+	return provider.Test(ctx)
+}
+
 // apiv3FileExists + apiv3DeleteFile defer to os.Stat / os.Remove.
 // Named with the apiv3 prefix to keep the cmd-package surface clean
 // since the v3 layer's unexported osFileExists / osDeleteFile aren't
@@ -693,6 +718,17 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// tests because no row has Implementation populated).
 	notificationEmitter := signalr.NewV3Emitter[apiv3.NotificationResource](signalRHub, "notification")
 	notificationRegistry := notifications.Default()
+	// 5.C1b: per-row Provider.Test() adapter. Wraps
+	// notifications.Registry.Construct + provider.Test under a real
+	// notifications.Dependencies. The Dependencies struct is empty
+	// today — concrete providers needing HTTPClient/Logger will fail
+	// Construct under their typed-cast guards. Wiring real deps is
+	// tracked in Phase-4 subset-3 follow-up (a) alongside the
+	// blank-import aggregator for webhook+discord init() blocks.
+	notificationTester := &registryNotificationTester{
+		registry: notificationRegistry,
+		deps:     notifications.Dependencies{Logger: logger},
+	}
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
@@ -842,6 +878,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/notification/schema", Handler: apiv3.NotificationSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationByIDHandler(notificationsRepo)},
 		{Method: "POST", Path: "/api/v3/notification", Handler: apiv3.NotificationCreateHandler(notificationsRepo, notificationRegistry, notificationEmitter)},
+		{Method: "POST", Path: "/api/v3/notification/test", Handler: apiv3.NotificationTestHandler(notificationTester)},
 		{Method: "PUT", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationUpdateHandler(notificationsRepo, notificationRegistry, notificationEmitter)},
 		{Method: "DELETE", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationDeleteHandler(notificationsRepo, notificationEmitter)},
 		{Method: "GET", Path: "/api/v3/parse", Handler: apiv3.ParseHandler()},
