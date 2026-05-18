@@ -386,6 +386,68 @@ func IndexerTestHandler(tester IndexerTester) http.Handler {
 	})
 }
 
+// IndexerActioner invokes a per-row provider RequestAction. The
+// cmd-side adapter wires this against indexers.Registry.Construct +
+// indexers.Provider.RequestAction under the host-supplied
+// indexers.Dependencies. Tests pass a stub.
+//
+// Common indexer actions: Newznab getCategories (category list for
+// the React UI category picker), newznabPresets (preset URL
+// discovery for the Add-indexer wizard).
+type IndexerActioner interface {
+	RequestAction(ctx context.Context, n *indexers.Indexer, action string, query map[string]string) (any, error)
+}
+
+// IndexerRequestActionHandler returns POST /api/v3/indexer/action/{name}.
+// Same shape as the notification action handler (5.C1d). [SkipValidation]
+// is implicit — no SharedValidator chain run here.
+func IndexerRequestActionHandler(actioner IndexerActioner) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if strings.TrimSpace(name) == "" {
+			httperr.BadRequest(w, "indexer/action: empty name")
+			return
+		}
+		body, err := decodeIndexerBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("indexer: malformed body: %v", err))
+			return
+		}
+		row, err := fromIndexerResource(body, nil)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("indexer: invalid fields: %v", err))
+			return
+		}
+		query := make(map[string]string, len(r.URL.Query()))
+		for k, vs := range r.URL.Query() {
+			if len(vs) > 0 {
+				query[k] = vs[0]
+			}
+		}
+		data, err := actioner.RequestAction(r.Context(), row, name, query)
+		if err != nil {
+			if errors.Is(err, indexers.ErrNotRegistered) {
+				httperr.WriteValidation(w, []httperr.Failure{{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q (configContract %q)", body.Implementation, body.ConfigContract),
+					Severity:     "error",
+				}})
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("indexer: action %q: %w", name, err), nil)
+			return
+		}
+		buf, err := json.Marshal(data)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("indexer: action %q: marshal: %w", name, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf)
+	})
+}
+
 // IndexerTestAllHandler returns POST /api/v3/indexer/testall.
 // Mirrors `ProviderControllerBase.TestAll` at C# :233-257 and the
 // 5.C1c notification TestAll twin. Iterates every persisted row,

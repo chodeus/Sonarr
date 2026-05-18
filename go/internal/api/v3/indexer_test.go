@@ -408,6 +408,128 @@ func TestIndexerTestHandler_SkipsSharedValidator(t *testing.T) {
 	}
 }
 
+// fakeIndexerActioner implements IndexerActioner.
+type fakeIndexerActioner struct {
+	seenName  string
+	seenQuery map[string]string
+	seenRow   *indexers.Indexer
+	result    any
+	err       error
+}
+
+func (f *fakeIndexerActioner) RequestAction(_ context.Context, n *indexers.Indexer, name string, query map[string]string) (any, error) {
+	f.seenName = name
+	f.seenQuery = query
+	f.seenRow = n
+	return f.result, f.err
+}
+
+func TestIndexerRequestActionHandler_Success(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeIndexerActioner{result: map[string]any{"categories": []any{float64(5000), float64(5070)}}}
+	body := validIndexerBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/indexer/action/getCategories?type=tv", bytes.NewReader(buf))
+	req.SetPathValue("name", "getCategories")
+	rr := httptest.NewRecorder()
+	IndexerRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body shape: %v body=%s", err, rr.Body.String())
+	}
+	if _, ok := got["categories"]; !ok {
+		t.Errorf("body: %+v", got)
+	}
+	if actioner.seenName != "getCategories" {
+		t.Errorf("action name: %q", actioner.seenName)
+	}
+	if actioner.seenQuery["type"] != "tv" {
+		t.Errorf("query map: %+v", actioner.seenQuery)
+	}
+	if actioner.seenRow == nil || actioner.seenRow.Implementation != "Newznab" {
+		t.Errorf("row not built: %+v", actioner.seenRow)
+	}
+}
+
+func TestIndexerRequestActionHandler_NilResult_EmitsJSONNull(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeIndexerActioner{result: nil}
+	body := validIndexerBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/indexer/action/noop", bytes.NewReader(buf))
+	req.SetPathValue("name", "noop")
+	rr := httptest.NewRecorder()
+	IndexerRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if rr.Body.String() != `null` {
+		t.Errorf("body should be JSON null; got %q", rr.Body.String())
+	}
+}
+
+func TestIndexerRequestActionHandler_ErrNotRegistered_400(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeIndexerActioner{err: indexers.ErrNotRegistered}
+	body := validIndexerBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/indexer/action/x", bytes.NewReader(buf))
+	req.SetPathValue("name", "x")
+	rr := httptest.NewRecorder()
+	IndexerRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var failures []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &failures); err != nil {
+		t.Fatalf("body shape: %v", err)
+	}
+	if len(failures) != 1 || failures[0]["propertyName"] != "Implementation" {
+		t.Errorf("expected single Implementation failure: %+v", failures)
+	}
+}
+
+func TestIndexerRequestActionHandler_OtherError_500(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeIndexerActioner{err: errors.New("upstream down")}
+	body := validIndexerBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/indexer/action/x", bytes.NewReader(buf))
+	req.SetPathValue("name", "x")
+	rr := httptest.NewRecorder()
+	IndexerRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestIndexerRequestActionHandler_EmptyName_400(t *testing.T) {
+	t.Parallel()
+	body := validIndexerBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/indexer/action/", bytes.NewReader(buf))
+	req.SetPathValue("name", "")
+	rr := httptest.NewRecorder()
+	IndexerRequestActionHandler(&fakeIndexerActioner{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestIndexerRequestActionHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/indexer/action/x", bytes.NewReader([]byte(`{nope`)))
+	req.SetPathValue("name", "x")
+	rr := httptest.NewRecorder()
+	IndexerRequestActionHandler(&fakeIndexerActioner{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
 // perRowIndexerTester maps row ID → outcome.
 type perRowIndexerTester struct {
 	seen     []int

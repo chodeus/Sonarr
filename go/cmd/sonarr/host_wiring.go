@@ -294,6 +294,18 @@ func (a *registryIndexerTester) Test(ctx context.Context, n *indexers.Indexer) (
 	return provider.Test(ctx)
 }
 
+// RequestAction satisfies apiv3.IndexerActioner. Mirrors C#
+// `IndexerFactory.RequestAction` — Construct the provider then
+// delegate to its per-action map (Newznab getCategories /
+// newznabPresets, etc.).
+func (a *registryIndexerTester) RequestAction(ctx context.Context, n *indexers.Indexer, action string, query map[string]string) (any, error) {
+	provider, err := a.registry.Construct(n, a.deps)
+	if err != nil {
+		return nil, err
+	}
+	return provider.RequestAction(ctx, action, query)
+}
+
 // apiv3FileExists + apiv3DeleteFile defer to os.Stat / os.Remove.
 // Named with the apiv3 prefix to keep the cmd-package surface clean
 // since the v3 layer's unexported osFileExists / osDeleteFile aren't
@@ -909,6 +921,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "POST", Path: "/api/v3/indexer", Handler: apiv3.IndexerCreateHandler(indexersRepo, indexerEmitter)},
 		{Method: "POST", Path: "/api/v3/indexer/test", Handler: apiv3.IndexerTestHandler(indexerTester)},
 		{Method: "POST", Path: "/api/v3/indexer/testall", Handler: apiv3.IndexerTestAllHandler(indexersRepo, indexerTester)},
+		{Method: "POST", Path: "/api/v3/indexer/action/{name}", Handler: apiv3.IndexerRequestActionHandler(indexerTester)},
 		{Method: "PUT", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerUpdateHandler(indexersRepo, indexerEmitter)},
 		{Method: "DELETE", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerDeleteHandler(indexersRepo, indexerEmitter)},
 		{Method: "GET", Path: "/api/v3/indexerflag", Handler: apiv3.IndexerFlagHandler()},
