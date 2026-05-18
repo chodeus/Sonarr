@@ -3,6 +3,7 @@ package deluge
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"sonarr.tv/sonarr/internal/downloadclients"
 )
 
 // HTTPDoer is the narrow http-client interface [Proxy] consumes. The
@@ -73,6 +76,12 @@ var (
 	// non-auth `error` object (code != 1 && code != 2). Mirrors C#
 	// `DelugeException` at `:228,309`.
 	ErrRPCFailure = errors.New("deluge: RPC failure")
+
+	// ErrAddFailed surfaces a core.add_torrent_* reply of JSON
+	// null / empty string — deluge's add-error sentinel. Mirrors
+	// the C# `DownloadClientException` thrown at
+	// `Deluge.cs:64,90`.
+	ErrAddFailed = errors.New("deluge: torrent add failed")
 )
 
 // Error-code constants the auth-retry branch keys on.
@@ -381,6 +390,130 @@ func (p *Proxy) GetTorrents(ctx context.Context, settings Settings) ([]DelugeTor
 		out = append(out, v)
 	}
 	return out, nil
+}
+
+// AddTorrentFromMagnet fires core.add_torrent_magnet. Mirrors C#
+// `DelugeProxy.AddTorrentFromMagnet` at `:103-125`. Returns the
+// added torrent's hash (the literal `result` string from deluge).
+//
+// Options object: add_paused / remove_at_ratio (always false to
+// match C# `:108`) / download_location / move_completed +
+// move_completed_path. Built via [buildAddOptions] so the add+file
+// path shares the assembly.
+func (p *Proxy) AddTorrentFromMagnet(ctx context.Context, magnetURL string, settings Settings) (string, error) {
+	options := buildAddOptions(settings)
+	raw, err := p.Call(ctx, "core.add_torrent_magnet", []any{magnetURL, options}, settings)
+	if err != nil {
+		return "", err
+	}
+	return parseAddResult(raw)
+}
+
+// AddTorrentFromFile fires core.add_torrent_file. Mirrors C#
+// `DelugeProxy.AddTorrentFromFile` at `:127-150`. The filename is
+// the wire-format display name only; deluge stores files under
+// download_location. fileContent is base64-encoded — deluge's
+// JSON-RPC accepts the .torrent bytes only as a base64 string.
+func (p *Proxy) AddTorrentFromFile(ctx context.Context, filename string, fileContent []byte, settings Settings) (string, error) {
+	options := buildAddOptions(settings)
+	encoded := base64.StdEncoding.EncodeToString(fileContent)
+	raw, err := p.Call(ctx, "core.add_torrent_file", []any{filename, encoded, options}, settings)
+	if err != nil {
+		return "", err
+	}
+	return parseAddResult(raw)
+}
+
+// parseAddResult unmarshals the add-torrent result. Deluge returns
+// the torrent's hash as a JSON string on success, or JSON null on
+// failure (the C# tree at `Deluge.cs:62-65,89-92` treats empty as
+// failure). The Go port surfaces failure as [ErrAddFailed].
+func parseAddResult(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return "", ErrAddFailed
+	}
+	var hash string
+	if err := json.Unmarshal(raw, &hash); err != nil {
+		return "", fmt.Errorf("deluge: parse add-torrent result: %w", err)
+	}
+	if strings.TrimSpace(hash) == "" {
+		return "", ErrAddFailed
+	}
+	return hash, nil
+}
+
+// SetTorrentLabel fires label.set_torrent. Mirrors C#
+// `DelugeProxy.SetTorrentLabel` at `:189-192`. Used by [Deluge.Download]
+// to apply TvCategory + by [Deluge.MarkItemAsImported] to swap to
+// TvImportedCategory.
+func (p *Proxy) SetTorrentLabel(ctx context.Context, hash, label string, settings Settings) error {
+	_, err := p.Call(ctx, "label.set_torrent", []any{strings.ToLower(hash), label}, settings)
+	return err
+}
+
+// SetTorrentSeedingConfiguration fires core.set_torrent_options with
+// stop_ratio + stop_at_ratio fields. Mirrors C#
+// `DelugeProxy.SetTorrentSeedingConfiguration` at `:170-186`. nil
+// seedConfig → no-op.
+func (p *Proxy) SetTorrentSeedingConfiguration(ctx context.Context, hash string, seedConfig *downloadclients.TorrentSeedConfiguration, settings Settings) error {
+	if seedConfig == nil {
+		return nil
+	}
+	args := map[string]any{}
+	if seedConfig.Ratio != nil {
+		args["stop_ratio"] = *seedConfig.Ratio
+		args["stop_at_ratio"] = 1
+	}
+	if len(args) == 0 {
+		// No actionable limits — skip the RPC (deluge happily
+		// accepts an empty arguments map but it's a wasted round
+		// trip).
+		return nil
+	}
+	_, err := p.Call(ctx, "core.set_torrent_options",
+		[]any{[]string{strings.ToLower(hash)}, args}, settings)
+	return err
+}
+
+// MoveTorrentToTopInQueue fires core.queue_top. Mirrors C#
+// `DelugeProxy.MoveTorrentToTopInQueue` at `:152-155`. The hash is
+// wrapped in a single-element array per deluge's API shape.
+func (p *Proxy) MoveTorrentToTopInQueue(ctx context.Context, hash string, settings Settings) error {
+	_, err := p.Call(ctx, "core.queue_top",
+		[]any{[]string{strings.ToLower(hash)}}, settings)
+	return err
+}
+
+// AddLabel fires label.add. Mirrors C# `DelugeProxy.AddLabel` at
+// `:184-187`. Used by [Deluge.Test] (deferred) to pre-create the
+// TvCategory label when it's missing.
+func (p *Proxy) AddLabel(ctx context.Context, label string, settings Settings) error {
+	_, err := p.Call(ctx, "label.add", []any{label}, settings)
+	return err
+}
+
+// buildAddOptions assembles the per-add options dict. Mirrors C#
+// `DelugeProxy.AddTorrentFromMagnet/AddTorrentFromFile` arms at
+// `:107-122,131-146` exactly.
+//
+// remove_at_ratio is unconditionally false — the C# tree forces it
+// off so Sonarr (not deluge) decides when to delete the torrent.
+// move_completed is set true alongside move_completed_path so
+// deluge applies the post-completion move per the C# `:115-119`
+// arm.
+func buildAddOptions(settings Settings) map[string]any {
+	opts := map[string]any{
+		"add_paused":      settings.AddPaused,
+		"remove_at_ratio": false,
+	}
+	if dl := strings.TrimSpace(settings.DownloadDirectory); dl != "" {
+		opts["download_location"] = dl
+	}
+	if mc := strings.TrimSpace(settings.CompletedDirectory); mc != "" {
+		opts["move_completed_path"] = mc
+		opts["move_completed"] = true
+	}
+	return opts
 }
 
 // authKey is the cache key (baseURL, password). Mirrors C#

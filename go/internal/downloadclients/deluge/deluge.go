@@ -74,10 +74,102 @@ func (d *Deluge) Settings() Settings { return d.settings }
 // Proxy returns the bound proxy.
 func (d *Deluge) Proxy() *Proxy { return d.proxy }
 
-// Download is filled in by slice 5.G2e. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (d *Deluge) Download(_ context.Context, _ *downloadclients.GrabRequest) (string, error) {
-	return "", downloadclients.ErrNotImplementedYet
+// Download ports the C# Deluge add orchestrator at
+// `Download/Clients/Deluge/Deluge.cs:58-110` — both AddFromMagnetLink
+// and AddFromTorrentFile share the same post-add steps (seed-config,
+// label, queue-top), so the Go port collapses them into one method.
+//
+// Add-path selection:
+//
+//   - TorrentBody non-empty → AddTorrentFromFile (base64-encoded).
+//   - MagnetURL non-empty → AddTorrentFromMagnet.
+//   - DownloadURL only, no MagnetURL and no TorrentBody → error.
+//     Deluge has no "fetch this URL" add — the orchestrator should
+//     pre-fetch the .torrent bytes into req.TorrentBody before
+//     dispatch. The C# tree's TorrentClientBase pre-fetches at a
+//     layer above the per-impl Download method.
+//
+// Post-add best-effort RPCs (log + continue on failure, matches
+// the C# pattern that doesn't propagate post-add failures since
+// the torrent is already loaded into deluge):
+//
+//   - SetTorrentSeedingConfiguration when req.SeedConfiguration != nil.
+//   - SetTorrentLabel when settings.TvCategory is non-empty.
+//   - MoveTorrentToTopInQueue when (IsRecent + RecentTvPriority==First)
+//     OR (!IsRecent + OlderTvPriority==First). Matches C#
+//     `:74-80,101-107`.
+//
+// Returns the upper-cased info-hash for the DownloadID handoff
+// (matches the GetItems DownloadID convention).
+func (d *Deluge) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
+	if req == nil {
+		return "", errors.New("deluge: Download: nil request")
+	}
+	if d.proxy == nil {
+		return "", errors.New("deluge: Download: nil proxy")
+	}
+
+	var (
+		hash string
+		err  error
+	)
+	switch {
+	case len(req.TorrentBody) > 0:
+		hash, err = d.proxy.AddTorrentFromFile(ctx, fallbackFilename(req), req.TorrentBody, d.settings)
+	case strings.TrimSpace(req.MagnetURL) != "":
+		hash, err = d.proxy.AddTorrentFromMagnet(ctx, req.MagnetURL, d.settings)
+	default:
+		return "", errors.New("deluge: Download: GrabRequest has neither TorrentBody nor MagnetURL; orchestrator must pre-fetch DownloadURL")
+	}
+	if err != nil {
+		return "", fmt.Errorf("deluge: Download(%q): %w", req.ReleaseTitle, err)
+	}
+
+	// Post-add steps — warn-and-continue (C# tree at :67-79,94-106
+	// doesn't propagate post-add failures; the torrent is already
+	// loaded).
+	if req.SeedConfiguration != nil {
+		if seedErr := d.proxy.SetTorrentSeedingConfiguration(ctx, hash, req.SeedConfiguration, d.settings); seedErr != nil {
+			d.log.Warn("deluge: SetTorrentSeedingConfiguration failed",
+				"hash", hash, "err", seedErr)
+		}
+	}
+	if cat := strings.TrimSpace(d.settings.TvCategory); cat != "" {
+		if labErr := d.proxy.SetTorrentLabel(ctx, hash, cat, d.settings); labErr != nil {
+			d.log.Warn("deluge: SetTorrentLabel failed",
+				"hash", hash, "label", cat, "err", labErr)
+		}
+	}
+	if shouldMoveToTop(req.IsRecent, d.settings) {
+		if qErr := d.proxy.MoveTorrentToTopInQueue(ctx, hash, d.settings); qErr != nil {
+			d.log.Warn("deluge: MoveTorrentToTopInQueue failed",
+				"hash", hash, "err", qErr)
+		}
+	}
+
+	return strings.ToUpper(hash), nil
+}
+
+// shouldMoveToTop ports the priority gate from C# `:76-77,103-104`:
+// move-to-top fires when the relevant priority setting is set to
+// First (1). Recent episodes use RecentTvPriority; older use
+// OlderTvPriority.
+func shouldMoveToTop(isRecent bool, settings Settings) bool {
+	if isRecent {
+		return settings.RecentTvPriority == PriorityFirst
+	}
+	return settings.OlderTvPriority == PriorityFirst
+}
+
+// fallbackFilename returns a reasonable .torrent filename for the
+// AddTorrentFromFile request. Deluge uses the filename only for the
+// WebUI's pending-torrent display + as the suggested rename — any
+// non-empty value works.
+func fallbackFilename(req *downloadclients.GrabRequest) string {
+	if t := strings.TrimSpace(req.ReleaseTitle); t != "" {
+		return t + ".torrent"
+	}
+	return "release.torrent"
 }
 
 // GetItems ports C# `Deluge.GetItems` at
