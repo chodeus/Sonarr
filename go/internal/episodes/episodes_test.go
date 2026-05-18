@@ -138,8 +138,45 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 	if err := repo.Update(t.Context(), &episodes.Episode{ID: 99999}); !errors.Is(err, episodes.ErrNotFound) {
 		t.Errorf("Update(missing): %v", err)
 	}
+
 	if err := repo.Delete(t.Context(), full.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
+	}
+
+	// 5.D3 port pre-work: DeleteBySeriesID bulk-cascade. Use series
+	// 200 (untouched by the earlier seed block) so this test doesn't
+	// interfere with the per-row Delete above.
+	for _, ep := range []episodes.Episode{
+		{SeriesID: 200, SeasonNumber: 1, EpisodeNumber: 1},
+		{SeriesID: 200, SeasonNumber: 1, EpisodeNumber: 2},
+		{SeriesID: 200, SeasonNumber: 2, EpisodeNumber: 1},
+	} {
+		ep := ep
+		if _, err := repo.Insert(t.Context(), &ep); err != nil {
+			t.Fatalf("Insert series 200: %v", err)
+		}
+	}
+	deleted, err := repo.DeleteBySeriesID(t.Context(), 200)
+	if err != nil {
+		t.Fatalf("DeleteBySeriesID: %v", err)
+	}
+	if deleted != 3 {
+		t.Errorf("DeleteBySeriesID rows: got %d, want 3", deleted)
+	}
+	remaining, err := repo.AllBySeriesID(t.Context(), 200)
+	if err != nil {
+		t.Fatalf("AllBySeriesID after delete: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("series 200 should have 0 episodes after delete; got %d", len(remaining))
+	}
+	// Idempotent on already-empty series: returns 0, no error.
+	deleted2, err := repo.DeleteBySeriesID(t.Context(), 99999)
+	if err != nil {
+		t.Errorf("DeleteBySeriesID(missing): %v", err)
+	}
+	if deleted2 != 0 {
+		t.Errorf("DeleteBySeriesID(missing) rows: got %d, want 0", deleted2)
 	}
 }
 

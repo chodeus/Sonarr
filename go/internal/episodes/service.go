@@ -444,3 +444,32 @@ func (s *Service) forgetMissingFromDisk(seriesID, episodeID int) {
 		delete(s.missingFromDiskCache, seriesID)
 	}
 }
+
+// DeleteBySeriesID cascades episode deletion when a series is
+// removed. Mirrors C# `EpisodeService.HandleAsync(SeriesDeletedEvent)`
+// at `EpisodeService.cs` — which loads episodes by the deleted-
+// series ids and calls `DeleteMany`.
+//
+// The Go port collapses the load + delete into a single bulk SQL
+// `DELETE FROM "Episodes" WHERE "SeriesId" = ?` round-trip. The C#
+// IHandle<EpisodeDeletedEvent> fan-out has no consumer in the Go
+// port today, so per-row entity surfacing isn't needed.
+//
+// Also evicts the in-memory missingFromDiskCache for the series so
+// the next scan starts fresh (the cache keys on seriesID; orphan
+// entries would never be touched again).
+//
+// Returns the number of rows deleted (0 when the series had no
+// episodes, e.g. a placeholder row created before the first scan).
+// Slice 5.D3 port pre-work — the API-layer DELETE /api/v3/series/{id}?deleteFiles=true
+// cascade lands in 5.D5.
+func (s *Service) DeleteBySeriesID(ctx context.Context, seriesID int) (int64, error) {
+	n, err := s.repo.DeleteBySeriesID(ctx, seriesID)
+	if err != nil {
+		return 0, err
+	}
+	s.missingMu.Lock()
+	delete(s.missingFromDiskCache, seriesID)
+	s.missingMu.Unlock()
+	return n, nil
+}

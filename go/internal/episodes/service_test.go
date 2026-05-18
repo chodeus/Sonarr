@@ -323,6 +323,67 @@ func TestService_MissingFromDiskCache(t *testing.T) {
 	}
 }
 
+func TestService_DeleteBySeriesID(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	svc, r := newServiceForTest(t, db)
+
+	// Insert 3 episodes for series 50, 1 for series 51.
+	for _, ep := range []episodes.Episode{
+		{SeriesID: 50, SeasonNumber: 1, EpisodeNumber: 1},
+		{SeriesID: 50, SeasonNumber: 1, EpisodeNumber: 2},
+		{SeriesID: 50, SeasonNumber: 2, EpisodeNumber: 1},
+		{SeriesID: 51, SeasonNumber: 1, EpisodeNumber: 1},
+	} {
+		ep := ep
+		if _, err := r.Insert(t.Context(), &ep); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+	}
+
+	// Seed the missingFromDiskCache for the soon-to-be-deleted series
+	// + an unrelated series. The cascade must evict series 50 but
+	// preserve series 51.
+	svc.RememberMissingFromDisk(50, 1001)
+	svc.RememberMissingFromDisk(50, 1002)
+	svc.RememberMissingFromDisk(51, 1003)
+
+	deleted, err := svc.DeleteBySeriesID(t.Context(), 50)
+	if err != nil {
+		t.Fatalf("DeleteBySeriesID: %v", err)
+	}
+	if deleted != 3 {
+		t.Errorf("rows deleted: got %d, want 3", deleted)
+	}
+
+	// Series 50 has zero episodes; series 51 still has 1.
+	left, _ := r.AllBySeriesID(t.Context(), 50)
+	if len(left) != 0 {
+		t.Errorf("series 50 should have 0 episodes; got %d", len(left))
+	}
+	left51, _ := r.AllBySeriesID(t.Context(), 51)
+	if len(left51) != 1 {
+		t.Errorf("series 51 should still have 1 episode; got %d", len(left51))
+	}
+
+	// missingFromDiskCache: series 50 evicted, series 51 preserved.
+	if got := svc.DrainMissingFromDisk(50); got != nil {
+		t.Errorf("cache for series 50 should be evicted; got %v", got)
+	}
+	if got := svc.DrainMissingFromDisk(51); len(got) != 1 || got[0] != 1003 {
+		t.Errorf("cache for series 51 should be preserved; got %v", got)
+	}
+
+	// Idempotent: deleting an already-empty series returns 0.
+	deleted2, err := svc.DeleteBySeriesID(t.Context(), 50)
+	if err != nil {
+		t.Errorf("DeleteBySeriesID idempotent: %v", err)
+	}
+	if deleted2 != 0 {
+		t.Errorf("DeleteBySeriesID idempotent rows: got %d, want 0", deleted2)
+	}
+}
+
 func TestService_NewServiceErrors(t *testing.T) {
 	t.Parallel()
 	if _, err := episodes.NewService(nil, nil); err == nil {

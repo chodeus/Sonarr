@@ -166,6 +166,32 @@ func (r *Repo) AllBySeriesID(ctx context.Context, seriesID int) ([]Episode, erro
 	return r.scanQuery(ctx, q, seriesID, "allBySeriesID")
 }
 
+// DeleteBySeriesID issues a single `DELETE FROM "Episodes" WHERE
+// "SeriesId" = ?` and returns the number of rows affected. Mirrors
+// the C# cascade behaviour at `EpisodeService.HandleAsync(SeriesDeletedEvent)`
+// (which calls `GetEpisodesBySeriesIds` + `DeleteMany`) — collapsed
+// into one SQL round-trip since the Go port doesn't need to surface
+// per-row entities to a downstream consumer (no IHandle<EpisodeDeletedEvent>
+// fan-out is wired today; episode-file rows + history rows that
+// reference episodes carry their own cascading deletes when their
+// series goes away).
+//
+// Slice 5.D3 port pre-work for the eventual /series/{id}?deleteFiles=true
+// cascade wired in slice 5.D5.
+func (r *Repo) DeleteBySeriesID(ctx context.Context, seriesID int) (int64, error) {
+	db := r.DB()
+	q := fmt.Sprintf(`DELETE FROM "Episodes" WHERE "SeriesId" = %s`, datastore.Placeholder(db.Engine, 1))
+	res, err := db.SQL.ExecContext(ctx, q, seriesID)
+	if err != nil {
+		return 0, fmt.Errorf("episodes: deleteBySeriesID(%d): %w", seriesID, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("episodes: deleteBySeriesID(%d): rowsAffected: %w", seriesID, err)
+	}
+	return affected, nil
+}
+
 // AllBySeriesAndSeason returns episodes for one season, ordered by EpisodeNumber.
 func (r *Repo) AllBySeriesAndSeason(ctx context.Context, seriesID, seasonNumber int) ([]Episode, error) {
 	db := r.DB()
