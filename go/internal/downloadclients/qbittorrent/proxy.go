@@ -8,10 +8,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
+
+	"sonarr.tv/sonarr/internal/downloadclients"
 )
 
 // HTTPDoer is the narrow http-client interface [Proxy] consumes. The
@@ -73,6 +77,12 @@ var (
 	// ErrUnexpected surfaces a 5xx / unknown-status / malformed
 	// response.
 	ErrUnexpected = errors.New("qbittorrent: unexpected response")
+
+	// ErrAddFailed surfaces a /api/v2/torrents/add reply of the
+	// literal string "Fails." — the qBittorrent WebUI's add-error
+	// sentinel. Mirrors the C# `DownloadClientException` thrown at
+	// `QBittorrentProxyV2.cs:153,176`.
+	ErrAddFailed = errors.New("qbittorrent: torrent add failed")
 )
 
 // NewProxy binds the deps. doer is REQUIRED; log defaults to
@@ -368,6 +378,233 @@ func (p *Proxy) GetTorrents(ctx context.Context, settings Settings) ([]QBittorre
 // naturally.
 func (p *Proxy) authKey(settings Settings) string {
 	return p.BuildBaseURL(settings) + ":" + settings.Username + ":" + settings.Password
+}
+
+// AddTorrentFromURL fires POST /api/v2/torrents/add with the
+// supplied magnet or HTTP(S) URL routed through the multipart 'urls'
+// field. Mirrors C# `QBittorrentProxyV2.AddTorrentFromUrl` at
+// `QBittorrentProxyV2.cs:139-160`. When seedConfig is non-nil AND
+// the WebUI API version exposes addShareLimits inline (qBittorrent
+// 4.4+ / API 2.8.1+), the per-torrent ratioLimit + seedingTimeLimit
+// fields ride along on the same request; older versions need a
+// follow-up [SetTorrentSeedingConfiguration] call (the Provider
+// layer handles the version split — this proxy method always
+// inlines when seedConfig is non-nil and lets the caller decide).
+//
+// On a "Fails." response body the C# tree throws
+// `DownloadClientException` at `:153`; the Go port surfaces it as
+// [ErrAddFailed].
+func (p *Proxy) AddTorrentFromURL(ctx context.Context, torrentURL string, seedConfig *downloadclients.TorrentSeedConfiguration, settings Settings, stoppedFieldName string) error {
+	body, contentType, err := buildAddTorrentBody(func(w *multipart.Writer) error {
+		if err := w.WriteField("urls", torrentURL); err != nil {
+			return err
+		}
+		return addTorrentFormFields(w, seedConfig, settings, stoppedFieldName)
+	})
+	if err != nil {
+		return fmt.Errorf("qbittorrent: build add-url body: %w", err)
+	}
+	return p.postAddTorrent(ctx, body, contentType, settings)
+}
+
+// AddTorrentFromFile fires POST /api/v2/torrents/add with the
+// supplied .torrent bytes routed through the multipart 'torrents'
+// file part. Mirrors C# `QBittorrentProxyV2.AddTorrentFromFile` at
+// `QBittorrentProxyV2.cs:162-181`.
+func (p *Proxy) AddTorrentFromFile(ctx context.Context, filename string, fileContent []byte, seedConfig *downloadclients.TorrentSeedConfiguration, settings Settings, stoppedFieldName string) error {
+	body, contentType, err := buildAddTorrentBody(func(w *multipart.Writer) error {
+		hdr := make(map[string][]string)
+		hdr["Content-Disposition"] = []string{
+			fmt.Sprintf(`form-data; name="torrents"; filename=%q`, filename),
+		}
+		hdr["Content-Type"] = []string{"application/x-bittorrent"}
+		part, err := w.CreatePart(hdr)
+		if err != nil {
+			return err
+		}
+		if _, err := part.Write(fileContent); err != nil {
+			return err
+		}
+		return addTorrentFormFields(w, seedConfig, settings, stoppedFieldName)
+	})
+	if err != nil {
+		return fmt.Errorf("qbittorrent: build add-file body: %w", err)
+	}
+	return p.postAddTorrent(ctx, body, contentType, settings)
+}
+
+// postAddTorrent dispatches the actual POST /api/v2/torrents/add
+// request and surfaces the C# "Fails." failure-string at
+// `QBittorrentProxyV2.cs:153,176` as [ErrAddFailed].
+func (p *Proxy) postAddTorrent(ctx context.Context, body []byte, contentType string, settings Settings) error {
+	status, respBody, err := p.DoRequest(ctx, http.MethodPost, "/api/v2/torrents/add",
+		bytes.NewReader(body), contentType, settings)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("%w: status=%d body=%s", ErrUnexpected, status, truncate(respBody, 256))
+	}
+	// qBittorrent returns the literal "Fails." string on a known
+	// add failure (bad URL, duplicate torrent that's already
+	// loaded, etc.). Older builds return an empty body on success;
+	// newer builds return "Ok." — accept either.
+	if strings.TrimSpace(string(respBody)) == "Fails." {
+		return ErrAddFailed
+	}
+	return nil
+}
+
+// SetForceStart fires POST /api/v2/torrents/setForceStart. Mirrors
+// C# `QBittorrentProxyV2.SetForceStart` at `:329-336`.
+func (p *Proxy) SetForceStart(ctx context.Context, hash string, enabled bool, settings Settings) error {
+	form := url.Values{}
+	form.Set("hashes", strings.ToLower(hash))
+	form.Set("value", strconv.FormatBool(enabled))
+	status, body, err := p.DoRequest(ctx, http.MethodPost, "/api/v2/torrents/setForceStart",
+		strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", settings)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("%w: setForceStart status=%d body=%s", ErrUnexpected, status, truncate(body, 128))
+	}
+	return nil
+}
+
+// SetTorrentSeedingConfiguration fires POST
+// /api/v2/torrents/setShareLimits. Mirrors C#
+// `QBittorrentProxyV2.SetTorrentSeedingConfiguration` at
+// `:284-307`. Tolerates HTTP 404 — the endpoint shipped in
+// qBittorrent API 2.0.1; older installs silently no-op (matches
+// the C# catch arm at `:299-303`).
+//
+// Per-grab seed-config nil → no-op.
+func (p *Proxy) SetTorrentSeedingConfiguration(ctx context.Context, hash string, seedConfig *downloadclients.TorrentSeedConfiguration, settings Settings) error {
+	if seedConfig == nil {
+		return nil
+	}
+	form := url.Values{}
+	form.Set("hashes", strings.ToLower(hash))
+	form.Set("ratioLimit", formatRatioLimit(seedConfig))
+	form.Set("seedingTimeLimit", formatSeedingTimeLimit(seedConfig))
+	status, body, err := p.DoRequest(ctx, http.MethodPost, "/api/v2/torrents/setShareLimits",
+		strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", settings)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusNotFound {
+		// API < 2.0.1 — silently no-op per C# :299-303.
+		return nil
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("%w: setShareLimits status=%d body=%s", ErrUnexpected, status, truncate(body, 128))
+	}
+	return nil
+}
+
+// buildAddTorrentBody assembles a multipart request body via the
+// supplied writer callback. Returns the encoded body bytes + the
+// Content-Type header (which includes the boundary).
+func buildAddTorrentBody(write func(*multipart.Writer) error) ([]byte, string, error) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := write(w); err != nil {
+		_ = w.Close()
+		return nil, "", err
+	}
+	if err := w.Close(); err != nil {
+		return nil, "", err
+	}
+	return buf.Bytes(), w.FormDataContentType(), nil
+}
+
+// addTorrentFormFields ports C# `AddTorrentDownloadFormParameters` at
+// `QBittorrentProxyV2.cs:240-282`. Writes the common
+// category/paused/sequential/firstLastPiecePrio/contentLayout fields
+// + the inline addShareLimits arm when seedConfig is non-nil.
+//
+// stoppedFieldName is the API-version-resolved name for the paused
+// flag — qBittorrent < 5 uses "paused"; >= 5 renamed it to "stopped"
+// per the C# probe at `QBittorrentProxyV2.cs:251` + the corresponding
+// API note. The Provider layer (Download method) probes via
+// GetVersion + picks the right name.
+func addTorrentFormFields(w *multipart.Writer, seedConfig *downloadclients.TorrentSeedConfiguration, settings Settings, stoppedFieldName string) error {
+	if cat := strings.TrimSpace(settings.TvCategory); cat != "" {
+		if err := w.WriteField("category", cat); err != nil {
+			return err
+		}
+	}
+
+	switch settings.InitialState {
+	case InitialStateStart:
+		if err := w.WriteField(stoppedFieldName, "false"); err != nil {
+			return err
+		}
+	case InitialStateStop:
+		if err := w.WriteField(stoppedFieldName, "true"); err != nil {
+			return err
+		}
+		// InitialStateForceStart handled by post-add SetForceStart
+		// call in the Provider — qBittorrent's add endpoint has no
+		// force-start arm.
+	}
+
+	if settings.SequentialOrder {
+		if err := w.WriteField("sequentialDownload", "true"); err != nil {
+			return err
+		}
+	}
+	if settings.FirstAndLast {
+		if err := w.WriteField("firstLastPiecePrio", "true"); err != nil {
+			return err
+		}
+	}
+
+	switch settings.ContentLayout {
+	case ContentLayoutOriginal:
+		if err := w.WriteField("contentLayout", "Original"); err != nil {
+			return err
+		}
+	case ContentLayoutSubfolder:
+		if err := w.WriteField("contentLayout", "Subfolder"); err != nil {
+			return err
+		}
+	}
+
+	// Inline addShareLimits arm — qBittorrent 4.4+ accepts these on
+	// the same /api/v2/torrents/add request. The Provider layer
+	// gates this on the API version and falls back to a follow-up
+	// setShareLimits call for older builds.
+	if seedConfig != nil {
+		if err := w.WriteField("ratioLimit", formatRatioLimit(seedConfig)); err != nil {
+			return err
+		}
+		if err := w.WriteField("seedingTimeLimit", formatSeedingTimeLimit(seedConfig)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// formatRatioLimit returns the wire-format ratio-limit string. -2 =
+// "use global"; -1 = "unlimited"; else the float ratio.
+func formatRatioLimit(seedConfig *downloadclients.TorrentSeedConfiguration) string {
+	if seedConfig == nil || seedConfig.Ratio == nil {
+		return "-2"
+	}
+	return strconv.FormatFloat(*seedConfig.Ratio, 'f', -1, 64)
+}
+
+// formatSeedingTimeLimit returns the wire-format seeding-time-limit
+// string in minutes. -2 = "use global"; -1 = "unlimited"; else the
+// number of minutes.
+func formatSeedingTimeLimit(seedConfig *downloadclients.TorrentSeedConfiguration) string {
+	if seedConfig == nil || seedConfig.SeedTime == nil {
+		return "-2"
+	}
+	mins := int64(seedConfig.SeedTime.Minutes())
+	return strconv.FormatInt(mins, 10)
 }
 
 // truncate clamps a byte slice to n bytes for log lines. Mirrors

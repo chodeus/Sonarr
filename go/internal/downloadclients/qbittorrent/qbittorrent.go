@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -91,10 +92,143 @@ func (q *QBittorrent) Settings() Settings { return q.settings }
 // surface.
 func (q *QBittorrent) Proxy() *Proxy { return q.proxy }
 
-// Download is filled in by slice 5.G1e. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (q *QBittorrent) Download(_ context.Context, _ *downloadclients.GrabRequest) (string, error) {
-	return "", downloadclients.ErrNotImplementedYet
+// Download ports the C# Download orchestrator at
+// `Download/Clients/QBittorrent/QBittorrent.cs:75-216`. Picks the
+// add path (TorrentBody → AddTorrentFromFile, MagnetURL →
+// AddTorrentFromURL(magnet), DownloadURL → AddTorrentFromURL(URL)),
+// applies the per-grab share limits + force-start + paused/stopped
+// initial state, and returns the upper-cased info-hash.
+//
+// Per-slice scope deferrals:
+//
+//   - The MoveTorrentToTopInQueue arm at C# `:109-119,178-188` is
+//     deferred to a follow-up slice — the priority RPC requires
+//     torrent-queueing to be enabled in qBittorrent and returns 409
+//     when not; not load-bearing for the common case.
+//   - AddSeriesTags at C# `:133-143,202-212` is deferred — the tag
+//     repository port lands at a later sub-arc, and AddTags is best-
+//     effort in the C# tree anyway (warn + continue on failure).
+//   - WaitForTorrent at C# `:218-242` (poll-until-visible for the
+//     post-add RPC chain) is replaced by an "apply best-effort"
+//     posture — the post-add RPCs log + continue on failure, which
+//     matches the C# catch arms at `:104-106,116-118,127-129`.
+//   - The "magnet without trackers when DHT disabled" guard at C#
+//     `:77-80` is deferred until GetStatus / preferences land
+//     (5.G1g). Sonarr-grabbed magnets virtually always include a
+//     tracker, so the regression cost is low.
+//
+// InfoHash sourcing:
+//
+//   - req.InfoHash trusted when set.
+//   - Otherwise extracted from MagnetURL's xt=urn:btih:HASH query
+//     parameter when present.
+//   - Otherwise an error (the orchestrator's responsibility is to
+//     fill InfoHash on Subjects produced from torznab/torrent-file
+//     indexers; this guard fails loudly during integration).
+func (q *QBittorrent) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
+	if req == nil {
+		return "", errors.New("qbittorrent: Download: nil request")
+	}
+	if q.proxy == nil {
+		return "", errors.New("qbittorrent: Download: nil proxy")
+	}
+
+	hash, err := resolveInfoHash(req)
+	if err != nil {
+		return "", err
+	}
+
+	stoppedField, _ := q.resolveStoppedFieldName(ctx)
+
+	// "addShareLimits inline" is API >= 2.8.1 (qBittorrent 4.4+).
+	// Probing the API version on every grab is expensive; the Go
+	// port pessimistically assumes the older shape (no inline
+	// share-limits) and applies them via a follow-up call. The C#
+	// tree at `:83,152` does the same fallback when the version
+	// probe is below 2.8.1.
+	switch {
+	case len(req.TorrentBody) > 0:
+		filename := fallbackFilename(req)
+		err = q.proxy.AddTorrentFromFile(ctx, filename, req.TorrentBody, nil, q.settings, stoppedField)
+	case strings.TrimSpace(req.MagnetURL) != "":
+		err = q.proxy.AddTorrentFromURL(ctx, req.MagnetURL, nil, q.settings, stoppedField)
+	case strings.TrimSpace(req.DownloadURL) != "":
+		err = q.proxy.AddTorrentFromURL(ctx, req.DownloadURL, nil, q.settings, stoppedField)
+	default:
+		return "", errors.New("qbittorrent: Download: GrabRequest has neither TorrentBody nor MagnetURL nor DownloadURL")
+	}
+	if err != nil {
+		return "", fmt.Errorf("qbittorrent: Download(%q): %w", req.ReleaseTitle, err)
+	}
+
+	// Post-add best-effort RPCs — match the C# warn-and-continue
+	// pattern at `:103-106,127-129`.
+	if req.SeedConfiguration != nil {
+		if seedErr := q.proxy.SetTorrentSeedingConfiguration(ctx, hash, req.SeedConfiguration, q.settings); seedErr != nil {
+			q.log.Warn("qbittorrent: SetTorrentSeedingConfiguration failed",
+				"hash", hash, "err", seedErr)
+		}
+	}
+	if q.settings.InitialState == InitialStateForceStart {
+		if forceErr := q.proxy.SetForceStart(ctx, hash, true, q.settings); forceErr != nil {
+			q.log.Warn("qbittorrent: SetForceStart failed",
+				"hash", hash, "err", forceErr)
+		}
+	}
+
+	return strings.ToUpper(hash), nil
+}
+
+// resolveStoppedFieldName probes /api/v2/app/version to decide
+// whether the add endpoint's paused-state field is named "paused"
+// (qBittorrent < 5) or "stopped" (qBittorrent >= 5). On any probe
+// failure, falls back to "paused" — matches the safe default in the
+// C# wire at `QBittorrentProxyV2.cs:251`.
+func (q *QBittorrent) resolveStoppedFieldName(ctx context.Context) (string, error) {
+	raw, err := q.proxy.GetVersion(ctx, q.settings)
+	if err != nil {
+		return "paused", err
+	}
+	v := parseVersion(raw)
+	if v == nil {
+		return "paused", nil
+	}
+	if v.major >= 5 {
+		return "stopped", nil
+	}
+	return "paused", nil
+}
+
+// resolveInfoHash sources the torrent's info-hash for the
+// DownloadID return value. See the [QBittorrent.Download] doc for
+// the order of preference.
+func resolveInfoHash(req *downloadclients.GrabRequest) (string, error) {
+	if h := strings.TrimSpace(req.InfoHash); h != "" {
+		return strings.ToLower(h), nil
+	}
+	if magnet := strings.TrimSpace(req.MagnetURL); magnet != "" {
+		// Magnet links can be parsed via url.Parse — they're URI
+		// syntax even if not http(s).
+		if u, err := url.Parse(magnet); err == nil {
+			for _, xt := range u.Query()["xt"] {
+				if strings.HasPrefix(xt, "urn:btih:") {
+					return strings.ToLower(strings.TrimPrefix(xt, "urn:btih:")), nil
+				}
+			}
+		}
+	}
+	return "", errors.New("qbittorrent: Download: GrabRequest has no InfoHash and no urn:btih: in MagnetURL")
+}
+
+// fallbackFilename returns a reasonable .torrent filename for the
+// AddTorrentFromFile multipart part. qBittorrent uses the filename
+// only for the WebUI's pending-torrent display; any non-empty value
+// works.
+func fallbackFilename(req *downloadclients.GrabRequest) string {
+	if t := strings.TrimSpace(req.ReleaseTitle); t != "" {
+		return t + ".torrent"
+	}
+	return "release.torrent"
 }
 
 // GetItems ports C# `QBittorrent.GetItems` at
