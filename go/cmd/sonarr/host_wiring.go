@@ -960,6 +960,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientByIDHandler(downloadClientsRepo)},
 		{Method: "POST", Path: "/api/v3/downloadclient", Handler: apiv3.DownloadClientCreateHandler(downloadClientsRepo, downloadClientEmitter)},
 		{Method: "POST", Path: "/api/v3/downloadclient/test", Handler: apiv3.DownloadClientTestHandler(downloadClientTester)},
+		{Method: "POST", Path: "/api/v3/downloadclient/testall", Handler: apiv3.DownloadClientTestAllHandler(downloadClientsRepo, downloadClientTester)},
 		{Method: "PUT", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientUpdateHandler(downloadClientsRepo, downloadClientEmitter)},
 		{Method: "DELETE", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientDeleteHandler(downloadClientsRepo, downloadClientEmitter)},
 		{Method: "GET", Path: "/api/v3/episode", Handler: apiv3.EpisodeListHandler(episodesSvc)},

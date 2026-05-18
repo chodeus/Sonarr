@@ -349,6 +349,60 @@ func DownloadClientTestHandler(tester DownloadClientTester) http.Handler {
 	})
 }
 
+// DownloadClientTestAllHandler returns POST /api/v3/downloadclient/testall.
+// Mirrors C# ProviderControllerBase.TestAll at :233-257 and the
+// 5.C1c / 5.C2c / 5.C3c twins. Returns 400 if any row failed, 200
+// if all passed. Empty list returns [].
+func DownloadClientTestAllHandler(lister DownloadClientLister, tester DownloadClientTester) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rows, err := lister.All(r.Context())
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient/testall: list: %w", err), nil)
+			return
+		}
+		results := make([]ProviderTestAllResult, 0, len(rows))
+		anyInvalid := false
+		for _, row := range rows {
+			row := row
+			failures, err := tester.Test(r.Context(), &row)
+			projected := make([]httperr.Failure, 0)
+			switch {
+			case errors.Is(err, downloadclients.ErrNotRegistered):
+				projected = append(projected, httperr.Failure{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q", row.Implementation),
+					Severity:     "error",
+				})
+			case err != nil:
+				projected = append(projected, httperr.Failure{
+					PropertyName: "",
+					ErrorMessage: fmt.Sprintf("Test failed: %v", err),
+					Severity:     "error",
+				})
+			default:
+				projected = append(projected, downloadClientTestFailuresToFluentArray(failures)...)
+			}
+			isValid := len(projected) == 0
+			if !isValid {
+				anyInvalid = true
+			}
+			results = append(results, ProviderTestAllResult{
+				ID:                 row.ID,
+				IsValid:            isValid,
+				ValidationFailures: projected,
+			})
+		}
+		status := http.StatusOK
+		if anyInvalid {
+			status = http.StatusBadRequest
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		buf, _ := json.Marshal(results)
+		_, _ = w.Write(buf)
+	})
+}
+
 // downloadClientTestFailuresToFluentArray projects the family's
 // TestFailure to httperr.Failure.
 func downloadClientTestFailuresToFluentArray(failures []downloadclients.TestFailure) []httperr.Failure {
