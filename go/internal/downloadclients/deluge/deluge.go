@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // Implementation + ConfigContract are the persisted-row identifiers
@@ -77,10 +80,162 @@ func (d *Deluge) Download(_ context.Context, _ *downloadclients.GrabRequest) (st
 	return "", downloadclients.ErrNotImplementedYet
 }
 
-// GetItems is filled in by slice 5.G2d. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (d *Deluge) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+// GetItems ports C# `Deluge.GetItems` at
+// `Download/Clients/Deluge/Deluge.cs:114-215`. Fetches every torrent
+// the WebUI reports (filtered server-side by label when
+// settings.TvCategory is non-empty per the C# `GetTorrentsByLabel`
+// branch at `:118-121`) and projects each into the orchestrator's
+// canonical [downloadclients.Item] shape.
+//
+// Differences from the C# port:
+//
+//   - The ReconnectToDaemon arm at C# `:198-208` (when ignored
+//     torrents trip a stale-daemon reconnect) is deferred — the
+//     reconnect helper lands when 5.G2g GetStatus drives the
+//     web.connected probe.
+//   - Remote-path-mapping translation at C# `:147` is deferred
+//     until the [downloadclients.Dependencies.RemotePathMappingService]
+//     port lands (same as 5.G1d / qBittorrent).
+//   - Ignored-torrent counter at C# `:128,136-138` collapses to a
+//     single slog.Warn per call rather than the stateful "have
+//     we tried reconnecting yet" branch.
+func (d *Deluge) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
+	if d.proxy == nil {
+		return nil, errors.New("deluge: GetItems: nil proxy")
+	}
+	torrents, err := d.proxy.GetTorrents(ctx, d.settings)
+	if err != nil {
+		return nil, fmt.Errorf("deluge: GetItems: %w", err)
+	}
+
+	info := d.itemClientInfo()
+	items := make([]*downloadclients.Item, 0, len(torrents))
+	ignored := 0
+	for i := range torrents {
+		t := torrents[i]
+		if strings.TrimSpace(t.Hash) == "" || strings.TrimSpace(t.Name) == "" {
+			ignored++
+			continue
+		}
+		items = append(items, d.torrentToItem(t, info))
+	}
+	if ignored > 0 {
+		// Mirrors the C# `:198-202` warn line but without the
+		// reconnect-state arm. The Provider's caller can still see
+		// the per-torrent items it does have.
+		d.log.Warn("deluge: GetItems: torrents missing hash or name were skipped",
+			"count", ignored)
+	}
+	return items, nil
+}
+
+// torrentToItem builds the typed Item from a deluge torrent.
+// Pulled into its own helper so the 5.G2d body stays readable.
+func (d *Deluge) torrentToItem(t DelugeTorrent, info *downloadclients.ItemClientInfo) *downloadclients.Item {
+	ratio := t.Ratio
+	ratioPtr := &ratio
+
+	remaining := t.Size - t.BytesDownloaded
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	item := &downloadclients.Item{
+		DownloadClientInfo: info,
+		DownloadID:         strings.ToUpper(t.Hash),
+		Category:           d.settings.TvCategory,
+		Title:              t.Name,
+		TotalSize:          t.Size,
+		RemainingSize:      remaining,
+		SeedRatio:          ratioPtr,
+	}
+
+	// ETA: deluge emits the float64 value as seconds. The C# tree
+	// at `:154-160` catches OverflowException and falls back to
+	// TimeSpan.MaxValue; the Go port mirrors with a max-duration
+	// fallback so the UI doesn't render NaN.
+	if t.Eta > 0 && !math.IsInf(t.Eta, 0) && !math.IsNaN(t.Eta) {
+		secs := t.Eta
+		// time.Duration ceiling is ~292 years; deluge sometimes
+		// returns 8640000 ("never" sentinel) — accept up to that
+		// scale, clamp anything bigger.
+		const maxEtaSeconds = float64(1<<31 - 1)
+		if secs > maxEtaSeconds {
+			secs = maxEtaSeconds
+		}
+		d := time.Duration(secs * float64(time.Second))
+		item.RemainingTime = &d
+	}
+
+	// OutputPath: deluge save_path + torrent name. C# `:147-148`
+	// composes via OsPath operator+; the Go port uses a simple
+	// '/'-separated join (deluge always emits '/' separators).
+	if strings.TrimSpace(t.DownloadPath) != "" {
+		item.OutputPath = ospath.New(joinTorrentPath(t.DownloadPath, t.Name))
+	}
+
+	// Status mapping per C# `:164-184`.
+	switch {
+	case t.State == StatusError:
+		item.Status = downloadclients.DownloadItemStatusWarning
+		item.Message = "Deluge reported an error on this torrent"
+		if strings.TrimSpace(t.Message) != "" {
+			item.Message = t.Message
+		}
+	case t.IsFinished && t.State != StatusChecking:
+		// C# `:169-172`: completed-paused torrents stay state="Paused"
+		// per deluge convention; IsFinished true → Completed
+		// unconditionally except mid-recheck.
+		item.Status = downloadclients.DownloadItemStatusCompleted
+	case t.State == StatusQueued:
+		item.Status = downloadclients.DownloadItemStatusQueued
+	case t.State == StatusPaused:
+		item.Status = downloadclients.DownloadItemStatusPaused
+	default:
+		item.Status = downloadclients.DownloadItemStatusDownloading
+	}
+
+	// CanBeRemoved + CanMoveFiles per C# `:188-193`. Five-way AND:
+	// RemoveCompletedDownloads (on the row) + IsAutoManaged +
+	// StopAtRatio + Ratio >= StopRatio + State == "Paused".
+	item.CanBeRemoved = info != nil && info.RemoveCompletedDownloads &&
+		t.IsAutoManaged && t.StopAtRatio &&
+		t.Ratio >= t.StopRatio && t.State == StatusPaused
+	item.CanMoveFiles = item.CanBeRemoved
+
+	return item
+}
+
+// itemClientInfo mirrors C#
+// `DownloadClientItemClientInfo.FromDownloadClient` at
+// `DownloadClientItemClientInfo.cs`. HasPostImportCategory is true
+// when settings.TvImportedCategory is non-empty per C# `:145`.
+func (d *Deluge) itemClientInfo() *downloadclients.ItemClientInfo {
+	info := &downloadclients.ItemClientInfo{
+		Protocol:              d.Protocol(),
+		Type:                  Implementation,
+		Name:                  d.Name(),
+		HasPostImportCategory: strings.TrimSpace(d.settings.TvImportedCategory) != "",
+	}
+	if d.def != nil {
+		info.ID = d.def.ID
+		info.Name = d.def.Name
+		info.RemoveCompletedDownloads = d.def.RemoveCompletedDownloads
+	}
+	return info
+}
+
+// joinTorrentPath joins deluge's save_path with the torrent name.
+// Deluge always emits '/' separators in its API responses (matches
+// the qBittorrent family pattern from 5.G1d).
+func joinTorrentPath(base, name string) string {
+	if base == "" {
+		return name
+	}
+	if name == "" {
+		return base
+	}
+	return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(name, "/")
 }
 
 // GetImportItem mirrors the C# base default — pass input through.

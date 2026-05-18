@@ -347,6 +347,42 @@ func (p *Proxy) fireRPC(ctx context.Context, method string, params []any, settin
 	return parsed.Result, parsed.Error, nil
 }
 
+// GetTorrents fires web.update_ui with the canonical
+// [requiredProperties] field-list and the optional category-filter
+// arm. Mirrors C# `DelugeProxy.GetTorrents` at `:68-94` (and the
+// label-filter variant at `:84-92`).
+//
+// When settings.TvCategory is non-empty, the filter parameter
+// carries `{"label": "<tvCategory>"}` so deluge-web returns only
+// matching torrents server-side — matches the C# `GetTorrentsByLabel`
+// path that Deluge.GetItems chooses at `Deluge.cs:118-121`.
+//
+// Returns the projected slice (empty, never nil) with each torrent's
+// Hash field back-filled from the map key when missing (some deluge
+// builds omit the in-value hash field).
+func (p *Proxy) GetTorrents(ctx context.Context, settings Settings) ([]DelugeTorrent, error) {
+	filter := map[string]any{}
+	if cat := strings.TrimSpace(settings.TvCategory); cat != "" {
+		filter["label"] = cat
+	}
+	raw, err := p.Call(ctx, "web.update_ui", []any{requiredProperties, filter}, settings)
+	if err != nil {
+		return nil, err
+	}
+	var envelope DelugeUpdateUIResult
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, fmt.Errorf("deluge: parse web.update_ui response: %w", err)
+	}
+	out := make([]DelugeTorrent, 0, len(envelope.Torrents))
+	for k, v := range envelope.Torrents {
+		if v.Hash == "" {
+			v.Hash = k
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
 // authKey is the cache key (baseURL, password). Mirrors C#
 // `DelugeProxy.cs:325` exactly.
 func (p *Proxy) authKey(settings Settings) string {
