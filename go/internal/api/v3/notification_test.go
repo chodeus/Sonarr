@@ -443,6 +443,146 @@ func TestNotificationTestHandler_SkipsSharedValidator(t *testing.T) {
 	}
 }
 
+// perRowTester maps row ID → outcome so a single fake covers
+// mixed-result testall scenarios.
+type perRowTester struct {
+	seen     []int
+	byID     map[int][]notifications.TestFailure
+	errByID  map[int]error
+	defaultR []notifications.TestFailure
+}
+
+func (p *perRowTester) Test(_ context.Context, n *notifications.Notification) ([]notifications.TestFailure, error) {
+	p.seen = append(p.seen, n.ID)
+	if p.errByID != nil {
+		if err, ok := p.errByID[n.ID]; ok {
+			return nil, err
+		}
+	}
+	if p.byID != nil {
+		if r, ok := p.byID[n.ID]; ok {
+			return r, nil
+		}
+	}
+	return p.defaultR, nil
+}
+
+func TestNotificationTestAllHandler_Empty_Returns200EmptyArray(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	NotificationTestAllHandler(&fakeNotifLister{}, &perRowTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification/testall", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `[]` {
+		t.Errorf("body: %q want []", rr.Body.String())
+	}
+}
+
+func TestNotificationTestAllHandler_AllPass_Returns200Array(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Name: "a", Implementation: "Webhook"},
+		{ID: 2, Name: "b", Implementation: "Discord"},
+	}
+	tester := &perRowTester{} // defaultR nil = passing
+	rr := httptest.NewRecorder()
+	NotificationTestAllHandler(&fakeNotifLister{rows: rows}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification/testall", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got []ProviderTestAllResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, rr.Body.String())
+	}
+	if len(got) != 2 {
+		t.Fatalf("len: %d", len(got))
+	}
+	for i, r := range got {
+		if !r.IsValid {
+			t.Errorf("row %d isValid: false; want true", i)
+		}
+		if len(r.ValidationFailures) != 0 {
+			t.Errorf("row %d failures: %+v", i, r.ValidationFailures)
+		}
+	}
+	if len(tester.seen) != 2 || tester.seen[0] != 1 || tester.seen[1] != 2 {
+		t.Errorf("Test should be called per-row in order: %v", tester.seen)
+	}
+}
+
+func TestNotificationTestAllHandler_MixedResults_Returns400(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Name: "ok", Implementation: "Webhook"},
+		{ID: 2, Name: "bad", Implementation: "Discord"},
+		{ID: 3, Name: "missing", Implementation: "GhostProvider"},
+		{ID: 4, Name: "boom", Implementation: "Webhook"},
+	}
+	tester := &perRowTester{
+		byID: map[int][]notifications.TestFailure{
+			2: {{PropertyName: "Url", ErrorMessage: "could not connect"}},
+		},
+		errByID: map[int]error{
+			3: notifications.ErrNotRegistered,
+			4: errors.New("transport reset"),
+		},
+	}
+	rr := httptest.NewRecorder()
+	NotificationTestAllHandler(&fakeNotifLister{rows: rows}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification/testall", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got []ProviderTestAllResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, rr.Body.String())
+	}
+	if len(got) != 4 {
+		t.Fatalf("len: %d", len(got))
+	}
+	// Row 1 passes.
+	if !got[0].IsValid || len(got[0].ValidationFailures) != 0 {
+		t.Errorf("row 0: %+v", got[0])
+	}
+	// Row 2 has the per-field failure.
+	if got[1].IsValid || len(got[1].ValidationFailures) != 1 || got[1].ValidationFailures[0].PropertyName != "Url" {
+		t.Errorf("row 1: %+v", got[1])
+	}
+	// Row 3 (ErrNotRegistered) reports a synthesised Implementation failure.
+	if got[2].IsValid || len(got[2].ValidationFailures) != 1 || got[2].ValidationFailures[0].PropertyName != "Implementation" {
+		t.Errorf("row 2: %+v", got[2])
+	}
+	// Row 4 (transport error) reports a whole-form Test-failed failure.
+	if got[3].IsValid || len(got[3].ValidationFailures) != 1 || got[3].ValidationFailures[0].PropertyName != "" {
+		t.Errorf("row 3: %+v", got[3])
+	}
+}
+
+func TestNotificationTestAllHandler_ListError_500(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	NotificationTestAllHandler(&fakeNotifLister{err: errors.New("db down")}, &perRowTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification/testall", nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestNotificationTestAllHandler_ValidationFailuresNonNil(t *testing.T) {
+	t.Parallel()
+	// Even on success the per-row validationFailures field must be
+	// `[]` (non-null) — matches the C# `new List<ValidationFailure>()`
+	// default. Tests the JSON output literally.
+	rows := []notifications.Notification{{ID: 7, Implementation: "Webhook"}}
+	rr := httptest.NewRecorder()
+	NotificationTestAllHandler(&fakeNotifLister{rows: rows}, &perRowTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification/testall", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`"validationFailures":[]`)) {
+		t.Errorf("validationFailures should be [] not null: body=%s", rr.Body.String())
+	}
+}
+
 func TestNotificationDeleteHandler_Success(t *testing.T) {
 	t.Parallel()
 	w := &fakeNotifWriter{rows: []notifications.Notification{{ID: 7, Name: "victim"}}}

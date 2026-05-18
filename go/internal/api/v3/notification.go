@@ -335,6 +335,95 @@ func NotificationTestHandler(tester NotificationTester) http.Handler {
 	})
 }
 
+// ProviderTestAllResult mirrors C# `Sonarr.Api.V3.ProviderTestAllResult`
+// at `src/Sonarr.Api.V3/ProviderTestAllResult.cs`. The C# `IsValid`
+// is a derived property (`ValidationFailures.Empty()`); the Go port
+// computes it at projection time and emits it as a regular field so
+// the wire shape is byte-equal.
+//
+// validationFailures defaults to `[]` (non-nil) so JSON marshalling
+// matches the C# `new List<ValidationFailure>()` ctor default.
+type ProviderTestAllResult struct {
+	ID                 int               `json:"id"`
+	IsValid            bool              `json:"isValid"`
+	ValidationFailures []httperr.Failure `json:"validationFailures"`
+}
+
+// NotificationTestAllHandler returns POST /api/v3/notification/testall.
+// Mirrors `ProviderControllerBase.TestAll` at C# :233-257. Iterates
+// every persisted row and runs the per-row provider Test sequentially.
+// Aggregates the outcomes into a `ProviderTestAllResult` array.
+// Returns 400 when any row's Test returned at least one failure, 200
+// when every row passed (mirrors C# `result.Any(c => !c.IsValid) ?
+// BadRequest(result) : Ok(result)` at :256).
+//
+// C# filters the iteration to `c.Settings.Validate().IsValid && c.Enable`
+// — the Settings filter is moot once Provider.Test is the source of
+// truth (a settings-invalid row will surface that as a TestFailure),
+// and the Go port's [notifications.Notification] has no Enable
+// column. Every row is tested; empty-DB returns `[]` either way which
+// preserves the byte-equal contract.
+//
+// Parallelism: C# is sequential, Go port matches. Per-row
+// concurrency is a perf optimization that can land in a later slice
+// once the empty-DB byte-equal contract has a populated counterpart
+// to compare against.
+func NotificationTestAllHandler(lister NotificationLister, tester NotificationTester) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rows, err := lister.All(r.Context())
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("notification/testall: list: %w", err), nil)
+			return
+		}
+		results := make([]ProviderTestAllResult, 0, len(rows))
+		anyInvalid := false
+		for _, row := range rows {
+			row := row
+			failures, err := tester.Test(r.Context(), &row)
+			projected := make([]httperr.Failure, 0)
+			switch {
+			case errors.Is(err, notifications.ErrNotRegistered):
+				projected = append(projected, httperr.Failure{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q", row.Implementation),
+					Severity:     "error",
+				})
+			case err != nil:
+				// Unexpected per-row error — surface it as a whole-form
+				// failure so the row reports IsValid=false rather than
+				// collapsing the entire response. Matches C# where any
+				// thrown exception inside the foreach is caught by the
+				// surrounding pipeline and a fallback failure is added
+				// (see `NotificationFactory.cs:210-229`).
+				projected = append(projected, httperr.Failure{
+					PropertyName: "",
+					ErrorMessage: fmt.Sprintf("Test failed: %v", err),
+					Severity:     "error",
+				})
+			default:
+				projected = append(projected, testFailuresToFluentArray(failures)...)
+			}
+			isValid := len(projected) == 0
+			if !isValid {
+				anyInvalid = true
+			}
+			results = append(results, ProviderTestAllResult{
+				ID:                 row.ID,
+				IsValid:            isValid,
+				ValidationFailures: projected,
+			})
+		}
+		status := http.StatusOK
+		if anyInvalid {
+			status = http.StatusBadRequest
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		buf, _ := json.Marshal(results)
+		_, _ = w.Write(buf)
+	})
+}
+
 // testFailuresToFluentArray ports the projection
 // `STJson.ToJson(validationException.Errors)` at C#
 // `SonarrErrorPipeline.cs:52` for the [notifications.TestFailure]
