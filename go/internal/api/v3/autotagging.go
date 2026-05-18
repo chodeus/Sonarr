@@ -3,11 +3,14 @@ package v3
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/httperr"
+	"sonarr.tv/sonarr/internal/validation"
 )
 
 // AutoTaggingResource mirrors
@@ -102,4 +105,246 @@ func toAutoTaggingResource(t *autotagging.Tag) AutoTaggingResource {
 		// stable until then.
 		Specifications: []AutoTaggingSpecificationSchema{},
 	}
+}
+
+// ---------- 5.B10: CRUD ----------
+
+// AutoTaggingWriter is the write surface. *autotagging.Service
+// satisfies it via All/GetByID/Insert/Update/Delete.
+// AutoTaggingController in C# extends RestController<T> (no SignalR).
+type AutoTaggingWriter interface {
+	All(ctx context.Context) ([]*autotagging.Tag, error)
+	GetByID(ctx context.Context, id int) (*autotagging.Tag, error)
+	Insert(ctx context.Context, row *autotagging.AutoTag) (*autotagging.Tag, error)
+	Update(ctx context.Context, row *autotagging.AutoTag) error
+	Delete(ctx context.Context, id int) error
+}
+
+// AutoTaggingByIDHandler returns GET /api/v3/autotagging/{id}.
+// Mirrors `AutoTaggingController.GetResourceById` at
+// `src/Sonarr.Api.V3/AutoTagging/AutoTaggingController.cs:47-50`.
+func AutoTaggingByIDHandler(svc AutoTaggingWriter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseAutoTaggingID(w, r)
+		if !ok {
+			return
+		}
+		t, err := svc.GetByID(r.Context(), id)
+		if errors.Is(err, autotagging.ErrNotFound) {
+			httperr.NotFound(w, fmt.Sprintf("autotagging %d not found", id))
+			return
+		}
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("autotagging: %w", err), nil)
+			return
+		}
+		writeAutoTaggingJSON(w, http.StatusOK, t)
+	})
+}
+
+// AutoTaggingCreateHandler returns POST /api/v3/autotagging.
+// Mirrors `Create` at `:52-61`. Validation chain ports the C#
+// SharedValidator block plus the Custom() spec-condition checks.
+//
+// DEFERRED: spec-internal Validate() (regex syntax etc) — needs the
+// spec-builder reflection layer that customformat 5.B4 also defers.
+// The handler accepts Specifications opaquely and persists the JSON
+// verbatim until that lands.
+func AutoTaggingCreateHandler(svc AutoTaggingWriter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeAutoTaggingBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("autotagging: malformed body: %v", err))
+			return
+		}
+		if errs := validateAutoTagging(r.Context(), svc, body, 0); !errs.OK() {
+			httperr.WriteValidation(w, errs.Failures())
+			return
+		}
+		model, err := autoTaggingToModel(*body)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("autotagging: serialise: %w", err), nil)
+			return
+		}
+		inserted, err := svc.Insert(r.Context(), &model)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("autotagging: %w", err), nil)
+			return
+		}
+		writeAutoTaggingJSON(w, http.StatusCreated, inserted)
+	})
+}
+
+// AutoTaggingUpdateHandler returns PUT /api/v3/autotagging/{id}.
+// Mirrors `Update` at `:63-74`. Path id wins; reloads the row after
+// Update so the response projects the canonical typed Tag shape.
+func AutoTaggingUpdateHandler(svc AutoTaggingWriter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseAutoTaggingID(w, r)
+		if !ok {
+			return
+		}
+		body, err := decodeAutoTaggingBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("autotagging: malformed body: %v", err))
+			return
+		}
+		body.ID = id
+		if errs := validateAutoTagging(r.Context(), svc, body, id); !errs.OK() {
+			httperr.WriteValidation(w, errs.Failures())
+			return
+		}
+		model, err := autoTaggingToModel(*body)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("autotagging: serialise: %w", err), nil)
+			return
+		}
+		err = svc.Update(r.Context(), &model)
+		if errors.Is(err, autotagging.ErrNotFound) {
+			httperr.NotFound(w, fmt.Sprintf("autotagging %d not found", id))
+			return
+		}
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("autotagging: %w", err), nil)
+			return
+		}
+		t, err := svc.GetByID(r.Context(), id)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("autotagging: reload: %w", err), nil)
+			return
+		}
+		writeAutoTaggingJSON(w, http.StatusAccepted, t)
+	})
+}
+
+// AutoTaggingDeleteHandler returns DELETE /api/v3/autotagging/{id}.
+// Mirrors `DeleteFormat` at `:83-87` — 200 empty / 404.
+func AutoTaggingDeleteHandler(svc AutoTaggingWriter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseAutoTaggingID(w, r)
+		if !ok {
+			return
+		}
+		err := svc.Delete(r.Context(), id)
+		if errors.Is(err, autotagging.ErrNotFound) {
+			httperr.NotFound(w, fmt.Sprintf("autotagging %d not found", id))
+			return
+		}
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("autotagging: %w", err), nil)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+}
+
+// ---------- helpers ----------
+
+func parseAutoTaggingID(w http.ResponseWriter, r *http.Request) (int, bool) {
+	raw := r.PathValue("id")
+	if raw == "" {
+		httperr.BadRequest(w, "autotagging: missing id path parameter")
+		return 0, false
+	}
+	id, err := strconv.Atoi(raw)
+	if err != nil || id <= 0 {
+		httperr.BadRequest(w, fmt.Sprintf("autotagging: invalid id %q", raw))
+		return 0, false
+	}
+	return id, true
+}
+
+func decodeAutoTaggingBody(r *http.Request) (*AutoTaggingResource, error) {
+	var t AutoTaggingResource
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&t); err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// validateAutoTagging ports the C# SharedValidator chain at
+// `AutoTaggingController.cs:28-44`:
+//
+//   - Name NotEmpty
+//   - Name unique across All() (excluding self by id)
+//   - Tags NotEmpty
+//   - Specifications NotEmpty + each Specification.Name non-empty
+//
+// excludeID is the URL id on Update (so the row being updated doesn't
+// false-positive the uniqueness check); 0 on Create.
+func validateAutoTagging(ctx context.Context, svc AutoTaggingWriter, res *AutoTaggingResource, excludeID int) *validation.Errors {
+	errs := validation.New()
+	if !errs.Required("Name", res.Name) {
+		return errs
+	}
+	if len(res.Tags) == 0 {
+		errs.Add("Tags", "'Tags' must not be empty")
+	}
+	if len(res.Specifications) == 0 {
+		errs.Add("Specifications", "Must contain at least one Condition")
+		return errs
+	}
+	for _, s := range res.Specifications {
+		if s.Name == "" {
+			errs.Add("Specifications", "Condition name(s) cannot be empty or consist of only spaces")
+			break
+		}
+	}
+	if errs.Len() > 0 {
+		return errs
+	}
+	// Uniqueness check across all rows.
+	all, err := svc.All(ctx)
+	if err != nil {
+		return errs
+	}
+	for _, t := range all {
+		if t == nil || t.ID == excludeID {
+			continue
+		}
+		if t.Name == res.Name {
+			errs.Add("Name", "Must be unique.")
+			return errs
+		}
+	}
+	return errs
+}
+
+// autoTaggingToModel serialises the resource into the persisted
+// model. Specifications round-trips through json.Marshal so the
+// DB column carries the canonical JSON form. Mirrors C#
+// `resource.ToModel(_specifications)` where the spec-builder
+// reflection projects each typed spec; the Go port defers the
+// typed projection (5.B4 customformat does the same — accepts
+// opaque JSON and persists verbatim) and will activate the deeper
+// per-spec Validate() when the spec-builder slice ports.
+func autoTaggingToModel(res AutoTaggingResource) (autotagging.AutoTag, error) {
+	specJSON := "[]"
+	if len(res.Specifications) > 0 {
+		buf, err := json.Marshal(res.Specifications)
+		if err != nil {
+			return autotagging.AutoTag{}, err
+		}
+		specJSON = string(buf)
+	}
+	tags := res.Tags
+	if tags == nil {
+		tags = []int{}
+	}
+	return autotagging.AutoTag{
+		ID:                      res.ID,
+		Name:                    res.Name,
+		Specifications:          specJSON,
+		RemoveTagsAutomatically: res.RemoveTagsAutomatically,
+		Tags:                    tags,
+	}, nil
+}
+
+func writeAutoTaggingJSON(w http.ResponseWriter, status int, t *autotagging.Tag) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	buf, _ := json.Marshal(toAutoTaggingResource(t))
+	_, _ = w.Write(buf)
 }
