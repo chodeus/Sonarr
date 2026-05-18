@@ -410,6 +410,111 @@ func (h hostConfigGetter) ProxyPassword() string           { return h.cfg.ProxyP
 func (h hostConfigGetter) ProxyBypassFilter() string       { return h.cfg.ProxyBypassFilter() }
 func (h hostConfigGetter) ProxyBypassLocalAddresses() bool { return h.cfg.ProxyBypassLocalAddresses() }
 
+// ---------- HostConfigWriter setters (slice 5.B13d) ----------
+
+func (h hostConfigGetter) SetBindAddress(ctx context.Context, v string) error {
+	return h.xmlCfg.SetBindAddress(ctx, v)
+}
+func (h hostConfigGetter) SetPort(ctx context.Context, v int) error {
+	return h.xmlCfg.SetPort(ctx, v)
+}
+func (h hostConfigGetter) SetSslPort(ctx context.Context, v int) error {
+	return h.xmlCfg.SetSslPort(ctx, v)
+}
+func (h hostConfigGetter) SetEnableSsl(ctx context.Context, v bool) error {
+	return h.xmlCfg.SetEnableSsl(ctx, v)
+}
+func (h hostConfigGetter) SetLaunchBrowser(ctx context.Context, v bool) error {
+	return h.xmlCfg.SetLaunchBrowser(ctx, v)
+}
+func (h hostConfigGetter) SetAuthenticationMethod(ctx context.Context, v string) error {
+	return h.xmlCfg.SetAuthenticationMethod(ctx, v)
+}
+func (h hostConfigGetter) SetAuthenticationRequired(ctx context.Context, v string) error {
+	return h.xmlCfg.SetAuthenticationRequired(ctx, v)
+}
+func (h hostConfigGetter) SetAnalyticsEnabled(ctx context.Context, v bool) error {
+	return h.xmlCfg.SetAnalyticsEnabled(ctx, v)
+}
+func (h hostConfigGetter) SetLogLevel(ctx context.Context, v string) error {
+	return h.xmlCfg.SetLogLevel(ctx, v)
+}
+func (h hostConfigGetter) SetLogSizeLimit(ctx context.Context, v int) error {
+	return h.xmlCfg.SetLogSizeLimit(ctx, v)
+}
+func (h hostConfigGetter) SetConsoleLogLevel(ctx context.Context, v string) error {
+	return h.xmlCfg.SetConsoleLogLevel(ctx, v)
+}
+func (h hostConfigGetter) SetBranch(ctx context.Context, v string) error {
+	return h.xmlCfg.SetBranch(ctx, v)
+}
+func (h hostConfigGetter) SetSslCertPath(ctx context.Context, v string) error {
+	return h.xmlCfg.SetSslCertPath(ctx, v)
+}
+func (h hostConfigGetter) SetSslKeyPath(ctx context.Context, v string) error {
+	return h.xmlCfg.SetSslKeyPath(ctx, v)
+}
+func (h hostConfigGetter) SetSslCertPassword(ctx context.Context, v string) error {
+	return h.xmlCfg.SetSslCertPassword(ctx, v)
+}
+func (h hostConfigGetter) SetURLBase(ctx context.Context, v string) error {
+	return h.xmlCfg.SetURLBase(ctx, v)
+}
+func (h hostConfigGetter) SetInstanceName(ctx context.Context, v string) error {
+	return h.xmlCfg.SetInstanceName(ctx, v)
+}
+func (h hostConfigGetter) SetTrustCgnatIpAddresses(ctx context.Context, v bool) error {
+	return h.xmlCfg.SetTrustCgnatIpAddresses(ctx, v)
+}
+func (h hostConfigGetter) SetUpdateAutomatically(ctx context.Context, v bool) error {
+	return h.xmlCfg.SetUpdateAutomatically(ctx, v)
+}
+func (h hostConfigGetter) SetUpdateMechanism(ctx context.Context, v string) error {
+	return h.xmlCfg.SetUpdateMechanism(ctx, v)
+}
+func (h hostConfigGetter) SetUpdateScriptPath(ctx context.Context, v string) error {
+	return h.xmlCfg.SetUpdateScriptPath(ctx, v)
+}
+func (h hostConfigGetter) SetApplicationUrl(ctx context.Context, v string) error {
+	return h.cfg.SetApplicationUrl(ctx, v)
+}
+func (h hostConfigGetter) SetBackupFolder(ctx context.Context, v string) error {
+	return h.cfg.SetBackupFolder(ctx, v)
+}
+func (h hostConfigGetter) SetBackupInterval(ctx context.Context, v int) error {
+	return h.cfg.SetBackupInterval(ctx, v)
+}
+func (h hostConfigGetter) SetBackupRetention(ctx context.Context, v int) error {
+	return h.cfg.SetBackupRetention(ctx, v)
+}
+func (h hostConfigGetter) SetCertificateValidation(ctx context.Context, v string) error {
+	return h.cfg.SetCertificateValidation(ctx, v)
+}
+func (h hostConfigGetter) SetProxyEnabled(ctx context.Context, v bool) error {
+	return h.cfg.SetProxyEnabled(ctx, v)
+}
+func (h hostConfigGetter) SetProxyType(ctx context.Context, v string) error {
+	return h.cfg.SetProxyType(ctx, v)
+}
+func (h hostConfigGetter) SetProxyHostname(ctx context.Context, v string) error {
+	return h.cfg.SetProxyHostname(ctx, v)
+}
+func (h hostConfigGetter) SetProxyPort(ctx context.Context, v int) error {
+	return h.cfg.SetProxyPort(ctx, v)
+}
+func (h hostConfigGetter) SetProxyUsername(ctx context.Context, v string) error {
+	return h.cfg.SetProxyUsername(ctx, v)
+}
+func (h hostConfigGetter) SetProxyPassword(ctx context.Context, v string) error {
+	return h.cfg.SetProxyPassword(ctx, v)
+}
+func (h hostConfigGetter) SetProxyBypassFilter(ctx context.Context, v string) error {
+	return h.cfg.SetProxyBypassFilter(ctx, v)
+}
+func (h hostConfigGetter) SetProxyBypassLocalAddresses(ctx context.Context, v bool) error {
+	return h.cfg.SetProxyBypassLocalAddresses(ctx, v)
+}
+
 // v3Routes collects the v3 controllers wired in this slice. As more
 // controllers port, they're added here in alphabetical order.
 //
@@ -446,6 +551,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/config/downloadclient", Handler: apiv3.DownloadClientConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/downloadclient/{id}", Handler: apiv3.DownloadClientConfigUpdateHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/host", Handler: apiv3.HostConfigHandler(hostCfg)},
+		{Method: "PUT", Path: "/api/v3/config/host/{id}", Handler: apiv3.HostConfigUpdateHandler(hostCfg)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/mediamanagement", Handler: apiv3.MediaManagementConfigHandler(configProv)},

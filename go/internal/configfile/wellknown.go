@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -300,6 +301,132 @@ func (p *Provider) AuthenticationMethod(ctx context.Context) (string, error) {
 		return "Forms", nil
 	}
 	return v, nil
+}
+
+// ---------- Host PUT setters (slice 5.B13d) ----------
+//
+// These wrap *Provider.Set with the strconv conversion the C#
+// SaveConfigDictionary fold performs implicitly. Bool values are
+// serialised as "true"/"false" (matching the C# bool.ToString lowering
+// at the XML write site); ints as base-10 digits.
+
+func setBoolKey(ctx context.Context, p *Provider, key string, v bool) error {
+	if v {
+		return p.Set(ctx, key, "True")
+	}
+	return p.Set(ctx, key, "False")
+}
+
+func setIntKey(ctx context.Context, p *Provider, key string, v int) error {
+	return p.Set(ctx, key, strconv.Itoa(v))
+}
+
+// SetBindAddress persists BindAddress.
+func (p *Provider) SetBindAddress(ctx context.Context, v string) error {
+	return p.Set(ctx, "BindAddress", v)
+}
+
+// SetPort persists Port.
+func (p *Provider) SetPort(ctx context.Context, v int) error {
+	return setIntKey(ctx, p, "Port", v)
+}
+
+// SetSslPort persists SslPort.
+func (p *Provider) SetSslPort(ctx context.Context, v int) error {
+	return setIntKey(ctx, p, "SslPort", v)
+}
+
+// SetEnableSsl persists EnableSsl.
+func (p *Provider) SetEnableSsl(ctx context.Context, v bool) error {
+	return setBoolKey(ctx, p, "EnableSsl", v)
+}
+
+// SetLaunchBrowser persists LaunchBrowser.
+func (p *Provider) SetLaunchBrowser(ctx context.Context, v bool) error {
+	return setBoolKey(ctx, p, "LaunchBrowser", v)
+}
+
+// SetAuthenticationMethod persists AuthenticationMethod (PascalCase
+// identifier — "Forms", "None", "External"; "Basic" is rejected by
+// the controller validator before reaching this setter).
+func (p *Provider) SetAuthenticationMethod(ctx context.Context, v string) error {
+	return p.Set(ctx, "AuthenticationMethod", v)
+}
+
+// SetAuthenticationRequired persists AuthenticationRequired (PascalCase
+// identifier — "Enabled", "DisabledForLocalAddresses").
+func (p *Provider) SetAuthenticationRequired(ctx context.Context, v string) error {
+	return p.Set(ctx, "AuthenticationRequired", v)
+}
+
+// SetAnalyticsEnabled persists AnalyticsEnabled.
+func (p *Provider) SetAnalyticsEnabled(ctx context.Context, v bool) error {
+	return setBoolKey(ctx, p, "AnalyticsEnabled", v)
+}
+
+// SetLogLevel persists LogLevel (already-lowered).
+func (p *Provider) SetLogLevel(ctx context.Context, v string) error {
+	return p.Set(ctx, "LogLevel", v)
+}
+
+// SetLogSizeLimit persists LogSizeLimit (caller clamps to 1..10).
+func (p *Provider) SetLogSizeLimit(ctx context.Context, v int) error {
+	return setIntKey(ctx, p, "LogSizeLimit", v)
+}
+
+// SetConsoleLogLevel persists ConsoleLogLevel.
+func (p *Provider) SetConsoleLogLevel(ctx context.Context, v string) error {
+	return p.Set(ctx, "ConsoleLogLevel", v)
+}
+
+// SetBranch persists Branch (already-lowered).
+func (p *Provider) SetBranch(ctx context.Context, v string) error {
+	return p.Set(ctx, "Branch", v)
+}
+
+// SetSslCertPath persists SslCertPath.
+func (p *Provider) SetSslCertPath(ctx context.Context, v string) error {
+	return p.Set(ctx, "SslCertPath", v)
+}
+
+// SetSslKeyPath persists SslKeyPath.
+func (p *Provider) SetSslKeyPath(ctx context.Context, v string) error {
+	return p.Set(ctx, "SslKeyPath", v)
+}
+
+// SetSslCertPassword persists SslCertPassword.
+func (p *Provider) SetSslCertPassword(ctx context.Context, v string) error {
+	return p.Set(ctx, "SslCertPassword", v)
+}
+
+// SetURLBase persists UrlBase (caller normalises the slash shape).
+func (p *Provider) SetURLBase(ctx context.Context, v string) error {
+	return p.Set(ctx, "UrlBase", v)
+}
+
+// SetInstanceName persists InstanceName.
+func (p *Provider) SetInstanceName(ctx context.Context, v string) error {
+	return p.Set(ctx, "InstanceName", v)
+}
+
+// SetTrustCgnatIpAddresses persists TrustCgnatIpAddresses.
+func (p *Provider) SetTrustCgnatIpAddresses(ctx context.Context, v bool) error {
+	return setBoolKey(ctx, p, "TrustCgnatIpAddresses", v)
+}
+
+// SetUpdateAutomatically persists UpdateAutomatically.
+func (p *Provider) SetUpdateAutomatically(ctx context.Context, v bool) error {
+	return setBoolKey(ctx, p, "UpdateAutomatically", v)
+}
+
+// SetUpdateMechanism persists UpdateMechanism (PascalCase identifier).
+func (p *Provider) SetUpdateMechanism(ctx context.Context, v string) error {
+	return p.Set(ctx, "UpdateMechanism", v)
+}
+
+// SetUpdateScriptPath persists UpdateScriptPath.
+func (p *Provider) SetUpdateScriptPath(ctx context.Context, v string) error {
+	return p.Set(ctx, "UpdateScriptPath", v)
 }
 
 // osStatImpl bridges the package-level fake to the real os.Stat. Kept

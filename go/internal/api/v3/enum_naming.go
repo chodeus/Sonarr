@@ -63,6 +63,83 @@ func ProperDownloadTypeName(p quality.ProperDownloadType) string {
 	return "unknown"
 }
 
+// AuthenticationMethodFromName reverses CamelCaseEnumName for the
+// AuthenticationType enum. Used by /api/v3/config/host PUT (slice
+// 5.B13d). "basic" is accepted here so the controller validator can
+// emit the friendly "'Basic' is no longer supported, switch to 'Forms'
+// instead." message; the AuthenticationMethod setter never sees
+// "Basic" because the validator rejects it before persistence.
+func AuthenticationMethodFromName(s string) (string, error) {
+	switch s {
+	case "none":
+		return "None", nil
+	case "basic":
+		return "Basic", nil
+	case "forms":
+		return "Forms", nil
+	case "external":
+		return "External", nil
+	}
+	return "", fmt.Errorf("unknown authenticationMethod value %q (want none|forms|external)", s)
+}
+
+// AuthenticationRequiredFromName reverses CamelCaseEnumName for the
+// AuthenticationRequiredType enum.
+func AuthenticationRequiredFromName(s string) (string, error) {
+	switch s {
+	case "enabled":
+		return "Enabled", nil
+	case "disabledForLocalAddresses":
+		return "DisabledForLocalAddresses", nil
+	}
+	return "", fmt.Errorf("unknown authenticationRequired value %q (want enabled|disabledForLocalAddresses)", s)
+}
+
+// UpdateMechanismFromName reverses CamelCaseEnumName for the
+// UpdateMechanism enum.
+func UpdateMechanismFromName(s string) (string, error) {
+	switch s {
+	case "builtIn":
+		return "BuiltIn", nil
+	case "script":
+		return "Script", nil
+	case "external":
+		return "External", nil
+	case "apt":
+		return "Apt", nil
+	case "docker":
+		return "Docker", nil
+	}
+	return "", fmt.Errorf("unknown updateMechanism value %q (want builtIn|script|external|apt|docker)", s)
+}
+
+// ProxyTypeFromName reverses CamelCaseEnumName for the ProxyType enum.
+func ProxyTypeFromName(s string) (string, error) {
+	switch s {
+	case "http":
+		return "Http", nil
+	case "socks4":
+		return "Socks4", nil
+	case "socks5":
+		return "Socks5", nil
+	}
+	return "", fmt.Errorf("unknown proxyType value %q (want http|socks4|socks5)", s)
+}
+
+// CertificateValidationFromName reverses CamelCaseEnumName for the
+// CertificateValidationType enum.
+func CertificateValidationFromName(s string) (string, error) {
+	switch s {
+	case "enabled":
+		return "Enabled", nil
+	case "disabledForLocalAddresses":
+		return "DisabledForLocalAddresses", nil
+	case "disabled":
+		return "Disabled", nil
+	}
+	return "", fmt.Errorf("unknown certificateValidation value %q (want enabled|disabledForLocalAddresses|disabled)", s)
+}
+
 // ProperDownloadTypeFromName reverses ProperDownloadTypeName. Used by
 // the /api/v3/config/mediamanagement PUT handler (slice 5.B13c).
 // Unknown values surface as an error rather than defaulting silently
