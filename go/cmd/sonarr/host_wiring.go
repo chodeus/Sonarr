@@ -683,6 +683,16 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// broadcast directly from the handler (no domain-event indirection
 	// for this resource — there's no RootFolderUpdatedEvent in C#).
 	rootFolderEmitter := signalr.NewV3Emitter[apiv3.RootFolderResource](signalRHub, "rootfolder")
+	// 5.C1a: notification provider CUD wires the per-resource SignalR
+	// emitter for "notification" + the Registry for implementation
+	// validation. The registry is shared singleton from
+	// internal/notifications/registry.go's Default() — concrete
+	// providers register themselves via init() once their packages
+	// are blank-imported by main.go (DEFERRED per Phase-4 subset-3
+	// follow-up (a); empty registry today still passes byte-equal
+	// tests because no row has Implementation populated).
+	notificationEmitter := signalr.NewV3Emitter[apiv3.NotificationResource](signalRHub, "notification")
+	notificationRegistry := notifications.Default()
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
@@ -831,6 +841,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/notification", Handler: apiv3.NotificationHandler(notificationsRepo)},
 		{Method: "GET", Path: "/api/v3/notification/schema", Handler: apiv3.NotificationSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationByIDHandler(notificationsRepo)},
+		{Method: "POST", Path: "/api/v3/notification", Handler: apiv3.NotificationCreateHandler(notificationsRepo, notificationRegistry, notificationEmitter)},
+		{Method: "PUT", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationUpdateHandler(notificationsRepo, notificationRegistry, notificationEmitter)},
+		{Method: "DELETE", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationDeleteHandler(notificationsRepo, notificationEmitter)},
 		{Method: "GET", Path: "/api/v3/parse", Handler: apiv3.ParseHandler()},
 		{Method: "GET", Path: "/api/v3/qualitydefinition", Handler: apiv3.QualityDefinitionHandler(qualityDefSvc)},
 		{Method: "GET", Path: "/api/v3/qualitydefinition/{id}", Handler: apiv3.QualityDefinitionByIDHandler(qualityDefSvc)},

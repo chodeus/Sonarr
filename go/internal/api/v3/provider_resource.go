@@ -1,5 +1,7 @@
 package v3
 
+import "encoding/json"
+
 // providerResourceCore carries the inherited fields from
 // `src/Sonarr.Api.V3/ProviderResource.cs` that every provider list
 // endpoint emits (Notifications, Indexers, ImportLists,
@@ -30,4 +32,41 @@ type providerResourceCore struct {
 	ImplementationName string `json:"implementationName"`
 	ConfigContract     string `json:"configContract"`
 	Tags               []int  `json:"tags"`
+}
+
+// ProviderField is one entry in a provider resource's `fields[]`
+// array — the C# wire shape produced by `SchemaBuilder.ToSchema(Settings)`
+// at `src/NzbDrone.Core/Annotations/FieldDefinition.cs`. The Go port
+// only round-trips the (Name, Value) pair right now; type/label/help-
+// text/select-options come from the C# annotations on the Settings
+// class and are DEFERRED until the schema-builder ports.
+//
+// On POST/PUT this is the input the handler consumes — the
+// per-implementation Settings JSON is reconstructed as a
+// `map[Name]Value` and stored in the `Settings` DB column. On GET the
+// inverse is currently a no-op (empty array) so the round-trip is
+// asymmetric — flagged in STATUS as a follow-up alongside the
+// schema-builder port.
+type ProviderField struct {
+	Name  string `json:"name"`
+	Value any    `json:"value,omitempty"`
+}
+
+// settingsJSONFromFields packs a `fields[]` array (POST/PUT input)
+// into the JSON object the DB row's `Settings` column stores. Empty
+// `fields[]` produces "{}" (matches C# default `Settings.ToJson()`
+// for a settings class with no populated properties).
+func settingsJSONFromFields(fields []ProviderField) (string, error) {
+	out := make(map[string]any, len(fields))
+	for _, f := range fields {
+		if f.Name == "" {
+			continue
+		}
+		out[f.Name] = f.Value
+	}
+	buf, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(buf), nil
 }

@@ -1,10 +1,14 @@
 package v3
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"sync/atomic"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/notifications"
@@ -35,4 +39,323 @@ func TestNotificationHandler_Error(t *testing.T) {
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("status: got %d want 500", rr.Code)
 	}
+}
+
+// fakeNotifWriter implements NotificationWriter against an in-memory
+// table. Insert auto-assigns ids monotonically; Update + Delete match
+// by id with ErrNotFound on miss.
+type fakeNotifWriter struct {
+	rows   []notifications.Notification
+	nextID int64
+	getErr error
+}
+
+func (f *fakeNotifWriter) Get(_ context.Context, id int) (*notifications.Notification, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	for i := range f.rows {
+		if f.rows[i].ID == id {
+			cp := f.rows[i]
+			return &cp, nil
+		}
+	}
+	return nil, notifications.ErrNotFound
+}
+func (f *fakeNotifWriter) All(_ context.Context) ([]notifications.Notification, error) {
+	out := make([]notifications.Notification, len(f.rows))
+	copy(out, f.rows)
+	return out, nil
+}
+func (f *fakeNotifWriter) Insert(_ context.Context, n *notifications.Notification) (*notifications.Notification, error) {
+	n.ID = int(atomic.AddInt64(&f.nextID, 1))
+	f.rows = append(f.rows, *n)
+	cp := *n
+	return &cp, nil
+}
+func (f *fakeNotifWriter) Update(_ context.Context, n *notifications.Notification) error {
+	for i := range f.rows {
+		if f.rows[i].ID == n.ID {
+			f.rows[i] = *n
+			return nil
+		}
+	}
+	return notifications.ErrNotFound
+}
+func (f *fakeNotifWriter) Delete(_ context.Context, id int) error {
+	for i := range f.rows {
+		if f.rows[i].ID == id {
+			f.rows = append(f.rows[:i], f.rows[i+1:]...)
+			return nil
+		}
+	}
+	return notifications.ErrNotFound
+}
+
+type fakeNotifEmitter struct {
+	created []NotificationResource
+	updated []NotificationResource
+	deleted []NotificationResource
+}
+
+func (f *fakeNotifEmitter) Created(_ context.Context, r NotificationResource) error {
+	f.created = append(f.created, r)
+	return nil
+}
+func (f *fakeNotifEmitter) Updated(_ context.Context, r NotificationResource) error {
+	f.updated = append(f.updated, r)
+	return nil
+}
+func (f *fakeNotifEmitter) Deleted(_ context.Context, r NotificationResource) error {
+	f.deleted = append(f.deleted, r)
+	return nil
+}
+
+type fakeNotifRegistry struct{ valid map[string]bool }
+
+func (f *fakeNotifRegistry) Has(impl, cfg string) bool {
+	if f.valid == nil {
+		return true
+	}
+	return f.valid[impl+"|"+cfg]
+}
+
+func validRegistry() *fakeNotifRegistry {
+	return &fakeNotifRegistry{valid: map[string]bool{
+		"Webhook|WebhookSettings": true,
+		"Discord|DiscordSettings": true,
+	}}
+}
+
+func validNotificationBody() NotificationResource {
+	return NotificationResource{
+		providerResourceCore: providerResourceCore{
+			Name:               "My Webhook",
+			Implementation:     "Webhook",
+			ImplementationName: "Webhook",
+			ConfigContract:     "WebhookSettings",
+			Tags:               []int{1, 2},
+		},
+		OnGrab:           true,
+		OnDownload:       true,
+		OnUpgrade:        true,
+		OnSeriesDelete:   true,
+		OnImportComplete: true,
+		Fields: []ProviderField{
+			{Name: "url", Value: "https://example.com/hook"},
+			{Name: "method", Value: float64(1)}, // JSON numbers round-trip as float64
+		},
+	}
+}
+
+func TestNotificationCreateHandler_Success(t *testing.T) {
+	t.Parallel()
+	w := &fakeNotifWriter{}
+	em := &fakeNotifEmitter{}
+	body := validNotificationBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/notification", bytes.NewReader(buf))
+	rr := httptest.NewRecorder()
+	NotificationCreateHandler(w, validRegistry(), em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.rows) != 1 || w.rows[0].Name != "My Webhook" || w.rows[0].ID <= 0 {
+		t.Errorf("row not inserted: %+v", w.rows)
+	}
+	// Settings JSON must be reconstructed from fields[].
+	if w.rows[0].Settings == "" || w.rows[0].Settings == "{}" {
+		t.Errorf("settings should pack fields[]; got %q", w.rows[0].Settings)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(w.rows[0].Settings), &settings); err != nil {
+		t.Fatalf("settings JSON: %v", err)
+	}
+	if settings["url"] != "https://example.com/hook" {
+		t.Errorf("url field: %v", settings["url"])
+	}
+	if len(em.created) != 1 || em.created[0].Name != "My Webhook" {
+		t.Errorf("emitter.Created not fired: %+v", em.created)
+	}
+}
+
+func TestNotificationCreateHandler_BadImplementation_400Validation(t *testing.T) {
+	t.Parallel()
+	body := validNotificationBody()
+	body.Implementation = "TotallyMadeUp"
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	NotificationCreateHandler(&fakeNotifWriter{}, validRegistry(), &fakeNotifEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var failures []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &failures); err != nil {
+		t.Fatalf("body shape: %v body=%s", err, rr.Body.String())
+	}
+	if len(failures) == 0 || failures[0]["propertyName"] != "Implementation" {
+		t.Errorf("expected Implementation failure: %v", failures)
+	}
+}
+
+func TestNotificationCreateHandler_NameMissing_400Validation(t *testing.T) {
+	t.Parallel()
+	body := validNotificationBody()
+	body.Name = ""
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	NotificationCreateHandler(&fakeNotifWriter{}, validRegistry(), &fakeNotifEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestNotificationCreateHandler_DuplicateName_400Validation(t *testing.T) {
+	t.Parallel()
+	body := validNotificationBody()
+	w := &fakeNotifWriter{rows: []notifications.Notification{{ID: 7, Name: "my webhook"}}}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	NotificationCreateHandler(w, validRegistry(), &fakeNotifEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestNotificationCreateHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	NotificationCreateHandler(&fakeNotifWriter{}, validRegistry(), &fakeNotifEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/notification", bytes.NewReader([]byte(`{bad`))))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", rr.Code)
+	}
+}
+
+func TestNotificationUpdateHandler_Success(t *testing.T) {
+	t.Parallel()
+	existing := notifications.Notification{ID: 42, Name: "old", Implementation: "Webhook", Settings: `{"url":"old"}`}
+	w := &fakeNotifWriter{rows: []notifications.Notification{existing}}
+	em := &fakeNotifEmitter{}
+	body := validNotificationBody()
+	body.ID = 42
+	body.Name = "renamed"
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/notification/42", bytes.NewReader(buf))
+	req.SetPathValue("id", "42")
+	rr := httptest.NewRecorder()
+	NotificationUpdateHandler(w, validRegistry(), em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if w.rows[0].Name != "renamed" {
+		t.Errorf("row not updated: %+v", w.rows[0])
+	}
+	if len(em.updated) != 1 {
+		t.Errorf("emitter.Updated not fired: %+v", em.updated)
+	}
+}
+
+func TestNotificationUpdateHandler_NotFound_404(t *testing.T) {
+	t.Parallel()
+	body := validNotificationBody()
+	body.ID = 999
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/notification/999", bytes.NewReader(buf))
+	req.SetPathValue("id", "999")
+	rr := httptest.NewRecorder()
+	NotificationUpdateHandler(&fakeNotifWriter{}, validRegistry(), &fakeNotifEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestNotificationUpdateHandler_BodyIDFallback(t *testing.T) {
+	t.Parallel()
+	// C# behavior: when route id misses but body.Id exists, use the body id.
+	existing := notifications.Notification{ID: 5, Name: "old", Implementation: "Webhook"}
+	w := &fakeNotifWriter{rows: []notifications.Notification{existing}}
+	body := validNotificationBody()
+	body.ID = 5
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/notification/999", bytes.NewReader(buf))
+	req.SetPathValue("id", "999")
+	rr := httptest.NewRecorder()
+	NotificationUpdateHandler(w, validRegistry(), &fakeNotifEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if w.rows[0].Name != "My Webhook" {
+		t.Errorf("body-id fallback didn't update row 5: %+v", w.rows[0])
+	}
+}
+
+func TestNotificationUpdateHandler_OmittedFields_KeepsExistingSettings(t *testing.T) {
+	t.Parallel()
+	existing := notifications.Notification{ID: 1, Name: "old", Implementation: "Webhook", Settings: `{"url":"keep-me"}`}
+	w := &fakeNotifWriter{rows: []notifications.Notification{existing}}
+	body := validNotificationBody()
+	body.ID = 1
+	body.Fields = nil // omit fields entirely
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/notification/1", bytes.NewReader(buf))
+	req.SetPathValue("id", "1")
+	rr := httptest.NewRecorder()
+	NotificationUpdateHandler(w, validRegistry(), &fakeNotifEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if w.rows[0].Settings != `{"url":"keep-me"}` {
+		t.Errorf("settings should be preserved when fields omitted; got %q", w.rows[0].Settings)
+	}
+}
+
+func TestNotificationDeleteHandler_Success(t *testing.T) {
+	t.Parallel()
+	w := &fakeNotifWriter{rows: []notifications.Notification{{ID: 7, Name: "victim"}}}
+	em := &fakeNotifEmitter{}
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/notification/7", nil)
+	req.SetPathValue("id", "7")
+	rr := httptest.NewRecorder()
+	NotificationDeleteHandler(w, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `{}` {
+		t.Errorf("body: %q", rr.Body.String())
+	}
+	if len(w.rows) != 0 {
+		t.Errorf("row should be deleted: %+v", w.rows)
+	}
+	if len(em.deleted) != 1 || em.deleted[0].ID != 7 {
+		t.Errorf("emitter.Deleted not fired with id 7: %+v", em.deleted)
+	}
+}
+
+func TestNotificationDeleteHandler_NotFound_404(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/notification/999", nil)
+	req.SetPathValue("id", "999")
+	rr := httptest.NewRecorder()
+	NotificationDeleteHandler(&fakeNotifWriter{}, &fakeNotifEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestNotificationDeleteHandler_InvalidID_400(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{"abc", "0", "-1"} {
+		raw := raw
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodDelete, "/api/v3/notification/"+raw, nil)
+			req.SetPathValue("id", raw)
+			rr := httptest.NewRecorder()
+			NotificationDeleteHandler(&fakeNotifWriter{}, &fakeNotifEmitter{}).ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("status: %d (id=%q)", rr.Code, raw)
+			}
+		})
+	}
+	_ = strconv.Itoa(0)
 }
