@@ -870,6 +870,10 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		registry: downloadClientRegistry,
 		deps:     downloadclients.Dependencies{Logger: logger},
 	}
+	// 5.C5a: metadata provider CUD emitter. The metadata package ships
+	// 4 concrete writers (xbmc/plex/roksbox/wdtv); 5.C5b will wire a
+	// tester adapter against metadata.Registry.Construct.
+	metadataEmitter := signalr.NewV3Emitter[apiv3.MetadataResource](signalRHub, "metadata")
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
@@ -1038,6 +1042,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/metadata", Handler: apiv3.MetadataListHandler(metadataRepo)},
 		{Method: "GET", Path: "/api/v3/metadata/schema", Handler: apiv3.MetadataSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/metadata/{id}", Handler: apiv3.MetadataByIDHandler(metadataRepo)},
+		{Method: "POST", Path: "/api/v3/metadata", Handler: apiv3.MetadataCreateHandler(metadataRepo, metadataEmitter)},
+		{Method: "PUT", Path: "/api/v3/metadata/{id}", Handler: apiv3.MetadataUpdateHandler(metadataRepo, metadataEmitter)},
+		{Method: "DELETE", Path: "/api/v3/metadata/{id}", Handler: apiv3.MetadataDeleteHandler(metadataRepo, metadataEmitter)},
 		{Method: "GET", Path: "/api/v3/localization/language", Handler: apiv3.LocalizationLanguageHandler(configProv.UILanguage)},
 		{Method: "GET", Path: "/api/v3/notification", Handler: apiv3.NotificationHandler(notificationsRepo)},
 		{Method: "GET", Path: "/api/v3/notification/schema", Handler: apiv3.NotificationSchemaHandler()},
