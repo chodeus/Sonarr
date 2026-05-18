@@ -405,3 +405,138 @@ func TestMetadataTestHandler_SkipsSharedValidator(t *testing.T) {
 		t.Errorf("skip-validation: status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+// fakeMetadataRowsLister satisfies MetadataRowsLister.
+type fakeMetadataRowsLister struct {
+	rows []metadata.Metadata
+	err  error
+}
+
+func (f *fakeMetadataRowsLister) All(_ context.Context) ([]metadata.Metadata, error) {
+	return f.rows, f.err
+}
+
+// perRowMetadataTester maps row ID → outcome.
+type perRowMetadataTester struct {
+	seen     []int
+	byID     map[int][]metadata.TestFailure
+	errByID  map[int]error
+	defaultR []metadata.TestFailure
+}
+
+func (p *perRowMetadataTester) Test(_ context.Context, n *metadata.Metadata) ([]metadata.TestFailure, error) {
+	p.seen = append(p.seen, n.ID)
+	if p.errByID != nil {
+		if err, ok := p.errByID[n.ID]; ok {
+			return nil, err
+		}
+	}
+	if p.byID != nil {
+		if r, ok := p.byID[n.ID]; ok {
+			return r, nil
+		}
+	}
+	return p.defaultR, nil
+}
+
+func TestMetadataTestAllHandler_Empty_Returns200EmptyArray(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	MetadataTestAllHandler(&fakeMetadataRowsLister{}, &perRowMetadataTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/metadata/testall", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `[]` {
+		t.Errorf("body: %q", rr.Body.String())
+	}
+}
+
+func TestMetadataTestAllHandler_AllPass_Returns200Array(t *testing.T) {
+	t.Parallel()
+	rows := []metadata.Metadata{
+		{ID: 1, Name: "a", Implementation: "XbmcMetadata"},
+		{ID: 2, Name: "b", Implementation: "PlexMetadata"},
+	}
+	tester := &perRowMetadataTester{}
+	rr := httptest.NewRecorder()
+	MetadataTestAllHandler(&fakeMetadataRowsLister{rows: rows}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/metadata/testall", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var got []ProviderTestAllResult
+	_ = json.Unmarshal(rr.Body.Bytes(), &got)
+	if len(got) != 2 {
+		t.Fatalf("len: %d", len(got))
+	}
+	for i, r := range got {
+		if !r.IsValid {
+			t.Errorf("row %d isValid: false", i)
+		}
+	}
+	if len(tester.seen) != 2 || tester.seen[0] != 1 || tester.seen[1] != 2 {
+		t.Errorf("ordering: %v", tester.seen)
+	}
+}
+
+func TestMetadataTestAllHandler_MixedResults_Returns400(t *testing.T) {
+	t.Parallel()
+	rows := []metadata.Metadata{
+		{ID: 1, Name: "ok", Implementation: "XbmcMetadata"},
+		{ID: 2, Name: "bad", Implementation: "PlexMetadata"},
+		{ID: 3, Name: "missing", Implementation: "GhostMetadata"},
+		{ID: 4, Name: "boom", Implementation: "XbmcMetadata"},
+	}
+	tester := &perRowMetadataTester{
+		byID: map[int][]metadata.TestFailure{
+			2: {{PropertyName: "OutputFolder", ErrorMessage: "write permission denied"}},
+		},
+		errByID: map[int]error{
+			3: metadata.ErrNotRegistered,
+			4: errors.New("disk full"),
+		},
+	}
+	rr := httptest.NewRecorder()
+	MetadataTestAllHandler(&fakeMetadataRowsLister{rows: rows}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/metadata/testall", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var got []ProviderTestAllResult
+	_ = json.Unmarshal(rr.Body.Bytes(), &got)
+	if len(got) != 4 {
+		t.Fatalf("len: %d", len(got))
+	}
+	if !got[0].IsValid {
+		t.Errorf("row 0: %+v", got[0])
+	}
+	if got[1].IsValid || got[1].ValidationFailures[0].PropertyName != "OutputFolder" {
+		t.Errorf("row 1: %+v", got[1])
+	}
+	if got[2].IsValid || got[2].ValidationFailures[0].PropertyName != "Implementation" {
+		t.Errorf("row 2: %+v", got[2])
+	}
+	if got[3].IsValid || got[3].ValidationFailures[0].PropertyName != "" {
+		t.Errorf("row 3: %+v", got[3])
+	}
+}
+
+func TestMetadataTestAllHandler_ListError_500(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	MetadataTestAllHandler(&fakeMetadataRowsLister{err: errors.New("db down")}, &perRowMetadataTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/metadata/testall", nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestMetadataTestAllHandler_ValidationFailuresNonNil(t *testing.T) {
+	t.Parallel()
+	rows := []metadata.Metadata{{ID: 7, Implementation: "XbmcMetadata"}}
+	rr := httptest.NewRecorder()
+	MetadataTestAllHandler(&fakeMetadataRowsLister{rows: rows}, &perRowMetadataTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/metadata/testall", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`"validationFailures":[]`)) {
+		t.Errorf("validationFailures should be [] not null: body=%s", rr.Body.String())
+	}
+}

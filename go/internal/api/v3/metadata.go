@@ -204,6 +204,64 @@ func MetadataTestHandler(tester MetadataTester) http.Handler {
 	})
 }
 
+// MetadataTestAllHandler returns POST /api/v3/metadata/testall.
+// Mirrors C# ProviderControllerBase.TestAll at :233-257 and the
+// 5.C1c/5.C2c/5.C3c/5.C4c twins. Reuses MetadataRowsLister
+// (defined in metadata_schema.go for the GET list path) and the
+// family-agnostic ProviderTestAllResult.
+//
+// Returns 400 if any row failed, 200 if all passed. Empty list
+// returns [].
+func MetadataTestAllHandler(lister MetadataRowsLister, tester MetadataTester) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rows, err := lister.All(r.Context())
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("metadata/testall: list: %w", err), nil)
+			return
+		}
+		results := make([]ProviderTestAllResult, 0, len(rows))
+		anyInvalid := false
+		for _, row := range rows {
+			row := row
+			failures, err := tester.Test(r.Context(), &row)
+			projected := make([]httperr.Failure, 0)
+			switch {
+			case errors.Is(err, metadata.ErrNotRegistered):
+				projected = append(projected, httperr.Failure{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q", row.Implementation),
+					Severity:     "error",
+				})
+			case err != nil:
+				projected = append(projected, httperr.Failure{
+					PropertyName: "",
+					ErrorMessage: fmt.Sprintf("Test failed: %v", err),
+					Severity:     "error",
+				})
+			default:
+				projected = append(projected, metadataTestFailuresToFluentArray(failures)...)
+			}
+			isValid := len(projected) == 0
+			if !isValid {
+				anyInvalid = true
+			}
+			results = append(results, ProviderTestAllResult{
+				ID:                 row.ID,
+				IsValid:            isValid,
+				ValidationFailures: projected,
+			})
+		}
+		status := http.StatusOK
+		if anyInvalid {
+			status = http.StatusBadRequest
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		buf, _ := json.Marshal(results)
+		_, _ = w.Write(buf)
+	})
+}
+
 // metadataTestFailuresToFluentArray projects the family's TestFailure
 // to httperr.Failure.
 func metadataTestFailuresToFluentArray(failures []metadata.TestFailure) []httperr.Failure {
