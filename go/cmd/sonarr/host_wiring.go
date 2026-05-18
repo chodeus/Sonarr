@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
@@ -216,6 +217,12 @@ var (
 	osStatCmd   = os.Stat
 	osRemoveCmd = os.Remove
 )
+
+// mediaCoverLister adapts the boot-time-resolved MediaCover folder
+// to apiv3.MediaCoverLister.
+type mediaCoverLister struct{ folder string }
+
+func (m mediaCoverLister) MediaCoverFolder() string { return m.folder }
 
 // logFileLister adapts the boot-time-resolved log folder + url base
 // to apiv3.LogFileLister. Both fields are captured at server start;
@@ -643,6 +650,11 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// adapter so the handler doesn't re-query per-request.
 	urlBase, _ := cfg.URLBase(context.Background())
 	logFileSvc := logFileLister{folder: logFolderPath, urlBase: urlBase}
+	// 5.I10: mediacover folder is <AppData>/MediaCover by convention.
+	// The log folder param was the only AppData-derived path threaded
+	// through buildHostServer — extract the parent to keep main.go's
+	// param list short.
+	mediaCoverSvc := mediaCoverLister{folder: filepath.Join(filepath.Dir(logFolderPath), "MediaCover")}
 	// 5.I3: disk space adapter sources from the rootfolders.Service —
 	// each configured root folder is treated as one important path.
 	// The optional-mounts path (C# `GetFixedDisksRootPaths` filtered
@@ -727,6 +739,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/log", Handler: apiv3.LogHandler()},
 		{Method: "GET", Path: "/api/v3/log/file", Handler: apiv3.LogFileHandler(logFileSvc)},
 		{Method: "GET", Path: "/api/v3/log/file/{filename}", Handler: apiv3.LogFileByNameHandler(logFileSvc)},
+		{Method: "GET", Path: "/api/v3/mediacover/{seriesId}/{filename}", Handler: apiv3.MediaCoverHandler(mediaCoverSvc)},
 		{Method: "GET", Path: "/api/v3/metadata", Handler: apiv3.MetadataListHandler(metadataRepo)},
 		{Method: "GET", Path: "/api/v3/metadata/schema", Handler: apiv3.MetadataSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/localization/language", Handler: apiv3.LocalizationLanguageHandler(configProv.UILanguage)},
