@@ -94,6 +94,50 @@ func TestEpisodeListHandler_InvalidSeriesId400(t *testing.T) {
 // strconv reference to silence unused-import nags when tests change.
 var _ = strconv.Itoa
 
+// ---------- 5.X8: GET /episode/{id} tests ----------
+
+type fakeEpisodeByIDGetter struct {
+	row *episodes.Episode
+	err error
+}
+
+func (f *fakeEpisodeByIDGetter) GetEpisode(_ context.Context, _ int) (*episodes.Episode, error) {
+	return f.row, f.err
+}
+
+func TestEpisodeByIDHandler_Found(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/episode/5", nil)
+	req.SetPathValue("id", "5")
+	EpisodeByIDHandler(&fakeEpisodeByIDGetter{row: &episodes.Episode{ID: 5, SeriesID: 1, Title: "Pilot"}}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+}
+
+func TestEpisodeByIDHandler_NotFound_404(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/episode/999", nil)
+	req.SetPathValue("id", "999")
+	EpisodeByIDHandler(&fakeEpisodeByIDGetter{err: episodes.ErrNotFound}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestEpisodeByIDHandler_InvalidID_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/episode/abc", nil)
+	req.SetPathValue("id", "abc")
+	EpisodeByIDHandler(&fakeEpisodeByIDGetter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
 // ---------- 5.D4a: PUT /episode/monitor tests ----------
 
 type fakeEpisodeMonitorWriter struct {

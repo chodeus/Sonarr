@@ -3,6 +3,7 @@ package v3
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -94,6 +95,44 @@ func EpisodeListHandler(lister EpisodeBySeriesLister) http.Handler {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		buf, _ := json.Marshal(out)
+		_, _ = w.Write(buf)
+	})
+}
+
+// EpisodeByIDGetter narrows episodes.Service to GetEpisode(id).
+// Satisfied directly by *episodes.Service.
+type EpisodeByIDGetter interface {
+	GetEpisode(ctx context.Context, id int) (*episodes.Episode, error)
+}
+
+// EpisodeByIDHandler returns GET /api/v3/episode/{id}. Mirrors
+// `EpisodeControllerWithSignalR.GetResourceById` at
+// `EpisodeControllerWithSignalR.cs:54-59` which delegates through
+// MapToResource with includeSeries+includeEpisodeFile+includeImages
+// all true.
+//
+// DEFERRED: the joined Series/EpisodeFile/Images projection (the
+// EpisodeResource skeleton omits these per the resource doc; same
+// gap as GET /episode list).
+func EpisodeByIDHandler(svc EpisodeByIDGetter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "episode: invalid id")
+			return
+		}
+		ep, err := svc.GetEpisode(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, episodes.ErrNotFound) {
+				httperr.NotFound(w, fmt.Sprintf("episode %d not found", id))
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episode: get %d: %w", id, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(ToEpisodeResource(*ep))
 		_, _ = w.Write(buf)
 	})
 }
