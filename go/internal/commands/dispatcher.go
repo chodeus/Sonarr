@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 )
 
 // Handler is the contract every IExecute<T>-equivalent satisfies.
@@ -115,6 +116,26 @@ func (r *CommandRegistry) Properties(name string) QueueProperties {
 func (r *CommandRegistry) Lookup(name string) (CommandSpec, bool) {
 	spec, ok := r.specs[name]
 	return spec, ok
+}
+
+// CanonicalName looks up the registered name case-insensitively and
+// returns the canonical casing. Used by the /api/v3/command POST
+// handler to validate the inbound name. Mirrors the C# `KnownTypes`
+// lookup at `CommandController.cs:56-59`:
+//
+//	_knownTypes.GetImplementations(typeof(Command))
+//	    .Single(c => c.Name.Replace("Command", "")
+//	                  .Equals(resource.Name, InvariantCultureIgnoreCase));
+func (r *CommandRegistry) CanonicalName(name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	for k := range r.specs {
+		if strings.EqualFold(k, name) {
+			return k, true
+		}
+	}
+	return "", false
 }
 
 // ErrNoHandler is recorded as Command.Exception when the dispatcher
