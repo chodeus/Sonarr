@@ -793,6 +793,11 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		registry: indexerRegistry,
 		deps:     indexers.Dependencies{Logger: logger},
 	}
+	// 5.C3a: importlist provider CUD emitter. The importlists.Registry
+	// already ships (Sonarr + Plex providers register; per Phase-4
+	// subset-4 follow-up (c) more providers will land later). 5.C3b
+	// will wire a tester adapter on top of importlists.Factory.Test.
+	importListEmitter := signalr.NewV3Emitter[apiv3.ImportListResource](signalRHub, "importlist")
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
@@ -908,6 +913,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/importlist", Handler: apiv3.ImportListHandler(importListsRepo)},
 		{Method: "GET", Path: "/api/v3/importlist/schema", Handler: apiv3.ImportListSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListByIDHandler(importListsRepo)},
+		{Method: "POST", Path: "/api/v3/importlist", Handler: apiv3.ImportListCreateHandler(importListsRepo, importListEmitter)},
+		{Method: "PUT", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListUpdateHandler(importListsRepo, importListEmitter)},
+		{Method: "DELETE", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListDeleteHandler(importListsRepo, importListEmitter)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion", Handler: apiv3.ImportListExclusionHandler(importListExclusionsRepo)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion/paged", Handler: apiv3.ImportListExclusionPagedHandler(importListExclusionsRepo)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion/{id}", Handler: apiv3.ImportListExclusionByIDHandler(importListExclusionsRepo)},

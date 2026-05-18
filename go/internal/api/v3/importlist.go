@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/importlists"
+	"sonarr.tv/sonarr/internal/signalr"
 )
 
 // ImportListResource mirrors
@@ -23,14 +25,15 @@ import (
 // flagged DEFERRED in STATUS.
 type ImportListResource struct {
 	providerResourceCore
-	EnableAutomaticAdd       bool   `json:"enableAutomaticAdd"`
-	SearchForMissingEpisodes bool   `json:"searchForMissingEpisodes"`
-	ShouldMonitor            int    `json:"shouldMonitor"`
-	MonitorNewItems          int    `json:"monitorNewItems"`
-	RootFolderPath           string `json:"rootFolderPath"`
-	QualityProfileID         int    `json:"qualityProfileId"`
-	SeriesType               int    `json:"seriesType"`
-	SeasonFolder             bool   `json:"seasonFolder"`
+	EnableAutomaticAdd       bool            `json:"enableAutomaticAdd"`
+	SearchForMissingEpisodes bool            `json:"searchForMissingEpisodes"`
+	ShouldMonitor            int             `json:"shouldMonitor"`
+	MonitorNewItems          int             `json:"monitorNewItems"`
+	RootFolderPath           string          `json:"rootFolderPath"`
+	QualityProfileID         int             `json:"qualityProfileId"`
+	SeriesType               int             `json:"seriesType"`
+	SeasonFolder             bool            `json:"seasonFolder"`
+	Fields                   []ProviderField `json:"fields,omitempty"`
 }
 
 // ImportListLister is the read side the handler depends on.
@@ -85,6 +88,230 @@ func ImportListHandler(lister ImportListLister) http.Handler {
 		buf, _ := json.Marshal(out)
 		_, _ = w.Write(buf)
 	})
+}
+
+// ImportListWriter is the CUD surface for the POST/PUT/DELETE
+// handlers. *importlists.Repo satisfies this via the embedded
+// repo.Repository[ImportList] (Insert/Update/Delete) + Get + All.
+type ImportListWriter interface {
+	Get(ctx context.Context, id int) (*importlists.ImportList, error)
+	All(ctx context.Context) ([]importlists.ImportList, error)
+	Insert(ctx context.Context, n *importlists.ImportList) (*importlists.ImportList, error)
+	Update(ctx context.Context, n *importlists.ImportList) error
+	Delete(ctx context.Context, id int) error
+}
+
+// ImportListEmitter mirrors the subset of
+// *signalr.ResourceBroadcaster[ImportListResource] the write
+// handlers call. Same shape as IndexerEmitter / NotificationEmitter.
+type ImportListEmitter interface {
+	Created(ctx context.Context, resource ImportListResource) error
+	Updated(ctx context.Context, resource ImportListResource) error
+	Deleted(ctx context.Context, resource ImportListResource) error
+}
+
+// ImportListCreateHandler returns POST /api/v3/importlist. Mirrors
+// `ProviderControllerBase.CreateProvider` at C# :81-93. Returns 201
+// + resource + emitter.Created. Validation chain ports the C#
+// SharedValidator rules: Name + Implementation + ConfigContract
+// non-empty + name unique (case-insensitive). The
+// importlists.Registry membership check is DEFERRED to 5.C3b's test
+// endpoint — the registry exists but the concrete providers don't
+// all register today (only Sonarr + Plex are wired per Phase-4
+// subset-4 follow-up (c)).
+func ImportListCreateHandler(svc ImportListWriter, emitter ImportListEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeImportListBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("importlist: malformed body: %v", err))
+			return
+		}
+		if failures := validateImportListResource(r.Context(), body, 0, svc); len(failures) > 0 {
+			httperr.WriteValidation(w, failures)
+			return
+		}
+		row, err := fromImportListResource(body, nil)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("importlist: invalid fields: %v", err))
+			return
+		}
+		saved, err := svc.Insert(r.Context(), row)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlist: insert: %w", err), nil)
+			return
+		}
+		res := toImportListResource(*saved)
+		signalr.FireAndLog(httperr.LoggerFromRequest(r), "importlist", "created", func() error {
+			return emitter.Created(r.Context(), res)
+		})
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusCreated)
+		buf, _ := json.Marshal(res)
+		_, _ = w.Write(buf)
+	})
+}
+
+// ImportListUpdateHandler returns PUT /api/v3/importlist/{id}.
+// Mirrors `ProviderControllerBase.UpdateProvider(id, resource)` at
+// C# :98-125. Body-Id fallback preserved.
+func ImportListUpdateHandler(svc ImportListWriter, emitter ImportListEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "importlist: invalid id")
+			return
+		}
+		body, err := decodeImportListBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("importlist: malformed body: %v", err))
+			return
+		}
+		existing, err := svc.Get(r.Context(), id)
+		if err != nil && !errors.Is(err, importlists.ErrNotFound) {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlist: get %d: %w", id, err), nil)
+			return
+		}
+		if errors.Is(err, importlists.ErrNotFound) {
+			if body.ID > 0 && body.ID != id {
+				if e2, e := svc.Get(r.Context(), body.ID); e == nil {
+					existing = e2
+					id = body.ID
+				}
+			}
+		}
+		if existing == nil {
+			httperr.NotFound(w, fmt.Sprintf("importlist %d not found", id))
+			return
+		}
+		if failures := validateImportListResource(r.Context(), body, id, svc); len(failures) > 0 {
+			httperr.WriteValidation(w, failures)
+			return
+		}
+		row, err := fromImportListResource(body, existing)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("importlist: invalid fields: %v", err))
+			return
+		}
+		row.ID = id
+		if err := svc.Update(r.Context(), row); err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlist: update %d: %w", id, err), nil)
+			return
+		}
+		res := toImportListResource(*row)
+		signalr.FireAndLog(httperr.LoggerFromRequest(r), "importlist", "updated", func() error {
+			return emitter.Updated(r.Context(), res)
+		})
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(res)
+		_, _ = w.Write(buf)
+	})
+}
+
+// ImportListDeleteHandler returns DELETE /api/v3/importlist/{id}.
+// Mirrors `ProviderControllerBase.DeleteProvider` at C# :181-186.
+func ImportListDeleteHandler(svc ImportListWriter, emitter ImportListEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "importlist: invalid id")
+			return
+		}
+		err = svc.Delete(r.Context(), id)
+		if errors.Is(err, importlists.ErrNotFound) {
+			httperr.NotFound(w, fmt.Sprintf("importlist %d not found", id))
+			return
+		}
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlist: delete %d: %w", id, err), nil)
+			return
+		}
+		signalr.FireAndLog(httperr.LoggerFromRequest(r), "importlist", "deleted", func() error {
+			return emitter.Deleted(r.Context(), ImportListResource{providerResourceCore: providerResourceCore{ID: id}})
+		})
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+}
+
+func decodeImportListBody(r *http.Request) (ImportListResource, error) {
+	defer func() { _ = r.Body.Close() }()
+	var out ImportListResource
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return ImportListResource{}, err
+	}
+	return out, nil
+}
+
+// validateImportListResource ports the C# SharedValidator rules
+// minus the registry-membership check (deferred to 5.C3b).
+func validateImportListResource(ctx context.Context, body ImportListResource, existingID int, svc ImportListWriter) []httperr.Failure {
+	failures := make([]httperr.Failure, 0, 3)
+	if strings.TrimSpace(body.Name) == "" {
+		failures = append(failures, httperr.Failure{PropertyName: "Name", ErrorMessage: "'Name' must not be empty.", Severity: "error"})
+	}
+	if strings.TrimSpace(body.Implementation) == "" {
+		failures = append(failures, httperr.Failure{PropertyName: "Implementation", ErrorMessage: "'Implementation' must not be empty.", Severity: "error"})
+	}
+	if strings.TrimSpace(body.ConfigContract) == "" {
+		failures = append(failures, httperr.Failure{PropertyName: "ConfigContract", ErrorMessage: "'Config Contract' must not be empty.", Severity: "error"})
+	}
+	if body.Name != "" {
+		rows, err := svc.All(ctx)
+		if err == nil {
+			for _, existing := range rows {
+				if existing.ID == existingID {
+					continue
+				}
+				if strings.EqualFold(existing.Name, body.Name) {
+					failures = append(failures, httperr.Failure{PropertyName: "Name", ErrorMessage: "Should be unique", Severity: "error"})
+					break
+				}
+			}
+		}
+	}
+	return failures
+}
+
+// fromImportListResource is the inverse of toImportListResource. On
+// PUT, `existing` is the persisted row — its *Settings is the
+// fallback when the request body omits `fields[]`.
+func fromImportListResource(res ImportListResource, existing *importlists.ImportList) (*importlists.ImportList, error) {
+	settings := "{}"
+	if res.Fields != nil {
+		s, err := settingsJSONFromFields(res.Fields)
+		if err != nil {
+			return nil, err
+		}
+		settings = s
+	} else if existing != nil && existing.Settings != nil {
+		settings = *existing.Settings
+	}
+	cfg := res.ConfigContract
+	tags := res.Tags
+	if tags == nil {
+		tags = []int{}
+	}
+	enableAuto := res.EnableAutomaticAdd
+	return &importlists.ImportList{
+		ID:                       res.ID,
+		Name:                     res.Name,
+		Implementation:           res.Implementation,
+		Settings:                 &settings,
+		ConfigContract:           &cfg,
+		EnableAutomaticAdd:       &enableAuto,
+		RootFolderPath:           res.RootFolderPath,
+		ShouldMonitor:            res.ShouldMonitor,
+		QualityProfileID:         res.QualityProfileID,
+		Tags:                     tags,
+		SeriesType:               res.SeriesType,
+		SeasonFolder:             res.SeasonFolder,
+		SearchForMissingEpisodes: res.SearchForMissingEpisodes,
+		MonitorNewItems:          res.MonitorNewItems,
+	}, nil
 }
 
 func toImportListResource(i importlists.ImportList) ImportListResource {
