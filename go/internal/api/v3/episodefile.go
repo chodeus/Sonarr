@@ -57,6 +57,95 @@ type EpisodeFileResource struct {
 	ReleaseGroup string    `json:"releaseGroup,omitempty"`
 }
 
+// EpisodeFileReader is the read surface for GET /api/v3/episodefile.
+// Satisfied directly by *episodefiles.Service.
+type EpisodeFileReader interface {
+	GetFile(ctx context.Context, id int) (*episodefiles.File, error)
+	GetFiles(ctx context.Context, ids []int) ([]episodefiles.File, error)
+	GetFilesBySeries(ctx context.Context, seriesID int) ([]episodefiles.File, error)
+}
+
+// EpisodeFileListHandler returns GET /api/v3/episodefile. Mirrors
+// `EpisodeFileController.GetEpisodeFiles` at `:61-92`. Required:
+// `seriesId` OR `episodeFileIds` (repeated int). Returns the C#-
+// shaped resource list — minus the joined fields (quality,
+// languages, customFormats, mediaInfo) which the existing
+// EpisodeFileResource skeleton DEFERS.
+func EpisodeFileListHandler(svc EpisodeFileReader) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		seriesIDStr := q.Get("seriesId")
+		var episodeFileIDs []int
+		for _, raw := range q["episodeFileIds"] {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n <= 0 {
+				httperr.BadRequest(w, fmt.Sprintf("episodefile: invalid episodeFileIds entry %q", raw))
+				return
+			}
+			episodeFileIDs = append(episodeFileIDs, n)
+		}
+		if seriesIDStr == "" && len(episodeFileIDs) == 0 {
+			httperr.BadRequest(w, "seriesId or episodeFileIds must be provided")
+			return
+		}
+		var files []episodefiles.File
+		if seriesIDStr != "" {
+			seriesID, err := strconv.Atoi(seriesIDStr)
+			if err != nil || seriesID <= 0 {
+				httperr.BadRequest(w, "episodefile: invalid seriesId")
+				return
+			}
+			rows, err := svc.GetFilesBySeries(r.Context(), seriesID)
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile: by series %d: %w", seriesID, err), nil)
+				return
+			}
+			files = rows
+		} else {
+			rows, err := svc.GetFiles(r.Context(), episodeFileIDs)
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile: by ids: %w", err), nil)
+				return
+			}
+			files = rows
+		}
+		out := make([]EpisodeFileResource, 0, len(files))
+		for _, f := range files {
+			out = append(out, ToEpisodeFileResource(f, ""))
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(out)
+		_, _ = w.Write(buf)
+	})
+}
+
+// EpisodeFileByIDHandler returns GET /api/v3/episodefile/{id}. Mirrors
+// the C# RestController base GetResourceById behaviour. 404 on
+// missing id.
+func EpisodeFileByIDHandler(svc EpisodeFileReader) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "episodefile: invalid id")
+			return
+		}
+		f, err := svc.GetFile(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, episodefiles.ErrNotFound) {
+				httperr.NotFound(w, fmt.Sprintf("episodefile %d not found", id))
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile: get %d: %w", id, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(ToEpisodeFileResource(*f, ""))
+		_, _ = w.Write(buf)
+	})
+}
+
 // EpisodeFileWriter is the write surface for DELETE /api/v3/episodefile.
 // Satisfied directly by *episodefiles.Service which exposes GetFile +
 // Delete (slice 3.B mediafiles service).

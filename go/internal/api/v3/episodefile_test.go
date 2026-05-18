@@ -157,3 +157,107 @@ func TestEpisodeFileBulkDeleteHandler_MalformedBody_400(t *testing.T) {
 		t.Errorf("status: %d", rr.Code)
 	}
 }
+
+// ---------- 5.I2: GET /episodefile tests ----------
+
+type fakeEpisodeFileReader struct {
+	bySeries    map[int][]episodefiles.File
+	byIDs       []episodefiles.File
+	byID        map[int]*episodefiles.File
+	bySeriesErr error
+}
+
+func (f *fakeEpisodeFileReader) GetFile(_ context.Context, id int) (*episodefiles.File, error) {
+	if v, ok := f.byID[id]; ok {
+		return v, nil
+	}
+	return nil, episodefiles.ErrNotFound
+}
+func (f *fakeEpisodeFileReader) GetFiles(_ context.Context, _ []int) ([]episodefiles.File, error) {
+	return f.byIDs, nil
+}
+func (f *fakeEpisodeFileReader) GetFilesBySeries(_ context.Context, seriesID int) ([]episodefiles.File, error) {
+	if f.bySeriesErr != nil {
+		return nil, f.bySeriesErr
+	}
+	return f.bySeries[seriesID], nil
+}
+
+func TestEpisodeFileListHandler_MissingParams_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	EpisodeFileListHandler(&fakeEpisodeFileReader{}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestEpisodeFileListHandler_SeriesIDBranch(t *testing.T) {
+	t.Parallel()
+	svc := &fakeEpisodeFileReader{bySeries: map[int][]episodefiles.File{
+		7: {
+			{ID: 1, SeriesID: 7, RelativePath: "a.mkv"},
+			{ID: 2, SeriesID: 7, RelativePath: "b.mkv"},
+		},
+	}}
+	rr := httptest.NewRecorder()
+	EpisodeFileListHandler(svc).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?seriesId=7", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"id":1`) || !strings.Contains(rr.Body.String(), `"id":2`) {
+		t.Errorf("body should contain both ids: %s", rr.Body.String())
+	}
+}
+
+func TestEpisodeFileListHandler_EpisodeFileIDsBranch(t *testing.T) {
+	t.Parallel()
+	svc := &fakeEpisodeFileReader{byIDs: []episodefiles.File{
+		{ID: 5, SeriesID: 7, RelativePath: "x.mkv"},
+	}}
+	rr := httptest.NewRecorder()
+	EpisodeFileListHandler(svc).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?episodeFileIds=5", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"id":5`) {
+		t.Errorf("body: %s", rr.Body.String())
+	}
+}
+
+func TestEpisodeFileListHandler_InvalidEpisodeFileID_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	EpisodeFileListHandler(&fakeEpisodeFileReader{}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?episodeFileIds=abc", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestEpisodeFileByIDHandler_Found(t *testing.T) {
+	t.Parallel()
+	svc := &fakeEpisodeFileReader{byID: map[int]*episodefiles.File{
+		3: {ID: 3, SeriesID: 1, RelativePath: "y.mkv"},
+	}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/episodefile/3", nil)
+	req.SetPathValue("id", "3")
+	EpisodeFileByIDHandler(svc).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"id":3`) {
+		t.Errorf("body: %s", rr.Body.String())
+	}
+}
+
+func TestEpisodeFileByIDHandler_NotFound_404(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/episodefile/999", nil)
+	req.SetPathValue("id", "999")
+	EpisodeFileByIDHandler(&fakeEpisodeFileReader{byID: map[int]*episodefiles.File{}}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
