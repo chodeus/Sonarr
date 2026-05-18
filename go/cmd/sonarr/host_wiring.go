@@ -242,12 +242,14 @@ func (m mediaCoverLister) MediaCoverFolder() string { return m.folder }
 // request, but the empty-DB recording shows urlbase doesn't change
 // after boot — the snapshot keeps the handler hot path lock-free.
 type logFileLister struct {
-	folder  string
-	urlBase string
+	folder       string
+	updateFolder string
+	urlBase      string
 }
 
-func (l logFileLister) LogFolder() string { return l.folder }
-func (l logFileLister) URLBase() string   { return l.urlBase }
+func (l logFileLister) LogFolder() string       { return l.folder }
+func (l logFileLister) UpdateLogFolder() string { return l.updateFolder }
+func (l logFileLister) URLBase() string         { return l.urlBase }
 
 // diskSpaceFromRootFolders adapts *rootfolders.Service to
 // apiv3.FreeSpaceLister. Each configured root folder becomes one
@@ -661,7 +663,11 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// are resolved at boot in buildHostServer and snapshot into the
 	// adapter so the handler doesn't re-query per-request.
 	urlBase, _ := cfg.URLBase(context.Background())
-	logFileSvc := logFileLister{folder: logFolderPath, urlBase: urlBase}
+	logFileSvc := logFileLister{
+		folder:       logFolderPath,
+		updateFolder: filepath.Join(filepath.Dir(logFolderPath), "UpdateLogs"),
+		urlBase:      urlBase,
+	}
 	// 5.I10: mediacover folder is <AppData>/MediaCover by convention.
 	// The log folder param was the only AppData-derived path threaded
 	// through buildHostServer — extract the parent to keep main.go's
@@ -767,6 +773,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/localization", Handler: apiv3.LocalizationHandler(localizationSvc)},
 		{Method: "GET", Path: "/api/v3/log", Handler: apiv3.LogHandler()},
 		{Method: "GET", Path: "/api/v3/log/file", Handler: apiv3.LogFileHandler(logFileSvc)},
+		{Method: "GET", Path: "/api/v3/log/file/update", Handler: apiv3.UpdateLogFileHandler(logFileSvc)},
+		{Method: "GET", Path: "/api/v3/log/file/update/{filename}", Handler: apiv3.UpdateLogFileByNameHandler(logFileSvc)},
 		{Method: "GET", Path: "/api/v3/log/file/{filename}", Handler: apiv3.LogFileByNameHandler(logFileSvc)},
 		{Method: "GET", Path: "/api/v3/mediacover/{seriesId}/{filename}", Handler: apiv3.MediaCoverHandler(mediaCoverSvc)},
 		{Method: "GET", Path: "/api/v3/metadata", Handler: apiv3.MetadataListHandler(metadataRepo)},

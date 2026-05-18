@@ -83,6 +83,95 @@ func LogFileHandler(svc LogFileLister) http.Handler {
 	})
 }
 
+// UpdateLogFileLister is the read surface for /api/v3/log/file/update.
+// Same shape as LogFileLister - production wiring snapshots the
+// update-log folder at boot.
+type UpdateLogFileLister interface {
+	UpdateLogFolder() string
+	URLBase() string
+}
+
+// UpdateLogFileHandler returns GET /api/v3/log/file/update. Mirrors
+// `UpdateLogFileController` which extends LogFileControllerBase
+// pointing at `<AppData>/UpdateLogs` instead of the regular logs
+// folder. Wire shape matches LogFileHandler.
+func UpdateLogFileHandler(svc UpdateLogFileLister) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		folder := svc.UpdateLogFolder()
+		urlBase := svc.URLBase()
+		entries, err := os.ReadDir(folder)
+		if err != nil && !os.IsNotExist(err) {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("log/file/update: read %q: %w", folder, err), nil)
+			return
+		}
+		out := make([]LogFileResource, 0, len(entries))
+		i := 0
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if !strings.HasSuffix(name, ".txt") {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			i++
+			out = append(out, LogFileResource{
+				ID:            i,
+				Filename:      name,
+				LastWriteTime: info.ModTime(),
+				ContentsURL:   fmt.Sprintf("%s/api/v1/log/file/update/%s", urlBase, name),
+				DownloadURL:   fmt.Sprintf("%s/updatelogfile/%s", urlBase, name),
+			})
+		}
+		sort.SliceStable(out, func(i, j int) bool { return out[i].LastWriteTime.After(out[j].LastWriteTime) })
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(out)
+		_, _ = w.Write(buf)
+	})
+}
+
+// UpdateLogFileByNameHandler returns
+// GET /api/v3/log/file/update/{filename}. Mirrors
+// `LogFileControllerBase.GetLogFileResponse` at `:54-68` against the
+// update-log folder. Defence-in-depth: regex + Dir == Clean check.
+func UpdateLogFileByNameHandler(svc UpdateLogFileLister) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		filename := r.PathValue("filename")
+		if !logFilenameRegex.MatchString(filename) {
+			httperr.BadRequest(w, "log/file/update: invalid filename")
+			return
+		}
+		folder := svc.UpdateLogFolder()
+		path := filepath.Join(folder, filename)
+		if filepath.Dir(path) != filepath.Clean(folder) {
+			httperr.BadRequest(w, "log/file/update: filename outside log folder")
+			return
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				httperr.NotFound(w, fmt.Sprintf("log/file/update %q not found", filename))
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("log/file/update: open %q: %w", path, err), nil)
+			return
+		}
+		defer func() { _ = f.Close() }()
+		info, err := f.Stat()
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("log/file/update: stat %q: %w", path, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+	})
+}
+
 // LogFileByNameHandler returns GET /api/v3/log/file/{filename}.
 // Mirrors `LogFileControllerBase.GetLogFileResponse` at `:54-68` —
 // serves the file contents as text/plain. 404 when the file doesn't
