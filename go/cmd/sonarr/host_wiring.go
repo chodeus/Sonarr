@@ -906,6 +906,12 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		registry: metadataRegistry,
 		deps:     metadata.Dependencies{Logger: logger},
 	}
+	// 5.D1a: series provider CUD emitter. *series.Service satisfies
+	// apiv3.SeriesWriter via the slice 5.D1a Insert/Update/Delete
+	// thin-pass-through methods (file-move cascade + deleteFiles
+	// cascade + ImportListExclusion add DEFERRED — see series.Service
+	// doc-comments for the side-effects not replicated).
+	seriesEmitter := signalr.NewV3Emitter[apiv3.SeriesResource](signalRHub, "series")
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
@@ -1130,6 +1136,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/series/{id}", Handler: apiv3.SeriesByIDHandler(seriesSvc)},
 		{Method: "GET", Path: "/api/v3/series/{id}/folder", Handler: apiv3.SeriesFolderHandler(seriesSvc, namingConfigSvc)},
 		{Method: "GET", Path: "/api/v3/series/lookup", Handler: apiv3.SeriesLookupHandler()},
+		{Method: "POST", Path: "/api/v3/series", Handler: apiv3.SeriesCreateHandler(seriesSvc, seriesEmitter)},
+		{Method: "PUT", Path: "/api/v3/series/{id}", Handler: apiv3.SeriesUpdateHandler(seriesSvc, seriesEmitter)},
+		{Method: "DELETE", Path: "/api/v3/series/{id}", Handler: apiv3.SeriesDeleteHandler(seriesSvc, seriesEmitter)},
 		{Method: "GET", Path: "/api/v3/system/backup", Handler: apiv3.BackupListHandler(backupAdmin{svc: backupSvc})},
 		{Method: "DELETE", Path: "/api/v3/system/backup/{id}", Handler: apiv3.BackupDeleteHandler(backupAdmin{svc: backupSvc})},
 		{Method: "POST", Path: "/api/v3/system/backup/restore/{id}", Handler: apiv3.BackupRestoreHandler(backupAdmin{svc: backupSvc})},

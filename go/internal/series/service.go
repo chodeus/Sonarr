@@ -251,3 +251,58 @@ func (s *Service) AllForTag(ctx context.Context, tagID int) ([]Series, error) {
 func (s *Service) SeriesPathExists(ctx context.Context, folder string) (bool, error) {
 	return s.repo.SeriesPathExists(ctx, folder)
 }
+
+// Insert persists a new Series row through the repo. This is the
+// service-layer wrapper added in slice 5.D1a so the v3 API write
+// handlers don't have to import series.Repo directly.
+//
+// IMPORTANT: this method is a thin pass-through to the repo only.
+// The richer C# AddSeriesService.AddSeries pipeline (TVDB lookup-
+// then-merge, folder creation via DiskProvider, season-pass seeding,
+// image download, ImportListExclusion clearing) is NOT replicated.
+// Callers that need the full pipeline must wait for the
+// AddSeriesService port.
+func (s *Service) Insert(ctx context.Context, row *Series) (*Series, error) {
+	return s.repo.Insert(ctx, row)
+}
+
+// Update persists a Series row through the repo. Service-layer
+// wrapper added in slice 5.D1a.
+//
+// IMPORTANT: the C# `SeriesService.UpdateSeries` performs several
+// side-effects this thin wrapper does NOT replicate yet:
+//
+//   - MoveSeriesCommand dispatch when Path changed (the on-disk
+//     move). The v3 `?moveFiles=true` query param is parsed but
+//     ignored until the cascade lands.
+//   - SeriesEditedEvent + SeriesMovedEvent publication on the bus
+//     (these flow to downstream subscribers like media-info
+//     refresh).
+//
+// Callers that depend on the cascade behaviour must wait for the
+// follow-up slice. For the v3 PUT happy path (rename Title, change
+// monitoring, swap quality profile) without a Path change, the
+// thin wrapper is sufficient.
+func (s *Service) Update(ctx context.Context, row *Series) error {
+	return s.repo.Update(ctx, row)
+}
+
+// Delete removes the Series row through the repo. Service-layer
+// wrapper added in slice 5.D1a.
+//
+// IMPORTANT: the C# `SeriesService.DeleteSeries(ids, deleteFiles,
+// addImportListExclusion)` performs:
+//
+//   - On-disk delete of the series folder when deleteFiles=true.
+//   - Adds the TVDB id to ImportListExclusion when
+//     addImportListExclusion=true.
+//   - Publishes SeriesDeletedEvent which downstream subscribers
+//     consume to clean up Episode rows + EpisodeFile rows + History
+//     entries.
+//
+// None of those side-effects are replicated here. Callers must wait
+// for the cascade port; for now the row vanishes from the Series
+// table but child Episode/EpisodeFile rows remain orphaned.
+func (s *Service) Delete(ctx context.Context, id int) error {
+	return s.repo.Delete(ctx, id)
+}

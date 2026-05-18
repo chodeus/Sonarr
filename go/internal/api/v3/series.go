@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/signalr"
 )
 
 // SeriesResource is the JSON shape produced by GET /api/v3/series.
@@ -213,6 +215,303 @@ func ToSeriesResource(s series.Series) SeriesResource {
 // (`src/NzbDrone.Core/Tv/SeriesStatusType.cs`). Used by the Ended
 // computed flag on the wire.
 const seriesStatusEnded = 1
+
+// SeriesWriter is the CUD surface. *series.Repo satisfies via the
+// embedded repo.Repository[Series] generic. The narrow interface
+// keeps the handler tests free of the full series.Service dependency
+// graph (which pulls in messaging.Bus + Repo).
+//
+// NOTE: this is INTENTIONALLY at the Repo layer, not the Service
+// layer. The C# `_seriesService.UpdateSeries` + `DeleteSeries`
+// methods carry side-effects (Tags refresh, MoveSeriesCommand
+// dispatch, deleteFiles cascade, ImportListExclusion add). Those are
+// DEFERRED to follow-up slices — 5.D1a ships the wire boundary +
+// the DB write but no disk side-effects. Operators using the API
+// today get DB-only behavior; the React UI's add-series wizard +
+// disk-move-on-rename flow won't fire until the cascade ports.
+type SeriesWriter interface {
+	GetSeries(ctx context.Context, id int) (*series.Series, error)
+	GetAllSeries(ctx context.Context) ([]series.Series, error)
+	Insert(ctx context.Context, n *series.Series) (*series.Series, error)
+	Update(ctx context.Context, n *series.Series) error
+	Delete(ctx context.Context, id int) error
+}
+
+// SeriesEmitter mirrors the
+// *signalr.ResourceBroadcaster[SeriesResource] subset the write
+// handlers call. *signalr.ResourceBroadcaster[SeriesResource]
+// satisfies directly.
+type SeriesEmitter interface {
+	Created(ctx context.Context, resource SeriesResource) error
+	Updated(ctx context.Context, resource SeriesResource) error
+	Deleted(ctx context.Context, resource SeriesResource) error
+}
+
+// SeriesCreateHandler returns POST /api/v3/series. Mirrors C#
+// `SeriesController.AddSeries` at SeriesController.cs:169-177.
+// Returns 201 + the persisted resource + SignalR Created.
+//
+// Validation (minimal — matches the C# `SeriesValidator` constraints
+// actively enforced at this endpoint):
+//
+//   - Title non-empty
+//   - Path non-empty
+//   - QualityProfileId > 0
+//
+// The richer C# AddSeriesService.AddSeries pipeline (RootFolderPath
+// → Path computation via SeriesPathBuilder, TVDB lookup-then-merge,
+// folder creation, season-pass seeding, image download) is DEFERRED.
+// 5.D1a's POST stores the row as-supplied; the React UI's wizard
+// already computes Path client-side via the rootfolder + title-slug
+// so the empty-DB byte-equal contract isn't broken.
+func SeriesCreateHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeSeriesBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("series: malformed body: %v", err))
+			return
+		}
+		if failures := validateSeriesResource(body); len(failures) > 0 {
+			httperr.WriteValidation(w, failures)
+			return
+		}
+		row := fromSeriesResource(body, nil)
+		saved, err := svc.Insert(r.Context(), row)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series: insert: %w", err), nil)
+			return
+		}
+		res := ToSeriesResource(*saved)
+		signalr.FireAndLog(httperr.LoggerFromRequest(r), "series", "created", func() error {
+			return emitter.Created(r.Context(), res)
+		})
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusCreated)
+		buf, _ := json.Marshal(res)
+		_, _ = w.Write(buf)
+	})
+}
+
+// SeriesUpdateHandler returns PUT /api/v3/series/{id}. Mirrors C#
+// `SeriesController.UpdateSeries` at :179-207. The `?moveFiles=true`
+// query param triggers MoveSeriesCommand in C# — DEFERRED here. The
+// param is parsed and ignored for forward-compat (the React UI's
+// rename-folder dialog passes it; ignoring it means the DB row
+// updates with the new Path but the on-disk move doesn't happen).
+//
+// Returns 202 + resource + SignalR Updated.
+func SeriesUpdateHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "series: invalid id")
+			return
+		}
+		body, err := decodeSeriesBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("series: malformed body: %v", err))
+			return
+		}
+		existing, err := svc.GetSeries(r.Context(), id)
+		if errors.Is(err, series.ErrNotFound) {
+			httperr.NotFound(w, fmt.Sprintf("series %d not found", id))
+			return
+		}
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series: get %d: %w", id, err), nil)
+			return
+		}
+		if failures := validateSeriesResource(body); len(failures) > 0 {
+			httperr.WriteValidation(w, failures)
+			return
+		}
+		row := fromSeriesResource(body, existing)
+		row.ID = id
+		if err := svc.Update(r.Context(), row); err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series: update %d: %w", id, err), nil)
+			return
+		}
+		// moveFiles query param: parsed for forward-compat but DEFERRED.
+		// When the MoveSeriesCommand cascade ports, dispatch here when
+		// r.URL.Query().Get("moveFiles") == "true" AND existing.Path !=
+		// row.Path. For now the DB row updates but no disk side-effect.
+		res := ToSeriesResource(*row)
+		signalr.FireAndLog(httperr.LoggerFromRequest(r), "series", "updated", func() error {
+			return emitter.Updated(r.Context(), res)
+		})
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(res)
+		_, _ = w.Write(buf)
+	})
+}
+
+// SeriesDeleteHandler returns DELETE /api/v3/series/{id}. Mirrors C#
+// `SeriesController.DeleteSeries` at :209-213. Query params:
+//
+//   - `deleteFiles=true` triggers the on-disk delete cascade in C#
+//     — DEFERRED here. Parsed and ignored for forward-compat.
+//   - `addImportListExclusion=true` adds the TVDB id to the
+//     ImportListExclusion table to prevent re-import. DEFERRED.
+//
+// Returns 200 with empty `{}` body + SignalR Deleted. Note: the C#
+// action signature returns `void` (200 empty body); the Go port
+// emits the canonical `{}` envelope-less JSON to match the other
+// 5.C-arc deletes.
+func SeriesDeleteHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "series: invalid id")
+			return
+		}
+		err = svc.Delete(r.Context(), id)
+		if errors.Is(err, series.ErrNotFound) {
+			httperr.NotFound(w, fmt.Sprintf("series %d not found", id))
+			return
+		}
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series: delete %d: %w", id, err), nil)
+			return
+		}
+		signalr.FireAndLog(httperr.LoggerFromRequest(r), "series", "deleted", func() error {
+			return emitter.Deleted(r.Context(), SeriesResource{ID: id})
+		})
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+}
+
+func decodeSeriesBody(r *http.Request) (SeriesResource, error) {
+	defer func() { _ = r.Body.Close() }()
+	var out SeriesResource
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&out); err != nil {
+		return SeriesResource{}, err
+	}
+	return out, nil
+}
+
+// validateSeriesResource ports the minimal C# SeriesValidator subset
+// applied to this endpoint. Title/Path/QualityProfileId are the
+// "must be supplied" rules — the richer rules (path-must-be-absolute,
+// rootfolder-must-exist, qualityProfile-must-exist) are DEFERRED
+// until the AddSeriesService pipeline ports.
+func validateSeriesResource(body SeriesResource) []httperr.Failure {
+	failures := make([]httperr.Failure, 0, 3)
+	if strings.TrimSpace(body.Title) == "" {
+		failures = append(failures, httperr.Failure{PropertyName: "Title", ErrorMessage: "'Title' must not be empty.", Severity: "error"})
+	}
+	if strings.TrimSpace(body.Path) == "" {
+		failures = append(failures, httperr.Failure{PropertyName: "Path", ErrorMessage: "'Path' must not be empty.", Severity: "error"})
+	}
+	if body.QualityProfileID <= 0 {
+		failures = append(failures, httperr.Failure{PropertyName: "QualityProfileId", ErrorMessage: "'Quality Profile' must be selected.", Severity: "error"})
+	}
+	return failures
+}
+
+// fromSeriesResource is the inverse of ToSeriesResource. Maps the
+// wire body to a series.Series row. The opaque-JSON fields (Images,
+// Seasons, Ratings, Actors, Genres-as-JSON, AddOptions) and the
+// AlternateTitles join table are NOT round-tripped — `existing`
+// provides the fallback on PUT; on POST they default to "" / nil.
+//
+// Enum string→int conversion via the inverse helpers below.
+func fromSeriesResource(res SeriesResource, existing *series.Series) *series.Series {
+	row := &series.Series{
+		ID:                res.ID,
+		TvdbID:            res.TvdbID,
+		TvRageID:          res.TvRageID,
+		ImdbID:            res.ImdbID,
+		Title:             res.Title,
+		TitleSlug:         res.TitleSlug,
+		CleanTitle:        res.CleanTitle,
+		Status:            seriesStatusFromName(res.Status),
+		Overview:          res.Overview,
+		AirTime:           res.AirTime,
+		Path:              res.Path,
+		Monitored:         res.Monitored,
+		SeasonFolder:      res.SeasonFolder,
+		Runtime:           res.Runtime,
+		SeriesType:        seriesTypeFromName(res.SeriesType),
+		Network:           res.Network,
+		UseSceneNumbering: res.UseSceneNumbering,
+		Year:              res.Year,
+		Certification:     res.Certification,
+		SortTitle:         res.SortTitle,
+		QualityProfileID:  res.QualityProfileID,
+		Tags:              res.Tags,
+		TvMazeID:          res.TvMazeID,
+		MonitorNewItems:   monitorNewItemsFromName(res.MonitorNewItems),
+		TmdbID:            res.TmdbID,
+		RootFolderPath:    res.RootFolderPath,
+	}
+	if row.Tags == nil {
+		row.Tags = []int{}
+	}
+	if existing != nil {
+		// Carry forward the opaque-JSON columns + the time-typed
+		// columns the wire SeriesResource doesn't represent yet.
+		row.Images = existing.Images
+		row.Seasons = existing.Seasons
+		row.Actors = existing.Actors
+		row.Ratings = existing.Ratings
+		row.Genres = existing.Genres
+		row.AddOptions = existing.AddOptions
+		row.FirstAired = existing.FirstAired
+		row.NextAiring = existing.NextAiring
+		row.LastAired = existing.LastAired
+		row.LastInfoSync = existing.LastInfoSync
+		row.LastDiskSync = existing.LastDiskSync
+		row.Added = existing.Added
+		row.OriginalLanguage = existing.OriginalLanguage
+		row.MalIDs = existing.MalIDs
+		row.AniListIDs = existing.AniListIDs
+		row.OriginalCountry = existing.OriginalCountry
+	}
+	return row
+}
+
+// seriesStatusFromName is the inverse of seriesStatusName.
+func seriesStatusFromName(s string) int {
+	switch strings.ToLower(s) {
+	case "continuing":
+		return series.SeriesStatusContinuing
+	case "ended":
+		return series.SeriesStatusEnded
+	case "upcoming":
+		return series.SeriesStatusUpcoming
+	case "deleted":
+		return series.SeriesStatusDeleted
+	}
+	return series.SeriesStatusContinuing
+}
+
+// seriesTypeFromName is the inverse of seriesTypeName.
+func seriesTypeFromName(t string) int {
+	switch strings.ToLower(t) {
+	case "standard":
+		return series.SeriesTypeStandard
+	case "daily":
+		return series.SeriesTypeDaily
+	case "anime":
+		return series.SeriesTypeAnime
+	}
+	return series.SeriesTypeStandard
+}
+
+// monitorNewItemsFromName is the inverse of monitorNewItemsName.
+func monitorNewItemsFromName(m string) int {
+	switch strings.ToLower(m) {
+	case "all":
+		return 0
+	case "none":
+		return 1
+	}
+	return 0
+}
 
 // seriesStatusName mirrors the C# JsonStringEnumConverter +
 // CamelCase applied to `SeriesStatusType`:
