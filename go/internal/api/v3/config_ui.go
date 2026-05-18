@@ -7,6 +7,8 @@ import (
 	"net/http"
 
 	"sonarr.tv/sonarr/internal/httperr"
+	"sonarr.tv/sonarr/internal/language"
+	"sonarr.tv/sonarr/internal/validation"
 )
 
 // UIConfigResource mirrors
@@ -84,4 +86,110 @@ func UIConfigHandler(getter UIConfigGetter) http.Handler {
 		buf, _ := json.Marshal(res)
 		_, _ = w.Write(buf)
 	})
+}
+
+// ---------- 5.B13b: PUT ----------
+
+// UIConfigWriter is the write surface — extends UIConfigGetter with
+// per-field setters. The Go *config.Provider satisfies the DB-backed
+// setters; the *configfile.Provider satisfies SetTheme (XML-backed).
+// The composite uiConfigGetter adapter in host_wiring.go wraps both.
+type UIConfigWriter interface {
+	UIConfigGetter
+	SetFirstDayOfWeek(ctx context.Context, v int) error
+	SetCalendarWeekColumnHeader(ctx context.Context, v string) error
+	SetShortDateFormat(ctx context.Context, v string) error
+	SetLongDateFormat(ctx context.Context, v string) error
+	SetTimeFormat(ctx context.Context, v string) error
+	SetTimeZone(ctx context.Context, v string) error
+	SetShowRelativeDates(ctx context.Context, v bool) error
+	SetEnableColorImpairedMode(ctx context.Context, v bool) error
+	SetUILanguage(ctx context.Context, v int) error
+	SetTheme(ctx context.Context, v string) error
+}
+
+// UIConfigUpdateHandler returns PUT /api/v3/config/ui/{id}.
+// Mirrors `UiConfigController.SaveConfig` at
+// `src/Sonarr.Api.V3/Config/UiConfigController.cs:34-45` — the C#
+// override saves the dictionary to BOTH ConfigFileProvider (XML, for
+// Theme) AND ConfigService (DB, for everything else). The Go port
+// composes both via the UIConfigWriter interface.
+//
+// Validation chain (C# SharedValidator at :21-31):
+//   - UILanguage >= 1
+//   - UILanguage must exist in Language.All
+func UIConfigUpdateHandler(svc UIConfigWriter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body UIConfigResource
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("config/ui: malformed body: %v", err))
+			return
+		}
+		if errs := validateUIConfig(&body); !errs.OK() {
+			httperr.WriteValidation(w, errs.Failures())
+			return
+		}
+		ctx := r.Context()
+		type setter struct {
+			name string
+			fn   func() error
+		}
+		// Per-field application. The C# pipeline uses reflection over
+		// the resource's properties; Go uses explicit setters. The
+		// order doesn't affect correctness (no inter-field dependencies)
+		// but matches the resource declaration order for readability.
+		setters := []setter{
+			{"FirstDayOfWeek", func() error { return svc.SetFirstDayOfWeek(ctx, body.FirstDayOfWeek) }},
+			{"CalendarWeekColumnHeader", func() error { return svc.SetCalendarWeekColumnHeader(ctx, body.CalendarWeekColumnHeader) }},
+			{"ShortDateFormat", func() error { return svc.SetShortDateFormat(ctx, body.ShortDateFormat) }},
+			{"LongDateFormat", func() error { return svc.SetLongDateFormat(ctx, body.LongDateFormat) }},
+			{"TimeFormat", func() error { return svc.SetTimeFormat(ctx, body.TimeFormat) }},
+			{"TimeZone", func() error { return svc.SetTimeZone(ctx, body.TimeZone) }},
+			{"ShowRelativeDates", func() error { return svc.SetShowRelativeDates(ctx, body.ShowRelativeDates) }},
+			{"EnableColorImpairedMode", func() error { return svc.SetEnableColorImpairedMode(ctx, body.EnableColorImpairedMode) }},
+			{"UILanguage", func() error { return svc.SetUILanguage(ctx, body.UILanguage) }},
+			{"Theme", func() error { return svc.SetTheme(ctx, body.Theme) }},
+		}
+		for _, s := range setters {
+			if err := s.fn(); err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("config/ui: set %s: %w", s.name, err), nil)
+				return
+			}
+		}
+		theme, err := svc.Theme(ctx)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("config/ui: reload theme: %w", err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(UIConfigResource{
+			ID:                       1,
+			FirstDayOfWeek:           svc.FirstDayOfWeek(),
+			CalendarWeekColumnHeader: svc.CalendarWeekColumnHeader(),
+			ShortDateFormat:          svc.ShortDateFormat(),
+			LongDateFormat:           svc.LongDateFormat(),
+			TimeFormat:               svc.TimeFormat(),
+			TimeZone:                 svc.TimeZone(),
+			ShowRelativeDates:        svc.ShowRelativeDates(),
+			EnableColorImpairedMode:  svc.EnableColorImpairedMode(),
+			UILanguage:               svc.UILanguage(),
+			Theme:                    theme,
+		})
+		_, _ = w.Write(buf)
+	})
+}
+
+func validateUIConfig(res *UIConfigResource) *validation.Errors {
+	errs := validation.New()
+	if res.UILanguage < 1 {
+		errs.Add("UILanguage", "The UI Language value cannot be less than 1")
+		return errs
+	}
+	if _, ok := language.FindByID(res.UILanguage); !ok {
+		errs.Add("UILanguage", "Invalid UI Language value")
+	}
+	return errs
 }

@@ -289,6 +289,40 @@ func (u uiConfigGetter) Theme(ctx context.Context) (string, error) {
 	return u.xmlCfg.Theme(ctx)
 }
 
+// 5.B13b setters — composite write surface for /api/v3/config/ui PUT.
+// DB-backed setters route to *config.Provider; the XML-backed Theme
+// setter routes to *configfile.Provider.
+func (u uiConfigGetter) SetFirstDayOfWeek(ctx context.Context, v int) error {
+	return u.cfg.SetFirstDayOfWeek(ctx, v)
+}
+func (u uiConfigGetter) SetCalendarWeekColumnHeader(ctx context.Context, v string) error {
+	return u.cfg.SetCalendarWeekColumnHeader(ctx, v)
+}
+func (u uiConfigGetter) SetShortDateFormat(ctx context.Context, v string) error {
+	return u.cfg.SetShortDateFormat(ctx, v)
+}
+func (u uiConfigGetter) SetLongDateFormat(ctx context.Context, v string) error {
+	return u.cfg.SetLongDateFormat(ctx, v)
+}
+func (u uiConfigGetter) SetTimeFormat(ctx context.Context, v string) error {
+	return u.cfg.SetTimeFormat(ctx, v)
+}
+func (u uiConfigGetter) SetTimeZone(ctx context.Context, v string) error {
+	return u.cfg.SetTimeZone(ctx, v)
+}
+func (u uiConfigGetter) SetShowRelativeDates(ctx context.Context, v bool) error {
+	return u.cfg.SetShowRelativeDates(ctx, v)
+}
+func (u uiConfigGetter) SetEnableColorImpairedMode(ctx context.Context, v bool) error {
+	return u.cfg.SetEnableColorImpairedMode(ctx, v)
+}
+func (u uiConfigGetter) SetUILanguage(ctx context.Context, v int) error {
+	return u.cfg.SetUILanguage(ctx, v)
+}
+func (u uiConfigGetter) SetTheme(ctx context.Context, v string) error {
+	return u.xmlCfg.SetTheme(ctx, v)
+}
+
 // hostConfigGetter composes *configfile.Provider and *config.Provider
 // into the single interface /api/v3/config/host needs. The two C#
 // services (IConfigFileProvider + IConfigService) are collapsed into
@@ -419,6 +453,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/config/naming/examples", Handler: apiv3.NamingConfigExamplesHandler(namingConfigSvc)},
 		{Method: "PUT", Path: "/api/v3/config/naming/{id}", Handler: apiv3.NamingConfigUpdateHandler(namingConfigSvc)},
 		{Method: "GET", Path: "/api/v3/config/ui", Handler: apiv3.UIConfigHandler(uiCfg)},
+		{Method: "PUT", Path: "/api/v3/config/ui/{id}", Handler: apiv3.UIConfigUpdateHandler(uiCfg)},
 		{Method: "GET", Path: "/api/v3/customfilter", Handler: apiv3.CustomFilterHandler(customFiltersSvc)},
 		{Method: "GET", Path: "/api/v3/customfilter/{id}", Handler: apiv3.CustomFilterByIDHandler(customFiltersSvc)},
 		{Method: "POST", Path: "/api/v3/customfilter", Handler: apiv3.CustomFilterCreateHandler(customFiltersSvc)},

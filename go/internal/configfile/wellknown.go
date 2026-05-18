@@ -248,6 +248,17 @@ func (p *Provider) Theme(ctx context.Context) (string, error) {
 	return v, nil
 }
 
+// SetTheme persists the UI theme to the XML config file. Used by the
+// /api/v3/config/ui PUT handler (slice 5.B13b) — the C# tree saves
+// Theme via ConfigFileProvider.SaveConfigDictionary; the Go port
+// uses Set() directly because the wrapper around the XML doc is
+// already key/value-shaped. An empty value is allowed (delete-key
+// semantic is not exposed; an empty string is what the UI sends to
+// reset to default).
+func (p *Provider) SetTheme(ctx context.Context, value string) error {
+	return p.Set(ctx, "Theme", value)
+}
+
 // AuthenticationMethod returns the configured auth scheme. Mirrors
 // the C# AuthenticationMethod getter:
 //   - if the legacy AuthenticationEnabled flag is true → Forms
