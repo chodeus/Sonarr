@@ -2,7 +2,6 @@ package deluge_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
@@ -197,15 +196,6 @@ func TestRegistry_DefaultsUsedWhenSettingsEmpty(t *testing.T) {
 // ErrNotImplementedYet. Lock that down so a regression turns into a
 // loud failure when the body slice lands.
 // ============================================================================
-
-func TestStub_MarkItemAsImportedReturnsNotImplemented(t *testing.T) {
-	t.Parallel()
-	d := deluge.New(nil, deluge.NewSettings(), nil, nil)
-	err := d.MarkItemAsImported(context.Background(), &downloadclients.Item{})
-	if !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("MarkItemAsImported() err = %v, want ErrNotImplementedYet", err)
-	}
-}
 
 func TestStub_GetImportItemPassesThrough(t *testing.T) {
 	t.Parallel()

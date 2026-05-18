@@ -445,10 +445,36 @@ func (d *Deluge) resolveDestDir(ctx context.Context) (string, error) {
 	return "", nil
 }
 
-// MarkItemAsImported is filled in by slice 5.G2h. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (d *Deluge) MarkItemAsImported(_ context.Context, _ *downloadclients.Item) error {
-	return downloadclients.ErrNotImplementedYet
+// MarkItemAsImported ports C# `Deluge.MarkItemAsImported` at
+// `Download/Clients/Deluge/Deluge.cs:39-56`. When the user has
+// configured a post-import category distinct from TvCategory, swaps
+// the torrent's deluge label to it via label.set_torrent.
+//
+// Failure swallowed (slog.Warn + return nil): the C# catch arm at
+// `:49-54` catches DownloadClientUnavailableException and warns
+// "Failed to set torrent post-import label" without propagating —
+// the import path has already moved files, so a propagated error
+// would block subsequent imports without recovering anything. The
+// Go port matches.
+func (d *Deluge) MarkItemAsImported(ctx context.Context, item *downloadclients.Item) error {
+	if item == nil {
+		return errors.New("deluge: MarkItemAsImported: nil item")
+	}
+	if d.proxy == nil {
+		return errors.New("deluge: MarkItemAsImported: nil proxy")
+	}
+	imported := strings.TrimSpace(d.settings.TvImportedCategory)
+	current := strings.TrimSpace(d.settings.TvCategory)
+	if imported == "" || imported == current {
+		return nil
+	}
+	hash := strings.ToLower(item.DownloadID)
+	if err := d.proxy.SetTorrentLabel(ctx, hash, imported, d.settings); err != nil {
+		d.log.Warn("deluge: Failed to set torrent post-import label",
+			"hash", hash, "label", imported, "err", err)
+		return nil
+	}
+	return nil
 }
 
 // Test ports the connectivity + auth probe from C#
