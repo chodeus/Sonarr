@@ -524,6 +524,27 @@ type SeriesWriter interface {
 	Delete(ctx context.Context, id int) error
 }
 
+// SeriesMover is the optional surface for the `?moveFiles=true`
+// query param on PUT /series/{id}. When the impl satisfies this
+// interface AND the body's Path differs from the existing row's
+// Path, the on-disk folder is renamed BEFORE the DB row updates.
+//
+// Wired via type-assertion on the SeriesWriter argument (same
+// backward-compat pattern as SeriesCascader + SeriesExclusionAdder).
+//
+// The cmd-side adapter calls *disk.Provider.MoveFolder under the
+// hood. The C# tree uses a MoveSeriesCommand dispatched on the
+// command bus; the Go port collapses to a direct disk call because
+// no other consumer reacts to MoveSeriesCommand today.
+//
+// Failure semantics: if MoveFolder returns a non-nil error, the
+// handler aborts with 500 and the DB row stays unchanged. The user
+// retries; once the underlying issue (permission, target exists,
+// in-use file) is resolved, the next PUT will retry the move.
+type SeriesMover interface {
+	MoveFolder(ctx context.Context, src, dst string) error
+}
+
 // SeriesExclusionAdder is the optional surface for the
 // `?addImportListExclusion=true` (single-row) and
 // `body.AddImportListExclusion` (editor) flags. The cmd-side
@@ -658,14 +679,23 @@ func SeriesUpdateHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
 		}
 		row := fromSeriesResource(body, existing)
 		row.ID = id
+		// 5.D9b: ?moveFiles=true wire-through. When the impl satisfies
+		// SeriesMover AND the new Path differs from the existing Path,
+		// rename the on-disk folder BEFORE the DB row update so a
+		// folder-move failure doesn't leave the DB pointing at a path
+		// the user hasn't actually renamed yet.
+		if r.URL.Query().Get("moveFiles") == "true" && existing.Path != row.Path && existing.Path != "" && row.Path != "" {
+			if mover, ok := svc.(SeriesMover); ok {
+				if mErr := mover.MoveFolder(r.Context(), existing.Path, row.Path); mErr != nil {
+					httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series: moveFolder %d %q→%q: %w", id, existing.Path, row.Path, mErr), nil)
+					return
+				}
+			}
+		}
 		if err := svc.Update(r.Context(), row); err != nil {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series: update %d: %w", id, err), nil)
 			return
 		}
-		// moveFiles query param: parsed for forward-compat but DEFERRED.
-		// When the MoveSeriesCommand cascade ports, dispatch here when
-		// r.URL.Query().Get("moveFiles") == "true" AND existing.Path !=
-		// row.Path. For now the DB row updates but no disk side-effect.
 		res := ToSeriesResource(*row)
 		signalr.FireAndLog(httperr.LoggerFromRequest(r), "series", "updated", func() error {
 			return emitter.Updated(r.Context(), res)

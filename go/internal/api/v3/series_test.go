@@ -1066,3 +1066,147 @@ func TestSeriesEditorDeleteHandler_BodyAddImportListExclusionAbsent(t *testing.T
 		t.Errorf("AddImportListExclusion must NOT fire when flag false: %v", w.excludedIDs)
 	}
 }
+
+// fakeSeriesMover combines the cascade-aware writer with a
+// MoveFolder recorder so the SeriesUpdateHandler type-assert can
+// dispatch to it for ?moveFiles=true.
+type fakeSeriesMover struct {
+	*fakeSeriesCascadeWriter
+	moveErr error
+	moves   []struct{ src, dst string }
+}
+
+func (f *fakeSeriesMover) MoveFolder(_ context.Context, src, dst string) error {
+	if f.moveErr != nil {
+		return f.moveErr
+	}
+	f.moves = append(f.moves, struct{ src, dst string }{src, dst})
+	return nil
+}
+
+func TestSeriesUpdateHandler_MoveFilesTrue_PathChanged_FiresMover(t *testing.T) {
+	t.Parallel()
+	existing := series.Series{ID: 1, Title: "Show", Path: "/old/path", QualityProfileID: 1}
+	w := &fakeSeriesMover{
+		fakeSeriesCascadeWriter: &fakeSeriesCascadeWriter{
+			fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{existing}},
+		},
+	}
+	body := validSeriesBody()
+	body.ID = 1
+	body.Path = "/new/path"
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/series/1?moveFiles=true", bytes.NewReader(buf))
+	req.SetPathValue("id", "1")
+	rr := httptest.NewRecorder()
+	SeriesUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.moves) != 1 || w.moves[0].src != "/old/path" || w.moves[0].dst != "/new/path" {
+		t.Errorf("MoveFolder should be invoked with old→new: %+v", w.moves)
+	}
+	if w.rows[0].Path != "/new/path" {
+		t.Errorf("DB row Path should update: %q", w.rows[0].Path)
+	}
+}
+
+func TestSeriesUpdateHandler_MoveFilesTrue_SamePath_NoMove(t *testing.T) {
+	t.Parallel()
+	existing := series.Series{ID: 1, Path: "/same/path", QualityProfileID: 1}
+	w := &fakeSeriesMover{
+		fakeSeriesCascadeWriter: &fakeSeriesCascadeWriter{
+			fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{existing}},
+		},
+	}
+	body := validSeriesBody()
+	body.ID = 1
+	body.Path = "/same/path"
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/series/1?moveFiles=true", bytes.NewReader(buf))
+	req.SetPathValue("id", "1")
+	rr := httptest.NewRecorder()
+	SeriesUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(w.moves) != 0 {
+		t.Errorf("MoveFolder must NOT fire when Path unchanged: %+v", w.moves)
+	}
+}
+
+func TestSeriesUpdateHandler_MoveFilesAbsent_PathChanged_NoMove(t *testing.T) {
+	t.Parallel()
+	existing := series.Series{ID: 1, Path: "/old", QualityProfileID: 1}
+	w := &fakeSeriesMover{
+		fakeSeriesCascadeWriter: &fakeSeriesCascadeWriter{
+			fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{existing}},
+		},
+	}
+	body := validSeriesBody()
+	body.ID = 1
+	body.Path = "/new"
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/series/1", bytes.NewReader(buf))
+	req.SetPathValue("id", "1")
+	rr := httptest.NewRecorder()
+	SeriesUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(w.moves) != 0 {
+		t.Errorf("MoveFolder must NOT fire without ?moveFiles=true: %+v", w.moves)
+	}
+	// DB row still updates to the new path (5.D1a behaviour).
+	if w.rows[0].Path != "/new" {
+		t.Errorf("Path should still update via DB: %q", w.rows[0].Path)
+	}
+}
+
+func TestSeriesUpdateHandler_MoveFolderError_500_RowPreserved(t *testing.T) {
+	t.Parallel()
+	existing := series.Series{ID: 1, Path: "/old", QualityProfileID: 1}
+	w := &fakeSeriesMover{
+		fakeSeriesCascadeWriter: &fakeSeriesCascadeWriter{
+			fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{existing}},
+		},
+		moveErr: errors.New("target exists"),
+	}
+	body := validSeriesBody()
+	body.ID = 1
+	body.Path = "/new"
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/series/1?moveFiles=true", bytes.NewReader(buf))
+	req.SetPathValue("id", "1")
+	rr := httptest.NewRecorder()
+	SeriesUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+	// DB row preserved with OLD path on move failure (the C# behaviour).
+	if w.rows[0].Path != "/old" {
+		t.Errorf("DB row should be preserved on move failure: %q", w.rows[0].Path)
+	}
+}
+
+func TestSeriesUpdateHandler_NonMoverImpl_FlagSilentlyNoOp(t *testing.T) {
+	t.Parallel()
+	// Plain fakeSeriesWriter doesn't satisfy SeriesMover — the
+	// ?moveFiles=true flag silently no-ops + DB still updates.
+	existing := series.Series{ID: 1, Path: "/old", QualityProfileID: 1}
+	w := &fakeSeriesWriter{rows: []series.Series{existing}}
+	body := validSeriesBody()
+	body.ID = 1
+	body.Path = "/new"
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/series/1?moveFiles=true", bytes.NewReader(buf))
+	req.SetPathValue("id", "1")
+	rr := httptest.NewRecorder()
+	SeriesUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if w.rows[0].Path != "/new" {
+		t.Errorf("Path should still update via DB: %q", w.rows[0].Path)
+	}
+}

@@ -200,12 +200,15 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 // directly for FileExists + DeleteFile; the Go port collapses the
 // indirection into stdlib calls via the helper functions in
 // internal/api/v3/system_backup.go.
-// seriesFolderCleaner narrows the disk.Provider surface to the one
-// method seriesCascadeAdapter actually uses. Production wires
-// *disk.Provider; tests pass a recording fake. nil-safe — when the
-// adapter holds a nil cleaner, the disk-delete step is skipped.
+// seriesFolderCleaner narrows the disk.Provider surface to the
+// methods seriesCascadeAdapter actually uses (DeleteFolder for the
+// cascade-delete path, MoveFolder for the moveFiles=true path).
+// Production wires *disk.Provider; tests pass a recording fake.
+// nil-safe — when the adapter holds a nil cleaner, the disk steps
+// are skipped.
 type seriesFolderCleaner interface {
 	DeleteFolder(path string, recursive bool) error
+	MoveFolder(src, dst string) error
 }
 
 // seriesCascadeAdapter bundles series + episodes + episodefiles
@@ -233,6 +236,21 @@ type seriesCascadeAdapter struct {
 	disk         seriesFolderCleaner
 	exclusions   *importlistexclusions.Service
 	logger       *slog.Logger
+}
+
+// MoveFolder satisfies apiv3.SeriesMover. Delegates to the bundled
+// *disk.Provider's MoveFolder method (5.D9a port pre-work). Nil-safe:
+// when the adapter holds no disk cleaner (e.g. test wiring), the
+// call is a no-op and the handler's type-assert continues to the
+// DB-only update. Mirrors C# `MoveSeriesCommand` handler at
+// `src/NzbDrone.Core/Tv/MoveSeriesService.cs` collapsing the
+// command-bus indirection (no other Go-port consumer reacts to
+// MoveSeriesCommand today).
+func (a *seriesCascadeAdapter) MoveFolder(_ context.Context, src, dst string) error {
+	if a.disk == nil {
+		return nil
+	}
+	return a.disk.MoveFolder(src, dst)
 }
 
 // AddImportListExclusion satisfies apiv3.SeriesExclusionAdder. Loads
