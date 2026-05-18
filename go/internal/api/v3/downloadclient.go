@@ -349,6 +349,152 @@ func DownloadClientTestHandler(tester DownloadClientTester) http.Handler {
 	})
 }
 
+// DownloadClientBulkResource mirrors C# `DownloadClientBulkResource`
+// at `src/Sonarr.Api.V3/DownloadClient/DownloadClientBulkResource.cs`.
+// Four per-controller optional fields plus the inherited
+// Ids/Tags/ApplyTags.
+//
+// All booleans + Priority are pointer-typed so null = "not supplied"
+// (matches C# nullable shapes at :8-11 + the null-coalesce mapper at
+// :26-30).
+//
+// applyTagsAction (defined in indexer.go for 5.C2e) is family-
+// agnostic and reused here.
+type DownloadClientBulkResource struct {
+	IDs                      []int           `json:"ids"`
+	Tags                     []int           `json:"tags"`
+	ApplyTags                applyTagsAction `json:"applyTags"`
+	Enable                   *bool           `json:"enable,omitempty"`
+	Priority                 *int            `json:"priority,omitempty"`
+	RemoveCompletedDownloads *bool           `json:"removeCompletedDownloads,omitempty"`
+	RemoveFailedDownloads    *bool           `json:"removeFailedDownloads,omitempty"`
+}
+
+// DownloadClientBulkUpdateHandler returns PUT /api/v3/downloadclient/bulk.
+// Mirrors `ProviderControllerBase.UpdateProvider(TBulkProviderResource)`
+// at C# :130-166 + `DownloadClientBulkResourceMapper.UpdateModel` at
+// `DownloadClientBulkResource.cs:17-33`.
+func DownloadClientBulkUpdateHandler(svc DownloadClientWriter, emitter DownloadClientEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeDownloadClientBulkBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("downloadclient/bulk: malformed body: %v", err))
+			return
+		}
+		if len(body.IDs) == 0 {
+			httperr.BadRequest(w, "ids must be provided")
+			return
+		}
+		updated := make([]DownloadClientResource, 0, len(body.IDs))
+		for _, id := range body.IDs {
+			existing, err := svc.Get(r.Context(), id)
+			if errors.Is(err, downloadclients.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient/bulk: get %d: %w", id, err), nil)
+				return
+			}
+			applyDownloadClientBulkUpdate(existing, body)
+			if err := svc.Update(r.Context(), existing); err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient/bulk: update %d: %w", id, err), nil)
+				return
+			}
+			res := toDownloadClientResource(*existing)
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "downloadclient", "updated", func() error {
+				return emitter.Updated(r.Context(), res)
+			})
+			updated = append(updated, res)
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(updated)
+		_, _ = w.Write(buf)
+	})
+}
+
+// DownloadClientBulkDeleteHandler returns DELETE /api/v3/downloadclient/bulk.
+func DownloadClientBulkDeleteHandler(svc DownloadClientWriter, emitter DownloadClientEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeDownloadClientBulkBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("downloadclient/bulk: malformed body: %v", err))
+			return
+		}
+		if len(body.IDs) == 0 {
+			httperr.BadRequest(w, "ids must be provided")
+			return
+		}
+		for _, id := range body.IDs {
+			err := svc.Delete(r.Context(), id)
+			if errors.Is(err, downloadclients.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient/bulk: delete %d: %w", id, err), nil)
+				return
+			}
+			id := id
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "downloadclient", "deleted", func() error {
+				return emitter.Deleted(r.Context(), DownloadClientResource{providerResourceCore: providerResourceCore{ID: id}})
+			})
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+}
+
+func decodeDownloadClientBulkBody(r *http.Request) (DownloadClientBulkResource, error) {
+	defer func() { _ = r.Body.Close() }()
+	var out DownloadClientBulkResource
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return DownloadClientBulkResource{}, err
+	}
+	return out, nil
+}
+
+// applyDownloadClientBulkUpdate mutates `existing` per the
+// [DownloadClientBulkResource] semantics. Mirrors C#
+// `DownloadClientBulkResourceMapper.UpdateModel` at :17-33 + the
+// inherited Tags-apply switch at :148-159.
+func applyDownloadClientBulkUpdate(existing *downloadclients.DownloadClient, body DownloadClientBulkResource) {
+	if body.Tags != nil {
+		switch body.ApplyTags {
+		case applyTagsReplace:
+			existing.Tags = append([]int(nil), body.Tags...)
+		case applyTagsAdd:
+			for _, t := range body.Tags {
+				if !containsInt(existing.Tags, t) {
+					existing.Tags = append(existing.Tags, t)
+				}
+			}
+		case applyTagsRemove:
+			out := existing.Tags[:0]
+			for _, t := range existing.Tags {
+				if !containsInt(body.Tags, t) {
+					out = append(out, t)
+				}
+			}
+			existing.Tags = out
+		}
+	}
+	if body.Enable != nil {
+		existing.Enable = *body.Enable
+	}
+	if body.Priority != nil {
+		existing.Priority = *body.Priority
+	}
+	if body.RemoveCompletedDownloads != nil {
+		existing.RemoveCompletedDownloads = *body.RemoveCompletedDownloads
+	}
+	if body.RemoveFailedDownloads != nil {
+		existing.RemoveFailedDownloads = *body.RemoveFailedDownloads
+	}
+}
+
 // DownloadClientActioner invokes a per-row provider RequestAction.
 // The cmd-side adapter wires this against
 // downloadclients.Registry.Construct + downloadclients.Provider.RequestAction

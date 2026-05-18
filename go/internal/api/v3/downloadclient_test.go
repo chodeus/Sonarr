@@ -662,3 +662,194 @@ func TestDownloadClientRequestActionHandler_MalformedJSON_400(t *testing.T) {
 		t.Errorf("status: %d", rr.Code)
 	}
 }
+
+func TestDownloadClientBulkUpdateHandler_TagsAddRemoveReplace(t *testing.T) {
+	t.Parallel()
+	rows := []downloadclients.DownloadClient{
+		{ID: 1, Implementation: "Sabnzbd", Tags: []int{10, 20}},
+	}
+	w := &fakeDownloadClientWriter{rows: rows}
+	// Add 30
+	body := DownloadClientBulkResource{IDs: []int{1}, Tags: []int{30}, ApplyTags: applyTagsAdd}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	DownloadClientBulkUpdateHandler(w, &fakeDownloadClientEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/downloadclient/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("Add status: %d", rr.Code)
+	}
+	if !equalIntSet(w.rows[0].Tags, []int{10, 20, 30}) {
+		t.Errorf("after Add: %v", w.rows[0].Tags)
+	}
+	// Remove 20
+	body = DownloadClientBulkResource{IDs: []int{1}, Tags: []int{20}, ApplyTags: applyTagsRemove}
+	buf, _ = json.Marshal(body)
+	rr = httptest.NewRecorder()
+	DownloadClientBulkUpdateHandler(w, &fakeDownloadClientEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/downloadclient/bulk", bytes.NewReader(buf)))
+	if !equalIntSet(w.rows[0].Tags, []int{10, 30}) {
+		t.Errorf("after Remove: %v", w.rows[0].Tags)
+	}
+	// Replace with [99]
+	body = DownloadClientBulkResource{IDs: []int{1}, Tags: []int{99}, ApplyTags: applyTagsReplace}
+	buf, _ = json.Marshal(body)
+	rr = httptest.NewRecorder()
+	DownloadClientBulkUpdateHandler(w, &fakeDownloadClientEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/downloadclient/bulk", bytes.NewReader(buf)))
+	if !equalIntSet(w.rows[0].Tags, []int{99}) {
+		t.Errorf("after Replace: %v", w.rows[0].Tags)
+	}
+}
+
+func TestDownloadClientBulkUpdateHandler_PerFieldNilSkip(t *testing.T) {
+	t.Parallel()
+	rows := []downloadclients.DownloadClient{{
+		ID:                       1,
+		Implementation:           "Sabnzbd",
+		Enable:                   true,
+		Priority:                 10,
+		RemoveCompletedDownloads: true,
+		RemoveFailedDownloads:    false,
+	}}
+	w := &fakeDownloadClientWriter{rows: rows}
+	// Only Priority updated; everything else preserved.
+	body := DownloadClientBulkResource{IDs: []int{1}, Priority: intPtr(42)}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	DownloadClientBulkUpdateHandler(w, &fakeDownloadClientEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/downloadclient/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if w.rows[0].Priority != 42 {
+		t.Errorf("Priority: %d", w.rows[0].Priority)
+	}
+	if !w.rows[0].Enable {
+		t.Errorf("Enable should be preserved")
+	}
+	if !w.rows[0].RemoveCompletedDownloads {
+		t.Errorf("RemoveCompletedDownloads should be preserved")
+	}
+	if w.rows[0].RemoveFailedDownloads {
+		t.Errorf("RemoveFailedDownloads should be preserved")
+	}
+}
+
+func TestDownloadClientBulkUpdateHandler_AllBoolFieldsToggleable(t *testing.T) {
+	t.Parallel()
+	rows := []downloadclients.DownloadClient{{
+		ID:                       1,
+		Implementation:           "Sabnzbd",
+		Enable:                   true,
+		RemoveCompletedDownloads: true,
+		RemoveFailedDownloads:    false,
+	}}
+	w := &fakeDownloadClientWriter{rows: rows}
+	enable := false
+	removeCompleted := false
+	removeFailed := true
+	body := DownloadClientBulkResource{
+		IDs:                      []int{1},
+		Enable:                   &enable,
+		RemoveCompletedDownloads: &removeCompleted,
+		RemoveFailedDownloads:    &removeFailed,
+	}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	DownloadClientBulkUpdateHandler(w, &fakeDownloadClientEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/downloadclient/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if w.rows[0].Enable || w.rows[0].RemoveCompletedDownloads || !w.rows[0].RemoveFailedDownloads {
+		t.Errorf("bool fields not toggled: %+v", w.rows[0])
+	}
+}
+
+func TestDownloadClientBulkUpdateHandler_ApplyTagsAsString(t *testing.T) {
+	t.Parallel()
+	rows := []downloadclients.DownloadClient{{ID: 1, Implementation: "Sabnzbd", Tags: []int{10, 20}}}
+	w := &fakeDownloadClientWriter{rows: rows}
+	body := []byte(`{"ids":[1],"tags":[10],"applyTags":"Remove"}`)
+	rr := httptest.NewRecorder()
+	DownloadClientBulkUpdateHandler(w, &fakeDownloadClientEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/downloadclient/bulk", bytes.NewReader(body)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !equalIntSet(w.rows[0].Tags, []int{20}) {
+		t.Errorf("after string-form Remove: %v", w.rows[0].Tags)
+	}
+}
+
+func TestDownloadClientBulkUpdateHandler_EmptyIDs_400(t *testing.T) {
+	t.Parallel()
+	body := DownloadClientBulkResource{IDs: nil}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	DownloadClientBulkUpdateHandler(&fakeDownloadClientWriter{}, &fakeDownloadClientEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/downloadclient/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestDownloadClientBulkUpdateHandler_MissingIdsSilentlySkipped(t *testing.T) {
+	t.Parallel()
+	rows := []downloadclients.DownloadClient{{ID: 1, Implementation: "Sabnzbd"}}
+	w := &fakeDownloadClientWriter{rows: rows}
+	em := &fakeDownloadClientEmitter{}
+	body := DownloadClientBulkResource{IDs: []int{1, 999}, Priority: intPtr(7)}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	DownloadClientBulkUpdateHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/downloadclient/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if w.rows[0].Priority != 7 {
+		t.Errorf("existing not updated: %+v", w.rows[0])
+	}
+	if len(em.updated) != 1 {
+		t.Errorf("Updated count: %d", len(em.updated))
+	}
+}
+
+func TestDownloadClientBulkDeleteHandler_Success(t *testing.T) {
+	t.Parallel()
+	rows := []downloadclients.DownloadClient{
+		{ID: 1, Implementation: "Sabnzbd"},
+		{ID: 2, Implementation: "Sabnzbd"},
+		{ID: 3, Implementation: "Sabnzbd"},
+	}
+	w := &fakeDownloadClientWriter{rows: rows}
+	em := &fakeDownloadClientEmitter{}
+	body := DownloadClientBulkResource{IDs: []int{1, 3}}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	DownloadClientBulkDeleteHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/downloadclient/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if rr.Body.String() != `{}` {
+		t.Errorf("body: %q", rr.Body.String())
+	}
+	if len(w.rows) != 1 || w.rows[0].ID != 2 {
+		t.Errorf("rows after bulk delete: %+v", w.rows)
+	}
+	if len(em.deleted) != 2 {
+		t.Errorf("Deleted: %d", len(em.deleted))
+	}
+}
+
+func TestDownloadClientBulkDeleteHandler_EmptyIDs_400(t *testing.T) {
+	t.Parallel()
+	body := DownloadClientBulkResource{IDs: nil}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	DownloadClientBulkDeleteHandler(&fakeDownloadClientWriter{}, &fakeDownloadClientEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/downloadclient/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestDownloadClientBulkUpdateHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	DownloadClientBulkUpdateHandler(&fakeDownloadClientWriter{}, &fakeDownloadClientEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/downloadclient/bulk", bytes.NewReader([]byte(`{bad`))))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
