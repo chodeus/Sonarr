@@ -1,9 +1,11 @@
 package v3
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -46,5 +48,70 @@ func TestDownloadClientConfigHandler_Defaults(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("body: got %+v want %+v", got, want)
+	}
+}
+
+// ---------- 5.B13: PUT tests ----------
+
+type fakeDownloadClientConfigWriter struct {
+	*fakeDownloadClientConfig
+	wf                                string
+	enable, auto, autoFromInteractive bool
+}
+
+func (f *fakeDownloadClientConfigWriter) SetDownloadClientWorkingFolders(_ context.Context, v string) error {
+	f.wf = v
+	f.workingFolders = v
+	return nil
+}
+func (f *fakeDownloadClientConfigWriter) SetEnableCompletedDownloadHandling(_ context.Context, v bool) error {
+	f.enable = v
+	f.enabled = v
+	return nil
+}
+func (f *fakeDownloadClientConfigWriter) SetAutoRedownloadFailed(_ context.Context, v bool) error {
+	f.auto = v
+	f.autoRedl = v
+	return nil
+}
+func (f *fakeDownloadClientConfigWriter) SetAutoRedownloadFailedFromInteractiveSearch(_ context.Context, v bool) error {
+	f.autoFromInteractive = v
+	f.autoRedlInter = v
+	return nil
+}
+
+func TestDownloadClientConfigUpdateHandler_Success(t *testing.T) {
+	t.Parallel()
+	w := &fakeDownloadClientConfigWriter{fakeDownloadClientConfig: &fakeDownloadClientConfig{}}
+	rr := httptest.NewRecorder()
+	body := `{"id":1,"downloadClientWorkingFolders":"_UNPACK_|_FAILED_","enableCompletedDownloadHandling":true,"autoRedownloadFailed":true,"autoRedownloadFailedFromInteractiveSearch":false}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/config/downloadclient/1", strings.NewReader(body))
+	req.SetPathValue("id", "1")
+	DownloadClientConfigUpdateHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if w.wf != "_UNPACK_|_FAILED_" {
+		t.Errorf("wf: got %q", w.wf)
+	}
+	if !w.enable {
+		t.Errorf("enable not set")
+	}
+	if !w.auto {
+		t.Errorf("auto not set")
+	}
+	if w.autoFromInteractive {
+		t.Errorf("autoFromInteractive should be false")
+	}
+}
+
+func TestDownloadClientConfigUpdateHandler_MalformedBody400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/config/downloadclient/1", strings.NewReader(`not json`))
+	req.SetPathValue("id", "1")
+	DownloadClientConfigUpdateHandler(&fakeDownloadClientConfigWriter{fakeDownloadClientConfig: &fakeDownloadClientConfig{}}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
 	}
 }
