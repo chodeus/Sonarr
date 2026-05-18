@@ -11,7 +11,6 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 )
 
-func ptrInt(i int) *int              { return &i }
 func ptrTime(t time.Time) *time.Time { return &t }
 
 func runRepoSuite(t *testing.T, db *datastore.DB) {

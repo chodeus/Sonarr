@@ -82,28 +82,28 @@ type Series struct {
 	// go/JSON_CONVENTIONS.md Option A. Schema column is nullable;
 	// Scan coerces NULL → 0 to match the C# tree's read-side
 	// behaviour (its `int` property cannot hold NULL).
-	Year              int        `json:"year"`
-	Seasons           string     `json:"seasons"`
-	Actors            string     `json:"actors"`
-	Ratings           string     `json:"ratings"`
-	Genres            string     `json:"genres"`
-	Certification     string     `json:"certification"`
-	SortTitle         string     `json:"sortTitle"`
+	Year          int    `json:"year"`
+	Seasons       string `json:"seasons"`
+	Actors        string `json:"actors"`
+	Ratings       string `json:"ratings"`
+	Genres        string `json:"genres"`
+	Certification string `json:"certification"`
+	SortTitle     string `json:"sortTitle"`
 	// QualityProfileID mirrors C# `Series.QualityProfileId` (non-
 	// nullable `int`) per go/JSON_CONVENTIONS.md Option A. Schema
 	// column is NOT NULL.
-	QualityProfileID  int        `json:"qualityProfileId"`
-	Tags              []int      `json:"tags"`
-	Added             *time.Time `json:"added"`
-	AddOptions        string     `json:"addOptions"`
-	TvMazeID          int        `json:"tvMazeId"`
-	OriginalLanguage  int        `json:"originalLanguage"`
-	LastAired         *time.Time `json:"lastAired"`
-	MonitorNewItems   int        `json:"monitorNewItems"`
-	TmdbID            int        `json:"tmdbId"`
-	MalIDs            []int      `json:"malIds"`
-	AniListIDs        []int      `json:"aniListIds"`
-	OriginalCountry   string     `json:"originalCountry"`
+	QualityProfileID int        `json:"qualityProfileId"`
+	Tags             []int      `json:"tags"`
+	Added            *time.Time `json:"added"`
+	AddOptions       string     `json:"addOptions"`
+	TvMazeID         int        `json:"tvMazeId"`
+	OriginalLanguage int        `json:"originalLanguage"`
+	LastAired        *time.Time `json:"lastAired"`
+	MonitorNewItems  int        `json:"monitorNewItems"`
+	TmdbID           int        `json:"tmdbId"`
+	MalIDs           []int      `json:"malIds"`
+	AniListIDs       []int      `json:"aniListIds"`
+	OriginalCountry  string     `json:"originalCountry"`
 
 	// RootFolderPath is a runtime-only field — not persisted in the
 	// Series table. The C# `Series` class carries it as a regular
@@ -302,21 +302,6 @@ func marshalInts(xs []int) string {
 		return `<marshal-error: ` + err.Error() + `>`
 	}
 	return out
-}
-
-func nullableInt(p *int) sql.NullInt64 {
-	if p == nil {
-		return sql.NullInt64{}
-	}
-	return sql.NullInt64{Int64: int64(*p), Valid: true}
-}
-
-func unwrapInt(n sql.NullInt64) *int {
-	if !n.Valid {
-		return nil
-	}
-	v := int(n.Int64)
-	return &v
 }
 
 func nullableStringEmpty(s string) sql.NullString {

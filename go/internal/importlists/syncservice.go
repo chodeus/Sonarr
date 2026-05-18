@@ -480,13 +480,3 @@ func buildSeries(item ItemInfo, list *ImportList) series.Series {
 // enum has not been promoted to its own Go type yet (per the
 // foundation-types slice 4.AK note).
 const monitorTypeNoneOrdinal = 12
-
-// refInt converts a value-int into a *int when non-zero. Used by
-// [buildSeries] to populate series.Series.QualityProfileID (which
-// is *int on the Series struct).
-func refInt(v int) *int {
-	if v == 0 {
-		return nil
-	}
-	return &v
-}
