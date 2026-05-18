@@ -393,6 +393,12 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	localizationSvc := localization.NewService()
 	uiCfg := uiConfigGetter{cfg: configProv, xmlCfg: cfg}
 	hostCfg := hostConfigGetter{cfg: configProv, xmlCfg: cfg}
+	// 5.B2: per-resource SignalR emitter for the rootfolder writes.
+	// The rootfolder controller in C# extends RestControllerWithSignalR
+	// which auto-broadcasts on Create/Delete; the Go port fires the
+	// broadcast directly from the handler (no domain-event indirection
+	// for this resource — there's no RootFolderUpdatedEvent in C#).
+	rootFolderEmitter := signalr.NewV3Emitter[apiv3.RootFolderResource](signalRHub, "rootfolder")
 	return []host.Route{
 		{Method: "GET", Path: "/api/v3/autotagging", Handler: apiv3.AutoTaggingHandler(autoTagsSvc)},
 		{Method: "GET", Path: "/api/v3/autotagging/schema", Handler: apiv3.AutoTaggingSchemaHandler()},
@@ -432,6 +438,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/releaseprofile", Handler: apiv3.ReleaseProfileHandler(releaseProfilesSvc)},
 		{Method: "GET", Path: "/api/v3/remotepathmapping", Handler: apiv3.RemotePathMappingHandler(remotePathMappingsSvc)},
 		{Method: "GET", Path: "/api/v3/rootfolder", Handler: apiv3.RootFolderHandler(rootFoldersSvc)},
+		{Method: "GET", Path: "/api/v3/rootfolder/{id}", Handler: apiv3.RootFolderByIDHandler(rootFoldersSvc)},
+		{Method: "POST", Path: "/api/v3/rootfolder", Handler: apiv3.RootFolderCreateHandler(rootFoldersSvc, rootFolderEmitter)},
+		{Method: "DELETE", Path: "/api/v3/rootfolder/{id}", Handler: apiv3.RootFolderDeleteHandler(rootFoldersSvc, rootFolderEmitter)},
 		{Method: "GET", Path: "/api/v3/series", Handler: apiv3.SeriesListHandler(seriesSvc)},
 		{Method: "GET", Path: "/api/v3/system/status", Handler: apiv3.SystemStatusHandler(systemStatus, cfg)},
 		{Method: "GET", Path: "/api/v3/tag", Handler: apiv3.TagHandler(tagsSvc)},
