@@ -520,10 +520,110 @@ func hasMatchingDrone(params []NzbgetParameter, id string) bool {
 	return false
 }
 
-// GetStatus is filled in by slice 5.G3g. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (n *Nzbget) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+// GetStatus ports C# `Nzbget.GetStatus` at
+// `Download/Clients/Nzbget/Nzbget.cs:212-229`. Fetches the global
+// config via `config` RPC, walks the Category${i} keys to find one
+// matching settings.TvCategory, and surfaces its DestDir as the
+// OutputRootFolders entry.
+//
+// Empty TvCategory or no matching category → empty
+// OutputRootFolders. RemovesCompletedDownloads stays false — NZBGet
+// has no global remove-on-completion preference that maps cleanly
+// (matches C# behaviour where the field is unset).
+//
+// Remote-path-mapping translation at C# `:225` deferred to the
+// [downloadclients.Dependencies.RemotePathMappingService] port.
+func (n *Nzbget) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
+	if n.proxy == nil {
+		return nil, errors.New("nzbget: GetStatus: nil proxy")
+	}
+	cfg, err := n.proxy.GetConfig(ctx, n.settings)
+	if err != nil {
+		return nil, fmt.Errorf("nzbget: GetStatus: %w", err)
+	}
+
+	info := &downloadclients.ClientInfo{
+		IsLocalhost: n.settings.Host == "127.0.0.1" || strings.EqualFold(n.settings.Host, "localhost"),
+	}
+	if tv := strings.TrimSpace(n.settings.TvCategory); tv != "" {
+		for _, cat := range getCategories(cfg) {
+			if cat.Name == tv {
+				if strings.TrimSpace(cat.DestDir) != "" {
+					info.OutputRootFolders = []ospath.OsPath{ospath.New(cat.DestDir)}
+				}
+				break
+			}
+		}
+	}
+	return info, nil
+}
+
+// getCategories walks the Category${i}.Name + Category${i}.DestDir
+// keys in the supplied config map. Mirrors C# `Nzbget.GetCategories`
+// at `Nzbget.cs:231-263`. Stops at the first missing Category${i}.Name
+// (NZBGet's preferences shape is dense from 1 onwards — no holes).
+//
+// DestDir resolution per C# `:242-253`:
+//
+//  1. Use the per-category Category${i}.DestDir directly when non-
+//     empty.
+//  2. Else read the global DestDir + MainDir, substitute
+//     `${MainDir}` into the global DestDir, and append the
+//     category name as a subfolder when AppendCategoryDir is
+//     "yes" (which is the default).
+//
+// Unpack / DefScript / Aliases are surfaced on the returned struct
+// even though [GetStatus] only reads DestDir — the future
+// label-aware probes (e.g. the import path's per-category-script
+// detection) will use them.
+func getCategories(config map[string]string) []NzbgetCategory {
+	out := make([]NzbgetCategory, 0, 4)
+	mainDir := config["MainDir"]
+	globalDestDir := config["DestDir"]
+	appendCategoryDir := config["AppendCategoryDir"]
+	if appendCategoryDir == "" {
+		appendCategoryDir = "yes" // C# `:249` default
+	}
+
+	for i := 1; i < 100; i++ {
+		name, ok := config[fmt.Sprintf("Category%d.Name", i)]
+		if !ok {
+			break
+		}
+		destDir := config[fmt.Sprintf("Category%d.DestDir", i)]
+		if strings.TrimSpace(destDir) == "" {
+			destDir = strings.ReplaceAll(globalDestDir, "${MainDir}", mainDir)
+			if appendCategoryDir == "yes" {
+				destDir = joinNzbgetPath(destDir, name)
+			}
+		}
+		out = append(out, NzbgetCategory{
+			Name:      name,
+			DestDir:   destDir,
+			Unpack:    config[fmt.Sprintf("Category%d.Unpack", i)] == "yes",
+			DefScript: config[fmt.Sprintf("Category%d.DefScript", i)],
+			Aliases:   config[fmt.Sprintf("Category%d.Aliases", i)],
+		})
+	}
+	return out
+}
+
+// joinNzbgetPath joins the global DestDir with a category name as
+// a subfolder. NZBGet runs on both Unix and Windows; the path
+// separator from the existing DestDir wins (mirrors the C#
+// `Path.Combine` which inherits from the parent's separator).
+func joinNzbgetPath(base, name string) string {
+	if base == "" {
+		return name
+	}
+	if name == "" {
+		return base
+	}
+	sep := "/"
+	if strings.ContainsRune(base, '\\') && !strings.ContainsRune(base, '/') {
+		sep = "\\"
+	}
+	return strings.TrimRight(base, "/\\") + sep + name
 }
 
 // MarkItemAsImported is filled in by slice 5.G3h. Returns

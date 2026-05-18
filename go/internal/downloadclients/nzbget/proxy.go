@@ -279,6 +279,26 @@ func (p *Proxy) EditQueue(ctx context.Context, command string, offset int, editT
 	return ok, nil
 }
 
+// GetConfig fires `config`. Mirrors C# `NzbgetProxy.GetConfig` at
+// `NzbgetProxy.cs:144-147`. Flattens the []NzbgetConfigItem wire
+// shape into a map[string]string for ergonomic key-by-name lookups
+// in [Nzbget.GetStatus] + the future label-aware probes.
+func (p *Proxy) GetConfig(ctx context.Context, settings Settings) (map[string]string, error) {
+	raw, err := p.Call(ctx, "config", nil, settings)
+	if err != nil {
+		return nil, err
+	}
+	var items []NzbgetConfigItem
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("nzbget: parse config response: %w", err)
+	}
+	out := make(map[string]string, len(items))
+	for _, item := range items {
+		out[item.Name] = item.Value
+	}
+	return out, nil
+}
+
 // GetQueue fires `listgroups`. Mirrors C# `NzbgetProxy.GetQueue`
 // at `NzbgetProxy.cs:124-127`. Returns the in-progress NZBs.
 func (p *Proxy) GetQueue(ctx context.Context, settings Settings) ([]NzbgetQueueItem, error) {

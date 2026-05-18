@@ -81,6 +81,42 @@ type NzbgetGlobalStatus struct {
 	DownloadPaused      bool `json:"DownloadPaused"`
 }
 
+// NzbgetConfigItem is one {Name, Value} pair returned by the
+// `config` RPC. Mirrors C# `NzbgetConfigItem` at
+// `NzbgetConfigItem.cs:3-7`. The wire format always stringifies
+// Value — even numeric/boolean settings come through as text.
+type NzbgetConfigItem struct {
+	Name  string `json:"Name"`
+	Value string `json:"Value"`
+}
+
+// NzbgetCategory is one per-category entry NZBGet's preferences
+// expose. Mirrors C# `NzbgetCategory` at `NzbgetCategory.cs:3-9`.
+// The Sonarr-side GetStatus arm looks up the category matching
+// settings.TvCategory and surfaces its DestDir as the
+// OutputRootFolders entry.
+type NzbgetCategory struct {
+	// Name is the user-facing category label (e.g. "tv", "movies").
+	Name string `json:"-"`
+
+	// DestDir is the per-category download directory — resolved
+	// per the `${MainDir}` substitution + AppendCategoryDir
+	// fallback at NzbgetGetCategories at `Nzbget.cs:242-253`.
+	DestDir string `json:"-"`
+
+	// Unpack is true when NZBGet auto-unpacks completed downloads
+	// in this category.
+	Unpack bool `json:"-"`
+
+	// DefScript is the default post-processing script for the
+	// category (empty when none).
+	DefScript string `json:"-"`
+
+	// Aliases is a comma-separated list of NZB-name patterns that
+	// resolve to this category (legacy convenience).
+	Aliases string `json:"-"`
+}
+
 // SuccessStatus is the set of NZBGet history-item Par/Unpack/Move/
 // Script status values that count as success. Mirrors C#
 // `_successStatus` at `Nzbget.cs:23` ({"SUCCESS", "NONE"}).
