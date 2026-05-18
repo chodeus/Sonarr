@@ -3,12 +3,43 @@ package v3
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/notifications"
 )
+
+// NotificationByIDGetter narrows the read for /notification/{id}.
+type NotificationByIDGetter interface {
+	Get(ctx context.Context, id int) (*notifications.Notification, error)
+}
+
+// NotificationByIDHandler returns GET /api/v3/notification/{id}.
+func NotificationByIDHandler(svc NotificationByIDGetter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "notification: invalid id")
+			return
+		}
+		row, err := svc.Get(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, notifications.ErrNotFound) {
+				httperr.NotFound(w, fmt.Sprintf("notification %d not found", id))
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("notification: get %d: %w", id, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(toNotificationResource(*row))
+		_, _ = w.Write(buf)
+	})
+}
 
 // NotificationResource mirrors
 // `src/Sonarr.Api.V3/Notifications/NotificationResource.cs`. Inherits

@@ -3,9 +3,11 @@ package v3
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/metadata"
@@ -162,6 +164,51 @@ func MetadataSchemaHandler() http.Handler {
 // All-rows read the list handler needs.
 type MetadataRowsLister interface {
 	All(ctx context.Context) ([]metadata.Metadata, error)
+}
+
+// MetadataByIDGetter narrows the read for /metadata/{id}.
+type MetadataByIDGetter interface {
+	Get(ctx context.Context, id int) (*metadata.Metadata, error)
+}
+
+// MetadataByIDHandler returns GET /api/v3/metadata/{id}. Projects
+// the persisted row through the schema-template lookup to emit the
+// full Fields-populated wire shape (same shape used by the list
+// handler).
+func MetadataByIDHandler(svc MetadataByIDGetter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "metadata: invalid id")
+			return
+		}
+		row, err := svc.Get(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, metadata.ErrNotFound) {
+				httperr.NotFound(w, fmt.Sprintf("metadata %d not found", id))
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("metadata: get %d: %w", id, err), nil)
+			return
+		}
+		schemaByImpl := make(map[string]MetadataSchemaResource, len(metadataSchemas))
+		for _, s := range metadataSchemas {
+			schemaByImpl[s.Implementation] = s
+		}
+		schema, ok := schemaByImpl[row.Implementation]
+		if !ok {
+			httperr.NotFound(w, fmt.Sprintf("metadata %d implementation %q unknown", id, row.Implementation))
+			return
+		}
+		schema.ID = row.ID
+		schema.Name = row.Name
+		schema.Enable = row.Enable
+		schema.Presets = nil
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(schema)
+		_, _ = w.Write(buf)
+	})
 }
 
 // MetadataListHandler returns the http.Handler for GET /api/v3/metadata.

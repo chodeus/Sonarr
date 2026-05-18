@@ -3,12 +3,43 @@ package v3
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/httperr"
 )
+
+// DownloadClientByIDGetter narrows the read for /downloadclient/{id}.
+type DownloadClientByIDGetter interface {
+	Get(ctx context.Context, id int) (*downloadclients.DownloadClient, error)
+}
+
+// DownloadClientByIDHandler returns GET /api/v3/downloadclient/{id}.
+func DownloadClientByIDHandler(svc DownloadClientByIDGetter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "downloadclient: invalid id")
+			return
+		}
+		row, err := svc.Get(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, downloadclients.ErrNotFound) {
+				httperr.NotFound(w, fmt.Sprintf("downloadclient %d not found", id))
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient: get %d: %w", id, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(toDownloadClientResource(*row))
+		_, _ = w.Write(buf)
+	})
+}
 
 // DownloadClientResource mirrors
 // `src/Sonarr.Api.V3/DownloadClient/DownloadClientResource.cs`.
