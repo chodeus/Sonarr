@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // HistoryResource is the per-record shape in the
@@ -46,7 +48,7 @@ func HistoryHandler(lister HistoryPagedLister) http.Handler {
 		req := parsePagingRequest(r, "date")
 		records, total, err := lister.PagedHistory(r.Context(), req)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("history: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("history: %w", err), nil)
 			return
 		}
 		if records == nil {

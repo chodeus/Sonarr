@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -109,7 +110,7 @@ func SeriesListHandler(lister SeriesLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rows, err := lister.GetAllSeries(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("series: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series: %w", err), nil)
 			return
 		}
 		out := make([]SeriesResource, 0, len(rows))

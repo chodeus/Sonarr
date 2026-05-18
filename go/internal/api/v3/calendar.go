@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // CalendarEpisodeLister narrows the read surface for the calendar
@@ -37,7 +38,7 @@ func CalendarHandler(lister CalendarEpisodeLister) http.Handler {
 
 		rows, err := lister.EpisodesBetweenDates(r.Context(), startUse, endUse, unmonitored, true)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("calendar: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("calendar: %w", err), nil)
 			return
 		}
 		out := make([]EpisodeResource, 0, len(rows))

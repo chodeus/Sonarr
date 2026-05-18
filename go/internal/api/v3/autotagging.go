@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"sonarr.tv/sonarr/internal/autotagging"
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // AutoTaggingResource mirrors
@@ -69,7 +70,7 @@ func AutoTaggingHandler(lister AutoTaggingLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rows, err := lister.All(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("autotagging: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("autotagging: %w", err), nil)
 			return
 		}
 		out := make([]AutoTaggingResource, 0, len(rows))

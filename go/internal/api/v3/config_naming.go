@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/namingconfig"
 )
 
@@ -51,7 +52,7 @@ func NamingConfigHandler(getter NamingConfigGetter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg, err := getter.GetConfig(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("namingconfig: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("namingconfig: %w", err), nil)
 			return
 		}
 		res := NamingConfigResource{

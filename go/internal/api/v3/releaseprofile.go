@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
 )
 
@@ -60,7 +61,7 @@ func ReleaseProfileHandler(lister ReleaseProfileLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rows, err := lister.All(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("releaseprofiles: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("releaseprofiles: %w", err), nil)
 			return
 		}
 		out := make([]ReleaseProfileResource, 0, len(rows))

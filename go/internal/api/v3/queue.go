@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // QueueResource is the per-record shape in the
@@ -68,7 +70,7 @@ func QueueHandler(lister QueuePagedLister) http.Handler {
 		req := parsePagingRequest(r, "timeleft")
 		records, total, err := lister.PagedQueue(r.Context(), req)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("queue: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("queue: %w", err), nil)
 			return
 		}
 		if records == nil {

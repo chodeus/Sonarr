@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // WantedEpisodeLister is the read side both wanted endpoints depend
@@ -44,7 +46,7 @@ func WantedHandler(lister WantedEpisodeLister, scope WantedScope) http.Handler {
 		req := parsePagingRequest(r, "episodes.airDateUtc")
 		records, total, err := lister.PagedWanted(r.Context(), req, scope)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("wanted: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("wanted: %w", err), nil)
 			return
 		}
 		if records == nil {

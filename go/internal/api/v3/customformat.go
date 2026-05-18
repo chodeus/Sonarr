@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"sonarr.tv/sonarr/internal/customformats"
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // CustomFormatResource mirrors
@@ -69,7 +70,7 @@ func CustomFormatHandler(lister CustomFormatLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rows, err := lister.All(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("customformats: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("customformats: %w", err), nil)
 			return
 		}
 		out := make([]CustomFormatResource, 0, len(rows))

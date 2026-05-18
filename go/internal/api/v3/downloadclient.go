@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // DownloadClientResource mirrors
@@ -39,7 +40,7 @@ func DownloadClientHandler(lister DownloadClientLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rows, err := lister.All(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("downloadclients: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclients: %w", err), nil)
 			return
 		}
 		out := make([]DownloadClientResource, 0, len(rows))

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // UIConfigResource mirrors
@@ -61,7 +63,7 @@ func UIConfigHandler(getter UIConfigGetter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		theme, err := getter.Theme(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("config/ui: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("config/ui: %w", err), nil)
 			return
 		}
 		res := UIConfigResource{

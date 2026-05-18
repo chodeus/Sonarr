@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"sonarr.tv/sonarr/internal/customformats"
+	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 )
@@ -128,12 +129,12 @@ func QualityProfileListHandler(profiles QualityProfileLister, formats CustomForm
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rows, err := profiles.All(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("qualityprofiles: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("qualityprofiles: %w", err), nil)
 			return
 		}
 		formatRows, err := formats.All(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("customformats: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("customformats: %w", err), nil)
 			return
 		}
 		formatNames := make(map[int]string, len(formatRows))
@@ -146,7 +147,7 @@ func QualityProfileListHandler(profiles QualityProfileLister, formats CustomForm
 		for _, p := range rows {
 			res, err := toQualityProfileResource(p, formatNames)
 			if err != nil {
-				http.Error(w, fmt.Sprintf("qualityprofiles: parse %d: %v", p.ID, err), http.StatusInternalServerError)
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("qualityprofiles: parse %d: %w", p.ID, err), nil)
 				return
 			}
 			out = append(out, res)
@@ -213,12 +214,12 @@ func QualityProfileSchemaHandler(schema QualityProfileSchemaLister, formats Cust
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		profile, err := schema.GetDefaultProfile(r.Context(), "", nil)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("qualityprofile/schema: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("qualityprofile/schema: %w", err), nil)
 			return
 		}
 		formatRows, err := formats.All(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("customformats: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("customformats: %w", err), nil)
 			return
 		}
 		formatNames := make(map[int]string, len(formatRows))
@@ -229,7 +230,7 @@ func QualityProfileSchemaHandler(schema QualityProfileSchemaLister, formats Cust
 		}
 		res, err := toQualityProfileResource(*profile, formatNames)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("qualityprofile/schema: project: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("qualityprofile/schema: project: %w", err), nil)
 			return
 		}
 		// The schema response carries no Id (the profile is unpersisted);

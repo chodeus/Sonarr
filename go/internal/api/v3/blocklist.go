@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // BlocklistResource is the per-record shape in the
@@ -44,7 +46,7 @@ func BlocklistHandler(lister BlocklistPagedLister) http.Handler {
 		req := parsePagingRequest(r, "date")
 		records, total, err := lister.PagedBlocklist(r.Context(), req)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("blocklist: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("blocklist: %w", err), nil)
 			return
 		}
 		if records == nil {

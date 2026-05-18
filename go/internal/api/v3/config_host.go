@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // HostConfigResource mirrors
@@ -116,21 +118,21 @@ func HostConfigHandler(getter HostConfigGetter) http.Handler {
 		ctx := r.Context()
 		read := func(s string, err error) (string, bool) {
 			if err != nil {
-				http.Error(w, fmt.Sprintf("config/host: %v", err), http.StatusInternalServerError)
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("config/host: %w", err), nil)
 				return "", false
 			}
 			return s, true
 		}
 		readInt := func(v int, err error) (int, bool) {
 			if err != nil {
-				http.Error(w, fmt.Sprintf("config/host: %v", err), http.StatusInternalServerError)
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("config/host: %w", err), nil)
 				return 0, false
 			}
 			return v, true
 		}
 		readBool := func(v bool, err error) (bool, bool) {
 			if err != nil {
-				http.Error(w, fmt.Sprintf("config/host: %v", err), http.StatusInternalServerError)
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("config/host: %w", err), nil)
 				return false, false
 			}
 			return v, true

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // TagDetailsResource is the JSON shape produced by
@@ -72,7 +74,7 @@ func TagDetailHandler(lister TagDetailLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rows, err := lister.AllTagDetails(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("tag/detail: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("tag/detail: %w", err), nil)
 			return
 		}
 		if rows == nil {

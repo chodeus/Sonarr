@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/rootfolders"
 )
 
@@ -52,7 +53,7 @@ func RootFolderHandler(lister RootFolderLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rows, err := lister.AllWithUnmappedFolders(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("rootfolders: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("rootfolders: %w", err), nil)
 			return
 		}
 		out := make([]RootFolderResource, 0, len(rows))

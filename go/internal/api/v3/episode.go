@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // EpisodeResource mirrors
@@ -73,17 +74,17 @@ func EpisodeListHandler(lister EpisodeBySeriesLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seriesIDStr := r.URL.Query().Get("seriesId")
 		if seriesIDStr == "" {
-			http.Error(w, "seriesId or episodeIds must be provided", http.StatusBadRequest)
+			httperr.BadRequest(w, "seriesId or episodeIds must be provided")
 			return
 		}
 		seriesID, err := strconv.Atoi(seriesIDStr)
 		if err != nil {
-			http.Error(w, "invalid seriesId", http.StatusBadRequest)
+			httperr.BadRequest(w, "invalid seriesId")
 			return
 		}
 		rows, err := lister.GetEpisodesBySeries(r.Context(), seriesID)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("episodes: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodes: %w", err), nil)
 			return
 		}
 		out := make([]EpisodeResource, 0, len(rows))

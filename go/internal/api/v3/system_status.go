@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // SystemStatusResource mirrors
@@ -109,7 +111,7 @@ func SystemStatusHandler(static SystemStatusContext, getter SystemStatusGetter) 
 		ctx := r.Context()
 		read := func(s string, err error) (string, bool) {
 			if err != nil {
-				http.Error(w, fmt.Sprintf("system/status: %v", err), http.StatusInternalServerError)
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("system/status: %w", err), nil)
 				return "", false
 			}
 			return s, true

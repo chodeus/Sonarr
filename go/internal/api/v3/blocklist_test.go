@@ -54,6 +54,30 @@ func TestBlocklistHandler_Error(t *testing.T) {
 	}
 }
 
+// TestBlocklistHandler_ErrorEmitsCSharpEnvelope pins the post-5.A4
+// wire shape on an error path — the body must be the JSON envelope
+// matching `Sonarr.Http/ErrorManagement/ErrorModel.cs` rather than
+// plain text (the pre-sweep shape `http.Error` emits). Catches a
+// regression to text/plain on any error handler.
+func TestBlocklistHandler_ErrorEmitsCSharpEnvelope(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	BlocklistHandler(&fakeBlocklistLister{err: errors.New("boom")}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/blocklist", nil))
+	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type: got %q want application/json", ct)
+	}
+	body := rr.Body.String()
+	if !contains(body, `"message"`) {
+		t.Errorf("body must carry message key: %s", body)
+	}
+	if !contains(body, "blocklist") {
+		t.Errorf("body must include the blocklist prefix in message: %s", body)
+	}
+	if !contains(body, "boom") {
+		t.Errorf("body must include the underlying error: %s", body)
+	}
+}
+
 func contains(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {

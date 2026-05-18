@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // UpdateResource is the JSON shape produced by GET /api/v3/update.
@@ -74,7 +76,7 @@ func UpdateHandler(lister UpdateLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rows, err := lister.RecentUpdates(r.Context())
 		if err != nil {
-			http.Error(w, fmt.Sprintf("update: %v", err), http.StatusInternalServerError)
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("update: %w", err), nil)
 			return
 		}
 		if rows == nil {
