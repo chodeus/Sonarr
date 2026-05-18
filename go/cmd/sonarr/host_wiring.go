@@ -132,6 +132,17 @@ func (emptyQueuePagedLister) PagedQueue(context.Context, apiv3.PagingRequest) ([
 	return nil, 0, nil
 }
 
+// emptyQueueDetailsLister mirrors the emptyQueuePagedLister pattern
+// for /queue/details. Empty-DB recording shows zero records; the
+// production wiring substitutes the empty implementation today.
+// Populated-row projection lands when the tracked-downloads /
+// pending-release join surface ports.
+type emptyQueueDetailsLister struct{}
+
+func (emptyQueueDetailsLister) QueueDetails(context.Context, *int, []int) ([]apiv3.QueueResource, error) {
+	return nil, nil
+}
+
 // pendingCountLister wraps the pendingreleases.Repo's row count for
 // /api/v3/queue/status. Slice 4.EB closed the emptyPendingLister stub
 // — the queue summary now reflects real pending-release rows. C#'s
@@ -761,6 +772,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "PUT", Path: "/api/v3/qualityprofile/{id}", Handler: apiv3.QualityProfileUpdateHandler(qualityProfilesSvc, customFormatsSvc)},
 		{Method: "DELETE", Path: "/api/v3/qualityprofile/{id}", Handler: apiv3.QualityProfileDeleteHandler(qualityProfilesSvc)},
 		{Method: "GET", Path: "/api/v3/queue", Handler: apiv3.QueueHandler(emptyQueuePagedLister{})},
+		{Method: "GET", Path: "/api/v3/queue/details", Handler: apiv3.QueueDetailsHandler(emptyQueueDetailsLister{})},
 		{Method: "GET", Path: "/api/v3/queue/status", Handler: apiv3.QueueStatusHandler(queueSvc, pendingCountLister{repo: pendingReleasesRepo}, queueStatusPauser)},
 		{Method: "GET", Path: "/api/v3/releaseprofile", Handler: apiv3.ReleaseProfileHandler(releaseProfilesSvc)},
 		{Method: "GET", Path: "/api/v3/releaseprofile/{id}", Handler: apiv3.ReleaseProfileByIDHandler(releaseProfilesSvc)},

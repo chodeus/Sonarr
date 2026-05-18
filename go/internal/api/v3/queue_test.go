@@ -77,3 +77,100 @@ func TestQueueHandler_RecordsPassthrough(t *testing.T) {
 		t.Errorf("records passthrough: %+v", got)
 	}
 }
+
+// ---------- 5.I18: /queue/details tests ----------
+
+type fakeQueueDetailsLister struct {
+	rows         []QueueResource
+	err          error
+	gotSeriesID  *int
+	gotEpisodes  []int
+	rememberArgs bool
+}
+
+func (f *fakeQueueDetailsLister) QueueDetails(_ context.Context, seriesID *int, episodeIDs []int) ([]QueueResource, error) {
+	if f.rememberArgs {
+		f.gotSeriesID = seriesID
+		f.gotEpisodes = append([]int(nil), episodeIDs...)
+	}
+	return f.rows, f.err
+}
+
+func TestQueueDetailsHandler_EmptyArrayShape(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	QueueDetailsHandler(&fakeQueueDetailsLister{}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/details", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if rr.Body.String() != "[]" {
+		t.Errorf("body: %q want []", rr.Body.String())
+	}
+}
+
+func TestQueueDetailsHandler_SeriesIDParsed(t *testing.T) {
+	t.Parallel()
+	l := &fakeQueueDetailsLister{rememberArgs: true}
+	rr := httptest.NewRecorder()
+	QueueDetailsHandler(l).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/details?seriesId=42", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if l.gotSeriesID == nil || *l.gotSeriesID != 42 {
+		t.Errorf("seriesId: %+v", l.gotSeriesID)
+	}
+}
+
+func TestQueueDetailsHandler_EpisodeIDsParsed(t *testing.T) {
+	t.Parallel()
+	l := &fakeQueueDetailsLister{rememberArgs: true}
+	rr := httptest.NewRecorder()
+	QueueDetailsHandler(l).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/details?episodeIds=1&episodeIds=2&episodeIds=3", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(l.gotEpisodes) != 3 || l.gotEpisodes[0] != 1 || l.gotEpisodes[2] != 3 {
+		t.Errorf("episodeIds: %+v", l.gotEpisodes)
+	}
+}
+
+func TestQueueDetailsHandler_InvalidSeriesID_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	QueueDetailsHandler(&fakeQueueDetailsLister{}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/details?seriesId=abc", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestQueueDetailsHandler_InvalidEpisodeID_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	QueueDetailsHandler(&fakeQueueDetailsLister{}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/details?episodeIds=abc", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestQueueDetailsHandler_ListerError_500(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	QueueDetailsHandler(&fakeQueueDetailsLister{err: errors.New("boom")}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/details", nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestQueueDetailsHandler_RecordsPassthrough(t *testing.T) {
+	t.Parallel()
+	seriesID := 7
+	l := &fakeQueueDetailsLister{rows: []QueueResource{{ID: 1, SeriesID: &seriesID, Title: "demo"}}}
+	rr := httptest.NewRecorder()
+	QueueDetailsHandler(l).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue/details", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"title":"demo"`) {
+		t.Errorf("body should include title; got %s", rr.Body.String())
+	}
+}

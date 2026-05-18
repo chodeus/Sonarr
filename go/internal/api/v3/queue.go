@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"sonarr.tv/sonarr/internal/httperr"
 )
@@ -42,6 +43,60 @@ type QueueResource struct {
 	Status     string `json:"status,omitempty"`
 	DownloadID string `json:"downloadId,omitempty"`
 	Protocol   string `json:"protocol,omitempty"`
+}
+
+// QueueDetailsLister narrows the queue read for the /queue/details
+// endpoint. Returns flat (unpaged) QueueResource rows optionally
+// filtered by seriesId or episodeIds. Today the production wiring
+// substitutes an empty implementation matching the recorded
+// empty-DB shape — populated-row projection requires the same
+// tracked-downloads / pending-release join the /queue paged surface
+// needs, which is DEFERRED.
+type QueueDetailsLister interface {
+	QueueDetails(ctx context.Context, seriesID *int, episodeIDs []int) ([]QueueResource, error)
+}
+
+// QueueDetailsHandler returns GET /api/v3/queue/details. Mirrors
+// `QueueDetailsController.GetQueue` at
+// `src/Sonarr.Api.V3/Queue/QueueDetailsController.cs:43-61`. Supports
+// optional `seriesId` (single int) + `episodeIds` (repeated int) query
+// filters. C# also accepts includeSeries / includeEpisode flags that
+// expand the resource projection; that join is DEFERRED in line with
+// the rest of the Go-port queue surface.
+func QueueDetailsHandler(lister QueueDetailsLister) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		var seriesID *int
+		if s := q.Get("seriesId"); s != "" {
+			n, err := strconv.Atoi(s)
+			if err != nil || n <= 0 {
+				httperr.BadRequest(w, "queue/details: invalid seriesId")
+				return
+			}
+			seriesID = &n
+		}
+		var episodeIDs []int
+		for _, raw := range q["episodeIds"] {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n <= 0 {
+				httperr.BadRequest(w, fmt.Sprintf("queue/details: invalid episodeIds entry %q", raw))
+				return
+			}
+			episodeIDs = append(episodeIDs, n)
+		}
+		rows, err := lister.QueueDetails(r.Context(), seriesID, episodeIDs)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("queue/details: %w", err), nil)
+			return
+		}
+		if rows == nil {
+			rows = []QueueResource{}
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(rows)
+		_, _ = w.Write(buf)
+	})
 }
 
 // QueuePagedLister is the read side the handler depends on. The
