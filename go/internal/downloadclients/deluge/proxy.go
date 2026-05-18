@@ -475,6 +475,71 @@ func (p *Proxy) SetTorrentSeedingConfiguration(ctx context.Context, hash string,
 	return err
 }
 
+// GetConfig fires core.get_config. Mirrors C#
+// `DelugeProxy.GetConfig` at `:66-72`. Returns the raw preferences
+// map — deluge's preferences shape is large and varies across
+// versions, so the consumer reads specific keys ("download_location",
+// "move_completed", "move_completed_path") rather than unmarshalling
+// into a typed struct.
+func (p *Proxy) GetConfig(ctx context.Context, settings Settings) (map[string]any, error) {
+	raw, err := p.Call(ctx, "core.get_config", nil, settings)
+	if err != nil {
+		return nil, err
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("deluge: parse core.get_config response: %w", err)
+	}
+	return cfg, nil
+}
+
+// GetLabelOptions fires label.get_options for the named label.
+// Mirrors C# `DelugeProxy.GetLabelOptions` at `:159-164`.
+//
+// Returns (nil, nil) when the label doesn't exist — deluge's
+// label.get_options on a missing label tends to surface as either
+// an empty result object OR an RPC error; both arms collapse to
+// nil so the GetStatus 4-way precedence falls through to the
+// next arm cleanly.
+func (p *Proxy) GetLabelOptions(ctx context.Context, label string, settings Settings) (*DelugeLabel, error) {
+	raw, err := p.Call(ctx, "label.get_options", []any{label}, settings)
+	if err != nil {
+		// Label plugin missing OR label not found both surface as
+		// RPC errors at this layer. The C# tree throws via
+		// DelugeException at `:215-228` which the consumer caller
+		// in `GetStatus` doesn't catch — so the Go-port mirror would
+		// propagate the error too. We propagate via the (nil, err)
+		// return; the GetStatus arm handles the err by treating it
+		// as "no label override" and falling through.
+		return nil, err
+	}
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil, nil
+	}
+	var opts DelugeLabel
+	if err := json.Unmarshal(raw, &opts); err != nil {
+		return nil, fmt.Errorf("deluge: parse label.get_options response: %w", err)
+	}
+	opts.Name = label
+	return &opts, nil
+}
+
+// GetMethods fires system.listMethods. Mirrors C#
+// `DelugeProxy.GetMethods` at `:96-101`. Used by the label-plugin
+// probe in 5.G2h's MarkItemAsImported when AddLabel is needed
+// (the label plugin must be loaded for label.* RPCs to work).
+func (p *Proxy) GetMethods(ctx context.Context, settings Settings) ([]string, error) {
+	raw, err := p.Call(ctx, "system.listMethods", nil, settings)
+	if err != nil {
+		return nil, err
+	}
+	var methods []string
+	if err := json.Unmarshal(raw, &methods); err != nil {
+		return nil, fmt.Errorf("deluge: parse system.listMethods response: %w", err)
+	}
+	return methods, nil
+}
+
 // RemoveTorrent fires core.remove_torrent. Mirrors C#
 // `DelugeProxy.RemoveTorrent` at `:152-156`. The `removeData` flag
 // tells deluge whether to also delete the on-disk payload.

@@ -354,10 +354,95 @@ func (d *Deluge) RemoveItem(ctx context.Context, item *downloadclients.Item, del
 	return nil
 }
 
-// GetStatus is filled in by slice 5.G2g. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (d *Deluge) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+// GetStatus ports C# `Deluge.GetStatus` at
+// `Download/Clients/Deluge/Deluge.cs:222-262`. Computes the
+// effective output directory via a 4-way precedence:
+//
+//  1. settings.CompletedDirectory (explicit user override on the
+//     DownloadClient row) — wins outright.
+//  2. settings.DownloadDirectory (explicit override of the
+//     pre-completion download path).
+//  3. Per-label `move_completed_path` when TvCategory is set AND
+//     the label's ApplyMoveCompleted AND MoveCompleted are both
+//     true.
+//  4. Global preferences: when `move_completed=true`, fall back to
+//     `move_completed_path`; else `download_location`.
+//
+// The label-arm RPC failure (label plugin missing, label not
+// found) silently falls through to the config arm — matches the C#
+// `label is { ApplyMoveCompleted: true, MoveCompleted: true }` arm
+// at `:237-241` which evaluates to false on null label.
+//
+// IsLocalhost matches the C# arm at `:253` — Host == 127.0.0.1 OR
+// the literal string "localhost"; the Go port relaxes to
+// case-insensitive since URL hostnames are case-folded anyway.
+//
+// RemovesCompletedDownloads is left false — the C# tree doesn't set
+// this field for Deluge, matching the absence of a global
+// remove-on-completion preference in deluge.
+//
+// The remote-path-mapping translation at C# `:258` is deferred
+// until the [downloadclients.Dependencies.RemotePathMappingService]
+// port lands (same as 5.G1g / qBittorrent).
+func (d *Deluge) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
+	if d.proxy == nil {
+		return nil, errors.New("deluge: GetStatus: nil proxy")
+	}
+
+	destDir, err := d.resolveDestDir(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("deluge: GetStatus: %w", err)
+	}
+
+	info := &downloadclients.ClientInfo{
+		IsLocalhost: d.settings.Host == "127.0.0.1" || strings.EqualFold(d.settings.Host, "localhost"),
+	}
+	if strings.TrimSpace(destDir) != "" {
+		info.OutputRootFolders = []ospath.OsPath{ospath.New(destDir)}
+	}
+	return info, nil
+}
+
+// resolveDestDir walks the 4-way precedence ladder for the output
+// directory. Returns "" when no arm produces a usable path (matches
+// the C# behaviour at `:256` — empty destDir surfaces an empty
+// OutputRootFolders).
+func (d *Deluge) resolveDestDir(ctx context.Context) (string, error) {
+	if cd := strings.TrimSpace(d.settings.CompletedDirectory); cd != "" {
+		return cd, nil
+	}
+	if dd := strings.TrimSpace(d.settings.DownloadDirectory); dd != "" {
+		return dd, nil
+	}
+
+	// Label arm — only when TvCategory is set. RPC failure on
+	// label.get_options (plugin missing / label not found) falls
+	// through to the config arm rather than propagating; the v3
+	// UI's path-mapping helper degrades gracefully without a
+	// destDir.
+	if cat := strings.TrimSpace(d.settings.TvCategory); cat != "" {
+		label, labelErr := d.proxy.GetLabelOptions(ctx, cat, d.settings)
+		if labelErr == nil && label != nil && label.ApplyMoveCompleted && label.MoveCompleted {
+			if mp := strings.TrimSpace(label.MoveCompletedPath); mp != "" {
+				return mp, nil
+			}
+		}
+	}
+
+	// Config arm.
+	cfg, err := d.proxy.GetConfig(ctx, d.settings)
+	if err != nil {
+		return "", err
+	}
+	if mc, _ := cfg["move_completed"].(bool); mc {
+		if mp, _ := cfg["move_completed_path"].(string); strings.TrimSpace(mp) != "" {
+			return mp, nil
+		}
+	}
+	if dl, _ := cfg["download_location"].(string); strings.TrimSpace(dl) != "" {
+		return dl, nil
+	}
+	return "", nil
 }
 
 // MarkItemAsImported is filled in by slice 5.G2h. Returns

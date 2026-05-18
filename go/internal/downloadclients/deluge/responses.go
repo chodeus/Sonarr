@@ -93,6 +93,32 @@ type DelugeUpdateUIResult struct {
 	Torrents  map[string]DelugeTorrent `json:"torrents"`
 }
 
+// DelugeLabel ports `DelugeLabel` at
+// `src/NzbDrone.Core/Download/Clients/Deluge/DelugeLabel.cs:3-14`.
+// Returned by `label.get_options` — surfaces the per-label
+// move-on-completion configuration that GetStatus consults at the
+// 4-way destDir precedence's label arm.
+type DelugeLabel struct {
+	// Name echoes the requested label. Not present in the wire
+	// payload — populated by [Proxy.GetLabelOptions] from the
+	// caller-supplied label argument.
+	Name string `json:"-"`
+
+	// ApplyMoveCompleted is true when deluge applies the per-label
+	// move-completed override (vs falling back to the global
+	// preferences).
+	ApplyMoveCompleted bool `json:"apply_move_completed"`
+
+	// MoveCompleted is the user-facing "move when complete" toggle
+	// on the label. The label arm fires only when both
+	// ApplyMoveCompleted AND MoveCompleted are true.
+	MoveCompleted bool `json:"move_completed"`
+
+	// MoveCompletedPath is the target directory the label moves
+	// completed torrents to. Empty when MoveCompleted is false.
+	MoveCompletedPath string `json:"move_completed_path"`
+}
+
 // Deluge state strings. Ports C# `DelugeTorrentStatus` at
 // `DelugeTorrentStatus.cs:3-10`.
 const (
