@@ -231,15 +231,6 @@ func TestStub_DownloadReturnsNotImplemented(t *testing.T) {
 	}
 }
 
-func TestStub_GetItemsReturnsNotImplemented(t *testing.T) {
-	t.Parallel()
-	n := nzbget.New(nil, nzbget.NewSettings(), nil, nil)
-	_, err := n.GetItems(context.Background())
-	if !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("GetItems() err = %v, want ErrNotImplementedYet", err)
-	}
-}
-
 func TestStub_RemoveItemReturnsNotImplemented(t *testing.T) {
 	t.Parallel()
 	n := nzbget.New(nil, nzbget.NewSettings(), nil, nil)

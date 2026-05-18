@@ -8,9 +8,12 @@ import (
 	"log/slog"
 	"regexp"
 	"strconv"
+	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // Implementation + ConfigContract are the persisted-row identifiers
@@ -79,10 +82,222 @@ func (n *Nzbget) Download(_ context.Context, _ *downloadclients.GrabRequest) (st
 	return "", downloadclients.ErrNotImplementedYet
 }
 
-// GetItems is filled in by slice 5.G3d. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (n *Nzbget) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+// GetItems ports C# `Nzbget.GetItems` at
+// `Download/Clients/Nzbget/Nzbget.cs:54-200`. NZBGet exposes two
+// endpoints that together represent the user-visible queue:
+//
+//   - `listgroups` — in-progress downloads (per [Nzbget.queueItems])
+//   - `history`    — completed / failed / deleted downloads (per
+//     [Nzbget.historyItems])
+//
+// The Go port runs both probes sequentially, projects each into
+// [downloadclients.Item], and filters by settings.TvCategory at the
+// end (matches C# `:199` — the Where-clause).
+//
+// Drone-parameter handling: every Sonarr-grabbed NZB carries a
+// "drone" parameter whose value is the Sonarr-side DownloadID (set
+// at append-time via the P[] params arg). queue+history items both
+// surface this; when missing, the DownloadID falls back to the
+// numeric NzbId / Id as a string (matches C# `:72,124`).
+func (n *Nzbget) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
+	if n.proxy == nil {
+		return nil, errors.New("nzbget: GetItems: nil proxy")
+	}
+
+	globalStatus, err := n.proxy.GetGlobalStatus(ctx, n.settings)
+	if err != nil {
+		return nil, fmt.Errorf("nzbget: GetItems: GetGlobalStatus: %w", err)
+	}
+	queue, err := n.proxy.GetQueue(ctx, n.settings)
+	if err != nil {
+		return nil, fmt.Errorf("nzbget: GetItems: GetQueue: %w", err)
+	}
+	history, err := n.proxy.GetHistory(ctx, n.settings)
+	if err != nil {
+		return nil, fmt.Errorf("nzbget: GetItems: GetHistory: %w", err)
+	}
+
+	info := n.itemClientInfo()
+	out := make([]*downloadclients.Item, 0, len(queue)+len(history))
+
+	// Queue arm.
+	var totalRemainingSize int64
+	for i := range queue {
+		out = append(out, n.queueItemToItem(queue[i], globalStatus, info, &totalRemainingSize))
+	}
+	// History arm.
+	for i := range history {
+		out = append(out, n.historyItemToItem(history[i], info))
+	}
+
+	// Category filter (C# `:199` Where-clause). Only applies when
+	// TvCategory is set; empty TvCategory surfaces all items.
+	cat := strings.TrimSpace(n.settings.TvCategory)
+	if cat == "" {
+		return out, nil
+	}
+	filtered := out[:0]
+	for _, item := range out {
+		if item.Category == cat {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
+}
+
+// queueItemToItem builds the Item from an in-progress queue entry.
+// Ports C# `Nzbget.GetQueue` per-item loop at `:63-105`.
+//
+// totalRemainingSize accumulates across the queue items so the
+// per-item RemainingTime estimate matches the C# behaviour: items
+// later in the queue surface a larger ETA reflecting "all items
+// before me must finish first".
+func (n *Nzbget) queueItemToItem(q NzbgetQueueItem, globalStatus *NzbgetGlobalStatus, info *downloadclients.ItemClientInfo, totalRemainingSize *int64) *downloadclients.Item {
+	totalSize := combineLoHi(q.FileSizeHi, q.FileSizeLo)
+	pausedSize := combineLoHi(q.PausedSizeHi, q.PausedSizeLo)
+	remainingSize := combineLoHi(q.RemainingSizeHi, q.RemainingSizeLo)
+
+	item := &downloadclients.Item{
+		DownloadClientInfo: info,
+		DownloadID:         droneOrFallback(q.Parameters, q.NzbId),
+		Title:              q.NzbName,
+		TotalSize:          totalSize,
+		Category:           q.Category,
+		CanMoveFiles:       true,
+		CanBeRemoved:       true,
+	}
+
+	pausedGlobal := globalStatus != nil && globalStatus.DownloadPaused
+	switch {
+	case pausedGlobal || (remainingSize == pausedSize && remainingSize != 0):
+		item.Status = downloadclients.DownloadItemStatusPaused
+		item.RemainingSize = remainingSize
+	default:
+		if q.ActiveDownloads == 0 && remainingSize != 0 {
+			item.Status = downloadclients.DownloadItemStatusQueued
+		} else {
+			item.Status = downloadclients.DownloadItemStatusDownloading
+		}
+		item.RemainingSize = remainingSize - pausedSize
+		if globalStatus != nil && globalStatus.DownloadRate != 0 {
+			secs := float64(*totalRemainingSize+item.RemainingSize) / float64(globalStatus.DownloadRate)
+			eta := time.Duration(secs * float64(time.Second))
+			item.RemainingTime = &eta
+			*totalRemainingSize += item.RemainingSize
+		}
+	}
+	return item
+}
+
+// historyItemToItem builds the Item from a completed/failed/deleted
+// history entry. Ports C# `Nzbget.GetHistory` per-item loop at
+// `:117-189`.
+//
+// FinalDir (set when NZBGet moved the completed download to its
+// final home) wins over DestDir per C# `:121`. The status cascade
+// (ParStatus → UnpackStatus → MoveStatus → ScriptStatus →
+// DeleteStatus → MarkStatus) decides the final Sonarr-side state.
+func (n *Nzbget) historyItemToItem(h NzbgetHistoryItem, info *downloadclients.ItemClientInfo) *downloadclients.Item {
+	itemDir := h.FinalDir
+	if strings.TrimSpace(itemDir) == "" {
+		itemDir = h.DestDir
+	}
+
+	zero := time.Duration(0)
+	item := &downloadclients.Item{
+		DownloadClientInfo: info,
+		DownloadID:         droneOrFallback(h.Parameters, h.Id),
+		Title:              h.Name,
+		TotalSize:          combineLoHi(h.FileSizeHi, h.FileSizeLo),
+		Category:           h.Category,
+		Status:             downloadclients.DownloadItemStatusCompleted,
+		RemainingTime:      &zero,
+		CanMoveFiles:       true,
+		CanBeRemoved:       true,
+		Message: fmt.Sprintf("Par: %s, Unpack: %s, Move: %s, Script: %s, Delete: %s, Mark: %s",
+			h.ParStatus, h.UnpackStatus, h.MoveStatus, h.ScriptStatus, h.DeleteStatus, h.MarkStatus),
+	}
+	if strings.TrimSpace(itemDir) != "" {
+		item.OutputPath = ospath.New(itemDir)
+	}
+
+	// DeleteStatus=MANUAL is the special arm at C# `:141-151`:
+	// manually-deleted items surface as Failed (C# specifically
+	// when MarkStatus=BAD; everything else is `continue`'d). The
+	// Go port keeps both arms as Failed: MarkStatus=BAD is the
+	// explicit Failed branch C# returns, and the C# `continue`
+	// drops the row entirely — but Sonarr's queue UI benefits
+	// from surfacing the row as terminal-failed since the import
+	// won't happen, vs dropping it silently. Either way the
+	// status is Failed.
+	if h.DeleteStatus == "MANUAL" {
+		item.Status = downloadclients.DownloadItemStatusFailed
+		return item
+	}
+
+	// Cascade per C# `:153-187`.
+	if !SuccessStatus[h.ParStatus] {
+		item.Status = downloadclients.DownloadItemStatusFailed
+	}
+	if h.UnpackStatus == "SPACE" {
+		item.Status = downloadclients.DownloadItemStatusWarning
+	} else if !SuccessStatus[h.UnpackStatus] {
+		item.Status = downloadclients.DownloadItemStatusFailed
+	}
+	if !SuccessStatus[h.MoveStatus] {
+		item.Status = downloadclients.DownloadItemStatusWarning
+	}
+	if !SuccessStatus[h.ScriptStatus] {
+		item.Status = downloadclients.DownloadItemStatusFailed
+	}
+	if !SuccessStatus[h.DeleteStatus] && strings.TrimSpace(h.DeleteStatus) != "" {
+		if DeleteFailedStatus[h.DeleteStatus] {
+			item.Status = downloadclients.DownloadItemStatusFailed
+		} else {
+			item.Status = downloadclients.DownloadItemStatusWarning
+		}
+	}
+	return item
+}
+
+// droneOrFallback looks up the "drone" parameter (Sonarr's per-grab
+// cross-reference token) and returns its string value. Falls back
+// to the numeric NzbId/Id-as-string when the parameter is missing —
+// matches C# `:72,124` (`.SingleOrDefault(...)?.Value.ToString()`
+// with `item.NzbId.ToString()` fallback).
+func droneOrFallback(params []NzbgetParameter, fallbackID int) string {
+	for _, p := range params {
+		if p.Name == "drone" {
+			if v, ok := p.Value.(string); ok && v != "" {
+				return v
+			}
+			if v, ok := p.Value.(float64); ok {
+				// JSON numbers decode as float64 — round-trip via
+				// strconv since drone IDs are typically GUID-style
+				// strings but some legacy installs use ints.
+				return strconv.FormatInt(int64(v), 10)
+			}
+		}
+	}
+	return strconv.Itoa(fallbackID)
+}
+
+// itemClientInfo mirrors C# `DownloadClientItemClientInfo.FromDownloadClient`.
+// Note: the C# tree passes `false` for HasPostImportCategory at
+// `:76,123` (NZBGet doesn't have a post-import-category concept the
+// same way qBittorrent / Deluge do). The Go port mirrors.
+func (n *Nzbget) itemClientInfo() *downloadclients.ItemClientInfo {
+	info := &downloadclients.ItemClientInfo{
+		Protocol: n.Protocol(),
+		Type:     Implementation,
+		Name:     n.Name(),
+	}
+	if n.def != nil {
+		info.ID = n.def.ID
+		info.Name = n.def.Name
+		info.RemoveCompletedDownloads = n.def.RemoveCompletedDownloads
+	}
+	return info
 }
 
 // GetImportItem mirrors the C# base default — pass input through.

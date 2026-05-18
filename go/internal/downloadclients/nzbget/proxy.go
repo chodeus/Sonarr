@@ -205,6 +205,56 @@ func (p *Proxy) Call(ctx context.Context, method string, params []any, settings 
 	return parsed.Result, nil
 }
 
+// GetQueue fires `listgroups`. Mirrors C# `NzbgetProxy.GetQueue`
+// at `NzbgetProxy.cs:124-127`. Returns the in-progress NZBs.
+func (p *Proxy) GetQueue(ctx context.Context, settings Settings) ([]NzbgetQueueItem, error) {
+	raw, err := p.Call(ctx, "listgroups", nil, settings)
+	if err != nil {
+		return nil, err
+	}
+	var items []NzbgetQueueItem
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("nzbget: parse listgroups response: %w", err)
+	}
+	if items == nil {
+		items = []NzbgetQueueItem{}
+	}
+	return items, nil
+}
+
+// GetHistory fires `history`. Mirrors C# `NzbgetProxy.GetHistory`
+// at `:129-132`. Returns the completed/failed/deleted NZBs.
+func (p *Proxy) GetHistory(ctx context.Context, settings Settings) ([]NzbgetHistoryItem, error) {
+	raw, err := p.Call(ctx, "history", nil, settings)
+	if err != nil {
+		return nil, err
+	}
+	var items []NzbgetHistoryItem
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("nzbget: parse history response: %w", err)
+	}
+	if items == nil {
+		items = []NzbgetHistoryItem{}
+	}
+	return items, nil
+}
+
+// GetGlobalStatus fires `status`. Mirrors C#
+// `NzbgetProxy.GetGlobalStatus` at `:120-123`. Drives the paused-
+// globally arm and the download-rate based RemainingTime estimate
+// in GetItems.
+func (p *Proxy) GetGlobalStatus(ctx context.Context, settings Settings) (*NzbgetGlobalStatus, error) {
+	raw, err := p.Call(ctx, "status", nil, settings)
+	if err != nil {
+		return nil, err
+	}
+	var status NzbgetGlobalStatus
+	if err := json.Unmarshal(raw, &status); err != nil {
+		return nil, fmt.Errorf("nzbget: parse status response: %w", err)
+	}
+	return &status, nil
+}
+
 // truncate clamps a byte slice to n bytes for log lines.
 func truncate(b []byte, n int) string {
 	if len(b) <= n {
