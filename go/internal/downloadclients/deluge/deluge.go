@@ -336,10 +336,22 @@ func (d *Deluge) GetImportItem(_ context.Context, item, _ *downloadclients.Item)
 	return item, nil
 }
 
-// RemoveItem is filled in by slice 5.G2f. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (d *Deluge) RemoveItem(_ context.Context, _ *downloadclients.Item, _ bool) error {
-	return downloadclients.ErrNotImplementedYet
+// RemoveItem ports C# `Deluge.RemoveItem` at
+// `Download/Clients/Deluge/Deluge.cs:217-220`. Lowercases the
+// DownloadID (matches C# `:219` `.ToLower()`) and delegates to
+// [Proxy.RemoveTorrent].
+func (d *Deluge) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
+	if item == nil {
+		return errors.New("deluge: RemoveItem: nil item")
+	}
+	if d.proxy == nil {
+		return errors.New("deluge: RemoveItem: nil proxy")
+	}
+	hash := strings.ToLower(item.DownloadID)
+	if err := d.proxy.RemoveTorrent(ctx, hash, deleteData, d.settings); err != nil {
+		return fmt.Errorf("deluge: RemoveItem(%s): %w", hash, err)
+	}
+	return nil
 }
 
 // GetStatus is filled in by slice 5.G2g. Returns

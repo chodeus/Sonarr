@@ -475,6 +475,19 @@ func (p *Proxy) SetTorrentSeedingConfiguration(ctx context.Context, hash string,
 	return err
 }
 
+// RemoveTorrent fires core.remove_torrent. Mirrors C#
+// `DelugeProxy.RemoveTorrent` at `:152-156`. The `removeData` flag
+// tells deluge whether to also delete the on-disk payload.
+//
+// Deluge returns a boolean `true` on success; the Go port ignores
+// the result body since the orchestrator only cares about
+// success/failure (any RPC error bubbles up).
+func (p *Proxy) RemoveTorrent(ctx context.Context, hash string, removeData bool, settings Settings) error {
+	_, err := p.Call(ctx, "core.remove_torrent",
+		[]any{strings.ToLower(hash), removeData}, settings)
+	return err
+}
+
 // MoveTorrentToTopInQueue fires core.queue_top. Mirrors C#
 // `DelugeProxy.MoveTorrentToTopInQueue` at `:152-155`. The hash is
 // wrapped in a single-element array per deluge's API shape.
