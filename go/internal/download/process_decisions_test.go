@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/download"
@@ -16,6 +17,50 @@ import (
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/series"
 )
+
+// stubRecorder satisfies providerstatus.Recorder. Captures every
+// per-providerID call so tests can assert the outcome classification.
+type stubRecorder struct {
+	mu               sync.Mutex
+	success          []int
+	failure          []int // RecordFailure (escalate) — also tracks minimumBackOff if needed
+	failureBackoff   []time.Duration
+	connectionFail   []int
+	providerDeleted  []int
+	successErr       error
+	failureErr       error
+	connectionErr    error
+	providerDeleteEr error
+}
+
+func (s *stubRecorder) RecordSuccess(_ context.Context, providerID int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.success = append(s.success, providerID)
+	return s.successErr
+}
+
+func (s *stubRecorder) RecordFailure(_ context.Context, providerID int, minimumBackOff time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failure = append(s.failure, providerID)
+	s.failureBackoff = append(s.failureBackoff, minimumBackOff)
+	return s.failureErr
+}
+
+func (s *stubRecorder) RecordConnectionFailure(_ context.Context, providerID int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.connectionFail = append(s.connectionFail, providerID)
+	return s.connectionErr
+}
+
+func (s *stubRecorder) OnProviderDeleted(_ context.Context, providerID int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.providerDeleted = append(s.providerDeleted, providerID)
+	return s.providerDeleteEr
+}
 
 // stubProvider satisfies [downloadclients.Provider] with pinnable
 // Download behaviour. Only Download is meaningful for these tests;
@@ -639,6 +684,204 @@ func TestProcessDecisions_BusNotInvokedOnDispatchFailure(t *testing.T) {
 	defer mu.Unlock()
 	if count != 0 {
 		t.Errorf("EpisodeGrabbedEvent count = %d, want 0 (no grab → no publish)", count)
+	}
+}
+
+// --- Slice 6.A3 providerstatus.Recorder wire coverage -------------------
+
+// TestProcessDecisions_SuccessRecordsSuccess — slice 6.A3:
+// a successful Provider.Download triggers Recorder.RecordSuccess on
+// the Definition.ID so the EscalationLevel decrements + DisabledTill
+// clears.
+func TestProcessDecisions_SuccessRecordsSuccess(t *testing.T) {
+	t.Parallel()
+	def := &downloadclients.DownloadClient{ID: 11, Name: "MySAB", Implementation: "Sabnzbd"}
+	prov := &stubProvider{name: "sab", protocol: indexers.DownloadProtocolUsenet, downloadID: "ok", definition: def}
+	pdd, err := download.NewProcessDownloadDecisions(&stubClientLister{usenet: []downloadclients.Provider{prov}}, nil, slog.Default())
+	if err != nil {
+		t.Fatalf("NewProcessDownloadDecisions: %v", err)
+	}
+	rec := &stubRecorder{}
+	pdd.SetRecorder(rec)
+
+	dec := mkDecision("Show.S01E01.NZB", indexers.DownloadProtocolUsenet, 1)
+	pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.success) != 1 || rec.success[0] != 11 {
+		t.Errorf("RecordSuccess providerIDs = %v, want [11]", rec.success)
+	}
+	if len(rec.failure)+len(rec.connectionFail) != 0 {
+		t.Errorf("expected zero failures; got failure=%v connFail=%v", rec.failure, rec.connectionFail)
+	}
+}
+
+// TestProcessDecisions_UnavailableRecordsFailureEscalates — slice 6.A3:
+// an "unavailable: ..." error triggers Recorder.RecordFailure
+// (escalates) with minimumBackOff=0.
+func TestProcessDecisions_UnavailableRecordsFailureEscalates(t *testing.T) {
+	t.Parallel()
+	def := &downloadclients.DownloadClient{ID: 13, Name: "Down", Implementation: "Sabnzbd"}
+	prov := &stubProvider{name: "sab", protocol: indexers.DownloadProtocolUsenet, downloadErr: errors.New("unavailable: refused"), definition: def}
+	pdd, err := download.NewProcessDownloadDecisions(&stubClientLister{usenet: []downloadclients.Provider{prov}}, nil, slog.Default())
+	if err != nil {
+		t.Fatalf("NewProcessDownloadDecisions: %v", err)
+	}
+	rec := &stubRecorder{}
+	pdd.SetRecorder(rec)
+
+	dec := mkDecision("Show.S01E01.NZB", indexers.DownloadProtocolUsenet, 1)
+	pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.failure) != 1 || rec.failure[0] != 13 {
+		t.Errorf("RecordFailure providerIDs = %v, want [13]", rec.failure)
+	}
+	if len(rec.failureBackoff) != 1 || rec.failureBackoff[0] != 0 {
+		t.Errorf("RecordFailure backoff = %v, want [0]", rec.failureBackoff)
+	}
+	if len(rec.success)+len(rec.connectionFail) != 0 {
+		t.Errorf("expected zero success/connection records; got success=%v connFail=%v", rec.success, rec.connectionFail)
+	}
+}
+
+// TestProcessDecisions_NotImplementedSkipsRecorder — slice 6.A3:
+// ErrNotImplementedYet doesn't bump the status table — port-incomplete
+// stubs shouldn't trip the escalation ladder.
+func TestProcessDecisions_NotImplementedSkipsRecorder(t *testing.T) {
+	t.Parallel()
+	def := &downloadclients.DownloadClient{ID: 17, Name: "Stub", Implementation: "Sabnzbd"}
+	prov := &stubProvider{name: "sab", protocol: indexers.DownloadProtocolUsenet, downloadErr: downloadclients.ErrNotImplementedYet, definition: def}
+	pdd, err := download.NewProcessDownloadDecisions(&stubClientLister{usenet: []downloadclients.Provider{prov}}, nil, slog.Default())
+	if err != nil {
+		t.Fatalf("NewProcessDownloadDecisions: %v", err)
+	}
+	rec := &stubRecorder{}
+	pdd.SetRecorder(rec)
+
+	dec := mkDecision("Show.S01E01.NZB", indexers.DownloadProtocolUsenet, 1)
+	pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.success)+len(rec.failure)+len(rec.connectionFail) != 0 {
+		t.Errorf("ErrNotImplementedYet should not record; got success=%v failure=%v connFail=%v",
+			rec.success, rec.failure, rec.connectionFail)
+	}
+}
+
+// TestProcessDecisions_GenericErrorRecordsConnectionFailure — slice 6.A3:
+// errors that aren't "unavailable" and aren't ErrNotImplementedYet
+// trigger RecordConnectionFailure (non-escalating).
+func TestProcessDecisions_GenericErrorRecordsConnectionFailure(t *testing.T) {
+	t.Parallel()
+	def := &downloadclients.DownloadClient{ID: 19, Name: "Sab", Implementation: "Sabnzbd"}
+	prov := &stubProvider{name: "sab", protocol: indexers.DownloadProtocolUsenet, downloadErr: errors.New("boom: random transient"), definition: def}
+	pdd, err := download.NewProcessDownloadDecisions(&stubClientLister{usenet: []downloadclients.Provider{prov}}, nil, slog.Default())
+	if err != nil {
+		t.Fatalf("NewProcessDownloadDecisions: %v", err)
+	}
+	rec := &stubRecorder{}
+	pdd.SetRecorder(rec)
+
+	dec := mkDecision("Show.S01E01.NZB", indexers.DownloadProtocolUsenet, 1)
+	pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.connectionFail) != 1 || rec.connectionFail[0] != 19 {
+		t.Errorf("RecordConnectionFailure = %v, want [19]", rec.connectionFail)
+	}
+	if len(rec.failure)+len(rec.success) != 0 {
+		t.Errorf("expected zero RecordFailure/Success; got failure=%v success=%v", rec.failure, rec.success)
+	}
+}
+
+// TestProcessDecisions_RecorderNilNoOps — slice 6.A3:
+// when SetRecorder isn't called, every dispatch outcome is a silent
+// no-op against the recorder. The grab itself still works.
+func TestProcessDecisions_RecorderNilNoOps(t *testing.T) {
+	t.Parallel()
+	def := &downloadclients.DownloadClient{ID: 23, Name: "Sab", Implementation: "Sabnzbd"}
+	prov := &stubProvider{name: "sab", protocol: indexers.DownloadProtocolUsenet, downloadID: "nzo", definition: def}
+	pdd := newPDD(t, &stubClientLister{usenet: []downloadclients.Provider{prov}})
+
+	dec := mkDecision("Show.S01E01.NZB", indexers.DownloadProtocolUsenet, 1)
+	out := pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
+	if len(out.Grabbed) != 1 {
+		t.Errorf("Grabbed = %d, want 1 (nil-recorder must not affect grab); full result: %s", len(out.Grabbed), out)
+	}
+}
+
+// TestProcessDecisions_RecorderSkippedForNilDefinitionOrZeroID —
+// slice 6.A3: test stubs / in-memory providers that report no
+// Definition (or Definition.ID == 0) skip the recorder. A zero
+// providerID can't be a real DB row.
+func TestProcessDecisions_RecorderSkippedForNilDefinitionOrZeroID(t *testing.T) {
+	t.Parallel()
+	prov := &stubProvider{name: "sab", protocol: indexers.DownloadProtocolUsenet, downloadID: "ok"} // definition: nil
+	pdd, err := download.NewProcessDownloadDecisions(&stubClientLister{usenet: []downloadclients.Provider{prov}}, nil, slog.Default())
+	if err != nil {
+		t.Fatalf("NewProcessDownloadDecisions: %v", err)
+	}
+	rec := &stubRecorder{}
+	pdd.SetRecorder(rec)
+
+	dec := mkDecision("Show.S01E01.NZB", indexers.DownloadProtocolUsenet, 1)
+	pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.success)+len(rec.failure)+len(rec.connectionFail) != 0 {
+		t.Errorf("nil-Definition should skip recorder; got success=%v failure=%v connFail=%v",
+			rec.success, rec.failure, rec.connectionFail)
+	}
+
+	// Also test ID == 0 path.
+	def0 := &downloadclients.DownloadClient{ID: 0, Name: "ZeroID"}
+	prov2 := &stubProvider{name: "zero", protocol: indexers.DownloadProtocolTorrent, downloadID: "x", definition: def0}
+	pdd2, _ := download.NewProcessDownloadDecisions(&stubClientLister{torrent: []downloadclients.Provider{prov2}}, nil, slog.Default())
+	rec2 := &stubRecorder{}
+	pdd2.SetRecorder(rec2)
+	dec2 := mkDecision("Show.S01E02.torrent", indexers.DownloadProtocolTorrent, 2)
+	pdd2.ProcessDecisions(context.Background(), []decisionengine.Decision{dec2})
+	rec2.mu.Lock()
+	defer rec2.mu.Unlock()
+	if len(rec2.success)+len(rec2.failure)+len(rec2.connectionFail) != 0 {
+		t.Errorf("Definition.ID=0 should skip recorder; got %v / %v / %v",
+			rec2.success, rec2.failure, rec2.connectionFail)
+	}
+}
+
+// TestProcessDecisions_MultiClientFailoverRecordsEachOutcome —
+// slice 6.A3: when failover walks two clients (first fails, second
+// succeeds), the recorder gets BOTH outcomes — RecordFailure for
+// client A, RecordSuccess for client B.
+func TestProcessDecisions_MultiClientFailoverRecordsEachOutcome(t *testing.T) {
+	t.Parallel()
+	defA := &downloadclients.DownloadClient{ID: 1, Name: "A"}
+	defB := &downloadclients.DownloadClient{ID: 2, Name: "B"}
+	first := &stubProvider{name: "A", protocol: indexers.DownloadProtocolUsenet, downloadErr: errors.New("unavailable: refused"), definition: defA}
+	second := &stubProvider{name: "B", protocol: indexers.DownloadProtocolUsenet, downloadID: "ok", definition: defB}
+	pdd, err := download.NewProcessDownloadDecisions(&stubClientLister{usenet: []downloadclients.Provider{first, second}}, nil, slog.Default())
+	if err != nil {
+		t.Fatalf("NewProcessDownloadDecisions: %v", err)
+	}
+	rec := &stubRecorder{}
+	pdd.SetRecorder(rec)
+
+	dec := mkDecision("Show.S01E01.NZB", indexers.DownloadProtocolUsenet, 1)
+	pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.failure) != 1 || rec.failure[0] != 1 {
+		t.Errorf("RecordFailure = %v, want [1] (client A unavailable)", rec.failure)
+	}
+	if len(rec.success) != 1 || rec.success[0] != 2 {
+		t.Errorf("RecordSuccess = %v, want [2] (client B grabbed)", rec.success)
 	}
 }
 

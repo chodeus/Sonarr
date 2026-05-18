@@ -13,6 +13,7 @@ import (
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/parser"
+	"sonarr.tv/sonarr/internal/providerstatus"
 )
 
 // ClientLister is the narrow surface ProcessDownloadDecisions
@@ -67,6 +68,7 @@ type ProcessDownloadDecisions struct {
 	clients     ClientLister
 	prioritizer DecisionPrioritizer
 	bus         *messaging.Bus
+	recorder    providerstatus.Recorder
 	log         *slog.Logger
 }
 
@@ -98,6 +100,39 @@ func NewProcessDownloadDecisions(clients ClientLister, prioritizer DecisionPrior
 // Returns the receiver for chainable construction.
 func (p *ProcessDownloadDecisions) SetBus(bus *messaging.Bus) *ProcessDownloadDecisions {
 	p.bus = bus
+	return p
+}
+
+// SetRecorder wires the [providerstatus.Recorder] (production:
+// *downloadclientstatus.Service) the orchestrator records every
+// per-client outcome against. Slice 6.A3 — mirrors the C#
+// `ProviderStatusServiceBase.RecordSuccess/RecordFailure` calls
+// `DownloadService.cs` does inside its per-client try/catch arms at
+// `:82-116`. Optional dep — when nil, outcomes are not recorded
+// (existing tests + non-status-aware harnesses can opt out).
+//
+// Per-outcome semantics (mirrors C# escalation contract):
+//
+//   - ResultGrabbed (Provider.Download returned nil err) →
+//     RecordSuccess(ctx, def.ID) decrements EscalationLevel +
+//     clears DisabledTill.
+//   - Provider.Download returned ErrNotImplementedYet → NO RECORD.
+//     A stub provider isn't a real failure; recording would penalize
+//     incomplete-port slices that left a Download method unwired.
+//   - Provider.Download returned an "unavailable" error (isUnavailable
+//     classifier hits) → RecordFailure(ctx, def.ID, 0) ESCALATES.
+//     This is the C# DownloadClientUnavailableException arm at `:215-218`.
+//   - Provider.Download returned any other error →
+//     RecordConnectionFailure(ctx, def.ID) records the touch without
+//     escalating. One-off transport errors shouldn't push the client
+//     up the back-off ladder beyond what a retry would warrant.
+//
+// def.ID == 0 (test stubs / in-memory providers) skips the record
+// regardless of outcome — a zero ID can't be a real DB row.
+//
+// Returns the receiver for chainable construction.
+func (p *ProcessDownloadDecisions) SetRecorder(r providerstatus.Recorder) *ProcessDownloadDecisions {
+	p.recorder = r
 	return p
 }
 
@@ -264,6 +299,7 @@ func (p *ProcessDownloadDecisions) dispatch(ctx context.Context, decision *decis
 			// in-flight Subject pointer is shared with the Grabbed
 			// list entry the caller iterates.
 			p.stampDownloadID(ctx, decision, id, provider)
+			p.recordOutcome(ctx, provider, nil)
 			return ResultGrabbed
 		}
 
@@ -281,6 +317,7 @@ func (p *ProcessDownloadDecisions) dispatch(ctx context.Context, decision *decis
 			p.log.Warn("download: dispatch failed on client, trying next client",
 				"client", provider.Name(), "title", release.Title, "err", err)
 		}
+		p.recordOutcome(ctx, provider, err)
 	}
 
 	p.log.Warn("download: all clients failed for protocol",
@@ -465,6 +502,43 @@ func episodeIDSet(eps []episodes.Episode) map[int]struct{} {
 		out[e.ID] = struct{}{}
 	}
 	return out
+}
+
+// recordOutcome reports a per-client Download attempt to the wired
+// [providerstatus.Recorder], if any. See [ProcessDownloadDecisions.SetRecorder]
+// for the per-outcome semantics. No-op when no recorder is wired, when
+// the provider has no Definition (test stub), or when Definition.ID
+// is zero. Errors from the recorder are deliberately ignored (logged
+// at debug) so a status-table write failure can't unwind a successful
+// remote-client grab. Slice 6.A3.
+func (p *ProcessDownloadDecisions) recordOutcome(ctx context.Context, provider downloadclients.Provider, err error) {
+	if p.recorder == nil {
+		return
+	}
+	def := provider.Definition()
+	if def == nil || def.ID == 0 {
+		return
+	}
+	if err == nil {
+		if recErr := p.recorder.RecordSuccess(ctx, def.ID); recErr != nil {
+			p.log.Debug("download: RecordSuccess failed", "client", provider.Name(), "err", recErr)
+		}
+		return
+	}
+	// ErrNotImplementedYet is a stub-port marker, not a real failure.
+	// Don't penalize the row in the status table.
+	if errors.Is(err, downloadclients.ErrNotImplementedYet) {
+		return
+	}
+	if isUnavailable(err) {
+		if recErr := p.recorder.RecordFailure(ctx, def.ID, 0); recErr != nil {
+			p.log.Debug("download: RecordFailure failed", "client", provider.Name(), "err", recErr)
+		}
+		return
+	}
+	if recErr := p.recorder.RecordConnectionFailure(ctx, def.ID); recErr != nil {
+		p.log.Debug("download: RecordConnectionFailure failed", "client", provider.Name(), "err", recErr)
+	}
 }
 
 // isUnavailable classifies a Provider.Download error as
