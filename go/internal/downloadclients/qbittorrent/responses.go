@@ -91,6 +91,24 @@ type QBittorrentTorrent struct {
 	LastActivity int64 `json:"last_activity"`
 }
 
+// QBittorrentLabel ports `QBittorrentLabel` at
+// `src/NzbDrone.Core/Download/Clients/QBittorrent/QBittorrentLabel.cs:3-7`.
+// Returned by /api/v2/torrents/categories as the value half of a
+// JSON object keyed by category name; the per-label SavePath is
+// surfaced through [Proxy.GetLabels] and consumed by the future
+// category-aware GetStatus arm + the getCategories RequestAction.
+type QBittorrentLabel struct {
+	// Name is the category label. Echoed by qBittorrent in the
+	// JSON value even though the parent object is already keyed
+	// by it — the C# tree honours the in-value field too.
+	Name string `json:"name"`
+
+	// SavePath is the per-category save directory override.
+	// Empty when no override is configured (qBittorrent falls
+	// back to the global preferences SavePath).
+	SavePath string `json:"savePath"`
+}
+
 // QBittorrentMaxRatioAction enumerates the action qBittorrent
 // performs when a torrent reaches its global max ratio. Mirrors C#
 // `QBittorrentMaxRatioAction` at `QBittorrentPreferences.cs:5-12`.

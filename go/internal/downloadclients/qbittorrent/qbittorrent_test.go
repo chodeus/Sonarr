@@ -2,7 +2,6 @@ package qbittorrent_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
@@ -258,15 +257,6 @@ func TestRegistry_DefaultsUsedWhenSettingsEmpty(t *testing.T) {
 // loud failure when the body slice lands.
 // ============================================================================
 
-func TestStub_MarkItemAsImportedReturnsNotImplemented(t *testing.T) {
-	t.Parallel()
-	q := qbittorrent.New(nil, qbittorrent.NewSettings(), nil, nil)
-	err := q.MarkItemAsImported(context.Background(), &downloadclients.Item{})
-	if !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("MarkItemAsImported() err = %v, want ErrNotImplementedYet", err)
-	}
-}
-
 func TestStub_GetImportItemPassesThrough(t *testing.T) {
 	t.Parallel()
 	q := qbittorrent.New(nil, qbittorrent.NewSettings(), nil, nil)
@@ -280,15 +270,17 @@ func TestStub_GetImportItemPassesThrough(t *testing.T) {
 	}
 }
 
-func TestStub_RequestActionReturnsNilNil(t *testing.T) {
+func TestStub_RequestActionUnknownActionReturnsNilNil(t *testing.T) {
 	t.Parallel()
+	// Unknown actions fall through to the C# DownloadClientBase
+	// default (nil, nil) — nil proxy is fine for the no-op arm.
 	q := qbittorrent.New(nil, qbittorrent.NewSettings(), nil, nil)
-	got, err := q.RequestAction(context.Background(), "getCategories", nil)
+	got, err := q.RequestAction(context.Background(), "neverHeardOfThis", nil)
 	if err != nil {
-		t.Errorf("RequestAction() err = %v, want nil", err)
+		t.Errorf("RequestAction(unknown) err = %v, want nil", err)
 	}
 	if got != nil {
-		t.Errorf("RequestAction() = %v, want nil", got)
+		t.Errorf("RequestAction(unknown) = %v, want nil", got)
 	}
 }
 

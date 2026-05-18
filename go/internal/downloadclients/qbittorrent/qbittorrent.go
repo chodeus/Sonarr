@@ -522,10 +522,36 @@ func removesCompletedDownloads(prefs *QBittorrentPreferences) bool {
 	return limitReached && actionRemoves
 }
 
-// MarkItemAsImported is filled in by slice 5.G1h. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (q *QBittorrent) MarkItemAsImported(_ context.Context, _ *downloadclients.Item) error {
-	return downloadclients.ErrNotImplementedYet
+// MarkItemAsImported ports C# `QBittorrent.MarkItemAsImported` at
+// `Download/Clients/QBittorrent/QBittorrent.cs:56-73`. When the user
+// has configured a post-import category distinct from TvCategory,
+// swaps the torrent's category to it via
+// /api/v2/torrents/setCategory.
+//
+// Failure swallowed (log + return nil): the C# catch arm at `:66-71`
+// warns "Failed to set post-import torrent label" and continues —
+// the import path has already moved files, so propagating the error
+// would block subsequent imports without recovering anything. The
+// Go port matches.
+func (q *QBittorrent) MarkItemAsImported(ctx context.Context, item *downloadclients.Item) error {
+	if item == nil {
+		return errors.New("qbittorrent: MarkItemAsImported: nil item")
+	}
+	if q.proxy == nil {
+		return errors.New("qbittorrent: MarkItemAsImported: nil proxy")
+	}
+	imported := strings.TrimSpace(q.settings.TvImportedCategory)
+	current := strings.TrimSpace(q.settings.TvCategory)
+	if imported == "" || imported == current {
+		return nil
+	}
+	hash := strings.ToLower(item.DownloadID)
+	if err := q.proxy.SetTorrentLabel(ctx, hash, imported, q.settings); err != nil {
+		q.log.Warn("qbittorrent: Failed to set post-import torrent label",
+			"hash", hash, "label", imported, "err", err)
+		return nil
+	}
+	return nil
 }
 
 // Test ports the connection + version-compat probe from C#
@@ -696,11 +722,36 @@ func parseVersion(raw string) *versionPair {
 	return &versionPair{major: major, minor: minor}
 }
 
-// RequestAction is the per-impl action map. Filled in by slice
-// 5.G1h. Until then mirrors `DownloadClientBase.cs:165-167` and
-// returns (nil, nil).
-func (q *QBittorrent) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
-	return nil, nil
+// RequestAction is the per-impl action map. Ports the C# action
+// surface from `QBittorrent.cs` — the only action qBittorrent
+// exposes is "getCategories", which the v3 React UI uses to
+// populate the category-dropdown when the user edits the
+// DownloadClient row.
+//
+// Unknown actions fall through to (nil, nil) per the C# default at
+// `DownloadClientBase.cs:165-167`.
+func (q *QBittorrent) RequestAction(ctx context.Context, action string, _ map[string]string) (any, error) {
+	if action != "getCategories" {
+		return nil, nil
+	}
+	if q.proxy == nil {
+		return nil, errors.New("qbittorrent: RequestAction(getCategories): nil proxy")
+	}
+	labels, err := q.proxy.GetLabels(ctx, q.settings)
+	if err != nil {
+		return nil, err
+	}
+	// Project to a list-shaped response the v3 UI can render
+	// without inferring the keying. Order is stable-but-
+	// unspecified — the UI sorts client-side.
+	out := make([]QBittorrentLabel, 0, len(labels))
+	for k, v := range labels {
+		if v.Name == "" {
+			v.Name = k
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 // Compile-time guard: QBittorrent satisfies the Provider interface.

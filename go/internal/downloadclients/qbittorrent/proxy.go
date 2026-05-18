@@ -502,6 +502,49 @@ func (p *Proxy) RemoveTorrent(ctx context.Context, hash string, deleteData bool,
 	return nil
 }
 
+// SetTorrentLabel fires POST /api/v2/torrents/setCategory. Mirrors
+// C# `QBittorrentProxyV2.SetTorrentLabel` at `:196-202`. Used by
+// [QBittorrent.MarkItemAsImported] to swap the post-import category.
+func (p *Proxy) SetTorrentLabel(ctx context.Context, hash, label string, settings Settings) error {
+	form := url.Values{}
+	form.Set("hashes", strings.ToLower(hash))
+	form.Set("category", label)
+	status, body, err := p.DoRequest(ctx, http.MethodPost, "/api/v2/torrents/setCategory",
+		strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", settings)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("%w: /api/v2/torrents/setCategory status=%d body=%s",
+			ErrUnexpected, status, truncate(body, 128))
+	}
+	return nil
+}
+
+// GetLabels fires GET /api/v2/torrents/categories. Mirrors C#
+// `QBittorrentProxyV2.GetLabels` at `:206-210`. Returns a map keyed
+// by category name → [QBittorrentLabel]. Empty map (never nil) when
+// qBittorrent has no categories configured.
+func (p *Proxy) GetLabels(ctx context.Context, settings Settings) (map[string]QBittorrentLabel, error) {
+	status, body, err := p.DoRequest(ctx, http.MethodGet, "/api/v2/torrents/categories", nil, "", settings)
+	if err != nil {
+		return nil, err
+	}
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, fmt.Errorf("%w: GET /api/v2/torrents/categories status=%d", ErrAuthFailed, status)
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("%w: GET /api/v2/torrents/categories status=%d body=%s",
+			ErrUnexpected, status, truncate(body, 256))
+	}
+	labels := map[string]QBittorrentLabel{}
+	if err := json.Unmarshal(body, &labels); err != nil {
+		return nil, fmt.Errorf("qbittorrent: parse /api/v2/torrents/categories response: %w", err)
+	}
+	return labels, nil
+}
+
 // SetForceStart fires POST /api/v2/torrents/setForceStart. Mirrors
 // C# `QBittorrentProxyV2.SetForceStart` at `:329-336`.
 func (p *Proxy) SetForceStart(ctx context.Context, hash string, enabled bool, settings Settings) error {
