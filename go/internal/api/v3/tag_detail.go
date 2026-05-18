@@ -3,8 +3,10 @@ package v3
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"sonarr.tv/sonarr/internal/httperr"
 )
@@ -61,6 +63,43 @@ type TagDetailsResource struct {
 // services will satisfy this interface.
 type TagDetailLister interface {
 	AllTagDetails(ctx context.Context) ([]TagDetailsResource, error)
+}
+
+// TagDetailByIDGetter narrows the read for /tag/detail/{id}. The
+// host wires this via a tagsSvc + per-consumer aggregator adapter;
+// today the empty stub returns 404 for any id.
+type TagDetailByIDGetter interface {
+	TagDetail(ctx context.Context, id int) (*TagDetailsResource, error)
+}
+
+// ErrTagDetailNotFound is returned by TagDetailByIDGetter when the
+// requested tag id has no row.
+var ErrTagDetailNotFound = errors.New("tagdetail: not found")
+
+// TagDetailByIDHandler returns GET /api/v3/tag/detail/{id}. Mirrors
+// `TagDetailsController.GetResourceById` at TagDetailsController.cs:18-21
+// (inherited from RestController). 404 when the tag id doesn't match.
+func TagDetailByIDHandler(svc TagDetailByIDGetter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "tag/detail: invalid id")
+			return
+		}
+		detail, err := svc.TagDetail(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, ErrTagDetailNotFound) {
+				httperr.NotFound(w, fmt.Sprintf("tag/detail %d not found", id))
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("tag/detail: get %d: %w", id, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(detail)
+		_, _ = w.Write(buf)
+	})
 }
 
 // TagDetailHandler returns the http.Handler for GET /api/v3/tag/detail.

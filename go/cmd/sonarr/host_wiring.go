@@ -112,6 +112,10 @@ func (emptyTagDetailLister) AllTagDetails(context.Context) ([]apiv3.TagDetailsRe
 	return nil, nil
 }
 
+func (emptyTagDetailLister) TagDetail(context.Context, int) (*apiv3.TagDetailsResource, error) {
+	return nil, apiv3.ErrTagDetailNotFound
+}
+
 // emptyUpdateLister stands in for the future Update package
 // provider. /api/v3/update's empty-DB recording shows 0 entries.
 // The C# UpdateController fetches recent packages via
@@ -837,6 +841,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "PUT", Path: "/api/v3/tag/{id}", Handler: apiv3.TagUpdateHandler(tagsSvc)},
 		{Method: "DELETE", Path: "/api/v3/tag/{id}", Handler: apiv3.TagDeleteHandler(tagsSvc)},
 		{Method: "GET", Path: "/api/v3/tag/detail", Handler: apiv3.TagDetailHandler(emptyTagDetailLister{})},
+		{Method: "GET", Path: "/api/v3/tag/detail/{id}", Handler: apiv3.TagDetailByIDHandler(emptyTagDetailLister{})},
 		{Method: "GET", Path: "/api/v3/update", Handler: apiv3.UpdateHandler(emptyUpdateLister{})},
 		{Method: "GET", Path: "/api/v3/wanted/cutoff", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedCutoff)},
 		{Method: "GET", Path: "/api/v3/wanted/missing", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedMissing)},

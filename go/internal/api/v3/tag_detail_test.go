@@ -19,6 +19,50 @@ func (f *fakeTagDetailLister) AllTagDetails(context.Context) ([]TagDetailsResour
 	return f.rows, f.err
 }
 
+// ---------- 5.X9: GET /tag/detail/{id} tests ----------
+
+type fakeTagDetailByID struct {
+	row *TagDetailsResource
+	err error
+}
+
+func (f *fakeTagDetailByID) TagDetail(_ context.Context, _ int) (*TagDetailsResource, error) {
+	return f.row, f.err
+}
+
+func TestTagDetailByIDHandler_Found(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/tag/detail/5", nil)
+	req.SetPathValue("id", "5")
+	TagDetailByIDHandler(&fakeTagDetailByID{row: &TagDetailsResource{ID: 5, Label: "favorites"}}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+}
+
+func TestTagDetailByIDHandler_NotFound_404(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/tag/detail/999", nil)
+	req.SetPathValue("id", "999")
+	TagDetailByIDHandler(&fakeTagDetailByID{err: ErrTagDetailNotFound}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestTagDetailByIDHandler_InvalidID_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/tag/detail/abc", nil)
+	req.SetPathValue("id", "abc")
+	TagDetailByIDHandler(&fakeTagDetailByID{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
 func TestTagDetailHandler_EmptyList(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
