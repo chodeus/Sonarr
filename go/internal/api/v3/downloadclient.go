@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/httperr"
+	"sonarr.tv/sonarr/internal/signalr"
 )
 
 // DownloadClientByIDGetter narrows the read for /downloadclient/{id}.
@@ -52,11 +54,12 @@ func DownloadClientByIDHandler(svc DownloadClientByIDGetter) http.Handler {
 // "unknown" until the factory port lands — DEFERRED.
 type DownloadClientResource struct {
 	providerResourceCore
-	Enable                   bool   `json:"enable"`
-	Protocol                 string `json:"protocol"`
-	Priority                 int    `json:"priority"`
-	RemoveCompletedDownloads bool   `json:"removeCompletedDownloads"`
-	RemoveFailedDownloads    bool   `json:"removeFailedDownloads"`
+	Enable                   bool            `json:"enable"`
+	Protocol                 string          `json:"protocol"`
+	Priority                 int             `json:"priority"`
+	RemoveCompletedDownloads bool            `json:"removeCompletedDownloads"`
+	RemoveFailedDownloads    bool            `json:"removeFailedDownloads"`
+	Fields                   []ProviderField `json:"fields,omitempty"`
 }
 
 // DownloadClientLister is the read side the handler depends on.
@@ -83,6 +86,213 @@ func DownloadClientHandler(lister DownloadClientLister) http.Handler {
 		buf, _ := json.Marshal(out)
 		_, _ = w.Write(buf)
 	})
+}
+
+// DownloadClientWriter is the CUD surface. *downloadclients.Repo
+// satisfies via the embedded repo.Repository[DownloadClient].
+type DownloadClientWriter interface {
+	Get(ctx context.Context, id int) (*downloadclients.DownloadClient, error)
+	All(ctx context.Context) ([]downloadclients.DownloadClient, error)
+	Insert(ctx context.Context, n *downloadclients.DownloadClient) (*downloadclients.DownloadClient, error)
+	Update(ctx context.Context, n *downloadclients.DownloadClient) error
+	Delete(ctx context.Context, id int) error
+}
+
+// DownloadClientEmitter mirrors the
+// *signalr.ResourceBroadcaster[DownloadClientResource] subset the
+// write handlers call.
+type DownloadClientEmitter interface {
+	Created(ctx context.Context, resource DownloadClientResource) error
+	Updated(ctx context.Context, resource DownloadClientResource) error
+	Deleted(ctx context.Context, resource DownloadClientResource) error
+}
+
+// DownloadClientCreateHandler returns POST /api/v3/downloadclient.
+// Same shape as IndexerCreateHandler / ImportListCreateHandler.
+// Registry membership check deferred to 5.C4b's test endpoint.
+func DownloadClientCreateHandler(svc DownloadClientWriter, emitter DownloadClientEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeDownloadClientBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("downloadclient: malformed body: %v", err))
+			return
+		}
+		if failures := validateDownloadClientResource(r.Context(), body, 0, svc); len(failures) > 0 {
+			httperr.WriteValidation(w, failures)
+			return
+		}
+		row, err := fromDownloadClientResource(body, nil)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("downloadclient: invalid fields: %v", err))
+			return
+		}
+		saved, err := svc.Insert(r.Context(), row)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient: insert: %w", err), nil)
+			return
+		}
+		res := toDownloadClientResource(*saved)
+		signalr.FireAndLog(httperr.LoggerFromRequest(r), "downloadclient", "created", func() error {
+			return emitter.Created(r.Context(), res)
+		})
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusCreated)
+		buf, _ := json.Marshal(res)
+		_, _ = w.Write(buf)
+	})
+}
+
+// DownloadClientUpdateHandler returns PUT /api/v3/downloadclient/{id}.
+func DownloadClientUpdateHandler(svc DownloadClientWriter, emitter DownloadClientEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "downloadclient: invalid id")
+			return
+		}
+		body, err := decodeDownloadClientBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("downloadclient: malformed body: %v", err))
+			return
+		}
+		existing, err := svc.Get(r.Context(), id)
+		if err != nil && !errors.Is(err, downloadclients.ErrNotFound) {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient: get %d: %w", id, err), nil)
+			return
+		}
+		if errors.Is(err, downloadclients.ErrNotFound) {
+			if body.ID > 0 && body.ID != id {
+				if e2, e := svc.Get(r.Context(), body.ID); e == nil {
+					existing = e2
+					id = body.ID
+				}
+			}
+		}
+		if existing == nil {
+			httperr.NotFound(w, fmt.Sprintf("downloadclient %d not found", id))
+			return
+		}
+		if failures := validateDownloadClientResource(r.Context(), body, id, svc); len(failures) > 0 {
+			httperr.WriteValidation(w, failures)
+			return
+		}
+		row, err := fromDownloadClientResource(body, existing)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("downloadclient: invalid fields: %v", err))
+			return
+		}
+		row.ID = id
+		if err := svc.Update(r.Context(), row); err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient: update %d: %w", id, err), nil)
+			return
+		}
+		res := toDownloadClientResource(*row)
+		signalr.FireAndLog(httperr.LoggerFromRequest(r), "downloadclient", "updated", func() error {
+			return emitter.Updated(r.Context(), res)
+		})
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(res)
+		_, _ = w.Write(buf)
+	})
+}
+
+// DownloadClientDeleteHandler returns DELETE /api/v3/downloadclient/{id}.
+func DownloadClientDeleteHandler(svc DownloadClientWriter, emitter DownloadClientEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "downloadclient: invalid id")
+			return
+		}
+		err = svc.Delete(r.Context(), id)
+		if errors.Is(err, downloadclients.ErrNotFound) {
+			httperr.NotFound(w, fmt.Sprintf("downloadclient %d not found", id))
+			return
+		}
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient: delete %d: %w", id, err), nil)
+			return
+		}
+		signalr.FireAndLog(httperr.LoggerFromRequest(r), "downloadclient", "deleted", func() error {
+			return emitter.Deleted(r.Context(), DownloadClientResource{providerResourceCore: providerResourceCore{ID: id}})
+		})
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+}
+
+func decodeDownloadClientBody(r *http.Request) (DownloadClientResource, error) {
+	defer func() { _ = r.Body.Close() }()
+	var out DownloadClientResource
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return DownloadClientResource{}, err
+	}
+	return out, nil
+}
+
+func validateDownloadClientResource(ctx context.Context, body DownloadClientResource, existingID int, svc DownloadClientWriter) []httperr.Failure {
+	failures := make([]httperr.Failure, 0, 3)
+	if strings.TrimSpace(body.Name) == "" {
+		failures = append(failures, httperr.Failure{PropertyName: "Name", ErrorMessage: "'Name' must not be empty.", Severity: "error"})
+	}
+	if strings.TrimSpace(body.Implementation) == "" {
+		failures = append(failures, httperr.Failure{PropertyName: "Implementation", ErrorMessage: "'Implementation' must not be empty.", Severity: "error"})
+	}
+	if strings.TrimSpace(body.ConfigContract) == "" {
+		failures = append(failures, httperr.Failure{PropertyName: "ConfigContract", ErrorMessage: "'Config Contract' must not be empty.", Severity: "error"})
+	}
+	if body.Name != "" {
+		rows, err := svc.All(ctx)
+		if err == nil {
+			for _, existing := range rows {
+				if existing.ID == existingID {
+					continue
+				}
+				if strings.EqualFold(existing.Name, body.Name) {
+					failures = append(failures, httperr.Failure{PropertyName: "Name", ErrorMessage: "Should be unique", Severity: "error"})
+					break
+				}
+			}
+		}
+	}
+	return failures
+}
+
+// fromDownloadClientResource is the inverse of
+// toDownloadClientResource. Note: DownloadClient's Settings +
+// ConfigContract are plain `string` (not *string like indexer +
+// importlist) — the DB schema makes them NOT NULL.
+func fromDownloadClientResource(res DownloadClientResource, existing *downloadclients.DownloadClient) (*downloadclients.DownloadClient, error) {
+	settings := "{}"
+	if res.Fields != nil {
+		s, err := settingsJSONFromFields(res.Fields)
+		if err != nil {
+			return nil, err
+		}
+		settings = s
+	} else if existing != nil {
+		settings = existing.Settings
+	}
+	tags := res.Tags
+	if tags == nil {
+		tags = []int{}
+	}
+	return &downloadclients.DownloadClient{
+		ID:                       res.ID,
+		Enable:                   res.Enable,
+		Name:                     res.Name,
+		Implementation:           res.Implementation,
+		Settings:                 settings,
+		ConfigContract:           res.ConfigContract,
+		Priority:                 res.Priority,
+		RemoveCompletedDownloads: res.RemoveCompletedDownloads,
+		RemoveFailedDownloads:    res.RemoveFailedDownloads,
+		Tags:                     tags,
+	}, nil
 }
 
 func toDownloadClientResource(d downloadclients.DownloadClient) DownloadClientResource {
