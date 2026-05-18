@@ -895,6 +895,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "POST", Path: "/api/v3/notification/test", Handler: apiv3.NotificationTestHandler(notificationTester)},
 		{Method: "POST", Path: "/api/v3/notification/testall", Handler: apiv3.NotificationTestAllHandler(notificationsRepo, notificationTester)},
 		{Method: "POST", Path: "/api/v3/notification/action/{name}", Handler: apiv3.NotificationRequestActionHandler(notificationTester)},
+		{Method: "PUT", Path: "/api/v3/notification/bulk", Handler: apiv3.NotificationBulkNotSupportedHandler()},
+		{Method: "DELETE", Path: "/api/v3/notification/bulk", Handler: apiv3.NotificationBulkNotSupportedHandler()},
 		{Method: "PUT", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationUpdateHandler(notificationsRepo, notificationRegistry, notificationEmitter)},
 		{Method: "DELETE", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationDeleteHandler(notificationsRepo, notificationEmitter)},
 		{Method: "GET", Path: "/api/v3/parse", Handler: apiv3.ParseHandler()},

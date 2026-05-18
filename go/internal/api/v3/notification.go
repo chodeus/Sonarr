@@ -335,6 +335,31 @@ func NotificationTestHandler(tester NotificationTester) http.Handler {
 	})
 }
 
+// NotificationBulkNotSupportedHandler returns 501 NotImplemented for
+// the two bulk endpoints (PUT /notification/bulk + DELETE
+// /notification/bulk). Mirrors the C# `NotificationController` at
+// `src/Sonarr.Api.V3/Notifications/NotificationController.cs:20-30`
+// which explicitly overrides the ProviderControllerBase bulk methods
+// with `[NonAction]` + `throw new NotImplementedException()`.
+//
+// `[NonAction]` makes the methods invisible to ASP.NET MVC routing
+// — the C# tree returns 404 from the framework's default 404 path.
+// The Go port returns 501 instead because the URL structurally
+// matches a valid bulk endpoint pattern (the indexer/importlist/
+// downloadclient/metadata families DO support bulk) — 501 is the
+// more diagnostic response: "this resource doesn't support bulk,"
+// vs 404 "no such endpoint."
+//
+// The other four provider families (5.C2-5) wire real bulk
+// handlers; notifications stays disabled.
+func NotificationBulkNotSupportedHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httperr.Write(w, http.StatusNotImplemented,
+			"bulk operations are not supported for notifications",
+			"", nil)
+	})
+}
+
 // NotificationActioner invokes a per-row provider RequestAction. The
 // cmd-side adapter wires this against
 // [notifications.Registry.Construct] + [notifications.Provider.RequestAction]

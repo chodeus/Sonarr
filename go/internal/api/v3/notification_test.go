@@ -443,6 +443,30 @@ func TestNotificationTestHandler_SkipsSharedValidator(t *testing.T) {
 	}
 }
 
+func TestNotificationBulkNotSupportedHandler_Returns501(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		method := method
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			rr := httptest.NewRecorder()
+			NotificationBulkNotSupportedHandler().ServeHTTP(rr, httptest.NewRequest(method, "/api/v3/notification/bulk", nil))
+			if rr.Code != http.StatusNotImplemented {
+				t.Errorf("status: %d want 501", rr.Code)
+			}
+			// Envelope shape, not validation array. The message field
+			// is the diagnostic string.
+			var env map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+				t.Fatalf("envelope shape: %v body=%s", err, rr.Body.String())
+			}
+			if msg, _ := env["message"].(string); msg == "" {
+				t.Errorf("message must be non-empty: %s", rr.Body.String())
+			}
+		})
+	}
+}
+
 // fakeNotifActioner implements NotificationActioner. Records each
 // call so the handler-side query/path/body projection can be
 // inspected.
