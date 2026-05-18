@@ -736,6 +736,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/episodefile", Handler: apiv3.EpisodeFileListHandler(episodeFilesSvc)},
 		{Method: "GET", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileByIDHandler(episodeFilesSvc)},
 		{Method: "PUT", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileUpdateHandler(episodeFilesSvc)},
+		{Method: "PUT", Path: "/api/v3/episodefile/editor", Handler: apiv3.EpisodeFileEditorHandler(episodeFilesSvc)},
+		{Method: "PUT", Path: "/api/v3/episodefile/bulk", Handler: apiv3.EpisodeFileBulkUpdateHandler(episodeFilesSvc)},
 		{Method: "DELETE", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileDeleteHandler(episodeFilesSvc)},
 		{Method: "DELETE", Path: "/api/v3/episodefile/bulk", Handler: apiv3.EpisodeFileBulkDeleteHandler(episodeFilesSvc)},
 		{Method: "GET", Path: "/api/v3/health", Handler: apiv3.HealthHandler(healthSvc)},

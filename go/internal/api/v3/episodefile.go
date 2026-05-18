@@ -147,13 +147,143 @@ func EpisodeFileByIDHandler(svc EpisodeFileReader) http.Handler {
 }
 
 // EpisodeFileWriter is the write surface for DELETE /api/v3/episodefile
-// + PUT /api/v3/episodefile/{id}. Satisfied directly by
-// *episodefiles.Service.
+// + PUT /api/v3/episodefile/{id} + bulk variants. Satisfied directly
+// by *episodefiles.Service.
 type EpisodeFileWriter interface {
 	GetFile(ctx context.Context, id int) (*episodefiles.File, error)
 	GetFiles(ctx context.Context, ids []int) ([]episodefiles.File, error)
 	Delete(ctx context.Context, f *episodefiles.File, reason episodefiles.DeleteMediaFileReason) error
 	Update(ctx context.Context, f *episodefiles.File) error
+	UpdateMany(ctx context.Context, files []*episodefiles.File) error
+}
+
+// episodeFileEditorBody mirrors C# `EpisodeFileListResource` — same
+// shape as the DELETE-bulk body plus the editor's metadata override
+// fields (Languages/Quality DEFERRED).
+type episodeFileEditorBody struct {
+	EpisodeFileIDs []int  `json:"episodeFileIds"`
+	SceneName      string `json:"sceneName,omitempty"`
+	ReleaseGroup   string `json:"releaseGroup,omitempty"`
+}
+
+// EpisodeFileEditorHandler returns PUT /api/v3/episodefile/editor.
+// Mirrors `EpisodeFileController.SetQuality` (the `[HttpPut("editor")]`
+// overload at `:115-150`) — applies one set of metadata overrides
+// (SceneName/ReleaseGroup; Languages/Quality DEFERRED) to ALL files
+// in the EpisodeFileIds list. The C# action is marked `[Obsolete]`
+// in favour of PUT /bulk but is still served; the Go port mirrors
+// that surface preservation.
+func EpisodeFileEditorHandler(svc EpisodeFileWriter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body episodeFileEditorBody
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("episodefile/editor: malformed body: %v", err))
+			return
+		}
+		if len(body.EpisodeFileIDs) == 0 {
+			httperr.BadRequest(w, "episodefile/editor: episodeFileIds is required")
+			return
+		}
+		files, err := svc.GetFiles(r.Context(), body.EpisodeFileIDs)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile/editor: get: %w", err), nil)
+			return
+		}
+		if len(files) == 0 {
+			httperr.NotFound(w, "episodefile/editor: no matching files")
+			return
+		}
+		ptrs := make([]*episodefiles.File, len(files))
+		for i := range files {
+			f := files[i]
+			if body.SceneName != "" {
+				f.SceneName = body.SceneName
+			}
+			if body.ReleaseGroup != "" {
+				f.ReleaseGroup = body.ReleaseGroup
+			}
+			ptrs[i] = &f
+		}
+		if err := svc.UpdateMany(r.Context(), ptrs); err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile/editor: update: %w", err), nil)
+			return
+		}
+		out := make([]EpisodeFileResource, 0, len(ptrs))
+		for _, f := range ptrs {
+			out = append(out, ToEpisodeFileResource(*f, ""))
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(out)
+		_, _ = w.Write(buf)
+	})
+}
+
+// EpisodeFileBulkUpdateHandler returns PUT /api/v3/episodefile/bulk.
+// Mirrors `EpisodeFileController.SetPropertiesBulk` at `:182-210` —
+// accepts an array of EpisodeFileResource, each entry matched by id
+// against the loaded files, with per-row override application.
+// Returns the updated rows projected.
+func EpisodeFileBulkUpdateHandler(svc EpisodeFileWriter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var body []EpisodeFileResource
+		dec := json.NewDecoder(req.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("episodefile/bulk: malformed body: %v", err))
+			return
+		}
+		if len(body) == 0 {
+			httperr.BadRequest(w, "episodefile/bulk: body must be non-empty array")
+			return
+		}
+		ids := make([]int, 0, len(body))
+		byID := make(map[int]EpisodeFileResource, len(body))
+		for _, entry := range body {
+			if entry.ID <= 0 {
+				httperr.BadRequest(w, "episodefile/bulk: each entry must include positive id")
+				return
+			}
+			ids = append(ids, entry.ID)
+			byID[entry.ID] = entry
+		}
+		files, err := svc.GetFiles(req.Context(), ids)
+		if err != nil {
+			httperr.WriteErr(w, req, http.StatusInternalServerError, fmt.Errorf("episodefile/bulk: get: %w", err), nil)
+			return
+		}
+		if len(files) == 0 {
+			httperr.NotFound(w, "episodefile/bulk: no matching files")
+			return
+		}
+		ptrs := make([]*episodefiles.File, len(files))
+		for i := range files {
+			f := files[i]
+			if entry, ok := byID[f.ID]; ok {
+				if entry.SceneName != "" {
+					f.SceneName = entry.SceneName
+				}
+				if entry.ReleaseGroup != "" {
+					f.ReleaseGroup = entry.ReleaseGroup
+				}
+			}
+			ptrs[i] = &f
+		}
+		if err := svc.UpdateMany(req.Context(), ptrs); err != nil {
+			httperr.WriteErr(w, req, http.StatusInternalServerError, fmt.Errorf("episodefile/bulk: update: %w", err), nil)
+			return
+		}
+		out := make([]EpisodeFileResource, 0, len(ptrs))
+		for _, f := range ptrs {
+			out = append(out, ToEpisodeFileResource(*f, ""))
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(out)
+		_, _ = w.Write(buf)
+	})
 }
 
 // EpisodeFileUpdateHandler returns PUT /api/v3/episodefile/{id}. Mirrors

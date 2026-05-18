@@ -12,13 +12,14 @@ import (
 )
 
 type fakeEpisodeFileWriter struct {
-	get        map[int]*episodefiles.File
-	getMany    []episodefiles.File
-	getErr     error
-	deletedIDs []int
-	deleteErr  error
-	updated    *episodefiles.File
-	updateErr  error
+	get         map[int]*episodefiles.File
+	getMany     []episodefiles.File
+	getErr      error
+	deletedIDs  []int
+	deleteErr   error
+	updated     *episodefiles.File
+	updatedMany []*episodefiles.File
+	updateErr   error
 }
 
 func (f *fakeEpisodeFileWriter) Update(_ context.Context, file *episodefiles.File) error {
@@ -27,6 +28,17 @@ func (f *fakeEpisodeFileWriter) Update(_ context.Context, file *episodefiles.Fil
 	}
 	cp := *file
 	f.updated = &cp
+	return nil
+}
+
+func (f *fakeEpisodeFileWriter) UpdateMany(_ context.Context, files []*episodefiles.File) error {
+	if f.updateErr != nil {
+		return f.updateErr
+	}
+	for _, fi := range files {
+		cp := *fi
+		f.updatedMany = append(f.updatedMany, &cp)
+	}
 	return nil
 }
 
@@ -358,6 +370,110 @@ func TestEpisodeFileUpdateHandler_UpdateError_500(t *testing.T) {
 	req.SetPathValue("id", "1")
 	EpisodeFileUpdateHandler(w).ServeHTTP(rr, req)
 	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// ---------- 5.D5c: PUT /episodefile/editor + /bulk tests ----------
+
+func TestEpisodeFileEditorHandler_AppliesSameOverridesToAll(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeFileWriter{getMany: []episodefiles.File{
+		{ID: 1, SceneName: "a", ReleaseGroup: "OLD"},
+		{ID: 2, SceneName: "b", ReleaseGroup: "OLD"},
+		{ID: 3, SceneName: "c", ReleaseGroup: "OLD"},
+	}}
+	rr := httptest.NewRecorder()
+	body := `{"episodeFileIds":[1,2,3],"releaseGroup":"NEW"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/editor", strings.NewReader(body))
+	EpisodeFileEditorHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.updatedMany) != 3 {
+		t.Fatalf("expected 3 updated; got %d", len(w.updatedMany))
+	}
+	for _, f := range w.updatedMany {
+		if f.ReleaseGroup != "NEW" {
+			t.Errorf("ReleaseGroup not propagated: %+v", f)
+		}
+		// SceneName not set in body -> preserved.
+		if f.SceneName == "" {
+			t.Errorf("SceneName should be preserved: %+v", f)
+		}
+	}
+}
+
+func TestEpisodeFileEditorHandler_NoMatchingFiles_404(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeFileWriter{getMany: nil}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/editor", strings.NewReader(`{"episodeFileIds":[999]}`))
+	EpisodeFileEditorHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestEpisodeFileEditorHandler_MissingIDs_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/editor", strings.NewReader(`{"episodeFileIds":[]}`))
+	EpisodeFileEditorHandler(&fakeEpisodeFileWriter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestEpisodeFileBulkUpdateHandler_PerIDOverrides(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeFileWriter{getMany: []episodefiles.File{
+		{ID: 1, SceneName: "old.1", ReleaseGroup: "OLD"},
+		{ID: 2, SceneName: "old.2", ReleaseGroup: "OLD"},
+	}}
+	rr := httptest.NewRecorder()
+	body := `[{"id":1,"seriesId":1,"seasonNumber":0,"relativePath":"","path":"","size":0,"dateAdded":"0001-01-01T00:00:00Z","sceneName":"new.1"},{"id":2,"seriesId":1,"seasonNumber":0,"relativePath":"","path":"","size":0,"dateAdded":"0001-01-01T00:00:00Z","releaseGroup":"NEW2"}]`
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/bulk", strings.NewReader(body))
+	EpisodeFileBulkUpdateHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.updatedMany) != 2 {
+		t.Fatalf("expected 2 updated; got %d", len(w.updatedMany))
+	}
+	// Per-id overrides: id=1 gets sceneName='new.1' + preserves OLD release group;
+	// id=2 gets releaseGroup='NEW2' + preserves old.2 scene name.
+	for _, f := range w.updatedMany {
+		switch f.ID {
+		case 1:
+			if f.SceneName != "new.1" || f.ReleaseGroup != "OLD" {
+				t.Errorf("id=1: %+v", f)
+			}
+		case 2:
+			if f.SceneName != "old.2" || f.ReleaseGroup != "NEW2" {
+				t.Errorf("id=2: %+v", f)
+			}
+		}
+	}
+}
+
+func TestEpisodeFileBulkUpdateHandler_EmptyArray_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/bulk", strings.NewReader(`[]`))
+	EpisodeFileBulkUpdateHandler(&fakeEpisodeFileWriter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestEpisodeFileBulkUpdateHandler_MissingID_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	body := `[{"id":0,"seriesId":1,"seasonNumber":0,"relativePath":"","path":"","size":0,"dateAdded":"0001-01-01T00:00:00Z"}]`
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/bulk", strings.NewReader(body))
+	EpisodeFileBulkUpdateHandler(&fakeEpisodeFileWriter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
 	}
 }
