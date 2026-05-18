@@ -3,6 +3,7 @@ package qbittorrent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -306,6 +307,59 @@ func (p *Proxy) fireOnce(ctx context.Context, method, path string, body []byte, 
 		return resp.StatusCode, nil, fmt.Errorf("qbittorrent: read response body: %w", readErr)
 	}
 	return resp.StatusCode, respBody, nil
+}
+
+// GetVersion fires GET /api/v2/app/version. Mirrors C#
+// `QBittorrentProxyV2.GetVersion` at
+// `QBittorrentProxyV2.cs:80-88`. The Test slice (5.G1c) drives this
+// directly via DoRequest because it wants finer-grained
+// failure-vs-error control; GetItems + Download routing prefer this
+// wrapper for the version-gated branches.
+func (p *Proxy) GetVersion(ctx context.Context, settings Settings) (string, error) {
+	status, body, err := p.DoRequest(ctx, http.MethodGet, "/api/v2/app/version", nil, "", settings)
+	if err != nil {
+		return "", err
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("%w: GET /api/v2/app/version status=%d body=%s",
+			ErrUnexpected, status, truncate(body, 128))
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(body)), "v")), nil
+}
+
+// GetTorrents fires GET /api/v2/torrents/info. Mirrors C#
+// `QBittorrentProxyV2.GetTorrents` at `QBittorrentProxyV2.cs:96-106`.
+// When settings.TvCategory is non-empty, applies it as the
+// ?category= filter so qBittorrent returns only matching torrents
+// — mirrors C# `:99-102`. Returns the JSON-deserialised slice; an
+// empty array maps to an empty slice (never nil).
+func (p *Proxy) GetTorrents(ctx context.Context, settings Settings) ([]QBittorrentTorrent, error) {
+	path := "/api/v2/torrents/info"
+	if tvCat := strings.TrimSpace(settings.TvCategory); tvCat != "" {
+		q := url.Values{}
+		q.Set("category", tvCat)
+		path = path + "?" + q.Encode()
+	}
+	status, body, err := p.DoRequest(ctx, http.MethodGet, path, nil, "", settings)
+	if err != nil {
+		return nil, err
+	}
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, fmt.Errorf("%w: GET /api/v2/torrents/info status=%d", ErrAuthFailed, status)
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("%w: GET /api/v2/torrents/info status=%d body=%s",
+			ErrUnexpected, status, truncate(body, 256))
+	}
+	var torrents []QBittorrentTorrent
+	if err := json.Unmarshal(body, &torrents); err != nil {
+		return nil, fmt.Errorf("qbittorrent: parse /api/v2/torrents/info response: %w", err)
+	}
+	if torrents == nil {
+		torrents = []QBittorrentTorrent{}
+	}
+	return torrents, nil
 }
 
 // authKey is the cache key (baseURL, username, password). Mirrors

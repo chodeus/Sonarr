@@ -10,9 +10,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // Implementation + ConfigContract are the persisted-row identifiers
@@ -95,10 +97,211 @@ func (q *QBittorrent) Download(_ context.Context, _ *downloadclients.GrabRequest
 	return "", downloadclients.ErrNotImplementedYet
 }
 
-// GetItems is filled in by slice 5.G1d. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (q *QBittorrent) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+// GetItems ports C# `QBittorrent.GetItems` at
+// `Download/Clients/QBittorrent/QBittorrent.cs:246-359`. Fetches
+// every torrent the WebUI reports (filtered server-side by category
+// when settings.TvCategory is non-empty per
+// `QBittorrentProxyV2.cs:99-102`) and projects each into the
+// orchestrator's canonical [downloadclients.Item] shape.
+//
+// Differences from the C# port:
+//
+//   - The DhtEnabled branch at C# `:316-325` (warn-on-metaDL-when-DHT-disabled)
+//     reads the /api/v2/app/preferences config which the Go port
+//     defers to 5.G1g (GetStatus). 5.G1d treats every metaDL /
+//     forcedMetaDL state as Queued unconditionally — the worst case
+//     is a metadata stall that takes longer to surface as a
+//     warning, which matches qBittorrent's own UI behaviour pre-2.6.
+//   - The remote-path-mapping translation at C# `:346` is deferred
+//     until the [downloadclients.Dependencies.RemotePathMappingService]
+//     port lands (see queue [15] follow-up). 5.G1d emits the raw
+//     RPC-side ContentPath / SavePath; the orchestrator's path-
+//     mapping helper translates at consumption time.
+//   - The version-gate at C# `:342` (ContentPath only at WebUI API
+//     >= 2.6.1) is dropped — minVersion at 5.G1c already pins to
+//     qBittorrent 4.1+ which always has API >= 2.6.
+//   - HasReachedSeedLimit at C# `:273` reads global config; the
+//     Go-port implementation honours only the per-torrent ratio_limit
+//     / seeding_time_limit fields (-2 = use global is treated as
+//     "not reached" — conservative, matches the Transmission
+//     family pattern at internal/downloadclients/transmission/transmission.go).
+func (q *QBittorrent) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
+	torrents, err := q.proxy.GetTorrents(ctx, q.settings)
+	if err != nil {
+		return nil, fmt.Errorf("qbittorrent: GetItems: %w", err)
+	}
+
+	info := q.itemClientInfo()
+
+	items := make([]*downloadclients.Item, 0, len(torrents))
+	for i := range torrents {
+		items = append(items, q.torrentToItem(torrents[i], info))
+	}
+	return items, nil
+}
+
+// torrentToItem builds the typed Item from a qBittorrent torrent.
+// Pulled into its own helper so the 5.G1d body stays readable.
+func (q *QBittorrent) torrentToItem(t QBittorrentTorrent, info *downloadclients.ItemClientInfo) *downloadclients.Item {
+	category := t.Category
+	if strings.TrimSpace(category) == "" {
+		category = t.Label
+	}
+
+	ratio := t.Ratio
+	ratioPtr := &ratio
+
+	remaining := int64(float64(t.Size) * (1.0 - t.Progress))
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	item := &downloadclients.Item{
+		DownloadClientInfo: info,
+		DownloadID:         strings.ToUpper(t.Hash),
+		Category:           category,
+		Title:              t.Name,
+		TotalSize:          t.Size,
+		RemainingSize:      remaining,
+		SeedRatio:          ratioPtr,
+	}
+
+	// ETA: qBittorrent reports 8640000 (100 days) for completed
+	// torrents — the C# tree clamps in the Completed arm at `:301`
+	// rather than here. We mirror: assign a non-nil duration when
+	// the torrent isn't completed; the completed arm below zeroes it.
+	if t.Eta > 0 {
+		d := time.Duration(t.Eta) * time.Second
+		// Guard the int64 nanosecond range — same overflow shield
+		// Transmission uses.
+		if t.Eta > int64(time.Duration(1<<62)/time.Second) {
+			d = time.Duration(t.Eta) * time.Millisecond
+		}
+		item.RemainingTime = &d
+	}
+
+	// Status mapping per C# `QBittorrent.cs:275-340`.
+	completed := false
+	switch t.State {
+	case "error":
+		item.Status = downloadclients.DownloadItemStatusWarning
+		item.Message = "qBittorrent reported an error on this torrent"
+
+	case "stoppedDL", "pausedDL":
+		item.Status = downloadclients.DownloadItemStatusPaused
+
+	case "queuedDL", "checkingDL", "checkingUP", "checkingResumeData", "queuedForChecking":
+		item.Status = downloadclients.DownloadItemStatusQueued
+
+	case "pausedUP", "stoppedUP", "uploading", "stalledUP", "queuedUP", "forcedUP":
+		item.Status = downloadclients.DownloadItemStatusCompleted
+		zero := time.Duration(0)
+		item.RemainingTime = &zero
+		completed = true
+
+	case "stalledDL":
+		item.Status = downloadclients.DownloadItemStatusWarning
+		item.Message = "The download is stalled with no connections"
+
+	case "missingFiles":
+		item.Status = downloadclients.DownloadItemStatusWarning
+		item.Message = "The download is missing files"
+
+	case "metaDL", "forcedMetaDL":
+		// C# tree warns when DHT is disabled; deferred to 5.G1g
+		// when GetStatus / preferences land. Treat as Queued
+		// unconditionally — matches qBittorrent's own UI hint.
+		item.Status = downloadclients.DownloadItemStatusQueued
+		item.Message = "Downloading torrent metadata"
+
+	case "forcedDL", "moving", "downloading":
+		item.Status = downloadclients.DownloadItemStatusDownloading
+
+	default:
+		// Unknown state — log + treat as Downloading per C# `:336-339`.
+		q.log.Info("qbittorrent: unknown torrent state, defaulting to Downloading",
+			"hash", t.Hash, "state", t.State)
+		item.Status = downloadclients.DownloadItemStatusDownloading
+		item.Message = fmt.Sprintf("Unknown qBittorrent state: %s", t.State)
+	}
+
+	// OutputPath. For completed torrents the C# tree prefers
+	// ContentPath (`:344-352`); we mirror, with the "ContentPath ==
+	// SavePath" arm becoming a Warning to match `:349-352`.
+	if completed {
+		switch {
+		case strings.TrimSpace(t.ContentPath) != "" && t.ContentPath != t.SavePath:
+			item.OutputPath = ospath.New(t.ContentPath)
+		case strings.TrimSpace(t.ContentPath) != "" && t.ContentPath == t.SavePath:
+			item.Status = downloadclients.DownloadItemStatusWarning
+			item.Message = "qBittorrent reported the same path for ContentPath and SavePath; the import path is unknown"
+		case strings.TrimSpace(t.SavePath) != "":
+			item.OutputPath = ospath.New(joinTorrentPath(t.SavePath, t.Name))
+		}
+	} else if strings.TrimSpace(t.SavePath) != "" {
+		item.OutputPath = ospath.New(joinTorrentPath(t.SavePath, t.Name))
+	}
+
+	// CanBeRemoved / CanMoveFiles gating per C# `:270-273`:
+	// only when paused-after-completion AND the global remove flag
+	// is set AND the seed limit was reached.
+	pausedAfterComplete := t.State == "pausedUP" || t.State == "stoppedUP"
+	item.CanBeRemoved = info != nil && info.RemoveCompletedDownloads &&
+		pausedAfterComplete && hasReachedSeedLimit(t)
+	item.CanMoveFiles = item.CanBeRemoved
+
+	return item
+}
+
+// hasReachedSeedLimit ports the per-torrent half of C#
+// `QBittorrent.HasReachedSeedLimit` at the consumer-callsite level.
+// The full C# impl reads global preferences too; the Go-port
+// version honours only the per-torrent `ratio_limit` /
+// `seeding_time_limit` fields (-2 = "use global" is treated as
+// "not reached" — conservative, matches the Transmission family
+// pattern). Global-preference reads land at 5.G1g once GetStatus
+// pulls /api/v2/app/preferences.
+func hasReachedSeedLimit(t QBittorrentTorrent) bool {
+	if t.RatioLimit >= 0 && t.Ratio >= t.RatioLimit {
+		return true
+	}
+	if t.SeedingTimeLimit >= 0 && t.SeedingTime != nil && *t.SeedingTime >= t.SeedingTimeLimit*60 {
+		return true
+	}
+	return false
+}
+
+// itemClientInfo mirrors C#
+// `DownloadClientItemClientInfo.FromDownloadClient` at
+// `DownloadClientItemClientInfo.cs`. HasPostImportCategory is true
+// when settings.TvImportedCategory is non-empty per C#
+// `QBittorrent.cs:262`.
+func (q *QBittorrent) itemClientInfo() *downloadclients.ItemClientInfo {
+	info := &downloadclients.ItemClientInfo{
+		Protocol:              q.Protocol(),
+		Type:                  Implementation,
+		Name:                  q.Name(),
+		HasPostImportCategory: strings.TrimSpace(q.settings.TvImportedCategory) != "",
+	}
+	if q.def != nil {
+		info.ID = q.def.ID
+		info.Name = q.def.Name
+		info.RemoveCompletedDownloads = q.def.RemoveCompletedDownloads
+	}
+	return info
+}
+
+// joinTorrentPath joins qBittorrent's save_path (always
+// '/'-separated, per C# `:386` comment) with the torrent name.
+// Trims any trailing slash on the base.
+func joinTorrentPath(base, name string) string {
+	if base == "" {
+		return name
+	}
+	if name == "" {
+		return base
+	}
+	return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(name, "/")
 }
 
 // GetImportItem mirrors the C# base default — pass input through.
