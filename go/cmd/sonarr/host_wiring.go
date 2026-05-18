@@ -951,6 +951,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "POST", Path: "/api/v3/importlist/test", Handler: apiv3.ImportListTestHandler(importListTester)},
 		{Method: "POST", Path: "/api/v3/importlist/testall", Handler: apiv3.ImportListTestAllHandler(importListsRepo, importListTester)},
 		{Method: "POST", Path: "/api/v3/importlist/action/{name}", Handler: apiv3.ImportListRequestActionHandler(importListTester)},
+		{Method: "PUT", Path: "/api/v3/importlist/bulk", Handler: apiv3.ImportListBulkUpdateHandler(importListsRepo, importListEmitter)},
+		{Method: "DELETE", Path: "/api/v3/importlist/bulk", Handler: apiv3.ImportListBulkDeleteHandler(importListsRepo, importListEmitter)},
 		{Method: "PUT", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListUpdateHandler(importListsRepo, importListEmitter)},
 		{Method: "DELETE", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListDeleteHandler(importListsRepo, importListEmitter)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion", Handler: apiv3.ImportListExclusionHandler(importListExclusionsRepo)},

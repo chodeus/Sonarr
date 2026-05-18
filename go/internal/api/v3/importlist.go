@@ -372,6 +372,154 @@ func ImportListTestHandler(tester ImportListTester) http.Handler {
 	})
 }
 
+// ImportListBulkResource mirrors C# `ImportListBulkResource` at
+// `src/Sonarr.Api.V3/ImportLists/ImportListBulkResource.cs`. Three
+// per-controller optional fields plus the inherited Ids/Tags/ApplyTags.
+//
+// Note: RootFolderPath is *string (not plain string) so the
+// distinction between "not supplied" and "empty string" is wire-
+// preservable — matches the C# null-coalesce semantics at the
+// mapper at :26 (`existing.RootFolderPath = resource.RootFolderPath
+// ?? existing.RootFolderPath`).
+//
+// applyTagsAction (defined in indexer.go for 5.C2e) is family-
+// agnostic and reused here.
+type ImportListBulkResource struct {
+	IDs                []int           `json:"ids"`
+	Tags               []int           `json:"tags"`
+	ApplyTags          applyTagsAction `json:"applyTags"`
+	EnableAutomaticAdd *bool           `json:"enableAutomaticAdd,omitempty"`
+	RootFolderPath     *string         `json:"rootFolderPath,omitempty"`
+	QualityProfileID   *int            `json:"qualityProfileId,omitempty"`
+}
+
+// ImportListBulkUpdateHandler returns PUT /api/v3/importlist/bulk.
+// Mirrors `ProviderControllerBase.UpdateProvider(TBulkProviderResource)`
+// at C# :130-166 + `ImportListBulkResourceMapper.UpdateModel` at
+// `ImportListBulkResource.cs:17-32`. Importlists support bulk (C#
+// ImportListController inherits the base method unchanged).
+func ImportListBulkUpdateHandler(svc ImportListWriter, emitter ImportListEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeImportListBulkBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("importlist/bulk: malformed body: %v", err))
+			return
+		}
+		if len(body.IDs) == 0 {
+			httperr.BadRequest(w, "ids must be provided")
+			return
+		}
+		updated := make([]ImportListResource, 0, len(body.IDs))
+		for _, id := range body.IDs {
+			existing, err := svc.Get(r.Context(), id)
+			if errors.Is(err, importlists.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlist/bulk: get %d: %w", id, err), nil)
+				return
+			}
+			applyImportListBulkUpdate(existing, body)
+			if err := svc.Update(r.Context(), existing); err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlist/bulk: update %d: %w", id, err), nil)
+				return
+			}
+			res := toImportListResource(*existing)
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "importlist", "updated", func() error {
+				return emitter.Updated(r.Context(), res)
+			})
+			updated = append(updated, res)
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(updated)
+		_, _ = w.Write(buf)
+	})
+}
+
+// ImportListBulkDeleteHandler returns DELETE /api/v3/importlist/bulk.
+// Same shape as IndexerBulkDeleteHandler.
+func ImportListBulkDeleteHandler(svc ImportListWriter, emitter ImportListEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeImportListBulkBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("importlist/bulk: malformed body: %v", err))
+			return
+		}
+		if len(body.IDs) == 0 {
+			httperr.BadRequest(w, "ids must be provided")
+			return
+		}
+		for _, id := range body.IDs {
+			err := svc.Delete(r.Context(), id)
+			if errors.Is(err, importlists.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlist/bulk: delete %d: %w", id, err), nil)
+				return
+			}
+			id := id
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "importlist", "deleted", func() error {
+				return emitter.Deleted(r.Context(), ImportListResource{providerResourceCore: providerResourceCore{ID: id}})
+			})
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+}
+
+func decodeImportListBulkBody(r *http.Request) (ImportListBulkResource, error) {
+	defer func() { _ = r.Body.Close() }()
+	var out ImportListBulkResource
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return ImportListBulkResource{}, err
+	}
+	return out, nil
+}
+
+// applyImportListBulkUpdate mutates `existing` per the
+// [ImportListBulkResource] semantics. Mirrors C#
+// `ImportListBulkResourceMapper.UpdateModel` at :17-32 for the
+// per-field block plus the inherited
+// `ProviderControllerBase.UpdateProvider` Tags-apply switch at
+// :148-159 for the tag-mutation block.
+func applyImportListBulkUpdate(existing *importlists.ImportList, body ImportListBulkResource) {
+	if body.Tags != nil {
+		switch body.ApplyTags {
+		case applyTagsReplace:
+			existing.Tags = append([]int(nil), body.Tags...)
+		case applyTagsAdd:
+			for _, t := range body.Tags {
+				if !containsInt(existing.Tags, t) {
+					existing.Tags = append(existing.Tags, t)
+				}
+			}
+		case applyTagsRemove:
+			out := existing.Tags[:0]
+			for _, t := range existing.Tags {
+				if !containsInt(body.Tags, t) {
+					out = append(out, t)
+				}
+			}
+			existing.Tags = out
+		}
+	}
+	if body.EnableAutomaticAdd != nil {
+		v := *body.EnableAutomaticAdd
+		existing.EnableAutomaticAdd = &v
+	}
+	if body.RootFolderPath != nil {
+		existing.RootFolderPath = *body.RootFolderPath
+	}
+	if body.QualityProfileID != nil {
+		existing.QualityProfileID = *body.QualityProfileID
+	}
+}
+
 // ImportListActioner invokes a per-row provider RequestAction. The
 // cmd-side adapter wires this against importlists.Registry.Construct
 // + importlists.Provider.RequestAction under host-supplied

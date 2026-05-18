@@ -675,3 +675,196 @@ func TestImportListRequestActionHandler_MalformedJSON_400(t *testing.T) {
 		t.Errorf("status: %d", rr.Code)
 	}
 }
+
+func stringPtr(s string) *string { return &s }
+
+func TestImportListBulkUpdateHandler_TagsAdd(t *testing.T) {
+	t.Parallel()
+	rows := []importlists.ImportList{
+		{ID: 1, Name: "a", Implementation: "SonarrImport", Tags: []int{10}},
+		{ID: 2, Name: "b", Implementation: "SonarrImport", Tags: []int{20}},
+	}
+	w := &fakeImportListWriter{rows: rows}
+	em := &fakeImportListEmitter{}
+	body := ImportListBulkResource{IDs: []int{1, 2}, Tags: []int{30}, ApplyTags: applyTagsAdd}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	ImportListBulkUpdateHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/importlist/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !equalIntSet(w.rows[0].Tags, []int{10, 30}) || !equalIntSet(w.rows[1].Tags, []int{20, 30}) {
+		t.Errorf("tags after Add: row0=%v row1=%v", w.rows[0].Tags, w.rows[1].Tags)
+	}
+	if len(em.updated) != 2 {
+		t.Errorf("emitter Updated count: %d", len(em.updated))
+	}
+}
+
+func TestImportListBulkUpdateHandler_TagsRemoveAndReplace(t *testing.T) {
+	t.Parallel()
+	rows := []importlists.ImportList{
+		{ID: 1, Implementation: "SonarrImport", Tags: []int{10, 20, 30}},
+	}
+	w := &fakeImportListWriter{rows: rows}
+	body := ImportListBulkResource{IDs: []int{1}, Tags: []int{20}, ApplyTags: applyTagsRemove}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	ImportListBulkUpdateHandler(w, &fakeImportListEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/importlist/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !equalIntSet(w.rows[0].Tags, []int{10, 30}) {
+		t.Errorf("after Remove: %v", w.rows[0].Tags)
+	}
+	// Replace overwrites.
+	body = ImportListBulkResource{IDs: []int{1}, Tags: []int{99}, ApplyTags: applyTagsReplace}
+	buf, _ = json.Marshal(body)
+	rr = httptest.NewRecorder()
+	ImportListBulkUpdateHandler(w, &fakeImportListEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/importlist/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !equalIntSet(w.rows[0].Tags, []int{99}) {
+		t.Errorf("after Replace: %v", w.rows[0].Tags)
+	}
+}
+
+func TestImportListBulkUpdateHandler_PerFieldNilSkip(t *testing.T) {
+	t.Parallel()
+	rows := []importlists.ImportList{{
+		ID:                 1,
+		Implementation:     "SonarrImport",
+		EnableAutomaticAdd: boolPtr(true),
+		RootFolderPath:     "/old",
+		QualityProfileID:   10,
+	}}
+	w := &fakeImportListWriter{rows: rows}
+	// Only QualityProfileID is updated; other fields preserved.
+	body := ImportListBulkResource{IDs: []int{1}, QualityProfileID: intPtr(42)}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	ImportListBulkUpdateHandler(w, &fakeImportListEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/importlist/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if w.rows[0].QualityProfileID != 42 {
+		t.Errorf("QualityProfileID not updated: %d", w.rows[0].QualityProfileID)
+	}
+	if w.rows[0].RootFolderPath != "/old" {
+		t.Errorf("RootFolderPath should be preserved: %q", w.rows[0].RootFolderPath)
+	}
+	if w.rows[0].EnableAutomaticAdd == nil || *w.rows[0].EnableAutomaticAdd != true {
+		t.Errorf("EnableAutomaticAdd should be preserved: %v", w.rows[0].EnableAutomaticAdd)
+	}
+}
+
+func TestImportListBulkUpdateHandler_RootFolderPathStringPtr(t *testing.T) {
+	t.Parallel()
+	// Explicit RootFolderPath supplied → overwrites; even empty string overwrites.
+	rows := []importlists.ImportList{{ID: 1, Implementation: "SonarrImport", RootFolderPath: "/old"}}
+	w := &fakeImportListWriter{rows: rows}
+	body := ImportListBulkResource{IDs: []int{1}, RootFolderPath: stringPtr("/new")}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	ImportListBulkUpdateHandler(w, &fakeImportListEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/importlist/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if w.rows[0].RootFolderPath != "/new" {
+		t.Errorf("RootFolderPath: %q", w.rows[0].RootFolderPath)
+	}
+}
+
+func TestImportListBulkUpdateHandler_ApplyTagsAsString(t *testing.T) {
+	t.Parallel()
+	rows := []importlists.ImportList{{ID: 1, Implementation: "SonarrImport", Tags: []int{10, 20}}}
+	w := &fakeImportListWriter{rows: rows}
+	body := []byte(`{"ids":[1],"tags":[10],"applyTags":"Remove"}`)
+	rr := httptest.NewRecorder()
+	ImportListBulkUpdateHandler(w, &fakeImportListEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/importlist/bulk", bytes.NewReader(body)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !equalIntSet(w.rows[0].Tags, []int{20}) {
+		t.Errorf("after string-form Remove: %v", w.rows[0].Tags)
+	}
+}
+
+func TestImportListBulkUpdateHandler_EmptyIDs_400(t *testing.T) {
+	t.Parallel()
+	body := ImportListBulkResource{IDs: nil}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	ImportListBulkUpdateHandler(&fakeImportListWriter{}, &fakeImportListEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/importlist/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestImportListBulkUpdateHandler_MissingIdsSilentlySkipped(t *testing.T) {
+	t.Parallel()
+	rows := []importlists.ImportList{{ID: 1, Implementation: "SonarrImport"}}
+	w := &fakeImportListWriter{rows: rows}
+	em := &fakeImportListEmitter{}
+	body := ImportListBulkResource{IDs: []int{1, 999}, QualityProfileID: intPtr(7)}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	ImportListBulkUpdateHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/importlist/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if w.rows[0].QualityProfileID != 7 {
+		t.Errorf("existing row not updated: %+v", w.rows[0])
+	}
+	if len(em.updated) != 1 {
+		t.Errorf("Updated should fire only once: %d", len(em.updated))
+	}
+}
+
+func TestImportListBulkDeleteHandler_Success(t *testing.T) {
+	t.Parallel()
+	rows := []importlists.ImportList{
+		{ID: 1, Implementation: "SonarrImport"},
+		{ID: 2, Implementation: "SonarrImport"},
+		{ID: 3, Implementation: "SonarrImport"},
+	}
+	w := &fakeImportListWriter{rows: rows}
+	em := &fakeImportListEmitter{}
+	body := ImportListBulkResource{IDs: []int{1, 3}}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	ImportListBulkDeleteHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/importlist/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `{}` {
+		t.Errorf("body: %q", rr.Body.String())
+	}
+	if len(w.rows) != 1 || w.rows[0].ID != 2 {
+		t.Errorf("rows after bulk delete: %+v", w.rows)
+	}
+	if len(em.deleted) != 2 {
+		t.Errorf("Deleted should fire per id: %d", len(em.deleted))
+	}
+}
+
+func TestImportListBulkDeleteHandler_EmptyIDs_400(t *testing.T) {
+	t.Parallel()
+	body := ImportListBulkResource{IDs: nil}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	ImportListBulkDeleteHandler(&fakeImportListWriter{}, &fakeImportListEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/importlist/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestImportListBulkUpdateHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	ImportListBulkUpdateHandler(&fakeImportListWriter{}, &fakeImportListEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/importlist/bulk", bytes.NewReader([]byte(`{bad`))))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
