@@ -397,9 +397,10 @@ func SeriesEditorUpdateHandler(svc SeriesWriter, emitter SeriesEmitter) http.Han
 // Mirrors C# `SeriesEditorController.DeleteSeries` at :103-108.
 // Loops Delete per row, broadcasts Deleted, returns 200 {}.
 //
-// DeleteFiles and AddImportListExclusion booleans on the body are
-// PARSED-AND-IGNORED (cascade DEFERRED, matches 5.D1a's behaviour
-// for the single-row delete).
+// body.DeleteFiles triggers the DB-row cascade per row (same
+// type-assert path as SeriesDeleteHandler). body.AddImportListExclusion
+// is PARSED-AND-IGNORED. On-disk physical-file delete via
+// DiskProvider is still DEFERRED.
 func SeriesEditorDeleteHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := decodeSeriesEditorBody(r)
@@ -412,7 +413,7 @@ func SeriesEditorDeleteHandler(svc SeriesWriter, emitter SeriesEmitter) http.Han
 			return
 		}
 		for _, id := range body.SeriesIDs {
-			err := svc.Delete(r.Context(), id)
+			err := deleteSeriesWithOptionalCascade(r.Context(), svc, id, body.DeleteFiles)
 			if errors.Is(err, series.ErrNotFound) {
 				continue
 			}
@@ -508,6 +509,31 @@ type SeriesWriter interface {
 	Insert(ctx context.Context, n *series.Series) (*series.Series, error)
 	Update(ctx context.Context, n *series.Series) error
 	Delete(ctx context.Context, id int) error
+}
+
+// SeriesCascader is the cascade-aware delete surface. The
+// cmd-side adapter (in cmd/sonarr/host_wiring.go) bundles
+// episodefiles.Service + episodes.Service + series.Service so a
+// single call removes all three families' rows in the correct
+// FK-parent-last order.
+//
+// Wired via type-assertion on the SeriesWriter argument the handler
+// receives — if the passed SeriesWriter ALSO implements
+// SeriesCascader and the request's deleteFiles flag is true, the
+// cascade fires before the series row is deleted. Tests don't have
+// to implement this — the type-assertion gracefully falls back to
+// the plain svc.Delete path when the flag is false or the impl
+// doesn't satisfy SeriesCascader.
+//
+// IMPORTANT: this slice (5.D5) only cascades DB ROWS (episodes +
+// episodefiles + series tables). The C# tree also calls
+// DiskProvider.DeleteFolder to remove the on-disk series folder
+// when ?deleteFiles=true. That physical-disk cascade is DEFERRED
+// — the API-level flag is now honoured for DB rows but the
+// actual files remain on disk. A follow-up slice will port the
+// DiskProvider wire-through.
+type SeriesCascader interface {
+	DeleteCascade(ctx context.Context, id int) error
 }
 
 // SeriesEmitter mirrors the
@@ -622,8 +648,15 @@ func SeriesUpdateHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
 // SeriesDeleteHandler returns DELETE /api/v3/series/{id}. Mirrors C#
 // `SeriesController.DeleteSeries` at :209-213. Query params:
 //
-//   - `deleteFiles=true` triggers the on-disk delete cascade in C#
-//     — DEFERRED here. Parsed and ignored for forward-compat.
+//   - `deleteFiles=true` triggers the DB-row cascade
+//     (episodes + episodefiles + series). Wired in 5.D5 via
+//     type-assertion to [SeriesCascader] when the passed
+//     SeriesWriter ALSO implements that interface. The on-disk
+//     physical-file delete via DiskProvider is still DEFERRED — the
+//     flag now cleans up rows in 3 tables but the .mkv/.mp4 files
+//     stay on disk. Without ?deleteFiles=true the flag is absent and
+//     only the series row is removed (orphaning child rows — same
+//     behaviour as 5.D1a's pre-cascade path).
 //   - `addImportListExclusion=true` adds the TVDB id to the
 //     ImportListExclusion table to prevent re-import. DEFERRED.
 //
@@ -638,7 +671,8 @@ func SeriesDeleteHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
 			httperr.BadRequest(w, "series: invalid id")
 			return
 		}
-		err = svc.Delete(r.Context(), id)
+		deleteFiles := r.URL.Query().Get("deleteFiles") == "true"
+		err = deleteSeriesWithOptionalCascade(r.Context(), svc, id, deleteFiles)
 		if errors.Is(err, series.ErrNotFound) {
 			httperr.NotFound(w, fmt.Sprintf("series %d not found", id))
 			return
@@ -654,6 +688,22 @@ func SeriesDeleteHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{}`))
 	})
+}
+
+// deleteSeriesWithOptionalCascade is the shared cascade-gated
+// delete path used by SeriesDeleteHandler + SeriesEditorDeleteHandler.
+// Type-asserts svc to [SeriesCascader] when deleteFiles is true; if
+// the impl satisfies the cascade interface we get the multi-table
+// cleanup, otherwise we fall through to plain svc.Delete (matches
+// the 5.D1a parsed-and-ignored behaviour for fakes / older test
+// surfaces that don't implement SeriesCascader).
+func deleteSeriesWithOptionalCascade(ctx context.Context, svc SeriesWriter, id int, deleteFiles bool) error {
+	if deleteFiles {
+		if c, ok := svc.(SeriesCascader); ok {
+			return c.DeleteCascade(ctx, id)
+		}
+	}
+	return svc.Delete(ctx, id)
 }
 
 func decodeSeriesBody(r *http.Request) (SeriesResource, error) {

@@ -199,6 +199,47 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 // directly for FileExists + DeleteFile; the Go port collapses the
 // indirection into stdlib calls via the helper functions in
 // internal/api/v3/system_backup.go.
+// seriesCascadeAdapter bundles series + episodes + episodefiles
+// services so apiv3.SeriesDeleteHandler's cascade-aware delete
+// path (gated on ?deleteFiles=true / body.DeleteFiles) can remove
+// rows from all 3 tables in the correct FK-parent-last order.
+//
+// Embedding *series.Service inherits the 5.D1a thin pass-through
+// methods (Insert / Update / Delete / GetSeries / GetAllSeries) so
+// the adapter satisfies apiv3.SeriesWriter without forwarding each
+// method by hand; only DeleteCascade is implemented here.
+//
+// IMPORTANT: DB-row cascade only. The on-disk .mkv/.mp4 files +
+// the series folder stay on disk — DiskProvider port + the
+// physical-delete wire-through is DEFERRED.
+type seriesCascadeAdapter struct {
+	*series.Service
+	episodes     *episodes.Service
+	episodefiles *episodefiles.Service
+}
+
+// DeleteCascade removes child rows (episodefiles → episodes) then
+// the series row itself. Order matches FK-parent-last so the
+// foreign-key constraints don't reject the parent delete. Mirrors
+// the C# cascade sequence at SeriesService.DeleteSeries +
+// MediaFileService.HandleAsync(SeriesDeletedEvent) +
+// EpisodeService.HandleAsync(SeriesDeletedEvent), collapsed into
+// three sequential SQL bulk DELETEs.
+//
+// Partial-failure semantics: if episodefiles cleanup fails the
+// series row stays — the user sees the error and can retry; the
+// orphaned episodefiles rows are recovered on the next retry.
+// Episodes cleanup follows the same rule.
+func (a *seriesCascadeAdapter) DeleteCascade(ctx context.Context, id int) error {
+	if _, err := a.episodefiles.DeleteBySeriesID(ctx, id); err != nil {
+		return fmt.Errorf("series cascade: episodefiles: %w", err)
+	}
+	if _, err := a.episodes.DeleteBySeriesID(ctx, id); err != nil {
+		return fmt.Errorf("series cascade: episodes: %w", err)
+	}
+	return a.Delete(ctx, id)
+}
+
 type backupAdmin struct{ svc *backup.Service }
 
 func (a backupAdmin) GetBackups() ([]backup.Backup, error) { return a.svc.GetBackups() }
@@ -912,6 +953,19 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// cascade + ImportListExclusion add DEFERRED — see series.Service
 	// doc-comments for the side-effects not replicated).
 	seriesEmitter := signalr.NewV3Emitter[apiv3.SeriesResource](signalRHub, "series")
+	// 5.D5 wires the DB-row cascade through the API layer. The
+	// adapter bundles series + episodes + episodefiles services so a
+	// single DeleteCascade call removes rows from all 3 tables in
+	// the correct FK-parent-last order (episodefiles → episodes →
+	// series). On-disk physical-file delete via DiskProvider stays
+	// DEFERRED. seriesWriter embeds *series.Service to inherit
+	// Insert/Update/Delete + GetSeries/GetAllSeries; the type-assert
+	// in apiv3.SeriesDeleteHandler picks up the DeleteCascade method.
+	seriesWriter := &seriesCascadeAdapter{
+		Service:      seriesSvc,
+		episodes:     episodesSvc,
+		episodefiles: episodeFilesSvc,
+	}
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
@@ -1136,13 +1190,13 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/series/{id}", Handler: apiv3.SeriesByIDHandler(seriesSvc)},
 		{Method: "GET", Path: "/api/v3/series/{id}/folder", Handler: apiv3.SeriesFolderHandler(seriesSvc, namingConfigSvc)},
 		{Method: "GET", Path: "/api/v3/series/lookup", Handler: apiv3.SeriesLookupHandler()},
-		{Method: "POST", Path: "/api/v3/series", Handler: apiv3.SeriesCreateHandler(seriesSvc, seriesEmitter)},
-		{Method: "PUT", Path: "/api/v3/series/{id}", Handler: apiv3.SeriesUpdateHandler(seriesSvc, seriesEmitter)},
-		{Method: "DELETE", Path: "/api/v3/series/{id}", Handler: apiv3.SeriesDeleteHandler(seriesSvc, seriesEmitter)},
-		{Method: "PUT", Path: "/api/v3/series/editor", Handler: apiv3.SeriesEditorUpdateHandler(seriesSvc, seriesEmitter)},
-		{Method: "DELETE", Path: "/api/v3/series/editor", Handler: apiv3.SeriesEditorDeleteHandler(seriesSvc, seriesEmitter)},
-		{Method: "POST", Path: "/api/v3/series/import", Handler: apiv3.SeriesImportHandler(seriesSvc, seriesEmitter)},
-		{Method: "POST", Path: "/api/v3/seasonpass", Handler: apiv3.SeasonPassHandler(seriesSvc, seriesEmitter)},
+		{Method: "POST", Path: "/api/v3/series", Handler: apiv3.SeriesCreateHandler(seriesWriter, seriesEmitter)},
+		{Method: "PUT", Path: "/api/v3/series/{id}", Handler: apiv3.SeriesUpdateHandler(seriesWriter, seriesEmitter)},
+		{Method: "DELETE", Path: "/api/v3/series/{id}", Handler: apiv3.SeriesDeleteHandler(seriesWriter, seriesEmitter)},
+		{Method: "PUT", Path: "/api/v3/series/editor", Handler: apiv3.SeriesEditorUpdateHandler(seriesWriter, seriesEmitter)},
+		{Method: "DELETE", Path: "/api/v3/series/editor", Handler: apiv3.SeriesEditorDeleteHandler(seriesWriter, seriesEmitter)},
+		{Method: "POST", Path: "/api/v3/series/import", Handler: apiv3.SeriesImportHandler(seriesWriter, seriesEmitter)},
+		{Method: "POST", Path: "/api/v3/seasonpass", Handler: apiv3.SeasonPassHandler(seriesWriter, seriesEmitter)},
 		{Method: "GET", Path: "/api/v3/system/backup", Handler: apiv3.BackupListHandler(backupAdmin{svc: backupSvc})},
 		{Method: "DELETE", Path: "/api/v3/system/backup/{id}", Handler: apiv3.BackupDeleteHandler(backupAdmin{svc: backupSvc})},
 		{Method: "POST", Path: "/api/v3/system/backup/restore/{id}", Handler: apiv3.BackupRestoreHandler(backupAdmin{svc: backupSvc})},

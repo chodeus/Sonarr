@@ -156,6 +156,11 @@ func TestSeriesEnumNames(t *testing.T) {
 // fakeSeriesWriter implements SeriesWriter against an in-memory
 // table. Same shape as the 5.C-family fakes — Insert auto-assigns
 // IDs; Update + Delete match by id with ErrNotFound on miss.
+//
+// 5.D5 added cascade tracking via [fakeSeriesCascadeWriter] (a
+// type-aliased variant that ALSO satisfies SeriesCascader). The
+// plain fakeSeriesWriter doesn't — letting tests opt in to the
+// type-assert cascade behavior only when relevant.
 type fakeSeriesWriter struct {
 	rows   []series.Series
 	nextID int64
@@ -779,5 +784,152 @@ func TestSeriesImportHandler_NotAnArray_400(t *testing.T) {
 	SeriesImportHandler(&fakeSeriesWriter{}, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/series/import", bytes.NewReader(buf)))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// fakeSeriesCascadeWriter is the cascade-aware variant of
+// fakeSeriesWriter. Embeds the plain writer + tracks DeleteCascade
+// invocations so tests can confirm the type-assert path fired.
+type fakeSeriesCascadeWriter struct {
+	*fakeSeriesWriter
+	cascadeErr  error
+	cascadedIDs []int
+}
+
+func (f *fakeSeriesCascadeWriter) DeleteCascade(ctx context.Context, id int) error {
+	if f.cascadeErr != nil {
+		return f.cascadeErr
+	}
+	f.cascadedIDs = append(f.cascadedIDs, id)
+	// On a real cascade the episodefiles + episodes get cleaned
+	// first; the fake collapses to the underlying Delete for the
+	// series-row removal so post-conditions assert the same way as
+	// the non-cascade tests (row count drops by 1).
+	return f.Delete(ctx, id)
+}
+
+func TestSeriesDeleteHandler_DeleteFilesTrue_FiresCascade(t *testing.T) {
+	t.Parallel()
+	w := &fakeSeriesCascadeWriter{fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{{ID: 7, Title: "victim"}}}}
+	em := &fakeSeriesEmitter{}
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/series/7?deleteFiles=true", nil)
+	req.SetPathValue("id", "7")
+	rr := httptest.NewRecorder()
+	SeriesDeleteHandler(w, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.cascadedIDs) != 1 || w.cascadedIDs[0] != 7 {
+		t.Errorf("DeleteCascade should be invoked with id 7: %v", w.cascadedIDs)
+	}
+	if len(w.rows) != 0 {
+		t.Errorf("row should be removed: %+v", w.rows)
+	}
+	if len(em.deleted) != 1 || em.deleted[0].ID != 7 {
+		t.Errorf("emitter.Deleted should fire even with cascade: %+v", em.deleted)
+	}
+}
+
+func TestSeriesDeleteHandler_DeleteFilesAbsent_NoCascade(t *testing.T) {
+	t.Parallel()
+	w := &fakeSeriesCascadeWriter{fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{{ID: 7}}}}
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/series/7", nil)
+	req.SetPathValue("id", "7")
+	rr := httptest.NewRecorder()
+	SeriesDeleteHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(w.cascadedIDs) != 0 {
+		t.Errorf("cascade must NOT fire when ?deleteFiles is absent: %v", w.cascadedIDs)
+	}
+}
+
+func TestSeriesDeleteHandler_DeleteFilesFalse_NoCascade(t *testing.T) {
+	t.Parallel()
+	w := &fakeSeriesCascadeWriter{fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{{ID: 7}}}}
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/series/7?deleteFiles=false", nil)
+	req.SetPathValue("id", "7")
+	rr := httptest.NewRecorder()
+	SeriesDeleteHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(w.cascadedIDs) != 0 {
+		t.Errorf("cascade must NOT fire when ?deleteFiles=false: %v", w.cascadedIDs)
+	}
+}
+
+func TestSeriesDeleteHandler_NonCascaderImpl_FallsThroughToDelete(t *testing.T) {
+	t.Parallel()
+	// fakeSeriesWriter (non-cascade) + ?deleteFiles=true should
+	// quietly fall through to svc.Delete (no error; no cascade
+	// fires because the impl doesn't satisfy SeriesCascader).
+	w := &fakeSeriesWriter{rows: []series.Series{{ID: 7}}}
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/series/7?deleteFiles=true", nil)
+	req.SetPathValue("id", "7")
+	rr := httptest.NewRecorder()
+	SeriesDeleteHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(w.rows) != 0 {
+		t.Errorf("row should be deleted via fallback Delete: %+v", w.rows)
+	}
+}
+
+func TestSeriesDeleteHandler_CascadeError_500(t *testing.T) {
+	t.Parallel()
+	w := &fakeSeriesCascadeWriter{
+		fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{{ID: 7}}},
+		cascadeErr:       errors.New("episodefiles cleanup failed"),
+	}
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/series/7?deleteFiles=true", nil)
+	req.SetPathValue("id", "7")
+	rr := httptest.NewRecorder()
+	SeriesDeleteHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+	// Series row preserved on cascade failure (partial-failure
+	// semantics from the adapter doc-comment).
+	if len(w.rows) != 1 {
+		t.Errorf("series row should be preserved on cascade failure: %+v", w.rows)
+	}
+}
+
+func TestSeriesEditorDeleteHandler_BodyDeleteFiles_FiresCascade(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 1}, {ID: 2}, {ID: 3}}
+	w := &fakeSeriesCascadeWriter{fakeSeriesWriter: &fakeSeriesWriter{rows: rows}}
+	em := &fakeSeriesEmitter{}
+	body := SeriesEditorResource{SeriesIDs: []int{1, 3}, DeleteFiles: true}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorDeleteHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(w.cascadedIDs) != 2 || w.cascadedIDs[0] != 1 || w.cascadedIDs[1] != 3 {
+		t.Errorf("DeleteCascade should fire for ids 1+3: %v", w.cascadedIDs)
+	}
+	if len(em.deleted) != 2 {
+		t.Errorf("emitter count: %d", len(em.deleted))
+	}
+}
+
+func TestSeriesEditorDeleteHandler_BodyDeleteFilesAbsent_NoCascade(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 1}, {ID: 2}}
+	w := &fakeSeriesCascadeWriter{fakeSeriesWriter: &fakeSeriesWriter{rows: rows}}
+	body := SeriesEditorResource{SeriesIDs: []int{1, 2}} // DeleteFiles defaults to false
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorDeleteHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(w.cascadedIDs) != 0 {
+		t.Errorf("cascade must NOT fire when body.DeleteFiles=false: %v", w.cascadedIDs)
 	}
 }
