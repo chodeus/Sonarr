@@ -315,3 +315,116 @@ func TestImportListDeleteHandler_InvalidID_400(t *testing.T) {
 		})
 	}
 }
+
+// fakeImportListTester implements ImportListTester.
+type fakeImportListTester struct {
+	seen   *importlists.ImportList
+	result []importlists.TestFailure
+	err    error
+}
+
+func (f *fakeImportListTester) Test(_ context.Context, n *importlists.ImportList) ([]importlists.TestFailure, error) {
+	f.seen = n
+	return f.result, f.err
+}
+
+func TestImportListTestHandler_Success_Returns200EmptyObject(t *testing.T) {
+	t.Parallel()
+	tester := &fakeImportListTester{}
+	body := validImportListBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/importlist/test", bytes.NewReader(buf))
+	rr := httptest.NewRecorder()
+	ImportListTestHandler(tester).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `{}` {
+		t.Errorf("body: %q", rr.Body.String())
+	}
+	if tester.seen == nil || tester.seen.Implementation != "SonarrImport" {
+		t.Errorf("Test should be invoked with built ImportList: %+v", tester.seen)
+	}
+	if tester.seen.Settings == nil {
+		t.Fatalf("Settings nil after fromResource")
+	}
+	var settings map[string]any
+	_ = json.Unmarshal([]byte(*tester.seen.Settings), &settings)
+	if settings["baseUrl"] != "http://upstream:8989" {
+		t.Errorf("settings packing: %+v", settings)
+	}
+}
+
+func TestImportListTestHandler_FailuresProjectTo400Array(t *testing.T) {
+	t.Parallel()
+	tester := &fakeImportListTester{result: []importlists.TestFailure{
+		{PropertyName: "BaseUrl", ErrorMessage: "could not connect"},
+		{PropertyName: "", ErrorMessage: "Test failed: timeout"},
+	}}
+	body := validImportListBody()
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	ImportListTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var failures []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &failures); err != nil {
+		t.Fatalf("body must be FluentValidation array: %v body=%s", err, rr.Body.String())
+	}
+	if len(failures) != 2 || failures[0]["propertyName"] != "BaseUrl" {
+		t.Errorf("failures: %+v", failures)
+	}
+}
+
+func TestImportListTestHandler_UnknownImplementation_400(t *testing.T) {
+	t.Parallel()
+	tester := &fakeImportListTester{err: importlists.ErrNotRegistered}
+	body := validImportListBody()
+	body.Implementation = "GhostProvider"
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	ImportListTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var failures []map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &failures)
+	if len(failures) != 1 || failures[0]["propertyName"] != "Implementation" {
+		t.Errorf("expected single Implementation failure: %+v", failures)
+	}
+}
+
+func TestImportListTestHandler_OtherError_500(t *testing.T) {
+	t.Parallel()
+	tester := &fakeImportListTester{err: errors.New("upstream timeout")}
+	body := validImportListBody()
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	ImportListTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestImportListTestHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	ImportListTestHandler(&fakeImportListTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist/test", bytes.NewReader([]byte(`{not json`))))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestImportListTestHandler_SkipsSharedValidator(t *testing.T) {
+	t.Parallel()
+	tester := &fakeImportListTester{}
+	body := validImportListBody()
+	body.Name = ""
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	ImportListTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Errorf("skip-validation: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}

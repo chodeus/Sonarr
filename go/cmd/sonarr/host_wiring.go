@@ -306,6 +306,23 @@ func (a *registryIndexerTester) RequestAction(ctx context.Context, n *indexers.I
 	return provider.RequestAction(ctx, action, query)
 }
 
+// registryImportListTester adapts importlists.Registry + Dependencies
+// to apiv3.ImportListTester. Same shape as the indexer + notification
+// tester adapters — would collapse to a generic shim once a fourth
+// provider family demands it.
+type registryImportListTester struct {
+	registry *importlists.Registry
+	deps     importlists.Dependencies
+}
+
+func (a *registryImportListTester) Test(ctx context.Context, n *importlists.ImportList) ([]importlists.TestFailure, error) {
+	provider, err := a.registry.Construct(n, a.deps)
+	if err != nil {
+		return nil, err
+	}
+	return provider.Test(ctx)
+}
+
 // apiv3FileExists + apiv3DeleteFile defer to os.Stat / os.Remove.
 // Named with the apiv3 prefix to keep the cmd-package surface clean
 // since the v3 layer's unexported osFileExists / osDeleteFile aren't
@@ -798,6 +815,14 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// subset-4 follow-up (c) more providers will land later). 5.C3b
 	// will wire a tester adapter on top of importlists.Factory.Test.
 	importListEmitter := signalr.NewV3Emitter[apiv3.ImportListResource](signalRHub, "importlist")
+	// 5.C3b: per-row Provider.Test() adapter for importlist family.
+	// Unlike indexers (5.C2b), importlists ships a populated registry
+	// today (Sonarr + Plex providers from Phase 4 subset 4).
+	importListRegistry := importlists.Default()
+	importListTester := &registryImportListTester{
+		registry: importListRegistry,
+		deps:     importlists.Dependencies{Logger: logger},
+	}
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
@@ -914,6 +939,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/importlist/schema", Handler: apiv3.ImportListSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListByIDHandler(importListsRepo)},
 		{Method: "POST", Path: "/api/v3/importlist", Handler: apiv3.ImportListCreateHandler(importListsRepo, importListEmitter)},
+		{Method: "POST", Path: "/api/v3/importlist/test", Handler: apiv3.ImportListTestHandler(importListTester)},
 		{Method: "PUT", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListUpdateHandler(importListsRepo, importListEmitter)},
 		{Method: "DELETE", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListDeleteHandler(importListsRepo, importListEmitter)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion", Handler: apiv3.ImportListExclusionHandler(importListExclusionsRepo)},

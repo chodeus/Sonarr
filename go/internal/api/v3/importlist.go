@@ -314,6 +314,79 @@ func fromImportListResource(res ImportListResource, existing *importlists.Import
 	}, nil
 }
 
+// ImportListTester invokes a per-row provider Test. The cmd-side
+// adapter wires this against importlists.Registry.Construct +
+// importlists.Provider.Test under the host-supplied
+// importlists.Dependencies. Tests can pass a stub.
+//
+// Unlike 5.C2b (indexers needed a port pre-work because no Registry
+// existed), the importlists.Registry already ships from Phase 4
+// subset 4 with Sonarr + Plex providers registered. Real Test calls
+// will work for those impls today; the other 8 follow-up impls
+// (Trakt user/popular/list, Simkl, AniList, MyAnimeList, Custom,
+// PlexRss per subset-4 follow-up (d)) still 400 with "Unknown
+// implementation" until they port.
+type ImportListTester interface {
+	Test(ctx context.Context, n *importlists.ImportList) ([]importlists.TestFailure, error)
+}
+
+// ImportListTestHandler returns POST /api/v3/importlist/test. Same
+// shape as 5.C1b notification + 5.C2b indexer Test endpoints: 200
+// `{}` on success, 400 FluentValidation array on failures, 400
+// single-Implementation failure on ErrNotRegistered, 500 on
+// transport errors.
+//
+// SharedValidator skipped (matches C# `[SkipValidation(true,false)]`).
+func ImportListTestHandler(tester ImportListTester) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeImportListBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("importlist: malformed body: %v", err))
+			return
+		}
+		row, err := fromImportListResource(body, nil)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("importlist: invalid fields: %v", err))
+			return
+		}
+		failures, err := tester.Test(r.Context(), row)
+		if err != nil {
+			if errors.Is(err, importlists.ErrNotRegistered) {
+				httperr.WriteValidation(w, []httperr.Failure{{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q (configContract %q)", body.Implementation, body.ConfigContract),
+					Severity:     "error",
+				}})
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlist: test: %w", err), nil)
+			return
+		}
+		if len(failures) > 0 {
+			httperr.WriteValidation(w, importListTestFailuresToFluentArray(failures))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+}
+
+// importListTestFailuresToFluentArray ports the projection for the
+// [importlists.TestFailure] shape. Same as the notification /
+// indexer twins.
+func importListTestFailuresToFluentArray(failures []importlists.TestFailure) []httperr.Failure {
+	out := make([]httperr.Failure, 0, len(failures))
+	for _, f := range failures {
+		out = append(out, httperr.Failure{
+			PropertyName: f.PropertyName,
+			ErrorMessage: f.ErrorMessage,
+			Severity:     "error",
+		})
+	}
+	return out
+}
+
 func toImportListResource(i importlists.ImportList) ImportListResource {
 	tags := i.Tags
 	if tags == nil {
