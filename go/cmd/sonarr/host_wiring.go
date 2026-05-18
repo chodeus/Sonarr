@@ -332,6 +332,22 @@ func (a *registryImportListTester) RequestAction(ctx context.Context, n *importl
 	return provider.RequestAction(ctx, action, query)
 }
 
+// registryDownloadClientTester adapts downloadclients.Registry +
+// Dependencies to apiv3.DownloadClientTester. Same pattern as the
+// indexer + notification + importlist twins.
+type registryDownloadClientTester struct {
+	registry *downloadclients.Registry
+	deps     downloadclients.Dependencies
+}
+
+func (a *registryDownloadClientTester) Test(ctx context.Context, n *downloadclients.DownloadClient) ([]downloadclients.TestFailure, error) {
+	provider, err := a.registry.Construct(n, a.deps)
+	if err != nil {
+		return nil, err
+	}
+	return provider.Test(ctx)
+}
+
 // apiv3FileExists + apiv3DeleteFile defer to os.Stat / os.Remove.
 // Named with the apiv3 prefix to keep the cmd-package surface clean
 // since the v3 layer's unexported osFileExists / osDeleteFile aren't
@@ -837,6 +853,14 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// concrete impls (Phase 4 baseline + subset 1); 5.C4b will wire a
 	// tester adapter on top.
 	downloadClientEmitter := signalr.NewV3Emitter[apiv3.DownloadClientResource](signalRHub, "downloadclient")
+	// 5.C4b: per-row Provider.Test() adapter. Production Test works
+	// today for Sabnzbd + Transmission; other impls 400 with "Unknown
+	// implementation" until 5.G slices port them.
+	downloadClientRegistry := downloadclients.Default()
+	downloadClientTester := &registryDownloadClientTester{
+		registry: downloadClientRegistry,
+		deps:     downloadclients.Dependencies{Logger: logger},
+	}
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
@@ -935,6 +959,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/downloadclient/schema", Handler: apiv3.DownloadClientSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientByIDHandler(downloadClientsRepo)},
 		{Method: "POST", Path: "/api/v3/downloadclient", Handler: apiv3.DownloadClientCreateHandler(downloadClientsRepo, downloadClientEmitter)},
+		{Method: "POST", Path: "/api/v3/downloadclient/test", Handler: apiv3.DownloadClientTestHandler(downloadClientTester)},
 		{Method: "PUT", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientUpdateHandler(downloadClientsRepo, downloadClientEmitter)},
 		{Method: "DELETE", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientDeleteHandler(downloadClientsRepo, downloadClientEmitter)},
 		{Method: "GET", Path: "/api/v3/episode", Handler: apiv3.EpisodeListHandler(episodesSvc)},

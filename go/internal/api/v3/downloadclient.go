@@ -295,6 +295,74 @@ func fromDownloadClientResource(res DownloadClientResource, existing *downloadcl
 	}, nil
 }
 
+// DownloadClientTester invokes a per-row provider Test. The cmd-side
+// adapter wires this against downloadclients.Registry.Construct +
+// downloadclients.Provider.Test under the host-supplied
+// downloadclients.Dependencies.
+//
+// Production Test works TODAY for Sabnzbd + Transmission impls;
+// other 18+ schema-only impls (qBittorrent/Deluge/NZBGet/rTorrent/
+// uTorrent/Vuze/...) return ErrNotRegistered until the 5.G slices
+// port them.
+type DownloadClientTester interface {
+	Test(ctx context.Context, n *downloadclients.DownloadClient) ([]downloadclients.TestFailure, error)
+}
+
+// DownloadClientTestHandler returns POST /api/v3/downloadclient/test.
+// Same shape as the 5.C1b/5.C2b/5.C3b twins: 200 `{}` on success,
+// 400 FluentValidation array on failures, 400 single-Implementation
+// failure on ErrNotRegistered, 500 on transport errors.
+//
+// SharedValidator skipped (matches C# `[SkipValidation(true,false)]`).
+func DownloadClientTestHandler(tester DownloadClientTester) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeDownloadClientBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("downloadclient: malformed body: %v", err))
+			return
+		}
+		row, err := fromDownloadClientResource(body, nil)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("downloadclient: invalid fields: %v", err))
+			return
+		}
+		failures, err := tester.Test(r.Context(), row)
+		if err != nil {
+			if errors.Is(err, downloadclients.ErrNotRegistered) {
+				httperr.WriteValidation(w, []httperr.Failure{{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q (configContract %q)", body.Implementation, body.ConfigContract),
+					Severity:     "error",
+				}})
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient: test: %w", err), nil)
+			return
+		}
+		if len(failures) > 0 {
+			httperr.WriteValidation(w, downloadClientTestFailuresToFluentArray(failures))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+}
+
+// downloadClientTestFailuresToFluentArray projects the family's
+// TestFailure to httperr.Failure.
+func downloadClientTestFailuresToFluentArray(failures []downloadclients.TestFailure) []httperr.Failure {
+	out := make([]httperr.Failure, 0, len(failures))
+	for _, f := range failures {
+		out = append(out, httperr.Failure{
+			PropertyName: f.PropertyName,
+			ErrorMessage: f.ErrorMessage,
+			Severity:     "error",
+		})
+	}
+	return out
+}
+
 func toDownloadClientResource(d downloadclients.DownloadClient) DownloadClientResource {
 	tags := d.Tags
 	if tags == nil {

@@ -307,3 +307,113 @@ func TestDownloadClientDeleteHandler_InvalidID_400(t *testing.T) {
 		})
 	}
 }
+
+// fakeDownloadClientTester implements DownloadClientTester.
+type fakeDownloadClientTester struct {
+	seen   *downloadclients.DownloadClient
+	result []downloadclients.TestFailure
+	err    error
+}
+
+func (f *fakeDownloadClientTester) Test(_ context.Context, n *downloadclients.DownloadClient) ([]downloadclients.TestFailure, error) {
+	f.seen = n
+	return f.result, f.err
+}
+
+func TestDownloadClientTestHandler_Success_Returns200EmptyObject(t *testing.T) {
+	t.Parallel()
+	tester := &fakeDownloadClientTester{}
+	body := validDownloadClientBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient/test", bytes.NewReader(buf))
+	rr := httptest.NewRecorder()
+	DownloadClientTestHandler(tester).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `{}` {
+		t.Errorf("body: %q", rr.Body.String())
+	}
+	if tester.seen == nil || tester.seen.Implementation != "Sabnzbd" {
+		t.Errorf("Test should be invoked with built DownloadClient: %+v", tester.seen)
+	}
+	var settings map[string]any
+	_ = json.Unmarshal([]byte(tester.seen.Settings), &settings)
+	if settings["host"] != "sab.example" {
+		t.Errorf("settings packing: %+v", settings)
+	}
+}
+
+func TestDownloadClientTestHandler_FailuresProjectTo400Array(t *testing.T) {
+	t.Parallel()
+	tester := &fakeDownloadClientTester{result: []downloadclients.TestFailure{
+		{PropertyName: "Host", ErrorMessage: "could not connect"},
+		{PropertyName: "", ErrorMessage: "Test failed: timeout"},
+	}}
+	body := validDownloadClientBody()
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	DownloadClientTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var failures []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &failures); err != nil {
+		t.Fatalf("body must be FluentValidation array: %v body=%s", err, rr.Body.String())
+	}
+	if len(failures) != 2 || failures[0]["propertyName"] != "Host" {
+		t.Errorf("failures: %+v", failures)
+	}
+}
+
+func TestDownloadClientTestHandler_UnknownImplementation_400(t *testing.T) {
+	t.Parallel()
+	tester := &fakeDownloadClientTester{err: downloadclients.ErrNotRegistered}
+	body := validDownloadClientBody()
+	body.Implementation = "GhostProvider"
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	DownloadClientTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var failures []map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &failures)
+	if len(failures) != 1 || failures[0]["propertyName"] != "Implementation" {
+		t.Errorf("expected single Implementation failure: %+v", failures)
+	}
+}
+
+func TestDownloadClientTestHandler_OtherError_500(t *testing.T) {
+	t.Parallel()
+	tester := &fakeDownloadClientTester{err: errors.New("upstream timeout")}
+	body := validDownloadClientBody()
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	DownloadClientTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestDownloadClientTestHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	DownloadClientTestHandler(&fakeDownloadClientTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient/test", bytes.NewReader([]byte(`{not json`))))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestDownloadClientTestHandler_SkipsSharedValidator(t *testing.T) {
+	t.Parallel()
+	tester := &fakeDownloadClientTester{}
+	body := validDownloadClientBody()
+	body.Name = ""
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	DownloadClientTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Errorf("skip-validation: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
