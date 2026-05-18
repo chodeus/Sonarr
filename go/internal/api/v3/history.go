@@ -3,9 +3,12 @@ package v3
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
+	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/httperr"
 )
 
@@ -63,5 +66,41 @@ func HistoryHandler(lister HistoryPagedLister) http.Handler {
 		w.WriteHeader(http.StatusOK)
 		buf, _ := json.Marshal(resp)
 		_, _ = w.Write(buf)
+	})
+}
+
+// FailedDownloadMarker is the narrow MarkAsFailed surface the POST
+// handler reaches for. Satisfied by *faileddownloads.Service.
+type FailedDownloadMarker interface {
+	MarkAsFailed(ctx context.Context, historyID int) error
+}
+
+// HistoryMarkAsFailedHandler returns POST /api/v3/history/failed/{id}.
+// Mirrors `HistoryController.MarkAsFailed` at `:131-136`:
+//
+//	_failedDownloadService.MarkAsFailed(id);
+//	return new { };
+//
+// The Go-port delegates to the same MarkAsFailed implementation the
+// scheduler / IHandle path would invoke. history.ErrNotFound surfaces
+// as 404.
+func HistoryMarkAsFailedHandler(svc FailedDownloadMarker) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "history: invalid id")
+			return
+		}
+		if err := svc.MarkAsFailed(r.Context(), id); err != nil {
+			if errors.Is(err, history.ErrNotFound) {
+				httperr.NotFound(w, fmt.Sprintf("history %d not found", id))
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("history: markAsFailed %d: %w", id, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
 	})
 }

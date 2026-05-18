@@ -61,6 +61,19 @@ func (s *stubReader) DeleteForSeries(_ context.Context, ids []int) (int64, error
 	return s.deleteSeriesAffected, nil
 }
 
+func (s *stubReader) Get(_ context.Context, id int) (*history.Entry, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	for i := range s.out {
+		if s.out[i].ID == id {
+			e := s.out[i]
+			return &e, nil
+		}
+	}
+	return nil, history.ErrNotFound
+}
+
 func TestNewServiceNilRepoReturnsNil(t *testing.T) {
 	t.Parallel()
 	if s := history.NewService(nil); s != nil {

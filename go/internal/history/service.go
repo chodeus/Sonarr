@@ -107,6 +107,7 @@ type EntryReader interface {
 	AllByEpisodeID(ctx context.Context, episodeID int) ([]Entry, error)
 	Insert(ctx context.Context, e *Entry) (*Entry, error)
 	DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, error)
+	Get(ctx context.Context, id int) (*Entry, error)
 }
 
 // Service ports a subset of `IHistoryService` at
@@ -311,6 +312,16 @@ func (s *Service) FindByEpisodeId(ctx context.Context, episodeID int) ([]Entry, 
 		return nil, fmt.Errorf("history: FindByEpisodeId: %w", err)
 	}
 	return out, nil
+}
+
+// Get returns a single history.Entry by Id. Mirrors C#
+// `HistoryService.Get(int id)` at `HistoryService.cs:83-86` — direct
+// repo lookup, ErrNotFound when missing.
+func (s *Service) Get(ctx context.Context, id int) (*Entry, error) {
+	if s == nil || s.repo == nil {
+		return nil, errors.New("history: Get on nil receiver")
+	}
+	return s.repo.Get(ctx, id)
 }
 
 // Compile-time interface-satisfaction guard. A refactor that breaks

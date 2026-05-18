@@ -67,6 +67,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/faileddownloads"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/historyhandlers"
@@ -797,6 +798,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	historySvc := history.NewService(historyRepo)
 	if historySvc == nil {
 		return fmt.Errorf("history service: nil — required dep regressed")
+	}
+
+	// Slice 5.E4: failed-downloads service wraps history.Get + bus
+	// publish so the POST /api/v3/history/failed/{id} handler can
+	// route through the same DownloadFailedEvent the auto-fail path
+	// uses. Stateless; the v3 handler holds the only consumer.
+	failedDownloadsSvc, err := faileddownloads.NewService(historyRepo, bus)
+	if err != nil {
+		return fmt.Errorf("faileddownloads service: %w", err)
 	}
 
 	// Slice 3.AT: history IHandle<EpisodeGrabbedEvent> subscriber.
@@ -2419,7 +2429,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// before `go build`.
 	frontendDir, _ := startup.Arg(appenv.StartupArgFrontendDir)
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, frontendDir)
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, frontendDir)
 	if err != nil {
 		return err
 	}
