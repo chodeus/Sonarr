@@ -30,21 +30,21 @@ import (
 
 // Entry is one DownloadHistory row.
 type Entry struct {
-	ID               int       `json:"id"`
-	EventType        int       `json:"eventType"`
-	SeriesID         int       `json:"seriesId"`
-	DownloadID       string    `json:"downloadId"`
-	SourceTitle      string    `json:"sourceTitle"`
-	Date             time.Time `json:"date"`
+	ID          int       `json:"id"`
+	EventType   int       `json:"eventType"`
+	SeriesID    int       `json:"seriesId"`
+	DownloadID  string    `json:"downloadId"`
+	SourceTitle string    `json:"sourceTitle"`
+	Date        time.Time `json:"date"`
 	// Protocol / IndexerID / DownloadClientID mirror C# non-nullable
 	// int properties per go/JSON_CONVENTIONS.md Option A. Schema
 	// columns are nullable; Scan coerces NULL → 0 to match C#
 	// property semantics.
-	Protocol         int      `json:"protocol"`
-	IndexerID        int      `json:"indexerId"`
-	DownloadClientID int      `json:"downloadClientId"`
-	Release          string    `json:"release"`
-	Data             string    `json:"data"`
+	Protocol         int    `json:"protocol"`
+	IndexerID        int    `json:"indexerId"`
+	DownloadClientID int    `json:"downloadClientId"`
+	Release          string `json:"release"`
+	Data             string `json:"data"`
 }
 
 // ErrNotFound is returned when no row matches.
@@ -148,21 +148,6 @@ func (r *Repo) scanQuery(ctx context.Context, query string, arg any, op string) 
 		return nil, fmt.Errorf("downloadhistory: %s rows: %w", op, err)
 	}
 	return out, nil
-}
-
-func nullableInt(p *int) sql.NullInt64 {
-	if p == nil {
-		return sql.NullInt64{}
-	}
-	return sql.NullInt64{Int64: int64(*p), Valid: true}
-}
-
-func unwrapInt(n sql.NullInt64) *int {
-	if !n.Valid {
-		return nil
-	}
-	v := int(n.Int64)
-	return &v
 }
 
 func nullableStringEmpty(s string) sql.NullString {

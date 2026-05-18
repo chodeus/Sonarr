@@ -65,6 +65,10 @@ func (p *stubProvider) Test(_ context.Context) ([]downloadclients.TestFailure, e
 	return nil, nil
 }
 
+func (p *stubProvider) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return nil, nil
+}
+
 // stubClientLister returns pinned per-protocol provider lists.
 type stubClientLister struct {
 	usenet  []downloadclients.Provider

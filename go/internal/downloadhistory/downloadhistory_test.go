@@ -10,8 +10,6 @@ import (
 	"sonarr.tv/sonarr/internal/downloadhistory"
 )
 
-func ptrInt(i int) *int { return &i }
-
 func runRepoSuite(t *testing.T, db *datastore.DB) {
 	t.Helper()
 	repo, err := downloadhistory.NewRepo(db)

@@ -6,8 +6,6 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 )
 
-func ptr[T any](v T) *T { return &v }
-
 func mkInput(s *series.Series) Input {
 	return Input{Series: s}
 }
