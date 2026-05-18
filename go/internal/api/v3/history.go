@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/httperr"
@@ -67,6 +68,115 @@ func HistoryHandler(lister HistoryPagedLister) http.Handler {
 		buf, _ := json.Marshal(resp)
 		_, _ = w.Write(buf)
 	})
+}
+
+// HistoryRangeReader is the read surface for /api/v3/history/since +
+// /series. Satisfied by *history.Service.
+type HistoryRangeReader interface {
+	Since(ctx context.Context, cutoff time.Time, eventType *history.EventType) ([]history.Entry, error)
+	GetBySeries(ctx context.Context, seriesID int, eventType *history.EventType) ([]history.Entry, error)
+}
+
+// HistorySinceHandler returns GET /api/v3/history/since. Mirrors C#
+// `HistoryController.GetHistorySince` at `:100-105`:
+//
+//	historyService.Since(date, eventType).Select(MapToResource).ToList()
+//
+// Required query: `date` (ISO-8601 / RFC3339). Optional: `eventType`
+// (integer matching history.EventType enum). `includeSeries` /
+// `includeEpisode` flags are accepted but DEFERRED (resource shape
+// doesn't yet model the joined Series/Episode payloads).
+func HistorySinceHandler(svc HistoryRangeReader) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dateStr := r.URL.Query().Get("date")
+		if dateStr == "" {
+			httperr.BadRequest(w, "history/since: missing date")
+			return
+		}
+		cutoff, err := time.Parse(time.RFC3339, dateStr)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("history/since: invalid date %q (RFC3339 required)", dateStr))
+			return
+		}
+		eventType, ok := parseEventTypeQuery(w, r)
+		if !ok {
+			return
+		}
+		rows, err := svc.Since(r.Context(), cutoff, eventType)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("history/since: %w", err), nil)
+			return
+		}
+		writeHistoryEntries(w, rows)
+	})
+}
+
+// HistorySeriesHandler returns GET /api/v3/history/series. Mirrors C#
+// `HistoryController.GetSeriesHistory` at `:107-129`. Required query:
+// `seriesId`. Optional: `eventType`. The C# action also accepts
+// `seasonNumber` to filter to a single season — DEFERRED in the Go
+// port (needs an episode-table join to map history.EpisodeId →
+// Episode.SeasonNumber that the v3 layer doesn't yet thread).
+func HistorySeriesHandler(svc HistoryRangeReader) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seriesIDStr := r.URL.Query().Get("seriesId")
+		if seriesIDStr == "" {
+			httperr.BadRequest(w, "history/series: missing seriesId")
+			return
+		}
+		seriesID, err := strconv.Atoi(seriesIDStr)
+		if err != nil || seriesID <= 0 {
+			httperr.BadRequest(w, fmt.Sprintf("history/series: invalid seriesId %q", seriesIDStr))
+			return
+		}
+		eventType, ok := parseEventTypeQuery(w, r)
+		if !ok {
+			return
+		}
+		rows, err := svc.GetBySeries(r.Context(), seriesID, eventType)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("history/series: %w", err), nil)
+			return
+		}
+		writeHistoryEntries(w, rows)
+	})
+}
+
+func parseEventTypeQuery(w http.ResponseWriter, r *http.Request) (*history.EventType, bool) {
+	raw := r.URL.Query().Get("eventType")
+	if raw == "" {
+		return nil, true
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		httperr.BadRequest(w, fmt.Sprintf("history: invalid eventType %q", raw))
+		return nil, false
+	}
+	v := history.EventType(n)
+	return &v, true
+}
+
+func writeHistoryEntries(w http.ResponseWriter, rows []history.Entry) {
+	out := make([]HistoryResource, 0, len(rows))
+	for _, e := range rows {
+		eventTypeName := ""
+		if e.EventType != nil {
+			eventTypeName = history.EventType(*e.EventType).String()
+		}
+		out = append(out, HistoryResource{
+			ID:          e.ID,
+			SeriesID:    e.SeriesID,
+			EpisodeID:   e.EpisodeID,
+			SourceTitle: e.SourceTitle,
+			Date:        e.Date.UTC().Format("2006-01-02T15:04:05Z"),
+			DownloadID:  e.DownloadID,
+			EventType:   eventTypeName,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	buf, _ := json.Marshal(out)
+	_, _ = w.Write(buf)
 }
 
 // FailedDownloadMarker is the narrow MarkAsFailed surface the POST

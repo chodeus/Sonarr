@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // EventType is the wire-stable enum for `History.EventType`. Mirrors
@@ -105,9 +106,11 @@ func (t EventType) String() string {
 type EntryReader interface {
 	AllByDownloadID(ctx context.Context, downloadID string) ([]Entry, error)
 	AllByEpisodeID(ctx context.Context, episodeID int) ([]Entry, error)
+	AllBySeriesID(ctx context.Context, seriesID int) ([]Entry, error)
 	Insert(ctx context.Context, e *Entry) (*Entry, error)
 	DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, error)
 	Get(ctx context.Context, id int) (*Entry, error)
+	Since(ctx context.Context, cutoff time.Time) ([]Entry, error)
 }
 
 // Service ports a subset of `IHistoryService` at
@@ -322,6 +325,53 @@ func (s *Service) Get(ctx context.Context, id int) (*Entry, error) {
 		return nil, errors.New("history: Get on nil receiver")
 	}
 	return s.repo.Get(ctx, id)
+}
+
+// Since ports `HistoryService.Since(DateTime, EpisodeHistoryEventType?)`
+// at `HistoryService.cs:88-91`. Returns every history row newer than
+// the cutoff, optionally filtered by event type (nil = no filter).
+// Order: Date descending (same as the underlying repo guarantee).
+func (s *Service) Since(ctx context.Context, cutoff time.Time, eventType *EventType) ([]Entry, error) {
+	if s == nil || s.repo == nil {
+		return nil, errors.New("history: Since on nil receiver")
+	}
+	rows, err := s.repo.Since(ctx, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("history: Since: %w", err)
+	}
+	if eventType == nil {
+		return rows, nil
+	}
+	return filterByEventType(rows, *eventType), nil
+}
+
+// GetBySeries ports `HistoryService.GetBySeries(int seriesId,
+// EpisodeHistoryEventType?)` at `HistoryService.cs:73-76`. Returns
+// every history row for the series, optionally filtered by event
+// type (nil = no filter). Repo.AllBySeriesID handles the underlying
+// query (Date-descending order).
+func (s *Service) GetBySeries(ctx context.Context, seriesID int, eventType *EventType) ([]Entry, error) {
+	if s == nil || s.repo == nil {
+		return nil, errors.New("history: GetBySeries on nil receiver")
+	}
+	rows, err := s.repo.AllBySeriesID(ctx, seriesID)
+	if err != nil {
+		return nil, fmt.Errorf("history: GetBySeries: %w", err)
+	}
+	if eventType == nil {
+		return rows, nil
+	}
+	return filterByEventType(rows, *eventType), nil
+}
+
+func filterByEventType(rows []Entry, eventType EventType) []Entry {
+	out := make([]Entry, 0, len(rows))
+	for _, e := range rows {
+		if e.EventType != nil && EventType(*e.EventType) == eventType {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // Compile-time interface-satisfaction guard. A refactor that breaks

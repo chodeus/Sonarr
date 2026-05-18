@@ -576,6 +576,11 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
 	blocklistSvc := blocklist.NewService(blocklistRepo)
+	// 5.I21: history.Service construction repeated here for the
+	// `/api/v3/history/since` + `/api/v3/history/series` read paths.
+	// Stateless service; the main.go-tier instance handles IHandle
+	// subscribers, this instance feeds the HTTP read handlers.
+	historySvc := history.NewService(historyRepo)
 	// 5.I3: disk space adapter sources from the rootfolders.Service —
 	// each configured root folder is treated as one important path.
 	// The optional-mounts path (C# `GetFixedDisksRootPaths` filtered
@@ -639,6 +644,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/episode", Handler: apiv3.EpisodeListHandler(episodesSvc)},
 		{Method: "GET", Path: "/api/v3/health", Handler: apiv3.HealthHandler(healthSvc)},
 		{Method: "GET", Path: "/api/v3/history", Handler: apiv3.HistoryHandler(historyPagedAdapter{repo: historyRepo})},
+		{Method: "GET", Path: "/api/v3/history/series", Handler: apiv3.HistorySeriesHandler(historySvc)},
+		{Method: "GET", Path: "/api/v3/history/since", Handler: apiv3.HistorySinceHandler(historySvc)},
 		{Method: "POST", Path: "/api/v3/history/failed/{id}", Handler: apiv3.HistoryMarkAsFailedHandler(failedDownloadsSvc)},
 		{Method: "GET", Path: "/api/v3/importlist", Handler: apiv3.ImportListHandler(importListsRepo)},
 		{Method: "GET", Path: "/api/v3/importlist/schema", Handler: apiv3.ImportListSchemaHandler()},

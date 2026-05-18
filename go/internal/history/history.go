@@ -133,6 +133,18 @@ func (r *Repo) AllByDownloadID(ctx context.Context, downloadID string) ([]Entry,
 	return r.scanQuery(ctx, q, downloadID, "allByDownloadID")
 }
 
+// Since returns every History row with Date >= cutoff, ordered by
+// Date descending. Mirrors `HistoryRepository.Since(DateTime date)`
+// at `History/HistoryRepository.cs:80-83`. Used by the `/api/v3/history/since`
+// read path.
+func (r *Repo) Since(ctx context.Context, cutoff time.Time) ([]Entry, error) {
+	db := r.DB()
+	q := fmt.Sprintf(
+		`SELECT "Id","EpisodeId","SeriesId","SourceTitle","Date","Quality","Data","EventType","DownloadId","Languages" FROM "History" WHERE "Date" >= %s ORDER BY "Date" DESC`,
+		datastore.Placeholder(db.Engine, 1))
+	return r.scanQuery(ctx, q, cutoff.UTC(), "since")
+}
+
 // DeleteForSeries ports `HistoryRepository.DeleteForSeries(List<int>)`
 // at `History/HistoryRepository.cs:116-119`. Bulk DELETE every History
 // row whose SeriesId is in the supplied list. Returns rows affected.

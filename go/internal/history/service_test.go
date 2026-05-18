@@ -74,6 +74,14 @@ func (s *stubReader) Get(_ context.Context, id int) (*history.Entry, error) {
 	return nil, history.ErrNotFound
 }
 
+func (s *stubReader) AllBySeriesID(_ context.Context, _ int) ([]history.Entry, error) {
+	return s.out, s.err
+}
+
+func (s *stubReader) Since(_ context.Context, _ time.Time) ([]history.Entry, error) {
+	return s.out, s.err
+}
+
 func TestNewServiceNilRepoReturnsNil(t *testing.T) {
 	t.Parallel()
 	if s := history.NewService(nil); s != nil {
