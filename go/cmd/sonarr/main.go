@@ -2429,7 +2429,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// before `go build`.
 	frontendDir, _ := startup.Arg(appenv.StartupArgFrontendDir)
 
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, frontendDir)
+	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, frontendDir)
 	if err != nil {
 		return err
 	}

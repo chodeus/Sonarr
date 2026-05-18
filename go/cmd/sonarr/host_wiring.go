@@ -38,6 +38,7 @@ import (
 	"sonarr.tv/sonarr/internal/releaseprofiles"
 	"sonarr.tv/sonarr/internal/remotepathmappings"
 	"sonarr.tv/sonarr/internal/rootfolders"
+	"sonarr.tv/sonarr/internal/scheduledtasks"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
@@ -50,7 +51,7 @@ import (
 // Mirrors `src/NzbDrone.Host/Bootstrap.cs:CreateConsoleHostBuilder`
 // where BindAddress + Port are pulled from the configuration before
 // the URL list is handed to Kestrel.
-func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, frontendDir string) (*host.Server, error) {
+func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, frontendDir string) (*host.Server, error) {
 	bind, err := cfg.BindAddress(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: bind address: %w", err)
@@ -60,7 +61,7 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 		return nil, fmt.Errorf("host: port: %w", err)
 	}
 	opts := []host.Option{
-		host.WithRoutes(v3Routes(configProv, cfg, logger, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, cmdRegistry, failedDownloadsSvc)...),
+		host.WithRoutes(v3Routes(configProv, cfg, logger, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, cmdRegistry, failedDownloadsSvc, taskSvc)...),
 	}
 	if frontendDir != "" {
 		opts = append(opts, host.WithStaticDir(frontendDir))
@@ -560,7 +561,7 @@ func (h hostConfigGetter) SetProxyBypassLocalAddresses(ctx context.Context, v bo
 // autoTagsSvc + releaseProfilesSvc own their respective tables; both
 // expose All directly via Go's structural typing on the Lister
 // interfaces.
-func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slog.Logger, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service) []host.Route {
+func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slog.Logger, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service) []host.Route {
 	langs := language.All()
 	localizationSvc := localization.NewService()
 	uiCfg := uiConfigGetter{cfg: configProv, xmlCfg: cfg}
@@ -688,6 +689,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "POST", Path: "/api/v3/system/restart", Handler: apiv3.SystemRestartHandler(lifecycleSvc)},
 		{Method: "POST", Path: "/api/v3/system/shutdown", Handler: apiv3.SystemShutdownHandler(lifecycleSvc)},
 		{Method: "GET", Path: "/api/v3/system/status", Handler: apiv3.SystemStatusHandler(systemStatus, cfg)},
+		{Method: "GET", Path: "/api/v3/system/task", Handler: apiv3.SystemTaskHandler(taskSvc)},
+		{Method: "GET", Path: "/api/v3/system/task/{id}", Handler: apiv3.SystemTaskByIDHandler(taskSvc)},
 		{Method: "GET", Path: "/api/v3/tag", Handler: apiv3.TagHandler(tagsSvc)},
 		{Method: "GET", Path: "/api/v3/tag/{id}", Handler: apiv3.TagByIDHandler(tagsSvc)},
 		{Method: "POST", Path: "/api/v3/tag", Handler: apiv3.TagCreateHandler(tagsSvc)},
