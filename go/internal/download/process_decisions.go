@@ -69,6 +69,7 @@ type ProcessDownloadDecisions struct {
 	prioritizer DecisionPrioritizer
 	bus         *messaging.Bus
 	recorder    providerstatus.Recorder
+	fetcher     BodyFetcher
 	log         *slog.Logger
 }
 
@@ -133,6 +134,34 @@ func (p *ProcessDownloadDecisions) SetBus(bus *messaging.Bus) *ProcessDownloadDe
 // Returns the receiver for chainable construction.
 func (p *ProcessDownloadDecisions) SetRecorder(r providerstatus.Recorder) *ProcessDownloadDecisions {
 	p.recorder = r
+	return p
+}
+
+// SetBodyFetcher wires the [BodyFetcher] the orchestrator uses to
+// pre-fetch the .nzb / .torrent body from the indexer that produced
+// each release. Slice 6.A4 — fills the gap documented at
+// `downloadclients.GrabRequest.NzbBody/TorrentBody`. Optional dep —
+// when nil, GrabRequest.NzbBody + TorrentBody stay empty and
+// concrete clients that require pre-fetched bytes will fail (SAB +
+// NZBGet); clients that accept DownloadURL directly (qBittorrent
+// via URL, Deluge URL-add) or magnet links (Transmission) keep
+// working unaffected.
+//
+// Fetch policy (per protocol, applied at dispatch time):
+//
+//   - Usenet: fetch GrabRequest.DownloadURL into NzbBody when
+//     DownloadURL is non-empty. NzbBody fields already populated
+//     (re-entry safety) are left alone.
+//   - Torrent: fetch DownloadURL into TorrentBody ONLY when
+//     MagnetURL is empty. When MagnetURL is set, the client adds
+//     via magnet directly; the .torrent file isn't needed.
+//   - Either protocol: a Fetch error buckets the decision to
+//     Pending WITHOUT tripping the per-protocol short-circuit (the
+//     indexer host is the issue, not the download client).
+//
+// Returns the receiver for chainable construction.
+func (p *ProcessDownloadDecisions) SetBodyFetcher(f BodyFetcher) *ProcessDownloadDecisions {
+	p.fetcher = f
 	return p
 }
 
@@ -277,6 +306,16 @@ func (p *ProcessDownloadDecisions) dispatch(ctx context.Context, decision *decis
 	}
 
 	req := buildGrabRequest(decision, release)
+
+	// Slice 6.A4: pre-fetch the .nzb / .torrent body from the
+	// indexer that produced the release before the per-client loop.
+	// Failure buckets to Pending (not Failed) so we don't trip the
+	// per-protocol short-circuit — the indexer is the issue, not
+	// the configured download client.
+	if res, abort := p.prefetchBody(ctx, req, protocol); abort {
+		return res
+	}
+
 	tried := make(map[int]struct{}, len(clients))
 	var lastErr error
 	var lastClient string
@@ -502,6 +541,57 @@ func episodeIDSet(eps []episodes.Episode) map[int]struct{} {
 		out[e.ID] = struct{}{}
 	}
 	return out
+}
+
+// prefetchBody runs the indexer-side body fetch for the GrabRequest
+// + populates NzbBody (usenet) or TorrentBody (torrent without
+// magnet) in place. Slice 6.A4. Returns (result, abort) — when
+// abort is true, dispatch returns the result immediately (Pending
+// without tripping the short-circuit); when abort is false, the
+// per-client dispatch loop proceeds. Skip cases that don't abort:
+//
+//   - No fetcher wired (production not yet configured for this
+//     path). Skips silently to preserve the existing test surface.
+//   - Empty req.DownloadURL — no fetch target. SAB/NZBGet will
+//     immediately fail without bytes; that's expected.
+//   - Torrent with non-empty MagnetURL — magnet adds bypass the
+//     .torrent file fetch.
+//   - Body already populated (re-entry safety; the orchestrator
+//     never re-enters today but the path is cheap).
+func (p *ProcessDownloadDecisions) prefetchBody(ctx context.Context, req *downloadclients.GrabRequest, protocol indexers.DownloadProtocol) (ProcessedDecisionResult, bool) {
+	if p.fetcher == nil || req == nil || req.DownloadURL == "" {
+		return 0, false
+	}
+	switch protocol {
+	case indexers.DownloadProtocolUsenet:
+		if len(req.NzbBody) > 0 {
+			return 0, false
+		}
+	case indexers.DownloadProtocolTorrent:
+		if req.MagnetURL != "" || len(req.TorrentBody) > 0 {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+
+	body, err := p.fetcher.Fetch(ctx, req.IndexerID, req.DownloadURL)
+	if err != nil {
+		p.log.Warn("download: body pre-fetch failed; bucketing decision to Pending",
+			"title", req.ReleaseTitle, "indexer", req.IndexerName, "indexerID", req.IndexerID,
+			"downloadURL", req.DownloadURL, "err", err)
+		return ResultPending, true
+	}
+
+	switch protocol {
+	case indexers.DownloadProtocolUsenet:
+		req.NzbBody = body
+	case indexers.DownloadProtocolTorrent:
+		req.TorrentBody = body
+	}
+	p.log.Debug("download: body pre-fetched",
+		"title", req.ReleaseTitle, "protocol", protocol, "bytes", len(body))
+	return 0, false
 }
 
 // recordOutcome reports a per-client Download attempt to the wired
