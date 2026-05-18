@@ -455,6 +455,30 @@ func (p *Proxy) postAddTorrent(ctx context.Context, body []byte, contentType str
 	return nil
 }
 
+// RemoveTorrent fires POST /api/v2/torrents/delete. Mirrors C#
+// `QBittorrentProxyV2.RemoveTorrent` at `:183-194`. When deleteData
+// is true, the `deleteFiles=true` form field rides along — the C#
+// tree omits the field entirely when false (`:188-191`); the Go
+// port mirrors that to match the wire format byte-for-byte (some
+// older qBittorrent builds reject `deleteFiles=false`).
+func (p *Proxy) RemoveTorrent(ctx context.Context, hash string, deleteData bool, settings Settings) error {
+	form := url.Values{}
+	form.Set("hashes", strings.ToLower(hash))
+	if deleteData {
+		form.Set("deleteFiles", "true")
+	}
+	status, body, err := p.DoRequest(ctx, http.MethodPost, "/api/v2/torrents/delete",
+		strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", settings)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("%w: /api/v2/torrents/delete status=%d body=%s",
+			ErrUnexpected, status, truncate(body, 128))
+	}
+	return nil
+}
+
 // SetForceStart fires POST /api/v2/torrents/setForceStart. Mirrors
 // C# `QBittorrentProxyV2.SetForceStart` at `:329-336`.
 func (p *Proxy) SetForceStart(ctx context.Context, hash string, enabled bool, settings Settings) error {

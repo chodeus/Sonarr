@@ -444,10 +444,23 @@ func (q *QBittorrent) GetImportItem(_ context.Context, item, _ *downloadclients.
 	return item, nil
 }
 
-// RemoveItem is filled in by slice 5.G1f. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (q *QBittorrent) RemoveItem(_ context.Context, _ *downloadclients.Item, _ bool) error {
-	return downloadclients.ErrNotImplementedYet
+// RemoveItem ports C# `QBittorrent.RemoveItem` at
+// `Download/Clients/QBittorrent/QBittorrent.cs:361-364`. Lowercases
+// the DownloadID (matches the C# `:363` `.ToLower()` call —
+// qBittorrent rejects mixed-case hashes on /api/v2/torrents/delete)
+// and delegates to [Proxy.RemoveTorrent].
+func (q *QBittorrent) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
+	if item == nil {
+		return errors.New("qbittorrent: RemoveItem: nil item")
+	}
+	if q.proxy == nil {
+		return errors.New("qbittorrent: RemoveItem: nil proxy")
+	}
+	hash := strings.ToLower(item.DownloadID)
+	if err := q.proxy.RemoveTorrent(ctx, hash, deleteData, q.settings); err != nil {
+		return fmt.Errorf("qbittorrent: RemoveItem(%s): %w", hash, err)
+	}
+	return nil
 }
 
 // GetStatus is filled in by slice 5.G1g. Returns
