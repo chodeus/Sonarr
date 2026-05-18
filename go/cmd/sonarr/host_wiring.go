@@ -552,6 +552,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "PUT", Path: "/api/v3/config/downloadclient/{id}", Handler: apiv3.DownloadClientConfigUpdateHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/host", Handler: apiv3.HostConfigHandler(hostCfg)},
 		{Method: "PUT", Path: "/api/v3/config/host/{id}", Handler: apiv3.HostConfigUpdateHandler(hostCfg)},
+		{Method: "GET", Path: "/api/v3/config/importlist", Handler: apiv3.ImportListConfigHandler(configProv)},
+		{Method: "PUT", Path: "/api/v3/config/importlist/{id}", Handler: apiv3.ImportListConfigUpdateHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/mediamanagement", Handler: apiv3.MediaManagementConfigHandler(configProv)},

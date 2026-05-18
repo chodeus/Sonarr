@@ -991,6 +991,34 @@ func (p *Provider) SetProxyBypassLocalAddresses(ctx context.Context, v bool) err
 	return err
 }
 
+// ListSyncLevel mirrors `ConfigService.cs:304-308`. Returns the
+// persisted PascalCase identifier ("Disabled", "LogOnly",
+// "KeepAndUnmonitor", "KeepAndTag"). Default "Disabled" per the C#
+// `GetValueEnum("ListSyncLevel", Disabled)`.
+func (p *Provider) ListSyncLevel() string {
+	return p.getString("ListSyncLevel", "Disabled")
+}
+
+// SetListSyncLevel writes the new value, publishing ConfigSavedEvent
+// on change.
+func (p *Provider) SetListSyncLevel(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "ListSyncLevel", v)
+	return err
+}
+
+// ListSyncTag mirrors `ConfigService.cs:310-314`. Default 0
+// (no tag) — only consulted when ListSyncLevel == KeepAndTag.
+func (p *Provider) ListSyncTag() int {
+	return p.getInt("ListSyncTag", 0)
+}
+
+// SetListSyncTag writes the new value, publishing ConfigSavedEvent
+// on change.
+func (p *Provider) SetListSyncTag(ctx context.Context, v int) error {
+	_, err := p.setInt(ctx, "ListSyncTag", v)
+	return err
+}
+
 // getFloat64 parses the cached value as float64, falling back to def
 // for missing / empty / unparseable entries. Mirrors the strconv-based
 // posture of [getInt] / [getBool].
