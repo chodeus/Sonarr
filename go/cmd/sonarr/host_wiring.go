@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/autotagging"
+	"sonarr.tv/sonarr/internal/backup"
 	"sonarr.tv/sonarr/internal/blocklist"
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/config"
@@ -51,7 +53,7 @@ import (
 // Mirrors `src/NzbDrone.Host/Bootstrap.cs:CreateConsoleHostBuilder`
 // where BindAddress + Port are pulled from the configuration before
 // the URL list is handed to Kestrel.
-func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, frontendDir string) (*host.Server, error) {
+func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, frontendDir string) (*host.Server, error) {
 	bind, err := cfg.BindAddress(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: bind address: %w", err)
@@ -61,7 +63,7 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 		return nil, fmt.Errorf("host: port: %w", err)
 	}
 	opts := []host.Option{
-		host.WithRoutes(v3Routes(configProv, cfg, logger, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, cmdRegistry, failedDownloadsSvc, taskSvc)...),
+		host.WithRoutes(v3Routes(configProv, cfg, logger, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, cmdRegistry, failedDownloadsSvc, taskSvc, backupSvc)...),
 	}
 	if frontendDir != "" {
 		opts = append(opts, host.WithStaticDir(frontendDir))
@@ -173,6 +175,47 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 	}
 	return out, total, nil
 }
+
+// backupAdmin adapts *backup.Service + stdlib fs helpers to
+// apiv3.BackupAdmin. The C# BackupController calls IDiskProvider
+// directly for FileExists + DeleteFile; the Go port collapses the
+// indirection into stdlib calls via the helper functions in
+// internal/api/v3/system_backup.go.
+type backupAdmin struct{ svc *backup.Service }
+
+func (a backupAdmin) GetBackups() ([]backup.Backup, error) { return a.svc.GetBackups() }
+func (a backupAdmin) GetBackupFolderForType(t backup.Type) string {
+	return a.svc.GetBackupFolderForType(t)
+}
+func (a backupAdmin) Restore(backupFileName string) error { return a.svc.Restore(backupFileName) }
+func (a backupAdmin) FileExists(path string) bool         { return apiv3FileExists(path) }
+func (a backupAdmin) DeleteFile(path string) error        { return apiv3DeleteFile(path) }
+
+// apiv3FileExists + apiv3DeleteFile defer to os.Stat / os.Remove.
+// Named with the apiv3 prefix to keep the cmd-package surface clean
+// since the v3 layer's unexported osFileExists / osDeleteFile aren't
+// reachable from main package.
+func apiv3FileExists(path string) bool {
+	info, err := osStatCmd(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
+func apiv3DeleteFile(path string) error {
+	if err := osRemoveCmd(path); err != nil {
+		return fmt.Errorf("delete %q: %w", path, err)
+	}
+	return nil
+}
+
+// osStatCmd + osRemoveCmd are package-local shims so tests can swap
+// them; the default implementations call os.Stat/os.Remove.
+var (
+	osStatCmd   = os.Stat
+	osRemoveCmd = os.Remove
+)
 
 // diskSpaceFromRootFolders adapts *rootfolders.Service to
 // apiv3.FreeSpaceLister. Each configured root folder becomes one
@@ -561,7 +604,7 @@ func (h hostConfigGetter) SetProxyBypassLocalAddresses(ctx context.Context, v bo
 // autoTagsSvc + releaseProfilesSvc own their respective tables; both
 // expose All directly via Go's structural typing on the Lister
 // interfaces.
-func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slog.Logger, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service) []host.Route {
+func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slog.Logger, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service) []host.Route {
 	langs := language.All()
 	localizationSvc := localization.NewService()
 	uiCfg := uiConfigGetter{cfg: configProv, xmlCfg: cfg}
@@ -695,6 +738,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "POST", Path: "/api/v3/rootfolder", Handler: apiv3.RootFolderCreateHandler(rootFoldersSvc, rootFolderEmitter)},
 		{Method: "DELETE", Path: "/api/v3/rootfolder/{id}", Handler: apiv3.RootFolderDeleteHandler(rootFoldersSvc, rootFolderEmitter)},
 		{Method: "GET", Path: "/api/v3/series", Handler: apiv3.SeriesListHandler(seriesSvc)},
+		{Method: "GET", Path: "/api/v3/system/backup", Handler: apiv3.BackupListHandler(backupAdmin{svc: backupSvc})},
+		{Method: "DELETE", Path: "/api/v3/system/backup/{id}", Handler: apiv3.BackupDeleteHandler(backupAdmin{svc: backupSvc})},
+		{Method: "POST", Path: "/api/v3/system/backup/restore/{id}", Handler: apiv3.BackupRestoreHandler(backupAdmin{svc: backupSvc})},
 		{Method: "POST", Path: "/api/v3/system/restart", Handler: apiv3.SystemRestartHandler(lifecycleSvc)},
 		{Method: "POST", Path: "/api/v3/system/shutdown", Handler: apiv3.SystemShutdownHandler(lifecycleSvc)},
 		{Method: "GET", Path: "/api/v3/system/status", Handler: apiv3.SystemStatusHandler(systemStatus, cfg)},
