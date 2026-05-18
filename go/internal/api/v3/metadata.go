@@ -204,6 +204,125 @@ func MetadataTestHandler(tester MetadataTester) http.Handler {
 	})
 }
 
+// MetadataBulkResource mirrors C# `MetadataBulkResource` at
+// `src/Sonarr.Api.V3/Metadata/MetadataBulkResource.cs`. Unlike the
+// other four provider families, the C# class is LITERALLY EMPTY —
+// it inherits only Ids/Tags/ApplyTags from ProviderBulkResource<T>
+// with no per-controller fields. The mapper at the same file is
+// also empty (it just returns the existing definitions unchanged).
+//
+// Since [metadata.Metadata] has no per-row Tags column either, the
+// Tags-apply switch in [applyMetadataBulkUpdate] is a structural
+// no-op for this family. The endpoint exists for cross-family parity
+// — the React UI's bulk-edit drawer doesn't surface anything mutable
+// for metadata, but the URL still has to respond rather than 404.
+//
+// PUT /metadata/bulk is effectively a no-op-update-and-broadcast
+// path; DELETE /metadata/bulk is genuinely useful (multi-row delete).
+//
+// applyTagsAction (defined in indexer.go for 5.C2e) is family-
+// agnostic and present here for wire-shape compatibility — accepted
+// on input but never consumed by the no-op mapper.
+type MetadataBulkResource struct {
+	IDs       []int           `json:"ids"`
+	Tags      []int           `json:"tags"`
+	ApplyTags applyTagsAction `json:"applyTags"`
+}
+
+// MetadataBulkUpdateHandler returns PUT /api/v3/metadata/bulk.
+// Mirrors C# behaviour even though it's effectively a no-op for this
+// family — Update is still called per row (matching C#
+// `_providerFactory.Update(definitionsToUpdate)`) so the SignalR
+// Updated broadcast fires for each id.
+func MetadataBulkUpdateHandler(svc MetadataWriter, emitter MetadataEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeMetadataBulkBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("metadata/bulk: malformed body: %v", err))
+			return
+		}
+		if len(body.IDs) == 0 {
+			httperr.BadRequest(w, "ids must be provided")
+			return
+		}
+		updated := make([]MetadataResource, 0, len(body.IDs))
+		for _, id := range body.IDs {
+			existing, err := svc.Get(r.Context(), id)
+			if errors.Is(err, metadata.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("metadata/bulk: get %d: %w", id, err), nil)
+				return
+			}
+			applyMetadataBulkUpdate(existing, body)
+			if err := svc.Update(r.Context(), existing); err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("metadata/bulk: update %d: %w", id, err), nil)
+				return
+			}
+			res := toMetadataResource(*existing, nil)
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "metadata", "updated", func() error {
+				return emitter.Updated(r.Context(), res)
+			})
+			updated = append(updated, res)
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(updated)
+		_, _ = w.Write(buf)
+	})
+}
+
+// MetadataBulkDeleteHandler returns DELETE /api/v3/metadata/bulk.
+func MetadataBulkDeleteHandler(svc MetadataWriter, emitter MetadataEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeMetadataBulkBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("metadata/bulk: malformed body: %v", err))
+			return
+		}
+		if len(body.IDs) == 0 {
+			httperr.BadRequest(w, "ids must be provided")
+			return
+		}
+		for _, id := range body.IDs {
+			err := svc.Delete(r.Context(), id)
+			if errors.Is(err, metadata.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("metadata/bulk: delete %d: %w", id, err), nil)
+				return
+			}
+			id := id
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "metadata", "deleted", func() error {
+				return emitter.Deleted(r.Context(), MetadataResource{ID: id})
+			})
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+}
+
+func decodeMetadataBulkBody(r *http.Request) (MetadataBulkResource, error) {
+	defer func() { _ = r.Body.Close() }()
+	var out MetadataBulkResource
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return MetadataBulkResource{}, err
+	}
+	return out, nil
+}
+
+// applyMetadataBulkUpdate is the no-op mutator for the metadata
+// family. metadata.Metadata has no Tags column and the C#
+// MetadataBulkResource exposes no per-controller fields. Kept as a
+// named function for symmetry with the other applyXxxBulkUpdate
+// helpers — future per-controller fields would land here.
+func applyMetadataBulkUpdate(_ *metadata.Metadata, _ MetadataBulkResource) {}
+
 // MetadataActioner invokes a per-row provider RequestAction. The
 // cmd-side adapter wires this against metadata.Registry.Construct +
 // metadata.Provider.RequestAction.

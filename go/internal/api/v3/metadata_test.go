@@ -665,3 +665,119 @@ func TestMetadataRequestActionHandler_MalformedJSON_400(t *testing.T) {
 		t.Errorf("status: %d", rr.Code)
 	}
 }
+
+func TestMetadataBulkUpdateHandler_NoOpButBroadcasts(t *testing.T) {
+	t.Parallel()
+	// Bulk PUT is structurally a no-op for metadata (no per-controller
+	// fields, no Tags column) but it still hits Update + Broadcasts
+	// per row — matching C# behaviour.
+	rows := []metadata.Metadata{
+		{ID: 1, Name: "a", Implementation: "XbmcMetadata"},
+		{ID: 2, Name: "b", Implementation: "PlexMetadata"},
+	}
+	w := &fakeMetadataWriter{rows: rows}
+	em := &fakeMetadataEmitter{}
+	body := MetadataBulkResource{IDs: []int{1, 2}}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	MetadataBulkUpdateHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/metadata/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(em.updated) != 2 {
+		t.Errorf("emitter Updated count: %d want 2", len(em.updated))
+	}
+	// Rows unchanged content-wise.
+	if w.rows[0].Name != "a" || w.rows[1].Name != "b" {
+		t.Errorf("rows mutated: %+v", w.rows)
+	}
+}
+
+func TestMetadataBulkUpdateHandler_TagsIgnoredGracefully(t *testing.T) {
+	t.Parallel()
+	// Wire accepts Tags + ApplyTags but they have no effect (metadata
+	// has no Tags column). Must not error.
+	rows := []metadata.Metadata{{ID: 1, Implementation: "XbmcMetadata"}}
+	w := &fakeMetadataWriter{rows: rows}
+	body := []byte(`{"ids":[1],"tags":[5,10],"applyTags":"Add"}`)
+	rr := httptest.NewRecorder()
+	MetadataBulkUpdateHandler(w, &fakeMetadataEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/metadata/bulk", bytes.NewReader(body)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestMetadataBulkUpdateHandler_EmptyIDs_400(t *testing.T) {
+	t.Parallel()
+	body := MetadataBulkResource{IDs: nil}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	MetadataBulkUpdateHandler(&fakeMetadataWriter{}, &fakeMetadataEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/metadata/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestMetadataBulkUpdateHandler_MissingIdsSilentlySkipped(t *testing.T) {
+	t.Parallel()
+	rows := []metadata.Metadata{{ID: 1, Implementation: "XbmcMetadata"}}
+	w := &fakeMetadataWriter{rows: rows}
+	em := &fakeMetadataEmitter{}
+	body := MetadataBulkResource{IDs: []int{1, 999}}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	MetadataBulkUpdateHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/metadata/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(em.updated) != 1 {
+		t.Errorf("Updated should fire only for existing row: %d", len(em.updated))
+	}
+}
+
+func TestMetadataBulkDeleteHandler_Success(t *testing.T) {
+	t.Parallel()
+	rows := []metadata.Metadata{
+		{ID: 1, Implementation: "XbmcMetadata"},
+		{ID: 2, Implementation: "PlexMetadata"},
+		{ID: 3, Implementation: "RoksboxMetadata"},
+	}
+	w := &fakeMetadataWriter{rows: rows}
+	em := &fakeMetadataEmitter{}
+	body := MetadataBulkResource{IDs: []int{1, 3}}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	MetadataBulkDeleteHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/metadata/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if rr.Body.String() != `{}` {
+		t.Errorf("body: %q", rr.Body.String())
+	}
+	if len(w.rows) != 1 || w.rows[0].ID != 2 {
+		t.Errorf("rows after delete: %+v", w.rows)
+	}
+	if len(em.deleted) != 2 {
+		t.Errorf("Deleted count: %d", len(em.deleted))
+	}
+}
+
+func TestMetadataBulkDeleteHandler_EmptyIDs_400(t *testing.T) {
+	t.Parallel()
+	body := MetadataBulkResource{IDs: nil}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	MetadataBulkDeleteHandler(&fakeMetadataWriter{}, &fakeMetadataEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/metadata/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestMetadataBulkUpdateHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	MetadataBulkUpdateHandler(&fakeMetadataWriter{}, &fakeMetadataEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/metadata/bulk", bytes.NewReader([]byte(`{bad`))))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}

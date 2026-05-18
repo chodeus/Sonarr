@@ -1078,6 +1078,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "POST", Path: "/api/v3/metadata/test", Handler: apiv3.MetadataTestHandler(metadataTester)},
 		{Method: "POST", Path: "/api/v3/metadata/testall", Handler: apiv3.MetadataTestAllHandler(metadataRepo, metadataTester)},
 		{Method: "POST", Path: "/api/v3/metadata/action/{name}", Handler: apiv3.MetadataRequestActionHandler(metadataTester)},
+		{Method: "PUT", Path: "/api/v3/metadata/bulk", Handler: apiv3.MetadataBulkUpdateHandler(metadataRepo, metadataEmitter)},
+		{Method: "DELETE", Path: "/api/v3/metadata/bulk", Handler: apiv3.MetadataBulkDeleteHandler(metadataRepo, metadataEmitter)},
 		{Method: "PUT", Path: "/api/v3/metadata/{id}", Handler: apiv3.MetadataUpdateHandler(metadataRepo, metadataEmitter)},
 		{Method: "DELETE", Path: "/api/v3/metadata/{id}", Handler: apiv3.MetadataDeleteHandler(metadataRepo, metadataEmitter)},
 		{Method: "GET", Path: "/api/v3/localization/language", Handler: apiv3.LocalizationLanguageHandler(configProv.UILanguage)},
