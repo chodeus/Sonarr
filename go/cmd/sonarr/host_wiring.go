@@ -372,6 +372,15 @@ func (a *registryMetadataTester) Test(ctx context.Context, n *metadata.Metadata)
 	return provider.Test(ctx)
 }
 
+// RequestAction satisfies apiv3.MetadataActioner.
+func (a *registryMetadataTester) RequestAction(ctx context.Context, n *metadata.Metadata, action string, query map[string]string) (any, error) {
+	provider, err := a.registry.Construct(n, a.deps)
+	if err != nil {
+		return nil, err
+	}
+	return provider.RequestAction(ctx, action, query)
+}
+
 // apiv3FileExists + apiv3DeleteFile defer to os.Stat / os.Remove.
 // Named with the apiv3 prefix to keep the cmd-package surface clean
 // since the v3 layer's unexported osFileExists / osDeleteFile aren't
@@ -1068,6 +1077,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "POST", Path: "/api/v3/metadata", Handler: apiv3.MetadataCreateHandler(metadataRepo, metadataEmitter)},
 		{Method: "POST", Path: "/api/v3/metadata/test", Handler: apiv3.MetadataTestHandler(metadataTester)},
 		{Method: "POST", Path: "/api/v3/metadata/testall", Handler: apiv3.MetadataTestAllHandler(metadataRepo, metadataTester)},
+		{Method: "POST", Path: "/api/v3/metadata/action/{name}", Handler: apiv3.MetadataRequestActionHandler(metadataTester)},
 		{Method: "PUT", Path: "/api/v3/metadata/{id}", Handler: apiv3.MetadataUpdateHandler(metadataRepo, metadataEmitter)},
 		{Method: "DELETE", Path: "/api/v3/metadata/{id}", Handler: apiv3.MetadataDeleteHandler(metadataRepo, metadataEmitter)},
 		{Method: "GET", Path: "/api/v3/localization/language", Handler: apiv3.LocalizationLanguageHandler(configProv.UILanguage)},

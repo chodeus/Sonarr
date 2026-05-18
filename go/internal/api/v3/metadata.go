@@ -204,6 +204,71 @@ func MetadataTestHandler(tester MetadataTester) http.Handler {
 	})
 }
 
+// MetadataActioner invokes a per-row provider RequestAction. The
+// cmd-side adapter wires this against metadata.Registry.Construct +
+// metadata.Provider.RequestAction.
+//
+// Per metadata.Provider doc-comment: none of the 4 concrete metadata
+// writers (Xbmc/Plex/Roksbox/Wdtv) override RequestAction — they all
+// return (nil, nil) via the base default. The endpoint exists for
+// cross-family parity with notification/indexer/importlist/
+// downloadclient: the React UI's per-provider settings dialog hits
+// /action/{name} unconditionally on form load to populate dynamic
+// select options; metadata's no-op default makes those calls return
+// JSON null which the UI handles gracefully.
+type MetadataActioner interface {
+	RequestAction(ctx context.Context, n *metadata.Metadata, action string, query map[string]string) (any, error)
+}
+
+// MetadataRequestActionHandler returns POST /api/v3/metadata/action/{name}.
+// Same shape as the 5.C1d/5.C2d/5.C3d/5.C4d twins.
+func MetadataRequestActionHandler(actioner MetadataActioner) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if strings.TrimSpace(name) == "" {
+			httperr.BadRequest(w, "metadata/action: empty name")
+			return
+		}
+		body, err := decodeMetadataBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("metadata: malformed body: %v", err))
+			return
+		}
+		row, err := fromMetadataResource(body, nil)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("metadata: invalid fields: %v", err))
+			return
+		}
+		query := make(map[string]string, len(r.URL.Query()))
+		for k, vs := range r.URL.Query() {
+			if len(vs) > 0 {
+				query[k] = vs[0]
+			}
+		}
+		data, err := actioner.RequestAction(r.Context(), row, name, query)
+		if err != nil {
+			if errors.Is(err, metadata.ErrNotRegistered) {
+				httperr.WriteValidation(w, []httperr.Failure{{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q (configContract %q)", body.Implementation, body.ConfigContract),
+					Severity:     "error",
+				}})
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("metadata: action %q: %w", name, err), nil)
+			return
+		}
+		buf, err := json.Marshal(data)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("metadata: action %q: marshal: %w", name, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf)
+	})
+}
+
 // MetadataTestAllHandler returns POST /api/v3/metadata/testall.
 // Mirrors C# ProviderControllerBase.TestAll at :233-257 and the
 // 5.C1c/5.C2c/5.C3c/5.C4c twins. Reuses MetadataRowsLister

@@ -540,3 +540,128 @@ func TestMetadataTestAllHandler_ValidationFailuresNonNil(t *testing.T) {
 		t.Errorf("validationFailures should be [] not null: body=%s", rr.Body.String())
 	}
 }
+
+// fakeMetadataActioner implements MetadataActioner.
+type fakeMetadataActioner struct {
+	seenName  string
+	seenQuery map[string]string
+	seenRow   *metadata.Metadata
+	result    any
+	err       error
+}
+
+func (f *fakeMetadataActioner) RequestAction(_ context.Context, n *metadata.Metadata, name string, query map[string]string) (any, error) {
+	f.seenName = name
+	f.seenQuery = query
+	f.seenRow = n
+	return f.result, f.err
+}
+
+func TestMetadataRequestActionHandler_NoOpDefault_EmitsJSONNull(t *testing.T) {
+	t.Parallel()
+	// Mirrors the metadata.Provider doc-comment "none of the 4 writers
+	// override RequestAction; all return nil + nil-error". Confirm the
+	// no-op default round-trips as JSON `null`.
+	actioner := &fakeMetadataActioner{result: nil}
+	body := validMetadataBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/metadata/action/getCustom?type=tv", bytes.NewReader(buf))
+	req.SetPathValue("name", "getCustom")
+	rr := httptest.NewRecorder()
+	MetadataRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `null` {
+		t.Errorf("body should be JSON null; got %q", rr.Body.String())
+	}
+	if actioner.seenName != "getCustom" {
+		t.Errorf("action name: %q", actioner.seenName)
+	}
+	if actioner.seenQuery["type"] != "tv" {
+		t.Errorf("query map: %+v", actioner.seenQuery)
+	}
+	if actioner.seenRow == nil || actioner.seenRow.Implementation != "XbmcMetadata" {
+		t.Errorf("row not built: %+v", actioner.seenRow)
+	}
+}
+
+func TestMetadataRequestActionHandler_NonNilResult(t *testing.T) {
+	t.Parallel()
+	// Hypothetical future writer that DOES override RequestAction —
+	// verify the non-nil-result path marshals correctly.
+	actioner := &fakeMetadataActioner{result: map[string]any{"result": "ok"}}
+	body := validMetadataBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/metadata/action/x", bytes.NewReader(buf))
+	req.SetPathValue("name", "x")
+	rr := httptest.NewRecorder()
+	MetadataRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body shape: %v body=%s", err, rr.Body.String())
+	}
+	if got["result"] != "ok" {
+		t.Errorf("body: %+v", got)
+	}
+}
+
+func TestMetadataRequestActionHandler_ErrNotRegistered_400(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeMetadataActioner{err: metadata.ErrNotRegistered}
+	body := validMetadataBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/metadata/action/x", bytes.NewReader(buf))
+	req.SetPathValue("name", "x")
+	rr := httptest.NewRecorder()
+	MetadataRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var failures []map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &failures)
+	if len(failures) != 1 || failures[0]["propertyName"] != "Implementation" {
+		t.Errorf("expected Implementation failure: %+v", failures)
+	}
+}
+
+func TestMetadataRequestActionHandler_OtherError_500(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeMetadataActioner{err: errors.New("upstream down")}
+	body := validMetadataBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/metadata/action/x", bytes.NewReader(buf))
+	req.SetPathValue("name", "x")
+	rr := httptest.NewRecorder()
+	MetadataRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestMetadataRequestActionHandler_EmptyName_400(t *testing.T) {
+	t.Parallel()
+	body := validMetadataBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/metadata/action/", bytes.NewReader(buf))
+	req.SetPathValue("name", "")
+	rr := httptest.NewRecorder()
+	MetadataRequestActionHandler(&fakeMetadataActioner{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestMetadataRequestActionHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/metadata/action/x", bytes.NewReader([]byte(`{nope`)))
+	req.SetPathValue("name", "x")
+	rr := httptest.NewRecorder()
+	MetadataRequestActionHandler(&fakeMetadataActioner{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
