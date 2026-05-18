@@ -216,6 +216,185 @@ func ToSeriesResource(s series.Series) SeriesResource {
 // computed flag on the wire.
 const seriesStatusEnded = 1
 
+// SeriesEditorResource mirrors C# `SeriesEditorResource` at
+// `src/Sonarr.Api.V3/Series/SeriesEditorResource.cs`. The bulk-edit
+// drawer in the React UI's series table POSTs this to PUT
+// /api/v3/series/editor (multi-row mutate) and DELETE
+// /api/v3/series/editor (multi-row delete).
+//
+// Differences vs the 5.C-family bulk resources:
+//
+//   - The id list field is named `seriesIds`, not `ids`.
+//   - MoveFiles / DeleteFiles / AddImportListExclusion are
+//     TOP-LEVEL booleans on the body (not query params).
+//   - 5 optional pointer-typed per-field updates plus a string-typed
+//     RootFolderPath (empty-string = "not supplied", matching the
+//     C# `string.IsNotNullOrWhiteSpace()` check at line :60).
+//   - MonitorNewItems + SeriesType are pointer-typed strings on the
+//     wire (C# nullable enums serialise as nullable strings via
+//     STJson's JsonStringEnumConverter).
+//
+// applyTagsAction (defined in indexer.go for 5.C2e) is family-
+// agnostic and reused here.
+type SeriesEditorResource struct {
+	SeriesIDs              []int           `json:"seriesIds"`
+	Monitored              *bool           `json:"monitored,omitempty"`
+	MonitorNewItems        *string         `json:"monitorNewItems,omitempty"`
+	QualityProfileID       *int            `json:"qualityProfileId,omitempty"`
+	SeriesType             *string         `json:"seriesType,omitempty"`
+	SeasonFolder           *bool           `json:"seasonFolder,omitempty"`
+	RootFolderPath         string          `json:"rootFolderPath"`
+	Tags                   []int           `json:"tags"`
+	ApplyTags              applyTagsAction `json:"applyTags"`
+	MoveFiles              bool            `json:"moveFiles"`
+	DeleteFiles            bool            `json:"deleteFiles"`
+	AddImportListExclusion bool            `json:"addImportListExclusion"`
+}
+
+// SeriesEditorUpdateHandler returns PUT /api/v3/series/editor.
+// Mirrors C# `SeriesEditorController.SaveAll` at
+// `SeriesEditorController.cs:24-101`. Iterates SeriesIDs, applies
+// per-field updates only when the body's optional pointer is non-
+// nil, broadcasts Updated per row, returns 202 + array.
+//
+// MoveFiles is DEFERRED (BulkMoveSeriesCommand not yet ported).
+// The RootFolderPath field updates the DB row but no on-disk move
+// fires — same gap as 5.D1a's ?moveFiles=true query param.
+func SeriesEditorUpdateHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeSeriesEditorBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("series/editor: malformed body: %v", err))
+			return
+		}
+		if len(body.SeriesIDs) == 0 {
+			httperr.BadRequest(w, "seriesIds must be provided")
+			return
+		}
+		updated := make([]SeriesResource, 0, len(body.SeriesIDs))
+		for _, id := range body.SeriesIDs {
+			existing, err := svc.GetSeries(r.Context(), id)
+			if errors.Is(err, series.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/editor: get %d: %w", id, err), nil)
+				return
+			}
+			applySeriesEditorUpdate(existing, body)
+			if err := svc.Update(r.Context(), existing); err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/editor: update %d: %w", id, err), nil)
+				return
+			}
+			res := ToSeriesResource(*existing)
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "series", "updated", func() error {
+				return emitter.Updated(r.Context(), res)
+			})
+			updated = append(updated, res)
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(updated)
+		_, _ = w.Write(buf)
+	})
+}
+
+// SeriesEditorDeleteHandler returns DELETE /api/v3/series/editor.
+// Mirrors C# `SeriesEditorController.DeleteSeries` at :103-108.
+// Loops Delete per row, broadcasts Deleted, returns 200 {}.
+//
+// DeleteFiles and AddImportListExclusion booleans on the body are
+// PARSED-AND-IGNORED (cascade DEFERRED, matches 5.D1a's behaviour
+// for the single-row delete).
+func SeriesEditorDeleteHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeSeriesEditorBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("series/editor: malformed body: %v", err))
+			return
+		}
+		if len(body.SeriesIDs) == 0 {
+			httperr.BadRequest(w, "seriesIds must be provided")
+			return
+		}
+		for _, id := range body.SeriesIDs {
+			err := svc.Delete(r.Context(), id)
+			if errors.Is(err, series.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/editor: delete %d: %w", id, err), nil)
+				return
+			}
+			id := id
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "series", "deleted", func() error {
+				return emitter.Deleted(r.Context(), SeriesResource{ID: id})
+			})
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+}
+
+func decodeSeriesEditorBody(r *http.Request) (SeriesEditorResource, error) {
+	defer func() { _ = r.Body.Close() }()
+	var out SeriesEditorResource
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return SeriesEditorResource{}, err
+	}
+	return out, nil
+}
+
+// applySeriesEditorUpdate mutates `existing` per the editor body.
+// Mirrors the C# `foreach (var series in seriesToUpdate)` block at
+// `SeriesEditorController.cs:32-89`. Per-field non-nil pointer ⇒
+// apply; nil ⇒ preserve.
+func applySeriesEditorUpdate(existing *series.Series, body SeriesEditorResource) {
+	if body.Monitored != nil {
+		existing.Monitored = *body.Monitored
+	}
+	if body.MonitorNewItems != nil {
+		existing.MonitorNewItems = monitorNewItemsFromName(*body.MonitorNewItems)
+	}
+	if body.QualityProfileID != nil {
+		existing.QualityProfileID = *body.QualityProfileID
+	}
+	if body.SeriesType != nil {
+		existing.SeriesType = seriesTypeFromName(*body.SeriesType)
+	}
+	if body.SeasonFolder != nil {
+		existing.SeasonFolder = *body.SeasonFolder
+	}
+	if strings.TrimSpace(body.RootFolderPath) != "" {
+		existing.RootFolderPath = body.RootFolderPath
+		// C# also pushes a BulkMoveSeries entry here for the
+		// MoveFiles cascade. DEFERRED — see handler doc-comment.
+	}
+	if body.Tags != nil {
+		switch body.ApplyTags {
+		case applyTagsReplace:
+			existing.Tags = append([]int(nil), body.Tags...)
+		case applyTagsAdd:
+			for _, t := range body.Tags {
+				if !containsInt(existing.Tags, t) {
+					existing.Tags = append(existing.Tags, t)
+				}
+			}
+		case applyTagsRemove:
+			out := existing.Tags[:0]
+			for _, t := range existing.Tags {
+				if !containsInt(body.Tags, t) {
+					out = append(out, t)
+				}
+			}
+			existing.Tags = out
+		}
+	}
+}
+
 // SeriesWriter is the CUD surface. *series.Repo satisfies via the
 // embedded repo.Repository[Series] generic. The narrow interface
 // keeps the handler tests free of the full series.Service dependency

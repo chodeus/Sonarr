@@ -442,3 +442,215 @@ func TestSeriesEnumFromName_Inverses(t *testing.T) {
 		t.Error("monitorNewItemsFromName none")
 	}
 }
+
+func stringPtrSeries(s string) *string { return &s }
+
+func TestSeriesEditorUpdateHandler_MonitoredToggle(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{
+		{ID: 1, Title: "A", Monitored: true},
+		{ID: 2, Title: "B", Monitored: true},
+	}
+	w := &fakeSeriesWriter{rows: rows}
+	em := &fakeSeriesEmitter{}
+	mon := false
+	body := SeriesEditorResource{SeriesIDs: []int{1, 2}, Monitored: &mon}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorUpdateHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if w.rows[0].Monitored || w.rows[1].Monitored {
+		t.Errorf("Monitored not toggled: %+v", w.rows)
+	}
+	if len(em.updated) != 2 {
+		t.Errorf("Updated count: %d", len(em.updated))
+	}
+}
+
+func TestSeriesEditorUpdateHandler_QualityProfileChange(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 1, QualityProfileID: 1}}
+	w := &fakeSeriesWriter{rows: rows}
+	qp := 42
+	body := SeriesEditorResource{SeriesIDs: []int{1}, QualityProfileID: &qp}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if w.rows[0].QualityProfileID != 42 {
+		t.Errorf("QualityProfileID: %d", w.rows[0].QualityProfileID)
+	}
+}
+
+func TestSeriesEditorUpdateHandler_PerFieldNilSkip(t *testing.T) {
+	t.Parallel()
+	// Only Monitored is in the body; Series fields stay intact.
+	rows := []series.Series{{
+		ID:               1,
+		Title:            "A",
+		Monitored:        true,
+		QualityProfileID: 10,
+		SeriesType:       series.SeriesTypeAnime,
+		SeasonFolder:     true,
+	}}
+	w := &fakeSeriesWriter{rows: rows}
+	mon := false
+	body := SeriesEditorResource{SeriesIDs: []int{1}, Monitored: &mon}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if w.rows[0].Monitored {
+		t.Errorf("Monitored should be false: %v", w.rows[0].Monitored)
+	}
+	if w.rows[0].QualityProfileID != 10 || w.rows[0].SeriesType != series.SeriesTypeAnime || !w.rows[0].SeasonFolder {
+		t.Errorf("other fields should be preserved: %+v", w.rows[0])
+	}
+}
+
+func TestSeriesEditorUpdateHandler_TagsAddRemoveReplace(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 1, Tags: []int{10, 20}}}
+	w := &fakeSeriesWriter{rows: rows}
+	// Add 30
+	body := SeriesEditorResource{SeriesIDs: []int{1}, Tags: []int{30}, ApplyTags: applyTagsAdd}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if !equalIntSet(w.rows[0].Tags, []int{10, 20, 30}) {
+		t.Errorf("after Add: %v", w.rows[0].Tags)
+	}
+	// Remove 20
+	body = SeriesEditorResource{SeriesIDs: []int{1}, Tags: []int{20}, ApplyTags: applyTagsRemove}
+	buf, _ = json.Marshal(body)
+	rr = httptest.NewRecorder()
+	SeriesEditorUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if !equalIntSet(w.rows[0].Tags, []int{10, 30}) {
+		t.Errorf("after Remove: %v", w.rows[0].Tags)
+	}
+	// Replace with [99]
+	body = SeriesEditorResource{SeriesIDs: []int{1}, Tags: []int{99}, ApplyTags: applyTagsReplace}
+	buf, _ = json.Marshal(body)
+	rr = httptest.NewRecorder()
+	SeriesEditorUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if !equalIntSet(w.rows[0].Tags, []int{99}) {
+		t.Errorf("after Replace: %v", w.rows[0].Tags)
+	}
+}
+
+func TestSeriesEditorUpdateHandler_SeriesTypeStringFromWire(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 1, SeriesType: series.SeriesTypeStandard}}
+	w := &fakeSeriesWriter{rows: rows}
+	st := "anime"
+	body := SeriesEditorResource{SeriesIDs: []int{1}, SeriesType: &st}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if w.rows[0].SeriesType != series.SeriesTypeAnime {
+		t.Errorf("SeriesType: %d (want anime=2)", w.rows[0].SeriesType)
+	}
+}
+
+func TestSeriesEditorUpdateHandler_RootFolderPathUpdates(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 1, RootFolderPath: "/old"}}
+	w := &fakeSeriesWriter{rows: rows}
+	body := SeriesEditorResource{SeriesIDs: []int{1}, RootFolderPath: "/new", MoveFiles: true}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if w.rows[0].RootFolderPath != "/new" {
+		t.Errorf("RootFolderPath: %q", w.rows[0].RootFolderPath)
+	}
+	// MoveFiles is parsed-and-ignored (BulkMoveSeriesCommand DEFERRED).
+}
+
+func TestSeriesEditorUpdateHandler_EmptyIDs_400(t *testing.T) {
+	t.Parallel()
+	body := SeriesEditorResource{SeriesIDs: nil}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorUpdateHandler(&fakeSeriesWriter{}, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestSeriesEditorUpdateHandler_MissingIdsSilentlySkipped(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 1}}
+	w := &fakeSeriesWriter{rows: rows}
+	em := &fakeSeriesEmitter{}
+	mon := false
+	body := SeriesEditorResource{SeriesIDs: []int{1, 999}, Monitored: &mon}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorUpdateHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(em.updated) != 1 {
+		t.Errorf("Updated count: %d (want 1)", len(em.updated))
+	}
+}
+
+func TestSeriesEditorDeleteHandler_Success(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{
+		{ID: 1, Title: "a"},
+		{ID: 2, Title: "b"},
+		{ID: 3, Title: "c"},
+	}
+	w := &fakeSeriesWriter{rows: rows}
+	em := &fakeSeriesEmitter{}
+	body := SeriesEditorResource{SeriesIDs: []int{1, 3}, DeleteFiles: true}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorDeleteHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `{}` {
+		t.Errorf("body: %q", rr.Body.String())
+	}
+	if len(w.rows) != 1 || w.rows[0].ID != 2 {
+		t.Errorf("rows after delete: %+v", w.rows)
+	}
+	if len(em.deleted) != 2 {
+		t.Errorf("Deleted count: %d", len(em.deleted))
+	}
+}
+
+func TestSeriesEditorDeleteHandler_EmptyIDs_400(t *testing.T) {
+	t.Parallel()
+	body := SeriesEditorResource{SeriesIDs: nil}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorDeleteHandler(&fakeSeriesWriter{}, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestSeriesEditorUpdateHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	SeriesEditorUpdateHandler(&fakeSeriesWriter{}, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader([]byte(`{bad`))))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+	_ = stringPtrSeries("") // silence unused
+}
