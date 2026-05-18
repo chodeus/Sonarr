@@ -173,6 +173,35 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 	return out, total, nil
 }
 
+// diskSpaceFromRootFolders adapts *rootfolders.Service to
+// apiv3.FreeSpaceLister. Each configured root folder becomes one
+// DiskSpaceResource; rows with nil FreeSpace/TotalSpace (disk-stat
+// probe failed) are dropped to match the C# behaviour where
+// `_diskProvider.GetAvailableSpace(path)` returning null skips the
+// row at `DiskSpaceService.cs:75-82`. Label stays empty pending a
+// GetVolumeLabel adapter port.
+type diskSpaceFromRootFolders struct{ svc *rootfolders.Service }
+
+func (a diskSpaceFromRootFolders) GetFreeSpace(ctx context.Context) ([]apiv3.DiskSpaceResource, error) {
+	folders, err := a.svc.AllWithUnmappedFolders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]apiv3.DiskSpaceResource, 0, len(folders))
+	for _, f := range folders {
+		if f.FreeSpace == nil || f.TotalSpace == nil {
+			continue
+		}
+		out = append(out, apiv3.DiskSpaceResource{
+			Path:       f.Path,
+			Label:      "",
+			FreeSpace:  *f.FreeSpace,
+			TotalSpace: *f.TotalSpace,
+		})
+	}
+	return out, nil
+}
+
 // historyPagedAdapter wraps *history.Repo. Same caveats as blocklist:
 // in-memory paging, skeleton fields only, sort params unused.
 type historyPagedAdapter struct{ repo *history.Repo }
@@ -546,6 +575,14 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
 	blocklistSvc := blocklist.NewService(blocklistRepo)
+	// 5.I3: disk space adapter sources from the rootfolders.Service —
+	// each configured root folder is treated as one important path.
+	// The optional-mounts path (C# `GetFixedDisksRootPaths` filtered
+	// against `_regexSpecialDrive`) is DEFERRED until a cross-platform
+	// GetMounts adapter lands; the rootfolder-only surface still
+	// matches C# wire shape on empty DB (`[]`) and gives populated
+	// DBs the right entries for the UI's "free space" widget.
+	diskSpaceLister := diskSpaceFromRootFolders{svc: rootFoldersSvc}
 	return []host.Route{
 		{Method: "GET", Path: "/api/v3/autotagging", Handler: apiv3.AutoTaggingHandler(autoTagsSvc)},
 		{Method: "GET", Path: "/api/v3/autotagging/{id}", Handler: apiv3.AutoTaggingByIDHandler(autoTagsSvc)},
@@ -595,6 +632,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "PUT", Path: "/api/v3/delayprofile/{id}", Handler: apiv3.DelayProfileUpdateHandler(delayProfilesSvc)},
 		{Method: "PUT", Path: "/api/v3/delayprofile/reorder/{id}", Handler: apiv3.DelayProfileReorderHandler(delayProfilesSvc)},
 		{Method: "DELETE", Path: "/api/v3/delayprofile/{id}", Handler: apiv3.DelayProfileDeleteHandler(delayProfilesSvc)},
+		{Method: "GET", Path: "/api/v3/diskspace", Handler: apiv3.DiskSpaceHandler(diskSpaceLister)},
 		{Method: "GET", Path: "/api/v3/downloadclient", Handler: apiv3.DownloadClientHandler(downloadClientsRepo)},
 		{Method: "GET", Path: "/api/v3/downloadclient/schema", Handler: apiv3.DownloadClientSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/episode", Handler: apiv3.EpisodeListHandler(episodesSvc)},
