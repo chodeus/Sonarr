@@ -328,3 +328,47 @@ func TestService_NewServiceErrors(t *testing.T) {
 		t.Errorf("NewService(nil) want error")
 	}
 }
+
+func TestService_DeleteBySeriesID(t *testing.T) {
+	t.Parallel()
+	svc, r, _ := newSvcWithBus(t)
+
+	// Insert 3 files for series 50 + 1 for series 51.
+	for _, f := range []*episodefiles.File{
+		sampleFile(50, 1, "S01E01.mkv"),
+		sampleFile(50, 1, "S01E02.mkv"),
+		sampleFile(50, 2, "S02E01.mkv"),
+		sampleFile(51, 1, "Other.mkv"),
+	} {
+		if _, err := r.Insert(t.Context(), f); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+	}
+
+	deleted, err := svc.DeleteBySeriesID(t.Context(), 50)
+	if err != nil {
+		t.Fatalf("DeleteBySeriesID: %v", err)
+	}
+	if deleted != 3 {
+		t.Errorf("rows: got %d, want 3", deleted)
+	}
+
+	// Series 50 has zero files; series 51 still has 1.
+	left, _ := r.AllBySeriesID(t.Context(), 50)
+	if len(left) != 0 {
+		t.Errorf("series 50: %d, want 0", len(left))
+	}
+	left51, _ := r.AllBySeriesID(t.Context(), 51)
+	if len(left51) != 1 {
+		t.Errorf("series 51: %d, want 1", len(left51))
+	}
+
+	// Idempotent.
+	deleted2, err := svc.DeleteBySeriesID(t.Context(), 50)
+	if err != nil {
+		t.Errorf("DeleteBySeriesID idempotent: %v", err)
+	}
+	if deleted2 != 0 {
+		t.Errorf("idempotent rows: got %d, want 0", deleted2)
+	}
+}

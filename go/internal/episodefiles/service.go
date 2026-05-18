@@ -323,3 +323,18 @@ func joinPath(parent, rel string) string {
 	rel = strings.TrimLeft(rel, "/")
 	return filepath.Clean(parent + "/" + rel)
 }
+
+// DeleteBySeriesID cascades episode-file row deletion when a series
+// is removed. Bulk SQL via the repo; no per-row event emission (the
+// Go port has no IHandle<EpisodeFileDeletedEvent> consumer that
+// reacts to series-delete cascades — per-row delete events still
+// fire from the per-file [Delete] path for the import-rename flow).
+//
+// IMPORTANT: DB-row cascade ONLY. The on-disk .mkv/.mp4 files are
+// NOT removed here; that requires the DiskProvider port + the
+// API-layer ?deleteFiles=true plumbing wired through (DEFERRED).
+//
+// Slice 5.D4 port pre-work — used by slice 5.D5's API-layer cascade.
+func (s *Service) DeleteBySeriesID(ctx context.Context, seriesID int) (int64, error) {
+	return s.repo.DeleteBySeriesID(ctx, seriesID)
+}

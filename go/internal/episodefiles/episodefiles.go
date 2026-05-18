@@ -163,6 +163,37 @@ func (r *Repo) AllBySeriesID(ctx context.Context, seriesID int) ([]File, error) 
 	return out, nil
 }
 
+// DeleteBySeriesID issues a single `DELETE FROM "EpisodeFiles" WHERE
+// "SeriesId" = ?` and returns the number of rows affected. Mirrors
+// the C# cascade behaviour: when a series is deleted, every
+// EpisodeFile row for that series is dropped. The C# tree does this
+// via the per-event handler `MediaFileService` listens for
+// `SeriesDeletedEvent` and walks the file list.
+//
+// IMPORTANT: this is the DB-row cascade ONLY. The C# tree also
+// deletes the on-disk file via `DiskProvider.DeleteFile` when
+// `deleteFiles=true` is supplied to the delete endpoint. That
+// physical-disk cascade is DEFERRED — the API-layer ?deleteFiles=true
+// param still parses-and-ignores the physical side; only the DB
+// rows are cleaned up. Cleanup of the actual .mkv/.mp4 files is a
+// follow-up slice that needs the DiskProvider wired through.
+//
+// Slice 5.D4 port pre-work for the eventual /series/{id}?deleteFiles=true
+// cascade wired in slice 5.D5.
+func (r *Repo) DeleteBySeriesID(ctx context.Context, seriesID int) (int64, error) {
+	db := r.DB()
+	q := fmt.Sprintf(`DELETE FROM "EpisodeFiles" WHERE "SeriesId" = %s`, datastore.Placeholder(db.Engine, 1))
+	res, err := db.SQL.ExecContext(ctx, q, seriesID)
+	if err != nil {
+		return 0, fmt.Errorf("episodefiles: deleteBySeriesID(%d): %w", seriesID, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("episodefiles: deleteBySeriesID(%d): rowsAffected: %w", seriesID, err)
+	}
+	return affected, nil
+}
+
 func defaultJSON(s, fallback string) string {
 	if s == "" {
 		return fallback

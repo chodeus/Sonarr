@@ -127,6 +127,42 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 	if err := repo.Delete(t.Context(), full.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
+
+	// 5.D4 port pre-work: DeleteBySeriesID bulk-cascade. Use series
+	// 200 (untouched by the seed block) so this test doesn't
+	// interfere with the existing per-row Delete above.
+	for _, f := range []episodefiles.File{
+		{SeriesID: 200, SeasonNumber: 1, Quality: "{}", Languages: []int{}, DateAdded: now, RelativePath: "S01E01.mkv"},
+		{SeriesID: 200, SeasonNumber: 1, Quality: "{}", Languages: []int{}, DateAdded: now, RelativePath: "S01E02.mkv"},
+		{SeriesID: 200, SeasonNumber: 2, Quality: "{}", Languages: []int{}, DateAdded: now, RelativePath: "S02E01.mkv"},
+	} {
+		f := f
+		if _, err := repo.Insert(t.Context(), &f); err != nil {
+			t.Fatalf("Insert series 200: %v", err)
+		}
+	}
+	deleted, err := repo.DeleteBySeriesID(t.Context(), 200)
+	if err != nil {
+		t.Fatalf("DeleteBySeriesID: %v", err)
+	}
+	if deleted != 3 {
+		t.Errorf("DeleteBySeriesID rows: got %d, want 3", deleted)
+	}
+	remaining, err := repo.AllBySeriesID(t.Context(), 200)
+	if err != nil {
+		t.Fatalf("AllBySeriesID after delete: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("series 200 should have 0 files after delete; got %d", len(remaining))
+	}
+	// Idempotent on already-empty series.
+	deleted2, err := repo.DeleteBySeriesID(t.Context(), 99999)
+	if err != nil {
+		t.Errorf("DeleteBySeriesID(missing): %v", err)
+	}
+	if deleted2 != 0 {
+		t.Errorf("DeleteBySeriesID(missing) rows: got %d, want 0", deleted2)
+	}
 }
 
 func TestRepo_SQLite(t *testing.T) {
