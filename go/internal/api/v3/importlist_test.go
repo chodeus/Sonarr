@@ -428,3 +428,130 @@ func TestImportListTestHandler_SkipsSharedValidator(t *testing.T) {
 		t.Errorf("skip-validation: status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+// perRowImportListTester maps row ID → outcome.
+type perRowImportListTester struct {
+	seen     []int
+	byID     map[int][]importlists.TestFailure
+	errByID  map[int]error
+	defaultR []importlists.TestFailure
+}
+
+func (p *perRowImportListTester) Test(_ context.Context, n *importlists.ImportList) ([]importlists.TestFailure, error) {
+	p.seen = append(p.seen, n.ID)
+	if p.errByID != nil {
+		if err, ok := p.errByID[n.ID]; ok {
+			return nil, err
+		}
+	}
+	if p.byID != nil {
+		if r, ok := p.byID[n.ID]; ok {
+			return r, nil
+		}
+	}
+	return p.defaultR, nil
+}
+
+func TestImportListTestAllHandler_Empty_Returns200EmptyArray(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	ImportListTestAllHandler(&fakeImportListLister{}, &perRowImportListTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist/testall", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `[]` {
+		t.Errorf("body: %q want []", rr.Body.String())
+	}
+}
+
+func TestImportListTestAllHandler_AllPass_Returns200Array(t *testing.T) {
+	t.Parallel()
+	rows := []importlists.ImportList{
+		{ID: 1, Name: "a", Implementation: "SonarrImport"},
+		{ID: 2, Name: "b", Implementation: "PlexImport"},
+	}
+	tester := &perRowImportListTester{}
+	rr := httptest.NewRecorder()
+	ImportListTestAllHandler(&fakeImportListLister{rows: rows}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist/testall", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got []ProviderTestAllResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len: %d", len(got))
+	}
+	for i, r := range got {
+		if !r.IsValid {
+			t.Errorf("row %d isValid: false; want true", i)
+		}
+	}
+	if len(tester.seen) != 2 || tester.seen[0] != 1 || tester.seen[1] != 2 {
+		t.Errorf("ordering: %v", tester.seen)
+	}
+}
+
+func TestImportListTestAllHandler_MixedResults_Returns400(t *testing.T) {
+	t.Parallel()
+	rows := []importlists.ImportList{
+		{ID: 1, Name: "ok", Implementation: "SonarrImport"},
+		{ID: 2, Name: "bad", Implementation: "PlexImport"},
+		{ID: 3, Name: "missing", Implementation: "GhostProvider"},
+		{ID: 4, Name: "boom", Implementation: "SonarrImport"},
+	}
+	tester := &perRowImportListTester{
+		byID: map[int][]importlists.TestFailure{
+			2: {{PropertyName: "BaseUrl", ErrorMessage: "could not connect"}},
+		},
+		errByID: map[int]error{
+			3: importlists.ErrNotRegistered,
+			4: errors.New("transport reset"),
+		},
+	}
+	rr := httptest.NewRecorder()
+	ImportListTestAllHandler(&fakeImportListLister{rows: rows}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist/testall", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got []ProviderTestAllResult
+	_ = json.Unmarshal(rr.Body.Bytes(), &got)
+	if len(got) != 4 {
+		t.Fatalf("len: %d", len(got))
+	}
+	if !got[0].IsValid {
+		t.Errorf("row 0: %+v", got[0])
+	}
+	if got[1].IsValid || got[1].ValidationFailures[0].PropertyName != "BaseUrl" {
+		t.Errorf("row 1: %+v", got[1])
+	}
+	if got[2].IsValid || got[2].ValidationFailures[0].PropertyName != "Implementation" {
+		t.Errorf("row 2: %+v", got[2])
+	}
+	if got[3].IsValid || got[3].ValidationFailures[0].PropertyName != "" {
+		t.Errorf("row 3: %+v", got[3])
+	}
+}
+
+func TestImportListTestAllHandler_ListError_500(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	ImportListTestAllHandler(&fakeImportListLister{err: errors.New("db down")}, &perRowImportListTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist/testall", nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestImportListTestAllHandler_ValidationFailuresNonNil(t *testing.T) {
+	t.Parallel()
+	rows := []importlists.ImportList{{ID: 7, Implementation: "SonarrImport"}}
+	rr := httptest.NewRecorder()
+	ImportListTestAllHandler(&fakeImportListLister{rows: rows}, &perRowImportListTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist/testall", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`"validationFailures":[]`)) {
+		t.Errorf("validationFailures should be [] not null: body=%s", rr.Body.String())
+	}
+}

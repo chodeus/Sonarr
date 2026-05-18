@@ -372,6 +372,65 @@ func ImportListTestHandler(tester ImportListTester) http.Handler {
 	})
 }
 
+// ImportListTestAllHandler returns POST /api/v3/importlist/testall.
+// Mirrors C# ProviderControllerBase.TestAll at :233-257 and the
+// 5.C1c / 5.C2c twins. Iterates every persisted row, runs per-row
+// Provider.Test sequentially, aggregates into the family-agnostic
+// [ProviderTestAllResult] array.
+//
+// Returns 400 when any row failed, 200 when all passed. Empty list
+// returns []. C# `Settings.Validate().IsValid && c.Enable` filter
+// dropped — same rationale as the notification + indexer twins.
+func ImportListTestAllHandler(lister ImportListLister, tester ImportListTester) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rows, err := lister.All(r.Context())
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlist/testall: list: %w", err), nil)
+			return
+		}
+		results := make([]ProviderTestAllResult, 0, len(rows))
+		anyInvalid := false
+		for _, row := range rows {
+			row := row
+			failures, err := tester.Test(r.Context(), &row)
+			projected := make([]httperr.Failure, 0)
+			switch {
+			case errors.Is(err, importlists.ErrNotRegistered):
+				projected = append(projected, httperr.Failure{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q", row.Implementation),
+					Severity:     "error",
+				})
+			case err != nil:
+				projected = append(projected, httperr.Failure{
+					PropertyName: "",
+					ErrorMessage: fmt.Sprintf("Test failed: %v", err),
+					Severity:     "error",
+				})
+			default:
+				projected = append(projected, importListTestFailuresToFluentArray(failures)...)
+			}
+			isValid := len(projected) == 0
+			if !isValid {
+				anyInvalid = true
+			}
+			results = append(results, ProviderTestAllResult{
+				ID:                 row.ID,
+				IsValid:            isValid,
+				ValidationFailures: projected,
+			})
+		}
+		status := http.StatusOK
+		if anyInvalid {
+			status = http.StatusBadRequest
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		buf, _ := json.Marshal(results)
+		_, _ = w.Write(buf)
+	})
+}
+
 // importListTestFailuresToFluentArray ports the projection for the
 // [importlists.TestFailure] shape. Same as the notification /
 // indexer twins.
