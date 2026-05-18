@@ -53,6 +53,22 @@ func SystemShutdownHandler(svc SystemLifecycleRunner) http.Handler {
 	})
 }
 
+// SystemRoutesDuplicateHandler returns GET /api/v3/system/routes/duplicate.
+// Mirrors `SystemController.DuplicateRoutes` at `:109-114` which
+// returns the C# `DuplicateEndpointDetector.GetDuplicateEndpoints`
+// output - an empty array unless the ASP.NET route table actually
+// contains conflicts. The Go-port route table is statically declared
+// in cmd/sonarr/host_wiring.go's v3Routes list + verified at boot, so
+// duplicates can't survive registration - this handler emits `[]`
+// unconditionally matching the steady-state shape.
+func SystemRoutesDuplicateHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	})
+}
+
 // SystemRestartHandler returns POST /api/v3/system/restart. Mirrors
 // `SystemController.Restart` at `:123-128`. Same fire-and-forget
 // pattern as Shutdown — the Restart() call sets RestartPending=true

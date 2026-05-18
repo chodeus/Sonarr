@@ -98,6 +98,18 @@ func TestSystemRestartHandler_RespondsImmediatelyAndDispatches(t *testing.T) {
 	waitFor(t, lc.restartCount, 1)
 }
 
+func TestSystemRoutesDuplicateHandler_EmptyArray(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	SystemRoutesDuplicateHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/system/routes/duplicate", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if rr.Body.String() != "[]" {
+		t.Errorf("body: %q want []", rr.Body.String())
+	}
+}
+
 // Errors from the lifecycle service must not affect the HTTP response
 // (the response is sent BEFORE the goroutine runs). The handler logs
 // the failure via the request-scoped logger.
