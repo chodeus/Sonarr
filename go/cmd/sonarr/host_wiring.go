@@ -720,6 +720,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/downloadclient", Handler: apiv3.DownloadClientHandler(downloadClientsRepo)},
 		{Method: "GET", Path: "/api/v3/downloadclient/schema", Handler: apiv3.DownloadClientSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/episode", Handler: apiv3.EpisodeListHandler(episodesSvc)},
+		{Method: "PUT", Path: "/api/v3/episode/monitor", Handler: apiv3.EpisodeMonitorHandler(episodesSvc)},
 		{Method: "GET", Path: "/api/v3/health", Handler: apiv3.HealthHandler(healthSvc)},
 		{Method: "GET", Path: "/api/v3/history", Handler: apiv3.HistoryHandler(historyPagedAdapter{repo: historyRepo})},
 		{Method: "GET", Path: "/api/v3/history/series", Handler: apiv3.HistorySeriesHandler(historySvc)},

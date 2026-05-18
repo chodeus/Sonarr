@@ -2,10 +2,12 @@ package v3
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/episodes"
@@ -91,3 +93,109 @@ func TestEpisodeListHandler_InvalidSeriesId400(t *testing.T) {
 
 // strconv reference to silence unused-import nags when tests change.
 var _ = strconv.Itoa
+
+// ---------- 5.D4a: PUT /episode/monitor tests ----------
+
+type fakeEpisodeMonitorWriter struct {
+	rows       []episodes.Episode
+	setOne     *int
+	setOneVal  *bool
+	setBulkIDs []int
+	setBulkVal *bool
+	err        error
+}
+
+func (f *fakeEpisodeMonitorWriter) GetEpisodesBySeries(_ context.Context, _ int) ([]episodes.Episode, error) {
+	return f.rows, f.err
+}
+func (f *fakeEpisodeMonitorWriter) GetEpisodes(_ context.Context, _ []int) ([]episodes.Episode, error) {
+	return f.rows, f.err
+}
+func (f *fakeEpisodeMonitorWriter) SetEpisodeMonitored(_ context.Context, id int, monitored bool) error {
+	f.setOne = &id
+	f.setOneVal = &monitored
+	return f.err
+}
+func (f *fakeEpisodeMonitorWriter) SetMonitored(_ context.Context, ids []int, monitored bool) error {
+	f.setBulkIDs = append([]int(nil), ids...)
+	f.setBulkVal = &monitored
+	return f.err
+}
+
+func TestEpisodeMonitorHandler_SingleID(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeMonitorWriter{rows: []episodes.Episode{{ID: 5, SeriesID: 1, Monitored: true}}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episode/monitor", strings.NewReader(`{"episodeIds":[5],"monitored":true}`))
+	EpisodeMonitorHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if w.setOne == nil || *w.setOne != 5 || w.setOneVal == nil || !*w.setOneVal {
+		t.Errorf("SetEpisodeMonitored not called for id=5,true: %+v %+v", w.setOne, w.setOneVal)
+	}
+	if w.setBulkIDs != nil {
+		t.Errorf("bulk path should not fire for single id: %+v", w.setBulkIDs)
+	}
+	var got []EpisodeResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != 5 {
+		t.Errorf("response: %+v", got)
+	}
+}
+
+func TestEpisodeMonitorHandler_BulkIDs(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeMonitorWriter{rows: []episodes.Episode{
+		{ID: 1, SeriesID: 1, Monitored: false},
+		{ID: 2, SeriesID: 1, Monitored: false},
+	}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episode/monitor", strings.NewReader(`{"episodeIds":[1,2],"monitored":false}`))
+	EpisodeMonitorHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if w.setOne != nil {
+		t.Errorf("single path should not fire for bulk: %+v", w.setOne)
+	}
+	if len(w.setBulkIDs) != 2 || w.setBulkIDs[0] != 1 || w.setBulkIDs[1] != 2 {
+		t.Errorf("bulk ids: %+v", w.setBulkIDs)
+	}
+	if w.setBulkVal == nil || *w.setBulkVal {
+		t.Errorf("bulk monitored value: %+v", w.setBulkVal)
+	}
+}
+
+func TestEpisodeMonitorHandler_MissingIDs_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episode/monitor", strings.NewReader(`{"episodeIds":[],"monitored":true}`))
+	EpisodeMonitorHandler(&fakeEpisodeMonitorWriter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestEpisodeMonitorHandler_MalformedBody_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episode/monitor", strings.NewReader(`not json`))
+	EpisodeMonitorHandler(&fakeEpisodeMonitorWriter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestEpisodeMonitorHandler_ServiceError_500(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeMonitorWriter{err: errors.New("boom")}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episode/monitor", strings.NewReader(`{"episodeIds":[1],"monitored":true}`))
+	EpisodeMonitorHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}

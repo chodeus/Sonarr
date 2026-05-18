@@ -98,6 +98,69 @@ func EpisodeListHandler(lister EpisodeBySeriesLister) http.Handler {
 	})
 }
 
+// EpisodeMonitorWriter is the write surface for PUT /episode/monitor.
+// Satisfied directly by *episodes.Service.
+type EpisodeMonitorWriter interface {
+	EpisodeBySeriesLister
+	GetEpisodes(ctx context.Context, ids []int) ([]episodes.Episode, error)
+	SetEpisodeMonitored(ctx context.Context, episodeID int, monitored bool) error
+	SetMonitored(ctx context.Context, ids []int, monitored bool) error
+}
+
+// episodesMonitoredBody mirrors C# `EpisodesMonitoredResource` —
+// `{episodeIds: int[], monitored: bool}`.
+type episodesMonitoredBody struct {
+	EpisodeIDs []int `json:"episodeIds"`
+	Monitored  bool  `json:"monitored"`
+}
+
+// EpisodeMonitorHandler returns PUT /api/v3/episode/monitor. Mirrors
+// `EpisodeController.SetEpisodesMonitored` at `:62-78` — sets
+// monitored flag for a single id or a batch, then returns the
+// updated rows projected to EpisodeResource. C# returns 202 Accepted.
+//
+// DEFERRED: includeImages query param (the EpisodeResource shape
+// doesn't yet model the embedded image set — same gap as the GET).
+func EpisodeMonitorHandler(svc EpisodeMonitorWriter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body episodesMonitoredBody
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("episode/monitor: malformed body: %v", err))
+			return
+		}
+		if len(body.EpisodeIDs) == 0 {
+			httperr.BadRequest(w, "episode/monitor: episodeIds is required")
+			return
+		}
+		ctx := r.Context()
+		var err error
+		if len(body.EpisodeIDs) == 1 {
+			err = svc.SetEpisodeMonitored(ctx, body.EpisodeIDs[0], body.Monitored)
+		} else {
+			err = svc.SetMonitored(ctx, body.EpisodeIDs, body.Monitored)
+		}
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episode/monitor: %w", err), nil)
+			return
+		}
+		rows, err := svc.GetEpisodes(ctx, body.EpisodeIDs)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episode/monitor: reload: %w", err), nil)
+			return
+		}
+		out := make([]EpisodeResource, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, ToEpisodeResource(row))
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(out)
+		_, _ = w.Write(buf)
+	})
+}
+
 // ToEpisodeResource maps the persisted Episode to the wire shape.
 // Exported so the cmd/sonarr wanted-episodes adapter can reuse the
 // same projection rather than re-rolling the field copy.
