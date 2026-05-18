@@ -2,6 +2,8 @@ package nzbget
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -76,10 +78,76 @@ func (n *Nzbget) Settings() Settings { return n.settings }
 // Proxy returns the bound proxy.
 func (n *Nzbget) Proxy() *Proxy { return n.proxy }
 
-// Download is filled in by slice 5.G3e. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (n *Nzbget) Download(_ context.Context, _ *downloadclients.GrabRequest) (string, error) {
-	return "", downloadclients.ErrNotImplementedYet
+// Download ports C# `Nzbget.AddFromNzbFile` at
+// `Download/Clients/Nzbget/Nzbget.cs:39-52`. NZBGet is usenet-only —
+// there's no torrent/magnet variant, so this collapses to a single
+// `append`-RPC dispatch.
+//
+// req.NzbBody MUST be non-empty: deluge/NZBGet/SAB are all usenet-
+// or torrent-byte-only at the add layer, and the orchestrator
+// pre-fetches DownloadURL → NzbBody in queue [15] before invoking
+// Provider.Download. An empty NzbBody is a programmer-error path.
+//
+// Drone-parameter wiring: every Sonarr-grabbed NZB carries a
+// freshly-minted 32-char hex drone ID via the PP[] params array.
+// The same ID is returned as the DownloadID so GetItems can
+// cross-reference the row when listgroups + history surface it
+// later (see the `drone` arm in droneOrFallback).
+//
+// Priority pick: req.IsRecent picks RecentTvPriority; else
+// OlderTvPriority. Matches C# `:42`.
+//
+// Filename: req.ReleaseTitle + ".nzb" suffix (deluge tree at
+// `:39` passes the filename through verbatim — Sonarr's
+// UsenetClientBase synthesises a "<release>.nzb" filename).
+//
+// Returns the drone ID as the DownloadID. Non-positive append
+// response surfaces as ErrAddFailed via the proxy.
+func (n *Nzbget) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
+	if req == nil {
+		return "", errors.New("nzbget: Download: nil request")
+	}
+	if n.proxy == nil {
+		return "", errors.New("nzbget: Download: nil proxy")
+	}
+	if len(req.NzbBody) == 0 {
+		return "", errors.New("nzbget: Download: NzbBody is empty (orchestrator must pre-fetch DownloadURL)")
+	}
+
+	droneID, err := newDroneID()
+	if err != nil {
+		return "", fmt.Errorf("nzbget: Download: generate drone ID: %w", err)
+	}
+
+	priority := n.settings.OlderTvPriority
+	if req.IsRecent {
+		priority = n.settings.RecentTvPriority
+	}
+
+	nzbName := strings.TrimSpace(req.ReleaseTitle)
+	if nzbName == "" {
+		nzbName = "release.nzb"
+	} else if !strings.HasSuffix(strings.ToLower(nzbName), ".nzb") {
+		nzbName += ".nzb"
+	}
+
+	if _, err := n.proxy.AppendNzbV16(ctx, nzbName, req.NzbBody,
+		n.settings.TvCategory, priority, n.settings.AddPaused,
+		droneID, n.settings); err != nil {
+		return "", fmt.Errorf("nzbget: Download(%q): %w", req.ReleaseTitle, err)
+	}
+	return droneID, nil
+}
+
+// newDroneID returns a fresh 32-char hex string used as the
+// per-grab cross-reference token. Matches C# `NzbgetProxy.cs:60-61`
+// (`Guid.NewGuid().ToString().Replace("-", "")`).
+func newDroneID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // GetItems ports C# `Nzbget.GetItems` at

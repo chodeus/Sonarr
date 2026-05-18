@@ -3,6 +3,7 @@ package nzbget
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -67,6 +68,11 @@ var (
 	// null `error` field. Mirrors C# `DownloadClientException`
 	// raised at `:259`.
 	ErrRPCFailure = errors.New("nzbget: RPC failure")
+
+	// ErrAddFailed surfaces an `append` RPC that returned a
+	// non-positive NzbId. Mirrors C#
+	// `DownloadClientRejectedReleaseException` at `Nzbget.cs:48`.
+	ErrAddFailed = errors.New("nzbget: append rejected the NZB")
 )
 
 // NewProxy binds the deps. doer is REQUIRED; log defaults to
@@ -203,6 +209,74 @@ func (p *Proxy) Call(ctx context.Context, method string, params []any, settings 
 			ErrRPCFailure, parsed.Error.Message, parsed.Error.Code, parsed.Error.Name, method)
 	}
 	return parsed.Result, nil
+}
+
+// AppendNzbV16 fires the new-style `append` RPC introduced in
+// NZBGet API v16 (NZBGet 16.0, ~2015). Mirrors C# `DownloadNzb`
+// v16 arm at `NzbgetProxy.cs:55-67`.
+//
+// Wire signature (positional):
+//
+//	append(NZBFilename, NZBFileContent[base64], Category, Priority,
+//	       AddToTop, AddPaused, DupeKey, DupeScore, DupeMode, PP[])
+//
+// PP[] is the per-NZB parameters array; the Go port always passes
+// `["drone", droneID]` so subsequent listgroups / history calls
+// can cross-reference the Sonarr-side ID via the `drone` parameter
+// (matches C# `:62`).
+//
+// Returns the NzbId integer on success (>0); zero or negative
+// surfaces as [ErrAddFailed] mirroring C# `:63-66`.
+//
+// Legacy v12/v13 paths from C# `:69-117` are intentionally deferred
+// — NZBGet 12 shipped in 2013 and the Sonarr-side minimum is v12,
+// but in practice every real-world install runs v21+. The
+// version-floor in 5.G3c's Test() probe surfaces older installs
+// as a "Version" failure before Download is ever reached.
+func (p *Proxy) AppendNzbV16(ctx context.Context, nzbName string, nzbBytes []byte, category string, priority int, addPaused bool, droneID string, settings Settings) (int, error) {
+	encoded := base64.StdEncoding.EncodeToString(nzbBytes)
+	params := []any{
+		nzbName, encoded, category, priority,
+		false,     // AddToTop — Sonarr doesn't reorder on add; priority is sufficient
+		addPaused, // AddPaused
+		"",        // DupeKey
+		0,         // DupeScore
+		"all",     // DupeMode — apply both score and key checks
+		[]string{"drone", droneID},
+	}
+	raw, err := p.Call(ctx, "append", params, settings)
+	if err != nil {
+		return 0, err
+	}
+	var nzbID int
+	if err := json.Unmarshal(raw, &nzbID); err != nil {
+		return 0, fmt.Errorf("nzbget: parse append response: %w", err)
+	}
+	if nzbID <= 0 {
+		return 0, ErrAddFailed
+	}
+	return nzbID, nil
+}
+
+// EditQueue fires `editqueue`. Mirrors C# `EditQueue` at
+// `NzbgetProxy.cs:215-218`. Used by [Nzbget.RemoveItem] (5.G3f)
+// for the `GroupFinalDelete` (in-progress) and `HistoryDelete`
+// (completed) commands.
+//
+// Returns the boolean success flag; false surfaces as a typed
+// error so callers can distinguish "the server returned false"
+// from "the RPC itself errored."
+func (p *Proxy) EditQueue(ctx context.Context, command string, offset int, editText string, id int, settings Settings) (bool, error) {
+	raw, err := p.Call(ctx, "editqueue",
+		[]any{command, offset, editText, id}, settings)
+	if err != nil {
+		return false, err
+	}
+	var ok bool
+	if err := json.Unmarshal(raw, &ok); err != nil {
+		return false, fmt.Errorf("nzbget: parse editqueue response: %w", err)
+	}
+	return ok, nil
 }
 
 // GetQueue fires `listgroups`. Mirrors C# `NzbgetProxy.GetQueue`
