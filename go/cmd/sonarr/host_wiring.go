@@ -19,6 +19,7 @@ import (
 	"sonarr.tv/sonarr/internal/customfilters"
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/delayprofiles"
+	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
@@ -56,7 +57,7 @@ import (
 // Mirrors `src/NzbDrone.Host/Bootstrap.cs:CreateConsoleHostBuilder`
 // where BindAddress + Port are pulled from the configuration before
 // the URL list is handed to Kestrel.
-func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, backupTempPath string, logFolderPath, frontendDir string) (*host.Server, error) {
+func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, diskProv *disk.Provider, backupTempPath string, logFolderPath, frontendDir string) (*host.Server, error) {
 	bind, err := cfg.BindAddress(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: bind address: %w", err)
@@ -66,7 +67,7 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, logger *slog
 		return nil, fmt.Errorf("host: port: %w", err)
 	}
 	opts := []host.Option{
-		host.WithRoutes(v3Routes(configProv, cfg, logger, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, cmdRegistry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, backupTempPath, logFolderPath)...),
+		host.WithRoutes(v3Routes(configProv, cfg, logger, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, cmdRegistry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, backupTempPath, logFolderPath)...),
 	}
 	if frontendDir != "" {
 		opts = append(opts, host.WithStaticDir(frontendDir))
@@ -199,38 +200,79 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 // directly for FileExists + DeleteFile; the Go port collapses the
 // indirection into stdlib calls via the helper functions in
 // internal/api/v3/system_backup.go.
+// seriesFolderCleaner narrows the disk.Provider surface to the one
+// method seriesCascadeAdapter actually uses. Production wires
+// *disk.Provider; tests pass a recording fake. nil-safe — when the
+// adapter holds a nil cleaner, the disk-delete step is skipped.
+type seriesFolderCleaner interface {
+	DeleteFolder(path string, recursive bool) error
+}
+
 // seriesCascadeAdapter bundles series + episodes + episodefiles
-// services so apiv3.SeriesDeleteHandler's cascade-aware delete
-// path (gated on ?deleteFiles=true / body.DeleteFiles) can remove
-// rows from all 3 tables in the correct FK-parent-last order.
+// services + a disk-folder cleaner so apiv3.SeriesDeleteHandler's
+// cascade-aware delete path (gated on ?deleteFiles=true /
+// body.DeleteFiles) can remove rows from 3 tables AND clean up the
+// series folder on disk.
 //
 // Embedding *series.Service inherits the 5.D1a thin pass-through
 // methods (Insert / Update / Delete / GetSeries / GetAllSeries) so
 // the adapter satisfies apiv3.SeriesWriter without forwarding each
 // method by hand; only DeleteCascade is implemented here.
 //
-// IMPORTANT: DB-row cascade only. The on-disk .mkv/.mp4 files +
-// the series folder stay on disk — DiskProvider port + the
-// physical-delete wire-through is DEFERRED.
+// On-disk cascade matches C# `SeriesService.DeleteSeries` at
+// `src/NzbDrone.Core/Tv/SeriesService.cs:222-242`: load the series,
+// delete its folder via DiskProvider (logged + continue on error),
+// then publish SeriesDeletedEvent which cascades the DB rows.
+// 5.D8 collapses the C# event-bus indirection into a direct
+// sequential call chain because no other Go-port consumer reacts
+// to SeriesDeletedEvent today.
 type seriesCascadeAdapter struct {
 	*series.Service
 	episodes     *episodes.Service
 	episodefiles *episodefiles.Service
+	disk         seriesFolderCleaner
+	logger       *slog.Logger
 }
 
-// DeleteCascade removes child rows (episodefiles → episodes) then
-// the series row itself. Order matches FK-parent-last so the
-// foreign-key constraints don't reject the parent delete. Mirrors
-// the C# cascade sequence at SeriesService.DeleteSeries +
-// MediaFileService.HandleAsync(SeriesDeletedEvent) +
-// EpisodeService.HandleAsync(SeriesDeletedEvent), collapsed into
-// three sequential SQL bulk DELETEs.
+// DeleteCascade removes the on-disk series folder + child rows
+// (episodefiles → episodes) → the series row itself.
 //
-// Partial-failure semantics: if episodefiles cleanup fails the
-// series row stays — the user sees the error and can retry; the
-// orphaned episodefiles rows are recovered on the next retry.
-// Episodes cleanup follows the same rule.
+// Order:
+//
+//  1. Load the series row to read Path (the on-disk folder location).
+//  2. If Path is non-empty and a disk cleaner is wired, call
+//     DeleteFolder(Path, recursive=true). Errors are LOGGED + the
+//     cascade continues — matches C# DiskProvider behaviour where
+//     on-disk delete failures (permission, in-use file) don't abort
+//     the DB-row cleanup. Operators can manually remove leftover
+//     files later; the database state stays consistent.
+//  3. Bulk-delete episodefiles for the series.
+//  4. Bulk-delete episodes for the series.
+//  5. Delete the series row itself.
+//
+// FK-parent-last order (children first) ensures foreign-key
+// constraints don't reject the series delete.
+//
+// Partial-failure semantics: if a DB-cascade step fails the series
+// row stays; the user sees the error and can retry; orphaned child
+// rows are recovered on retry. The on-disk failure is non-fatal
+// (logged only) per the doc-comment above.
 func (a *seriesCascadeAdapter) DeleteCascade(ctx context.Context, id int) error {
+	// Step 1: load the series for its Path.
+	row, err := a.GetSeries(ctx, id)
+	if err != nil {
+		return err
+	}
+	// Step 2: on-disk folder delete (best-effort, logged on failure).
+	if a.disk != nil && row.Path != "" {
+		if dErr := a.disk.DeleteFolder(row.Path, true); dErr != nil {
+			if a.logger != nil {
+				a.logger.Warn("series cascade: on-disk DeleteFolder failed; continuing with DB cleanup",
+					"id", id, "path", row.Path, "err", dErr)
+			}
+		}
+	}
+	// Steps 3-5: DB-row cascade in FK-parent-last order.
 	if _, err := a.episodefiles.DeleteBySeriesID(ctx, id); err != nil {
 		return fmt.Errorf("series cascade: episodefiles: %w", err)
 	}
@@ -856,7 +898,7 @@ func (h hostConfigGetter) SetProxyBypassLocalAddresses(ctx context.Context, v bo
 // autoTagsSvc + releaseProfilesSvc own their respective tables; both
 // expose All directly via Go's structural typing on the Lister
 // interfaces.
-func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slog.Logger, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, backupTempPath, logFolderPath string) []host.Route {
+func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slog.Logger, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, diskProv *disk.Provider, backupTempPath, logFolderPath string) []host.Route {
 	langs := language.All()
 	localizationSvc := localization.NewService()
 	uiCfg := uiConfigGetter{cfg: configProv, xmlCfg: cfg}
@@ -961,10 +1003,16 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// DEFERRED. seriesWriter embeds *series.Service to inherit
 	// Insert/Update/Delete + GetSeries/GetAllSeries; the type-assert
 	// in apiv3.SeriesDeleteHandler picks up the DeleteCascade method.
+	// 5.D8: pull the *disk.Provider in scope here for the on-disk
+	// folder-cleanup step in seriesCascadeAdapter.DeleteCascade. The
+	// adapter only needs DeleteFolder so we wire via the narrow
+	// seriesFolderCleaner interface — production passes diskProv.
 	seriesWriter := &seriesCascadeAdapter{
 		Service:      seriesSvc,
 		episodes:     episodesSvc,
 		episodefiles: episodeFilesSvc,
+		disk:         diskProv,
+		logger:       logger,
 	}
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
 	// at line 1979 for the IHandle subscribers) since both wires need
