@@ -216,6 +216,100 @@ func ToSeriesResource(s series.Series) SeriesResource {
 // computed flag on the wire.
 const seriesStatusEnded = 1
 
+// SeriesImportHandler returns POST /api/v3/series/import. Mirrors
+// C# `SeriesImportController.Import` at
+// `src/Sonarr.Api.V3/Series/SeriesImportController.cs:13-20`. The
+// React UI's "import existing series from disk" flow and the
+// import-list scheduled sync (when an enabled import list discovers
+// new series matching the configured criteria) both hit this
+// endpoint with a JSON array of SeriesResource.
+//
+// 5.D2 ships the DB-write boundary WITHOUT the AddSeriesService
+// cascade — same pragmatic split as 5.D1a's single-row POST.
+// Specifically NOT replicated:
+//
+//   - TVDB lookup-then-merge (the C# pipeline fetches the upstream
+//     SkyHook metadata and overlays the user-supplied row).
+//   - Folder creation via DiskProvider when AddOptions requests it.
+//   - Season-pass seeding (the C# `SeasonPassService` creates one
+//     Episode placeholder per season per series for the upcoming
+//     scheduler-pass refresh).
+//   - Image download + cover-cache priming.
+//   - ImportListExclusion clearing for any TVDB id being added back.
+//
+// The Go port persists each row as supplied + fires SignalR Created
+// per row. The React UI's wizard pre-computes Path via the
+// rootfolder + title-slug so the empty-DB byte-equal contract isn't
+// broken.
+//
+// Validation: same minimum as the single-row POST (validateSeriesResource:
+// Title + Path + QualityProfileId). The first invalid row aborts
+// the batch with a 400 (matches C# `_addSeriesService.AddSeries`
+// throwing on the first validator failure — no partial-write
+// semantics).
+//
+// Empty array returns 200 with `[]`. Non-empty success returns 201
+// + the persisted resources.
+func SeriesImportHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeSeriesImportBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("series/import: malformed body: %v", err))
+			return
+		}
+		// Pre-validate the whole batch so a partial-insert failure
+		// can't sneak through. Mirrors the C# pipeline which throws
+		// from inside the foreach before any DB write happens.
+		for i, row := range body {
+			if failures := validateSeriesResource(row); len(failures) > 0 {
+				// Prefix the property name with the row index so the
+				// React UI can surface which item in the batch failed.
+				prefixed := make([]httperr.Failure, len(failures))
+				for j, f := range failures {
+					f.PropertyName = fmt.Sprintf("[%d].%s", i, f.PropertyName)
+					prefixed[j] = f
+				}
+				httperr.WriteValidation(w, prefixed)
+				return
+			}
+		}
+		if len(body) == 0 {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		created := make([]SeriesResource, 0, len(body))
+		for _, res := range body {
+			row := fromSeriesResource(res, nil)
+			saved, err := svc.Insert(r.Context(), row)
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/import: insert %q: %w", res.Title, err), nil)
+				return
+			}
+			out := ToSeriesResource(*saved)
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "series", "created", func() error {
+				return emitter.Created(r.Context(), out)
+			})
+			created = append(created, out)
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusCreated)
+		buf, _ := json.Marshal(created)
+		_, _ = w.Write(buf)
+	})
+}
+
+func decodeSeriesImportBody(r *http.Request) ([]SeriesResource, error) {
+	defer func() { _ = r.Body.Close() }()
+	var out []SeriesResource
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SeriesEditorResource mirrors C# `SeriesEditorResource` at
 // `src/Sonarr.Api.V3/Series/SeriesEditorResource.cs`. The bulk-edit
 // drawer in the React UI's series table POSTs this to PUT

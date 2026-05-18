@@ -654,3 +654,130 @@ func TestSeriesEditorUpdateHandler_MalformedJSON_400(t *testing.T) {
 	}
 	_ = stringPtrSeries("") // silence unused
 }
+
+func TestSeriesImportHandler_EmptyArray_Returns200EmptyArray(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	SeriesImportHandler(&fakeSeriesWriter{}, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/series/import", bytes.NewReader([]byte(`[]`))))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `[]` {
+		t.Errorf("body: %q want []", rr.Body.String())
+	}
+}
+
+func TestSeriesImportHandler_SingleRow_Success(t *testing.T) {
+	t.Parallel()
+	w := &fakeSeriesWriter{}
+	em := &fakeSeriesEmitter{}
+	body := []SeriesResource{validSeriesBody()}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesImportHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/series/import", bytes.NewReader(buf)))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.rows) != 1 || w.rows[0].Title != "Breaking Bad" {
+		t.Errorf("row not inserted: %+v", w.rows)
+	}
+	if len(em.created) != 1 {
+		t.Errorf("emitter.Created: %+v", em.created)
+	}
+	var got []SeriesResource
+	_ = json.Unmarshal(rr.Body.Bytes(), &got)
+	if len(got) != 1 || got[0].ID <= 0 {
+		t.Errorf("response: %+v", got)
+	}
+}
+
+func TestSeriesImportHandler_MultiRow_Success(t *testing.T) {
+	t.Parallel()
+	w := &fakeSeriesWriter{}
+	em := &fakeSeriesEmitter{}
+	row1 := validSeriesBody()
+	row2 := validSeriesBody()
+	row2.Title = "Better Call Saul"
+	row2.TvdbID = 273181
+	row2.TitleSlug = "better-call-saul"
+	body := []SeriesResource{row1, row2}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesImportHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/series/import", bytes.NewReader(buf)))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.rows) != 2 {
+		t.Errorf("len: %d", len(w.rows))
+	}
+	if w.rows[0].Title != "Breaking Bad" || w.rows[1].Title != "Better Call Saul" {
+		t.Errorf("rows: %+v %+v", w.rows[0].Title, w.rows[1].Title)
+	}
+	if len(em.created) != 2 {
+		t.Errorf("emitter.Created count: %d", len(em.created))
+	}
+}
+
+func TestSeriesImportHandler_PerRowValidationFailure_AbortsBatchWith400(t *testing.T) {
+	t.Parallel()
+	w := &fakeSeriesWriter{}
+	row1 := validSeriesBody()
+	row2 := validSeriesBody()
+	row2.Title = "" // invalid
+	body := []SeriesResource{row1, row2}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesImportHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/series/import", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	// Verify NO rows inserted — the validation pre-pass aborts before
+	// any DB write.
+	if len(w.rows) != 0 {
+		t.Errorf("rows should be empty on validation failure: %+v", w.rows)
+	}
+	// Verify the failure carries the [1].Title prefix (row index 1
+	// failed; the React UI uses this to highlight the offending row).
+	var failures []map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &failures)
+	if len(failures) == 0 {
+		t.Fatalf("body: %s", rr.Body.String())
+	}
+	prop, _ := failures[0]["propertyName"].(string)
+	if !strings.HasPrefix(prop, "[1].") {
+		t.Errorf("propertyName should be prefixed [1].* : %q", prop)
+	}
+}
+
+func TestSeriesImportHandler_MissingRequiredFields_400(t *testing.T) {
+	t.Parallel()
+	body := []SeriesResource{{Title: "OnlyTitle"}} // path + qualityProfileId missing
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesImportHandler(&fakeSeriesWriter{}, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/series/import", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestSeriesImportHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	SeriesImportHandler(&fakeSeriesWriter{}, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/series/import", bytes.NewReader([]byte(`{not-array`))))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestSeriesImportHandler_NotAnArray_400(t *testing.T) {
+	t.Parallel()
+	// Body is a single SeriesResource object, not an array — should
+	// fail decoding.
+	body := validSeriesBody()
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesImportHandler(&fakeSeriesWriter{}, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/series/import", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
