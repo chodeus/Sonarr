@@ -373,10 +373,151 @@ func (n *Nzbget) GetImportItem(_ context.Context, item, _ *downloadclients.Item)
 	return item, nil
 }
 
-// RemoveItem is filled in by slice 5.G3f. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (n *Nzbget) RemoveItem(_ context.Context, _ *downloadclients.Item, _ bool) error {
-	return downloadclients.ErrNotImplementedYet
+// RemoveItem ports C# `Nzbget.RemoveItem` at
+// `Download/Clients/Nzbget/Nzbget.cs:202-210` + the proxy-side
+// lookup at `NzbgetProxy.cs:165-202`.
+//
+// NZBGet's remove flow is unusual: the DownloadID could refer to
+// EITHER an in-progress queue entry (use GroupFinalDelete) OR a
+// completed history entry (use HistoryDelete). The lookup logic:
+//
+//   - DownloadID parses as integer AND is < 10 chars: legacy
+//     non-Sonarr-grabbed entry; match queueItem.NzbId / historyItem.Id
+//     directly (matches C# `:172-175`).
+//   - Otherwise: 32-char hex drone GUID from Sonarr's append-time
+//     parameter; match the `drone` parameter Value case-sensitive
+//     (matches C# `:177-181`).
+//
+// Not-found surfaces as a slog.Warn but returns nil — matches the
+// C# pattern at `:201` which warns but doesn't throw. EditQueue
+// returning false also warns + continues (matches C# `:188-192`).
+//
+// deleteData=true: the C# tree at `:204-207` calls `DeleteItemData`
+// which uses DiskProvider.DeleteFolder against item.OutputPath. The
+// Go port defers this until the disk-provider port lands — emits a
+// slog.Warn so the orchestrator's hint isn't silently dropped, then
+// proceeds with the editqueue call which is the load-bearing
+// behaviour anyway.
+func (n *Nzbget) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
+	if item == nil {
+		return errors.New("nzbget: RemoveItem: nil item")
+	}
+	if n.proxy == nil {
+		return errors.New("nzbget: RemoveItem: nil proxy")
+	}
+
+	if deleteData {
+		n.log.Warn("nzbget: RemoveItem: deleteData=true requested but on-disk data deletion is not yet supported; the queue/history entry will be removed but files remain",
+			"downloadID", item.DownloadID)
+	}
+
+	queue, err := n.proxy.GetQueue(ctx, n.settings)
+	if err != nil {
+		return fmt.Errorf("nzbget: RemoveItem: GetQueue: %w", err)
+	}
+	history, err := n.proxy.GetHistory(ctx, n.settings)
+	if err != nil {
+		return fmt.Errorf("nzbget: RemoveItem: GetHistory: %w", err)
+	}
+
+	queueItem, historyItem := lookupForRemove(item.DownloadID, queue, history)
+	switch {
+	case queueItem != nil:
+		ok, err := n.proxy.EditQueue(ctx, "GroupFinalDelete", 0, "", queueItem.NzbId, n.settings)
+		if err != nil {
+			n.log.Warn("nzbget: RemoveItem: editqueue GroupFinalDelete failed",
+				"nzbId", queueItem.NzbId, "name", queueItem.NzbName, "err", err)
+			return nil
+		}
+		if !ok {
+			n.log.Warn("nzbget: RemoveItem: editqueue GroupFinalDelete returned false",
+				"nzbId", queueItem.NzbId, "name", queueItem.NzbName)
+		}
+	case historyItem != nil:
+		ok, err := n.proxy.EditQueue(ctx, "HistoryDelete", 0, "", historyItem.Id, n.settings)
+		if err != nil {
+			n.log.Warn("nzbget: RemoveItem: editqueue HistoryDelete failed",
+				"id", historyItem.Id, "name", historyItem.Name, "err", err)
+			return nil
+		}
+		if !ok {
+			n.log.Warn("nzbget: RemoveItem: editqueue HistoryDelete returned false",
+				"id", historyItem.Id, "name", historyItem.Name)
+		}
+	default:
+		n.log.Warn("nzbget: RemoveItem: unknown DownloadID — not present in queue or history",
+			"downloadID", item.DownloadID)
+	}
+	return nil
+}
+
+// lookupForRemove walks queue + history looking for the DownloadID.
+// Returns the matched (*queueItem, nil) OR (nil, *historyItem); a
+// nil/nil return means not found anywhere.
+//
+// Match rules per C# `NzbgetProxy.RemoveItem` at `:170-186`:
+//
+//   - DownloadID parses as an integer AND is < 10 chars: match by
+//     numeric NzbId/Id directly (legacy non-Sonarr-grabbed entries).
+//   - Otherwise: match by the `drone` parameter Value, case-
+//     sensitive — drone GUIDs are lowercase hex from
+//     [newDroneID].
+func lookupForRemove(downloadID string, queue []NzbgetQueueItem, history []NzbgetHistoryItem) (*NzbgetQueueItem, *NzbgetHistoryItem) {
+	id := strings.TrimSpace(downloadID)
+	if id == "" {
+		return nil, nil
+	}
+
+	if len(id) < 10 {
+		if nzbID, err := strconv.Atoi(id); err == nil {
+			for i := range queue {
+				if queue[i].NzbId == nzbID {
+					return &queue[i], nil
+				}
+			}
+			for i := range history {
+				if history[i].Id == nzbID {
+					return nil, &history[i]
+				}
+			}
+			return nil, nil
+		}
+	}
+
+	for i := range queue {
+		if hasMatchingDrone(queue[i].Parameters, id) {
+			return &queue[i], nil
+		}
+	}
+	for i := range history {
+		if hasMatchingDrone(history[i].Parameters, id) {
+			return nil, &history[i]
+		}
+	}
+	return nil, nil
+}
+
+// hasMatchingDrone reports whether any parameter named "drone"
+// carries value == id (case-sensitive). Handles both string-Value
+// (the modern shape) and float64-Value (legacy int-stringified)
+// arms.
+func hasMatchingDrone(params []NzbgetParameter, id string) bool {
+	for _, p := range params {
+		if p.Name != "drone" {
+			continue
+		}
+		switch v := p.Value.(type) {
+		case string:
+			if v == id {
+				return true
+			}
+		case float64:
+			if strconv.FormatInt(int64(v), 10) == id {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // GetStatus is filled in by slice 5.G3g. Returns

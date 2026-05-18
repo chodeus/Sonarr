@@ -222,15 +222,6 @@ func TestRegistry_DefaultsUsedWhenSettingsEmpty(t *testing.T) {
 // ErrNotImplementedYet.
 // ============================================================================
 
-func TestStub_RemoveItemReturnsNotImplemented(t *testing.T) {
-	t.Parallel()
-	n := nzbget.New(nil, nzbget.NewSettings(), nil, nil)
-	err := n.RemoveItem(context.Background(), &downloadclients.Item{}, false)
-	if !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("RemoveItem() err = %v, want ErrNotImplementedYet", err)
-	}
-}
-
 func TestStub_GetStatusReturnsNotImplemented(t *testing.T) {
 	t.Parallel()
 	n := nzbget.New(nil, nzbget.NewSettings(), nil, nil)
