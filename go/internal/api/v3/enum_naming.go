@@ -1,6 +1,7 @@
 package v3
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 
@@ -60,4 +61,20 @@ func ProperDownloadTypeName(p quality.ProperDownloadType) string {
 		return "doNotPrefer"
 	}
 	return "unknown"
+}
+
+// ProperDownloadTypeFromName reverses ProperDownloadTypeName. Used by
+// the /api/v3/config/mediamanagement PUT handler (slice 5.B13c).
+// Unknown values surface as an error rather than defaulting silently
+// — the wire shape is a closed enum and a bad value should reject.
+func ProperDownloadTypeFromName(s string) (quality.ProperDownloadType, error) {
+	switch s {
+	case "preferAndUpgrade":
+		return quality.ProperPreferAndUpgrade, nil
+	case "doNotUpgrade":
+		return quality.ProperDoNotUpgrade, nil
+	case "doNotPrefer":
+		return quality.ProperDoNotPrefer, nil
+	}
+	return 0, fmt.Errorf("unknown DownloadPropersAndRepacks value %q (want preferAndUpgrade|doNotUpgrade|doNotPrefer)", s)
 }

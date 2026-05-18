@@ -315,6 +315,17 @@ func (p *Provider) UserRejectedExtensions() string {
 	return p.getString("UserRejectedExtensions", "")
 }
 
+// SetUserRejectedExtensions persists the comma-separated extension
+// list. Slice 5.B13c (config/mediamanagement PUT) wires this.
+// Validation that each entry parses cleanly (no spaces, no missing
+// dot) is the caller's responsibility — the C# pipeline does it
+// in the controller-side Custom() validator at
+// `MediaManagementConfigController.cs:43-56`.
+func (p *Provider) SetUserRejectedExtensions(ctx context.Context, v string) error {
+	_, err := p.setString(ctx, "UserRejectedExtensions", v)
+	return err
+}
+
 // getInt parses the cached value as int, falling back to def for
 // missing/empty/unparseable entries.
 func (p *Provider) getInt(key string, def int) int {

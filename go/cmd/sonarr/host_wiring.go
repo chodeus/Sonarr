@@ -449,6 +449,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/mediamanagement", Handler: apiv3.MediaManagementConfigHandler(configProv)},
+		{Method: "PUT", Path: "/api/v3/config/mediamanagement/{id}", Handler: apiv3.MediaManagementConfigUpdateHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/naming", Handler: apiv3.NamingConfigHandler(namingConfigSvc)},
 		{Method: "GET", Path: "/api/v3/config/naming/examples", Handler: apiv3.NamingConfigExamplesHandler(namingConfigSvc)},
 		{Method: "PUT", Path: "/api/v3/config/naming/{id}", Handler: apiv3.NamingConfigUpdateHandler(namingConfigSvc)},
