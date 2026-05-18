@@ -357,6 +357,21 @@ func (a *registryDownloadClientTester) RequestAction(ctx context.Context, n *dow
 	return provider.RequestAction(ctx, action, query)
 }
 
+// registryMetadataTester adapts metadata.Registry + Dependencies to
+// apiv3.MetadataTester (and the upcoming MetadataActioner for 5.C5d).
+type registryMetadataTester struct {
+	registry *metadata.Registry
+	deps     metadata.Dependencies
+}
+
+func (a *registryMetadataTester) Test(ctx context.Context, n *metadata.Metadata) ([]metadata.TestFailure, error) {
+	provider, err := a.registry.Construct(n, a.deps)
+	if err != nil {
+		return nil, err
+	}
+	return provider.Test(ctx)
+}
+
 // apiv3FileExists + apiv3DeleteFile defer to os.Stat / os.Remove.
 // Named with the apiv3 prefix to keep the cmd-package surface clean
 // since the v3 layer's unexported osFileExists / osDeleteFile aren't
@@ -874,6 +889,14 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// 4 concrete writers (xbmc/plex/roksbox/wdtv); 5.C5b will wire a
 	// tester adapter against metadata.Registry.Construct.
 	metadataEmitter := signalr.NewV3Emitter[apiv3.MetadataResource](signalRHub, "metadata")
+	// 5.C5b: per-row Provider.Test() adapter. Production Test works
+	// today for all 4 concrete writers (Xbmc/Plex/Roksbox/Wdtv) — the
+	// only family where every schema-listed provider has a real impl.
+	metadataRegistry := metadata.Default()
+	metadataTester := &registryMetadataTester{
+		registry: metadataRegistry,
+		deps:     metadata.Dependencies{Logger: logger},
+	}
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
@@ -1043,6 +1066,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/metadata/schema", Handler: apiv3.MetadataSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/metadata/{id}", Handler: apiv3.MetadataByIDHandler(metadataRepo)},
 		{Method: "POST", Path: "/api/v3/metadata", Handler: apiv3.MetadataCreateHandler(metadataRepo, metadataEmitter)},
+		{Method: "POST", Path: "/api/v3/metadata/test", Handler: apiv3.MetadataTestHandler(metadataTester)},
 		{Method: "PUT", Path: "/api/v3/metadata/{id}", Handler: apiv3.MetadataUpdateHandler(metadataRepo, metadataEmitter)},
 		{Method: "DELETE", Path: "/api/v3/metadata/{id}", Handler: apiv3.MetadataDeleteHandler(metadataRepo, metadataEmitter)},
 		{Method: "GET", Path: "/api/v3/localization/language", Handler: apiv3.LocalizationLanguageHandler(configProv.UILanguage)},

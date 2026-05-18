@@ -151,6 +151,73 @@ func MetadataUpdateHandler(svc MetadataWriter, emitter MetadataEmitter) http.Han
 	})
 }
 
+// MetadataTester invokes a per-row provider Test. The cmd-side
+// adapter wires this against metadata.Registry.Construct +
+// metadata.Provider.Test under host-supplied metadata.Dependencies.
+//
+// Production Test works TODAY for all 4 concrete writers
+// (XbmcMetadata / PlexMetadata / RoksboxMetadata / WdtvMetadata)
+// per Phase 4 work — metadata is the only family where every
+// schema-listed provider has a real implementation.
+type MetadataTester interface {
+	Test(ctx context.Context, n *metadata.Metadata) ([]metadata.TestFailure, error)
+}
+
+// MetadataTestHandler returns POST /api/v3/metadata/test. Same shape
+// as the 5.C1b/5.C2b/5.C3b/5.C4b twins: 200 `{}` on success, 400
+// FluentValidation array on failures, 400 single-Implementation
+// failure on ErrNotRegistered, 500 on transport errors.
+//
+// SharedValidator skipped (matches C# `[SkipValidation(true,false)]`).
+func MetadataTestHandler(tester MetadataTester) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeMetadataBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("metadata: malformed body: %v", err))
+			return
+		}
+		row, err := fromMetadataResource(body, nil)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("metadata: invalid fields: %v", err))
+			return
+		}
+		failures, err := tester.Test(r.Context(), row)
+		if err != nil {
+			if errors.Is(err, metadata.ErrNotRegistered) {
+				httperr.WriteValidation(w, []httperr.Failure{{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q (configContract %q)", body.Implementation, body.ConfigContract),
+					Severity:     "error",
+				}})
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("metadata: test: %w", err), nil)
+			return
+		}
+		if len(failures) > 0 {
+			httperr.WriteValidation(w, metadataTestFailuresToFluentArray(failures))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+}
+
+// metadataTestFailuresToFluentArray projects the family's TestFailure
+// to httperr.Failure.
+func metadataTestFailuresToFluentArray(failures []metadata.TestFailure) []httperr.Failure {
+	out := make([]httperr.Failure, 0, len(failures))
+	for _, f := range failures {
+		out = append(out, httperr.Failure{
+			PropertyName: f.PropertyName,
+			ErrorMessage: f.ErrorMessage,
+			Severity:     "error",
+		})
+	}
+	return out
+}
+
 // MetadataDeleteHandler returns DELETE /api/v3/metadata/{id}.
 func MetadataDeleteHandler(svc MetadataWriter, emitter MetadataEmitter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

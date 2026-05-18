@@ -295,3 +295,113 @@ func TestMetadataDeleteHandler_InvalidID_400(t *testing.T) {
 // Sanity check: errors.Is wiring for metadata.ErrNotFound — keeps
 // the import non-trivial when no tests cover it.
 var _ = errors.Is(metadata.ErrNotFound, metadata.ErrNotFound)
+
+// fakeMetadataTester implements MetadataTester.
+type fakeMetadataTester struct {
+	seen   *metadata.Metadata
+	result []metadata.TestFailure
+	err    error
+}
+
+func (f *fakeMetadataTester) Test(_ context.Context, n *metadata.Metadata) ([]metadata.TestFailure, error) {
+	f.seen = n
+	return f.result, f.err
+}
+
+func TestMetadataTestHandler_Success_Returns200EmptyObject(t *testing.T) {
+	t.Parallel()
+	tester := &fakeMetadataTester{}
+	body := validMetadataBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/metadata/test", bytes.NewReader(buf))
+	rr := httptest.NewRecorder()
+	MetadataTestHandler(tester).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `{}` {
+		t.Errorf("body: %q", rr.Body.String())
+	}
+	if tester.seen == nil || tester.seen.Implementation != "XbmcMetadata" {
+		t.Errorf("Test should be invoked with built Metadata: %+v", tester.seen)
+	}
+	var settings map[string]any
+	_ = json.Unmarshal([]byte(tester.seen.Settings), &settings)
+	if settings["seriesMetadata"] != true {
+		t.Errorf("settings packing: %+v", settings)
+	}
+}
+
+func TestMetadataTestHandler_FailuresProjectTo400Array(t *testing.T) {
+	t.Parallel()
+	tester := &fakeMetadataTester{result: []metadata.TestFailure{
+		{PropertyName: "OutputFolder", ErrorMessage: "write permission denied"},
+		{PropertyName: "", ErrorMessage: "Test failed: permission"},
+	}}
+	body := validMetadataBody()
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	MetadataTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/metadata/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var failures []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &failures); err != nil {
+		t.Fatalf("body must be FluentValidation array: %v body=%s", err, rr.Body.String())
+	}
+	if len(failures) != 2 || failures[0]["propertyName"] != "OutputFolder" {
+		t.Errorf("failures: %+v", failures)
+	}
+}
+
+func TestMetadataTestHandler_UnknownImplementation_400(t *testing.T) {
+	t.Parallel()
+	tester := &fakeMetadataTester{err: metadata.ErrNotRegistered}
+	body := validMetadataBody()
+	body.Implementation = "GhostMetadata"
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	MetadataTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/metadata/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var failures []map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &failures)
+	if len(failures) != 1 || failures[0]["propertyName"] != "Implementation" {
+		t.Errorf("expected Implementation failure: %+v", failures)
+	}
+}
+
+func TestMetadataTestHandler_OtherError_500(t *testing.T) {
+	t.Parallel()
+	tester := &fakeMetadataTester{err: errors.New("disk full")}
+	body := validMetadataBody()
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	MetadataTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/metadata/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestMetadataTestHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	MetadataTestHandler(&fakeMetadataTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/metadata/test", bytes.NewReader([]byte(`{not json`))))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestMetadataTestHandler_SkipsSharedValidator(t *testing.T) {
+	t.Parallel()
+	tester := &fakeMetadataTester{}
+	body := validMetadataBody()
+	body.Name = ""
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	MetadataTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/metadata/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Errorf("skip-validation: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
