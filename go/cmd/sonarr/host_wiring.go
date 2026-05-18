@@ -600,6 +600,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "DELETE", Path: "/api/v3/blocklist/{id}", Handler: apiv3.BlocklistDeleteHandler(blocklistSvc)},
 		{Method: "DELETE", Path: "/api/v3/blocklist/bulk", Handler: apiv3.BlocklistBulkDeleteHandler(blocklistSvc)},
 		{Method: "GET", Path: "/api/v3/calendar", Handler: apiv3.CalendarHandler(episodesSvc)},
+		{Method: "GET", Path: "/feed/v3/calendar/Sonarr.ics", Handler: apiv3.CalendarFeedHandler(episodesSvc, seriesSvc)},
 		{Method: "GET", Path: "/api/v3/command", Handler: apiv3.CommandListHandler(cmdSvc)},
 		{Method: "GET", Path: "/api/v3/command/{id}", Handler: apiv3.CommandByIDHandler(cmdSvc)},
 		{Method: "POST", Path: "/api/v3/command", Handler: apiv3.CommandCreateHandler(cmdSvc, cmdRegistry)},
