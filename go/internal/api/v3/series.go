@@ -3,8 +3,10 @@ package v3
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/series"
@@ -99,6 +101,40 @@ type SeriesResource struct {
 // the handler needs. *series.Service satisfies it via GetAllSeries.
 type SeriesLister interface {
 	GetAllSeries(ctx context.Context) ([]series.Series, error)
+}
+
+// SeriesByIDGetter narrows series.Service to the GetSeries-by-id
+// read. *series.Service satisfies it via GetSeries.
+type SeriesByIDGetter interface {
+	GetSeries(ctx context.Context, id int) (*series.Series, error)
+}
+
+// SeriesByIDHandler returns GET /api/v3/series/{id}. Mirrors C#
+// `SeriesController.GetResourceById` at SeriesController.cs:153-159.
+// `includeSeasonImages` query param is accepted but ignored - the
+// existing SeriesResource skeleton DEFERS the seasons/images
+// projection (see resource doc).
+func SeriesByIDHandler(svc SeriesByIDGetter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "series: invalid id")
+			return
+		}
+		s, err := svc.GetSeries(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, series.ErrNotFound) {
+				httperr.NotFound(w, fmt.Sprintf("series %d not found", id))
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series: get %d: %w", id, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(ToSeriesResource(*s))
+		_, _ = w.Write(buf)
+	})
 }
 
 // SeriesListHandler returns the http.Handler for GET /api/v3/series.

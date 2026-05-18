@@ -78,6 +78,53 @@ func TestSeriesListHandler_NilTagsEmitsEmptyArray(t *testing.T) {
 	}
 }
 
+// ---------- 5.X7: GET /series/{id} tests ----------
+
+type fakeSeriesByIDGetter struct {
+	row *series.Series
+	err error
+}
+
+func (f *fakeSeriesByIDGetter) GetSeries(_ context.Context, _ int) (*series.Series, error) {
+	return f.row, f.err
+}
+
+func TestSeriesByIDHandler_Found(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/series/42", nil)
+	req.SetPathValue("id", "42")
+	SeriesByIDHandler(&fakeSeriesByIDGetter{row: &series.Series{ID: 42, Title: "My Show"}}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"title":"My Show"`) {
+		t.Errorf("body: %s", rr.Body.String())
+	}
+}
+
+func TestSeriesByIDHandler_NotFound_404(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/series/999", nil)
+	req.SetPathValue("id", "999")
+	SeriesByIDHandler(&fakeSeriesByIDGetter{err: series.ErrNotFound}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestSeriesByIDHandler_InvalidID_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/series/abc", nil)
+	req.SetPathValue("id", "abc")
+	SeriesByIDHandler(&fakeSeriesByIDGetter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
 func TestSeriesListHandler_ListerError(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
