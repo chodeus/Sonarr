@@ -386,6 +386,71 @@ func IndexerTestHandler(tester IndexerTester) http.Handler {
 	})
 }
 
+// IndexerTestAllHandler returns POST /api/v3/indexer/testall.
+// Mirrors `ProviderControllerBase.TestAll` at C# :233-257 and the
+// 5.C1c notification TestAll twin. Iterates every persisted row,
+// runs per-row Provider.Test sequentially, aggregates into the
+// family-agnostic [ProviderTestAllResult] array.
+//
+// Returns 400 when any row failed, 200 when all passed (matches C#
+// `result.Any(c => !c.IsValid) ? BadRequest(result) : Ok(result)`).
+//
+// C# filters by `Settings.Validate().IsValid && c.Enable` at :238 —
+// dropped here for the same reason as 5.C1c: settings-invalid
+// surfaces as a TestFailure inside Provider.Test, and the Go
+// Indexer struct has its enable flags split across EnableRss /
+// EnableAutomaticSearch / EnableInteractiveSearch (no single
+// Enable bit). Every row is tested.
+func IndexerTestAllHandler(lister IndexerLister, tester IndexerTester) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rows, err := lister.All(r.Context())
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("indexer/testall: list: %w", err), nil)
+			return
+		}
+		results := make([]ProviderTestAllResult, 0, len(rows))
+		anyInvalid := false
+		for _, row := range rows {
+			row := row
+			failures, err := tester.Test(r.Context(), &row)
+			projected := make([]httperr.Failure, 0)
+			switch {
+			case errors.Is(err, indexers.ErrNotRegistered):
+				projected = append(projected, httperr.Failure{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q", row.Implementation),
+					Severity:     "error",
+				})
+			case err != nil:
+				projected = append(projected, httperr.Failure{
+					PropertyName: "",
+					ErrorMessage: fmt.Sprintf("Test failed: %v", err),
+					Severity:     "error",
+				})
+			default:
+				projected = append(projected, indexerTestFailuresToFluentArray(failures)...)
+			}
+			isValid := len(projected) == 0
+			if !isValid {
+				anyInvalid = true
+			}
+			results = append(results, ProviderTestAllResult{
+				ID:                 row.ID,
+				IsValid:            isValid,
+				ValidationFailures: projected,
+			})
+		}
+		status := http.StatusOK
+		if anyInvalid {
+			status = http.StatusBadRequest
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		buf, _ := json.Marshal(results)
+		_, _ = w.Write(buf)
+	})
+}
+
 // indexerTestFailuresToFluentArray ports the projection
 // `STJson.ToJson(validationException.Errors)` for the
 // [indexers.TestFailure] shape. DetailedDescription has no

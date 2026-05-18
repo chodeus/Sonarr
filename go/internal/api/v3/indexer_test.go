@@ -408,6 +408,135 @@ func TestIndexerTestHandler_SkipsSharedValidator(t *testing.T) {
 	}
 }
 
+// perRowIndexerTester maps row ID → outcome.
+type perRowIndexerTester struct {
+	seen     []int
+	byID     map[int][]indexers.TestFailure
+	errByID  map[int]error
+	defaultR []indexers.TestFailure
+}
+
+func (p *perRowIndexerTester) Test(_ context.Context, n *indexers.Indexer) ([]indexers.TestFailure, error) {
+	p.seen = append(p.seen, n.ID)
+	if p.errByID != nil {
+		if err, ok := p.errByID[n.ID]; ok {
+			return nil, err
+		}
+	}
+	if p.byID != nil {
+		if r, ok := p.byID[n.ID]; ok {
+			return r, nil
+		}
+	}
+	return p.defaultR, nil
+}
+
+func TestIndexerTestAllHandler_Empty_Returns200EmptyArray(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	IndexerTestAllHandler(&fakeIndexerLister{}, &perRowIndexerTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer/testall", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `[]` {
+		t.Errorf("body: %q want []", rr.Body.String())
+	}
+}
+
+func TestIndexerTestAllHandler_AllPass_Returns200Array(t *testing.T) {
+	t.Parallel()
+	rows := []indexers.Indexer{
+		{ID: 1, Name: "a", Implementation: "Newznab"},
+		{ID: 2, Name: "b", Implementation: "Torznab"},
+	}
+	tester := &perRowIndexerTester{}
+	rr := httptest.NewRecorder()
+	IndexerTestAllHandler(&fakeIndexerLister{rows: rows}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer/testall", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got []ProviderTestAllResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len: %d", len(got))
+	}
+	for i, r := range got {
+		if !r.IsValid {
+			t.Errorf("row %d isValid: false; want true", i)
+		}
+	}
+	if len(tester.seen) != 2 || tester.seen[0] != 1 || tester.seen[1] != 2 {
+		t.Errorf("ordering: %v", tester.seen)
+	}
+}
+
+func TestIndexerTestAllHandler_MixedResults_Returns400(t *testing.T) {
+	t.Parallel()
+	rows := []indexers.Indexer{
+		{ID: 1, Name: "ok", Implementation: "Newznab"},
+		{ID: 2, Name: "bad", Implementation: "Torznab"},
+		{ID: 3, Name: "missing", Implementation: "GhostProvider"},
+		{ID: 4, Name: "boom", Implementation: "Newznab"},
+	}
+	tester := &perRowIndexerTester{
+		byID: map[int][]indexers.TestFailure{
+			2: {{PropertyName: "BaseUrl", ErrorMessage: "could not connect"}},
+		},
+		errByID: map[int]error{
+			3: indexers.ErrNotRegistered,
+			4: errors.New("transport reset"),
+		},
+	}
+	rr := httptest.NewRecorder()
+	IndexerTestAllHandler(&fakeIndexerLister{rows: rows}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer/testall", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got []ProviderTestAllResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("len: %d", len(got))
+	}
+	if !got[0].IsValid || len(got[0].ValidationFailures) != 0 {
+		t.Errorf("row 0: %+v", got[0])
+	}
+	if got[1].IsValid || len(got[1].ValidationFailures) != 1 || got[1].ValidationFailures[0].PropertyName != "BaseUrl" {
+		t.Errorf("row 1: %+v", got[1])
+	}
+	if got[2].IsValid || got[2].ValidationFailures[0].PropertyName != "Implementation" {
+		t.Errorf("row 2: %+v", got[2])
+	}
+	if got[3].IsValid || got[3].ValidationFailures[0].PropertyName != "" {
+		t.Errorf("row 3: %+v", got[3])
+	}
+}
+
+func TestIndexerTestAllHandler_ListError_500(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	IndexerTestAllHandler(&fakeIndexerLister{err: errors.New("db down")}, &perRowIndexerTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer/testall", nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestIndexerTestAllHandler_ValidationFailuresNonNil(t *testing.T) {
+	t.Parallel()
+	rows := []indexers.Indexer{{ID: 7, Implementation: "Newznab"}}
+	rr := httptest.NewRecorder()
+	IndexerTestAllHandler(&fakeIndexerLister{rows: rows}, &perRowIndexerTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer/testall", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`"validationFailures":[]`)) {
+		t.Errorf("validationFailures should be [] not null: body=%s", rr.Body.String())
+	}
+}
+
 func TestIndexerDeleteHandler_Success(t *testing.T) {
 	t.Parallel()
 	w := &fakeIndexerWriter{rows: []indexers.Indexer{{ID: 7, Name: "victim"}}}

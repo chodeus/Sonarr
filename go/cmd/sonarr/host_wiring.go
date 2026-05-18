@@ -908,6 +908,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerByIDHandler(indexersRepo)},
 		{Method: "POST", Path: "/api/v3/indexer", Handler: apiv3.IndexerCreateHandler(indexersRepo, indexerEmitter)},
 		{Method: "POST", Path: "/api/v3/indexer/test", Handler: apiv3.IndexerTestHandler(indexerTester)},
+		{Method: "POST", Path: "/api/v3/indexer/testall", Handler: apiv3.IndexerTestAllHandler(indexersRepo, indexerTester)},
 		{Method: "PUT", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerUpdateHandler(indexersRepo, indexerEmitter)},
 		{Method: "DELETE", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerDeleteHandler(indexersRepo, indexerEmitter)},
 		{Method: "GET", Path: "/api/v3/indexerflag", Handler: apiv3.IndexerFlagHandler()},
