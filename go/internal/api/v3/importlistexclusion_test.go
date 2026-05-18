@@ -2,6 +2,7 @@ package v3
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -297,5 +298,90 @@ func TestImportListExclusionBulkDeleteHandler_AnyMissingIs404(t *testing.T) {
 	ImportListExclusionBulkDeleteHandler(store).ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// ---------- 5.I16: GET /paged tests ----------
+
+func TestImportListExclusionPagedHandler_EmptyEnvelope(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	ImportListExclusionPagedHandler(&fakeImportListExclusionStore{}).
+		ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/importlistexclusion/paged", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var got PagingResource[ImportListExclusionResource]
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.TotalRecords != 0 || got.SortKey != "id" || got.SortDirection != "descending" {
+		t.Errorf("envelope: %+v", got)
+	}
+}
+
+func TestImportListExclusionPagedHandler_DefaultsToIDDescending(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	store := &fakeImportListExclusionStore{rows: []importlistexclusions.Exclusion{
+		{ID: 1, TvdbID: 100, Title: "Zebra"},
+		{ID: 2, TvdbID: 200, Title: "Alpha"},
+		{ID: 3, TvdbID: 50, Title: "Middle"},
+	}}
+	ImportListExclusionPagedHandler(store).
+		ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/importlistexclusion/paged?pageSize=10", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var got PagingResource[ImportListExclusionResource]
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.TotalRecords != 3 || len(got.Records) != 3 {
+		t.Fatalf("counts: total=%d records=%d", got.TotalRecords, len(got.Records))
+	}
+	if got.Records[0].ID != 3 || got.Records[1].ID != 2 || got.Records[2].ID != 1 {
+		t.Errorf("id desc ordering: %d %d %d", got.Records[0].ID, got.Records[1].ID, got.Records[2].ID)
+	}
+}
+
+func TestImportListExclusionPagedHandler_SortByTitleAscending(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	store := &fakeImportListExclusionStore{rows: []importlistexclusions.Exclusion{
+		{ID: 1, TvdbID: 100, Title: "Zebra"},
+		{ID: 2, TvdbID: 200, Title: "Alpha"},
+		{ID: 3, TvdbID: 50, Title: "Middle"},
+	}}
+	ImportListExclusionPagedHandler(store).
+		ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/importlistexclusion/paged?sortKey=title&sortDirection=ascending&pageSize=10", nil))
+	var got PagingResource[ImportListExclusionResource]
+	_ = json.Unmarshal(rr.Body.Bytes(), &got)
+	if len(got.Records) != 3 {
+		t.Fatalf("len: %d", len(got.Records))
+	}
+	if got.Records[0].Title != "Alpha" || got.Records[1].Title != "Middle" || got.Records[2].Title != "Zebra" {
+		t.Errorf("title asc ordering: %q %q %q", got.Records[0].Title, got.Records[1].Title, got.Records[2].Title)
+	}
+}
+
+func TestImportListExclusionPagedHandler_PaginationPage2(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	store := &fakeImportListExclusionStore{rows: []importlistexclusions.Exclusion{
+		{ID: 1, TvdbID: 100, Title: "A"},
+		{ID: 2, TvdbID: 200, Title: "B"},
+		{ID: 3, TvdbID: 50, Title: "C"},
+		{ID: 4, TvdbID: 75, Title: "D"},
+	}}
+	ImportListExclusionPagedHandler(store).
+		ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/importlistexclusion/paged?page=2&pageSize=2&sortKey=id&sortDirection=ascending", nil))
+	var got PagingResource[ImportListExclusionResource]
+	_ = json.Unmarshal(rr.Body.Bytes(), &got)
+	if got.TotalRecords != 4 || len(got.Records) != 2 {
+		t.Fatalf("counts: total=%d records=%d", got.TotalRecords, len(got.Records))
+	}
+	if got.Records[0].ID != 3 || got.Records[1].ID != 4 {
+		t.Errorf("page-2 contents: %d %d", got.Records[0].ID, got.Records[1].ID)
 	}
 }

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/importlistexclusions"
@@ -72,6 +74,76 @@ func ImportListExclusionHandler(store ImportListExclusionStore) http.Handler {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		buf, _ := json.Marshal(out)
+		_, _ = w.Write(buf)
+	})
+}
+
+// ImportListExclusionPagedHandler returns GET /api/v3/importlistexclusion/paged.
+// Mirrors `GetImportListExclusionsPaged` at
+// `src/Sonarr.Api.V3/ImportLists/ImportListExclusionController.cs:45-61`.
+// C# allows sort keys "id", "title", "tvdbId" (case-insensitive) and
+// defaults to "id" desc.
+//
+// The Go port does in-memory paging (Repo.All + slice) — matching the
+// blocklist/history adapter posture. Sort honours the three documented
+// keys; unknown keys fall back to id-desc. The C# query supports
+// page/pageSize/sortKey/sortDirection via the standard PagingRequest
+// query params.
+func ImportListExclusionPagedHandler(store ImportListExclusionStore) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := parsePagingRequest(r, "id")
+		if req.SortDirection == "" {
+			req.SortDirection = "descending"
+		}
+		rows, err := store.All(r.Context())
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlistexclusions/paged: %w", err), nil)
+			return
+		}
+		// Sort by the requested key (case-insensitive). Unknown keys
+		// fall back to id.
+		key := strings.ToLower(req.SortKey)
+		desc := strings.EqualFold(req.SortDirection, "descending") || strings.EqualFold(req.SortDirection, "desc")
+		sort.SliceStable(rows, func(i, j int) bool {
+			var less bool
+			switch key {
+			case "title":
+				less = strings.ToLower(rows[i].Title) < strings.ToLower(rows[j].Title)
+			case "tvdbid":
+				less = rows[i].TvdbID < rows[j].TvdbID
+			default:
+				less = rows[i].ID < rows[j].ID
+			}
+			if desc {
+				return !less
+			}
+			return less
+		})
+		total := len(rows)
+		start := (req.Page - 1) * req.PageSize
+		if start < 0 {
+			start = 0
+		}
+		if start > total {
+			start = total
+		}
+		end := start + req.PageSize
+		if end > total {
+			end = total
+		}
+		page := rows[start:end]
+		records := make([]ImportListExclusionResource, 0, len(page))
+		for _, row := range page {
+			records = append(records, ImportListExclusionResource{ID: row.ID, TvdbID: row.TvdbID, Title: row.Title})
+		}
+		resp := PagingResource[ImportListExclusionResource]{
+			Page: req.Page, PageSize: req.PageSize,
+			Records: records, SortDirection: req.SortDirection,
+			SortKey: req.SortKey, TotalRecords: total,
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(resp)
 		_, _ = w.Write(buf)
 	})
 }

@@ -643,6 +643,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/importlist", Handler: apiv3.ImportListHandler(importListsRepo)},
 		{Method: "GET", Path: "/api/v3/importlist/schema", Handler: apiv3.ImportListSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/importlistexclusion", Handler: apiv3.ImportListExclusionHandler(importListExclusionsRepo)},
+		{Method: "GET", Path: "/api/v3/importlistexclusion/paged", Handler: apiv3.ImportListExclusionPagedHandler(importListExclusionsRepo)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion/{id}", Handler: apiv3.ImportListExclusionByIDHandler(importListExclusionsRepo)},
 		{Method: "POST", Path: "/api/v3/importlistexclusion", Handler: apiv3.ImportListExclusionCreateHandler(importListExclusionsRepo)},
 		{Method: "PUT", Path: "/api/v3/importlistexclusion/{id}", Handler: apiv3.ImportListExclusionUpdateHandler(importListExclusionsRepo)},
