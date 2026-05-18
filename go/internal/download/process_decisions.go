@@ -11,6 +11,7 @@ import (
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/parser"
 )
 
@@ -65,6 +66,7 @@ type DecisionPrioritizer interface {
 type ProcessDownloadDecisions struct {
 	clients     ClientLister
 	prioritizer DecisionPrioritizer
+	bus         *messaging.Bus
 	log         *slog.Logger
 }
 
@@ -80,6 +82,23 @@ func NewProcessDownloadDecisions(clients ClientLister, prioritizer DecisionPrior
 		log = slog.Default()
 	}
 	return &ProcessDownloadDecisions{clients: clients, prioritizer: prioritizer, log: log}, nil
+}
+
+// SetBus wires the *messaging.Bus the orchestrator publishes
+// [decisionengine.EpisodeGrabbedEvent] on after every successful
+// Provider.Download. The bus dep is OPTIONAL — when unset, successful
+// grabs still complete + bucket into Grabbed, but no listeners
+// (historyhandlers.HandleEpisodeGrabbed, downloadhistory.Service,
+// pendingreleaseshandlers.EpisodeGrabbed, notifications.Service,
+// blocklisthandlers.DownloadFailed) fire. Production wiring at
+// cmd/sonarr/main.go MUST call SetBus before the first dispatch;
+// unit tests may leave it nil. Slice 6.A2 — gap-fill for the
+// previously-no-op stampDownloadID stamp.
+//
+// Returns the receiver for chainable construction.
+func (p *ProcessDownloadDecisions) SetBus(bus *messaging.Bus) *ProcessDownloadDecisions {
+	p.bus = bus
+	return p
 }
 
 // ProcessDecisions iterates approved + temporarily-rejected
@@ -244,7 +263,7 @@ func (p *ProcessDownloadDecisions) dispatch(ctx context.Context, decision *decis
 			// (history + tracked-downloads) can pick it up. The
 			// in-flight Subject pointer is shared with the Grabbed
 			// list entry the caller iterates.
-			p.stampDownloadID(decision, id, provider)
+			p.stampDownloadID(ctx, decision, id, provider)
 			return ResultGrabbed
 		}
 
@@ -326,22 +345,68 @@ func (p *ProcessDownloadDecisions) protocolOf(decision *decisionengine.Decision)
 	return indexers.DownloadProtocolUnknown, nil
 }
 
-// stampDownloadID mutates Subject.DownloadAllowed to true and (if
-// the SeedConfiguration field is populated) leaves it intact. The
-// per-grab ID surfaces via the Provider.Download return.
+// stampDownloadID flips Subject.DownloadAllowed and publishes a
+// [decisionengine.EpisodeGrabbedEvent] on the wired bus so the
+// historyhandlers / downloadhistory / pendingreleaseshandlers /
+// notifications / blocklisthandlers listeners can persist + fan
+// out. Slice 6.A2 — fills in the previously-no-op stamp.
 //
-// The Subject doesn't carry a DownloadID field today (the C#
-// RemoteEpisode equivalent doesn't either — the ID lives on the
-// queue Item). The orchestrator could persist it via downloadhistory
-// here, but that's queue [15] sub-arc territory.
-func (p *ProcessDownloadDecisions) stampDownloadID(decision *decisionengine.Decision, id string, provider downloadclients.Provider) {
+// The Subject itself doesn't carry a DownloadID field (matching the
+// C# RemoteEpisode shape — the ID lives on the queue Item); the
+// event carries it. Subject.DownloadAllowed is set so downstream
+// code that re-encounters this Subject (the Grabbed bucket the
+// caller iterates) can branch on "was a grab dispatched against
+// this candidate".
+//
+// Bus-nil path: the event isn't published; the grab still counts.
+// Production wiring is REQUIRED to call SetBus before the first
+// dispatch — the warn-log here surfaces misconfiguration without
+// breaking the orchestrator's primary contract.
+//
+// Mirrors C# `DownloadService.DownloadReport` at
+// `src/NzbDrone.Core/Download/DownloadService.cs:120-135` where the
+// EpisodeGrabbedEvent is filled out + `_eventAggregator.PublishEvent`
+// fires after the client.Download() return.
+func (p *ProcessDownloadDecisions) stampDownloadID(ctx context.Context, decision *decisionengine.Decision, id string, provider downloadclients.Provider) {
 	sub, ok := decision.Subject.(*decisionengine.Subject)
 	if !ok || sub == nil {
 		return
 	}
 	sub.DownloadAllowed = true
-	_ = id
-	_ = provider
+
+	if p.bus == nil {
+		p.log.Warn("download: bus not wired; EpisodeGrabbedEvent dropped",
+			"downloadID", id, "client", provider.Name())
+		return
+	}
+
+	ev := decisionengine.EpisodeGrabbedEvent{
+		Episode:            sub,
+		DownloadID:         id,
+		DownloadClientName: provider.Name(),
+	}
+	if def := provider.Definition(); def != nil {
+		ev.DownloadClientID = def.ID
+		ev.DownloadClient = def.Implementation
+		// Production rows carry both Name and Implementation; the
+		// user-configured display name wins for DownloadClientName
+		// when the definition has one (Provider.Name may return the
+		// implementation-default if the user never renamed). Matches
+		// C# `DownloadService.DownloadReport` which reads
+		// `downloadClient.Definition.Name` at `:123`.
+		if def.Name != "" {
+			ev.DownloadClientName = def.Name
+		}
+	}
+
+	if err := messaging.Publish(ctx, p.bus, ev); err != nil {
+		// Bus shutdown / recursion-limit. The grab itself is already
+		// dispatched to the remote client — log and move on rather
+		// than rolling back. Mirrors the C# bus posture where
+		// PublishEvent failures don't unwind the grab.
+		p.log.Warn("download: EpisodeGrabbedEvent publish failed",
+			"err", err, "downloadID", id, "client", provider.Name())
+	}
 }
 
 // buildGrabRequest extracts the GrabRequest fields from

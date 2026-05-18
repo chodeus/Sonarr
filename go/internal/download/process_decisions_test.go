@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/decisionengine"
@@ -11,6 +12,7 @@ import (
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -477,6 +479,166 @@ func TestProcessedDecisions_StringFormat(t *testing.T) {
 	want := "Grabbed=2 Pending=1 Rejected=0"
 	if got != want {
 		t.Errorf("String = %q, want %q", got, want)
+	}
+}
+
+// --- Slice 6.A2 bus + EpisodeGrabbedEvent publish coverage --------------
+
+// TestProcessDecisions_PublishesEpisodeGrabbedEvent — slice 6.A2:
+// a successful Provider.Download publishes a
+// decisionengine.EpisodeGrabbedEvent on the wired bus with the
+// DownloadID + DownloadClientID + DownloadClient (Implementation)
+// + DownloadClientName (Definition.Name) all populated.
+func TestProcessDecisions_PublishesEpisodeGrabbedEvent(t *testing.T) {
+	t.Parallel()
+	def := &downloadclients.DownloadClient{ID: 7, Name: "MySAB", Implementation: "Sabnzbd"}
+	prov := &stubProvider{name: "sab", protocol: indexers.DownloadProtocolUsenet, downloadID: "nzo_pub", definition: def}
+	lister := &stubClientLister{usenet: []downloadclients.Provider{prov}}
+	pdd, err := download.NewProcessDownloadDecisions(lister, nil, slog.Default())
+	if err != nil {
+		t.Fatalf("NewProcessDownloadDecisions: %v", err)
+	}
+	bus := messaging.New(slog.Default())
+	pdd.SetBus(bus)
+
+	var (
+		mu       sync.Mutex
+		received []decisionengine.EpisodeGrabbedEvent
+	)
+	messaging.Subscribe(bus, "test-handler", func(_ context.Context, ev decisionengine.EpisodeGrabbedEvent) error {
+		mu.Lock()
+		received = append(received, ev)
+		mu.Unlock()
+		return nil
+	})
+
+	dec := mkDecision("Show.S01E01.NZB", indexers.DownloadProtocolUsenet, 1)
+	out := pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
+
+	if len(out.Grabbed) != 1 {
+		t.Fatalf("Grabbed = %d, want 1; full result: %s", len(out.Grabbed), out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 {
+		t.Fatalf("EpisodeGrabbedEvent count = %d, want 1", len(received))
+	}
+	ev := received[0]
+	if ev.DownloadID != "nzo_pub" {
+		t.Errorf("DownloadID = %q, want %q", ev.DownloadID, "nzo_pub")
+	}
+	if ev.DownloadClientID != 7 {
+		t.Errorf("DownloadClientID = %d, want 7", ev.DownloadClientID)
+	}
+	if ev.DownloadClient != "Sabnzbd" {
+		t.Errorf("DownloadClient = %q, want %q (Definition.Implementation)", ev.DownloadClient, "Sabnzbd")
+	}
+	if ev.DownloadClientName != "MySAB" {
+		t.Errorf("DownloadClientName = %q, want %q (Definition.Name wins over Provider.Name())", ev.DownloadClientName, "MySAB")
+	}
+	if ev.Episode == nil {
+		t.Fatal("Episode subject was not stamped on the event")
+	}
+	if !ev.Episode.DownloadAllowed {
+		t.Error("Episode.DownloadAllowed not flipped to true after grab")
+	}
+}
+
+// TestProcessDecisions_BusNilSurvivesAndWarns — slice 6.A2:
+// when no bus is wired, the orchestrator still grabs successfully
+// but no listeners can fire. Existing tests already exercise this
+// path; this case pins it explicitly so the contract isn't lost.
+func TestProcessDecisions_BusNilSurvivesAndWarns(t *testing.T) {
+	t.Parallel()
+	prov := &stubProvider{name: "sab", protocol: indexers.DownloadProtocolUsenet, downloadID: "nzo_x"}
+	pdd := newPDD(t, &stubClientLister{usenet: []downloadclients.Provider{prov}})
+	// Note: SetBus deliberately NOT called.
+
+	dec := mkDecision("Show.S01E01.NZB", indexers.DownloadProtocolUsenet, 1)
+	out := pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
+
+	if len(out.Grabbed) != 1 {
+		t.Fatalf("Grabbed = %d, want 1 (nil-bus path must not abort the grab); full result: %s", len(out.Grabbed), out)
+	}
+}
+
+// TestProcessDecisions_PublishUsesProviderNameWhenDefinitionMissing —
+// slice 6.A2: test stubs / in-memory providers that return a nil
+// Definition fall back to Provider.Name() for the
+// DownloadClientName + leave DownloadClientID = 0,
+// DownloadClient = "".
+func TestProcessDecisions_PublishUsesProviderNameWhenDefinitionMissing(t *testing.T) {
+	t.Parallel()
+	prov := &stubProvider{name: "stub-provider", protocol: indexers.DownloadProtocolTorrent, downloadID: "hash_y"} // definition: nil
+	lister := &stubClientLister{torrent: []downloadclients.Provider{prov}}
+	pdd, err := download.NewProcessDownloadDecisions(lister, nil, slog.Default())
+	if err != nil {
+		t.Fatalf("NewProcessDownloadDecisions: %v", err)
+	}
+	bus := messaging.New(slog.Default())
+	pdd.SetBus(bus)
+
+	captured := make(chan decisionengine.EpisodeGrabbedEvent, 1)
+	messaging.Subscribe(bus, "capture", func(_ context.Context, ev decisionengine.EpisodeGrabbedEvent) error {
+		captured <- ev
+		return nil
+	})
+
+	dec := mkDecision("Show.S01E05.torrent", indexers.DownloadProtocolTorrent, 5)
+	pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
+
+	select {
+	case ev := <-captured:
+		if ev.DownloadID != "hash_y" {
+			t.Errorf("DownloadID = %q, want %q", ev.DownloadID, "hash_y")
+		}
+		if ev.DownloadClientID != 0 {
+			t.Errorf("DownloadClientID = %d, want 0 (no Definition)", ev.DownloadClientID)
+		}
+		if ev.DownloadClient != "" {
+			t.Errorf("DownloadClient = %q, want empty (no Definition.Implementation)", ev.DownloadClient)
+		}
+		if ev.DownloadClientName != "stub-provider" {
+			t.Errorf("DownloadClientName = %q, want Provider.Name() fallback %q", ev.DownloadClientName, "stub-provider")
+		}
+	default:
+		t.Fatal("EpisodeGrabbedEvent not received")
+	}
+}
+
+// TestProcessDecisions_BusNotInvokedOnDispatchFailure — slice 6.A2:
+// when every client errors, no EpisodeGrabbedEvent fires. Only
+// SUCCESSFUL grabs publish.
+func TestProcessDecisions_BusNotInvokedOnDispatchFailure(t *testing.T) {
+	t.Parallel()
+	prov := &stubProvider{name: "sab", protocol: indexers.DownloadProtocolUsenet, downloadErr: errors.New("unavailable: refused")}
+	lister := &stubClientLister{usenet: []downloadclients.Provider{prov}}
+	pdd, err := download.NewProcessDownloadDecisions(lister, nil, slog.Default())
+	if err != nil {
+		t.Fatalf("NewProcessDownloadDecisions: %v", err)
+	}
+	bus := messaging.New(slog.Default())
+	pdd.SetBus(bus)
+
+	var count int32
+	var mu sync.Mutex
+	messaging.Subscribe(bus, "count", func(_ context.Context, _ decisionengine.EpisodeGrabbedEvent) error {
+		mu.Lock()
+		count++
+		mu.Unlock()
+		return nil
+	})
+
+	dec := mkDecision("Show.S01E01.NZB", indexers.DownloadProtocolUsenet, 1)
+	out := pdd.ProcessDecisions(context.Background(), []decisionengine.Decision{dec})
+
+	if len(out.Pending) != 1 {
+		t.Errorf("Pending = %d, want 1; full result: %s", len(out.Pending), out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if count != 0 {
+		t.Errorf("EpisodeGrabbedEvent count = %d, want 0 (no grab → no publish)", count)
 	}
 }
 
