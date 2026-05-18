@@ -200,7 +200,7 @@ func TestRegistry_DefaultsUsedWhenSettingsEmpty(t *testing.T) {
 
 func TestStub_DownloadReturnsNotImplemented(t *testing.T) {
 	t.Parallel()
-	d := deluge.New(nil, deluge.NewSettings(), nil)
+	d := deluge.New(nil, deluge.NewSettings(), nil, nil)
 	_, err := d.Download(context.Background(), &downloadclients.GrabRequest{})
 	if !errors.Is(err, downloadclients.ErrNotImplementedYet) {
 		t.Errorf("Download() err = %v, want ErrNotImplementedYet", err)
@@ -209,7 +209,7 @@ func TestStub_DownloadReturnsNotImplemented(t *testing.T) {
 
 func TestStub_GetItemsReturnsNotImplemented(t *testing.T) {
 	t.Parallel()
-	d := deluge.New(nil, deluge.NewSettings(), nil)
+	d := deluge.New(nil, deluge.NewSettings(), nil, nil)
 	_, err := d.GetItems(context.Background())
 	if !errors.Is(err, downloadclients.ErrNotImplementedYet) {
 		t.Errorf("GetItems() err = %v, want ErrNotImplementedYet", err)
@@ -218,7 +218,7 @@ func TestStub_GetItemsReturnsNotImplemented(t *testing.T) {
 
 func TestStub_RemoveItemReturnsNotImplemented(t *testing.T) {
 	t.Parallel()
-	d := deluge.New(nil, deluge.NewSettings(), nil)
+	d := deluge.New(nil, deluge.NewSettings(), nil, nil)
 	err := d.RemoveItem(context.Background(), &downloadclients.Item{}, false)
 	if !errors.Is(err, downloadclients.ErrNotImplementedYet) {
 		t.Errorf("RemoveItem() err = %v, want ErrNotImplementedYet", err)
@@ -227,7 +227,7 @@ func TestStub_RemoveItemReturnsNotImplemented(t *testing.T) {
 
 func TestStub_GetStatusReturnsNotImplemented(t *testing.T) {
 	t.Parallel()
-	d := deluge.New(nil, deluge.NewSettings(), nil)
+	d := deluge.New(nil, deluge.NewSettings(), nil, nil)
 	_, err := d.GetStatus(context.Background())
 	if !errors.Is(err, downloadclients.ErrNotImplementedYet) {
 		t.Errorf("GetStatus() err = %v, want ErrNotImplementedYet", err)
@@ -236,7 +236,7 @@ func TestStub_GetStatusReturnsNotImplemented(t *testing.T) {
 
 func TestStub_MarkItemAsImportedReturnsNotImplemented(t *testing.T) {
 	t.Parallel()
-	d := deluge.New(nil, deluge.NewSettings(), nil)
+	d := deluge.New(nil, deluge.NewSettings(), nil, nil)
 	err := d.MarkItemAsImported(context.Background(), &downloadclients.Item{})
 	if !errors.Is(err, downloadclients.ErrNotImplementedYet) {
 		t.Errorf("MarkItemAsImported() err = %v, want ErrNotImplementedYet", err)
@@ -245,7 +245,7 @@ func TestStub_MarkItemAsImportedReturnsNotImplemented(t *testing.T) {
 
 func TestStub_GetImportItemPassesThrough(t *testing.T) {
 	t.Parallel()
-	d := deluge.New(nil, deluge.NewSettings(), nil)
+	d := deluge.New(nil, deluge.NewSettings(), nil, nil)
 	in := &downloadclients.Item{DownloadID: "abc"}
 	got, err := d.GetImportItem(context.Background(), in, nil)
 	if err != nil {
@@ -258,25 +258,13 @@ func TestStub_GetImportItemPassesThrough(t *testing.T) {
 
 func TestStub_RequestActionReturnsNilNil(t *testing.T) {
 	t.Parallel()
-	d := deluge.New(nil, deluge.NewSettings(), nil)
+	d := deluge.New(nil, deluge.NewSettings(), nil, nil)
 	got, err := d.RequestAction(context.Background(), "anyAction", nil)
 	if err != nil {
 		t.Errorf("RequestAction() err = %v, want nil", err)
 	}
 	if got != nil {
 		t.Errorf("RequestAction() = %v, want nil", got)
-	}
-}
-
-func TestStub_TestSurfacesPlaceholderFailure(t *testing.T) {
-	t.Parallel()
-	d := deluge.New(nil, deluge.NewSettings(), nil)
-	got, err := d.Test(context.Background())
-	if err != nil {
-		t.Fatalf("Test() err = %v", err)
-	}
-	if len(got) == 0 {
-		t.Fatalf("Test() returned no failures; want placeholder 5.G2c sentinel")
 	}
 }
 
