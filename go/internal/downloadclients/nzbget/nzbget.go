@@ -626,10 +626,29 @@ func joinNzbgetPath(base, name string) string {
 	return strings.TrimRight(base, "/\\") + sep + name
 }
 
-// MarkItemAsImported is filled in by slice 5.G3h. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (n *Nzbget) MarkItemAsImported(_ context.Context, _ *downloadclients.Item) error {
-	return downloadclients.ErrNotImplementedYet
+// MarkItemAsImported is a no-op for NZBGet — the C# tree at
+// `Download/Clients/Nzbget/Nzbget.cs` does NOT override the
+// `DownloadClientBase.MarkItemAsImported` default, which throws
+// `NotSupportedException` at `DownloadClientBase.cs:189-192`. The
+// Go port surfaces this via [downloadclients.ErrMarkAsImportedUnsupported].
+//
+// Sonarr's import pipeline calls MarkItemAsImported on every
+// download-client item after a successful import to (optionally)
+// swap the per-client category to a "imported" variant — see
+// qBittorrent 5.G1h / Deluge 5.G2h for the implementations that
+// DO override. NZBGet has no equivalent: queue/history entries are
+// either dropped via the editqueue HistoryDelete command (5.G3f's
+// RemoveItem path) or left in place; there's no re-categorization
+// concept.
+//
+// The orchestrator (queue [15] ProcessDownloadDecisions follow-up)
+// treats ErrMarkAsImportedUnsupported as "log + skip" — the import
+// path proceeds without complaint.
+func (n *Nzbget) MarkItemAsImported(_ context.Context, item *downloadclients.Item) error {
+	if item == nil {
+		return errors.New("nzbget: MarkItemAsImported: nil item")
+	}
+	return fmt.Errorf("%w: NZBGet has no post-import-category mechanism", downloadclients.ErrMarkAsImportedUnsupported)
 }
 
 // Test ports the connectivity + version-floor probe from C#

@@ -222,12 +222,25 @@ func TestRegistry_DefaultsUsedWhenSettingsEmpty(t *testing.T) {
 // ErrNotImplementedYet.
 // ============================================================================
 
-func TestStub_MarkItemAsImportedReturnsNotImplemented(t *testing.T) {
+func TestMarkItemAsImported_NilItem(t *testing.T) {
 	t.Parallel()
 	n := nzbget.New(nil, nzbget.NewSettings(), nil, nil)
-	err := n.MarkItemAsImported(context.Background(), &downloadclients.Item{})
-	if !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("MarkItemAsImported() err = %v, want ErrNotImplementedYet", err)
+	if err := n.MarkItemAsImported(context.Background(), nil); err == nil {
+		t.Fatal("MarkItemAsImported(nil) err = nil, want error")
+	}
+}
+
+func TestMarkItemAsImported_ReturnsUnsupportedSentinel(t *testing.T) {
+	t.Parallel()
+	// NZBGet has no post-import-category mechanism in the C# tree
+	// (Nzbget.cs has no MarkItemAsImported override); the Go port
+	// surfaces this via ErrMarkAsImportedUnsupported so the
+	// orchestrator can log+skip per the family contract at
+	// downloadclients/provider.go.
+	n := nzbget.New(nil, nzbget.NewSettings(), nil, nil)
+	err := n.MarkItemAsImported(context.Background(), &downloadclients.Item{DownloadID: "abc"})
+	if !errors.Is(err, downloadclients.ErrMarkAsImportedUnsupported) {
+		t.Errorf("MarkItemAsImported() err = %v, want ErrMarkAsImportedUnsupported", err)
 	}
 }
 
