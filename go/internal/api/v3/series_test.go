@@ -933,3 +933,136 @@ func TestSeriesEditorDeleteHandler_BodyDeleteFilesAbsent_NoCascade(t *testing.T)
 		t.Errorf("cascade must NOT fire when body.DeleteFiles=false: %v", w.cascadedIDs)
 	}
 }
+
+// fakeSeriesExclusionWriter combines the cascade-aware writer with
+// an AddImportListExclusion tracker so the type-assert in
+// SeriesDeleteHandler picks up both interfaces.
+type fakeSeriesExclusionWriter struct {
+	*fakeSeriesCascadeWriter
+	excludeErr  error
+	excludedIDs []int
+}
+
+func (f *fakeSeriesExclusionWriter) AddImportListExclusion(_ context.Context, id int) error {
+	if f.excludeErr != nil {
+		return f.excludeErr
+	}
+	f.excludedIDs = append(f.excludedIDs, id)
+	return nil
+}
+
+func TestSeriesDeleteHandler_AddImportListExclusion_FiresAdder(t *testing.T) {
+	t.Parallel()
+	w := &fakeSeriesExclusionWriter{
+		fakeSeriesCascadeWriter: &fakeSeriesCascadeWriter{
+			fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{{ID: 7, Title: "victim", TvdbID: 12345}}},
+		},
+	}
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/series/7?addImportListExclusion=true", nil)
+	req.SetPathValue("id", "7")
+	rr := httptest.NewRecorder()
+	SeriesDeleteHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.excludedIDs) != 1 || w.excludedIDs[0] != 7 {
+		t.Errorf("AddImportListExclusion should be invoked with id 7: %v", w.excludedIDs)
+	}
+	if len(w.rows) != 0 {
+		t.Errorf("row should still be deleted after exclusion-add: %+v", w.rows)
+	}
+}
+
+func TestSeriesDeleteHandler_AddImportListExclusionAbsent_NoAdderCall(t *testing.T) {
+	t.Parallel()
+	w := &fakeSeriesExclusionWriter{
+		fakeSeriesCascadeWriter: &fakeSeriesCascadeWriter{
+			fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{{ID: 7}}},
+		},
+	}
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/series/7", nil)
+	req.SetPathValue("id", "7")
+	rr := httptest.NewRecorder()
+	SeriesDeleteHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(w.excludedIDs) != 0 {
+		t.Errorf("AddImportListExclusion must NOT fire when flag absent: %v", w.excludedIDs)
+	}
+}
+
+func TestSeriesDeleteHandler_AddImportListExclusionError_500_RowPreserved(t *testing.T) {
+	t.Parallel()
+	w := &fakeSeriesExclusionWriter{
+		fakeSeriesCascadeWriter: &fakeSeriesCascadeWriter{
+			fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{{ID: 7, TvdbID: 12345}}},
+		},
+		excludeErr: errors.New("constraint violation"),
+	}
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/series/7?addImportListExclusion=true", nil)
+	req.SetPathValue("id", "7")
+	rr := httptest.NewRecorder()
+	SeriesDeleteHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+	// Series row preserved when exclusion-add fails — the C# behaviour.
+	if len(w.rows) != 1 {
+		t.Errorf("series row should be preserved on exclusion-add failure: %+v", w.rows)
+	}
+}
+
+func TestSeriesDeleteHandler_NonAdderImpl_FlagSilentlyNoOp(t *testing.T) {
+	t.Parallel()
+	// Plain fakeSeriesWriter doesn't implement SeriesExclusionAdder
+	// — the ?addImportListExclusion=true flag silently no-ops.
+	w := &fakeSeriesWriter{rows: []series.Series{{ID: 7}}}
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/series/7?addImportListExclusion=true", nil)
+	req.SetPathValue("id", "7")
+	rr := httptest.NewRecorder()
+	SeriesDeleteHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+}
+
+func TestSeriesEditorDeleteHandler_BodyAddImportListExclusion(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 1, TvdbID: 100}, {ID: 2, TvdbID: 200}}
+	w := &fakeSeriesExclusionWriter{
+		fakeSeriesCascadeWriter: &fakeSeriesCascadeWriter{
+			fakeSeriesWriter: &fakeSeriesWriter{rows: rows},
+		},
+	}
+	body := SeriesEditorResource{SeriesIDs: []int{1, 2}, AddImportListExclusion: true}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorDeleteHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(w.excludedIDs) != 2 || w.excludedIDs[0] != 1 || w.excludedIDs[1] != 2 {
+		t.Errorf("AddImportListExclusion should fire for ids 1+2: %v", w.excludedIDs)
+	}
+}
+
+func TestSeriesEditorDeleteHandler_BodyAddImportListExclusionAbsent(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 1}}
+	w := &fakeSeriesExclusionWriter{
+		fakeSeriesCascadeWriter: &fakeSeriesCascadeWriter{
+			fakeSeriesWriter: &fakeSeriesWriter{rows: rows},
+		},
+	}
+	body := SeriesEditorResource{SeriesIDs: []int{1}} // AddImportListExclusion default false
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorDeleteHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(w.excludedIDs) != 0 {
+		t.Errorf("AddImportListExclusion must NOT fire when flag false: %v", w.excludedIDs)
+	}
+}

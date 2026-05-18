@@ -397,10 +397,11 @@ func SeriesEditorUpdateHandler(svc SeriesWriter, emitter SeriesEmitter) http.Han
 // Mirrors C# `SeriesEditorController.DeleteSeries` at :103-108.
 // Loops Delete per row, broadcasts Deleted, returns 200 {}.
 //
-// body.DeleteFiles triggers the DB-row cascade per row (same
-// type-assert path as SeriesDeleteHandler). body.AddImportListExclusion
-// is PARSED-AND-IGNORED. On-disk physical-file delete via
-// DiskProvider is still DEFERRED.
+// body.DeleteFiles triggers the DB-row + on-disk cascade per row
+// (same type-assert path as SeriesDeleteHandler).
+// body.AddImportListExclusion adds each series's TvdbID+Title to
+// the ImportListExclusion table BEFORE the delete (type-assert to
+// [SeriesExclusionAdder]).
 func SeriesEditorDeleteHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := decodeSeriesEditorBody(r)
@@ -412,7 +413,19 @@ func SeriesEditorDeleteHandler(svc SeriesWriter, emitter SeriesEmitter) http.Han
 			httperr.BadRequest(w, "seriesIds must be provided")
 			return
 		}
+		adder, hasExclusion := svc.(SeriesExclusionAdder)
 		for _, id := range body.SeriesIDs {
+			if body.AddImportListExclusion && hasExclusion {
+				if eErr := adder.AddImportListExclusion(r.Context(), id); eErr != nil {
+					if errors.Is(eErr, series.ErrNotFound) {
+						// Skip missing rows silently (same shape as the
+						// cascade's missing-id path below).
+						continue
+					}
+					httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/editor: addImportListExclusion %d: %w", id, eErr), nil)
+					return
+				}
+			}
 			err := deleteSeriesWithOptionalCascade(r.Context(), svc, id, body.DeleteFiles)
 			if errors.Is(err, series.ErrNotFound) {
 				continue
@@ -509,6 +522,25 @@ type SeriesWriter interface {
 	Insert(ctx context.Context, n *series.Series) (*series.Series, error)
 	Update(ctx context.Context, n *series.Series) error
 	Delete(ctx context.Context, id int) error
+}
+
+// SeriesExclusionAdder is the optional surface for the
+// `?addImportListExclusion=true` (single-row) and
+// `body.AddImportListExclusion` (editor) flags. The cmd-side
+// adapter looks up the series's TvdbID+Title and inserts an
+// importlistexclusions row so future import-list syncs skip the
+// row. Wired via type-assertion on the SeriesWriter argument —
+// when the impl doesn't satisfy this interface the flag is
+// silently no-op'd (same backward-compat pattern as
+// SeriesCascader).
+//
+// Failure semantics: if AddImportListExclusion returns a non-nil
+// error the handler aborts with 500 BEFORE the delete fires —
+// matches C# behaviour where _seriesService.DeleteSeries throws
+// from inside the exclusion-add path. The series row stays for
+// a retry.
+type SeriesExclusionAdder interface {
+	AddImportListExclusion(ctx context.Context, id int) error
 }
 
 // SeriesCascader is the cascade-aware delete surface. The
@@ -657,8 +689,12 @@ func SeriesUpdateHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
 //     stay on disk. Without ?deleteFiles=true the flag is absent and
 //     only the series row is removed (orphaning child rows — same
 //     behaviour as 5.D1a's pre-cascade path).
-//   - `addImportListExclusion=true` adds the TVDB id to the
-//     ImportListExclusion table to prevent re-import. DEFERRED.
+//   - `addImportListExclusion=true` adds the series's TVDB id +
+//     title to the ImportListExclusion table so future import-list
+//     syncs skip the row. Wired via type-assertion to
+//     [SeriesExclusionAdder] when the impl satisfies it. Fires
+//     BEFORE the delete (the exclusion needs to read TvdbID + Title
+//     from the still-present series row).
 //
 // Returns 200 with empty `{}` body + SignalR Deleted. Note: the C#
 // action signature returns `void` (200 empty body); the Go port
@@ -672,6 +708,19 @@ func SeriesDeleteHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
 			return
 		}
 		deleteFiles := r.URL.Query().Get("deleteFiles") == "true"
+		addExclusion := r.URL.Query().Get("addImportListExclusion") == "true"
+		if addExclusion {
+			if adder, ok := svc.(SeriesExclusionAdder); ok {
+				if eErr := adder.AddImportListExclusion(r.Context(), id); eErr != nil {
+					if errors.Is(eErr, series.ErrNotFound) {
+						httperr.NotFound(w, fmt.Sprintf("series %d not found", id))
+						return
+					}
+					httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series: addImportListExclusion %d: %w", id, eErr), nil)
+					return
+				}
+			}
+		}
 		err = deleteSeriesWithOptionalCascade(r.Context(), svc, id, deleteFiles)
 		if errors.Is(err, series.ErrNotFound) {
 			httperr.NotFound(w, fmt.Sprintf("series %d not found", id))

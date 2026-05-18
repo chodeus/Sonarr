@@ -231,7 +231,46 @@ type seriesCascadeAdapter struct {
 	episodes     *episodes.Service
 	episodefiles *episodefiles.Service
 	disk         seriesFolderCleaner
+	exclusions   *importlistexclusions.Service
 	logger       *slog.Logger
+}
+
+// AddImportListExclusion satisfies apiv3.SeriesExclusionAdder. Loads
+// the series row to read TvdbID + Title, then calls
+// importlistexclusions.Service.Add. Mirrors C# `SeriesService.DeleteSeries`
+// at SeriesService.cs:233-238 which inserts the exclusion BEFORE
+// the row is removed (so the TvdbID + Title are still readable).
+//
+// Idempotent: if the TvdbID is already on the exclusions table (the
+// schema's TvdbId UNIQUE constraint enforces this), the underlying
+// Repo.Insert path returns an error which the C# tree swallows.
+// The Go port surfaces the error today; a follow-up may swallow
+// constraint-violations explicitly. For now real-world race-free
+// usage shouldn't hit this since the React UI gates the flag on a
+// confirmation dialog.
+//
+// Tvdb ID of 0 (a series with no TvdbID set — should be rare since
+// the AddSeries pipeline enforces TvdbID > 0) is skipped to avoid
+// inserting a 0-keyed exclusion. Logged.
+func (a *seriesCascadeAdapter) AddImportListExclusion(ctx context.Context, id int) error {
+	if a.exclusions == nil {
+		return nil
+	}
+	row, err := a.GetSeries(ctx, id)
+	if err != nil {
+		return err
+	}
+	if row.TvdbID == 0 {
+		if a.logger != nil {
+			a.logger.Warn("series exclusion-add: skipping series with TvdbID=0", "id", id, "title", row.Title)
+		}
+		return nil
+	}
+	_, err = a.exclusions.Add(ctx, &importlistexclusions.Exclusion{
+		TvdbID: row.TvdbID,
+		Title:  row.Title,
+	})
+	return err
 }
 
 // DeleteCascade removes the on-disk series folder + child rows
@@ -1007,11 +1046,15 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// folder-cleanup step in seriesCascadeAdapter.DeleteCascade. The
 	// adapter only needs DeleteFolder so we wire via the narrow
 	// seriesFolderCleaner interface — production passes diskProv.
+	// 5.D10: importlistexclusions.Service for ?addImportListExclusion=true
+	// + body.AddImportListExclusion=true on the editor delete.
+	exclusionsSvc := importlistexclusions.NewService(importListExclusionsRepo)
 	seriesWriter := &seriesCascadeAdapter{
 		Service:      seriesSvc,
 		episodes:     episodesSvc,
 		episodefiles: episodeFilesSvc,
 		disk:         diskProv,
+		exclusions:   exclusionsSvc,
 		logger:       logger,
 	}
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
