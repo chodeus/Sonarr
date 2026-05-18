@@ -146,13 +146,66 @@ func EpisodeFileByIDHandler(svc EpisodeFileReader) http.Handler {
 	})
 }
 
-// EpisodeFileWriter is the write surface for DELETE /api/v3/episodefile.
-// Satisfied directly by *episodefiles.Service which exposes GetFile +
-// Delete (slice 3.B mediafiles service).
+// EpisodeFileWriter is the write surface for DELETE /api/v3/episodefile
+// + PUT /api/v3/episodefile/{id}. Satisfied directly by
+// *episodefiles.Service.
 type EpisodeFileWriter interface {
 	GetFile(ctx context.Context, id int) (*episodefiles.File, error)
 	GetFiles(ctx context.Context, ids []int) ([]episodefiles.File, error)
 	Delete(ctx context.Context, f *episodefiles.File, reason episodefiles.DeleteMediaFileReason) error
+	Update(ctx context.Context, f *episodefiles.File) error
+}
+
+// EpisodeFileUpdateHandler returns PUT /api/v3/episodefile/{id}. Mirrors
+// `EpisodeFileController.SetQuality` at `:94-113`. Updates SceneName
+// + ReleaseGroup on the persisted row; returns 202 + the updated
+// resource.
+//
+// DEFERRED with rationale: Quality + Languages updates (the
+// EpisodeFileResource skeleton doesn't yet model these fields - same
+// gap as the existing GET; revisit when the populated-row mapping
+// lands); IsSceneTitle regex validation on SceneName (C# guards the
+// assignment with `SceneChecker.IsSceneTitle` which validates the
+// proper scene naming pattern - the Go port accepts any non-empty
+// value today and trusts the React UI to send well-formed data).
+func EpisodeFileUpdateHandler(svc EpisodeFileWriter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "episodefile: invalid id")
+			return
+		}
+		var body EpisodeFileResource
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("episodefile: malformed body: %v", err))
+			return
+		}
+		f, err := svc.GetFile(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, episodefiles.ErrNotFound) {
+				httperr.NotFound(w, fmt.Sprintf("episodefile %d not found", id))
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile: get %d: %w", id, err), nil)
+			return
+		}
+		if body.SceneName != "" {
+			f.SceneName = body.SceneName
+		}
+		if body.ReleaseGroup != "" {
+			f.ReleaseGroup = body.ReleaseGroup
+		}
+		if err := svc.Update(r.Context(), f); err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile: update %d: %w", id, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(ToEpisodeFileResource(*f, ""))
+		_, _ = w.Write(buf)
+	})
 }
 
 // episodeFileBulkBody mirrors C# `EpisodeFileListResource` —

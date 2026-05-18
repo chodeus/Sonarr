@@ -17,6 +17,17 @@ type fakeEpisodeFileWriter struct {
 	getErr     error
 	deletedIDs []int
 	deleteErr  error
+	updated    *episodefiles.File
+	updateErr  error
+}
+
+func (f *fakeEpisodeFileWriter) Update(_ context.Context, file *episodefiles.File) error {
+	if f.updateErr != nil {
+		return f.updateErr
+	}
+	cp := *file
+	f.updated = &cp
+	return nil
 }
 
 func (f *fakeEpisodeFileWriter) GetFile(_ context.Context, id int) (*episodefiles.File, error) {
@@ -258,6 +269,95 @@ func TestEpisodeFileByIDHandler_NotFound_404(t *testing.T) {
 	req.SetPathValue("id", "999")
 	EpisodeFileByIDHandler(&fakeEpisodeFileReader{byID: map[int]*episodefiles.File{}}).ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// ---------- 5.D5b: PUT /episodefile/{id} tests ----------
+
+func TestEpisodeFileUpdateHandler_UpdatesSceneNameAndReleaseGroup(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeFileWriter{get: map[int]*episodefiles.File{
+		7: {ID: 7, SeriesID: 1, SceneName: "old.scene", ReleaseGroup: "OLD"},
+	}}
+	rr := httptest.NewRecorder()
+	body := `{"id":7,"seriesId":1,"seasonNumber":0,"relativePath":"","path":"","size":0,"dateAdded":"0001-01-01T00:00:00Z","sceneName":"New.Scene-GROUP","releaseGroup":"NEW"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/7", strings.NewReader(body))
+	req.SetPathValue("id", "7")
+	EpisodeFileUpdateHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if w.updated == nil || w.updated.SceneName != "New.Scene-GROUP" || w.updated.ReleaseGroup != "NEW" {
+		t.Errorf("updated: %+v", w.updated)
+	}
+}
+
+func TestEpisodeFileUpdateHandler_EmptyStringFieldsPreserveExisting(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeFileWriter{get: map[int]*episodefiles.File{
+		7: {ID: 7, SceneName: "keep.scene", ReleaseGroup: "KEEP"},
+	}}
+	rr := httptest.NewRecorder()
+	body := `{"id":7,"seriesId":1,"seasonNumber":0,"relativePath":"","path":"","size":0,"dateAdded":"0001-01-01T00:00:00Z"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/7", strings.NewReader(body))
+	req.SetPathValue("id", "7")
+	EpisodeFileUpdateHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if w.updated == nil || w.updated.SceneName != "keep.scene" || w.updated.ReleaseGroup != "KEEP" {
+		t.Errorf("existing values should be preserved: %+v", w.updated)
+	}
+}
+
+func TestEpisodeFileUpdateHandler_NotFound_404(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeFileWriter{get: map[int]*episodefiles.File{}}
+	rr := httptest.NewRecorder()
+	body := `{"id":999,"seriesId":1,"seasonNumber":0,"relativePath":"","path":"","size":0,"dateAdded":"0001-01-01T00:00:00Z"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/999", strings.NewReader(body))
+	req.SetPathValue("id", "999")
+	EpisodeFileUpdateHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestEpisodeFileUpdateHandler_InvalidID_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/abc", strings.NewReader(`{}`))
+	req.SetPathValue("id", "abc")
+	EpisodeFileUpdateHandler(&fakeEpisodeFileWriter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestEpisodeFileUpdateHandler_MalformedBody_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/1", strings.NewReader(`not json`))
+	req.SetPathValue("id", "1")
+	EpisodeFileUpdateHandler(&fakeEpisodeFileWriter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestEpisodeFileUpdateHandler_UpdateError_500(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeFileWriter{
+		get:       map[int]*episodefiles.File{1: {ID: 1}},
+		updateErr: errors.New("boom"),
+	}
+	rr := httptest.NewRecorder()
+	body := `{"id":1,"seriesId":1,"seasonNumber":0,"relativePath":"","path":"","size":0,"dateAdded":"0001-01-01T00:00:00Z","sceneName":"x"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/1", strings.NewReader(body))
+	req.SetPathValue("id", "1")
+	EpisodeFileUpdateHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("status: %d", rr.Code)
 	}
 }
