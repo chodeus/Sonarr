@@ -343,6 +343,15 @@ func (s *Server) buildMux() *http.ServeMux {
 		if !r.Anonymous {
 			h = s.requireAPIKey(h)
 		}
+		// Inject the server's *slog.Logger into the request context
+		// so handlers calling `httperr.WriteErr(..., nil)` can fetch
+		// it via `httperr.LoggerFromRequest` and log 500-class errors
+		// at slog.Error. Closes the "zero handler-side logging"
+		// observability gap surfaced by the Phase 5 audit. Wraps
+		// every route uniformly (including anonymous ones) — handlers
+		// gain logging access independent of whether they're behind
+		// requireAPIKey.
+		h = injectLogger(s.logger, h)
 		pattern := r.Path
 		if r.Method != "" {
 			pattern = r.Method + " " + r.Path

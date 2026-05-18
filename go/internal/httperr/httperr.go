@@ -32,10 +32,47 @@
 package httperr
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 )
+
+// loggerCtxKey is the unexported context key for the per-request
+// *slog.Logger injection used by the v3 handler error path.
+type loggerCtxKey struct{}
+
+// WithLogger returns a clone of r whose context carries logger.
+// Used by the host's logger-injection middleware (slice 5.A5) so
+// handlers can fetch the logger via [LoggerFromRequest] without
+// every handler signature growing a *slog.Logger parameter.
+//
+// Nil logger is a no-op (returns r unchanged) so the middleware
+// can wrap routes unconditionally even when no logger is wired
+// (early-build / test contexts).
+func WithLogger(r *http.Request, logger *slog.Logger) *http.Request {
+	if logger == nil || r == nil {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), loggerCtxKey{}, logger))
+}
+
+// LoggerFromRequest returns the *slog.Logger stashed by
+// [WithLogger], or nil when no logger was injected. Callers should
+// treat the nil case gracefully — for the v3 handler error path
+// this means the slog.Error log line is silently skipped (matches
+// the WriteErr nil-logger guard).
+func LoggerFromRequest(r *http.Request) *slog.Logger {
+	if r == nil {
+		return nil
+	}
+	if v := r.Context().Value(loggerCtxKey{}); v != nil {
+		if l, ok := v.(*slog.Logger); ok {
+			return l
+		}
+	}
+	return nil
+}
 
 // Envelope is the wire shape of a C# `ErrorModel` (non-validation
 // errors — 5xx and 4xx other than 400). Fields are emitted only
@@ -90,6 +127,15 @@ func WriteErr(w http.ResponseWriter, r *http.Request, status int, err error, log
 	msg := ""
 	if err != nil {
 		msg = err.Error()
+	}
+	// 5.A5 wires a logger-injection middleware at the host route
+	// layer, so handlers that pass logger=nil still log via the
+	// request-context fallback. This keeps the WriteErr call sites
+	// in 5.A4's sweep terse (`httperr.WriteErr(..., nil)`) while
+	// activating the slog.Error path once the middleware is in
+	// place. Tests passing a non-nil logger still bypass the lookup.
+	if logger == nil {
+		logger = LoggerFromRequest(r)
 	}
 	if logger != nil && status >= 500 {
 		method, path := "", ""

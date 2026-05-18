@@ -204,6 +204,77 @@ func TestInternal_DelegatesToWriteErr(t *testing.T) {
 	}
 }
 
+func TestWithLogger_RoundTripsThroughContext(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	req := httptest.NewRequest("GET", "/", nil)
+	req2 := WithLogger(req, logger)
+	got := LoggerFromRequest(req2)
+	if got != logger {
+		t.Errorf("LoggerFromRequest: got %v want %v", got, logger)
+	}
+}
+
+func TestWithLogger_NilLoggerIsNoOp(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest("GET", "/", nil)
+	req2 := WithLogger(req, nil)
+	if req2 != req {
+		t.Errorf("WithLogger(req, nil) must return req unchanged")
+	}
+	if LoggerFromRequest(req2) != nil {
+		t.Errorf("LoggerFromRequest must be nil when none injected")
+	}
+}
+
+func TestLoggerFromRequest_NilRequestSafe(t *testing.T) {
+	t.Parallel()
+	if got := LoggerFromRequest(nil); got != nil {
+		t.Errorf("LoggerFromRequest(nil): got %v want nil", got)
+	}
+}
+
+func TestWriteErr_FallsBackToContextLogger(t *testing.T) {
+	t.Parallel()
+	// The 5.A5 middleware injects a logger via context; WriteErr
+	// callers pass nil for the logger arg and the function picks it
+	// up from the request. This pins the contract that closes the
+	// "zero handler-side logging" gap end-to-end.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	req := httptest.NewRequest("POST", "/api/v3/series", nil)
+	req = WithLogger(req, logger)
+	rr := httptest.NewRecorder()
+	WriteErr(rr, req, http.StatusInternalServerError, errors.New("ctx-logger"), nil)
+	if !strings.Contains(buf.String(), "ctx-logger") {
+		t.Errorf("context logger must capture 500: got %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "/api/v3/series") {
+		t.Errorf("logger must include path: %q", buf.String())
+	}
+}
+
+func TestWriteErr_ExplicitLoggerWinsOverContext(t *testing.T) {
+	t.Parallel()
+	// If a caller passes an explicit logger, it MUST be used in
+	// preference to any context-injected logger. Tests typically
+	// supply an explicit one to capture output.
+	var ctxBuf, explicitBuf bytes.Buffer
+	ctxLogger := slog.New(slog.NewTextHandler(&ctxBuf, nil))
+	explicitLogger := slog.New(slog.NewTextHandler(&explicitBuf, nil))
+	req := httptest.NewRequest("GET", "/", nil)
+	req = WithLogger(req, ctxLogger)
+	rr := httptest.NewRecorder()
+	WriteErr(rr, req, http.StatusInternalServerError, errors.New("x"), explicitLogger)
+	if ctxBuf.Len() != 0 {
+		t.Errorf("context logger must NOT fire when explicit provided")
+	}
+	if explicitBuf.Len() == 0 {
+		t.Errorf("explicit logger must fire")
+	}
+}
+
 func TestWriteErr_EmittedShapeMatchesEnvelope(t *testing.T) {
 	t.Parallel()
 	// Verify that WriteErr's body is the same envelope shape Write
