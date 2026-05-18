@@ -19,6 +19,8 @@ import (
 // trackeddownloads-driven Block call in the queue/import wire) land.
 type EntryWriter interface {
 	Insert(ctx context.Context, e *Entry) (*Entry, error)
+	Delete(ctx context.Context, id int) error
+	DeleteByIDs(ctx context.Context, ids []int) (int64, error)
 	DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, error)
 }
 
@@ -129,6 +131,40 @@ func (s *Service) DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, 
 	n, err := s.repo.DeleteForSeries(ctx, seriesIDs)
 	if err != nil {
 		return 0, fmt.Errorf("blocklist: DeleteForSeries: %w", err)
+	}
+	return n, nil
+}
+
+// Delete ports `BlocklistService.Delete(int id)` at
+// `BlocklistService.cs:165-168` — removes a single Blocklist row.
+// Returns blocklist.ErrNotFound when no row matches.
+//
+// SignalR/event-bus fan-out (the C# `BlocklistService.Delete` does
+// not publish; only `Block` does) is intentionally absent.
+func (s *Service) Delete(ctx context.Context, id int) error {
+	if s == nil || s.repo == nil {
+		return errors.New("blocklist: Delete on nil receiver")
+	}
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return fmt.Errorf("blocklist: Delete(%d): %w", id, err)
+	}
+	return nil
+}
+
+// DeleteByIDs ports `BlocklistService.Delete(List<int> ids)` at
+// `BlocklistService.cs:170-173`. Bulk-removes every Blocklist row
+// whose Id is in the supplied list. Returns rows affected. Empty
+// input is no-op (0, nil).
+func (s *Service) DeleteByIDs(ctx context.Context, ids []int) (int64, error) {
+	if s == nil || s.repo == nil {
+		return 0, errors.New("blocklist: DeleteByIDs on nil receiver")
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	n, err := s.repo.DeleteByIDs(ctx, ids)
+	if err != nil {
+		return 0, fmt.Errorf("blocklist: DeleteByIDs: %w", err)
 	}
 	return n, nil
 }

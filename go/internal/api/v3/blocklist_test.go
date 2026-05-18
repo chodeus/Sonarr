@@ -6,7 +6,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"sonarr.tv/sonarr/internal/blocklist"
 )
 
 type fakeBlocklistLister struct {
@@ -75,6 +78,105 @@ func TestBlocklistHandler_ErrorEmitsCSharpEnvelope(t *testing.T) {
 	}
 	if !contains(body, "boom") {
 		t.Errorf("body must include the underlying error: %s", body)
+	}
+}
+
+// ---------- 5.E3: DELETE tests ----------
+
+type fakeBlocklistWriter struct {
+	deletedIDs []int
+	bulkIDs    []int
+	notFound   bool
+}
+
+func (f *fakeBlocklistWriter) Delete(_ context.Context, id int) error {
+	if f.notFound {
+		return blocklist.ErrNotFound
+	}
+	f.deletedIDs = append(f.deletedIDs, id)
+	return nil
+}
+func (f *fakeBlocklistWriter) DeleteByIDs(_ context.Context, ids []int) (int64, error) {
+	f.bulkIDs = append(f.bulkIDs, ids...)
+	return int64(len(ids)), nil
+}
+
+func TestBlocklistDeleteHandler_Success(t *testing.T) {
+	t.Parallel()
+	w := &fakeBlocklistWriter{}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/blocklist/7", nil)
+	req.SetPathValue("id", "7")
+	BlocklistDeleteHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(w.deletedIDs) != 1 || w.deletedIDs[0] != 7 {
+		t.Errorf("deleted: %+v", w.deletedIDs)
+	}
+}
+
+func TestBlocklistDeleteHandler_NotFound_404(t *testing.T) {
+	t.Parallel()
+	w := &fakeBlocklistWriter{notFound: true}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/blocklist/999", nil)
+	req.SetPathValue("id", "999")
+	BlocklistDeleteHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestBlocklistDeleteHandler_InvalidID_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/blocklist/abc", nil)
+	req.SetPathValue("id", "abc")
+	BlocklistDeleteHandler(&fakeBlocklistWriter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestBlocklistBulkDeleteHandler_Success(t *testing.T) {
+	t.Parallel()
+	w := &fakeBlocklistWriter{}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/blocklist/bulk", strings.NewReader(`{"ids":[1,2,3]}`))
+	BlocklistBulkDeleteHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(w.bulkIDs) != 3 {
+		t.Errorf("bulk ids: %+v", w.bulkIDs)
+	}
+	if rr.Body.String() != `{}` {
+		t.Errorf("body should be empty object; got %q", rr.Body.String())
+	}
+}
+
+func TestBlocklistBulkDeleteHandler_EmptyIDs_NoOp(t *testing.T) {
+	t.Parallel()
+	w := &fakeBlocklistWriter{}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/blocklist/bulk", strings.NewReader(`{"ids":[]}`))
+	BlocklistBulkDeleteHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: %d", rr.Code)
+	}
+	if len(w.bulkIDs) != 0 {
+		t.Errorf("expected no bulk calls; got %+v", w.bulkIDs)
+	}
+}
+
+func TestBlocklistBulkDeleteHandler_MalformedBody_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/blocklist/bulk", strings.NewReader(`not json`))
+	BlocklistBulkDeleteHandler(&fakeBlocklistWriter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
 	}
 }
 

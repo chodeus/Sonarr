@@ -541,6 +541,10 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// broadcast directly from the handler (no domain-event indirection
 	// for this resource — there's no RootFolderUpdatedEvent in C#).
 	rootFolderEmitter := signalr.NewV3Emitter[apiv3.RootFolderResource](signalRHub, "rootfolder")
+	// 5.E3: blocklistSvc construction is repeated here (and in main.go
+	// at line 1979 for the IHandle subscribers) since both wires need
+	// a Service. Service is stateless, so two instances are equivalent.
+	blocklistSvc := blocklist.NewService(blocklistRepo)
 	return []host.Route{
 		{Method: "GET", Path: "/api/v3/autotagging", Handler: apiv3.AutoTaggingHandler(autoTagsSvc)},
 		{Method: "GET", Path: "/api/v3/autotagging/{id}", Handler: apiv3.AutoTaggingByIDHandler(autoTagsSvc)},
@@ -549,6 +553,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "PUT", Path: "/api/v3/autotagging/{id}", Handler: apiv3.AutoTaggingUpdateHandler(autoTagsSvc)},
 		{Method: "DELETE", Path: "/api/v3/autotagging/{id}", Handler: apiv3.AutoTaggingDeleteHandler(autoTagsSvc)},
 		{Method: "GET", Path: "/api/v3/blocklist", Handler: apiv3.BlocklistHandler(blocklistPagedAdapter{repo: blocklistRepo})},
+		{Method: "DELETE", Path: "/api/v3/blocklist/{id}", Handler: apiv3.BlocklistDeleteHandler(blocklistSvc)},
+		{Method: "DELETE", Path: "/api/v3/blocklist/bulk", Handler: apiv3.BlocklistBulkDeleteHandler(blocklistSvc)},
 		{Method: "GET", Path: "/api/v3/calendar", Handler: apiv3.CalendarHandler(episodesSvc)},
 		{Method: "GET", Path: "/api/v3/command", Handler: apiv3.CommandListHandler(cmdSvc)},
 		{Method: "GET", Path: "/api/v3/command/{id}", Handler: apiv3.CommandByIDHandler(cmdSvc)},

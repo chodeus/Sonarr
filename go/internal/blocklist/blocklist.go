@@ -202,6 +202,36 @@ func (r *Repo) DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, err
 	return n, nil
 }
 
+// DeleteByIDs ports `BlocklistRepository.DeleteMany(List<int> ids)`.
+// Bulk DELETE every Blocklist row whose Id is in the supplied list.
+// Returns rows affected. Empty input is no-op (0, nil). Used by the
+// /api/v3/blocklist/bulk DELETE handler (slice 5.E3).
+func (r *Repo) DeleteByIDs(ctx context.Context, ids []int) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	db := r.DB()
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = datastore.Placeholder(db.Engine, i+1)
+		args[i] = id
+	}
+	q := fmt.Sprintf(
+		`DELETE FROM "Blocklist" WHERE "Id" IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+	res, err := db.SQL.ExecContext(ctx, q, args...)
+	if err != nil {
+		return 0, fmt.Errorf("blocklist: DeleteByIDs: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("blocklist: DeleteByIDs: rowsAffected: %w", err)
+	}
+	return n, nil
+}
+
 func marshalInts(xs []int) string {
 	if xs == nil {
 		xs = []int{}

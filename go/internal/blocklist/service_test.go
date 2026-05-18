@@ -20,6 +20,11 @@ type stubWriter struct {
 	gotDeleteSeries      []int
 	deleteSeriesAffected int64
 	deleteSeriesErr      error
+	gotDeleteID          int
+	deleteErr            error
+	gotDeleteByIDs       []int
+	deleteByIDsAffected  int64
+	deleteByIDsErr       error
 }
 
 func (s *stubWriter) Insert(_ context.Context, e *blocklist.Entry) (*blocklist.Entry, error) {
@@ -42,6 +47,19 @@ func (s *stubWriter) DeleteForSeries(_ context.Context, ids []int) (int64, error
 		return 0, s.deleteSeriesErr
 	}
 	return s.deleteSeriesAffected, nil
+}
+
+func (s *stubWriter) Delete(_ context.Context, id int) error {
+	s.gotDeleteID = id
+	return s.deleteErr
+}
+
+func (s *stubWriter) DeleteByIDs(_ context.Context, ids []int) (int64, error) {
+	s.gotDeleteByIDs = append([]int(nil), ids...)
+	if s.deleteByIDsErr != nil {
+		return 0, s.deleteByIDsErr
+	}
+	return s.deleteByIDsAffected, nil
 }
 
 func validEntry() *blocklist.Entry {
