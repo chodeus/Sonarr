@@ -283,6 +283,131 @@ func TestIndexerUpdateHandler_OmittedFields_KeepsExistingSettings(t *testing.T) 
 	}
 }
 
+// fakeIndexerTester implements IndexerTester. seen records the last
+// Indexer it was asked to test so the handler-side fromResource
+// projection can be verified.
+type fakeIndexerTester struct {
+	seen   *indexers.Indexer
+	result []indexers.TestFailure
+	err    error
+}
+
+func (f *fakeIndexerTester) Test(_ context.Context, n *indexers.Indexer) ([]indexers.TestFailure, error) {
+	f.seen = n
+	return f.result, f.err
+}
+
+func TestIndexerTestHandler_Success_Returns200EmptyObject(t *testing.T) {
+	t.Parallel()
+	tester := &fakeIndexerTester{}
+	body := validIndexerBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/indexer/test", bytes.NewReader(buf))
+	rr := httptest.NewRecorder()
+	IndexerTestHandler(tester).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `{}` {
+		t.Errorf("body: %q want {}", rr.Body.String())
+	}
+	if tester.seen == nil || tester.seen.Implementation != "Newznab" {
+		t.Errorf("Test should be invoked with built Indexer: seen=%+v", tester.seen)
+	}
+	if tester.seen.Settings == nil {
+		t.Fatalf("Settings nil after fromResource")
+	}
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(*tester.seen.Settings), &settings); err != nil {
+		t.Fatalf("Settings JSON: %v", err)
+	}
+	if settings["baseUrl"] != "https://nyaa.example/api" {
+		t.Errorf("settings baseUrl not packed: %v", settings["baseUrl"])
+	}
+}
+
+func TestIndexerTestHandler_FailuresProjectTo400Array(t *testing.T) {
+	t.Parallel()
+	tester := &fakeIndexerTester{result: []indexers.TestFailure{
+		{PropertyName: "BaseUrl", ErrorMessage: "could not connect"},
+		{PropertyName: "", ErrorMessage: "Test failed: timeout"},
+	}}
+	body := validIndexerBody()
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var failures []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &failures); err != nil {
+		t.Fatalf("body must be FluentValidation array: %v body=%s", err, rr.Body.String())
+	}
+	if len(failures) != 2 {
+		t.Fatalf("len: %d", len(failures))
+	}
+	if failures[0]["propertyName"] != "BaseUrl" || failures[0]["errorMessage"] != "could not connect" {
+		t.Errorf("first: %+v", failures[0])
+	}
+	if failures[0]["severity"] != "error" {
+		t.Errorf("severity must default to error: %+v", failures[0])
+	}
+}
+
+func TestIndexerTestHandler_UnknownImplementation_400(t *testing.T) {
+	t.Parallel()
+	tester := &fakeIndexerTester{err: indexers.ErrNotRegistered}
+	body := validIndexerBody()
+	body.Implementation = "GhostProvider"
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var failures []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &failures); err != nil {
+		t.Fatalf("body shape: %v", err)
+	}
+	if len(failures) != 1 || failures[0]["propertyName"] != "Implementation" {
+		t.Errorf("expected single Implementation failure: %+v", failures)
+	}
+}
+
+func TestIndexerTestHandler_OtherError_500(t *testing.T) {
+	t.Parallel()
+	tester := &fakeIndexerTester{err: errors.New("transport broke")}
+	body := validIndexerBody()
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestIndexerTestHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	IndexerTestHandler(&fakeIndexerTester{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer/test", bytes.NewReader([]byte(`{not json`))))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestIndexerTestHandler_SkipsSharedValidator(t *testing.T) {
+	t.Parallel()
+	tester := &fakeIndexerTester{}
+	body := validIndexerBody()
+	body.Name = "" // would be 400 on POST/PUT
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerTestHandler(tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer/test", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Errorf("skip-validation: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestIndexerDeleteHandler_Success(t *testing.T) {
 	t.Parallel()
 	w := &fakeIndexerWriter{rows: []indexers.Indexer{{ID: 7, Name: "victim"}}}

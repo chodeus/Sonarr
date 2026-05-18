@@ -332,6 +332,77 @@ func fromIndexerResource(res IndexerResource, existing *indexers.Indexer) (*inde
 	}, nil
 }
 
+// IndexerTester invokes a per-row provider Test. The cmd-side
+// adapter wires this against indexers.Registry.Construct +
+// indexers.Provider.Test under the host-supplied
+// indexers.Dependencies. Tests can pass a stub.
+//
+// An error return is reserved for "provider couldn't be
+// constructed" (unknown impl, malformed settings); these are
+// projected to 400 with the C# unknown-implementation envelope.
+type IndexerTester interface {
+	Test(ctx context.Context, n *indexers.Indexer) ([]indexers.TestFailure, error)
+}
+
+// IndexerTestHandler returns POST /api/v3/indexer/test. Mirrors the
+// notification Test endpoint (5.C1b) shape: 200 `{}` on success,
+// 400 FluentValidation array on failures, 400 single-Implementation
+// failure on ErrNotRegistered, 500 on transport errors.
+//
+// SharedValidator is skipped (matches C# `[SkipValidation(true,false)]`)
+// — Settings.Validate runs inside Provider.Test under the hood.
+func IndexerTestHandler(tester IndexerTester) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeIndexerBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("indexer: malformed body: %v", err))
+			return
+		}
+		row, err := fromIndexerResource(body, nil)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("indexer: invalid fields: %v", err))
+			return
+		}
+		failures, err := tester.Test(r.Context(), row)
+		if err != nil {
+			if errors.Is(err, indexers.ErrNotRegistered) {
+				httperr.WriteValidation(w, []httperr.Failure{{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q (configContract %q)", body.Implementation, body.ConfigContract),
+					Severity:     "error",
+				}})
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("indexer: test: %w", err), nil)
+			return
+		}
+		if len(failures) > 0 {
+			httperr.WriteValidation(w, indexerTestFailuresToFluentArray(failures))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+}
+
+// indexerTestFailuresToFluentArray ports the projection
+// `STJson.ToJson(validationException.Errors)` for the
+// [indexers.TestFailure] shape. DetailedDescription has no
+// FluentValidation counterpart in httperr.Failure — dropped
+// pending the shared cross-family type.
+func indexerTestFailuresToFluentArray(failures []indexers.TestFailure) []httperr.Failure {
+	out := make([]httperr.Failure, 0, len(failures))
+	for _, f := range failures {
+		out = append(out, httperr.Failure{
+			PropertyName: f.PropertyName,
+			ErrorMessage: f.ErrorMessage,
+			Severity:     "error",
+		})
+	}
+	return out
+}
+
 func toIndexerResource(i indexers.Indexer) IndexerResource {
 	tags := i.Tags
 	if tags == nil {

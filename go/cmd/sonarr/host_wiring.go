@@ -277,6 +277,23 @@ func (a *registryNotificationTester) RequestAction(ctx context.Context, n *notif
 	return provider.RequestAction(ctx, action, query)
 }
 
+// registryIndexerTester adapts indexers.Registry + Dependencies to
+// apiv3.IndexerTester. Same shape as registryNotificationTester —
+// would collapse to a generic shim once a third provider family
+// demands it.
+type registryIndexerTester struct {
+	registry *indexers.Registry
+	deps     indexers.Dependencies
+}
+
+func (a *registryIndexerTester) Test(ctx context.Context, n *indexers.Indexer) ([]indexers.TestFailure, error) {
+	provider, err := a.registry.Construct(n, a.deps)
+	if err != nil {
+		return nil, err
+	}
+	return provider.Test(ctx)
+}
+
 // apiv3FileExists + apiv3DeleteFile defer to os.Stat / os.Remove.
 // Named with the apiv3 prefix to keep the cmd-package surface clean
 // since the v3 layer's unexported osFileExists / osDeleteFile aren't
@@ -751,6 +768,19 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 	// checks Name/Implementation/ConfigContract non-empty + name
 	// uniqueness — no registry membership.
 	indexerEmitter := signalr.NewV3Emitter[apiv3.IndexerResource](signalRHub, "indexer")
+	// 5.C2b: indexer Test endpoint adapter. Wraps
+	// indexers.Registry.Construct + provider.Test under
+	// indexers.Dependencies. Zero concrete indexer providers register
+	// today — every request to /indexer/test will return 400
+	// "Unknown implementation" until the first concrete impl ports
+	// (Newznab/Torznab/BroadcastTheNet/etc.). The wire boundary is
+	// in place so subsequent slices can land concrete providers
+	// without touching this wiring.
+	indexerRegistry := indexers.Default()
+	indexerTester := &registryIndexerTester{
+		registry: indexerRegistry,
+		deps:     indexers.Dependencies{Logger: logger},
+	}
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
@@ -877,6 +907,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/indexer/schema", Handler: apiv3.IndexerSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerByIDHandler(indexersRepo)},
 		{Method: "POST", Path: "/api/v3/indexer", Handler: apiv3.IndexerCreateHandler(indexersRepo, indexerEmitter)},
+		{Method: "POST", Path: "/api/v3/indexer/test", Handler: apiv3.IndexerTestHandler(indexerTester)},
 		{Method: "PUT", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerUpdateHandler(indexersRepo, indexerEmitter)},
 		{Method: "DELETE", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerDeleteHandler(indexersRepo, indexerEmitter)},
 		{Method: "GET", Path: "/api/v3/indexerflag", Handler: apiv3.IndexerFlagHandler()},
