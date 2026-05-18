@@ -408,6 +408,205 @@ func TestIndexerTestHandler_SkipsSharedValidator(t *testing.T) {
 	}
 }
 
+// intPtr is a local helper for the bulk test bodies. boolPtr is
+// already defined in customformat.go and reused here.
+func intPtr(n int) *int { return &n }
+
+func TestIndexerBulkUpdateHandler_TagsAdd(t *testing.T) {
+	t.Parallel()
+	rows := []indexers.Indexer{
+		{ID: 1, Name: "a", Implementation: "Newznab", Tags: []int{10}},
+		{ID: 2, Name: "b", Implementation: "Newznab", Tags: []int{20}},
+	}
+	w := &fakeIndexerWriter{rows: rows}
+	em := &fakeIndexerEmitter{}
+	body := IndexerBulkResource{IDs: []int{1, 2}, Tags: []int{30}, ApplyTags: applyTagsAdd}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerBulkUpdateHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/indexer/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !equalIntSet(w.rows[0].Tags, []int{10, 30}) {
+		t.Errorf("row0 tags after Add: %v", w.rows[0].Tags)
+	}
+	if !equalIntSet(w.rows[1].Tags, []int{20, 30}) {
+		t.Errorf("row1 tags after Add: %v", w.rows[1].Tags)
+	}
+	if len(em.updated) != 2 {
+		t.Errorf("emitter Updated count: %d", len(em.updated))
+	}
+}
+
+func TestIndexerBulkUpdateHandler_TagsRemove(t *testing.T) {
+	t.Parallel()
+	rows := []indexers.Indexer{{ID: 1, Implementation: "Newznab", Tags: []int{10, 20, 30}}}
+	w := &fakeIndexerWriter{rows: rows}
+	body := IndexerBulkResource{IDs: []int{1}, Tags: []int{20}, ApplyTags: applyTagsRemove}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerBulkUpdateHandler(w, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/indexer/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !equalIntSet(w.rows[0].Tags, []int{10, 30}) {
+		t.Errorf("tags after Remove: %v", w.rows[0].Tags)
+	}
+}
+
+func TestIndexerBulkUpdateHandler_TagsReplace(t *testing.T) {
+	t.Parallel()
+	rows := []indexers.Indexer{{ID: 1, Implementation: "Newznab", Tags: []int{10, 20}}}
+	w := &fakeIndexerWriter{rows: rows}
+	body := IndexerBulkResource{IDs: []int{1}, Tags: []int{99}, ApplyTags: applyTagsReplace}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerBulkUpdateHandler(w, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/indexer/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !equalIntSet(w.rows[0].Tags, []int{99}) {
+		t.Errorf("tags after Replace: %v", w.rows[0].Tags)
+	}
+}
+
+func TestIndexerBulkUpdateHandler_PerFieldUpdate_NilSkipsExisting(t *testing.T) {
+	t.Parallel()
+	rows := []indexers.Indexer{{ID: 1, Implementation: "Newznab", EnableRss: boolPtr(true), Priority: 10, SeasonSearchMaximumSingleEpisodeAge: 5}}
+	w := &fakeIndexerWriter{rows: rows}
+	// Only Priority is updated; other fields stay (nil-pointer skip).
+	body := IndexerBulkResource{IDs: []int{1}, Priority: intPtr(42)}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerBulkUpdateHandler(w, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/indexer/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if w.rows[0].Priority != 42 {
+		t.Errorf("Priority not updated: %d", w.rows[0].Priority)
+	}
+	if w.rows[0].EnableRss == nil || *w.rows[0].EnableRss != true {
+		t.Errorf("EnableRss should be preserved: %v", w.rows[0].EnableRss)
+	}
+	if w.rows[0].SeasonSearchMaximumSingleEpisodeAge != 5 {
+		t.Errorf("SeasonSearch should be preserved: %d", w.rows[0].SeasonSearchMaximumSingleEpisodeAge)
+	}
+}
+
+func TestIndexerBulkUpdateHandler_ApplyTagsAsString(t *testing.T) {
+	t.Parallel()
+	// String form ("Remove") for ApplyTags. The wire is permissive.
+	rows := []indexers.Indexer{{ID: 1, Implementation: "Newznab", Tags: []int{10, 20}}}
+	w := &fakeIndexerWriter{rows: rows}
+	body := []byte(`{"ids":[1],"tags":[10],"applyTags":"Remove"}`)
+	rr := httptest.NewRecorder()
+	IndexerBulkUpdateHandler(w, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/indexer/bulk", bytes.NewReader(body)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !equalIntSet(w.rows[0].Tags, []int{20}) {
+		t.Errorf("tags after string-form Remove: %v", w.rows[0].Tags)
+	}
+}
+
+func TestIndexerBulkUpdateHandler_EmptyIDs_400(t *testing.T) {
+	t.Parallel()
+	body := IndexerBulkResource{IDs: nil}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerBulkUpdateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/indexer/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestIndexerBulkUpdateHandler_MissingIdsSilentlySkipped(t *testing.T) {
+	t.Parallel()
+	rows := []indexers.Indexer{{ID: 1, Implementation: "Newznab"}}
+	w := &fakeIndexerWriter{rows: rows}
+	em := &fakeIndexerEmitter{}
+	body := IndexerBulkResource{IDs: []int{1, 999}, Priority: intPtr(7)}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerBulkUpdateHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/indexer/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if w.rows[0].Priority != 7 {
+		t.Errorf("existing row not updated: %+v", w.rows[0])
+	}
+	if len(em.updated) != 1 {
+		t.Errorf("Updated should fire only for the row that existed: %d", len(em.updated))
+	}
+}
+
+func TestIndexerBulkDeleteHandler_Success(t *testing.T) {
+	t.Parallel()
+	rows := []indexers.Indexer{
+		{ID: 1, Implementation: "Newznab"},
+		{ID: 2, Implementation: "Newznab"},
+		{ID: 3, Implementation: "Newznab"},
+	}
+	w := &fakeIndexerWriter{rows: rows}
+	em := &fakeIndexerEmitter{}
+	body := IndexerBulkResource{IDs: []int{1, 3}}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerBulkDeleteHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/indexer/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `{}` {
+		t.Errorf("body: %q", rr.Body.String())
+	}
+	if len(w.rows) != 1 || w.rows[0].ID != 2 {
+		t.Errorf("rows after bulk delete: %+v", w.rows)
+	}
+	if len(em.deleted) != 2 {
+		t.Errorf("Deleted should fire per id: %d", len(em.deleted))
+	}
+}
+
+func TestIndexerBulkDeleteHandler_EmptyIDs_400(t *testing.T) {
+	t.Parallel()
+	body := IndexerBulkResource{IDs: nil}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerBulkDeleteHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/indexer/bulk", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestIndexerBulkUpdateHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	IndexerBulkUpdateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/indexer/bulk", bytes.NewReader([]byte(`{bad`))))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// equalIntSet compares two int slices as sets (order independent).
+func equalIntSet(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[int]int, len(a))
+	for _, x := range a {
+		seen[x]++
+	}
+	for _, x := range b {
+		seen[x]--
+	}
+	for _, v := range seen {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // fakeIndexerActioner implements IndexerActioner.
 type fakeIndexerActioner struct {
 	seenName  string

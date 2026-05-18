@@ -386,6 +386,237 @@ func IndexerTestHandler(tester IndexerTester) http.Handler {
 	})
 }
 
+// IndexerBulkResource mirrors C# `IndexerBulkResource` at
+// `src/Sonarr.Api.V3/Indexers/IndexerBulkResource.cs` and the
+// inherited `ProviderBulkResource<T>` at
+// `src/Sonarr.Api.V3/ProviderBulkResource.cs`.
+//
+// All per-field updates are nullable so the request body can opt-in
+// to changing only the specific columns the user toggled in the
+// React UI (the bulk-edit drawer renders independent checkboxes).
+// Tags + ApplyTags follow the same opt-in: if Tags is non-nil the
+// ApplyTags semantics determine whether to Add/Remove/Replace.
+//
+// ApplyTags wire shape is permissive: case-insensitive string
+// ("add"/"remove"/"replace") OR integer ordinal (0/1/2) matching
+// the C# `enum ApplyTags { Add=0, Remove=1, Replace=2 }`. STJson's
+// default emits int but the React UI's bulk-edit drawer sends
+// strings — accept both to avoid breaking either client.
+type IndexerBulkResource struct {
+	IDs                                 []int           `json:"ids"`
+	Tags                                []int           `json:"tags"`
+	ApplyTags                           applyTagsAction `json:"applyTags"`
+	EnableRss                           *bool           `json:"enableRss,omitempty"`
+	EnableAutomaticSearch               *bool           `json:"enableAutomaticSearch,omitempty"`
+	EnableInteractiveSearch             *bool           `json:"enableInteractiveSearch,omitempty"`
+	Priority                            *int            `json:"priority,omitempty"`
+	SeasonSearchMaximumSingleEpisodeAge *int            `json:"seasonSearchMaximumSingleEpisodeAge,omitempty"`
+}
+
+// applyTagsAction is the per-bulk-edit semantics enum. Mirrors C#
+// `Sonarr.Api.V3.ApplyTags` (Add=0, Remove=1, Replace=2). The
+// UnmarshalJSON accepts both string and int forms — see
+// [IndexerBulkResource] doc-comment for rationale.
+type applyTagsAction int
+
+const (
+	applyTagsAdd     applyTagsAction = 0
+	applyTagsRemove  applyTagsAction = 1
+	applyTagsReplace applyTagsAction = 2
+)
+
+// UnmarshalJSON accepts both string ("add"/"remove"/"replace",
+// case-insensitive) and integer (0/1/2) wire forms.
+func (a *applyTagsAction) UnmarshalJSON(buf []byte) error {
+	if len(buf) == 0 {
+		*a = applyTagsAdd
+		return nil
+	}
+	// Integer form.
+	if buf[0] != '"' {
+		var n int
+		if err := json.Unmarshal(buf, &n); err != nil {
+			return err
+		}
+		if n < 0 || n > 2 {
+			return fmt.Errorf("applyTags: invalid ordinal %d", n)
+		}
+		*a = applyTagsAction(n)
+		return nil
+	}
+	// String form.
+	var s string
+	if err := json.Unmarshal(buf, &s); err != nil {
+		return err
+	}
+	switch strings.ToLower(s) {
+	case "add":
+		*a = applyTagsAdd
+	case "remove":
+		*a = applyTagsRemove
+	case "replace":
+		*a = applyTagsReplace
+	default:
+		return fmt.Errorf("applyTags: invalid value %q", s)
+	}
+	return nil
+}
+
+// IndexerBulkUpdateHandler returns PUT /api/v3/indexer/bulk.
+// Mirrors `ProviderControllerBase.UpdateProvider(TBulkProviderResource)`
+// at C# :130-166. Unlike notifications (5.C1e: bulk disabled), the
+// C# IndexerController inherits this method unchanged, so bulk is
+// active for indexers.
+//
+// Tag mutation semantics (Add/Remove/Replace) match C# at :148-159.
+// Per-field updates apply only when the body's optional pointer is
+// non-nil; nil pointers leave the column unchanged.
+//
+// Returns 202 + array of updated [IndexerResource]. SignalR Updated
+// fires once per persisted row.
+func IndexerBulkUpdateHandler(svc IndexerWriter, emitter IndexerEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeIndexerBulkBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("indexer/bulk: malformed body: %v", err))
+			return
+		}
+		if len(body.IDs) == 0 {
+			httperr.BadRequest(w, "ids must be provided")
+			return
+		}
+		updated := make([]IndexerResource, 0, len(body.IDs))
+		for _, id := range body.IDs {
+			existing, err := svc.Get(r.Context(), id)
+			if errors.Is(err, indexers.ErrNotFound) {
+				// Skip missing ids silently — matches C#
+				// `_providerFactory.Get(ids)` which returns only the
+				// rows that exist.
+				continue
+			}
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("indexer/bulk: get %d: %w", id, err), nil)
+				return
+			}
+			applyBulkUpdate(existing, body)
+			if err := svc.Update(r.Context(), existing); err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("indexer/bulk: update %d: %w", id, err), nil)
+				return
+			}
+			res := toIndexerResource(*existing)
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "indexer", "updated", func() error {
+				return emitter.Updated(r.Context(), res)
+			})
+			updated = append(updated, res)
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(updated)
+		_, _ = w.Write(buf)
+	})
+}
+
+// IndexerBulkDeleteHandler returns DELETE /api/v3/indexer/bulk.
+// Mirrors `ProviderControllerBase.DeleteProviders` at C# :188-195.
+// Loops per-id Delete, fires Deleted once per row, returns 200 +
+// empty object `{}` (matches C# `return new { };`).
+func IndexerBulkDeleteHandler(svc IndexerWriter, emitter IndexerEmitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeIndexerBulkBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("indexer/bulk: malformed body: %v", err))
+			return
+		}
+		if len(body.IDs) == 0 {
+			httperr.BadRequest(w, "ids must be provided")
+			return
+		}
+		for _, id := range body.IDs {
+			err := svc.Delete(r.Context(), id)
+			if errors.Is(err, indexers.ErrNotFound) {
+				// Skip missing ids silently — see bulk-update note.
+				continue
+			}
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("indexer/bulk: delete %d: %w", id, err), nil)
+				return
+			}
+			id := id
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "indexer", "deleted", func() error {
+				return emitter.Deleted(r.Context(), IndexerResource{providerResourceCore: providerResourceCore{ID: id}})
+			})
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+}
+
+func decodeIndexerBulkBody(r *http.Request) (IndexerBulkResource, error) {
+	defer func() { _ = r.Body.Close() }()
+	var out IndexerBulkResource
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return IndexerBulkResource{}, err
+	}
+	return out, nil
+}
+
+// applyBulkUpdate mutates `existing` per the [IndexerBulkResource]
+// semantics. Mirrors C# `IndexerBulkResourceMapper.UpdateModel` at
+// `IndexerBulkResource.cs:17-34` for the per-field block plus the
+// inherited `ProviderControllerBase.UpdateProvider` Tags-apply
+// switch at :148-159 for the tag-mutation block.
+func applyBulkUpdate(existing *indexers.Indexer, body IndexerBulkResource) {
+	if body.Tags != nil {
+		switch body.ApplyTags {
+		case applyTagsReplace:
+			existing.Tags = append([]int(nil), body.Tags...)
+		case applyTagsAdd:
+			for _, t := range body.Tags {
+				if !containsInt(existing.Tags, t) {
+					existing.Tags = append(existing.Tags, t)
+				}
+			}
+		case applyTagsRemove:
+			out := existing.Tags[:0]
+			for _, t := range existing.Tags {
+				if !containsInt(body.Tags, t) {
+					out = append(out, t)
+				}
+			}
+			existing.Tags = out
+		}
+	}
+	if body.EnableRss != nil {
+		v := *body.EnableRss
+		existing.EnableRss = &v
+	}
+	if body.EnableAutomaticSearch != nil {
+		v := *body.EnableAutomaticSearch
+		existing.EnableAutomaticSearch = &v
+	}
+	if body.EnableInteractiveSearch != nil {
+		existing.EnableInteractiveSearch = *body.EnableInteractiveSearch
+	}
+	if body.Priority != nil {
+		existing.Priority = *body.Priority
+	}
+	if body.SeasonSearchMaximumSingleEpisodeAge != nil {
+		existing.SeasonSearchMaximumSingleEpisodeAge = *body.SeasonSearchMaximumSingleEpisodeAge
+	}
+}
+
+func containsInt(xs []int, t int) bool {
+	for _, x := range xs {
+		if x == t {
+			return true
+		}
+	}
+	return false
+}
+
 // IndexerActioner invokes a per-row provider RequestAction. The
 // cmd-side adapter wires this against indexers.Registry.Construct +
 // indexers.Provider.RequestAction under the host-supplied
