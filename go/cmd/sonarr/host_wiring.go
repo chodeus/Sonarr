@@ -743,6 +743,14 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		registry: notificationRegistry,
 		deps:     notifications.Dependencies{Logger: logger},
 	}
+	// 5.C2a: indexer provider CUD emitter for SignalR Created/Updated/Deleted.
+	// No registry-checker yet — internal/indexers/ does not export a
+	// Registry singleton today (notifications.Registry has no
+	// counterpart). The Test/TestAll/Action endpoints in 5.C2b-d will
+	// need one; for the basic-CUD slice the validation chain only
+	// checks Name/Implementation/ConfigContract non-empty + name
+	// uniqueness — no registry membership.
+	indexerEmitter := signalr.NewV3Emitter[apiv3.IndexerResource](signalRHub, "indexer")
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
@@ -868,6 +876,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "GET", Path: "/api/v3/indexer", Handler: apiv3.IndexerHandler(indexersRepo)},
 		{Method: "GET", Path: "/api/v3/indexer/schema", Handler: apiv3.IndexerSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerByIDHandler(indexersRepo)},
+		{Method: "POST", Path: "/api/v3/indexer", Handler: apiv3.IndexerCreateHandler(indexersRepo, indexerEmitter)},
+		{Method: "PUT", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerUpdateHandler(indexersRepo, indexerEmitter)},
+		{Method: "DELETE", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerDeleteHandler(indexersRepo, indexerEmitter)},
 		{Method: "GET", Path: "/api/v3/indexerflag", Handler: apiv3.IndexerFlagHandler()},
 		{Method: "GET", Path: "/api/v3/language", Handler: apiv3.LanguageHandler(langs)},
 		{Method: "GET", Path: "/api/v3/languageprofile", Handler: apiv3.LanguageProfileHandler()},

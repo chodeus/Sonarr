@@ -1,10 +1,13 @@
 package v3
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/indexers"
@@ -34,5 +37,298 @@ func TestIndexerHandler_Error(t *testing.T) {
 	IndexerHandler(&fakeIndexerLister{err: errors.New("boom")}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/indexer", nil))
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("status: got %d want 500", rr.Code)
+	}
+}
+
+// fakeIndexerWriter implements IndexerWriter against an in-memory
+// table. Same shape as the notification fake — Insert auto-assigns
+// ids; Update + Delete match by id with ErrNotFound on miss.
+type fakeIndexerWriter struct {
+	rows   []indexers.Indexer
+	nextID int64
+	getErr error
+}
+
+func (f *fakeIndexerWriter) Get(_ context.Context, id int) (*indexers.Indexer, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	for i := range f.rows {
+		if f.rows[i].ID == id {
+			cp := f.rows[i]
+			return &cp, nil
+		}
+	}
+	return nil, indexers.ErrNotFound
+}
+func (f *fakeIndexerWriter) All(_ context.Context) ([]indexers.Indexer, error) {
+	out := make([]indexers.Indexer, len(f.rows))
+	copy(out, f.rows)
+	return out, nil
+}
+func (f *fakeIndexerWriter) Insert(_ context.Context, n *indexers.Indexer) (*indexers.Indexer, error) {
+	n.ID = int(atomic.AddInt64(&f.nextID, 1))
+	f.rows = append(f.rows, *n)
+	cp := *n
+	return &cp, nil
+}
+func (f *fakeIndexerWriter) Update(_ context.Context, n *indexers.Indexer) error {
+	for i := range f.rows {
+		if f.rows[i].ID == n.ID {
+			f.rows[i] = *n
+			return nil
+		}
+	}
+	return indexers.ErrNotFound
+}
+func (f *fakeIndexerWriter) Delete(_ context.Context, id int) error {
+	for i := range f.rows {
+		if f.rows[i].ID == id {
+			f.rows = append(f.rows[:i], f.rows[i+1:]...)
+			return nil
+		}
+	}
+	return indexers.ErrNotFound
+}
+
+type fakeIndexerEmitter struct {
+	created []IndexerResource
+	updated []IndexerResource
+	deleted []IndexerResource
+}
+
+func (f *fakeIndexerEmitter) Created(_ context.Context, r IndexerResource) error {
+	f.created = append(f.created, r)
+	return nil
+}
+func (f *fakeIndexerEmitter) Updated(_ context.Context, r IndexerResource) error {
+	f.updated = append(f.updated, r)
+	return nil
+}
+func (f *fakeIndexerEmitter) Deleted(_ context.Context, r IndexerResource) error {
+	f.deleted = append(f.deleted, r)
+	return nil
+}
+
+func validIndexerBody() IndexerResource {
+	return IndexerResource{
+		providerResourceCore: providerResourceCore{
+			Name:               "Nyaa",
+			Implementation:     "Newznab",
+			ImplementationName: "Newznab",
+			ConfigContract:     "NewznabSettings",
+			Tags:               []int{},
+		},
+		EnableRss:                           true,
+		EnableAutomaticSearch:               true,
+		EnableInteractiveSearch:             true,
+		Priority:                            25,
+		DownloadClientID:                    0,
+		SeasonSearchMaximumSingleEpisodeAge: 0,
+		Fields: []ProviderField{
+			{Name: "baseUrl", Value: "https://nyaa.example/api"},
+			{Name: "apiKey", Value: "deadbeef"},
+		},
+	}
+}
+
+func TestIndexerCreateHandler_Success(t *testing.T) {
+	t.Parallel()
+	w := &fakeIndexerWriter{}
+	em := &fakeIndexerEmitter{}
+	body := validIndexerBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf))
+	rr := httptest.NewRecorder()
+	IndexerCreateHandler(w, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.rows) != 1 || w.rows[0].Name != "Nyaa" || w.rows[0].ID <= 0 {
+		t.Errorf("row not inserted: %+v", w.rows)
+	}
+	if w.rows[0].Settings == nil || *w.rows[0].Settings == "" || *w.rows[0].Settings == "{}" {
+		t.Errorf("settings should pack fields[]; got %v", w.rows[0].Settings)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(*w.rows[0].Settings), &settings); err != nil {
+		t.Fatalf("settings JSON: %v", err)
+	}
+	if settings["baseUrl"] != "https://nyaa.example/api" || settings["apiKey"] != "deadbeef" {
+		t.Errorf("settings packing: %+v", settings)
+	}
+	if len(em.created) != 1 || em.created[0].Name != "Nyaa" {
+		t.Errorf("emitter.Created not fired: %+v", em.created)
+	}
+}
+
+func TestIndexerCreateHandler_NameMissing_400(t *testing.T) {
+	t.Parallel()
+	body := validIndexerBody()
+	body.Name = ""
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerCreateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestIndexerCreateHandler_ImplementationMissing_400(t *testing.T) {
+	t.Parallel()
+	body := validIndexerBody()
+	body.Implementation = ""
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerCreateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestIndexerCreateHandler_DuplicateName_400(t *testing.T) {
+	t.Parallel()
+	body := validIndexerBody()
+	w := &fakeIndexerWriter{rows: []indexers.Indexer{{ID: 5, Name: "nyaa"}}}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerCreateHandler(w, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestIndexerCreateHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	IndexerCreateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader([]byte(`{bad`))))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestIndexerUpdateHandler_Success(t *testing.T) {
+	t.Parallel()
+	existingSettings := `{"baseUrl":"old"}`
+	existing := indexers.Indexer{ID: 42, Name: "old", Implementation: "Newznab", Settings: &existingSettings}
+	w := &fakeIndexerWriter{rows: []indexers.Indexer{existing}}
+	em := &fakeIndexerEmitter{}
+	body := validIndexerBody()
+	body.ID = 42
+	body.Name = "Renamed"
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/indexer/42", bytes.NewReader(buf))
+	req.SetPathValue("id", "42")
+	rr := httptest.NewRecorder()
+	IndexerUpdateHandler(w, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if w.rows[0].Name != "Renamed" {
+		t.Errorf("row not updated: %+v", w.rows[0])
+	}
+	if len(em.updated) != 1 {
+		t.Errorf("emitter.Updated not fired: %+v", em.updated)
+	}
+}
+
+func TestIndexerUpdateHandler_NotFound_404(t *testing.T) {
+	t.Parallel()
+	body := validIndexerBody()
+	body.ID = 999
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/indexer/999", bytes.NewReader(buf))
+	req.SetPathValue("id", "999")
+	rr := httptest.NewRecorder()
+	IndexerUpdateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestIndexerUpdateHandler_BodyIDFallback(t *testing.T) {
+	t.Parallel()
+	existing := indexers.Indexer{ID: 5, Name: "old", Implementation: "Newznab"}
+	w := &fakeIndexerWriter{rows: []indexers.Indexer{existing}}
+	body := validIndexerBody()
+	body.ID = 5
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/indexer/999", bytes.NewReader(buf))
+	req.SetPathValue("id", "999")
+	rr := httptest.NewRecorder()
+	IndexerUpdateHandler(w, &fakeIndexerEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestIndexerUpdateHandler_OmittedFields_KeepsExistingSettings(t *testing.T) {
+	t.Parallel()
+	existingSettings := `{"baseUrl":"keep-me"}`
+	existing := indexers.Indexer{ID: 1, Name: "old", Implementation: "Newznab", Settings: &existingSettings}
+	w := &fakeIndexerWriter{rows: []indexers.Indexer{existing}}
+	body := validIndexerBody()
+	body.ID = 1
+	body.Fields = nil
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/indexer/1", bytes.NewReader(buf))
+	req.SetPathValue("id", "1")
+	rr := httptest.NewRecorder()
+	IndexerUpdateHandler(w, &fakeIndexerEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if w.rows[0].Settings == nil || *w.rows[0].Settings != `{"baseUrl":"keep-me"}` {
+		t.Errorf("settings should be preserved when fields omitted; got %v", w.rows[0].Settings)
+	}
+}
+
+func TestIndexerDeleteHandler_Success(t *testing.T) {
+	t.Parallel()
+	w := &fakeIndexerWriter{rows: []indexers.Indexer{{ID: 7, Name: "victim"}}}
+	em := &fakeIndexerEmitter{}
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/indexer/7", nil)
+	req.SetPathValue("id", "7")
+	rr := httptest.NewRecorder()
+	IndexerDeleteHandler(w, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != `{}` {
+		t.Errorf("body: %q", rr.Body.String())
+	}
+	if len(w.rows) != 0 {
+		t.Errorf("row should be deleted: %+v", w.rows)
+	}
+	if len(em.deleted) != 1 || em.deleted[0].ID != 7 {
+		t.Errorf("emitter.Deleted not fired with id 7: %+v", em.deleted)
+	}
+}
+
+func TestIndexerDeleteHandler_NotFound_404(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/indexer/999", nil)
+	req.SetPathValue("id", "999")
+	rr := httptest.NewRecorder()
+	IndexerDeleteHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestIndexerDeleteHandler_InvalidID_400(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{"abc", "0", "-1"} {
+		raw := raw
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodDelete, "/api/v3/indexer/"+raw, nil)
+			req.SetPathValue("id", raw)
+			rr := httptest.NewRecorder()
+			IndexerDeleteHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}).ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("status: %d (id=%q)", rr.Code, raw)
+			}
+		})
 	}
 }
