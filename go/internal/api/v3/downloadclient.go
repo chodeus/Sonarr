@@ -349,6 +349,67 @@ func DownloadClientTestHandler(tester DownloadClientTester) http.Handler {
 	})
 }
 
+// DownloadClientActioner invokes a per-row provider RequestAction.
+// The cmd-side adapter wires this against
+// downloadclients.Registry.Construct + downloadclients.Provider.RequestAction
+// under host-supplied downloadclients.Dependencies.
+//
+// Common downloadclient actions: Sabnzbd `getCategories` /
+// `getCustomCategories` for category-picker enumeration; Transmission
+// `getCustomTorrentFolders` for writable-destination enumeration.
+type DownloadClientActioner interface {
+	RequestAction(ctx context.Context, n *downloadclients.DownloadClient, action string, query map[string]string) (any, error)
+}
+
+// DownloadClientRequestActionHandler returns POST /api/v3/downloadclient/action/{name}.
+// Same shape as the 5.C1d/5.C2d/5.C3d twins.
+func DownloadClientRequestActionHandler(actioner DownloadClientActioner) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if strings.TrimSpace(name) == "" {
+			httperr.BadRequest(w, "downloadclient/action: empty name")
+			return
+		}
+		body, err := decodeDownloadClientBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("downloadclient: malformed body: %v", err))
+			return
+		}
+		row, err := fromDownloadClientResource(body, nil)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("downloadclient: invalid fields: %v", err))
+			return
+		}
+		query := make(map[string]string, len(r.URL.Query()))
+		for k, vs := range r.URL.Query() {
+			if len(vs) > 0 {
+				query[k] = vs[0]
+			}
+		}
+		data, err := actioner.RequestAction(r.Context(), row, name, query)
+		if err != nil {
+			if errors.Is(err, downloadclients.ErrNotRegistered) {
+				httperr.WriteValidation(w, []httperr.Failure{{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q (configContract %q)", body.Implementation, body.ConfigContract),
+					Severity:     "error",
+				}})
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient: action %q: %w", name, err), nil)
+			return
+		}
+		buf, err := json.Marshal(data)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient: action %q: marshal: %w", name, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf)
+	})
+}
+
 // DownloadClientTestAllHandler returns POST /api/v3/downloadclient/testall.
 // Mirrors C# ProviderControllerBase.TestAll at :233-257 and the
 // 5.C1c / 5.C2c / 5.C3c twins. Returns 400 if any row failed, 200

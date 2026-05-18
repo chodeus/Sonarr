@@ -590,6 +590,14 @@ func containsByte(s string, c byte) bool {
 	return false
 }
 
+// RequestAction is the per-impl action map. Sabnzbd ships
+// `getCategories` + `getCustomCategories` actions in C# — the Go
+// port keeps the entry point but returns the C# default (nil, nil)
+// until the per-action body ports. Mirrors `DownloadClientBase.cs:165-167`.
+func (s *Sabnzbd) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return nil, nil
+}
+
 // Compile-time guard: Sabnzbd satisfies the Provider interface.
 var _ downloadclients.Provider = (*Sabnzbd)(nil)
 

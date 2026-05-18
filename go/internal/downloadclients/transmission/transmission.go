@@ -561,6 +561,14 @@ func parseVersion(version string) *versionPair {
 	return &versionPair{major: major, minor: minor}
 }
 
+// RequestAction is the per-impl action map. Transmission ships
+// `getCustomTorrentFolders` in C# — the Go port keeps the entry
+// point but returns the C# default (nil, nil) until the per-action
+// body ports. Mirrors `DownloadClientBase.cs:165-167`.
+func (t *Transmission) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return nil, nil
+}
+
 // Compile-time guard: Transmission satisfies the Provider interface.
 var _ downloadclients.Provider = (*Transmission)(nil)
 

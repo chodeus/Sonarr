@@ -348,6 +348,15 @@ func (a *registryDownloadClientTester) Test(ctx context.Context, n *downloadclie
 	return provider.Test(ctx)
 }
 
+// RequestAction satisfies apiv3.DownloadClientActioner.
+func (a *registryDownloadClientTester) RequestAction(ctx context.Context, n *downloadclients.DownloadClient, action string, query map[string]string) (any, error) {
+	provider, err := a.registry.Construct(n, a.deps)
+	if err != nil {
+		return nil, err
+	}
+	return provider.RequestAction(ctx, action, query)
+}
+
 // apiv3FileExists + apiv3DeleteFile defer to os.Stat / os.Remove.
 // Named with the apiv3 prefix to keep the cmd-package surface clean
 // since the v3 layer's unexported osFileExists / osDeleteFile aren't
@@ -961,6 +970,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "POST", Path: "/api/v3/downloadclient", Handler: apiv3.DownloadClientCreateHandler(downloadClientsRepo, downloadClientEmitter)},
 		{Method: "POST", Path: "/api/v3/downloadclient/test", Handler: apiv3.DownloadClientTestHandler(downloadClientTester)},
 		{Method: "POST", Path: "/api/v3/downloadclient/testall", Handler: apiv3.DownloadClientTestAllHandler(downloadClientsRepo, downloadClientTester)},
+		{Method: "POST", Path: "/api/v3/downloadclient/action/{name}", Handler: apiv3.DownloadClientRequestActionHandler(downloadClientTester)},
 		{Method: "PUT", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientUpdateHandler(downloadClientsRepo, downloadClientEmitter)},
 		{Method: "DELETE", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientDeleteHandler(downloadClientsRepo, downloadClientEmitter)},
 		{Method: "GET", Path: "/api/v3/episode", Handler: apiv3.EpisodeListHandler(episodesSvc)},

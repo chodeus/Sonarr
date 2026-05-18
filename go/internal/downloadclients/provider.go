@@ -129,6 +129,21 @@ type Provider interface {
 	// failure with an empty property name; the Go port surfaces it
 	// as a non-nil error so the orchestrator can distinguish.
 	Test(ctx context.Context) ([]TestFailure, error)
+
+	// RequestAction handles the per-impl action handshake some
+	// download-client Settings classes expose. Mirrors C#
+	// `object RequestAction(string action,
+	// IDictionary<string,string> query)` at
+	// `src/NzbDrone.Core/ThingiProvider/IProvider.cs:15` and the
+	// no-op default at `DownloadClientBase.cs:165-167` (returns
+	// null). Concrete clients that don't override return (nil, nil).
+	//
+	// Common actions across the overriding clients: Sabnzbd
+	// `getCategories` enumerates the configured categories; Sabnzbd
+	// `getCustomCategories` returns per-app custom-category presets;
+	// Transmission `getCustomTorrentFolders` enumerates writable
+	// torrent destination paths.
+	RequestAction(ctx context.Context, action string, query map[string]string) (any, error)
 }
 
 // GrabRequest is the post-Map, post-Aggregate shape the orchestrator

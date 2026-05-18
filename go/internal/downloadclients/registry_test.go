@@ -47,6 +47,10 @@ func (p *fakeProvider) Test(_ context.Context) ([]downloadclients.TestFailure, e
 	return nil, nil
 }
 
+func (p *fakeProvider) RequestAction(_ context.Context, _ string, _ map[string]string) (any, error) {
+	return nil, nil
+}
+
 // fakeUsenetSettings + fakeTorrentSettings satisfy the marker
 // interfaces. Used by interface-satisfaction smoke tests.
 type fakeUsenetSettings struct {
