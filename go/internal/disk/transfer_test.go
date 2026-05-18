@@ -313,3 +313,73 @@ func TestProvider_GetDirectories_MissingPath(t *testing.T) {
 		t.Errorf("err = %v, want fs.ErrNotExist", err)
 	}
 }
+
+func TestProvider_MoveFolder_SameDevice(t *testing.T) {
+	t.Parallel()
+	p := newProvider()
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	dst := filepath.Join(tmp, "dst")
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, filepath.Join(src, "a.txt"), "alpha")
+	writeFile(t, filepath.Join(src, "sub", "b.txt"), "beta")
+
+	if err := p.MoveFolder(src, dst); err != nil {
+		t.Fatalf("MoveFolder: %v", err)
+	}
+	if p.FolderExists(src) {
+		t.Errorf("source folder should be gone")
+	}
+	if got := readFile(t, filepath.Join(dst, "a.txt")); got != "alpha" {
+		t.Errorf("dst a.txt: %q", got)
+	}
+	if got := readFile(t, filepath.Join(dst, "sub", "b.txt")); got != "beta" {
+		t.Errorf("dst sub/b.txt: %q", got)
+	}
+}
+
+func TestProvider_MoveFolder_MissingSource(t *testing.T) {
+	t.Parallel()
+	p := newProvider()
+	tmp := t.TempDir()
+	err := p.MoveFolder(filepath.Join(tmp, "nope"), filepath.Join(tmp, "dst"))
+	if err == nil {
+		t.Errorf("MoveFolder(missing) should error")
+	}
+}
+
+func TestProvider_MoveFolder_NestedTree(t *testing.T) {
+	t.Parallel()
+	p := newProvider()
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	dst := filepath.Join(tmp, "dst")
+	// Exercises the os.Rename happy path on a multi-level tree.
+	// (The cross-device fallback is hard to trigger in unit tests
+	// without a real second filesystem mount; MoveFile_SameDir + the
+	// underlying CopyFile already cover the per-file copy logic.)
+	if err := os.MkdirAll(filepath.Join(src, "a", "b"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, filepath.Join(src, "root.txt"), "root")
+	writeFile(t, filepath.Join(src, "a", "deep.txt"), "deep")
+	writeFile(t, filepath.Join(src, "a", "b", "deeper.txt"), "deeper")
+	if err := p.MoveFolder(src, dst); err != nil {
+		t.Fatalf("MoveFolder: %v", err)
+	}
+	for _, want := range []struct{ rel, content string }{
+		{"root.txt", "root"},
+		{"a/deep.txt", "deep"},
+		{"a/b/deeper.txt", "deeper"},
+	} {
+		got := readFile(t, filepath.Join(dst, want.rel))
+		if got != want.content {
+			t.Errorf("%s: %q want %q", want.rel, got, want.content)
+		}
+	}
+	if p.FolderExists(src) {
+		t.Errorf("source should be gone after rename")
+	}
+}

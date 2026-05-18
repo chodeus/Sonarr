@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -108,6 +109,80 @@ func (p *Provider) TryCreateHardLink(src, dst string) bool {
 		return false
 	}
 	return true
+}
+
+// MoveFolder ports `DiskProviderBase.cs:344-358`. Renames a folder
+// (and everything inside it) from src to dst. Uses [os.Rename] which
+// handles entire-directory rename as a single atomic operation when
+// src + dst live on the same filesystem.
+//
+// Cross-device fallback: on EXDEV, falls back to a recursive copy of
+// the directory tree via [filepath.Walk] + DeleteFolder(src, true).
+// The fallback is slower (per-file copy) but functionally
+// equivalent. Mirrors C# DiskTransferService's cross-mount handling.
+//
+// Errors propagate wrapped. The dst-already-exists case from
+// os.Rename surfaces as the underlying syscall error so callers can
+// `errors.Is(err, fs.ErrExist)`.
+//
+// Slice 5.D9 port pre-work for the eventual /api/v3/series/{id}?moveFiles=true
+// cascade that fires when the React UI's rename-folder dialog
+// supplies a new Path.
+func (p *Provider) MoveFolder(src, dst string) error {
+	if err := os.Rename(src, dst); err != nil {
+		if isCrossDevice(err) {
+			if cerr := p.copyFolderRecursive(src, dst); cerr != nil {
+				return fmt.Errorf("disk: MoveFolder(%q, %q): cross-device fallback copy: %w", src, dst, cerr)
+			}
+			if rerr := p.DeleteFolder(src, true); rerr != nil {
+				return fmt.Errorf("disk: MoveFolder(%q, %q): cross-device fallback delete: %w", src, dst, rerr)
+			}
+			return nil
+		}
+		return fmt.Errorf("disk: MoveFolder(%q, %q): %w", src, dst, err)
+	}
+	return nil
+}
+
+// copyFolderRecursive walks src and replicates the directory tree
+// rooted at dst, copying every regular file via CopyFile. Symlinks
+// inside the tree are NOT followed — they're recreated as symlinks
+// at dst (matches the C# DiskProvider's symlink-preserve behaviour
+// at DiskProviderBase.cs:298-302). Empty directories are recreated
+// with the source's mode bits.
+//
+// Errors abort the walk early — callers see the underlying file's
+// error wrapped with the walk path for diagnostics.
+func (p *Provider) copyFolderRecursive(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("walk %q: %w", path, walkErr)
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return fmt.Errorf("rel %q: %w", path, err)
+		}
+		target := filepath.Join(dst, rel)
+		switch {
+		case info.IsDir():
+			if err := os.MkdirAll(target, info.Mode().Perm()); err != nil {
+				return fmt.Errorf("mkdir %q: %w", target, err)
+			}
+		case info.Mode()&os.ModeSymlink != 0:
+			link, lerr := os.Readlink(path)
+			if lerr != nil {
+				return fmt.Errorf("readlink %q: %w", path, lerr)
+			}
+			if err := os.Symlink(link, target); err != nil {
+				return fmt.Errorf("symlink %q→%q: %w", target, link, err)
+			}
+		default:
+			if err := p.CopyFile(path, target); err != nil {
+				return fmt.Errorf("copyfile %q→%q: %w", path, target, err)
+			}
+		}
+		return nil
+	})
 }
 
 // DeleteFile ports `DiskProviderBase.cs:359-371`. Removes a regular
