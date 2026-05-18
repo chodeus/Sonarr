@@ -263,6 +263,20 @@ func (a *registryNotificationTester) Test(ctx context.Context, n *notifications.
 	return provider.Test(ctx)
 }
 
+// RequestAction satisfies apiv3.NotificationActioner. Mirrors C#
+// `ProviderFactoryBase.RequestAction(definition, action, query)` at
+// `ProviderFactoryBase.cs:204-220` — Construct the provider, then
+// delegate to its per-action map (Plex OAuth, Trakt OAuth, Twitter
+// PIN flow, PushBullet device enumeration, etc.). Concrete providers
+// returning nil emit JSON `null`; the v3 React UI tolerates either.
+func (a *registryNotificationTester) RequestAction(ctx context.Context, n *notifications.Notification, action string, query map[string]string) (any, error) {
+	provider, err := a.registry.Construct(n, a.deps)
+	if err != nil {
+		return nil, err
+	}
+	return provider.RequestAction(ctx, action, query)
+}
+
 // apiv3FileExists + apiv3DeleteFile defer to os.Stat / os.Remove.
 // Named with the apiv3 prefix to keep the cmd-package surface clean
 // since the v3 layer's unexported osFileExists / osDeleteFile aren't
@@ -880,6 +894,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, logger *slo
 		{Method: "POST", Path: "/api/v3/notification", Handler: apiv3.NotificationCreateHandler(notificationsRepo, notificationRegistry, notificationEmitter)},
 		{Method: "POST", Path: "/api/v3/notification/test", Handler: apiv3.NotificationTestHandler(notificationTester)},
 		{Method: "POST", Path: "/api/v3/notification/testall", Handler: apiv3.NotificationTestAllHandler(notificationsRepo, notificationTester)},
+		{Method: "POST", Path: "/api/v3/notification/action/{name}", Handler: apiv3.NotificationRequestActionHandler(notificationTester)},
 		{Method: "PUT", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationUpdateHandler(notificationsRepo, notificationRegistry, notificationEmitter)},
 		{Method: "DELETE", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationDeleteHandler(notificationsRepo, notificationEmitter)},
 		{Method: "GET", Path: "/api/v3/parse", Handler: apiv3.ParseHandler()},

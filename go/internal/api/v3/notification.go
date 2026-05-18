@@ -335,6 +335,94 @@ func NotificationTestHandler(tester NotificationTester) http.Handler {
 	})
 }
 
+// NotificationActioner invokes a per-row provider RequestAction. The
+// cmd-side adapter wires this against
+// [notifications.Registry.Construct] + [notifications.Provider.RequestAction]
+// under the host-supplied [notifications.Dependencies]. Tests can
+// pass a stub.
+//
+// The C# action map is per-provider: Plex (startOAuth, continueOAuth,
+// getOAuthToken), Twitter (oauth1 PIN), PushBullet (getDevices), etc.
+// The Go port treats each action as an opaque string and lets the
+// provider decode it.
+//
+// Return shape: any JSON-marshalable value; nil → emits `null`.
+type NotificationActioner interface {
+	RequestAction(ctx context.Context, n *notifications.Notification, action string, query map[string]string) (any, error)
+}
+
+// NotificationRequestActionHandler returns POST /api/v3/notification/action/{name}.
+// Mirrors `ProviderControllerBase.RequestAction` at C# :259-273. The
+// C# `[SkipValidation]` attribute at :259 disables the entire
+// SharedValidator + PostValidator pair — the Go port skips the
+// `validateNotificationResource` call to match.
+//
+// Wire shape: body is a [NotificationResource]; route carries the
+// action name; query parameters are passed through to the provider
+// as a `map[string]string` (matches C#
+// `Request.Query.ToDictionary(x => x.Key, x => x.Value.ToString())`).
+// Response is the provider's returned JSON value (Content-Type set
+// to application/json regardless of the value's underlying type).
+//
+// Error projection mirrors the test endpoint: ErrNotRegistered → 400
+// with single Implementation failure; other errors → 500. Empty
+// action name → 400 BadRequest. The C# action requires a non-empty
+// `{name}` route segment too (ASP.NET routing won't match `:259` for
+// `/action/` with empty name).
+func NotificationRequestActionHandler(actioner NotificationActioner) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if strings.TrimSpace(name) == "" {
+			httperr.BadRequest(w, "notification/action: empty name")
+			return
+		}
+		body, err := decodeNotificationBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("notification: malformed body: %v", err))
+			return
+		}
+		row, err := fromNotificationResource(body, nil)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("notification: invalid fields: %v", err))
+			return
+		}
+		query := make(map[string]string, len(r.URL.Query()))
+		for k, vs := range r.URL.Query() {
+			if len(vs) > 0 {
+				// C# `Request.Query.ToDictionary` collapses multi-valued
+				// query params via `x.Value.ToString()` which on
+				// `Microsoft.Extensions.Primitives.StringValues` emits
+				// comma-joined values. The Go port takes the first value
+				// — the C#-side behaviour is rarely meaningful (only
+				// `?action=a&action=b` triggers it, and provider actions
+				// don't use multi-valued params today).
+				query[k] = vs[0]
+			}
+		}
+		data, err := actioner.RequestAction(r.Context(), row, name, query)
+		if err != nil {
+			if errors.Is(err, notifications.ErrNotRegistered) {
+				httperr.WriteValidation(w, []httperr.Failure{{
+					PropertyName: "Implementation",
+					ErrorMessage: fmt.Sprintf("Unknown implementation %q (configContract %q)", body.Implementation, body.ConfigContract),
+					Severity:     "error",
+				}})
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("notification: action %q: %w", name, err), nil)
+			return
+		}
+		buf, err := json.Marshal(data)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("notification: action %q: marshal: %w", name, err), nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf)
+	})
+}
+
 // ProviderTestAllResult mirrors C# `Sonarr.Api.V3.ProviderTestAllResult`
 // at `src/Sonarr.Api.V3/ProviderTestAllResult.cs`. The C# `IsValid`
 // is a derived property (`ValidationFailures.Empty()`); the Go port

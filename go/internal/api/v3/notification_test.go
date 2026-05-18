@@ -443,6 +443,130 @@ func TestNotificationTestHandler_SkipsSharedValidator(t *testing.T) {
 	}
 }
 
+// fakeNotifActioner implements NotificationActioner. Records each
+// call so the handler-side query/path/body projection can be
+// inspected.
+type fakeNotifActioner struct {
+	seenName  string
+	seenQuery map[string]string
+	seenRow   *notifications.Notification
+	result    any
+	err       error
+}
+
+func (f *fakeNotifActioner) RequestAction(_ context.Context, n *notifications.Notification, name string, query map[string]string) (any, error) {
+	f.seenName = name
+	f.seenQuery = query
+	f.seenRow = n
+	return f.result, f.err
+}
+
+func TestNotificationRequestActionHandler_Success(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeNotifActioner{result: map[string]any{"token": "abc"}}
+	body := validNotificationBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/notification/action/startOAuth?callback=http%3A%2F%2Fhost%2Fcb&prompt=consent", bytes.NewReader(buf))
+	req.SetPathValue("name", "startOAuth")
+	rr := httptest.NewRecorder()
+	NotificationRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body shape: %v body=%s", err, rr.Body.String())
+	}
+	if got["token"] != "abc" {
+		t.Errorf("body: %+v", got)
+	}
+	if actioner.seenName != "startOAuth" {
+		t.Errorf("action name: %q", actioner.seenName)
+	}
+	if actioner.seenQuery["callback"] != "http://host/cb" || actioner.seenQuery["prompt"] != "consent" {
+		t.Errorf("query map: %+v", actioner.seenQuery)
+	}
+	if actioner.seenRow == nil || actioner.seenRow.Implementation != "Webhook" {
+		t.Errorf("row not built: %+v", actioner.seenRow)
+	}
+}
+
+func TestNotificationRequestActionHandler_NilResult_EmitsJSONNull(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeNotifActioner{result: nil}
+	body := validNotificationBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/notification/action/noop", bytes.NewReader(buf))
+	req.SetPathValue("name", "noop")
+	rr := httptest.NewRecorder()
+	NotificationRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if rr.Body.String() != `null` {
+		t.Errorf("body should be JSON null; got %q", rr.Body.String())
+	}
+}
+
+func TestNotificationRequestActionHandler_ErrNotRegistered_400(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeNotifActioner{err: notifications.ErrNotRegistered}
+	body := validNotificationBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/notification/action/x", bytes.NewReader(buf))
+	req.SetPathValue("name", "x")
+	rr := httptest.NewRecorder()
+	NotificationRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var failures []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &failures); err != nil {
+		t.Fatalf("body must be FluentValidation array: %v body=%s", err, rr.Body.String())
+	}
+	if len(failures) != 1 || failures[0]["propertyName"] != "Implementation" {
+		t.Errorf("expected single Implementation failure: %+v", failures)
+	}
+}
+
+func TestNotificationRequestActionHandler_OtherError_500(t *testing.T) {
+	t.Parallel()
+	actioner := &fakeNotifActioner{err: errors.New("upstream down")}
+	body := validNotificationBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/notification/action/x", bytes.NewReader(buf))
+	req.SetPathValue("name", "x")
+	rr := httptest.NewRecorder()
+	NotificationRequestActionHandler(actioner).ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestNotificationRequestActionHandler_EmptyName_400(t *testing.T) {
+	t.Parallel()
+	body := validNotificationBody()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/notification/action/", bytes.NewReader(buf))
+	req.SetPathValue("name", "")
+	rr := httptest.NewRecorder()
+	NotificationRequestActionHandler(&fakeNotifActioner{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestNotificationRequestActionHandler_MalformedJSON_400(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/notification/action/x", bytes.NewReader([]byte(`{nope`)))
+	req.SetPathValue("name", "x")
+	rr := httptest.NewRecorder()
+	NotificationRequestActionHandler(&fakeNotifActioner{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
 // perRowTester maps row ID → outcome so a single fake covers
 // mixed-result testall scenarios.
 type perRowTester struct {
