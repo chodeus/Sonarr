@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -214,5 +215,245 @@ func TestQualityProfileListHandler_ListerError(t *testing.T) {
 	).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/qualityprofile", nil))
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("status: got %d want 500", rr.Code)
+	}
+}
+
+// ---------- 5.B5: CRUD tests ----------
+
+type fakeQualityProfileWriter struct {
+	rows      []qualityprofiles.Profile
+	getRow    *qualityprofiles.Profile
+	getErr    error
+	addErr    error
+	updateErr error
+	deleteErr error
+
+	addCalledWith    *qualityprofiles.Profile
+	updateCalledWith *qualityprofiles.Profile
+	deleteCalledID   int
+}
+
+func (f *fakeQualityProfileWriter) All(_ context.Context) ([]qualityprofiles.Profile, error) {
+	return f.rows, nil
+}
+
+func (f *fakeQualityProfileWriter) Get(_ context.Context, id int) (*qualityprofiles.Profile, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	if f.getRow == nil {
+		return nil, qualityprofiles.ErrNotFound
+	}
+	return f.getRow, nil
+}
+
+func (f *fakeQualityProfileWriter) Add(_ context.Context, p *qualityprofiles.Profile) (*qualityprofiles.Profile, error) {
+	f.addCalledWith = p
+	if f.addErr != nil {
+		return nil, f.addErr
+	}
+	out := *p
+	out.ID = 99
+	return &out, nil
+}
+
+func (f *fakeQualityProfileWriter) Update(_ context.Context, p *qualityprofiles.Profile) error {
+	f.updateCalledWith = p
+	return f.updateErr
+}
+
+func (f *fakeQualityProfileWriter) Delete(_ context.Context, id int) error {
+	f.deleteCalledID = id
+	return f.deleteErr
+}
+
+// validQPBody builds a minimal valid QualityProfileResource JSON body
+// with a single allowed quality (SDTV id=1) and Cutoff matching it.
+func validQPBody(name string) string {
+	return fmt.Sprintf(`{
+		"name":%q,
+		"upgradeAllowed":true,
+		"cutoff":1,
+		"items":[{"quality":{"id":1,"name":"SDTV","source":"television","resolution":480},"allowed":true,"items":[]}],
+		"minFormatScore":0,
+		"cutoffFormatScore":0,
+		"minUpgradeFormatScore":1,
+		"formatItems":[]
+	}`, name)
+}
+
+// ----- GET /qualityprofile/{id} -----
+
+func TestQualityProfileByIDHandler_Hit(t *testing.T) {
+	t.Parallel()
+	w := &fakeQualityProfileWriter{getRow: &qualityprofiles.Profile{ID: 3, Name: "HD-1080p", Cutoff: 1}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/qualityprofile/3", nil)
+	req.SetPathValue("id", "3")
+	QualityProfileByIDHandler(w, &fakeCustomFormatLister{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"id":3`) || !strings.Contains(rr.Body.String(), `"name":"HD-1080p"`) {
+		t.Errorf("body: %s", rr.Body.String())
+	}
+}
+
+func TestQualityProfileByIDHandler_NotFound(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/qualityprofile/99", nil)
+	req.SetPathValue("id", "99")
+	QualityProfileByIDHandler(&fakeQualityProfileWriter{}, &fakeCustomFormatLister{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// ----- POST /qualityprofile -----
+
+func TestQualityProfileCreateHandler_Success(t *testing.T) {
+	t.Parallel()
+	w := &fakeQualityProfileWriter{}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/qualityprofile", strings.NewReader(validQPBody("Custom HD")))
+	QualityProfileCreateHandler(w, &fakeCustomFormatLister{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if w.addCalledWith == nil || w.addCalledWith.Name != "Custom HD" {
+		t.Errorf("svc.Add called with %+v", w.addCalledWith)
+	}
+	if !strings.Contains(rr.Body.String(), `"id":99`) {
+		t.Errorf("response should carry inserted id: %s", rr.Body.String())
+	}
+}
+
+func TestQualityProfileCreateHandler_EmptyName400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/qualityprofile", strings.NewReader(validQPBody("")))
+	QualityProfileCreateHandler(&fakeQualityProfileWriter{}, &fakeCustomFormatLister{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"propertyName":"Name"`) {
+		t.Errorf("body: %s", rr.Body.String())
+	}
+}
+
+func TestQualityProfileCreateHandler_EmptyItems400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	body := `{"name":"x","cutoff":1,"items":[],"formatItems":[],"minUpgradeFormatScore":1}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/qualityprofile", strings.NewReader(body))
+	QualityProfileCreateHandler(&fakeQualityProfileWriter{}, &fakeCustomFormatLister{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "must contain at least one item") {
+		t.Errorf("body: %s", rr.Body.String())
+	}
+}
+
+func TestQualityProfileCreateHandler_BadCutoff400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	// cutoff=999 doesn't match any item.
+	body := `{"name":"x","cutoff":999,"items":[{"quality":{"id":1,"name":"SDTV","source":"television","resolution":480},"allowed":true,"items":[]}],"formatItems":[],"minUpgradeFormatScore":1}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/qualityprofile", strings.NewReader(body))
+	QualityProfileCreateHandler(&fakeQualityProfileWriter{}, &fakeCustomFormatLister{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "Cutoff must match") {
+		t.Errorf("body: %s", rr.Body.String())
+	}
+}
+
+func TestQualityProfileCreateHandler_MinUpgradeFormatScoreBelow1Fails(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	body := strings.Replace(validQPBody("x"), `"minUpgradeFormatScore":1`, `"minUpgradeFormatScore":0`, 1)
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/qualityprofile", strings.NewReader(body))
+	QualityProfileCreateHandler(&fakeQualityProfileWriter{}, &fakeCustomFormatLister{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"propertyName":"MinUpgradeFormatScore"`) {
+		t.Errorf("body: %s", rr.Body.String())
+	}
+}
+
+// ----- PUT /qualityprofile/{id} -----
+
+func TestQualityProfileUpdateHandler_Success(t *testing.T) {
+	t.Parallel()
+	w := &fakeQualityProfileWriter{}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/qualityprofile/3", strings.NewReader(validQPBody("Renamed")))
+	req.SetPathValue("id", "3")
+	QualityProfileUpdateHandler(w, &fakeCustomFormatLister{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if w.updateCalledWith == nil || w.updateCalledWith.ID != 3 {
+		t.Errorf("svc.Update called with %+v", w.updateCalledWith)
+	}
+}
+
+func TestQualityProfileUpdateHandler_NotFound(t *testing.T) {
+	t.Parallel()
+	w := &fakeQualityProfileWriter{updateErr: qualityprofiles.ErrNotFound}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/qualityprofile/99", strings.NewReader(validQPBody("x")))
+	req.SetPathValue("id", "99")
+	QualityProfileUpdateHandler(w, &fakeCustomFormatLister{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// ----- DELETE /qualityprofile/{id} -----
+
+func TestQualityProfileDeleteHandler_Success(t *testing.T) {
+	t.Parallel()
+	w := &fakeQualityProfileWriter{}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/qualityprofile/3", nil)
+	req.SetPathValue("id", "3")
+	QualityProfileDeleteHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: %d", rr.Code)
+	}
+	if w.deleteCalledID != 3 {
+		t.Errorf("svc.Delete called with %d", w.deleteCalledID)
+	}
+}
+
+func TestQualityProfileDeleteHandler_InUseIs409(t *testing.T) {
+	t.Parallel()
+	w := &fakeQualityProfileWriter{deleteErr: fmt.Errorf("%w: 'HD-1080p' (id=3)", qualityprofiles.ErrQualityProfileInUse)}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/qualityprofile/3", nil)
+	req.SetPathValue("id", "3")
+	QualityProfileDeleteHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Errorf("status: got %d want 409", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "in use") {
+		t.Errorf("body should explain in-use: %s", rr.Body.String())
+	}
+}
+
+func TestQualityProfileDeleteHandler_NotFoundIs404(t *testing.T) {
+	t.Parallel()
+	w := &fakeQualityProfileWriter{deleteErr: qualityprofiles.ErrNotFound}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/qualityprofile/99", nil)
+	req.SetPathValue("id", "99")
+	QualityProfileDeleteHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d", rr.Code)
 	}
 }

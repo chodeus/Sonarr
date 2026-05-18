@@ -3,13 +3,16 @@ package v3
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
+	"sonarr.tv/sonarr/internal/validation"
 )
 
 // QualityProfileResource is the JSON shape produced by
@@ -268,4 +271,299 @@ func toQualityProfileItemResource(it qualityprofiles.QualityItem) QualityProfile
 		out.PreferredSize = it.PreferredSize
 	}
 	return out
+}
+
+// ---------- 5.B5: CRUD ----------
+
+// QualityProfileWriter is the write surface for the CRUD handlers.
+// *qualityprofiles.Service satisfies it via All/Get/Add/Update/Delete.
+// QualityProfileController in C# extends RestController<T> (NOT
+// RestControllerWithSignalR), so no SignalR fan-out is wired.
+type QualityProfileWriter interface {
+	All(ctx context.Context) ([]qualityprofiles.Profile, error)
+	Get(ctx context.Context, id int) (*qualityprofiles.Profile, error)
+	Add(ctx context.Context, p *qualityprofiles.Profile) (*qualityprofiles.Profile, error)
+	Update(ctx context.Context, p *qualityprofiles.Profile) error
+	Delete(ctx context.Context, id int) error
+}
+
+// QualityProfileByIDHandler returns GET /api/v3/qualityprofile/{id}.
+// Mirrors `QualityProfileController.GetResourceById` at
+// `src/Sonarr.Api.V3/Profiles/Quality/QualityProfileController.cs:75-78`.
+func QualityProfileByIDHandler(profiles QualityProfileWriter, formats CustomFormatNameLister) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseQualityProfileID(w, r)
+		if !ok {
+			return
+		}
+		p, err := profiles.Get(r.Context(), id)
+		if errors.Is(err, qualityprofiles.ErrNotFound) {
+			httperr.NotFound(w, fmt.Sprintf("qualityprofile %d not found", id))
+			return
+		}
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("qualityprofiles: %w", err), nil)
+			return
+		}
+		writeQualityProfileJSON(w, r, http.StatusOK, *p, formats)
+	})
+}
+
+// QualityProfileCreateHandler returns POST /api/v3/qualityprofile.
+// Mirrors `Create` at `:49-56`. Returns 201 + the persisted profile
+// (with Id populated by the service).
+//
+// Validation ports the cheap subset of the C# SharedValidator chain:
+//   - Required(Name)
+//   - Items NotEmpty
+//   - MinUpgradeFormatScore >= 1 (GreaterThanOrEqualTo(1))
+//   - Cutoff resolves to one of the items (ValidCutoff)
+//
+// The deeper rules (FormatItems-vs-All match, MinFormatScore
+// satisfiability, the per-item ValidItems internal check) are
+// DEFERRED — they require richer cross-service validators that the
+// Go port hasn't built yet. The service-side Add still runs whatever
+// invariant checks live there, so the wire-shape rejection surface
+// stays correct for the cases this slice covers.
+func QualityProfileCreateHandler(profiles QualityProfileWriter, formats CustomFormatNameLister) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeQualityProfileBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("qualityprofile: malformed body: %v", err))
+			return
+		}
+		if errs := validateQualityProfile(body); !errs.OK() {
+			httperr.WriteValidation(w, errs.Failures())
+			return
+		}
+		model, err := fromQualityProfileResource(body)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("qualityprofiles: serialise: %w", err), nil)
+			return
+		}
+		inserted, err := profiles.Add(r.Context(), &model)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("qualityprofiles: %w", err), nil)
+			return
+		}
+		writeQualityProfileJSON(w, r, http.StatusCreated, *inserted, formats)
+	})
+}
+
+// QualityProfileUpdateHandler returns PUT /api/v3/qualityprofile/{id}.
+// Mirrors `Update` at `:64-73`. Returns 202 + the persisted profile.
+// Path id wins over body id per RestPutById.
+func QualityProfileUpdateHandler(profiles QualityProfileWriter, formats CustomFormatNameLister) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseQualityProfileID(w, r)
+		if !ok {
+			return
+		}
+		body, err := decodeQualityProfileBody(r)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("qualityprofile: malformed body: %v", err))
+			return
+		}
+		if errs := validateQualityProfile(body); !errs.OK() {
+			httperr.WriteValidation(w, errs.Failures())
+			return
+		}
+		body.ID = id
+		model, err := fromQualityProfileResource(body)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("qualityprofiles: serialise: %w", err), nil)
+			return
+		}
+		err = profiles.Update(r.Context(), &model)
+		if errors.Is(err, qualityprofiles.ErrNotFound) {
+			httperr.NotFound(w, fmt.Sprintf("qualityprofile %d not found", id))
+			return
+		}
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("qualityprofiles: %w", err), nil)
+			return
+		}
+		writeQualityProfileJSON(w, r, http.StatusAccepted, model, formats)
+	})
+}
+
+// QualityProfileDeleteHandler returns DELETE /api/v3/qualityprofile/{id}.
+// Mirrors `DeleteProfile` at `:58-62`. Returns 200 empty body on
+// success; 409 envelope on ErrQualityProfileInUse (the C# pipeline
+// surfaces QualityProfileInUseException as HTTP 409 via
+// `Sonarr.Http.Exceptions.QualityProfileInUseException` → 409 status).
+func QualityProfileDeleteHandler(profiles QualityProfileWriter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseQualityProfileID(w, r)
+		if !ok {
+			return
+		}
+		err := profiles.Delete(r.Context(), id)
+		switch {
+		case errors.Is(err, qualityprofiles.ErrNotFound):
+			httperr.NotFound(w, fmt.Sprintf("qualityprofile %d not found", id))
+			return
+		case errors.Is(err, qualityprofiles.ErrQualityProfileInUse):
+			httperr.Conflict(w, err.Error())
+			return
+		case err != nil:
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("qualityprofiles: %w", err), nil)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+}
+
+// ---------- helpers ----------
+
+func parseQualityProfileID(w http.ResponseWriter, r *http.Request) (int, bool) {
+	raw := r.PathValue("id")
+	if raw == "" {
+		httperr.BadRequest(w, "qualityprofile: missing id path parameter")
+		return 0, false
+	}
+	id, err := strconv.Atoi(raw)
+	if err != nil || id <= 0 {
+		httperr.BadRequest(w, fmt.Sprintf("qualityprofile: invalid id %q", raw))
+		return 0, false
+	}
+	return id, true
+}
+
+func decodeQualityProfileBody(r *http.Request) (*QualityProfileResource, error) {
+	var t QualityProfileResource
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&t); err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// validateQualityProfile ports the cheap subset of the C# SharedValidator
+// chain. Defers the complex set-comparison rules to a future slice that
+// can model the C# QualityProfileResourceValidator semantics.
+func validateQualityProfile(res *QualityProfileResource) *validation.Errors {
+	errs := validation.New()
+	if !errs.Required("Name", res.Name) {
+		return errs
+	}
+	if len(res.Items) == 0 {
+		errs.Add("Items", "must contain at least one item")
+		return errs
+	}
+	errs.Range("MinUpgradeFormatScore", res.MinUpgradeFormatScore, 1, int(^uint(0)>>1))
+	// ValidCutoff: the Cutoff value must match either a leaf Quality.ID
+	// or a group ID present in Items.
+	if !cutoffResolves(res.Items, res.Cutoff) {
+		errs.Add("Cutoff", "Cutoff must match one of the included items")
+	}
+	return errs
+}
+
+func cutoffResolves(items []QualityProfileItemResource, cutoff int) bool {
+	for _, it := range items {
+		if it.ID != 0 && it.ID == cutoff {
+			return true
+		}
+		if it.Quality != nil && it.Quality.ID == cutoff {
+			return true
+		}
+		if cutoffResolves(it.Items, cutoff) {
+			return true
+		}
+	}
+	return false
+}
+
+// fromQualityProfileResource serialises the wire-shape resource into
+// the persisted Profile, including the Items+FormatItems JSON columns
+// via the qualityprofiles SetItems/SetFormatItems helpers.
+func fromQualityProfileResource(res *QualityProfileResource) (qualityprofiles.Profile, error) {
+	items := make([]qualityprofiles.QualityItem, 0, len(res.Items))
+	for _, it := range res.Items {
+		items = append(items, fromQualityProfileItemResource(it))
+	}
+	formatItems := make([]qualityprofiles.FormatItem, 0, len(res.FormatItems))
+	for _, fi := range res.FormatItems {
+		formatItems = append(formatItems, qualityprofiles.FormatItem{
+			FormatID: fi.Format,
+			Score:    fi.Score,
+		})
+	}
+	p := qualityprofiles.Profile{
+		ID:                    res.ID,
+		Name:                  res.Name,
+		UpgradeAllowed:        res.UpgradeAllowed,
+		Cutoff:                res.Cutoff,
+		MinFormatScore:        res.MinFormatScore,
+		CutoffFormatScore:     res.CutoffFormatScore,
+		MinUpgradeFormatScore: res.MinUpgradeFormatScore,
+	}
+	if err := p.SetItems(items); err != nil {
+		return qualityprofiles.Profile{}, err
+	}
+	if err := p.SetFormatItems(formatItems); err != nil {
+		return qualityprofiles.Profile{}, err
+	}
+	return p, nil
+}
+
+// fromQualityProfileItemResource reverses toQualityProfileItemResource.
+// Group vs quality discrimination uses the wire-shape signal: if the
+// resource carries a non-nil Quality, it's a leaf entry; otherwise
+// (Quality is nil and Items is non-empty) it's a group.
+func fromQualityProfileItemResource(res QualityProfileItemResource) qualityprofiles.QualityItem {
+	if res.Quality != nil {
+		// Leaf quality entry. Look up the full Quality taxonomy by ID
+		// so the persisted JSON carries the canonical Quality shape
+		// (Source + Resolution come from the registry, not the wire).
+		q, _ := quality.FindByID(res.Quality.ID)
+		return qualityprofiles.QualityItem{
+			Quality:       q,
+			Items:         []qualityprofiles.QualityItem{},
+			Allowed:       res.Allowed,
+			MinSize:       res.MinSize,
+			MaxSize:       res.MaxSize,
+			PreferredSize: res.PreferredSize,
+		}
+	}
+	// Group entry. Recurse on nested Items.
+	children := make([]qualityprofiles.QualityItem, 0, len(res.Items))
+	for _, c := range res.Items {
+		children = append(children, fromQualityProfileItemResource(c))
+	}
+	return qualityprofiles.QualityItem{
+		ID:      res.ID,
+		Name:    res.Name,
+		Items:   children,
+		Allowed: res.Allowed,
+	}
+}
+
+// writeQualityProfileJSON emits a single Profile projected to
+// QualityProfileResource. Loads the format-name map fresh from the
+// CustomFormat service so the FormatItems Name-join is current.
+// Mirrors the C# `Service.Get(id).ToResource()` shape.
+func writeQualityProfileJSON(w http.ResponseWriter, r *http.Request, status int, p qualityprofiles.Profile, formats CustomFormatNameLister) {
+	formatRows, err := formats.All(r.Context())
+	if err != nil {
+		httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("customformats: %w", err), nil)
+		return
+	}
+	formatNames := make(map[int]string, len(formatRows))
+	for _, f := range formatRows {
+		if f != nil {
+			formatNames[f.ID] = f.Name
+		}
+	}
+	res, err := toQualityProfileResource(p, formatNames)
+	if err != nil {
+		httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("qualityprofiles: project: %w", err), nil)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	buf, _ := json.Marshal(res)
+	_, _ = w.Write(buf)
 }
