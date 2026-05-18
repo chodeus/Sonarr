@@ -337,6 +337,29 @@ func (p *Proxy) GetVersion(ctx context.Context, settings Settings) (string, erro
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(body)), "v")), nil
 }
 
+// GetConfig fires GET /api/v2/app/preferences. Mirrors C#
+// `QBittorrentProxyV2.GetConfig` at `QBittorrentProxyV2.cs:88-94`.
+// Returns the parsed [QBittorrentPreferences].
+func (p *Proxy) GetConfig(ctx context.Context, settings Settings) (*QBittorrentPreferences, error) {
+	status, body, err := p.DoRequest(ctx, http.MethodGet, "/api/v2/app/preferences", nil, "", settings)
+	if err != nil {
+		return nil, err
+	}
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, fmt.Errorf("%w: GET /api/v2/app/preferences status=%d", ErrAuthFailed, status)
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("%w: GET /api/v2/app/preferences status=%d body=%s",
+			ErrUnexpected, status, truncate(body, 256))
+	}
+	var prefs QBittorrentPreferences
+	if err := json.Unmarshal(body, &prefs); err != nil {
+		return nil, fmt.Errorf("qbittorrent: parse /api/v2/app/preferences response: %w", err)
+	}
+	return &prefs, nil
+}
+
 // GetTorrents fires GET /api/v2/torrents/info. Mirrors C#
 // `QBittorrentProxyV2.GetTorrents` at `QBittorrentProxyV2.cs:96-106`.
 // When settings.TvCategory is non-empty, applies it as the

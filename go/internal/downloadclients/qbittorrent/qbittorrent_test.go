@@ -258,15 +258,6 @@ func TestRegistry_DefaultsUsedWhenSettingsEmpty(t *testing.T) {
 // loud failure when the body slice lands.
 // ============================================================================
 
-func TestStub_GetStatusReturnsNotImplemented(t *testing.T) {
-	t.Parallel()
-	q := qbittorrent.New(nil, qbittorrent.NewSettings(), nil, nil)
-	_, err := q.GetStatus(context.Background())
-	if !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("GetStatus() err = %v, want ErrNotImplementedYet", err)
-	}
-}
-
 func TestStub_MarkItemAsImportedReturnsNotImplemented(t *testing.T) {
 	t.Parallel()
 	q := qbittorrent.New(nil, qbittorrent.NewSettings(), nil, nil)

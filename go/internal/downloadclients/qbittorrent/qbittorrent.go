@@ -463,10 +463,63 @@ func (q *QBittorrent) RemoveItem(ctx context.Context, item *downloadclients.Item
 	return nil
 }
 
-// GetStatus is filled in by slice 5.G1g. Returns
-// [downloadclients.ErrNotImplementedYet] until then.
-func (q *QBittorrent) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+// GetStatus ports C# `QBittorrent.GetStatus` at
+// `Download/Clients/QBittorrent/QBittorrent.cs:400-438`. Fetches the
+// global preferences via /api/v2/app/preferences and projects:
+//
+//   - IsLocalhost — true when settings.Host is 127.0.0.1 or
+//     "localhost" (case-insensitive). The C# arm at `:434` checks
+//     literal equality against "localhost"; the Go port relaxes to
+//     case-insensitive since URL hostnames are case-folded anyway.
+//   - OutputRootFolders — [ospath.New(SavePath)]. The C# tree
+//     additionally consults the category-specific savePath via
+//     [Proxy.GetLabels] when TvCategory is set (`:407-430`); that
+//     branch is deferred to a follow-up slice — the GetLabels
+//     endpoint port hasn't landed and the global SavePath is
+//     load-bearing for the common case.
+//   - RemovesCompletedDownloads — see [removesCompletedDownloads].
+func (q *QBittorrent) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
+	if q.proxy == nil {
+		return nil, errors.New("qbittorrent: GetStatus: nil proxy")
+	}
+	prefs, err := q.proxy.GetConfig(ctx, q.settings)
+	if err != nil {
+		return nil, fmt.Errorf("qbittorrent: GetStatus: %w", err)
+	}
+	info := &downloadclients.ClientInfo{
+		IsLocalhost:               q.settings.Host == "127.0.0.1" || strings.EqualFold(q.settings.Host, "localhost"),
+		RemovesCompletedDownloads: removesCompletedDownloads(prefs),
+	}
+	if strings.TrimSpace(prefs.SavePath) != "" {
+		info.OutputRootFolders = []ospath.OsPath{ospath.New(prefs.SavePath)}
+	}
+	return info, nil
+}
+
+// removesCompletedDownloads ports C# `QBittorrent.RemovesCompletedDownloads`
+// at `QBittorrent.cs:440-444`. Returns true when qBittorrent will
+// itself remove a completed torrent without Sonarr's intervention.
+//
+// Two predicates AND together:
+//
+//  1. Either MaxRatioEnabled is on, OR (MaxSeedingTimeEnabled is on
+//     AND the cap is under 14 days). The 14-day floor matches the
+//     C# `minimumRetention = 60*24*14` literal — qBittorrent users
+//     who set a seeding cap above two weeks aren't relying on the
+//     client for cleanup at the Sonarr-import timescale.
+//  2. MaxRatioAction is Remove or DeleteFiles. If the user picked
+//     Pause / EnableSuperSeeding, qBittorrent doesn't actually
+//     delete the torrent — so Sonarr can still safely remove it.
+func removesCompletedDownloads(prefs *QBittorrentPreferences) bool {
+	if prefs == nil {
+		return false
+	}
+	const minimumRetentionMinutes = int64(60 * 24 * 14)
+	limitReached := prefs.MaxRatioEnabled ||
+		(prefs.MaxSeedingTimeEnabled && prefs.MaxSeedingTime < minimumRetentionMinutes)
+	actionRemoves := prefs.MaxRatioAction == MaxRatioActionRemove ||
+		prefs.MaxRatioAction == MaxRatioActionDeleteFiles
+	return limitReached && actionRemoves
 }
 
 // MarkItemAsImported is filled in by slice 5.G1h. Returns

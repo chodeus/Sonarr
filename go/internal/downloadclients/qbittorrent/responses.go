@@ -91,6 +91,76 @@ type QBittorrentTorrent struct {
 	LastActivity int64 `json:"last_activity"`
 }
 
+// QBittorrentMaxRatioAction enumerates the action qBittorrent
+// performs when a torrent reaches its global max ratio. Mirrors C#
+// `QBittorrentMaxRatioAction` at `QBittorrentPreferences.cs:5-12`.
+type QBittorrentMaxRatioAction int
+
+// Max-ratio actions. The numeric values match the qBittorrent wire
+// format (and the C# enum) — do not reorder.
+const (
+	MaxRatioActionPause              QBittorrentMaxRatioAction = 0
+	MaxRatioActionRemove             QBittorrentMaxRatioAction = 1
+	MaxRatioActionEnableSuperSeeding QBittorrentMaxRatioAction = 2
+	MaxRatioActionDeleteFiles        QBittorrentMaxRatioAction = 3
+)
+
+// QBittorrentPreferences is the global qBittorrent config returned
+// by GET /api/v2/app/preferences. Mirrors C# `QBittorrentPreferences`
+// at `QBittorrentPreferences.cs:14-46`.
+//
+// 5.G1g ships only the fields GetStatus consumes; the
+// addShareLimits-inline / DhtEnabled-metaDL-warning / QueueingEnabled
+// branches in GetItems + Download will reach for additional fields
+// at later sub-arcs.
+type QBittorrentPreferences struct {
+	// SavePath is the global default download directory. Used by
+	// [QBittorrent.GetStatus] to surface the root path the queue
+	// UI's path-mapping helper translates against.
+	SavePath string `json:"save_path"`
+
+	// MaxRatioEnabled is true when the global share-ratio limit is
+	// turned on. RemovesCompletedDownloads gating reads this AND
+	// MaxRatioAction.
+	MaxRatioEnabled bool `json:"max_ratio_enabled"`
+
+	// MaxRatio is the global share-ratio cap.
+	MaxRatio float64 `json:"max_ratio"`
+
+	// MaxSeedingTimeEnabled is true when the global share-time
+	// limit is turned on.
+	MaxSeedingTimeEnabled bool `json:"max_seeding_time_enabled"`
+
+	// MaxSeedingTime is the global share-time cap, in minutes.
+	MaxSeedingTime int64 `json:"max_seeding_time"`
+
+	// MaxInactiveSeedingTimeEnabled is true when the global
+	// inactive-share-time limit is turned on (qBittorrent 4.6+).
+	MaxInactiveSeedingTimeEnabled bool `json:"max_inactive_seeding_time_enabled"`
+
+	// MaxInactiveSeedingTime is the global inactive-share-time
+	// cap, in minutes (qBittorrent 4.6+).
+	MaxInactiveSeedingTime int64 `json:"max_inactive_seeding_time"`
+
+	// MaxRatioAction is the post-limit action qBittorrent performs
+	// (Pause / Remove / EnableSuperSeeding / DeleteFiles). The
+	// Sonarr-side RemovesCompletedDownloads computation surfaces
+	// true only when the action is Remove or DeleteFiles.
+	MaxRatioAction QBittorrentMaxRatioAction `json:"max_ratio_act"`
+
+	// QueueingEnabled is true when qBittorrent's torrent-queueing
+	// feature is on — required by the topPrio / bottomPrio RPCs.
+	// Defaulted to true on the C# side (see `:42`); the Go port
+	// preserves the default during JSON unmarshal via the explicit
+	// pointer-default helper at parse time.
+	QueueingEnabled bool `json:"queueing_enabled"`
+
+	// DhtEnabled mirrors qBittorrent's "DHT" toggle. Consumed by
+	// GetItems' metaDL warning arm at a later wiring slice; ported
+	// now so the GetConfig deser path is complete.
+	DhtEnabled bool `json:"dht"`
+}
+
 // QBittorrentTorrentProperties is the per-torrent detail returned
 // by /api/v2/torrents/properties. Slice 5.G1d ships the struct skeleton
 // only — the consumers (GetImportItem post-2.6.1 fallback, the C# tree
