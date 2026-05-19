@@ -54,17 +54,57 @@ type QBittorrent struct {
 	settings Settings
 	proxy    *Proxy
 	def      *downloadclients.DownloadClient
+	rpm      downloadclients.RemotePathMapper
 	log      *slog.Logger
 }
 
 // New constructs a QBittorrent Provider against the resolved
 // settings + proxy. Used by both the registry [Constructor] and by
-// tests that pin a stub HTTPDoer.
+// tests that pin a stub HTTPDoer. Remote-path mapping is bound via
+// [QBittorrent.SetRemotePathMapper] after construction.
 func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, log *slog.Logger) *QBittorrent {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &QBittorrent{settings: settings, proxy: proxy, def: def, log: log}
+}
+
+// SetRemotePathMapper binds the [downloadclients.RemotePathMapper]
+// the torrentToItem and GetStatus paths consult to translate the
+// qBittorrent-side absolute paths (ContentPath / SavePath / global
+// SavePath) back to Sonarr-side paths. Optional — nil mapper
+// degrades to the raw WebUI-side path at every call site (matches
+// the pre-6.B behaviour). Slice 6.B5 (Phase 6.B wire-up arc).
+//
+// Returns the receiver for chainable construction.
+func (q *QBittorrent) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) *QBittorrent {
+	q.rpm = rpm
+	return q
+}
+
+// remapOutput translates a qBittorrent-side absolute path back to a
+// Sonarr-side path via the wired [downloadclients.RemotePathMapper].
+// Returns the raw path unchanged when the mapper is nil, when the
+// input is empty, or when the mapper returns an error (debug-log
+// the error; a remap failure shouldn't fail the calling GetItems /
+// GetStatus). Centralises the nil-safe lookup.
+func (q *QBittorrent) remapOutput(ctx context.Context, raw string) ospath.OsPath {
+	if raw == "" {
+		return ospath.OsPath{}
+	}
+	remote := ospath.New(raw)
+	if q.rpm == nil {
+		return remote
+	}
+	local, err := q.rpm.RemapRemoteToLocal(ctx, q.settings.Host, remote)
+	if err != nil {
+		q.log.Debug("qbittorrent: RemapRemoteToLocal failed; using raw path",
+			slog.String("host", q.settings.Host),
+			slog.String("path", raw),
+			slog.Any("err", err))
+		return remote
+	}
+	return local
 }
 
 // Name returns the user-facing label. Mirrors C# `QBittorrent.Name`
@@ -269,14 +309,16 @@ func (q *QBittorrent) GetItems(ctx context.Context) ([]*downloadclients.Item, er
 
 	items := make([]*downloadclients.Item, 0, len(torrents))
 	for i := range torrents {
-		items = append(items, q.torrentToItem(torrents[i], info))
+		items = append(items, q.torrentToItem(ctx, torrents[i], info))
 	}
 	return items, nil
 }
 
 // torrentToItem builds the typed Item from a qBittorrent torrent.
-// Pulled into its own helper so the 5.G1d body stays readable.
-func (q *QBittorrent) torrentToItem(t QBittorrentTorrent, info *downloadclients.ItemClientInfo) *downloadclients.Item {
+// Slice 6.B5 routes the resolved OutputPath through
+// [QBittorrent.remapOutput] so off-host qBittorrent instances surface
+// a Sonarr-side path; nil mapper / no match → raw WebUI-side path.
+func (q *QBittorrent) torrentToItem(ctx context.Context, t QBittorrentTorrent, info *downloadclients.ItemClientInfo) *downloadclients.Item {
 	category := t.Category
 	if strings.TrimSpace(category) == "" {
 		category = t.Label
@@ -361,19 +403,22 @@ func (q *QBittorrent) torrentToItem(t QBittorrentTorrent, info *downloadclients.
 
 	// OutputPath. For completed torrents the C# tree prefers
 	// ContentPath (`:344-352`); we mirror, with the "ContentPath ==
-	// SavePath" arm becoming a Warning to match `:349-352`.
+	// SavePath" arm becoming a Warning to match `:349-352`. Slice
+	// 6.B5: each surviving arm hands the resolved raw path to
+	// remapOutput so off-host qBittorrent instances surface
+	// Sonarr-side paths.
 	if completed {
 		switch {
 		case strings.TrimSpace(t.ContentPath) != "" && t.ContentPath != t.SavePath:
-			item.OutputPath = ospath.New(t.ContentPath)
+			item.OutputPath = q.remapOutput(ctx, t.ContentPath)
 		case strings.TrimSpace(t.ContentPath) != "" && t.ContentPath == t.SavePath:
 			item.Status = downloadclients.DownloadItemStatusWarning
 			item.Message = "qBittorrent reported the same path for ContentPath and SavePath; the import path is unknown"
 		case strings.TrimSpace(t.SavePath) != "":
-			item.OutputPath = ospath.New(joinTorrentPath(t.SavePath, t.Name))
+			item.OutputPath = q.remapOutput(ctx, joinTorrentPath(t.SavePath, t.Name))
 		}
 	} else if strings.TrimSpace(t.SavePath) != "" {
-		item.OutputPath = ospath.New(joinTorrentPath(t.SavePath, t.Name))
+		item.OutputPath = q.remapOutput(ctx, joinTorrentPath(t.SavePath, t.Name))
 	}
 
 	// CanBeRemoved / CanMoveFiles gating per C# `:270-273`:
@@ -491,7 +536,7 @@ func (q *QBittorrent) GetStatus(ctx context.Context) (*downloadclients.ClientInf
 		RemovesCompletedDownloads: removesCompletedDownloads(prefs),
 	}
 	if strings.TrimSpace(prefs.SavePath) != "" {
-		info.OutputRootFolders = []ospath.OsPath{ospath.New(prefs.SavePath)}
+		info.OutputRootFolders = []ospath.OsPath{q.remapOutput(ctx, prefs.SavePath)}
 	}
 	return info, nil
 }
@@ -792,7 +837,15 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 		}
 	}
 
-	return New(def, settings, proxy, log), nil
+	qbt := New(def, settings, proxy, log)
+	// Slice 6.B5: cast the typed-as-any RemotePathMappingService to
+	// the narrow RemotePathMapper interface. nil dep / cast miss
+	// leaves qbt.rpm nil; per-call sites fall through to the raw
+	// WebUI-side path.
+	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
+		qbt.SetRemotePathMapper(rpm)
+	}
+	return qbt, nil
 }
 
 // init registers qBittorrent with the global registry.
