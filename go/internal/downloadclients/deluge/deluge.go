@@ -40,17 +40,55 @@ type Deluge struct {
 	settings Settings
 	proxy    *Proxy
 	def      *downloadclients.DownloadClient
+	rpm      downloadclients.RemotePathMapper
 	log      *slog.Logger
 }
 
 // New constructs a Deluge Provider against the resolved settings +
 // proxy. Used by both the registry [Constructor] and by tests that
-// pin a stub HTTPDoer.
+// pin a stub HTTPDoer. Remote-path mapping is bound via
+// [Deluge.SetRemotePathMapper] after construction.
 func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, log *slog.Logger) *Deluge {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Deluge{settings: settings, proxy: proxy, def: def, log: log}
+}
+
+// SetRemotePathMapper binds the [downloadclients.RemotePathMapper]
+// the torrentToItem and GetStatus paths consult to translate the
+// deluge-side absolute paths (DownloadPath + the resolved destDir)
+// back to Sonarr-side paths. Optional — nil mapper degrades to the
+// raw RPC-side path. Slice 6.B6 (Phase 6.B wire-up arc).
+//
+// Returns the receiver for chainable construction.
+func (d *Deluge) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) *Deluge {
+	d.rpm = rpm
+	return d
+}
+
+// remapOutput translates a deluge-side absolute path back to a
+// Sonarr-side path via the wired [downloadclients.RemotePathMapper].
+// Returns the raw path unchanged when the mapper is nil, when the
+// input is empty, or when the mapper returns an error (debug-log
+// the error).
+func (d *Deluge) remapOutput(ctx context.Context, raw string) ospath.OsPath {
+	if raw == "" {
+		return ospath.OsPath{}
+	}
+	remote := ospath.New(raw)
+	if d.rpm == nil {
+		return remote
+	}
+	local, err := d.rpm.RemapRemoteToLocal(ctx, d.settings.Host, remote)
+	if err != nil {
+		d.log.Debug("deluge: RemapRemoteToLocal failed; using raw path",
+			slog.String("host", d.settings.Host),
+			slog.String("path", raw),
+			slog.Any("err", err))
+		return remote
+	}
+	return local
 }
 
 // Name returns the user-facing label. Mirrors C# `Deluge.Name`
@@ -209,7 +247,7 @@ func (d *Deluge) GetItems(ctx context.Context) ([]*downloadclients.Item, error) 
 			ignored++
 			continue
 		}
-		items = append(items, d.torrentToItem(t, info))
+		items = append(items, d.torrentToItem(ctx, t, info))
 	}
 	if ignored > 0 {
 		// Mirrors the C# `:198-202` warn line but without the
@@ -222,8 +260,10 @@ func (d *Deluge) GetItems(ctx context.Context) ([]*downloadclients.Item, error) 
 }
 
 // torrentToItem builds the typed Item from a deluge torrent.
-// Pulled into its own helper so the 5.G2d body stays readable.
-func (d *Deluge) torrentToItem(t DelugeTorrent, info *downloadclients.ItemClientInfo) *downloadclients.Item {
+// Slice 6.B6 routes the resolved OutputPath through
+// [Deluge.remapOutput] so off-host deluge instances surface a
+// Sonarr-side path; nil mapper / no match → raw RPC-side path.
+func (d *Deluge) torrentToItem(ctx context.Context, t DelugeTorrent, info *downloadclients.ItemClientInfo) *downloadclients.Item {
 	ratio := t.Ratio
 	ratioPtr := &ratio
 
@@ -262,8 +302,10 @@ func (d *Deluge) torrentToItem(t DelugeTorrent, info *downloadclients.ItemClient
 	// OutputPath: deluge save_path + torrent name. C# `:147-148`
 	// composes via OsPath operator+; the Go port uses a simple
 	// '/'-separated join (deluge always emits '/' separators).
+	// Slice 6.B6: route the joined path through remapOutput so
+	// off-host deluge instances surface a Sonarr-side path.
 	if strings.TrimSpace(t.DownloadPath) != "" {
-		item.OutputPath = ospath.New(joinTorrentPath(t.DownloadPath, t.Name))
+		item.OutputPath = d.remapOutput(ctx, joinTorrentPath(t.DownloadPath, t.Name))
 	}
 
 	// Status mapping per C# `:164-184`.
@@ -398,7 +440,7 @@ func (d *Deluge) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, er
 		IsLocalhost: d.settings.Host == "127.0.0.1" || strings.EqualFold(d.settings.Host, "localhost"),
 	}
 	if strings.TrimSpace(destDir) != "" {
-		info.OutputRootFolders = []ospath.OsPath{ospath.New(destDir)}
+		info.OutputRootFolders = []ospath.OsPath{d.remapOutput(ctx, destDir)}
 	}
 	return info, nil
 }
@@ -619,7 +661,15 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 		}
 	}
 
-	return New(def, settings, proxy, log), nil
+	dlg := New(def, settings, proxy, log)
+	// Slice 6.B6: cast the typed-as-any RemotePathMappingService to
+	// the narrow RemotePathMapper interface. nil dep / cast miss
+	// leaves dlg.rpm nil; per-call sites fall through to the raw
+	// RPC-side path.
+	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
+		dlg.SetRemotePathMapper(rpm)
+	}
+	return dlg, nil
 }
 
 // init registers Deluge with the global registry.
