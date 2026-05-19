@@ -2299,7 +2299,57 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		},
 		logger,
 	)
-	processDownloadDecisions, err := download.NewProcessDownloadDecisions(downloadClientLister, nil, logger)
+	// Slice 6.D (Phase 6.D — DecisionPrioritizer wiring): construct
+	// *decisionengine.DecisionComparer with three deps.
+	//
+	//   - ConfigReader   ← configProv (satisfies via DownloadPropersAndRepacks()).
+	//   - ComparerProfileLookup
+	//                    ← per-call qualityProfilesSvc.Get → NewProfileView.
+	//                      Defensive: any lookup/parse failure logs warn
+	//                      + returns nil (the comparer degrades to "no
+	//                      profile signal" — matches the C# behaviour at
+	//                      DecisionComparer.cs:71-95 when the profile
+	//                      can't be resolved). context.Background is
+	//                      acceptable per the existing precedent at
+	//                      qualityComparerAdapter (downloadedimport_wiring.go:854).
+	//   - ComparerDelayProfileLookup
+	//                    ← per-call delayProfilesSvc.BestForTags. Bool
+	//                      false when no profile matches (the comparer
+	//                      then skips the delay-tier stage).
+	//
+	// Closes the 6.A6c deferral that left prioritizer=nil; the
+	// orchestrator's ProcessDecisions now sorts by the C# priority
+	// chain (quality → custom-format-score → protocol → episode-count
+	// → episode-number → indexer-priority → peers → age → size)
+	// instead of input order.
+	decisionPrioritizer := decisionengine.NewDecisionComparer(
+		configProv,
+		func(profileID int) *decisionengine.ProfileView {
+			profile, err := qualityProfilesSvc.Get(context.Background(), profileID)
+			if err != nil || profile == nil {
+				logger.Warn("decision-prioritizer: quality profile lookup failed; degrading to no-signal",
+					slog.Int("profileId", profileID),
+					slog.Any("err", err))
+				return nil
+			}
+			view, err := decisionengine.NewProfileView(profile)
+			if err != nil {
+				logger.Warn("decision-prioritizer: profile view parse failed; degrading to no-signal",
+					slog.Int("profileId", profileID),
+					slog.Any("err", err))
+				return nil
+			}
+			return view
+		},
+		func(tagIDs []int) (delayprofiles.Profile, bool) {
+			profile, err := delayProfilesSvc.BestForTags(context.Background(), tagIDs)
+			if err != nil || profile == nil {
+				return delayprofiles.Profile{}, false
+			}
+			return *profile, true
+		},
+	)
+	processDownloadDecisions, err := download.NewProcessDownloadDecisions(downloadClientLister, decisionPrioritizer, logger)
 	if err != nil {
 		return fmt.Errorf("download.ProcessDownloadDecisions: %w", err)
 	}
