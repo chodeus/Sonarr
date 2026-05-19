@@ -453,3 +453,130 @@ func TestProxy_GetVersion_StripsVPrefix(t *testing.T) {
 		t.Errorf("GetVersion() = %q, want %q", got, "4.5.0")
 	}
 }
+
+// ============================================================================
+// Slice 6.E: DHT-disabled-metaDL warning. When a torrent is in metaDL/
+// forcedMetaDL state AND prefs.DhtEnabled=false, the metaDL arm
+// promotes from Queued to Warning with a descriptive message.
+// ============================================================================
+
+// torrentsPrefsHandler serves both /api/v2/torrents/info and
+// /api/v2/app/preferences in one server — needed so GetItems can hit
+// the lazy GetConfig probe added in slice 6.E.
+type torrentsPrefsHandler struct {
+	loginCookie string
+	infoBody    string
+	prefsBody   string
+
+	prefsCalls atomic.Int32
+}
+
+func (h *torrentsPrefsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/api/v2/auth/login":
+		if h.loginCookie != "" {
+			http.SetCookie(w, &http.Cookie{Name: "SID", Value: h.loginCookie})
+		}
+		_, _ = io.WriteString(w, "Ok.")
+	case "/api/v2/torrents/info":
+		_, _ = io.WriteString(w, h.infoBody)
+	case "/api/v2/app/preferences":
+		h.prefsCalls.Add(1)
+		_, _ = io.WriteString(w, h.prefsBody)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func TestGetItems_MetaDLDhtDisabledPromotesToWarning(t *testing.T) {
+	t.Parallel()
+	h := &torrentsPrefsHandler{
+		loginCookie: "sid",
+		infoBody:    `[{"hash":"h","name":"MetaStuck","size":100,"progress":0,"state":"metaDL","category":"tv","save_path":"/dl","content_path":"","ratio":0,"ratio_limit":-2,"seeding_time_limit":-2,"inactive_seeding_time_limit":-2}]`,
+		prefsBody:   `{"save_path":"/dl","dht":false,"max_ratio_act":0}`,
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := mustNewQBit(t, srv, func(s *qbittorrent.Settings) { s.Username = "u"; s.Password = "p" })
+
+	got, err := q.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("GetItems: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].Status != downloadclients.DownloadItemStatusWarning {
+		t.Errorf("Status = %v, want Warning (dht=false on metaDL)", got[0].Status)
+	}
+	if !strings.Contains(strings.ToLower(got[0].Message), "dht") {
+		t.Errorf("Message = %q, want substring 'dht'", got[0].Message)
+	}
+	if h.prefsCalls.Load() != 1 {
+		t.Errorf("prefs called %d times, want exactly 1 (lazy probe)", h.prefsCalls.Load())
+	}
+}
+
+func TestGetItems_MetaDLDhtEnabledStaysQueued(t *testing.T) {
+	t.Parallel()
+	h := &torrentsPrefsHandler{
+		loginCookie: "sid",
+		infoBody:    `[{"hash":"h","name":"MetaOK","size":100,"progress":0,"state":"metaDL","category":"tv","save_path":"/dl","content_path":"","ratio":0,"ratio_limit":-2,"seeding_time_limit":-2,"inactive_seeding_time_limit":-2}]`,
+		prefsBody:   `{"save_path":"/dl","dht":true,"max_ratio_act":0}`,
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := mustNewQBit(t, srv, func(s *qbittorrent.Settings) { s.Username = "u"; s.Password = "p" })
+
+	got, _ := q.GetItems(context.Background())
+	if len(got) != 1 || got[0].Status != downloadclients.DownloadItemStatusQueued {
+		t.Errorf("Status = %v, want Queued (dht=true on metaDL)", got[0].Status)
+	}
+}
+
+func TestGetItems_MetaDLPrefsProbeFiresOnceForMultipleTorrents(t *testing.T) {
+	t.Parallel()
+	// Two metaDL torrents — the lazy GetConfig probe should fire
+	// exactly once across both.
+	h := &torrentsPrefsHandler{
+		loginCookie: "sid",
+		infoBody:    `[{"hash":"a","name":"A","size":1,"progress":0,"state":"metaDL","category":"tv","save_path":"/dl","ratio":0,"ratio_limit":-2,"seeding_time_limit":-2,"inactive_seeding_time_limit":-2},{"hash":"b","name":"B","size":1,"progress":0,"state":"forcedMetaDL","category":"tv","save_path":"/dl","ratio":0,"ratio_limit":-2,"seeding_time_limit":-2,"inactive_seeding_time_limit":-2}]`,
+		prefsBody:   `{"save_path":"/dl","dht":false,"max_ratio_act":0}`,
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := mustNewQBit(t, srv, func(s *qbittorrent.Settings) { s.Username = "u"; s.Password = "p" })
+
+	got, _ := q.GetItems(context.Background())
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	for _, item := range got {
+		if item.Status != downloadclients.DownloadItemStatusWarning {
+			t.Errorf("torrent %s: Status = %v, want Warning", item.DownloadID, item.Status)
+		}
+	}
+	if h.prefsCalls.Load() != 1 {
+		t.Errorf("prefs called %d times, want exactly 1 (lazy + cached across items)", h.prefsCalls.Load())
+	}
+}
+
+func TestGetItems_NoMetaDLSkipsPrefsProbe(t *testing.T) {
+	t.Parallel()
+	// No torrents in metaDL → the lazy GetConfig probe should never fire.
+	h := &torrentsPrefsHandler{
+		loginCookie: "sid",
+		infoBody:    `[{"hash":"h","name":"X","size":100,"progress":0.5,"state":"downloading","category":"tv","save_path":"/dl","content_path":"","ratio":0,"ratio_limit":-2,"seeding_time_limit":-2,"inactive_seeding_time_limit":-2}]`,
+		prefsBody:   `{"save_path":"/dl","dht":false,"max_ratio_act":0}`,
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := mustNewQBit(t, srv, func(s *qbittorrent.Settings) { s.Username = "u"; s.Password = "p" })
+
+	if _, err := q.GetItems(context.Background()); err != nil {
+		t.Fatalf("GetItems: %v", err)
+	}
+	if h.prefsCalls.Load() != 0 {
+		t.Errorf("prefs called %d times, want 0 (no metaDL torrent)", h.prefsCalls.Load())
+	}
+}

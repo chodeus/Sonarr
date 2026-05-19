@@ -307,9 +307,32 @@ func (q *QBittorrent) GetItems(ctx context.Context) ([]*downloadclients.Item, er
 
 	info := q.itemClientInfo()
 
+	// Slice 6.E: lazy GetConfig probe — only fires when a metaDL /
+	// forcedMetaDL state appears AND we haven't already learned
+	// DhtEnabled. Mirrors the C# `:316-325` warn-on-metaDL-when-DHT-
+	// disabled arm without paying the prefs RPC cost on every
+	// scan (the typical case has no torrents in metaDL).
+	var (
+		prefs    *QBittorrentPreferences
+		prefsErr error
+		prefsHit bool
+	)
+	loadPrefs := func() *QBittorrentPreferences {
+		if prefsHit {
+			return prefs
+		}
+		prefsHit = true
+		prefs, prefsErr = q.proxy.GetConfig(ctx, q.settings)
+		if prefsErr != nil {
+			q.log.Warn("qbittorrent: GetItems: GetConfig failed; DHT-disabled warning degrades to silent",
+				"err", prefsErr)
+		}
+		return prefs
+	}
+
 	items := make([]*downloadclients.Item, 0, len(torrents))
 	for i := range torrents {
-		items = append(items, q.torrentToItem(ctx, torrents[i], info))
+		items = append(items, q.torrentToItem(ctx, torrents[i], info, loadPrefs))
 	}
 	return items, nil
 }
@@ -318,7 +341,9 @@ func (q *QBittorrent) GetItems(ctx context.Context) ([]*downloadclients.Item, er
 // Slice 6.B5 routes the resolved OutputPath through
 // [QBittorrent.remapOutput] so off-host qBittorrent instances surface
 // a Sonarr-side path; nil mapper / no match → raw WebUI-side path.
-func (q *QBittorrent) torrentToItem(ctx context.Context, t QBittorrentTorrent, info *downloadclients.ItemClientInfo) *downloadclients.Item {
+// Slice 6.E threads a lazy preferences loader so the metaDL arm can
+// promote to Warning when DhtEnabled=false (matches C# :316-325).
+func (q *QBittorrent) torrentToItem(ctx context.Context, t QBittorrentTorrent, info *downloadclients.ItemClientInfo, loadPrefs func() *QBittorrentPreferences) *downloadclients.Item {
 	category := t.Category
 	if strings.TrimSpace(category) == "" {
 		category = t.Label
@@ -384,11 +409,19 @@ func (q *QBittorrent) torrentToItem(ctx context.Context, t QBittorrentTorrent, i
 		item.Message = "The download is missing files"
 
 	case "metaDL", "forcedMetaDL":
-		// C# tree warns when DHT is disabled; deferred to 5.G1g
-		// when GetStatus / preferences land. Treat as Queued
-		// unconditionally — matches qBittorrent's own UI hint.
-		item.Status = downloadclients.DownloadItemStatusQueued
-		item.Message = "Downloading torrent metadata"
+		// Slice 6.E (closes the 5.G1d deferral): promote to Warning
+		// when DhtEnabled=false. Magnets without DHT can stall in
+		// metaDL indefinitely; the warning surfaces the issue in the
+		// UI. nil prefs (GetConfig failed, or no loader supplied via
+		// a unit-test call site) degrades to plain Queued — matches
+		// pre-6.E behaviour. Mirrors C# `:316-325`.
+		if prefs := loadPrefs(); prefs != nil && !prefs.DhtEnabled {
+			item.Status = downloadclients.DownloadItemStatusWarning
+			item.Message = "qBittorrent cannot resolve magnet without DHT — the global DHT setting is disabled"
+		} else {
+			item.Status = downloadclients.DownloadItemStatusQueued
+			item.Message = "Downloading torrent metadata"
+		}
 
 	case "forcedDL", "moving", "downloading":
 		item.Status = downloadclients.DownloadItemStatusDownloading
