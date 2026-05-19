@@ -2,6 +2,8 @@ package qbittorrent_test
 
 import (
 	"context"
+	"crypto/sha1" //nolint:gosec // BitTorrent info-hash spec uses SHA-1.
+	"encoding/hex"
 	"errors"
 	"io"
 	"mime"
@@ -247,6 +249,33 @@ func TestDownload_NoInfoHashTorrentBytesErrors(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Download(torrent-bytes no InfoHash) err = nil, want error")
+	}
+}
+
+func TestDownload_InfoHashExtractedFromBencode(t *testing.T) {
+	t.Parallel()
+	// Slice 6.H: real bencode .torrent body, no explicit InfoHash,
+	// no Magnet — the resolver should extract the BEP-3 SHA-1 from
+	// the info dict.
+	infoDict := "d4:name5:helloe"
+	body := []byte("d4:info" + infoDict + "e")
+
+	// Compute expected hash inline so the test is self-consistent.
+	sum := sha1Sum([]byte(infoDict))
+
+	_, srv := newAddServer(t)
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.ApiKey = "k"
+	})
+	hash, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show.S01E01",
+		TorrentBody:  body,
+	})
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if hash != strings.ToUpper(sum) {
+		t.Errorf("Download() = %q, want %q (SHA-1 of info dict)", hash, strings.ToUpper(sum))
 	}
 }
 
@@ -628,4 +657,11 @@ func TestDownload_RecentTvPriorityLastSkipsMoveToTop(t *testing.T) {
 	if h.topPrioCalls.Load() != 0 {
 		t.Errorf("topPrio fired %d times, want 0 (RecentTvPriority=Last)", h.topPrioCalls.Load())
 	}
+}
+
+// sha1Sum returns the lowercase-hex SHA-1 — used by the bencode
+// info-hash extraction test (slice 6.H).
+func sha1Sum(b []byte) string {
+	sum := sha1.Sum(b) //nolint:gosec // BEP-3 info-hash spec.
+	return hex.EncodeToString(sum[:])
 }

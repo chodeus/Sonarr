@@ -158,9 +158,9 @@ func (q *QBittorrent) Proxy() *Proxy { return q.proxy }
 //   - req.InfoHash trusted when set.
 //   - Otherwise extracted from MagnetURL's xt=urn:btih:HASH query
 //     parameter when present.
-//   - Otherwise an error (the orchestrator's responsibility is to
-//     fill InfoHash on Subjects produced from torznab/torrent-file
-//     indexers; this guard fails loudly during integration).
+//   - Otherwise extracted from TorrentBody via SHA-1 of the bencoded
+//     "info" dict (slice 6.H — BEP-3 spec).
+//   - Otherwise an error.
 func (q *QBittorrent) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
 	if req == nil {
 		return "", errors.New("qbittorrent: Download: nil request")
@@ -274,7 +274,17 @@ func resolveInfoHash(req *downloadclients.GrabRequest) (string, error) {
 			}
 		}
 	}
-	return "", errors.New("qbittorrent: Download: GrabRequest has no InfoHash and no urn:btih: in MagnetURL")
+	if len(req.TorrentBody) > 0 {
+		// Slice 6.H: derive the BEP-3 info-hash from the bencoded
+		// .torrent body. Lets indexers ship the raw .torrent without
+		// pre-computing the hash — qBittorrent will key the torrent
+		// by this value, so DownloadID stays consistent across re-
+		// queries.
+		if h, err := extractInfoHash(req.TorrentBody); err == nil {
+			return h, nil
+		}
+	}
+	return "", errors.New("qbittorrent: Download: GrabRequest has no InfoHash, no urn:btih: in MagnetURL, and no valid bencoded info dict in TorrentBody")
 }
 
 // fallbackFilename returns a reasonable .torrent filename for the
