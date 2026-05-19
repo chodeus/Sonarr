@@ -60,6 +60,7 @@ import (
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/delayprofiles"
 	"sonarr.tv/sonarr/internal/disk"
+	"sonarr.tv/sonarr/internal/download"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclientstatus"
 	"sonarr.tv/sonarr/internal/downloadedimport"
@@ -121,6 +122,20 @@ import (
 	_ "sonarr.tv/sonarr/internal/metadata/roksbox"
 	_ "sonarr.tv/sonarr/internal/metadata/wdtv"
 	_ "sonarr.tv/sonarr/internal/metadata/xbmc"
+
+	// Slice 6.A6c (queue [15] orchestrator production wiring):
+	// blank-import the 5 concrete download-client packages so their
+	// init() blocks register (Implementation, ConfigContract) →
+	// Constructor mappings against downloadclients.Default(). The
+	// downloadClientLister adapter constructed below consults the
+	// global registry at grab time; without these imports the
+	// registry is empty and every grab buckets to Pending. Pattern-
+	// mirror of the metadata-writer blank imports above.
+	_ "sonarr.tv/sonarr/internal/downloadclients/deluge"
+	_ "sonarr.tv/sonarr/internal/downloadclients/nzbget"
+	_ "sonarr.tv/sonarr/internal/downloadclients/qbittorrent"
+	_ "sonarr.tv/sonarr/internal/downloadclients/sabnzbd"
+	_ "sonarr.tv/sonarr/internal/downloadclients/transmission"
 )
 
 func main() {
@@ -1396,7 +1411,12 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("downloadclientstatus service: %w", err)
 	}
-	_ = downloadClientStatusSvc // held until queue [13]/[14] download-client provider wires consume it.
+	// downloadClientStatusSvc is consumed by the queue [15] grab
+	// orchestrator (download.NewProcessDownloadDecisions →
+	// SetRecorder, wired below). The blank-ident retention from
+	// slice 4.V dropped here at 6.A6c — the per-grab outcome routing
+	// is now a real consumer of the status service's Recorder
+	// surface.
 
 	// Slice 4.AB (queue [N1]): wire notificationstatus.Service. Pattern-
 	// mirror of the indexerstatus / downloadclientstatus pairs above.
@@ -2202,6 +2222,83 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// Slice 4.Q (queue [9]): wire the RssSync handler. Below in
 	// handlers.RegisterAll the indexerSearchSvc satisfies the narrow
 	// handlers.RssFetcher interface via Go's structural typing.
+
+	// Slice 6.A6c (queue [15] orchestrator production wiring):
+	// construct *download.ProcessDownloadDecisions — the per-batch
+	// grab orchestrator ported across slices 4.Z / 4.BP / 4.BR /
+	// 4.BQ and activated end-to-end across the 6.A arc. Bound here
+	// AFTER httpClient (HTTPBodyFetcher needs an HTTP transport) +
+	// AFTER downloadClientStatusSvc (Recorder dep) so every required
+	// dep is in scope.
+	//
+	// Dependencies wired:
+	//
+	//   - ClientLister ← downloadClientLister adapter (slice 6.A6b),
+	//     walking downloadClientsRepo + downloadclients.Default() at
+	//     grab time. The 5 concrete client packages (Sabnzbd /
+	//     Transmission / qBittorrent / Deluge / NZBGet) register their
+	//     Constructors against the default registry via init() — the
+	//     blank imports near the top of this file activate that.
+	//   - DecisionPrioritizer ← nil. The C# `IPrioritizeDownloadDecision`
+	//     sort lands as a follow-up slice (the NewDecisionComparer
+	//     wiring needs ConfigReader + ComparerProfileLookup +
+	//     ComparerDelayProfileLookup adapters; deferring keeps this
+	//     slice surgical). With nil, the orchestrator processes
+	//     decisions in input order — matches the pre-slice-4.BP
+	//     behaviour and is correct (though sub-optimal) until the
+	//     prioritizer slice lands.
+	//   - Bus ← the shared *messaging.Bus the rest of main.go uses.
+	//     Activates the 5 EpisodeGrabbedEvent listeners (historyhandlers
+	//     at :822, downloadhistory.Service, pendingreleaseshandlers,
+	//     notifications.Service, blocklisthandlers — all subscribed
+	//     elsewhere in main.go).
+	//   - Recorder ← *downloadclientstatus.Service. Per-grab outcome
+	//     escalation routes through RecordSuccess /RecordFailure /
+	//     RecordConnectionFailure on def.ID — drops the slice-4.V
+	//     blank-ident retention.
+	//   - BodyFetcher ← &download.HTTPBodyFetcher{}. The nil-Client
+	//     default falls back to http.DefaultClient — adequate for
+	//     unauthenticated public-feed indexers + as a baseline.
+	//     A per-indexer authenticated HTTPBodyFetcher (Cookie /
+	//     Authorization header attachment via indexers.Provider.
+	//     GetDownloadRequest) is a documented follow-up.
+	//
+	// No caller wired this slice — the orchestrator is held via
+	// the blank ident pending slice 6.A6d, which extends the
+	// RssSync handler with a GrabProcessor seam that feeds the
+	// approved decisions into ProcessDecisions.
+	downloadClientLister := newDownloadClientLister(
+		downloadClientsRepo,
+		downloadclients.Default(),
+		downloadclients.Dependencies{
+			HTTPClient:     httpClient,
+			ConfigProvider: configProv,
+			DiskProvider:   diskProv,
+			Logger:         logger,
+			StatusService:  downloadClientStatusSvc,
+			// RemotePathMappingService stays nil until the remotepathmappings
+			// port lands (Phase 6.B). Concrete clients (Sabnzbd /
+			// Transmission / qBittorrent / Deluge / NZBGet) tolerate
+			// nil — only the OutputPath translation arm reaches for
+			// it, and that arm degrades to "no remap" when the dep
+			// is nil.
+		},
+		logger,
+	)
+	processDownloadDecisions, err := download.NewProcessDownloadDecisions(downloadClientLister, nil, logger)
+	if err != nil {
+		return fmt.Errorf("download.ProcessDownloadDecisions: %w", err)
+	}
+	processDownloadDecisions.
+		SetBus(bus).
+		SetRecorder(downloadClientStatusSvc).
+		SetBodyFetcher(&download.HTTPBodyFetcher{})
+	// processDownloadDecisions held via the blank ident pending
+	// slice 6.A6d (RssSync GrabProcessor seam). Construction itself
+	// is the contract under test — the four setters establish the
+	// dispatch + event-publish + status-record + body-prefetch chain
+	// against the 5 production download clients.
+	_ = processDownloadDecisions
 
 	// Slice 4.BK (sub-arc W6c of queue [W6] — CLOSES [W6]): construct
 	// the metadata-writer orchestrator. The 4 concrete writers
