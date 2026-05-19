@@ -1650,6 +1650,14 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("healthcheck indexerJackettAll: %w", err)
 	}
+	// Audit fix B.5b: warn when an enabled indexer pins a
+	// DownloadClientId > 0 that is missing or disabled. Mirrors C#
+	// IndexerDownloadClientCheck. Both repos satisfy the lister
+	// interfaces directly.
+	indexerDCCheck, err := healthcheck.NewIndexerDownloadClientCheck(indexersRepo, downloadClientsRepo)
+	if err != nil {
+		return fmt.Errorf("healthcheck indexerDownloadClient: %w", err)
+	}
 
 	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
 		healthcheck.NewAppDataLocationCheck(folder),
@@ -1668,6 +1676,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		indexerSearchCheck,
 		downloadClientCheck,
 		indexerJackettAllCheck,
+		indexerDCCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)
