@@ -187,7 +187,7 @@ func (c *IndexerStatusCheck) Run(ctx context.Context) HealthCheck {
 	// runs. The C# tree relies on the LINQ Join order; the Go port
 	// pins it explicitly, matching the precedent set by
 	// RemovedSeriesCheck (3.44).
-	sort.Slice(down, func(i, j int) bool {
+	sort.SliceStable(down, func(i, j int) bool {
 		return strings.ToLower(down[i].Name) < strings.ToLower(down[j].Name)
 	})
 	names := make([]string, 0, len(down))

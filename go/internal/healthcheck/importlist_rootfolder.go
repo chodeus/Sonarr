@@ -159,7 +159,7 @@ func (c *ImportListRootFolderCheck) Run(ctx context.Context) HealthCheck {
 	if len(missingOrder) == 1 {
 		root := missingOrder[0]
 		names := append([]string(nil), missingByPath[root]...)
-		sort.Slice(names, func(i, j int) bool {
+		sort.SliceStable(names, func(i, j int) bool {
 			return strings.ToLower(names[i]) < strings.ToLower(names[j])
 		})
 		return New(
@@ -176,7 +176,7 @@ func (c *ImportListRootFolderCheck) Run(ctx context.Context) HealthCheck {
 		// Per-root list-names sort case-insensitively so multi-list
 		// renders are stable.
 		names := append([]string(nil), missingByPath[root]...)
-		sort.Slice(names, func(i, j int) bool {
+		sort.SliceStable(names, func(i, j int) bool {
 			return strings.ToLower(names[i]) < strings.ToLower(names[j])
 		})
 		parts = append(parts, formatMissingRoot(root, names))

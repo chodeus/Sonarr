@@ -137,7 +137,9 @@ func Calculate(input CustomFormatInput, formats []*Format) []*Format {
 			matched = append(matched, f)
 		}
 	}
-	sort.Slice(matched, func(i, j int) bool {
+	// Stable sort: C# `OrderBy` is stable, and custom-format names are
+	// user-editable so they can collide. `sort.Slice` is not stable.
+	sort.SliceStable(matched, func(i, j int) bool {
 		return matched[i].Name < matched[j].Name
 	})
 	return matched

@@ -502,7 +502,7 @@ func filterByScene(candidates []Mapping, sceneSeasonNumber int) []Mapping {
 	// Map iteration is randomised; sort by Title for stable test
 	// output (the C# LINQ pipeline preserves whatever the underlying
 	// dictionary's enumeration order is — varies by runtime version).
-	sort.Slice(out, func(i, j int) bool { return out[i].Title < out[j].Title })
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Title < out[j].Title })
 	return out
 }
 

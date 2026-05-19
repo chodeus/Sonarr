@@ -192,7 +192,7 @@ func (c *ImportListStatusCheck) Run(ctx context.Context) HealthCheck {
 	// runs. Same precedent as IndexerStatusCheck +
 	// NotificationStatusCheck — the C# tree relies on the LINQ
 	// Join order; the Go port pins it explicitly.
-	sort.Slice(down, func(i, j int) bool {
+	sort.SliceStable(down, func(i, j int) bool {
 		return strings.ToLower(down[i].Name) < strings.ToLower(down[j].Name)
 	})
 	names := make([]string, 0, len(down))

@@ -132,7 +132,7 @@ func (c *RemovedSeriesCheck) Run(ctx context.Context) HealthCheck {
 	// Sort by Title (case-insensitive) for stable rendering across
 	// runs. The C# tree relies on the SeriesService ordering; the Go
 	// port pins the order explicitly.
-	sort.Slice(deleted, func(i, j int) bool {
+	sort.SliceStable(deleted, func(i, j int) bool {
 		return strings.ToLower(deleted[i].Title) < strings.ToLower(deleted[j].Title)
 	})
 
