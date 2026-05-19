@@ -1491,6 +1491,19 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("healthcheck indexerStatus: %w", err)
 	}
+	// Audit fix B.5c: IndexerLongTermStatusCheck is the same shape as
+	// IndexerStatusCheck above but flips the InitialFailure time
+	// predicate — it flags indexers that have been blocked for LONGER
+	// than IndexerRecentFailureWindow (6h). Same lister deps; pattern-
+	// mirror of the IndexerStatusCheck wire just above.
+	indexerLongTermStatusCheck, err := healthcheck.NewIndexerLongTermStatusCheck(
+		newEnabledIndexerListerAdapter(indexersRepo),
+		indexerStatusSvc,
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("healthcheck indexerLongTermStatus: %w", err)
+	}
 
 	// Slice 4.AI (queue [N5]): NotificationStatusCheck wires
 	// EnabledNotificationLister (over notifications.Repo via the
@@ -1677,6 +1690,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		downloadClientCheck,
 		indexerJackettAllCheck,
 		indexerDCCheck,
+		indexerLongTermStatusCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)

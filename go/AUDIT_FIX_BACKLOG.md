@@ -159,14 +159,14 @@ The CI job catches NEW drift now even with the baseline budget — if any of the
 
 ## B.5 — REAL (verified 2026-05-20 in slice 5.J9; partial progress slice 5.J10+)
 
-**Missing healthchecks (8 remaining; IndexerJackettAllCheck CLOSED in 5.J10, IndexerDownloadClientCheck CLOSED in 5.J11):**
+**Missing healthchecks (7 remaining; IndexerJackettAll, IndexerDownloadClient, IndexerLongTermStatus all closed in 5.J10-J12):**
 
 - ~~IndexerJackettAllCheck~~ — CLOSED in slice 5.J10. `internal/healthcheck/indexer_jackett_all.go` + test ship a warning when an enabled Torznab indexer's `BaseUrl` or `ApiPath` contains `/torznab/all` or `/api/v2.0/indexers/all/results/torznab`. Wired in `cmd/sonarr/main.go` alongside the other indexer checks.
 - ~~IndexerDownloadClientCheck~~ — CLOSED in slice 5.J11. `internal/healthcheck/indexer_downloadclient.go` + test warn when an enabled indexer pins a `DownloadClientId > 0` that doesn't match any enabled download client. Wired in `cmd/sonarr/main.go`. Uses a new narrow `DownloadClientRowLister` interface (the pre-existing `DownloadClientLister` is the count-only surface for DownloadClientCheck — kept distinct).
+- ~~IndexerLongTermStatusCheck~~ — CLOSED in slice 5.J12. `internal/healthcheck/indexer_long_term_status.go` + test mirror IndexerStatusCheck but flip the InitialFailure time predicate — flags indexers blocked LONGER than `IndexerRecentFailureWindow` (6h). Reuses the same `EnabledIndexerLister` + `IndexerStatusBlockedLister` interfaces. Wired in `cmd/sonarr/main.go`.
 - DownloadClientRootFolderCheck — DC folder writable
 - DownloadClientRemovesCompletedCheck — DC's "remove completed" setting matches Sonarr's expectation
 - DownloadClientSortingCheck — DC sorting conflicts with Sonarr
-- IndexerLongTermStatusCheck — indexer down > N hours
 - ImportMechanismCheck — folder watching vs completed handling
 - MountCheck — mount point exists and is writable (NEEDS `disk.GetMount` port — IsReadOnly mount detection is platform-specific syscall work; this is genuinely larger than a single slice)
 - PackageGlobalMessageCheck — package maintainer messaging hook (NEEDS `DeploymentInfoProvider` port — reads `<bin>/../package_info` key/value file shipped by package maintainers)
