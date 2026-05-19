@@ -2267,21 +2267,29 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// the blank ident pending slice 6.A6d, which extends the
 	// RssSync handler with a GrabProcessor seam that feeds the
 	// approved decisions into ProcessDecisions.
+	// Compile-time guard: *remotepathmappings.Service satisfies the
+	// downloadclients.RemotePathMapper narrow interface. Pins the
+	// structural-typing contract at the wiring boundary so a future
+	// signature drift in either package surfaces at boot rather than
+	// at the first per-client cast failure.
+	var _ downloadclients.RemotePathMapper = (*remotepathmappings.Service)(nil)
 	downloadClientLister := newDownloadClientLister(
 		downloadClientsRepo,
 		downloadclients.Default(),
 		downloadclients.Dependencies{
-			HTTPClient:     httpClient,
-			ConfigProvider: configProv,
-			DiskProvider:   diskProv,
-			Logger:         logger,
-			StatusService:  downloadClientStatusSvc,
-			// RemotePathMappingService stays nil until the remotepathmappings
-			// port lands (Phase 6.B). Concrete clients (Sabnzbd /
-			// Transmission / qBittorrent / Deluge / NZBGet) tolerate
-			// nil — only the OutputPath translation arm reaches for
-			// it, and that arm degrades to "no remap" when the dep
-			// is nil.
+			HTTPClient:               httpClient,
+			ConfigProvider:           configProv,
+			DiskProvider:             diskProv,
+			Logger:                   logger,
+			StatusService:            downloadClientStatusSvc,
+			RemotePathMappingService: remotePathMappingsSvc,
+			// Slice 6.B2 (Phase 6.B): wired here so the per-client
+			// constructors (sabnzbd / transmission / qbittorrent /
+			// deluge / nzbget) consume it via the downloadclients.
+			// RemotePathMapper narrow interface. Until 6.B3-6.B7 land
+			// the per-client casts + OutputPath remap calls, the dep
+			// is in scope but unread by every constructor; behaviour
+			// is unchanged.
 		},
 		logger,
 	)

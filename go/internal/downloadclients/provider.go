@@ -146,6 +146,31 @@ type Provider interface {
 	RequestAction(ctx context.Context, action string, query map[string]string) (any, error)
 }
 
+// RemotePathMapper is the narrow projection concrete download clients
+// consume for path translation. Mirrors the C# `IRemotePathMappingService`
+// surface at `RemotePathMappings/RemotePathMappingService.cs:128-157`
+// reduced to the single direction concrete clients actually call:
+// remap a client-side absolute path back to a Sonarr-side path. The
+// inverse direction (RemapLocalToRemote) isn't reached for from a
+// download-client constructor — it's a service-layer concern at the
+// queue / import-decision boundary, outside this package.
+//
+// Production binds *remotepathmappings.Service via Go's structural
+// typing; concrete client constructors cast
+// [Dependencies.RemotePathMappingService] to this interface. A nil
+// mapper degrades to "no remap" at every call site (the per-client
+// methods return the raw path unchanged — preserves the pre-Phase-6.B
+// behaviour).
+//
+// Slice 6.B2 (Phase 6.B RemotePathMappingService wire-up arc). The
+// interface lives here (not in remotepathmappings) so concrete clients
+// don't need to import remotepathmappings just to declare the dep —
+// matches the established Dependencies-bundle pattern where typed
+// surfaces are defined where they're consumed.
+type RemotePathMapper interface {
+	RemapRemoteToLocal(ctx context.Context, host string, remotePath ospath.OsPath) (ospath.OsPath, error)
+}
+
 // GrabRequest is the post-Map, post-Aggregate shape the orchestrator
 // hands a [Provider.Download] call. Carries the resolved release info
 // + per-grab torrent seed configuration + the indexer that produced
