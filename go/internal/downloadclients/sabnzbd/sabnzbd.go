@@ -41,17 +41,37 @@ type Sabnzbd struct {
 	settings Settings
 	proxy    *Proxy
 	def      *downloadclients.DownloadClient
+	rpm      downloadclients.RemotePathMapper
 	log      *slog.Logger
 }
 
 // New constructs a Sabnzbd Provider against the resolved settings +
 // proxy. Used by both the registry [Constructor] and by tests that
-// pin a stub HTTPDoer.
+// pin a stub HTTPDoer. Remote-path mapping is bound via
+// [Sabnzbd.SetRemotePathMapper] after construction — keeps the
+// signature stable while letting tests opt out (nil mapper degrades
+// to "no remap" at every OutputPath site).
 func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, log *slog.Logger) *Sabnzbd {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Sabnzbd{settings: settings, proxy: proxy, def: def, log: log}
+}
+
+// SetRemotePathMapper binds the [downloadclients.RemotePathMapper]
+// the historyItemToItem and GetStatus paths consult to translate
+// SAB-side absolute paths back to Sonarr-side paths (for off-host
+// SAB instances where the storage directory the SAB user wrote to
+// isn't mounted at the same path on the Sonarr host). Optional —
+// when nil (test harnesses, single-host setups) the raw SAB-side
+// path is emitted unchanged. Mirrors C# `Sabnzbd.cs:160-176,265-275`
+// where the C# RemotePathMappingService is consulted at the same
+// two sites. Slice 6.B3 (Phase 6.B wire-up arc).
+//
+// Returns the receiver for chainable construction.
+func (s *Sabnzbd) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) *Sabnzbd {
+	s.rpm = rpm
+	return s
 }
 
 // Name returns the user-facing label. Mirrors C# `Sabnzbd.Name`
@@ -138,9 +158,36 @@ func (s *Sabnzbd) GetItems(ctx context.Context) ([]*downloadclients.Item, error)
 		if h.Status == SabStatusDeleted {
 			continue
 		}
-		out = append(out, historyItemToItem(h, info))
+		out = append(out, s.historyItemToItem(ctx, h, info))
 	}
 	return out, nil
+}
+
+// remapOutput translates a SAB-side absolute path back to a
+// Sonarr-side path via the wired [downloadclients.RemotePathMapper].
+// Returns the raw path unchanged when the mapper is nil, when the
+// input is empty, or when the mapper returns an error (the error is
+// logged at debug — a remap failure shouldn't fail the calling
+// GetItems / GetStatus call; the C# code at
+// `RemotePathMappingService.cs:128-157` also returns the raw path on
+// no-match without surfacing an error).
+func (s *Sabnzbd) remapOutput(ctx context.Context, raw string) ospath.OsPath {
+	if raw == "" {
+		return ospath.OsPath{}
+	}
+	remote := ospath.New(raw)
+	if s.rpm == nil {
+		return remote
+	}
+	local, err := s.rpm.RemapRemoteToLocal(ctx, s.settings.Host, remote)
+	if err != nil {
+		s.log.Debug("sabnzbd: RemapRemoteToLocal failed; using raw path",
+			slog.String("host", s.settings.Host),
+			slog.String("path", raw),
+			slog.Any("err", err))
+		return remote
+	}
+	return local
 }
 
 // sabCategoryMatches mirrors the C# predicate at `Sabnzbd.cs:190`:
@@ -193,11 +240,10 @@ func queueItemToItem(q SabnzbdQueueItem, queuePaused bool, info *downloadclients
 }
 
 // historyItemToItem ports the per-item projection at `Sabnzbd.cs:108-178`.
-// The OutputPath remote-path-mapping step is deferred — the Go port
-// stores the SAB-side Storage path verbatim until the
-// RemotePathMappingService dep lands on the [Sabnzbd] constructor
-// (separate slice once boot wiring needs it).
-func historyItemToItem(h SabnzbdHistoryItem, info *downloadclients.ItemClientInfo) *downloadclients.Item {
+// The OutputPath is run through [Sabnzbd.remapOutput] so off-host
+// SAB instances surface a Sonarr-side path (slice 6.B3); a nil
+// mapper degrades to the raw SAB-side Storage path.
+func (s *Sabnzbd) historyItemToItem(ctx context.Context, h SabnzbdHistoryItem, info *downloadclients.ItemClientInfo) *downloadclients.Item {
 	zero := time.Duration(0)
 	item := &downloadclients.Item{
 		DownloadClientInfo: info,
@@ -226,11 +272,15 @@ func historyItemToItem(h SabnzbdHistoryItem, info *downloadclients.ItemClientInf
 		// Verifying / Moving / Extracting etc.
 		item.Status = downloadclients.DownloadItemStatusDownloading
 	}
-	// OutputPath: pass the SAB storage path through unchanged. Once
-	// RemotePathMappingService is wired into the Sabnzbd constructor,
-	// the C# `:160-176` remap + parent-walk step lands here.
+	// Slice 6.B3: route the SAB Storage path through remapOutput so
+	// off-host SAB instances surface the Sonarr-side path. The C#
+	// parent-walk step at `:163-176` (when the remap returns the same
+	// path, walk parents until one resolves) is NOT yet ported — a
+	// follow-up slice once the C# behavioural fixture is captured;
+	// most deployments hit a configured RemotePathMappings row directly
+	// without needing the parent walk.
 	if h.Storage != "" {
-		item.OutputPath = ospath.New(h.Storage)
+		item.OutputPath = s.remapOutput(ctx, h.Storage)
 	}
 	return item
 }
@@ -309,9 +359,10 @@ func (s *Sabnzbd) RemoveItem(ctx context.Context, item *downloadclients.Item, de
 // OutputRootFolders (the absolute path SAB writes completed
 // downloads into).
 //
-// The C# RemotePathMappingService.RemapRemoteToLocal step is deferred
-// — without RemotePathMappingService wired into the constructor, the
-// OutputRootFolders entries are the raw SAB-side paths.
+// Slice 6.B3 routed OutputRootFolders through [Sabnzbd.remapOutput]
+// so the resolved SAB-side complete_dir surfaces as the Sonarr-side
+// path when a RemotePathMappings row matches; nil mapper / no match
+// → raw SAB-side path.
 //
 // Slice 4.BS (C-cleanup sub-arc C2a).
 func (s *Sabnzbd) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
@@ -359,7 +410,7 @@ func (s *Sabnzbd) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, e
 		}
 
 		if matched.FullPath != "" {
-			info.OutputRootFolders = []ospath.OsPath{ospath.New(matched.FullPath)}
+			info.OutputRootFolders = []ospath.OsPath{s.remapOutput(ctx, matched.FullPath)}
 		}
 	}
 	return info, nil
@@ -627,7 +678,16 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	if err != nil {
 		return nil, err
 	}
-	return New(def, settings, proxy, log), nil
+	sab := New(def, settings, proxy, log)
+	// Slice 6.B3: cast the typed-as-any RemotePathMappingService to
+	// the narrow RemotePathMapper interface. A nil dep or a cast
+	// miss leaves sab.rpm nil — the per-call sites fall through to
+	// the raw SAB-side path. Test harnesses + single-host setups
+	// run with nil and behave identically to the pre-6.B port.
+	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
+		sab.SetRemotePathMapper(rpm)
+	}
+	return sab, nil
 }
 
 // init registers the SAB Provider with the package-global

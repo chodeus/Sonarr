@@ -12,6 +12,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/sabnzbd"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // ============================================================================
@@ -900,3 +901,143 @@ func TestSabnzbd_GetStatusFetchesFullStatusForRelativeCompleteDir(t *testing.T) 
 		t.Errorf("expected fullstatus call when complete_dir is relative")
 	}
 }
+
+// ============================================================================
+// Slice 6.B3: Sabnzbd RemotePathMapper wire-up — historyItemToItem +
+// GetStatus consult the mapper to translate SAB-side absolute paths back
+// to Sonarr-side paths when the off-host SAB instance writes to a
+// directory that isn't mounted at the same path on the Sonarr host.
+// ============================================================================
+
+// stubMapper satisfies downloadclients.RemotePathMapper with a fixed
+// prefix-swap rule. Returns the input unchanged when the input doesn't
+// start with the configured remote prefix.
+type stubMapper struct {
+	host         string
+	remotePrefix string
+	localPrefix  string
+	err          error
+}
+
+func (m *stubMapper) RemapRemoteToLocal(_ context.Context, host string, remotePath ospath.OsPath) (ospath.OsPath, error) {
+	if m.err != nil {
+		return remotePath, m.err
+	}
+	if !strings.EqualFold(host, m.host) {
+		return remotePath, nil
+	}
+	raw := remotePath.FullPath()
+	if !strings.HasPrefix(raw, m.remotePrefix) {
+		return remotePath, nil
+	}
+	return ospath.New(m.localPrefix + strings.TrimPrefix(raw, m.remotePrefix)), nil
+}
+
+func TestSabnzbd_GetItems_RemapsHistoryOutputPath(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":false,"slots":[]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[{"name":"Show.S01E02","bytes":1048576,"category":"tv","nzo_id":"h_001","status":"Completed","storage":"/sab/storage/Show.S01E02"}]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+
+	sab := newSabnzbdForURL(t, srv)
+	sab.SetRemotePathMapper(&stubMapper{
+		host:         "127.0.0.1",
+		remotePrefix: "/sab/storage",
+		localPrefix:  "/sonarr/storage",
+	})
+
+	got, err := sab.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("GetItems: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if want := "/sonarr/storage/Show.S01E02"; got[0].OutputPath.FullPath() != want {
+		t.Errorf("OutputPath = %q, want %q", got[0].OutputPath.FullPath(), want)
+	}
+}
+
+func TestSabnzbd_GetItems_NilMapperKeepsRawSabPath(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":false,"slots":[]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[{"name":"Show.S01E02","bytes":1048576,"category":"tv","nzo_id":"h_001","status":"Completed","storage":"/sab/storage/Show.S01E02"}]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+
+	sab := newSabnzbdForURL(t, srv)
+	// No SetRemotePathMapper — default nil. Verifies the slice-6.B3
+	// degraded path matches the pre-6.B raw-path behaviour.
+	got, err := sab.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("GetItems: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if want := "/sab/storage/Show.S01E02"; got[0].OutputPath.FullPath() != want {
+		t.Errorf("OutputPath = %q, want %q (nil mapper must pass through)", got[0].OutputPath.FullPath(), want)
+	}
+}
+
+func TestSabnzbd_GetStatus_RemapsOutputRootFolders(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("mode") == "get_config" {
+			_, _ = w.Write([]byte(`{"config":{"misc":{"complete_dir":"/sab/storage","tv_categories":["tv"]},"categories":[{"name":"tv","dir":"sonarr"}],"sorters":[]}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":true}`))
+	}))
+	defer srv.Close()
+	sab := newSabnzbdForURL(t, srv)
+	sab.SetRemotePathMapper(&stubMapper{
+		host:         "127.0.0.1",
+		remotePrefix: "/sab/storage",
+		localPrefix:  "/sonarr/storage",
+	})
+
+	got, err := sab.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if len(got.OutputRootFolders) != 1 {
+		t.Fatalf("OutputRootFolders = %+v, want 1 entry", got.OutputRootFolders)
+	}
+	if want := "/sonarr/storage/sonarr"; got.OutputRootFolders[0].FullPath() != want {
+		t.Errorf("OutputRootFolders[0] = %q, want %q", got.OutputRootFolders[0].FullPath(), want)
+	}
+}
+
+func TestSabnzbd_RemapErrorFallsBackToRawPath(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":false,"slots":[]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[{"name":"X","bytes":1,"category":"tv","nzo_id":"id","status":"Completed","storage":"/sab/x"}]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+
+	sab := newSabnzbdForURL(t, srv)
+	sab.SetRemotePathMapper(&stubMapper{host: "127.0.0.1", err: errors.New("rpm lookup blew up")})
+
+	got, err := sab.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("GetItems: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if want := "/sab/x"; got[0].OutputPath.FullPath() != want {
+		t.Errorf("OutputPath = %q, want raw %q on remap error", got[0].OutputPath.FullPath(), want)
+	}
+}
+
+// Compile-time guard: *stubMapper satisfies the narrow interface.
+var _ downloadclients.RemotePathMapper = (*stubMapper)(nil)
