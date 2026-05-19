@@ -2273,6 +2273,12 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// signature drift in either package surfaces at boot rather than
 	// at the first per-client cast failure.
 	var _ downloadclients.RemotePathMapper = (*remotepathmappings.Service)(nil)
+	// Slice 6.C2 (Phase 6.C wire-up): the same guard for the
+	// downloadclients.DiskProvider narrow interface — *disk.Provider's
+	// DeleteFolder(path, recursive bool) error matches via Go
+	// structural typing. The 6.C3 NZBGet RemoveItem deleteData arm
+	// consumes this dep first; 6.C4 may add SABnzbd as a follow-up.
+	var _ downloadclients.DiskProvider = (*disk.Provider)(nil)
 	downloadClientLister := newDownloadClientLister(
 		downloadClientsRepo,
 		downloadclients.Default(),

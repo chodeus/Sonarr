@@ -171,6 +171,30 @@ type RemotePathMapper interface {
 	RemapRemoteToLocal(ctx context.Context, host string, remotePath ospath.OsPath) (ospath.OsPath, error)
 }
 
+// DiskProvider is the narrow projection concrete download clients
+// consume for the post-removal disk-cleanup arm of RemoveItem (when
+// the user requested deleteData=true). Mirrors the C# `IDiskProvider`
+// surface at `Disk/IDiskProvider.cs` reduced to the single method
+// concrete clients actually call from RemoveItem:
+// DiskProvider.DeleteFolder against item.OutputPath.
+//
+// Production binds *disk.Provider via Go's structural typing;
+// concrete client constructors cast [Dependencies.DiskProvider] to
+// this interface. A nil disk degrades to "skip the disk arm" at
+// every call site — the client-API removal still runs, files just
+// stay on disk (matches the pre-Phase-6.C behaviour, with a warn log
+// so the user sees the deferral).
+//
+// DeleteFile is intentionally NOT exposed here yet — none of the
+// shipped concrete clients have a per-file (vs per-folder) deletion
+// arm in scope for Phase 6.C. Additive extension when a consumer
+// needs it (likely SABnzbd's single-file Storage edge case in 6.C4).
+//
+// Slice 6.C2 (Phase 6.C DiskProvider wire-up arc).
+type DiskProvider interface {
+	DeleteFolder(path string, recursive bool) error
+}
+
 // GrabRequest is the post-Map, post-Aggregate shape the orchestrator
 // hands a [Provider.Download] call. Carries the resolved release info
 // + per-grab torrent seed configuration + the indexer that produced
