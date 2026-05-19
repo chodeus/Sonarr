@@ -141,10 +141,6 @@ func (q *QBittorrent) Proxy() *Proxy { return q.proxy }
 //
 // Per-slice scope deferrals:
 //
-//   - The MoveTorrentToTopInQueue arm at C# `:109-119,178-188` is
-//     deferred to a follow-up slice — the priority RPC requires
-//     torrent-queueing to be enabled in qBittorrent and returns 409
-//     when not; not load-bearing for the common case.
 //   - AddSeriesTags at C# `:133-143,202-212` is deferred — the tag
 //     repository port lands at a later sub-arc, and AddTags is best-
 //     effort in the C# tree anyway (warn + continue on failure).
@@ -215,8 +211,29 @@ func (q *QBittorrent) Download(ctx context.Context, req *downloadclients.GrabReq
 				"hash", hash, "err", forceErr)
 		}
 	}
+	// Slice 6.F (closes the MoveTorrentToTopInQueue deferral): when
+	// the user's per-recency priority setting resolves to PriorityFirst,
+	// move the just-added torrent to the top of qBittorrent's queue.
+	// Mirrors C# `:109-119,178-188`. Best-effort: a 409 from
+	// qBittorrent (queueing disabled in prefs) is silently swallowed
+	// inside the proxy; other failures warn + continue.
+	if recencyPriority(req.IsRecent, q.settings) == PriorityFirst {
+		if prioErr := q.proxy.MoveTorrentToTopInQueue(ctx, hash, q.settings); prioErr != nil {
+			q.log.Warn("qbittorrent: MoveTorrentToTopInQueue failed",
+				"hash", hash, "err", prioErr)
+		}
+	}
 
 	return strings.ToUpper(hash), nil
+}
+
+// recencyPriority resolves req.IsRecent to the per-recency
+// priority setting. Mirrors C# `:73,76`.
+func recencyPriority(isRecent bool, settings Settings) int {
+	if isRecent {
+		return settings.RecentTvPriority
+	}
+	return settings.OlderTvPriority
 }
 
 // resolveStoppedFieldName probes /api/v2/app/version to decide

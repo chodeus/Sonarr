@@ -470,3 +470,162 @@ func equalBytes(a, b []byte) bool {
 	}
 	return true
 }
+
+// ============================================================================
+// Slice 6.F: MoveTorrentToTopInQueue post-add wiring. Applies when the
+// per-recency priority setting resolves to PriorityFirst.
+// ============================================================================
+
+// addServerWithPrio extends the canonical addServer wiring with a
+// /api/v2/torrents/topPrio handler so the slice-6.F post-add RPC is
+// observable. Returns 200 by default; tests can override
+// topPrioStatus to exercise the 409/error arms.
+type addServerWithPrio struct {
+	addServer
+	topPrioCalls  atomic.Int32
+	topPrioStatus atomic.Int32 // 0 → 200, set to override
+	topPrioForm   atomic.Value // url.Values
+}
+
+func newAddServerWithPrio(t *testing.T) (*addServerWithPrio, *httptest.Server) {
+	h := &addServerWithPrio{
+		addServer: addServer{
+			versionBody:     "v4.5.0",
+			addedFormFields: map[string]string{},
+			addResponseBody: "Ok.",
+			addStatus:       http.StatusOK,
+		},
+	}
+	h.shareLimitStatus.Store(http.StatusOK)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/torrents/topPrio" {
+			h.topPrioCalls.Add(1)
+			_ = r.ParseForm()
+			h.topPrioForm.Store(r.PostForm)
+			s := int(h.topPrioStatus.Load())
+			if s == 0 {
+				s = http.StatusOK
+			}
+			w.WriteHeader(s)
+			return
+		}
+		// Delegate to the shared addServer plumbing for the
+		// remaining endpoints.
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			http.SetCookie(w, &http.Cookie{Name: "SID", Value: "sid"})
+			_, _ = io.WriteString(w, "Ok.")
+		case "/api/v2/app/version":
+			_, _ = io.WriteString(w, h.versionBody)
+		case "/api/v2/torrents/add":
+			h.addCalls.Add(1)
+			w.WriteHeader(h.addStatus)
+			_, _ = io.WriteString(w, h.addResponseBody)
+		case "/api/v2/torrents/setForceStart":
+			h.forceStartCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case "/api/v2/torrents/setShareLimits":
+			h.shareLimitCalls.Add(1)
+			w.WriteHeader(int(h.shareLimitStatus.Load()))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return h, srv
+}
+
+func TestDownload_RecentTvPriorityFirstFiresMoveToTop(t *testing.T) {
+	t.Parallel()
+	h, srv := newAddServerWithPrio(t)
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+		s.RecentTvPriority = qbittorrent.PriorityFirst
+		s.OlderTvPriority = qbittorrent.PriorityLast
+	})
+	hash, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show.S01E01",
+		MagnetURL:    "magnet:?xt=urn:btih:DEADBEEF",
+		IsRecent:     true,
+	})
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if hash != "DEADBEEF" {
+		t.Errorf("hash = %q, want DEADBEEF", hash)
+	}
+	if h.topPrioCalls.Load() != 1 {
+		t.Errorf("topPrio fired %d times, want 1 (RecentTvPriority=First + IsRecent=true)", h.topPrioCalls.Load())
+	}
+	form, _ := h.topPrioForm.Load().(url.Values)
+	if got := form.Get("hashes"); got != "deadbeef" {
+		t.Errorf("topPrio hashes = %q, want lowercase deadbeef", got)
+	}
+}
+
+func TestDownload_OlderTvPriorityLastSkipsMoveToTop(t *testing.T) {
+	t.Parallel()
+	h, srv := newAddServerWithPrio(t)
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+		s.RecentTvPriority = qbittorrent.PriorityFirst
+		s.OlderTvPriority = qbittorrent.PriorityLast
+	})
+	_, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show.S01E99",
+		MagnetURL:    "magnet:?xt=urn:btih:CAFEFEED",
+		IsRecent:     false, // IsRecent=false → OlderTvPriority=Last → no topPrio
+	})
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if h.topPrioCalls.Load() != 0 {
+		t.Errorf("topPrio fired %d times, want 0 (OlderTvPriority=Last)", h.topPrioCalls.Load())
+	}
+}
+
+func TestDownload_TopPrio409QueueingDisabledIsSilent(t *testing.T) {
+	t.Parallel()
+	h, srv := newAddServerWithPrio(t)
+	h.topPrioStatus.Store(http.StatusConflict)
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+		s.RecentTvPriority = qbittorrent.PriorityFirst
+	})
+	// 409 from qBittorrent's queueing-disabled state is best-effort;
+	// the proxy swallows it and Download returns success.
+	if _, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		MagnetURL:    "magnet:?xt=urn:btih:DEADBEEF",
+		IsRecent:     true,
+	}); err != nil {
+		t.Errorf("Download must not fail on topPrio 409 (queueing disabled): got %v", err)
+	}
+	if h.topPrioCalls.Load() != 1 {
+		t.Errorf("topPrio still fires once even on 409 (proxy must attempt + swallow); got %d", h.topPrioCalls.Load())
+	}
+}
+
+func TestDownload_RecentTvPriorityLastSkipsMoveToTop(t *testing.T) {
+	t.Parallel()
+	h, srv := newAddServerWithPrio(t)
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+		s.RecentTvPriority = qbittorrent.PriorityLast
+		s.OlderTvPriority = qbittorrent.PriorityFirst
+	})
+	if _, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Recent",
+		MagnetURL:    "magnet:?xt=urn:btih:DEADBEEF",
+		IsRecent:     true, // IsRecent=true → RecentTvPriority=Last → no topPrio
+	}); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if h.topPrioCalls.Load() != 0 {
+		t.Errorf("topPrio fired %d times, want 0 (RecentTvPriority=Last)", h.topPrioCalls.Load())
+	}
+}

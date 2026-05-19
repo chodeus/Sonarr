@@ -562,6 +562,35 @@ func (p *Proxy) SetForceStart(ctx context.Context, hash string, enabled bool, se
 	return nil
 }
 
+// MoveTorrentToTopInQueue fires POST /api/v2/torrents/topPrio.
+// Mirrors C# `QBittorrentProxyV2.MoveTorrentToTopInQueue` at
+// `QBittorrentProxyV2.cs:309-318`. Tolerates HTTP 409 — qBittorrent
+// returns Conflict when torrent-queueing is disabled in the global
+// preferences; this matches the C# catch arm at `:312-316` which
+// swallows the exception and the orchestrator's caller treats the
+// arm as best-effort.
+//
+// Slice 6.F (qBittorrent hygiene long-tail — closes the
+// MoveTorrentToTopInQueue deferral noted at qbittorrent.go:144-147).
+func (p *Proxy) MoveTorrentToTopInQueue(ctx context.Context, hash string, settings Settings) error {
+	form := url.Values{}
+	form.Set("hashes", strings.ToLower(hash))
+	status, body, err := p.DoRequest(ctx, http.MethodPost, "/api/v2/torrents/topPrio",
+		strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", settings)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusConflict {
+		// Queueing disabled in qBittorrent preferences — silently
+		// no-op per C# `:312-316`.
+		return nil
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("%w: topPrio status=%d body=%s", ErrUnexpected, status, truncate(body, 128))
+	}
+	return nil
+}
+
 // SetTorrentSeedingConfiguration fires POST
 // /api/v2/torrents/setShareLimits. Mirrors C#
 // `QBittorrentProxyV2.SetTorrentSeedingConfiguration` at
