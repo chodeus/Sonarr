@@ -73,13 +73,17 @@ type EntryWriter interface {
 //
 // # ReleaseType handling
 //
-// The C# event reads `message.Episode.ParsedEpisodeInfo.ReleaseType`,
-// but the Go-port [parser.ParsedEpisodeInfo] does NOT carry a
-// ReleaseType field at HEAD (the field lives on
-// `episodeimport.LocalEpisode` only). This handler emits
-// `Data["ReleaseType"] = "Unknown"` to keep the column shape stable;
-// a follow-up slice can add the field to ParsedEpisodeInfo and
-// source it from there.
+// The C# event reads `message.Episode.ParsedEpisodeInfo.ReleaseType`.
+// Go's [parser.ParsedEpisodeInfo] exposes the same value as a derived
+// method `ReleaseType()` (not a field — same semantic). The handler
+// sources from `subject.ParsedEpisodeInfo.ReleaseType()` and emits
+// the int-string form via `strconv.Itoa`, matching the convention
+// shared with imported.go / file_deleted.go / file_renamed.go /
+// download_ignored.go. Nil-ParsedEpisodeInfo degrades to
+// [parser.ReleaseTypeUnknown] ("0"). C# emits the PascalCase enum
+// name via `.ToString()`; the Go-port int-string convention is a
+// known wire-shape divergence across all 5 history handlers — worth
+// reconsidering as a single sweep, not piecemeal.
 //
 // # Defensive arms
 //
@@ -248,11 +252,15 @@ func buildGrabbedData(ev *decisionengine.EpisodeGrabbedEvent, subject *decisione
 		data["SeriesMatchType"] = matchTypeName(series.MatchTypeUnknown)
 		data["ReleaseSource"] = releaseSourceName(decisionengine.ReleaseSourceUnknown)
 	}
-	// ParsedEpisodeInfo.ReleaseType has not been ported onto the Go
-	// ParsedEpisodeInfo yet (lives on episodeimport.LocalEpisode only).
-	// Emit "Unknown" to keep the column shape stable; follow-up slice
-	// can add the field + source it from subject.ParsedEpisodeInfo.
-	data["ReleaseType"] = "Unknown"
+	// Source ReleaseType from subject.ParsedEpisodeInfo.ReleaseType()
+	// (a derived method on the parsed-info value), emitted as the
+	// int-string form to match the sister handlers. Nil-PEI → "0"
+	// (ReleaseTypeUnknown).
+	rt := parser.ReleaseTypeUnknown
+	if subject != nil && subject.ParsedEpisodeInfo != nil {
+		rt = subject.ParsedEpisodeInfo.ReleaseType()
+	}
+	data["ReleaseType"] = strconv.Itoa(int(rt))
 
 	if torrent != nil {
 		data["TorrentInfoHash"] = torrent.InfoHash

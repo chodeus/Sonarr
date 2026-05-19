@@ -204,16 +204,20 @@ No live C# binary needed at CI time — goldens are checked in.
 
 ---
 
-## B.7 — Missing GET-by-id on ~18 resources
+## B.7 — REJECTED: audit list is stale; all GET-by-id endpoints already wired
 
-**Severity:** 🟡 Important — clients can't fetch single records
-**Source:** Carried from `PHASE_5_AUDIT.md §"Per-resource matrix (reads beyond list)"`
+**Rejected in slice 5.J4.**
 
-**Resources affected:** autotagging, customfilter, customformat, delayprofile, downloadclient, importlist, indexer, metadata, notification, qualityprofile, releaseprofile, remotepathmapping, rootfolder, tag, series, episode, command, queue, blocklist.
+Verified against `cmd/sonarr/host_wiring.go` GET-route table — all 17 resources the audit claims missing already have a `GET /api/v3/<resource>/{id}` handler:
 
-**Fix shape:** each is a small `GET /api/v3/<resource>/{id}` handler that does `SELECT ... WHERE id = ?` and returns the same resource shape the list endpoint returns. Mechanical. Suggest batching as a single sweep slice rather than one slice per resource — they're nearly identical work.
+`autotagging`, `command`, `customfilter`, `customformat`, `delayprofile`, `downloadclient`, `episode`, `episodefile`, `importlist`, `indexer`, `metadata`, `notification`, `qualitydefinition`, `qualityprofile`, `releaseprofile`, `remotepathmapping`, `rootfolder`, `series`, `tag`, `tag/detail`, `system/task`, `wanted/cutoff`, `wanted/missing` — and the related `config/*` family by-id routes are also wired.
 
-**Verification:** each route returns 200 with the resource, 404 with httperr envelope when missing.
+The two remaining audit entries (`queue`, `blocklist`) are NOT exposed in C# either:
+
+- `src/Sonarr.Api.V3/Queue/QueueController.cs:64-73` — `GetResourceById` is marked `[NonAction]` and throws `NotImplementedException`. The base inheritance is suppressed.
+- `src/Sonarr.Api.V3/Blocklist/BlocklistController.cs` — only `[HttpGet]` for the paged list, `[RestDeleteById]`, and `bulk` delete. No GET-by-id.
+
+So B.7 in its written form is already fully closed. Audit was stale (probably built against the same pre-write-path snapshot that produced the rest of `PHASE_5_AUDIT.md`).
 
 ---
 
@@ -276,29 +280,25 @@ Go only seeds the DelayProfile via migration. The others appear missing — a fr
 
 ---
 
-## B.11 — History `Data["ReleaseType"]` hardcoded to "Unknown"
+## B.11 — CLOSED in slice 5.J5 (Grabbed handler now sources ReleaseType from ParsedEpisodeInfo)
 
-**Severity:** 🟡 Important — cross-binary history-filter blind spot
-**Source:** Round-2 audit (`internal/historyhandlers/grabbed.go:251-255`)
+Go's `parser.ParsedEpisodeInfo` already exposes `ReleaseType()` as a derived getter (not a field, but same semantic) at `internal/parser/model.go:114-125`. The audit comment that the field is missing was technically correct but functionally moot. `internal/historyhandlers/grabbed.go:255` now sources from `subject.ParsedEpisodeInfo.ReleaseType()` and emits via `strconv.Itoa`, matching the existing convention used by the four sister handlers (imported, file_deleted, file_renamed, download_ignored).
 
-**Problem:** Go's `ParsedEpisodeInfo` lacks the `ReleaseType` field, so the `Grabbed` history handler emits `Data["ReleaseType"] = "Unknown"` unconditionally (acknowledged TODO at `grabbed.go:251-255`). C# emits the actual enum name (`SingleEpisode`, `MultiEpisode`, `SeasonPack`, etc.). React UI filters that query by ReleaseType won't find Go-written events; analytics that aggregate by release type get skewed.
+New test coverage in `grabbed_test.go`: `TestHandleEpisodeGrabbed_ReleaseTypePopulated` (single/multi/seasonpack branches), `TestHandleEpisodeGrabbed_ReleaseTypeNilPEI` (nil guard → "0").
 
-**Fix shape:** port the `ReleaseType` field on `ParsedEpisodeInfo` (probably in `internal/parser/` types) and populate it during parse. Then update `grabbed.go:251-255` to emit the real value. Optionally: one-shot migration to backfill historic Go-written rows post-cutover (or accept the blind spot for historic data).
-
-**Verification:** parse a known SeasonPack release, write a Grabbed history row, confirm `data->>'ReleaseType'` is `"SeasonPack"` not `"Unknown"`.
+**Follow-up worth flagging:** all 5 history handlers emit the int-string form (e.g. "2") while C# `HistoryService.cs:180,233,297,330,360` calls `ReleaseType.ToString()` and emits the PascalCase enum name (e.g. "MultiEpisode"). This is a wire-shape divergence across the whole family — fixing it requires reworking 5 handlers + their tests, plus deciding whether to migrate any rows written by Go to date. Audit's verification step (`"SeasonPack"` not `"Unknown"`) actually expected the C# form. Tracked in this note for whoever sweeps the history-data wire shape next.
 
 ---
 
-## B.12 — `SONARR__` env var config overrides not wired
+## B.12 — CLOSED in slice 5.J6 (Sonarr__Section__Key env-var overrides wired)
 
-**Severity:** 🟡 Important — containerized deployments rely on this
-**Source:** Round-2 audit (`internal/configfile/wellknown.go:239-242` acknowledges it's deferred)
+C# Sonarr honours `Sonarr__<Section>__<Key>` env vars via ASP.NET's `AddEnvironmentVariables()` at `src/NzbDrone.Host/Bootstrap.cs:266`. The audit's `SONARR__PORT=8989` form is actually not the shape C# accepts — C# expects the section-namespaced form (`Sonarr__Server__Port`), where the section names come from the four Options classes at `src/NzbDrone.Common/Options/{App,Auth,Server,Update}Options.cs`.
 
-**Problem:** C# Sonarr honors environment variables like `SONARR__PORT=8989`, `SONARR__BINDADDRESS=*`, `SONARR__APIKEY=...` per ASP.NET Core's default config provider chain. Docker / Kubernetes / homelab users frequently configure Sonarr exclusively via env vars without touching config.xml. The Go port doesn't read these (only `--data` and `--frontenddir` CLI flags are wired).
+The existing `configfile.Overrides` struct already had every field that needed wiring; only the env-var parser was missing. New `internal/configfile/envvars.go` ships `ParseOverridesFromEnv(env []string) Overrides` covering Server (Port/SslPort/BindAddress/UrlBase/EnableSsl), Auth (ApiKey/Method/Required), App (InstanceName/LaunchBrowser), Update (Branch), plus the top-level `Sonarr__LogLevel`. Section/key match case-insensitively to mirror ASP.NET config posture. Unparseable int/bool values are dropped silently (same as C# `config.GetValue<int?>`).
 
-**Fix shape:** in `internal/configfile/loader.go`, after parsing the XML, walk `os.Environ()` for `SONARR__<KEY>` entries and override the corresponding `wellknown` keys. Honor the `persist=false` flag so env-var-only keys don't get written back to config.xml. Cover both single-underscore (legacy) and double-underscore (ASP.NET) styles if C# accepts both.
+`cmd/sonarr/main.go:196` now passes `configfile.ParseOverridesFromEnv(os.Environ())` instead of an empty struct. The existing `persist=false` semantic on Provider overrides means env-var-only keys never get written to config.xml.
 
-**Verification:** `SONARR__PORT=12345 ./sonarr` boots on port 12345 even when config.xml says 8989. Same for BindAddress, ApiKey, LogLevel.
+Tests: `internal/configfile/envvars_test.go` covers Server/Auth/App+Update/LogLevel/CaseInsensitive/IgnoresUnrelated/InvalidInts/MissingEquals. `golangci-lint run` 0 issues, `go test -race -count=1 ./internal/configfile/... ./cmd/sonarr/...` green.
 
 ---
 

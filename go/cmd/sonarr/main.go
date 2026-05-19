@@ -193,7 +193,12 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("config load: %w", err)
 	}
 	bus := messaging.New(logger)
-	cfg := configfile.NewProvider(loader, configfile.Overrides{}, bus, auth.GenerateAPIKey)
+	// Audit fix B.12: pick up `Sonarr__Section__Key`-style env-var
+	// overrides on boot, matching the C# host's
+	// `AddEnvironmentVariables()` posture at
+	// `src/NzbDrone.Host/Bootstrap.cs:266`.
+	envOverrides := configfile.ParseOverridesFromEnv(os.Environ())
+	cfg := configfile.NewProvider(loader, envOverrides, bus, auth.GenerateAPIKey)
 
 	instanceName, err := cfg.InstanceName(ctx)
 	if err != nil {

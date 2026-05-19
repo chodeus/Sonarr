@@ -188,7 +188,7 @@ func TestHandleEpisodeGrabbed_DataMapShape(t *testing.T) {
 		{"CustomFormatScore", "75"},
 		{"SeriesMatchType", "Alias"},
 		{"ReleaseSource", "InteractiveSearch"},
-		{"ReleaseType", "Unknown"},
+		{"ReleaseType", "0"},  // ParsedEpisodeInfo with no episode numbers + FullSeason=false → ReleaseTypeUnknown (int 0)
 		{"IndexerFlags", "9"}, // Freeleech (1) + Internal (8) = 9
 	}
 	for _, c := range cases {
@@ -198,6 +198,56 @@ func TestHandleEpisodeGrabbed_DataMapShape(t *testing.T) {
 	}
 	if _, ok := d["TorrentInfoHash"]; ok {
 		t.Errorf("non-torrent release: TorrentInfoHash should be absent, got %q", d["TorrentInfoHash"])
+	}
+}
+
+// TestHandleEpisodeGrabbed_ReleaseTypePopulated exercises the
+// non-Unknown branches of ParsedEpisodeInfo.ReleaseType() — single
+// episode, multi episode, and full-season pack — to confirm the
+// grab handler now emits the computed value rather than a hardcoded
+// "Unknown" (audit fix B.11).
+func TestHandleEpisodeGrabbed_ReleaseTypePopulated(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		mutate  func(*parser.ParsedEpisodeInfo)
+		wantStr string
+	}{
+		{"single_episode", func(p *parser.ParsedEpisodeInfo) { p.EpisodeNumbers = []int{1} }, "1"},
+		{"multi_episode", func(p *parser.ParsedEpisodeInfo) { p.EpisodeNumbers = []int{1, 2} }, "2"},
+		{"season_pack", func(p *parser.ParsedEpisodeInfo) { p.FullSeason = true }, "3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := &stubWriter{}
+			eps := []episodes.Episode{{ID: 11, SeriesID: 7}}
+			subject := grabbedSubject(eps, grabbedRelease())
+			tc.mutate(subject.ParsedEpisodeInfo)
+			ev := &decisionengine.EpisodeGrabbedEvent{Episode: subject}
+			if err := historyhandlers.HandleEpisodeGrabbed(t.Context(), w, ev); err != nil {
+				t.Fatalf("HandleEpisodeGrabbed: %v", err)
+			}
+			if got := w.added[0].Data["ReleaseType"]; got != tc.wantStr {
+				t.Errorf("ReleaseType: got %q, want %q", got, tc.wantStr)
+			}
+		})
+	}
+}
+
+// TestHandleEpisodeGrabbed_ReleaseTypeNilPEI confirms the nil-guard
+// keeps the field shape stable and emits the Unknown int form.
+func TestHandleEpisodeGrabbed_ReleaseTypeNilPEI(t *testing.T) {
+	t.Parallel()
+	w := &stubWriter{}
+	eps := []episodes.Episode{{ID: 11, SeriesID: 7}}
+	subject := grabbedSubject(eps, grabbedRelease())
+	subject.ParsedEpisodeInfo = nil
+	ev := &decisionengine.EpisodeGrabbedEvent{Episode: subject}
+	if err := historyhandlers.HandleEpisodeGrabbed(t.Context(), w, ev); err != nil {
+		t.Fatalf("HandleEpisodeGrabbed: %v", err)
+	}
+	if got := w.added[0].Data["ReleaseType"]; got != "0" {
+		t.Errorf("ReleaseType: got %q, want %q", got, "0")
 	}
 }
 
