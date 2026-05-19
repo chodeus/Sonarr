@@ -1641,6 +1641,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("healthcheck downloadClient: %w", err)
 	}
+	// Audit fix B.5a: warn when an enabled indexer's Torznab settings
+	// point at Jackett's all-indexers endpoint (Sonarr can't classify
+	// per-indexer responses from that endpoint). Mirrors C#
+	// IndexerJackettAllCheck. *indexers.Repo satisfies the lister
+	// interface directly via Repository[T].All.
+	indexerJackettAllCheck, err := healthcheck.NewIndexerJackettAllCheck(indexersRepo)
+	if err != nil {
+		return fmt.Errorf("healthcheck indexerJackettAll: %w", err)
+	}
 
 	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
 		healthcheck.NewAppDataLocationCheck(folder),
@@ -1658,6 +1667,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		indexerRssCheck,
 		indexerSearchCheck,
 		downloadClientCheck,
+		indexerJackettAllCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)

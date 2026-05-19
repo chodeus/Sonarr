@@ -157,21 +157,21 @@ The CI job catches NEW drift now even with the baseline budget — if any of the
 
 ---
 
-## B.5 — REAL (verified 2026-05-20 in slice 5.J9; not yet implemented)
+## B.5 — REAL (verified 2026-05-20 in slice 5.J9; partial progress slice 5.J10+)
 
-**10 missing healthchecks — confirmed not present in `internal/healthcheck/`:**
+**Missing healthchecks (9 remaining; IndexerJackettAllCheck CLOSED in slice 5.J10):**
 
+- ~~IndexerJackettAllCheck~~ — CLOSED in slice 5.J10. `internal/healthcheck/indexer_jackett_all.go` + test ship a warning when an enabled Torznab indexer's `BaseUrl` or `ApiPath` contains `/torznab/all` or `/api/v2.0/indexers/all/results/torznab`. Wired in `cmd/sonarr/main.go` alongside the other indexer checks.
 - DownloadClientRootFolderCheck — DC folder writable
 - DownloadClientRemovesCompletedCheck — DC's "remove completed" setting matches Sonarr's expectation
 - DownloadClientSortingCheck — DC sorting conflicts with Sonarr
 - IndexerDownloadClientCheck — no enabled DC for an enabled indexer's protocol
-- IndexerJackettAllCheck — warns when using Jackett's `/all` endpoint
 - IndexerLongTermStatusCheck — indexer down > N hours
 - ImportMechanismCheck — folder watching vs completed handling
-- MountCheck — mount point exists and is writable
-- PackageGlobalMessageCheck — package maintainer messaging hook
-- RemotePathMappingCheck — configured remote paths reachable
-- UpdateCheck — update folder writable
+- MountCheck — mount point exists and is writable (NEEDS `disk.GetMount` port — IsReadOnly mount detection is platform-specific syscall work; this is genuinely larger than a single slice)
+- PackageGlobalMessageCheck — package maintainer messaging hook (NEEDS `DeploymentInfoProvider` port — reads `<bin>/../package_info` key/value file shipped by package maintainers)
+- RemotePathMappingCheck — configured remote paths reachable (largest at 387 LOC, complex docker-detection logic)
+- UpdateCheck — update folder writable (needs disk capability checks + version-string compare)
 
 **Partial — ProxyCheck (1):** `internal/healthcheck/proxy.go` is fully ported (resolve + ping + status-400 branching) but production wiring at `cmd/sonarr/healthcheck_wiring.go:283-310` injects `proxyHostConfigStub` (always returns ProxyEnabled=false). The check short-circuits to OK in every install. Genuine partial — finishing it needs the C# HostConfig keyvalues-backed `IConfigService` to land.
 
