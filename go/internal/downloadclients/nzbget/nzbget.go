@@ -47,17 +47,56 @@ type Nzbget struct {
 	settings Settings
 	proxy    *Proxy
 	def      *downloadclients.DownloadClient
+	rpm      downloadclients.RemotePathMapper
 	log      *slog.Logger
 }
 
 // New constructs an Nzbget Provider against the resolved settings +
 // proxy. Used by both the registry [Constructor] and by tests that
-// pin a stub HTTPDoer.
+// pin a stub HTTPDoer. Remote-path mapping is bound via
+// [Nzbget.SetRemotePathMapper] after construction.
 func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, log *slog.Logger) *Nzbget {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Nzbget{settings: settings, proxy: proxy, def: def, log: log}
+}
+
+// SetRemotePathMapper binds the [downloadclients.RemotePathMapper]
+// the historyItemToItem and GetStatus paths consult to translate
+// NZBGet-side absolute paths (FinalDir / DestDir / per-category
+// DestDir) back to Sonarr-side paths. Optional — nil mapper degrades
+// to the raw RPC-side path. Slice 6.B7 (Phase 6.B wire-up arc —
+// final per-client slice).
+//
+// Returns the receiver for chainable construction.
+func (n *Nzbget) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) *Nzbget {
+	n.rpm = rpm
+	return n
+}
+
+// remapOutput translates an NZBGet-side absolute path back to a
+// Sonarr-side path via the wired [downloadclients.RemotePathMapper].
+// Returns the raw path unchanged when the mapper is nil, when the
+// input is empty, or when the mapper returns an error (debug-log
+// the error).
+func (n *Nzbget) remapOutput(ctx context.Context, raw string) ospath.OsPath {
+	if raw == "" {
+		return ospath.OsPath{}
+	}
+	remote := ospath.New(raw)
+	if n.rpm == nil {
+		return remote
+	}
+	local, err := n.rpm.RemapRemoteToLocal(ctx, n.settings.Host, remote)
+	if err != nil {
+		n.log.Debug("nzbget: RemapRemoteToLocal failed; using raw path",
+			slog.String("host", n.settings.Host),
+			slog.String("path", raw),
+			slog.Any("err", err))
+		return remote
+	}
+	return local
 }
 
 // Name returns the user-facing label.
@@ -195,7 +234,7 @@ func (n *Nzbget) GetItems(ctx context.Context) ([]*downloadclients.Item, error) 
 	}
 	// History arm.
 	for i := range history {
-		out = append(out, n.historyItemToItem(history[i], info))
+		out = append(out, n.historyItemToItem(ctx, history[i], info))
 	}
 
 	// Category filter (C# `:199` Where-clause). Only applies when
@@ -265,7 +304,10 @@ func (n *Nzbget) queueItemToItem(q NzbgetQueueItem, globalStatus *NzbgetGlobalSt
 // final home) wins over DestDir per C# `:121`. The status cascade
 // (ParStatus → UnpackStatus → MoveStatus → ScriptStatus →
 // DeleteStatus → MarkStatus) decides the final Sonarr-side state.
-func (n *Nzbget) historyItemToItem(h NzbgetHistoryItem, info *downloadclients.ItemClientInfo) *downloadclients.Item {
+// Slice 6.B7 routes the resolved itemDir through
+// [Nzbget.remapOutput] so off-host NZBGet instances surface a
+// Sonarr-side path; nil mapper / no match → raw RPC-side path.
+func (n *Nzbget) historyItemToItem(ctx context.Context, h NzbgetHistoryItem, info *downloadclients.ItemClientInfo) *downloadclients.Item {
 	itemDir := h.FinalDir
 	if strings.TrimSpace(itemDir) == "" {
 		itemDir = h.DestDir
@@ -286,7 +328,7 @@ func (n *Nzbget) historyItemToItem(h NzbgetHistoryItem, info *downloadclients.It
 			h.ParStatus, h.UnpackStatus, h.MoveStatus, h.ScriptStatus, h.DeleteStatus, h.MarkStatus),
 	}
 	if strings.TrimSpace(itemDir) != "" {
-		item.OutputPath = ospath.New(itemDir)
+		item.OutputPath = n.remapOutput(ctx, itemDir)
 	}
 
 	// DeleteStatus=MANUAL is the special arm at C# `:141-151`:
@@ -549,7 +591,7 @@ func (n *Nzbget) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, er
 		for _, cat := range getCategories(cfg) {
 			if cat.Name == tv {
 				if strings.TrimSpace(cat.DestDir) != "" {
-					info.OutputRootFolders = []ospath.OsPath{ospath.New(cat.DestDir)}
+					info.OutputRootFolders = []ospath.OsPath{n.remapOutput(ctx, cat.DestDir)}
 				}
 				break
 			}
@@ -832,7 +874,15 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 		}
 	}
 
-	return New(def, settings, proxy, log), nil
+	nzb := New(def, settings, proxy, log)
+	// Slice 6.B7: cast the typed-as-any RemotePathMappingService to
+	// the narrow RemotePathMapper interface. nil dep / cast miss
+	// leaves nzb.rpm nil; per-call sites fall through to the raw
+	// RPC-side path.
+	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
+		nzb.SetRemotePathMapper(rpm)
+	}
+	return nzb, nil
 }
 
 // init registers Nzbget with the global registry.
