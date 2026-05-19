@@ -119,6 +119,15 @@ type Deps struct {
 	// RssSyncCompleteEvent (with zero approved/rejected counts).
 	RssSyncDecider RssDecider
 
+	// RssSyncGrabber is the optional download.ProcessDownloadDecisions
+	// projection RssSync feeds the decider's output into after the
+	// decision pipeline runs. Slice 6.A6d (queue [15]). Nil skips the
+	// dispatch step (preserves the slice-4.U behaviour); the handler
+	// still publishes RssSyncCompleteEvent with the approved/rejected
+	// counts and zero Grabbed/Pending counts. Production binds
+	// `*download.ProcessDownloadDecisions` via Go's structural typing.
+	RssSyncGrabber GrabProcessor
+
 	// UpdateSceneMapping wires the IExecute<UpdateSceneMappingCommand>
 	// handler into the dispatcher. Slice 4.AZ (sub-arc M6b-ii of queue
 	// [M6]). Optional — nil skips registration entirely (the API
@@ -239,7 +248,7 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	// the scheduler ticks against). Hosts that haven't yet wired
 	// indexersearch.Service simply omit the slot.
 	if deps.RssSync != nil {
-		rssSync, err := NewRssSync(deps.RssSync, deps.RssSyncDecider, deps.RssSyncBus, deps.Log)
+		rssSync, err := NewRssSync(deps.RssSync, deps.RssSyncDecider, deps.RssSyncGrabber, deps.RssSyncBus, deps.Log)
 		if err != nil {
 			return err
 		}

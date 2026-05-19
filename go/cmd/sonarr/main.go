@@ -2293,12 +2293,12 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		SetBus(bus).
 		SetRecorder(downloadClientStatusSvc).
 		SetBodyFetcher(&download.HTTPBodyFetcher{})
-	// processDownloadDecisions held via the blank ident pending
-	// slice 6.A6d (RssSync GrabProcessor seam). Construction itself
-	// is the contract under test — the four setters establish the
-	// dispatch + event-publish + status-record + body-prefetch chain
-	// against the 5 production download clients.
-	_ = processDownloadDecisions
+	// Slice 6.A6d (queue [15]): processDownloadDecisions is consumed
+	// by the RssSync handler wired below via handlers.Deps.RssSyncGrabber.
+	// The 4 setters above establish the dispatch + event-publish +
+	// status-record + body-prefetch chain against the 5 production
+	// download clients; the RssSync caller drives ProcessDecisions on
+	// every scheduled-task tick.
 
 	// Slice 4.BK (sub-arc W6c of queue [W6] — CLOSES [W6]): construct
 	// the metadata-writer orchestrator. The 4 concrete writers
@@ -2389,6 +2389,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		RssSync:        indexerSearchSvc,
 		RssSyncBus:     bus,
 		RssSyncDecider: downloadDecider,
+		// Slice 6.A6d (queue [15]): the grab orchestrator (constructed
+		// above) consumes the decider's output. *download.ProcessDownloadDecisions
+		// satisfies handlers.GrabProcessor via Go's structural typing.
+		RssSyncGrabber: processDownloadDecisions,
 		// Slice 4.AZ (sub-arc M6b-ii of queue [M6]): wire the
 		// UpdateSceneMapping command handler against
 		// *scenemappings.Service. The Service satisfies

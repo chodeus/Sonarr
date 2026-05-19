@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/decisionengine"
+	"sonarr.tv/sonarr/internal/download"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 )
@@ -88,24 +89,48 @@ type RssDecider interface {
 	GetRssDecision(ctx context.Context, reports []any, pushedRelease bool) []decisionengine.Decision
 }
 
+// GrabProcessor is the narrow surface RssSync consumes for the
+// batch-grab step that follows GetRssDecision. Mirrors C#
+// `IProcessDownloadDecisions.ProcessDecisions` at
+// `Download/IProcessDownloadDecisions.cs`. Production binds
+// *download.ProcessDownloadDecisions via Go's structural typing.
+// Optional: nil grabber skips the dispatch — the handler still
+// publishes RssSyncCompleteEvent with the approved/rejected counts
+// and zero Grabbed/Pending counts (preserves slice-4.U behaviour).
+type GrabProcessor interface {
+	ProcessDecisions(ctx context.Context, decisions []decisionengine.Decision) *download.ProcessedDecisions
+}
+
 // RssSyncCompleteEvent is published on the bus after Sync completes.
 // Mirrors the C# `RssSyncCompleteEvent` at
-// `src/NzbDrone.Core/Indexers/RssSyncCompleteEvent.cs`. As of slice
-// 4.U (queue [11] sub-arc 11c) the event carries the decision split
-// (Approved / Rejected); the Grabbed/Pending/etc split lives in the
-// downstream ProcessDownloadDecisions handler (queue [15], not yet
-// landed) so the C# event's `ProcessedDecisions.Grabbed` field stays
-// unsourced here.
+// `src/NzbDrone.Core/Indexers/RssSyncCompleteEvent.cs`. Slice 4.U
+// added Approved/Rejected; slice 6.A6d adds Grabbed/Pending from the
+// downstream ProcessDownloadDecisions orchestrator — closes the
+// missing C# `ProcessedDecisions.Grabbed` parity gap noted in the
+// 4.U doc.
 type RssSyncCompleteEvent struct {
 	// ReportsFound is the aggregated release count returned by
 	// indexersearch.Service.FetchRSS.
 	ReportsFound int
 	// ApprovedDecisions is the count of decisions with no rejections
-	// after the spec gate. Zero when no RssDecider is wired.
+	// after the spec gate. Zero when no RssDecider is wired. Note
+	// this is the release-info-only signal; the orchestrator's
+	// IsQualified gate (no resolvable Episodes) can subsequently push
+	// some of these to Rejected — see GrabbedDecisions / PendingDecisions
+	// for the post-dispatch bucketing.
 	ApprovedDecisions int
 	// RejectedDecisions is the count of decisions with at least one
-	// rejection. Zero when no RssDecider is wired.
+	// rejection at the decider boundary. Zero when no RssDecider is
+	// wired.
 	RejectedDecisions int
+	// GrabbedDecisions is the count the orchestrator successfully
+	// dispatched to a download client. Zero when no GrabProcessor is
+	// wired or no decisions reached the dispatch path.
+	GrabbedDecisions int
+	// PendingDecisions is the count the orchestrator deferred (delayed
+	// by a TimeDelay spec or short-circuited by a per-protocol client
+	// failure). Zero when no GrabProcessor is wired.
+	PendingDecisions int
 	// StartedAt is the wall-clock time the handler started its work.
 	StartedAt time.Time
 	// CompletedAt is the wall-clock time the handler returned.
@@ -114,28 +139,32 @@ type RssSyncCompleteEvent struct {
 
 // RssSync is the IExecute<RssSyncCommand> port. fetcher MUST be
 // non-nil — running the command without a fetcher has no meaningful
-// behaviour. decider, bus, and log are optional; nil decider skips
-// the decision pipeline (compat with the slice 4.Q wiring), nil bus
-// skips the event publish, nil log defaults to slog.Default.
+// behaviour. decider, grabber, bus, and log are optional; nil decider
+// skips the decision pipeline (compat with the slice 4.Q wiring),
+// nil grabber skips the dispatch step (compat with the slice 4.U
+// wiring), nil bus skips the event publish, nil log defaults to
+// slog.Default.
 type RssSync struct {
 	fetcher RssFetcher
 	decider RssDecider
+	grabber GrabProcessor
 	bus     *messaging.Bus
 	log     *slog.Logger
 }
 
-// NewRssSync builds the handler. fetcher MUST be non-nil; decider is
-// optional (nil → no decision pipeline). Slice 4.U added the decider
-// dep; pre-4.U callers passing only (fetcher, bus, log) keep working
-// via the new [NewRssSyncFetchOnly] constructor below.
-func NewRssSync(fetcher RssFetcher, decider RssDecider, bus *messaging.Bus, log *slog.Logger) (*RssSync, error) {
+// NewRssSync builds the handler. fetcher MUST be non-nil; decider +
+// grabber are optional. Slice 4.U added the decider dep; slice 6.A6d
+// added the grabber dep (the production *download.ProcessDownloadDecisions
+// binding). nil grabber preserves the slice-4.U behaviour — decisions
+// are produced but never dispatched.
+func NewRssSync(fetcher RssFetcher, decider RssDecider, grabber GrabProcessor, bus *messaging.Bus, log *slog.Logger) (*RssSync, error) {
 	if fetcher == nil {
 		return nil, errors.New("handlers: NewRssSync: nil fetcher")
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	return &RssSync{fetcher: fetcher, decider: decider, bus: bus, log: log}, nil
+	return &RssSync{fetcher: fetcher, decider: decider, grabber: grabber, bus: bus, log: log}, nil
 }
 
 // Execute runs the RSS sync. Body is ignored — RssSyncCommand carries
@@ -158,11 +187,11 @@ func (h *RssSync) Execute(ctx context.Context, _ string) error {
 		return err
 	}
 
-	// Slice 4.U (queue [11] sub-arc 11c): dispatch the raw fetch
-	// output through the decision pipeline. The grab step
-	// (IProcessDownloadDecisions) is still HARD-GATED on the
-	// download-client family — flagged as queue [15] follow-up.
-	var approved, rejected int
+	// Slice 4.U (queue [11] sub-arc 11c): run the decision pipeline.
+	// Slice 6.A6d (queue [15]): feed the resulting decisions into the
+	// orchestrator so approved candidates dispatch to the configured
+	// download clients.
+	var approved, rejected, grabbed, pending int
 	if h.decider != nil && len(rs) > 0 {
 		decisions := h.decider.GetRssDecision(ctx, rs, false)
 		for _, d := range decisions {
@@ -172,6 +201,13 @@ func (h *RssSync) Execute(ctx context.Context, _ string) error {
 				rejected++
 			}
 		}
+		if h.grabber != nil && len(decisions) > 0 {
+			processed := h.grabber.ProcessDecisions(ctx, decisions)
+			if processed != nil {
+				grabbed = len(processed.Grabbed)
+				pending = len(processed.Pending)
+			}
+		}
 	}
 
 	completed := time.Now().UTC()
@@ -179,6 +215,8 @@ func (h *RssSync) Execute(ctx context.Context, _ string) error {
 		slog.Int("reportsFound", len(rs)),
 		slog.Int("approved", approved),
 		slog.Int("rejected", rejected),
+		slog.Int("grabbed", grabbed),
+		slog.Int("pending", pending),
 		slog.Duration("elapsed", completed.Sub(started)),
 	)
 
@@ -191,6 +229,8 @@ func (h *RssSync) Execute(ctx context.Context, _ string) error {
 			ReportsFound:      len(rs),
 			ApprovedDecisions: approved,
 			RejectedDecisions: rejected,
+			GrabbedDecisions:  grabbed,
+			PendingDecisions:  pending,
 			StartedAt:         started,
 			CompletedAt:       completed,
 		}); pubErr != nil {
