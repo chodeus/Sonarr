@@ -53,6 +53,83 @@ jobs:
       - name: go test
         run: go test -race -count=1 ./...
 
+  contract-replay:
+    name: Contract replay (live binary)
+    runs-on: ubuntu-latest
+    needs: vet-lint-test
+    # Audit fix B.1: boot the freshly-built Go binary, run the
+    # contract replayer against it, and fail only when drift COUNT
+    # exceeds the known baseline. 9 of 53 goldens currently diverge
+    # because the C# recording captured environment-specific values
+    # (host port 9898, IsUserInteractive=true, real diskspace, real
+    # log records) that the corpus doesn't yet redact + a handful of
+    # genuine wire shapes (qualitydefinition ID assignment order,
+    # episodefile 404-vs-200, scheduled-task set). The baseline lets
+    # CI catch NEW drift without requiring those 9 to be fixed first.
+    # A separate sweep can re-record goldens against a clean C# boot
+    # OR expand corpus normalize rules and lower the baseline.
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Build sonarr
+        run: go build -trimpath -o /tmp/sonarr ./cmd/sonarr
+
+      - name: Boot sonarr in background
+        env:
+          # B.12 wiring — set the API key via env var so the test
+          # rig doesn't have to parse config.xml after first boot.
+          Sonarr__Auth__ApiKey: ci-replay-test-key
+        run: |
+          mkdir -p /tmp/sonarr-data
+          /tmp/sonarr -data=/tmp/sonarr-data -nobrowser > /tmp/sonarr.log 2>&1 &
+          echo $! > /tmp/sonarr.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8989/ping > /dev/null; then
+              echo "sonarr ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8989/ping > /dev/null
+
+      - name: Contract replay
+        env:
+          CONTRACT_DRIFT_BASELINE: "9"
+        run: |
+          set -o pipefail
+          go test ./test/contract/replayer/... \
+            -contract.base=http://127.0.0.1:8989 \
+            -contract.api-key=ci-replay-test-key \
+            -contract.golden=$(pwd)/test/contract/golden \
+            -contract.corpus=$(pwd)/test/contract/corpus \
+            -run TestReplay -v 2>&1 | tee /tmp/replay.out || true
+          DRIFT=$(grep -c "contract drift" /tmp/replay.out || true)
+          echo "::notice::Contract replay drift count: ${DRIFT} (baseline ${CONTRACT_DRIFT_BASELINE})"
+          if [ "${DRIFT}" -gt "${CONTRACT_DRIFT_BASELINE}" ]; then
+            echo "::error::Contract replay drift (${DRIFT}) exceeds baseline (${CONTRACT_DRIFT_BASELINE}). New wire-shape regression."
+            exit 1
+          fi
+          if [ "${DRIFT}" -lt "${CONTRACT_DRIFT_BASELINE}" ]; then
+            echo "::warning::Contract replay drift (${DRIFT}) is BELOW baseline (${CONTRACT_DRIFT_BASELINE}). Lower CONTRACT_DRIFT_BASELINE in build_go.yml to keep the regression guard tight."
+          fi
+
+      - name: Stop sonarr
+        if: always()
+        run: |
+          if [ -f /tmp/sonarr.pid ]; then
+            kill "$(cat /tmp/sonarr.pid)" 2>/dev/null || true
+          fi
+
+      - name: Sonarr log
+        if: always()
+        run: cat /tmp/sonarr.log 2>/dev/null || true
+
   build-matrix:
     name: Build ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
     runs-on: ubuntu-latest

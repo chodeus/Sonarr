@@ -70,35 +70,35 @@ Tests: `internal/host/auth_test.go` extended with `TestRequireAPIKeyLocalBypass`
 
 # Tier B — Important
 
-## B.1 — Contract replayer not wired to CI
+## B.1 — CLOSED in slice 5.J8 (contract-replay job wired with drift baseline)
 
-**Severity:** 🟡 Important — without this, A.1-class regressions land silently
-**Source:** Carried from `TEST_QUALITY_AUDIT.md` §2–3
+New `contract-replay` job in `.github/workflows/build_go.yml`:
 
-**Problem:** `test/contract/replayer/replayer.go:46-48` self-skips when `-contract.base` is unset. `.github/workflows/build_go.yml:53-54` runs `go test -race -count=1 ./...` with no `-contract.base`. The 83 golden files at `test/contract/golden/` are recorded against real C# Sonarr 10.0.0.26712 (`Server: Kestrel`, `X-Application-Version`, `X-Miniprofiler-Ids`) — authentic data, just not exercised.
+1. `needs: vet-lint-test` so it only runs once the base tests pass.
+2. Builds the Go binary with the same `go build -trimpath` invocation the existing build matrix uses.
+3. Boots `/tmp/sonarr -data=/tmp/sonarr-data -nobrowser` in the background with `Sonarr__Auth__ApiKey=ci-replay-test-key` set via env var (B.12 wiring — no config.xml parsing needed).
+4. Waits up to 30s for `/ping` to respond, then runs `go test ./test/contract/replayer/...` with the recorded goldens.
+5. Counts "contract drift" lines from the test output. Fails if drift count > 9 (the current baseline) — a regression guard. Warns if drift count is BELOW 9 (asking the operator to lower the baseline).
 
-**Fix shape:** add a job to `build_go.yml`:
+**Baseline-failure inventory (9 entries)** — captured locally before wiring CI:
 
-```yaml
-- name: Boot Go binary
-  run: |
-    ./dist/sonarr -appdata $(mktemp -d) -nobrowser &
-    echo $! > sonarr.pid
-    timeout 30 sh -c 'until curl -s http://127.0.0.1:8989/ping; do sleep 1; done'
-    # Discover the auto-generated key from config.xml or pass --api-key on boot
+- `v3.system.status` — `isUserInteractive` differs (env: TTY vs CI headless).
+- `v3.system.routes` — C# recording is the full Swashbuckle route table (~336 KB); Go's port has a different surface.
+- `v3.system.health` — C# emitted DownloadClientCheck + IndexerSearchCheck; Go emits SkyHookCheck + ApiKeyValidationCheck. Different default healthcheck set.
+- `v3.system.tasks` — different scheduled-task default set + the last-execution timestamps weren't redacted.
+- `v3.config.host` — C# recording was at port 9898 (non-default); Go boots at 8989. Plus `analyticsEnabled` + `launchBrowser` defaults differ.
+- `v3.qualitydefinition` — WEBDL-480p / WEBRip-480p (etc.) IDs are swapped — seed insertion order differs from C#. Worth investigating: either a real bug or normalize the corpus to sort by quality.id.
+- `v3.episodefile.list` — Go returns 200 with `[]`; C# returns 404 with a stack trace because the seriesId=1 filter doesn't match. Real wire divergence to fix.
+- `v3.diskspace` — C# recording captures the real host's mounts (9 entries); Go on CI ephemeral disk has different mounts.
+- `v3.log` — C# recording has 7 historical log records from the recording host; fresh Go boot has 0.
 
-- name: Contract replay
-  run: |
-    go test ./test/contract/replayer/... \
-      -contract.base=http://127.0.0.1:8989 \
-      -contract.api-key=$TEST_API_KEY \
-      -contract.golden=./test/contract/golden \
-      -contract.corpus=./test/contract/corpus
-```
+Most of these are environment-dependent (the C# binary was recorded on a particular operator's machine). The corpus normalize rules don't redact host-specific fields like `port`, `isUserInteractive`, disk mounts, or log records. A separate sweep could either:
 
-No live C# binary needed at CI time — goldens are checked in.
+- Add `redact_paths` entries for the env-dependent values (lower baseline, keep current goldens).
+- Re-record goldens against a clean C# boot in a Docker container (defeats some of the value but levels the playing field).
+- Tighten the few genuine divergences (`v3.episodefile.list` 404 shape, `v3.qualitydefinition` ID ordering).
 
-**Verification:** intentionally regress one of the v3 handlers locally (e.g., change a field cast), push to a feature branch, confirm CI fails. Then revert.
+The CI job catches NEW drift now even with the baseline budget — if any of the currently-passing 44 entries breaks, drift will tick to 10 and the job will fail.
 
 ---
 
@@ -261,22 +261,18 @@ So B.7 in its written form is already fully closed. Audit was stale (probably bu
 
 ---
 
-## B.10 — First-run seed data missing (QualityProfile, QualityDefinition, Config table)
+## B.10 — REJECTED: audit was wrong; first-run seeding already wired
 
-**Severity:** 🟡 Important — fresh-install UX differs from C#
-**Source:** Round-2 audit
+**Rejected in slice 5.J7.**
 
-**Problem:** On a freshly-migrated empty DB, C# Sonarr seeds:
-- Default `QualityProfile` named "Any" with default `Items` list and cutoffs
-- All `QualityDefinition` rows (one per quality enum value) with default min/max/preferred sizes
-- Initial `Config` table key-value pairs for non-XML preferences (recycling bin path, naming defaults, etc.)
-- Default `DelayProfile` (tag-less catch-all) — *this one IS seeded* via `00070_delay_profile.sql`
+All three pieces the audit claims missing are actually seeded today:
 
-Go only seeds the DelayProfile via migration. The others appear missing — a freshly-booted Go binary lacks the rows users expect.
+- **Default QualityProfile + Items + FormatItems** — seeded by `qualityProfilesSvc.SeedDefaults(ctx)` at `cmd/sonarr/main.go:1184`, ported from C# `QualityProfileService.Handle(ApplicationStartedEvent)` at `QualityProfileService.cs:91-157`. Tests at `internal/qualityprofiles/defaults_test.go:180-205` cover the empty-DB case (inserts six defaults: Any / SD / HD-720p / HD-1080p / Ultra-HD / HD-720p-or-1080p) and the no-op-when-any-profile-exists guard.
+- **QualityDefinition rows** — seeded by `qualityDefSvc.EnsureDefaults(ctx)` at `cmd/sonarr/main.go:565`, ported from C# `QualityDefinitionService.InsertMissingDefinitions` at `:68-96`. Idempotent insert-missing + delete-orphan pass over `quality.DefaultDefinitions()`.
+- **Config table key-value pairs** — neither C# nor Go pre-seeds these. Both use a default-on-read pattern (C# `ConfigService.GetValue(key, default, persist=false)` at `ConfigService.cs:454-474`; Go `config.Provider.getString(key, def)` at `internal/config/provider.go:128-136`). Config rows materialise lazily on writes, exactly as in C#. Audit conflated "rows absent in `Config` table" with "default value not available to consumers" — the second is what matters, and it works.
+- **Default DelayProfile** — seeded by migration `00070_delay_profile.sql` (the audit acknowledges this).
 
-**Fix shape:** either (a) add seed migrations (00231_seed_quality_definitions.sql, 00232_seed_default_qualityprofile.sql, 00233_seed_config_defaults.sql) that match C#'s first-run output byte-for-byte, or (b) port C#'s `IExecute<HousekeepingCommand>` first-run-bootstrap logic to Go startup. Option (a) is simpler and is more cutover-friendly (the schema head matches between binaries; no startup-order coupling).
-
-**Verification:** boot Go against an empty SQLite DB; assert that `GET /api/v3/qualityprofile` returns the "Any" profile, `GET /api/v3/qualitydefinition` returns the full quality list, and `Config` table contains the expected default keys. Cross-check that C# against an empty DB produces the same rows.
+So B.10 is closed by code that pre-dates the audit. The audit likely sampled an early-Phase-1 snapshot before the bootstrap wiring landed.
 
 ---
 
