@@ -566,12 +566,14 @@ func (q *QBittorrent) RemoveItem(ctx context.Context, item *downloadclients.Item
 //     "localhost" (case-insensitive). The C# arm at `:434` checks
 //     literal equality against "localhost"; the Go port relaxes to
 //     case-insensitive since URL hostnames are case-folded anyway.
-//   - OutputRootFolders — [ospath.New(SavePath)]. The C# tree
-//     additionally consults the category-specific savePath via
-//     [Proxy.GetLabels] when TvCategory is set (`:407-430`); that
-//     branch is deferred to a follow-up slice — the GetLabels
-//     endpoint port hasn't landed and the global SavePath is
-//     load-bearing for the common case.
+//   - OutputRootFolders — when settings.TvCategory is non-empty AND
+//     [Proxy.GetLabels] returns a matching label with a non-empty
+//     per-category SavePath, that category-specific path is used
+//     (slice 6.G — closes the `:407-430` deferral). Otherwise falls
+//     back to the global prefs.SavePath. Both arms route through
+//     remapOutput so off-host qBittorrent surfaces a Sonarr-side
+//     path. A GetLabels failure silently degrades to the global
+//     SavePath (best-effort; matches the C# catch-and-continue).
 //   - RemovesCompletedDownloads — see [removesCompletedDownloads].
 func (q *QBittorrent) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
 	if q.proxy == nil {
@@ -585,10 +587,36 @@ func (q *QBittorrent) GetStatus(ctx context.Context) (*downloadclients.ClientInf
 		IsLocalhost:               q.settings.Host == "127.0.0.1" || strings.EqualFold(q.settings.Host, "localhost"),
 		RemovesCompletedDownloads: removesCompletedDownloads(prefs),
 	}
-	if strings.TrimSpace(prefs.SavePath) != "" {
-		info.OutputRootFolders = []ospath.OsPath{q.remapOutput(ctx, prefs.SavePath)}
+	savePath := strings.TrimSpace(prefs.SavePath)
+	if tv := strings.TrimSpace(q.settings.TvCategory); tv != "" {
+		if catPath := q.categorySavePath(ctx, tv); catPath != "" {
+			savePath = catPath
+		}
+	}
+	if savePath != "" {
+		info.OutputRootFolders = []ospath.OsPath{q.remapOutput(ctx, savePath)}
 	}
 	return info, nil
+}
+
+// categorySavePath looks up the per-category SavePath override for
+// the supplied TvCategory via GetLabels. Returns "" when GetLabels
+// fails, no label matches the category name (case-sensitive — the
+// qBittorrent API treats category names as exact-match keys), or
+// the matched label has no per-category SavePath override. Mirrors
+// the C# arm at `:407-430`. Slice 6.G.
+func (q *QBittorrent) categorySavePath(ctx context.Context, tvCategory string) string {
+	labels, err := q.proxy.GetLabels(ctx, q.settings)
+	if err != nil {
+		q.log.Warn("qbittorrent: GetStatus: GetLabels failed; falling back to global SavePath",
+			"category", tvCategory, "err", err)
+		return ""
+	}
+	label, ok := labels[tvCategory]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(label.SavePath)
 }
 
 // removesCompletedDownloads ports C# `QBittorrent.RemovesCompletedDownloads`

@@ -246,3 +246,132 @@ func TestGetStatus_MalformedJSONErrors(t *testing.T) {
 		t.Fatal("GetStatus(malformed) err = nil, want parse error")
 	}
 }
+
+// ============================================================================
+// Slice 6.G: category-aware GetStatus.SavePath. When TvCategory is set
+// and GetLabels returns a matching label with a non-empty per-category
+// SavePath, the OutputRootFolders surfaces that path instead of the
+// global SavePath.
+// ============================================================================
+
+// prefsPlusLabelsHandler serves both /api/v2/app/preferences and
+// /api/v2/torrents/categories — needed for the category-aware
+// GetStatus arm added in slice 6.G.
+type prefsPlusLabelsHandler struct {
+	prefsBody  string
+	labelsBody string
+	labelCalls atomic.Int32
+}
+
+func (h *prefsPlusLabelsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/api/v2/auth/login":
+		http.SetCookie(w, &http.Cookie{Name: "SID", Value: "sid"})
+		_, _ = io.WriteString(w, "Ok.")
+	case "/api/v2/app/preferences":
+		_, _ = io.WriteString(w, h.prefsBody)
+	case "/api/v2/torrents/categories":
+		h.labelCalls.Add(1)
+		_, _ = io.WriteString(w, h.labelsBody)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func TestGetStatus_PerCategorySavePathWinsOverGlobal(t *testing.T) {
+	t.Parallel()
+	h := &prefsPlusLabelsHandler{
+		prefsBody:  `{"save_path":"/global/dl","dht":true,"max_ratio_act":0}`,
+		labelsBody: `{"tv-sonarr":{"name":"tv-sonarr","savePath":"/per-cat/tv"}}`,
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := newQBitForStatus(t, srv, func(s *qbittorrent.Settings) {
+		s.ApiKey = "k"
+		s.TvCategory = "tv-sonarr"
+	})
+	info, err := q.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if len(info.OutputRootFolders) != 1 || info.OutputRootFolders[0].String() != "/per-cat/tv" {
+		t.Errorf("OutputRootFolders = %v, want [/per-cat/tv]", info.OutputRootFolders)
+	}
+	if h.labelCalls.Load() != 1 {
+		t.Errorf("labels endpoint called %d times, want 1", h.labelCalls.Load())
+	}
+}
+
+func TestGetStatus_LabelMissingFallsBackToGlobalSavePath(t *testing.T) {
+	t.Parallel()
+	h := &prefsPlusLabelsHandler{
+		prefsBody:  `{"save_path":"/global/dl","dht":true,"max_ratio_act":0}`,
+		labelsBody: `{"other-category":{"name":"other-category","savePath":"/other"}}`,
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := newQBitForStatus(t, srv, func(s *qbittorrent.Settings) {
+		s.ApiKey = "k"
+		s.TvCategory = "tv-sonarr" // not in labels response
+	})
+	info, _ := q.GetStatus(context.Background())
+	if len(info.OutputRootFolders) != 1 || info.OutputRootFolders[0].String() != "/global/dl" {
+		t.Errorf("OutputRootFolders = %v, want [/global/dl] (category not found)", info.OutputRootFolders)
+	}
+}
+
+func TestGetStatus_LabelMatchedButSavePathEmptyFallsBackToGlobal(t *testing.T) {
+	t.Parallel()
+	h := &prefsPlusLabelsHandler{
+		prefsBody:  `{"save_path":"/global/dl","dht":true,"max_ratio_act":0}`,
+		labelsBody: `{"tv-sonarr":{"name":"tv-sonarr","savePath":""}}`,
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := newQBitForStatus(t, srv, func(s *qbittorrent.Settings) {
+		s.ApiKey = "k"
+		s.TvCategory = "tv-sonarr"
+	})
+	info, _ := q.GetStatus(context.Background())
+	if len(info.OutputRootFolders) != 1 || info.OutputRootFolders[0].String() != "/global/dl" {
+		t.Errorf("OutputRootFolders = %v, want [/global/dl] (per-cat savePath empty)", info.OutputRootFolders)
+	}
+}
+
+func TestGetStatus_EmptyTvCategorySkipsLabelLookup(t *testing.T) {
+	t.Parallel()
+	h := &prefsPlusLabelsHandler{
+		prefsBody:  `{"save_path":"/global/dl","dht":true,"max_ratio_act":0}`,
+		labelsBody: `{"tv-sonarr":{"name":"tv-sonarr","savePath":"/per-cat/tv"}}`,
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := newQBitForStatus(t, srv, func(s *qbittorrent.Settings) {
+		s.ApiKey = "k"
+		s.TvCategory = "" // empty → skip labels lookup
+	})
+	if _, err := q.GetStatus(context.Background()); err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if h.labelCalls.Load() != 0 {
+		t.Errorf("labels called %d times with empty TvCategory, want 0", h.labelCalls.Load())
+	}
+}
+
+func TestGetStatus_LabelEndpointErrorFallsBackToGlobalSavePath(t *testing.T) {
+	t.Parallel()
+	// Prefs server only — labels endpoint returns 404 (the existing
+	// newPrefsServer scaffolding doesn't serve /categories).
+	_, srv := newPrefsServer(t, `{"save_path":"/global/dl","dht":true,"max_ratio_act":0}`)
+	q := newQBitForStatus(t, srv, func(s *qbittorrent.Settings) {
+		s.ApiKey = "k"
+		s.TvCategory = "tv-sonarr"
+	})
+	info, err := q.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus must not propagate labels-endpoint error: %v", err)
+	}
+	if len(info.OutputRootFolders) != 1 || info.OutputRootFolders[0].String() != "/global/dl" {
+		t.Errorf("OutputRootFolders = %v, want [/global/dl] (labels endpoint failed)", info.OutputRootFolders)
+	}
+}
