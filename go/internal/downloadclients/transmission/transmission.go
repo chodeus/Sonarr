@@ -40,17 +40,62 @@ type Transmission struct {
 	settings Settings
 	proxy    *Proxy
 	def      *downloadclients.DownloadClient
+	rpm      downloadclients.RemotePathMapper
 	log      *slog.Logger
 }
 
 // New constructs a Transmission Provider against the resolved
 // settings + proxy. Used by both the registry [Constructor] and by
-// tests that pin a stub HTTPDoer.
+// tests that pin a stub HTTPDoer. Remote-path mapping is bound via
+// [Transmission.SetRemotePathMapper] after construction — keeps the
+// signature stable while letting tests opt out (nil mapper degrades
+// to "no remap" at every OutputPath site).
 func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, log *slog.Logger) *Transmission {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Transmission{settings: settings, proxy: proxy, def: def, log: log}
+}
+
+// SetRemotePathMapper binds the [downloadclients.RemotePathMapper]
+// the torrentToItem and GetStatus paths consult to translate the
+// Transmission-side absolute paths (downloadDir + per-torrent name)
+// back to Sonarr-side paths. Optional — nil mapper degrades to the
+// raw RPC-side path at every call site (matches the pre-6.B
+// behaviour). Mirrors C# `TransmissionBase.cs` where the C#
+// RemotePathMappingService.RemapRemoteToLocal is consulted at the
+// same sites. Slice 6.B4 (Phase 6.B wire-up arc).
+//
+// Returns the receiver for chainable construction.
+func (t *Transmission) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) *Transmission {
+	t.rpm = rpm
+	return t
+}
+
+// remapOutput translates a Transmission-side absolute path back to a
+// Sonarr-side path via the wired [downloadclients.RemotePathMapper].
+// Returns the raw path unchanged when the mapper is nil, when the
+// input is empty, or when the mapper returns an error (the error is
+// logged at debug — a remap failure shouldn't fail the calling
+// GetItems / GetStatus call). Centralises the nil-safe lookup so the
+// per-call sites stay terse.
+func (t *Transmission) remapOutput(ctx context.Context, raw string) ospath.OsPath {
+	if raw == "" {
+		return ospath.OsPath{}
+	}
+	remote := ospath.New(raw)
+	if t.rpm == nil {
+		return remote
+	}
+	local, err := t.rpm.RemapRemoteToLocal(ctx, t.settings.Host, remote)
+	if err != nil {
+		t.log.Debug("transmission: RemapRemoteToLocal failed; using raw path",
+			slog.String("host", t.settings.Host),
+			slog.String("path", raw),
+			slog.Any("err", err))
+		return remote
+	}
+	return local
 }
 
 // Name returns the user-facing label. Mirrors C# `Transmission.Name`
@@ -179,7 +224,7 @@ func (t *Transmission) GetItems(ctx context.Context) ([]*downloadclients.Item, e
 		if !t.matchesCategory(tor, supportsLabels) {
 			continue
 		}
-		item := t.torrentToItem(tor, info)
+		item := t.torrentToItem(ctx, tor, info)
 		// Seed-limit + can-move gating uses the session config.
 		item.CanBeRemoved = info.RemoveCompletedDownloads && hasReachedSeedLimit(tor, item.SeedRatio, loadCfg)
 		item.CanMoveFiles = item.CanBeRemoved && tor.Status == TorrentStatusStopped
@@ -220,15 +265,19 @@ func (t *Transmission) matchesCategory(tor TransmissionTorrent, supportsLabels b
 }
 
 // torrentToItem builds the typed Item from a Transmission torrent.
-func (t *Transmission) torrentToItem(tor TransmissionTorrent, info *downloadclients.ItemClientInfo) *downloadclients.Item {
-	outputPath := ospath.New(tor.DownloadDir)
+// Slice 6.B4 routes the resolved outputPath through
+// [Transmission.remapOutput] so off-host Transmission instances
+// surface a Sonarr-side path; nil mapper / no match → raw RPC-side
+// path.
+func (t *Transmission) torrentToItem(ctx context.Context, tor TransmissionTorrent, info *downloadclients.ItemClientInfo) *downloadclients.Item {
 	// Append the torrent name (C# `:259-262` GetOutputPath). Replace
 	// ':' to dodge Windows filename rules — match C# behaviour.
 	safeName := strings.ReplaceAll(tor.Name, ":", "_")
+	rawPath := tor.DownloadDir
 	if safeName != "" {
-		joined := joinPath(tor.DownloadDir, safeName)
-		outputPath = ospath.New(joined)
+		rawPath = joinPath(tor.DownloadDir, safeName)
 	}
+	outputPath := t.remapOutput(ctx, rawPath)
 
 	var ratio *float64
 	if tor.DownloadedEver > 0 {
@@ -337,8 +386,9 @@ func (t *Transmission) RemoveItem(ctx context.Context, item *downloadclients.Ite
 
 // GetStatus ports C# `TransmissionBase.GetStatus` at `:190-214`.
 // Returns the destDir-derived OutputRootFolders + IsLocalhost flag.
-// RemotePathMappingService remap is deferred (same as SAB sub-arc
-// C2a) — destDir is the raw RPC-side path.
+// Slice 6.B4 routes destDir through [Transmission.remapOutput] so
+// off-host Transmission instances surface a Sonarr-side path; nil
+// mapper / no match → raw RPC-side path.
 //
 // Slice 4.BT (C-cleanup sub-arc C2b).
 func (t *Transmission) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
@@ -357,7 +407,7 @@ func (t *Transmission) GetStatus(ctx context.Context) (*downloadclients.ClientIn
 		IsLocalhost: t.settings.Host == "127.0.0.1" || strings.EqualFold(t.settings.Host, "localhost"),
 	}
 	if destDir != "" {
-		info.OutputRootFolders = []ospath.OsPath{ospath.New(destDir)}
+		info.OutputRootFolders = []ospath.OsPath{t.remapOutput(ctx, destDir)}
 	}
 	return info, nil
 }
@@ -596,7 +646,16 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	if err != nil {
 		return nil, err
 	}
-	return New(def, settings, proxy, log), nil
+	tx := New(def, settings, proxy, log)
+	// Slice 6.B4: cast the typed-as-any RemotePathMappingService to
+	// the narrow RemotePathMapper interface. nil dep or cast miss
+	// leaves tx.rpm nil; per-call sites fall through to the raw
+	// RPC-side path. Test harnesses + single-host setups run with
+	// nil and behave identically to the pre-6.B port.
+	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
+		tx.SetRemotePathMapper(rpm)
+	}
+	return tx, nil
 }
 
 // init registers Transmission with the global registry.

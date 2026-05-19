@@ -16,6 +16,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/transmission"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // ============================================================================
@@ -975,3 +976,132 @@ func equalBytes(a, b []byte) bool {
 	}
 	return true
 }
+
+// ============================================================================
+// Slice 6.B4: Transmission RemotePathMapper wire-up — torrentToItem +
+// GetStatus consult the mapper to translate the Transmission-side
+// downloadDir / per-torrent path back to Sonarr-side paths.
+// ============================================================================
+
+// stubMapper satisfies downloadclients.RemotePathMapper with a fixed
+// host-keyed prefix-swap rule.
+type stubMapper struct {
+	host         string
+	remotePrefix string
+	localPrefix  string
+	err          error
+}
+
+func (m *stubMapper) RemapRemoteToLocal(_ context.Context, host string, remotePath ospath.OsPath) (ospath.OsPath, error) {
+	if m.err != nil {
+		return remotePath, m.err
+	}
+	if !strings.EqualFold(host, m.host) {
+		return remotePath, nil
+	}
+	raw := remotePath.FullPath()
+	if !strings.HasPrefix(raw, m.remotePrefix) {
+		return remotePath, nil
+	}
+	return ospath.New(m.localPrefix + strings.TrimPrefix(raw, m.remotePrefix)), nil
+}
+
+func TestTransmission_GetItems_RemapsTorrentOutputPath(t *testing.T) {
+	t.Parallel()
+	fake := &fakeTransmission{
+		versionResp:  `{"version":"4.0.5","rpc-version":"17"}`,
+		torrentsResp: `{"torrents":[{"hashString":"abc","name":"Show.S01E01","downloadDir":"/tx/done","totalSize":10,"leftUntilDone":0,"labels":["tv"],"status":6,"eta":-1,"isFinished":true}]}`,
+	}
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+	prov := setTvCategory(t, newTransmissionForURL(t, srv), srv, "tv")
+	prov.SetRemotePathMapper(&stubMapper{
+		host:         stripScheme(srv.URL),
+		remotePrefix: "/tx/done",
+		localPrefix:  "/sonarr/done",
+	})
+	got, err := prov.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("GetItems: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if want := "/sonarr/done/Show.S01E01"; got[0].OutputPath.FullPath() != want {
+		t.Errorf("OutputPath = %q, want %q", got[0].OutputPath.FullPath(), want)
+	}
+}
+
+func TestTransmission_GetItems_NilMapperKeepsRawRPCPath(t *testing.T) {
+	t.Parallel()
+	fake := &fakeTransmission{
+		versionResp:  `{"version":"4.0.5","rpc-version":"17"}`,
+		torrentsResp: `{"torrents":[{"hashString":"abc","name":"Show.S01E01","downloadDir":"/tx/done","totalSize":10,"leftUntilDone":0,"labels":["tv"],"status":6,"eta":-1,"isFinished":true}]}`,
+	}
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+	prov := setTvCategory(t, newTransmissionForURL(t, srv), srv, "tv")
+	got, err := prov.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("GetItems: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if want := "/tx/done/Show.S01E01"; got[0].OutputPath.FullPath() != want {
+		t.Errorf("OutputPath = %q, want raw RPC %q (nil mapper)", got[0].OutputPath.FullPath(), want)
+	}
+}
+
+func TestTransmission_GetStatus_RemapsDestDir(t *testing.T) {
+	t.Parallel()
+	fake := &fakeTransmission{
+		configResp: `{"download-dir":"/tx/done","version":"4.0.5"}`,
+	}
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+	prov := newTransmissionForURL(t, srv)
+	prov.SetRemotePathMapper(&stubMapper{
+		host:         stripScheme(srv.URL),
+		remotePrefix: "/tx/done",
+		localPrefix:  "/sonarr/done",
+	})
+	got, err := prov.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if len(got.OutputRootFolders) != 1 {
+		t.Fatalf("OutputRootFolders = %+v, want 1 entry", got.OutputRootFolders)
+	}
+	// destDir = download-dir + TvCategory (NewSettings defaults
+	// TvCategory to "tv-sonarr"); remap then swaps /tx/done →
+	// /sonarr/done so the full destDir surfaces remapped.
+	if want := "/sonarr/done/tv-sonarr"; got.OutputRootFolders[0].FullPath() != want {
+		t.Errorf("OutputRootFolders[0] = %q, want %q", got.OutputRootFolders[0].FullPath(), want)
+	}
+}
+
+func TestTransmission_RemapErrorFallsBackToRawPath(t *testing.T) {
+	t.Parallel()
+	fake := &fakeTransmission{
+		versionResp:  `{"version":"4.0.5","rpc-version":"17"}`,
+		torrentsResp: `{"torrents":[{"hashString":"abc","name":"X","downloadDir":"/tx/x","totalSize":1,"leftUntilDone":0,"labels":["tv"],"status":6,"eta":-1,"isFinished":true}]}`,
+	}
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+	prov := setTvCategory(t, newTransmissionForURL(t, srv), srv, "tv")
+	prov.SetRemotePathMapper(&stubMapper{host: stripScheme(srv.URL), err: errors.New("rpm blew up")})
+	got, err := prov.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("GetItems: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if want := "/tx/x/X"; got[0].OutputPath.FullPath() != want {
+		t.Errorf("OutputPath = %q, want raw %q on remap error", got[0].OutputPath.FullPath(), want)
+	}
+}
+
+// Compile-time guard.
+var _ downloadclients.RemotePathMapper = (*stubMapper)(nil)
