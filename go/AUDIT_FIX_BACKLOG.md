@@ -157,19 +157,9 @@ The CI job catches NEW drift now even with the baseline budget — if any of the
 
 ---
 
-## B.5 — Missing healthchecks (10) + stub healthchecks (2)
+## B.5 — REAL (verified 2026-05-20 in slice 5.J9; not yet implemented)
 
-**Severity:** 🟡 Important — silently misconfigured installs go undetected
-**Source:** New finding
-
-**Real (14):** ApiKeyValidationCheck, AppDataLocationCheck, DownloadClientStatusCheck, ImportListStatusCheck, ImportListRootFolderCheck, IndexerStatusCheck, IndexerRssCheck, IndexerSearchCheck, NotificationStatusCheck, RootFolderCheck, RecyclingBinCheck, RemovedSeriesCheck, SystemTimeCheck (partial — needs verification), and the `ImportListStatusCheck`/`ImportListRootFolderCheck` pair flagged in `STATUS.md` as recently landed.
-
-**Stub (2):**
-
-- `internal/healthcheck/proxy.go` — `ProxyCheck` always returns OK because host-config keyvalues store isn't ported. Should validate proxy reachability when configured. Wired stub at `cmd/sonarr/healthcheck_wiring.go:283-310`.
-- `internal/healthcheck/system_time.go` — calls `services.sonarr.tv/v1/time` but logic is partial; verify it returns correct severity when out of sync.
-
-**Missing (10):**
+**10 missing healthchecks — confirmed not present in `internal/healthcheck/`:**
 
 - DownloadClientRootFolderCheck — DC folder writable
 - DownloadClientRemovesCompletedCheck — DC's "remove completed" setting matches Sonarr's expectation
@@ -183,7 +173,11 @@ The CI job catches NEW drift now even with the baseline budget — if any of the
 - RemotePathMappingCheck — configured remote paths reachable
 - UpdateCheck — update folder writable
 
-**Fix shape:** each missing check is a single Go file matching the existing pattern (`internal/healthcheck/<name>.go`) plus registration in the wiring file. Reference: the corresponding C# file under `src/NzbDrone.Core/HealthCheck/Checks/`. Prioritize by ops-impact: MountCheck and UpdateCheck first.
+**Partial — ProxyCheck (1):** `internal/healthcheck/proxy.go` is fully ported (resolve + ping + status-400 branching) but production wiring at `cmd/sonarr/healthcheck_wiring.go:283-310` injects `proxyHostConfigStub` (always returns ProxyEnabled=false). The check short-circuits to OK in every install. Genuine partial — finishing it needs the C# HostConfig keyvalues-backed `IConfigService` to land.
+
+**SystemTimeCheck — not a stub (audit was wrong):** `internal/healthcheck/system_time.go` ports the full `services.sonarr.tv/v1/time` fetch + drift threshold logic. Functional today. Audit's "verify it returns correct severity when out of sync" is already covered by the existing tests.
+
+**Fix shape:** each missing check is a single Go file matching the existing pattern (`internal/healthcheck/<name>.go`) plus registration in `cmd/sonarr/healthcheck_wiring.go`. Reference: the corresponding C# file under `src/NzbDrone.Core/HealthCheck/Checks/`. Prioritize by ops-impact: MountCheck and UpdateCheck first.
 
 **Verification:** new healthcheck appears in `GET /api/v3/health` response. Unit test for each.
 
@@ -221,28 +215,27 @@ So B.7 in its written form is already fully closed. Audit was stale (probably bu
 
 ---
 
-## B.8 — Missing standalone read endpoints
+## B.8 — REJECTED: audit list is stale; all endpoints already wired
 
-**Severity:** 🟡 Important — features missing from the port surface
-**Source:** Carried from `PHASE_5_AUDIT.md §"Other reads missing entirely"`
+**Rejected in slice 5.J9.**
 
-**Verify each against current tree (some may have landed since 2026-05-18):**
+Verified each route against `cmd/sonarr/host_wiring.go`:
 
-- `GET /api/v3/calendar/feed` (Sonarr.ics export)
-- `GET /api/v3/diskspace`
-- `GET /api/v3/filesystem` (+ `/type`, `/mediafiles`)
-- `GET /api/v3/log` (+ `/file`, `/file/{filename}`, `/file/update`)
-- `GET /api/v3/manualimport`
-- `GET /api/v3/parse`
-- `GET /api/v3/rename` (+ `/bulk`)
-- `GET /api/v3/series/lookup` (+ `/{id}/folder`)
-- `GET /api/v3/system/backup` (list)
-- `GET /api/v3/system/task` (+ by-id)
-- `GET /api/v3/release` (search — see B.4)
-- `GET /api/v3/mediacover/{seriesId}/{filename}`
-- `GET /api/v3/indexerflag`
+- ✓ `GET /api/v3/calendar/feed` (Sonarr.ics) — wired
+- ✓ `GET /api/v3/diskspace` — wired
+- ✓ `GET /api/v3/filesystem` (+ `/type`, `/mediafiles`) — wired
+- ✓ `GET /api/v3/log` (+ `/file`, `/file/{filename}`, `/file/update`, `/file/update/{filename}`) — wired
+- ✓ `GET /api/v3/manualimport` — wired
+- ✓ `GET /api/v3/parse` — wired
+- ✓ `GET /api/v3/rename` (+ `/bulk`) — wired
+- ✓ `GET /api/v3/series/lookup` — wired
+- ✓ `GET /api/v3/series/{id}/folder` — wired (the audit's `/api/v3/series/lookup/{id}/folder` is a misread of the C# route; `SeriesFolderController.cs:8,20` uses `[V3ApiController("series")] + [HttpGet("{id}/folder")]` → `/api/v3/series/{id}/folder`, NOT under `lookup`)
+- ✓ `GET /api/v3/system/backup` (list) — wired
+- ✓ `GET /api/v3/system/task` (+ by-id) — wired
+- ✓ `GET /api/v3/mediacover/{seriesId}/{filename}` — wired
+- ✓ `GET /api/v3/indexerflag` — wired
 
-**Fix shape:** mechanical per `PHASE_5_AUDIT.md §Tier 3`. Verify which still apply before working through them.
+`GET /api/v3/release` (the search endpoint) is the only one still stubbed — but that's tracked separately as B.4.
 
 ---
 
