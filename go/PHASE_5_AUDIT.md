@@ -1,5 +1,15 @@
 # Phase 5 Audit — Find & Fix Backlog
 
+> **Snapshot 2026-05-18 — superseded by `AUDIT_FIX_BACKLOG.md` and `STATUS.md` (verified 2026-05-20).**
+>
+> Several headline claims below are no longer true:
+> - "Zero write endpoints under /api/v3" — FALSE. ~40 POST/PUT/DELETE routes are wired in `cmd/sonarr/host_wiring.go` with real handler bodies (tag, customformat (+bulk), customfilter, autotagging, delayprofile (+reorder), config/host, config/ui, series, command, blocklist, and provider CUD for downloadclient/importlist/indexer/metadata/notification).
+> - "Error response shape drift (text/plain)" — FIXED. `internal/httperr/httperr.go` ships the C# `ErrorModel` envelope and the FluentValidation 400 array shape; zero `http.Error()` calls remain under `internal/api/v3/`.
+> - "18 download clients schema-only" — STALE. qBittorrent, Deluge, NZBGet, SABnzbd, and Transmission have landed (~14 remain, not 18).
+> - "Backup restore endpoint missing" — IMPLEMENTED (`internal/api/v3/system_backup.go`).
+>
+> The Tier 1/2/3 backlog structure below still has reusable prioritization for the remaining provider, healthcheck, and read-endpoint work — but for the live state of port-blocking issues see `AUDIT_FIX_BACKLOG.md`.
+
 This document is the authoritative inventory of gaps in the Go port as of 2026-05-18 (post-slice 4.FW). It exists because the byte-equal contract harness, by design, only proves wire-shape parity on the *read side*. Four independent audit subagents (endpoint coverage, write-path coverage, provider implementation, cross-cutting concerns) ran against the post-4.FW tree and produced the findings below.
 
 Pairs with `go/PHASE_6_SCOPE.md` (which scopes the operational gate). This doc scopes the *code-side gap* the operational gate would otherwise have to find.

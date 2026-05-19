@@ -1,0 +1,456 @@
+# Audit Fix Backlog — for the porting session
+
+**Generated:** 2026-05-20
+**By:** External review session (separate from the porting Claude that maintains `STATUS.md`)
+**Pairs with:** `TEST_QUALITY_AUDIT.md`, `PORT_ACCURACY_AUDIT.md` (deeper findings; this file is the actionable backlog distilled from both).
+
+---
+
+## How to use this doc
+
+Items are grouped into three tiers (`A.*` critical, `B.*` important, `C.*` hygiene), then a fourth section (`✓`) of things that are **verified correct — do not rework**.
+
+Each item gives: file:line citations, what's wrong, what to do, and how to verify. Items are written to be self-contained — pick one, fix it, mark it done, delete from this file (or replace with a one-line "Closed in slice X.Y" entry).
+
+Suggested execution order is by tier. Within a tier, items are independent unless an explicit blocker is noted.
+
+**Meta-finding before anything else:** `PHASE_5_AUDIT.md` (dated 2026-05-18) is stale. Several items it lists as critical gaps are now closed (write endpoints, error envelope, qBittorrent/Deluge/NZBGet implementations). If the porting session is using it as a current map, decisions are being made against an outdated picture. Consider striking the closed items or adding a "snapshot — see STATUS.md and this file" header to it.
+
+---
+
+# Tier A — Critical
+
+## A.1 — REJECTED: audit was wrong about C# behavior
+
+**Rejected in slice 5.J1.**
+
+**Reason:** The audit asserts "C# emits explicit `null` / `""` / `false`, Go currently OMITS the key." This is empirically false. C# Sonarr configures System.Text.Json globally with `DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull` at [`src/NzbDrone.Common/Serializer/System.Text.Json/STJson.cs:27`](../src/NzbDrone.Common/Serializer/System.Text.Json/STJson.cs), wired into the MVC pipeline at [`src/NzbDrone.Host/Startup.cs:107,113`](../src/NzbDrone.Host/Startup.cs). C# OMITS null / nullable-reference-null properties — exactly matching Go's `omitempty` semantic for nullable types.
+
+**Evidence from recorded goldens** (`test/contract/golden/v3-empty-state/`, recorded against C# Sonarr 10.0.0.26712):
+
+- `v3.qualityprofile.golden.json` — `QualityProfileItemResource` for "Unknown" quality omits `id` and `name`; group entries omit `quality`; "Raw-HD" item omits `maxSize`. Current Go shape with `omitempty` matches.
+- `v3.indexer.schema.golden.json` — `FieldDef` for "API Key" field omits `helpText`, `value`, `unit`, `selectOptions`, etc. Go shape matches.
+- `v3.command.golden.json` — `CommandResource` omits `message`, `clientUserAgent`, `exception` when null. Go shape matches.
+
+Dropping `omitempty` would have Go EMIT keys C# does not, breaking byte-equality in the opposite direction.
+
+**Caveats worth flagging for a future review (narrow real concerns the broad audit missed):**
+
+1. `internal/api/v3/filesystem.go:23` — `Size int64 \`json:"size,omitempty"\``. C# `FileSystemModel.Size` is `long` (non-nullable). C# emits `0`; Go omits. Dormant today because the empty-state corpus has no filesystem records; live filesystem endpoints could hit it.
+2. `JSON_CONVENTIONS.md` is itself incorrect about C# behavior — it describes the System.Text.Json **default** posture, not Sonarr's actual `WhenWritingNull` override. The "Field-by-field rules" table should say nullable → `*T` WITH `omitempty` (omitted when nil; emitted when set). Worth correcting the doc so future slices don't repeat the same misreading.
+
+These two items are tracked here for whoever next touches the JSON-shape policy; neither warrants a Phase-5 sweep.
+
+---
+
+## A.2 — CLOSED in slice 5.J2 (sort.Slice → sort.SliceStable at six flagged sites)
+
+Sites switched to stable sort: `internal/customformats/calculate.go:140`, `internal/healthcheck/indexer_status.go:190`, `internal/healthcheck/importlist_status.go:195`, `internal/healthcheck/removed_series.go:135`, `internal/healthcheck/importlist_rootfolder.go:162,179`, `internal/scenemappings/service.go:505`. (Line numbers shifted since the audit; `grep -n` re-confirmed each pattern.) `backup.go:368` left for C.3. `golangci-lint run` 0 issues; `go test -race -count=1` green for the three touched packages.
+
+---
+
+## A.3 — CLOSED in slice 5.J1 (PHASE_5_AUDIT.md prefaced with supersession banner)
+
+---
+
+## A.4 — CLOSED in slice 5.J3 (localhost bypass + access_token tightening)
+
+Wired in `internal/host/auth.go` + new `internal/host/local_ip.go`:
+
+- New optional `host.AuthPolicy` interface (satisfied by `*configfile.Provider` — no wiring change at the call site). When the resolver also implements it and `AuthenticationRequired = DisabledForLocalAddresses`, the middleware bypasses auth for local peers — mirroring `Sonarr.Http.Authentication.UiAuthorizationHandler.HandleRequirementAsync` at `src/Sonarr.Http/Authentication/UiAuthorizationHandler.cs:25-41`.
+- `isLocalAddress` covers loopback, IPv4 private (10/8, 172.16-31/12, 192.168/16) + link-local (169.254/16), IPv6 link-local / unique-local / site-local. Mirrors `src/NzbDrone.Common/Extensions/IpAddressExtensions.cs:8-37`.
+- `isCgnatAddress` (100.64.0.0/10) — bypass extended to CGNAT only when `TrustCgnatIpAddresses` is set.
+- `?access_token=` query param now path-gated: honored ONLY on /signalr/* routes (the C# SignalR auth scheme), rejected on REST paths. /signalr/* also no longer accepts the REST scheme's `apikey=` query name. Mirrors the dual-scheme registration at `src/Sonarr.Http/Authentication/AuthenticationBuilderExtensions.cs:57-66`.
+
+Tests: `internal/host/auth_test.go` extended with `TestRequireAPIKeyLocalBypass` (11 IP-class branches) + `TestRequireAPIKeyValidKeyOverridesBypass`; `internal/host/local_ip_test.go` NEW for the helpers. `go test -race -count=1 ./internal/host/...` green; `golangci-lint run ./...` 0 issues.
+
+`Forms` and `External` auth modes remain unimplemented — tracked separately as B.9. The audit's "Verification" curl-from-loopback example is satisfied by `TestRequireAPIKeyLocalBypass/loopback_v4_bypass`.
+
+---
+
+# Tier B — Important
+
+## B.1 — Contract replayer not wired to CI
+
+**Severity:** 🟡 Important — without this, A.1-class regressions land silently
+**Source:** Carried from `TEST_QUALITY_AUDIT.md` §2–3
+
+**Problem:** `test/contract/replayer/replayer.go:46-48` self-skips when `-contract.base` is unset. `.github/workflows/build_go.yml:53-54` runs `go test -race -count=1 ./...` with no `-contract.base`. The 83 golden files at `test/contract/golden/` are recorded against real C# Sonarr 10.0.0.26712 (`Server: Kestrel`, `X-Application-Version`, `X-Miniprofiler-Ids`) — authentic data, just not exercised.
+
+**Fix shape:** add a job to `build_go.yml`:
+
+```yaml
+- name: Boot Go binary
+  run: |
+    ./dist/sonarr -appdata $(mktemp -d) -nobrowser &
+    echo $! > sonarr.pid
+    timeout 30 sh -c 'until curl -s http://127.0.0.1:8989/ping; do sleep 1; done'
+    # Discover the auto-generated key from config.xml or pass --api-key on boot
+
+- name: Contract replay
+  run: |
+    go test ./test/contract/replayer/... \
+      -contract.base=http://127.0.0.1:8989 \
+      -contract.api-key=$TEST_API_KEY \
+      -contract.golden=./test/contract/golden \
+      -contract.corpus=./test/contract/corpus
+```
+
+No live C# binary needed at CI time — goldens are checked in.
+
+**Verification:** intentionally regress one of the v3 handlers locally (e.g., change a field cast), push to a feature branch, confirm CI fails. Then revert.
+
+---
+
+## B.2 — SignalR broadcasts not fired from most write handlers
+
+**Severity:** 🟡 Important — frontend won't update live
+**Source:** New finding
+
+**Problem:** Only 8 v3 handler files emit `signalr.FireAndLog` after writes: `importlist`, `series`, `notification`, `indexer`, `downloadclient`, `rootfolder`, `metadata`, `seasonpass`. The other ~62 write endpoints (across `episode`, `episodefile`, `queue`, `blocklist`, `autotagging`, `command`, `qualityprofile`, `customfilter`, `customformat`, `delayprofile`, `releaseprofile`, `tag`, `remotepathmap`, `config_*`) return success but don't broadcast. React UI won't refresh until the user manually reloads.
+
+`PHASE_5_AUDIT.md §"SignalR broadcast unwired"` flagged this generically as "gated by writes." Now that writes exist, the gate is open — but only ~12% of write paths broadcast.
+
+**Fix shape:** for each write handler, identify the equivalent C# `IHandle<ResourceChangeEvent>` or `_signalRBroadcaster.BroadcastMessage(...)` site in `src/Sonarr.Api.V3/...Controller.cs` or its service layer, and wire the equivalent Go broadcast after the DB write succeeds. Use the existing `signalr.FireAndLog` pattern from `importlist.go` / `series.go` as the template.
+
+**Acceptance:** every POST/PUT/DELETE handler in `internal/api/v3/` fires the corresponding broadcast on its happy path; nothing on the error path. Optional: a vet-style lint that warns when a write handler imports `signalr` but doesn't call it.
+
+---
+
+## B.3 — Scheduled-task handlers that are stubs
+
+**Severity:** 🟡 Important — runtime background work doesn't happen
+**Source:** New finding
+
+**Problem:** Three scheduled-task command handlers in `internal/commands/handlers/` are registered with real `RegisterHandler` entries but their bodies log "not yet implemented" or equivalent and return OK without doing the work:
+
+- `RefreshSeries` (`refreshseries.go`) — log-only. C# refreshes series metadata via SkyHook + updates DB. Scheduled every 12h.
+- `RefreshMonitoredDownloads` (`refreshmonitoreddownloads.go`) — log-only. C# polls active download clients and updates queue state. Scheduled every 1m.
+- `CheckForFinishedDownloads` (`checkforfinisheddownloads.go`) — log-only. C# triggers import on completed downloads. Scheduled every 1m.
+
+**Plus two missing entirely:**
+
+- `MissingEpisodeSearchCommand` — periodic search for missing-monitored episodes.
+- `ApplicationCheckUpdateCommand` — periodic update-availability poll.
+
+**Why it matters:** the port LOOKS operational (commands fire on cron, return OK) but no actual work happens. Users adding a series won't see metadata refresh, won't see download progress updates, won't see auto-imports.
+
+**Fix shape:** these are not mechanical — each requires real domain logic. RefreshSeries depends on the SkyHook proxy (queue [M3] per STATUS.md), so it may already be partially blocked. Triage:
+1. Confirm what's actually blocked vs what can be implemented now.
+2. For each, port the C# `Execute(<Command>)` body using existing services.
+3. Add unit tests against a seeded DB.
+
+**Verification:** integration test that boots the scheduler, advances time, asserts the handler did the work (DB state changed, events fired).
+
+---
+
+## B.4 — `/api/v3/release` search is fully stubbed
+
+**Severity:** 🟡 Important — core user feature ("Search Releases") is non-functional
+**Source:** New finding
+
+**Problem:** `internal/api/v3/release.go:24-40` validates query params (seriesId/episodeId/seasonNumber) but always returns hardcoded `[]`. Comment at line 18-21 says "orchestration driver hasn't been assembled yet." The indexer search service exists (slices 3.AK/3.AL/4.A per STATUS.md) but isn't wired into this handler.
+
+**Fix shape:** wire `internal/indexersearch.Service` (or whatever the search orchestrator is named) into the handler. Accept query params → dispatch parallel queries to enabled indexers → aggregate + score via decision engine → return ranked `ReleaseResource[]`. The C# reference is `src/Sonarr.Api.V3/Indexers/ReleaseController.cs`.
+
+**Verification:** unit test with a fake indexer registered; assert the handler returns the fake's results with decision-engine scoring applied.
+
+---
+
+## B.5 — Missing healthchecks (10) + stub healthchecks (2)
+
+**Severity:** 🟡 Important — silently misconfigured installs go undetected
+**Source:** New finding
+
+**Real (14):** ApiKeyValidationCheck, AppDataLocationCheck, DownloadClientStatusCheck, ImportListStatusCheck, ImportListRootFolderCheck, IndexerStatusCheck, IndexerRssCheck, IndexerSearchCheck, NotificationStatusCheck, RootFolderCheck, RecyclingBinCheck, RemovedSeriesCheck, SystemTimeCheck (partial — needs verification), and the `ImportListStatusCheck`/`ImportListRootFolderCheck` pair flagged in `STATUS.md` as recently landed.
+
+**Stub (2):**
+
+- `internal/healthcheck/proxy.go` — `ProxyCheck` always returns OK because host-config keyvalues store isn't ported. Should validate proxy reachability when configured. Wired stub at `cmd/sonarr/healthcheck_wiring.go:283-310`.
+- `internal/healthcheck/system_time.go` — calls `services.sonarr.tv/v1/time` but logic is partial; verify it returns correct severity when out of sync.
+
+**Missing (10):**
+
+- DownloadClientRootFolderCheck — DC folder writable
+- DownloadClientRemovesCompletedCheck — DC's "remove completed" setting matches Sonarr's expectation
+- DownloadClientSortingCheck — DC sorting conflicts with Sonarr
+- IndexerDownloadClientCheck — no enabled DC for an enabled indexer's protocol
+- IndexerJackettAllCheck — warns when using Jackett's `/all` endpoint
+- IndexerLongTermStatusCheck — indexer down > N hours
+- ImportMechanismCheck — folder watching vs completed handling
+- MountCheck — mount point exists and is writable
+- PackageGlobalMessageCheck — package maintainer messaging hook
+- RemotePathMappingCheck — configured remote paths reachable
+- UpdateCheck — update folder writable
+
+**Fix shape:** each missing check is a single Go file matching the existing pattern (`internal/healthcheck/<name>.go`) plus registration in the wiring file. Reference: the corresponding C# file under `src/NzbDrone.Core/HealthCheck/Checks/`. Prioritize by ops-impact: MountCheck and UpdateCheck first.
+
+**Verification:** new healthcheck appears in `GET /api/v3/health` response. Unit test for each.
+
+---
+
+## B.6 — Stub indexers (7) and stub download clients (14)
+
+**Severity:** 🟡 Important — limits which user setups the port supports
+**Source:** Carried from `PHASE_5_AUDIT.md`, count updated 2026-05-20
+
+**Indexers missing (7):** BroadcastheNet, Fanzub, FileList, HDBits, IPTorrents, Nyaa, Torrentleech. `internal/indexers/registry.go:23-30` documents "zero concrete impls register."
+
+**Download clients missing (~14):** Aria2, TorrentDownloadStation, UsenetDownloadStation, Flood, TorrentFreeboxDownload, Hadouken, NzbVortex, Pneumatic, RQBit, rTorrent, TorrentBlackhole, TriblerDownloadClient, UsenetBlackhole, uTorrent, Vuze. (qBittorrent, Deluge, NZBGet, SABnzbd, Transmission landed since `PHASE_5_AUDIT.md` was written.)
+
+**Fix shape:** each is a per-provider implementation. Priority order per `PHASE_5_AUDIT.md §Tier 2` — rTorrent and uTorrent are highest-traffic among remaining. Use qBittorrent/Deluge as templates.
+
+**Verification:** each provider registers in its registry, schema endpoint returns its definition, full CUD round-trips, behavior tests pass (Download → GetItems → MarkAsImported).
+
+---
+
+## B.7 — Missing GET-by-id on ~18 resources
+
+**Severity:** 🟡 Important — clients can't fetch single records
+**Source:** Carried from `PHASE_5_AUDIT.md §"Per-resource matrix (reads beyond list)"`
+
+**Resources affected:** autotagging, customfilter, customformat, delayprofile, downloadclient, importlist, indexer, metadata, notification, qualityprofile, releaseprofile, remotepathmapping, rootfolder, tag, series, episode, command, queue, blocklist.
+
+**Fix shape:** each is a small `GET /api/v3/<resource>/{id}` handler that does `SELECT ... WHERE id = ?` and returns the same resource shape the list endpoint returns. Mechanical. Suggest batching as a single sweep slice rather than one slice per resource — they're nearly identical work.
+
+**Verification:** each route returns 200 with the resource, 404 with httperr envelope when missing.
+
+---
+
+## B.8 — Missing standalone read endpoints
+
+**Severity:** 🟡 Important — features missing from the port surface
+**Source:** Carried from `PHASE_5_AUDIT.md §"Other reads missing entirely"`
+
+**Verify each against current tree (some may have landed since 2026-05-18):**
+
+- `GET /api/v3/calendar/feed` (Sonarr.ics export)
+- `GET /api/v3/diskspace`
+- `GET /api/v3/filesystem` (+ `/type`, `/mediafiles`)
+- `GET /api/v3/log` (+ `/file`, `/file/{filename}`, `/file/update`)
+- `GET /api/v3/manualimport`
+- `GET /api/v3/parse`
+- `GET /api/v3/rename` (+ `/bulk`)
+- `GET /api/v3/series/lookup` (+ `/{id}/folder`)
+- `GET /api/v3/system/backup` (list)
+- `GET /api/v3/system/task` (+ by-id)
+- `GET /api/v3/release` (search — see B.4)
+- `GET /api/v3/mediacover/{seriesId}/{filename}`
+- `GET /api/v3/indexerflag`
+
+**Fix shape:** mechanical per `PHASE_5_AUDIT.md §Tier 3`. Verify which still apply before working through them.
+
+---
+
+## B.9 — Forms and External authentication modes not implemented
+
+**Severity:** 🟡 Important — limits deployment topologies
+**Source:** Round-2 audit
+
+**Problem:** `wellknown.go:272-304` recognizes all four C# `AuthenticationMethod` values (`None`, `Basic`, `Forms`, `External`) and includes a legacy "Basic"→"Forms" upgrade path, but only `None` and the API-key path are enforced. Users running C# with `Forms` (cookie-based login form, served at `/login`) or `External` (trusted reverse-proxy headers like `X-Forwarded-User`) cannot switch to Go without changing their auth topology.
+
+**Fix shape:**
+- **Forms:** add `/login` POST endpoint that issues a session cookie; middleware that accepts the cookie in lieu of API key. Cookie name and signing should match C# Identity defaults (or use a documented Go-port equivalent — but matching is cheaper for migration).
+- **External:** middleware that accepts `X-Forwarded-User` (or whatever header C# trusts) when configured. Document the trusted-proxy IP list to prevent header spoofing.
+
+**Verification:** end-to-end test for each mode against the existing React login flow. Plus security test: spoofed `X-Forwarded-User` from an untrusted IP is rejected in External mode.
+
+---
+
+## B.10 — First-run seed data missing (QualityProfile, QualityDefinition, Config table)
+
+**Severity:** 🟡 Important — fresh-install UX differs from C#
+**Source:** Round-2 audit
+
+**Problem:** On a freshly-migrated empty DB, C# Sonarr seeds:
+- Default `QualityProfile` named "Any" with default `Items` list and cutoffs
+- All `QualityDefinition` rows (one per quality enum value) with default min/max/preferred sizes
+- Initial `Config` table key-value pairs for non-XML preferences (recycling bin path, naming defaults, etc.)
+- Default `DelayProfile` (tag-less catch-all) — *this one IS seeded* via `00070_delay_profile.sql`
+
+Go only seeds the DelayProfile via migration. The others appear missing — a freshly-booted Go binary lacks the rows users expect.
+
+**Fix shape:** either (a) add seed migrations (00231_seed_quality_definitions.sql, 00232_seed_default_qualityprofile.sql, 00233_seed_config_defaults.sql) that match C#'s first-run output byte-for-byte, or (b) port C#'s `IExecute<HousekeepingCommand>` first-run-bootstrap logic to Go startup. Option (a) is simpler and is more cutover-friendly (the schema head matches between binaries; no startup-order coupling).
+
+**Verification:** boot Go against an empty SQLite DB; assert that `GET /api/v3/qualityprofile` returns the "Any" profile, `GET /api/v3/qualitydefinition` returns the full quality list, and `Config` table contains the expected default keys. Cross-check that C# against an empty DB produces the same rows.
+
+---
+
+## B.11 — History `Data["ReleaseType"]` hardcoded to "Unknown"
+
+**Severity:** 🟡 Important — cross-binary history-filter blind spot
+**Source:** Round-2 audit (`internal/historyhandlers/grabbed.go:251-255`)
+
+**Problem:** Go's `ParsedEpisodeInfo` lacks the `ReleaseType` field, so the `Grabbed` history handler emits `Data["ReleaseType"] = "Unknown"` unconditionally (acknowledged TODO at `grabbed.go:251-255`). C# emits the actual enum name (`SingleEpisode`, `MultiEpisode`, `SeasonPack`, etc.). React UI filters that query by ReleaseType won't find Go-written events; analytics that aggregate by release type get skewed.
+
+**Fix shape:** port the `ReleaseType` field on `ParsedEpisodeInfo` (probably in `internal/parser/` types) and populate it during parse. Then update `grabbed.go:251-255` to emit the real value. Optionally: one-shot migration to backfill historic Go-written rows post-cutover (or accept the blind spot for historic data).
+
+**Verification:** parse a known SeasonPack release, write a Grabbed history row, confirm `data->>'ReleaseType'` is `"SeasonPack"` not `"Unknown"`.
+
+---
+
+## B.12 — `SONARR__` env var config overrides not wired
+
+**Severity:** 🟡 Important — containerized deployments rely on this
+**Source:** Round-2 audit (`internal/configfile/wellknown.go:239-242` acknowledges it's deferred)
+
+**Problem:** C# Sonarr honors environment variables like `SONARR__PORT=8989`, `SONARR__BINDADDRESS=*`, `SONARR__APIKEY=...` per ASP.NET Core's default config provider chain. Docker / Kubernetes / homelab users frequently configure Sonarr exclusively via env vars without touching config.xml. The Go port doesn't read these (only `--data` and `--frontenddir` CLI flags are wired).
+
+**Fix shape:** in `internal/configfile/loader.go`, after parsing the XML, walk `os.Environ()` for `SONARR__<KEY>` entries and override the corresponding `wellknown` keys. Honor the `persist=false` flag so env-var-only keys don't get written back to config.xml. Cover both single-underscore (legacy) and double-underscore (ASP.NET) styles if C# accepts both.
+
+**Verification:** `SONARR__PORT=12345 ./sonarr` boots on port 12345 even when config.xml says 8989. Same for BindAddress, ApiKey, LogLevel.
+
+---
+
+# Tier C — Hygiene
+
+## C.1 — Cache-Control / Pragma / Expires / Vary headers not emitted
+
+**Severity:** 🟢 Hygiene — body still byte-equal; only header drift
+**Source:** New finding
+
+C# emits per `test/contract/golden/v3-empty-state/v3.blocklist.golden.json:5-25`:
+```
+Cache-Control: no-cache, no-store
+Pragma: no-cache
+Expires: -1
+Vary: Accept-Encoding
+```
+
+Go emits none. Caching proxies in front of either binary will behave differently.
+
+**Fix shape:** a small middleware applied to the v3 router that sets these headers on every response. `PHASE_6_SCOPE.md` treats this as a Phase 6 finding rather than port-blocking, which is reasonable.
+
+---
+
+## C.2 — DateTime sub-second precision risk
+
+**Severity:** 🟢 Hygiene — invisible today, fragile to future changes
+**Source:** New finding
+
+C# emits `DateTime` at second precision (`"2026-05-02T06:56:55Z"`). Go's `time.Time.MarshalJSON` uses RFC3339Nano — if any code path constructs a `time.Time` with non-zero sub-second component and serializes it (e.g., `time.Now()` instead of a DB-loaded timestamp), the wire shape will include nanoseconds and break byte-equality.
+
+**Today's reality:** all timestamps observed in the contract goldens have zero sub-second component (DB-sourced), so this is dormant.
+
+**Fix shape:** either (a) a wrapper `type ISO8601Time time.Time` with a custom `MarshalJSON` that truncates to seconds, applied to all wire-emission paths, or (b) a `go vet`-style check that flags `time.Now()` flowing into a JSON-emitting struct. Option (a) is more robust.
+
+---
+
+## C.3 — `backup.go:119` time-based unstable sort
+
+**Severity:** 🟢 Hygiene — see A.2 for context
+**Source:** New finding
+
+`internal/backup/backup.go:119` sorts backups by `Time.Before(...)` using `sort.Slice`. If two backups share an identical timestamp (rare at second precision but possible), the order is non-deterministic. Verify C# equivalent — if `OrderBy(x => x.Time)`, switch to `sort.SliceStable`.
+
+---
+
+## C.4 — PID file / systemd readiness signaling not implemented
+
+**Severity:** 🟢 Hygiene — affects packaged Linux deployments
+**Source:** Round-2 audit
+
+C# Sonarr (via NLog/ASP.NET hosting) writes a PID file and signals systemd `Type=notify` readiness. Linux package maintainers (DEB/RPM) rely on this for unit health. Go has no equivalent today.
+
+**Fix shape:** in `cmd/sonarr/main.go`, after the server starts accepting connections, write `os.Getpid()` to a configurable path (default `<AppData>/sonarr.pid`) and call `sd_notify(READY=1)` (`github.com/coreos/go-systemd/v22/daemon`). Skip on non-systemd platforms gracefully.
+
+---
+
+## C.5 — Frontend `<base href>` injection for URL base not implemented
+
+**Severity:** 🟢 Hygiene — Phase 5 deferred per `server.go` comment
+**Source:** Round-2 audit
+
+When `UrlBase=/sonarr` is configured, the React bundle's `index.html` needs `<base href="/sonarr/">` rewritten at serve time so client-side routes resolve correctly. Go's static-bundle serving (per STATUS.md, `WithStaticDir` / `WithStaticFS` / `//go:embed` fallback) is wired, but base-href injection is not. Reverse-proxy users at sub-paths will see broken asset loads.
+
+**Fix shape:** intercept the `index.html` response in the static handler, parse minimally, rewrite the `<base href>` tag (or inject if absent) using the configured URL base. Cache the rewritten bytes per URL-base value to avoid per-request DOM parsing.
+
+---
+
+## C.6 — Log rotation / size limits not wired
+
+**Severity:** 🟢 Hygiene — long-running installs will fill disk
+**Source:** Round-2 audit
+
+C# uses NLog with size-limited rolling files. Go currently uses `slog` text format (per `cmd/sonarr/main.go:16-22`) writing to stdout/stderr without rotation. Deferred per Phase 6 expectations, but worth tracking — homelab installs running for months will accumulate gigabytes of log.
+
+**Fix shape:** wrap `slog.NewTextHandler` with `gopkg.in/natefinch/lumberjack.v2` (or equivalent) configured to match C# defaults (per-file size limit, retention count). Honor C#'s `<LogLevel>` and `<LogRotate>` config keys.
+
+---
+
+# ✓ Verified correct — do not rework
+
+This list exists to prevent the porting session from "fixing" things that already work. Each was checked during the 2026-05-20 audit.
+
+| Concern | Status | Evidence |
+|---|---|---|
+| Migration parity (HEAD v230, SQLite + Postgres) | ✓ Exact | Both ports at version 230. Schema spot-checks (Series, Episodes, EpisodeFiles, Indexers, Notifications) match column-for-column. Goose `goose_db_version` vs FluentMigrator `VersionInfo` intentionally separate, won't collide. Migration test harness at `internal/datastore/migrate_test.go:40-300` runs to v1, to HEAD, and idempotency check on both engines. |
+| Error envelope shape | ✓ Fixed | `internal/httperr/httperr.go:103-178` emits the C# `ErrorModel` (5xx/4xx) and FluentValidation 400 array. Zero `http.Error` calls remain under `internal/api/v3/`. |
+| Nil-slice → `[]` (vs `null`) | ✓ Compliant | Verified on `series.list`, `tag.list`, `qualityprofile.list` against goldens. |
+| Status code mapping 404 / 400 / 409 | ✓ Compliant | `httperr.NotFound` / `BadRequest` / `Conflict` helpers used uniformly. |
+| Regex translation (C# → RE2) | ✓ Handled | `internal/parser/normalize.go:9-62` explicitly rewrites C# lookbehinds rather than transliterating; named groups preserved. |
+| Decision-engine sort stability | ✓ Correct | `internal/decisionengine/decisionmaker.go:71` uses `sort.SliceStable`. |
+| DB nullable NULL→0 coercion | ✓ Correct | `internal/series/series.go:213-220` coerces `Year` and `QualityProfileID` from `sql.NullInt64.Valid`. |
+| Time/timezone handling | ✓ Correct | `time.Now().UTC()` used in `internal/historyhandlers/*.go`; no local-clock misuse. |
+| String comparison (byte-wise) | ✓ Correct | `internal/parser/parse_title.go:141-142` uses `strings.ToLower` + `strings.Contains`. |
+| Notifications (25/25 implemented) | ✓ Confirmed | Discord/Email/Slack/Telegram/Plex/Trakt all have real proxy + settings + test code. |
+| Metadata writers (4/4 implemented) | ✓ Confirmed | Plex, Wdtv, Roksbox, Xbmc all real. |
+| qBittorrent / Deluge / NZBGet / SABnzbd / Transmission download clients | ✓ Implemented | ~2000 LOC each, full Download/GetItems/GetStatus/RemoveItem/MarkItemAsImported. |
+| Provider settings JSON shape (qBit, Deluge, SAB, Discord, Email, Newznab) | ✓ Match | Field count, order, names, types, Advanced/Hidden flags all match C# `*Resource.cs` definitions. |
+| `panic("not implemented")` / `panic("TODO")` markers | ✓ Zero | None anywhere under `internal/`. |
+| Auth middleware uniformity (API-key path) | ✓ Pass | `internal/host/auth.go:38-53`; constant-time compare via `subtle.ConstantTimeCompare` at `internal/auth/apikey.go`. (BUT: see A.4 for missing localhost bypass and B.9 for Forms/External modes.) |
+| HTTP method handling (auto-405) | ✓ Pass | Go 1.22+ ServeMux. |
+| Sensitive-value logging | ✓ Pass | Per `PHASE_5_AUDIT.md`. |
+| config.xml read/write parity | ✓ Pass | `internal/configfile/loader.go:144-251` reads, `:284-305` writes. Atomic temp+rename, element order preserved, type coercion matches C#. A C# config.xml loads cleanly and writes back unchanged. |
+| AppData path resolution | ✓ Pass | `internal/appenv/appfolder.go:58-72` — Windows `%PROGRAMDATA%\Sonarr`, Unix `$XDG_CONFIG_HOME/Sonarr` or `$HOME/.config/Sonarr`. Matches C# `IAppFolderInfo`. |
+| API key auto-generation on missing/empty | ✓ Pass | `internal/configfile/wellknown.go:63-84` — generates and writes back, mirrors C#. |
+| URL base parsing/normalization | ✓ Pass | `internal/host/server.go:166-172` (`normaliseURLBase`) + `:298-324` (`stripURLBase`). Out-of-prefix → 404. (BUT: see C.5 for frontend `<base href>` injection still missing.) |
+| Default DelayProfile seeded | ✓ Pass | Migration `00070_delay_profile.sql` matches C#. |
+| Backup file format (cross-binary compatible) | ✓ Pass | `internal/backup/backup.go:295` — `sonarr_backup_v{V}_{date}.zip`; type folders `scheduled`/`manual`/`update` at `:254-258`. Filename regex at `:75` accepts both legacy `nzbdrone_backup_…` and current forms. C# and Go can restore each other's backups. |
+| Backup restore endpoint | ✓ Implemented (contradicts stale PHASE_5_AUDIT) | `internal/api/v3/system_backup.go:102-133` for by-ID, `:181-230` for upload. Extracts ZIP, swaps DB to `DatabaseRestorePath()`, returns `{"restartRequired":true}`. |
+| History `EventType` enum ordinals (all 8) | ✓ Match | `internal/history/service.go:22-57` vs C# `EpisodeHistory.cs:37-47`. Frozen wire protocol. |
+| History `Data` shape for `Grabbed` (22 keys), `DownloadFolderImported` (10), `DownloadFailed` (7) | ✓ Match (except B.11) | `internal/historyhandlers/grabbed.go:189-261`, `imported.go:184-205`, `download_failed.go:72-200`. The only deviation is `ReleaseType="Unknown"` — see B.11. |
+| `GET /api/v3/history` + `/since` + `/series` | ✓ Implemented | `internal/api/v3/history.go:50-216`. Filter set partially deferred. |
+| `POST /api/v3/history/failed/{id}` | ✓ Implemented | `internal/api/v3/history.go:197-216`. |
+| Quality detection from filename (`QualityParser` parity) | ✓ Match | `internal/quality/parse.go:23-438` vs C# `QualityParser.cs:68-598`. All 22 quality enum values present with stable IDs. 5-sample mental run-through (WEB-DL/HDTV/REMUX/PROPER/WEBRip) all produce matching outputs. |
+| Language detection (RE2-rewrite of C# patterns) | ✓ Match | `internal/parser/language.go:1-211`. Negative lookaheads (e.g. `spa(?!\(Latino\))`) re-implemented via separate capture groups + post-match filter at `:100`. All 25 language tokens map correctly. |
+| Release group extraction (`-GROUP`, `[GROUP]`) | ✓ Match | `internal/parser/release_group.go:15-555` ports C# `ReleaseGroupParser.cs:3-167`. |
+| Episode matching — Standard / Daily / Anime / Scene | ✓ All four modes | `internal/parser/report_title.go` rules with C# line-citation comments. First-match-wins ordering preserved. |
+| Custom format scoring on import (not just grab) | ✓ Implemented | `internal/episodeimport/local_format_calculator.go:81-162` — scores both renamed filename and original filename; specs gate on MinFormatScore. |
+| File naming token expansion | ✓ Match | `internal/organizer/build.go` + `*_tokens.go`. Illegal-char sanitization at `cleanname.go:8-143` mirrors C# illegal-char set. |
+| File move/copy/hardlink with cross-device fallback | ✓ Match | `internal/disk/transfer.go:27-145` — `MoveFile` atomic rename then copy+delete on EXDEV; `CopyFile` uses `O_EXCL`; `TryCreateHardLink` for HardLinkOrCopy. Permission bits preserved. |
+| Graceful shutdown drain | ✓ Pass | `internal/host/server.go:135` — 5s drain matches Kestrel implicit default. SIGTERM handled in `cmd/sonarr/main.go:25`. |
+
+---
+
+# What this audit did NOT cover
+
+Listing remaining blind spots after round 2:
+
+- **SignalR payload shapes per event family.** Round 1 verified broadcasts are wired in 8 of ~70 write handlers; did not byte-compare emitted payloads against C# `*EventHub` messages, and did not enumerate every uncovered write path. B.2 lists the uncovered set generically.
+- **Per-provider settings JSON for unported providers.** Round 1 spot-checked qBittorrent, Deluge, SABnzbd, Discord, Email, Newznab. The remaining 60+ provider Settings classes need confirmation slice-by-slice as they land.
+- **Behavior under load and concurrency.** No race detector run, no fuzz, no replay against a real workload. Best addressed once Phase 6 shadow traffic is up.
+- **Frontend ↔ backend integration smoke.** The React UI lives at `frontend/` and was not exercised against the Go binary. Best addressed by the manual smoke checklist in `PHASE_6_SCOPE.md §6.2`.
+- **`internal/disk`, `internal/auth`, `internal/repo` test coverage.** Flagged in `TEST_QUALITY_AUDIT.md §5` as under-tested; not deepened here. (Round 2 did verify `internal/auth.EqualAPIKey` uses constant-time compare.)
+- **Per-handler error path coverage.** Verified the envelope shape and status-code mapping; did not enumerate which error conditions each handler actually emits across every edge case.
+- **Logging output format and field names.** C# uses NLog with specific field conventions; Go uses slog — wire-format of log lines was not compared. Operators parsing logs across the cutover will see different shapes.
+- **Update / self-update flow** (`update-script.sh`, `internal/update/` if present). Round 1 noted `UpdateCheck` healthcheck is missing (B.5); the update mechanism itself wasn't audited.
+- **Frontend API surface vs Go-implemented routes.** Did not cross-reference every endpoint the React UI calls against the Go route table to find any UI feature that silently calls a missing endpoint.
+
+A bigger audit pass would tackle these — but most are better surfaced by Phase 6's shadow-traffic harness than by static review.
+
+**Closed by round 2 (no longer blind spots):**
+- ~~Backup format compatibility~~ — verified byte-compatible, see Verified-correct table.
+- ~~History record shape per event type~~ — verified except B.11.
+- ~~Quality / language detection fidelity~~ — verified, no drift.
+- ~~File move / copy / hardlink semantics~~ — verified, matches C#.
+- ~~Config.xml + AppData path + API key handling~~ — verified except A.4 / B.9 / B.10 / B.12.
+
+---
+
+# When you (the porting session) work through this
+
+1. Pick a Tier A item, fix it, run `golangci-lint run` + `go test ./...` + (once B.1 lands) the contract replayer.
+2. Mark this file with a one-line closure note (e.g., `## A.1 — CLOSED in slice 5.J1`).
+3. When all of Tier A is closed, this file becomes a Tier B/C tracker; consider folding Tier A history into a section of `STATUS.md` and deleting from here.
+4. If you find any item is incorrect (the audit was wrong), strike it with a note explaining why — that's useful signal for the next external review.
