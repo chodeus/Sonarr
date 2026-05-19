@@ -3,6 +3,7 @@ package nzbget_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/nzbget"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // ============================================================================
@@ -277,3 +279,144 @@ func TestRemoveItem_NumericArmDoesNotFallThroughToDroneArm(t *testing.T) {
 		t.Errorf("editqueue fired %d times, want 0 (numeric arm doesn't fall through to drone)", h.editCalls.Load())
 	}
 }
+
+// ============================================================================
+// Slice 6.C3: RemoveItem deleteData arm — DiskProvider.DeleteFolder
+// against item.OutputPath fires BEFORE the editqueue call.
+// ============================================================================
+
+// stubDisk satisfies downloadclients.DiskProvider with a recording
+// shim. Captures every (path, recursive) invocation so tests can
+// assert on the DeleteFolder side-effects.
+type stubDisk struct {
+	calls []struct {
+		path      string
+		recursive bool
+	}
+	err error
+}
+
+func (d *stubDisk) DeleteFolder(path string, recursive bool) error {
+	d.calls = append(d.calls, struct {
+		path      string
+		recursive bool
+	}{path, recursive})
+	return d.err
+}
+
+func TestRemoveItem_DeleteDataWithDiskProvider_FiresRecursiveDeleteFolder(t *testing.T) {
+	t.Parallel()
+	h, srv := newRemoveServer(t)
+	h.queueBody = `[{"NZBID":42,"NZBName":"Show.S01E01","Parameters":[{"Name":"drone","Value":"abcdef1234567890abcdef1234567890"}]}]`
+	n := newNzbgetForRemove(t, srv)
+	disk := &stubDisk{}
+	n.SetDiskProvider(disk)
+
+	item := &downloadclients.Item{
+		DownloadID: "abcdef1234567890abcdef1234567890",
+		OutputPath: ospath.New("/data/done/Show.S01E01"),
+	}
+	if err := n.RemoveItem(context.Background(), item, true); err != nil {
+		t.Fatalf("RemoveItem(deleteData=true): %v", err)
+	}
+	if len(disk.calls) != 1 {
+		t.Fatalf("DeleteFolder calls = %d, want 1", len(disk.calls))
+	}
+	if disk.calls[0].path != "/data/done/Show.S01E01" {
+		t.Errorf("DeleteFolder path = %q, want /data/done/Show.S01E01", disk.calls[0].path)
+	}
+	if !disk.calls[0].recursive {
+		t.Errorf("DeleteFolder recursive = false, want true (must clear subdirs)")
+	}
+	if h.editCalls.Load() != 1 {
+		t.Errorf("editqueue fired %d times, want 1 (queue removal still load-bearing)", h.editCalls.Load())
+	}
+}
+
+func TestRemoveItem_DeleteDataNoDiskProvider_FallsBackToWarnLog(t *testing.T) {
+	t.Parallel()
+	h, srv := newRemoveServer(t)
+	h.queueBody = `[{"NZBID":42,"NZBName":"X","Parameters":[{"Name":"drone","Value":"abcdef1234567890abcdef1234567890"}]}]`
+	n := newNzbgetForRemove(t, srv) // no SetDiskProvider call
+	item := &downloadclients.Item{
+		DownloadID: "abcdef1234567890abcdef1234567890",
+		OutputPath: ospath.New("/data/done/Show"),
+	}
+	if err := n.RemoveItem(context.Background(), item, true); err != nil {
+		t.Fatalf("RemoveItem(deleteData=true, nil disk): %v", err)
+	}
+	// editqueue still fires — queue removal is load-bearing
+	// regardless of the disk-arm outcome.
+	if h.editCalls.Load() != 1 {
+		t.Errorf("editqueue fired %d times, want 1 (nil disk doesn't block dispatch)", h.editCalls.Load())
+	}
+}
+
+func TestRemoveItem_DeleteDataEmptyOutputPath_SkipsDiskDelete(t *testing.T) {
+	t.Parallel()
+	h, srv := newRemoveServer(t)
+	h.queueBody = `[{"NZBID":42,"NZBName":"X","Parameters":[{"Name":"drone","Value":"abcdef1234567890abcdef1234567890"}]}]`
+	n := newNzbgetForRemove(t, srv)
+	disk := &stubDisk{}
+	n.SetDiskProvider(disk)
+
+	// Empty OutputPath — nothing to delete on disk.
+	item := &downloadclients.Item{
+		DownloadID: "abcdef1234567890abcdef1234567890",
+	}
+	if err := n.RemoveItem(context.Background(), item, true); err != nil {
+		t.Fatalf("RemoveItem: %v", err)
+	}
+	if len(disk.calls) != 0 {
+		t.Errorf("DeleteFolder fired %d times with empty OutputPath, want 0", len(disk.calls))
+	}
+	if h.editCalls.Load() != 1 {
+		t.Errorf("editqueue fired %d times, want 1", h.editCalls.Load())
+	}
+}
+
+func TestRemoveItem_DiskErrorDoesNotAbortEditQueue(t *testing.T) {
+	t.Parallel()
+	h, srv := newRemoveServer(t)
+	h.queueBody = `[{"NZBID":42,"NZBName":"X","Parameters":[{"Name":"drone","Value":"abcdef1234567890abcdef1234567890"}]}]`
+	n := newNzbgetForRemove(t, srv)
+	disk := &stubDisk{err: errors.New("permission denied")}
+	n.SetDiskProvider(disk)
+
+	item := &downloadclients.Item{
+		DownloadID: "abcdef1234567890abcdef1234567890",
+		OutputPath: ospath.New("/data/done/Show"),
+	}
+	if err := n.RemoveItem(context.Background(), item, true); err != nil {
+		t.Fatalf("RemoveItem must not propagate disk error: got %v", err)
+	}
+	if len(disk.calls) != 1 {
+		t.Errorf("DeleteFolder calls = %d, want 1 (attempted before propagating)", len(disk.calls))
+	}
+	if h.editCalls.Load() != 1 {
+		t.Errorf("editqueue fired %d times, want 1 (queue removal still load-bearing after disk error)", h.editCalls.Load())
+	}
+}
+
+func TestRemoveItem_DeleteDataFalse_DiskProviderNotConsulted(t *testing.T) {
+	t.Parallel()
+	h, srv := newRemoveServer(t)
+	h.queueBody = `[{"NZBID":42,"NZBName":"X","Parameters":[{"Name":"drone","Value":"abcdef1234567890abcdef1234567890"}]}]`
+	n := newNzbgetForRemove(t, srv)
+	disk := &stubDisk{}
+	n.SetDiskProvider(disk)
+
+	item := &downloadclients.Item{
+		DownloadID: "abcdef1234567890abcdef1234567890",
+		OutputPath: ospath.New("/data/done/Show"),
+	}
+	if err := n.RemoveItem(context.Background(), item, false); err != nil {
+		t.Fatalf("RemoveItem: %v", err)
+	}
+	if len(disk.calls) != 0 {
+		t.Errorf("DeleteFolder fired %d times with deleteData=false, want 0", len(disk.calls))
+	}
+}
+
+// Compile-time guard.
+var _ downloadclients.DiskProvider = (*stubDisk)(nil)

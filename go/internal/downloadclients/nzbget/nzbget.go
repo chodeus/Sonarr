@@ -48,6 +48,7 @@ type Nzbget struct {
 	proxy    *Proxy
 	def      *downloadclients.DownloadClient
 	rpm      downloadclients.RemotePathMapper
+	disk     downloadclients.DiskProvider
 	log      *slog.Logger
 }
 
@@ -72,6 +73,24 @@ func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, l
 // Returns the receiver for chainable construction.
 func (n *Nzbget) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) *Nzbget {
 	n.rpm = rpm
+	return n
+}
+
+// SetDiskProvider binds the [downloadclients.DiskProvider] the
+// RemoveItem deleteData arm consults to delete item.OutputPath when
+// the user asked for "remove from client + delete on-disk data".
+// Mandatory for the deleteData=true arm to be load-bearing — NZBGet's
+// editqueue API has no files-delete arg, so the Sonarr-side
+// DiskProvider.DeleteFolder is the ONLY mechanism that removes
+// completed-download data from disk (mirrors the C# tree at
+// `Nzbget.cs:204-207`). Optional — when nil, deleteData=true falls
+// back to the pre-6.C warn-log behaviour (the queue/history entry
+// is still removed; files stay on disk). Slice 6.C3 (Phase 6.C
+// wire-up arc — the hard case).
+//
+// Returns the receiver for chainable construction.
+func (n *Nzbget) SetDiskProvider(d downloadclients.DiskProvider) *Nzbget {
+	n.disk = d
 	return n
 }
 
@@ -435,11 +454,15 @@ func (n *Nzbget) GetImportItem(_ context.Context, item, _ *downloadclients.Item)
 // returning false also warns + continues (matches C# `:188-192`).
 //
 // deleteData=true: the C# tree at `:204-207` calls `DeleteItemData`
-// which uses DiskProvider.DeleteFolder against item.OutputPath. The
-// Go port defers this until the disk-provider port lands — emits a
-// slog.Warn so the orchestrator's hint isn't silently dropped, then
-// proceeds with the editqueue call which is the load-bearing
-// behaviour anyway.
+// which uses DiskProvider.DeleteFolder against item.OutputPath.
+// Slice 6.C3 wires this — when a [downloadclients.DiskProvider] is
+// set via [Nzbget.SetDiskProvider] AND item.OutputPath is non-empty,
+// the recursive DeleteFolder fires BEFORE the editqueue call (the
+// C# ordering at `:204-207`). A disk error is logged but does not
+// abort the editqueue step — the queue/history removal is still
+// load-bearing even when the on-disk arm fails. When no disk
+// provider is wired, falls back to the pre-6.C warn log (preserves
+// test-harness compatibility).
 func (n *Nzbget) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
 	if item == nil {
 		return errors.New("nzbget: RemoveItem: nil item")
@@ -449,8 +472,21 @@ func (n *Nzbget) RemoveItem(ctx context.Context, item *downloadclients.Item, del
 	}
 
 	if deleteData {
-		n.log.Warn("nzbget: RemoveItem: deleteData=true requested but on-disk data deletion is not yet supported; the queue/history entry will be removed but files remain",
-			"downloadID", item.DownloadID)
+		switch {
+		case n.disk == nil:
+			n.log.Warn("nzbget: RemoveItem: deleteData=true requested but no DiskProvider is wired; the queue/history entry will be removed but files remain on disk",
+				"downloadID", item.DownloadID)
+		case item.OutputPath.IsEmpty():
+			n.log.Debug("nzbget: RemoveItem: deleteData=true but item.OutputPath is empty; skipping on-disk delete",
+				"downloadID", item.DownloadID)
+		default:
+			if err := n.disk.DeleteFolder(item.OutputPath.FullPath(), true); err != nil {
+				n.log.Warn("nzbget: RemoveItem: DiskProvider.DeleteFolder failed; the queue/history entry will still be removed",
+					"downloadID", item.DownloadID,
+					"path", item.OutputPath.FullPath(),
+					"err", err)
+			}
+		}
 	}
 
 	queue, err := n.proxy.GetQueue(ctx, n.settings)
@@ -881,6 +917,13 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	// RPC-side path.
 	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
 		nzb.SetRemotePathMapper(rpm)
+	}
+	// Slice 6.C3: cast the typed-as-any DiskProvider to the narrow
+	// downloadclients.DiskProvider interface. nil dep / cast miss
+	// leaves nzb.disk nil; the deleteData=true arm falls back to the
+	// warn-log behaviour (queue/history entry removed, files remain).
+	if d, ok := deps.DiskProvider.(downloadclients.DiskProvider); ok {
+		nzb.SetDiskProvider(d)
 	}
 	return nzb, nil
 }
