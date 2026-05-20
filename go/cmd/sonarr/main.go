@@ -911,6 +911,18 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 				historyhandlers.WithDownloadIDLookup(historySvc))
 		})
 
+	// Slice 5.J137: downloadhistory IHandle<EpisodeImportedEvent>
+	// subscriber. Mirrors the historyhandlers twin (same NewDownload
+	// gate, same FindDownloadID fallback wired through *history.Service
+	// from J127, same downstream-recoverable-error posture). Writes a
+	// single FileImported row per event — DownloadHistory is keyed at
+	// lifecycle granularity, not per-episode.
+	messaging.Subscribe(bus, "downloadhistory.HandleEpisodeImported",
+		func(ctx context.Context, ev episodeimport.EpisodeImportedEvent) error {
+			return downloadhistoryhandlers.HandleEpisodeImported(ctx, dlHistorySvc, &ev,
+				downloadhistoryhandlers.WithDownloadIDLookup(historySvc))
+		})
+
 	// Slice 3.AV: history IHandle<DownloadFailedEvent> subscriber.
 	// Walks ev.EpisodeIDs and writes one history.Entry per id with
 	// the failure metadata. Producer (FailedDownloadService) is
