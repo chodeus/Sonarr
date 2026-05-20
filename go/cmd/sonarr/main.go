@@ -139,12 +139,21 @@ import (
 	// registry is empty and every grab buckets to Pending. Pattern-
 	// mirror of the metadata-writer blank imports above.
 	_ "sonarr.tv/sonarr/internal/downloadclients/aria2"
+	_ "sonarr.tv/sonarr/internal/downloadclients/blackhole"
 	_ "sonarr.tv/sonarr/internal/downloadclients/deluge"
+	_ "sonarr.tv/sonarr/internal/downloadclients/downloadstation"
+	_ "sonarr.tv/sonarr/internal/downloadclients/flood"
+	_ "sonarr.tv/sonarr/internal/downloadclients/freebox"
+	_ "sonarr.tv/sonarr/internal/downloadclients/hadouken"
 	_ "sonarr.tv/sonarr/internal/downloadclients/nzbget"
+	_ "sonarr.tv/sonarr/internal/downloadclients/nzbvortex"
+	_ "sonarr.tv/sonarr/internal/downloadclients/pneumatic"
 	_ "sonarr.tv/sonarr/internal/downloadclients/qbittorrent"
+	_ "sonarr.tv/sonarr/internal/downloadclients/rqbit"
 	_ "sonarr.tv/sonarr/internal/downloadclients/rtorrent"
 	_ "sonarr.tv/sonarr/internal/downloadclients/sabnzbd"
 	_ "sonarr.tv/sonarr/internal/downloadclients/transmission"
+	_ "sonarr.tv/sonarr/internal/downloadclients/tribler"
 	_ "sonarr.tv/sonarr/internal/downloadclients/utorrent"
 	_ "sonarr.tv/sonarr/internal/downloadclients/vuze"
 )

@@ -61,20 +61,21 @@ For closure narrative, see commit history `5.J1` … `5.J22` on `go-port`. The t
 
 ~~Also still in scope: `ProxyCheck` is wired but stubbed.~~ — **CLOSED 5.J56.** The `*config.Provider` already exposed keyvalues-backed Proxy{Enabled,Hostname,Port,Type,Username,Password} accessors. Replaced `proxyHostConfigStub` with `proxyHostConfigAdapter{cfg: *config.Provider}` and `newProxyPingerStub` with `newProxyPinger(cfg)` — net/http.Client with `Transport.Proxy = http.ProxyURL(buildProxyURL(cfg))` that pings `services.sonarr.tv/v1/ping` through the configured proxy. Documented divergence: SOCKS5 proxy type deferred (needs `golang.org/x/net/proxy` integration — Go-port HTTP/HTTPS-only for now).
 
-## B.6 — Stub providers (7 indexers + 15 download clients)
+## B.6 — Stub providers (7 indexers remaining; DC family fully ported and registered)
 
-**Status:** REAL. The largest single chunk of remaining audit work — each provider is ~1500-2500 LOC of real-network impl.
+**Status:** Download clients DONE (18 of 18 ported + all self-registered + composition-root blank-imports landed in J145). Indexer ports remain — 7 still missing.
 
 **Indexers missing:** BroadcastheNet, Fanzub, FileList, HDBits, IPTorrents, Nyaa, Torrentleech (7).
 
-**Download clients missing:** ~~Aria2~~ (**CLOSED across 5.J50–J53**: skeleton + XML-RPC Proxy + Test version probe + Download (aria2.addUri / aria2.addTorrent) + GetItems (3-call tellActive/tellWaiting/tellStopped fanout with status mapping + longest-common-path OutputPath heuristic) + RemoveItem (forceRemove or removeDownloadResult based on Status) + GetStatus (IsLocalhost + OutputRootFolders from getGlobalOption['dir']) + MarkItemAsImported returns ErrMarkAsImportedUnsupported. Documented divergences: aria2 lacks file-deletion support — CanMoveFiles always false, deleteData logs warn-and-continues per https://github.com/aria2/aria2/issues/728. Non-localhost GetStatus IsLocalhost test omitted because endpointURL uses settings.Host for the actual network call.), TorrentDownloadStation, UsenetDownloadStation, Flood, TorrentFreeboxDownload, Hadouken, NzbVortex, Pneumatic, RQBit, ~~rTorrent~~ (**CLOSED across 5.J41–J45**: skeleton + XML-RPC Proxy + Test version probe + Download (load.start / load.raw_start) + GetItems (d.multicall.2 with 12-column projection) + RemoveItem (d.erase) + GetStatus + MarkItemAsImported (d.custom1.set for post-import label). Documented divergences: WaitForTorrent post-add poll replaced by fire-and-trust; deleteData on-disk cleanup deferred; PushTorrentUniqueView for the rTorrent UI view deferred; per-grab seed-config gating of CanMoveFiles/CanBeRemoved defers to the queue layer's existing enforcement.), TorrentBlackhole, TriblerDownloadClient, UsenetBlackhole, ~~uTorrent~~ (**CLOSED across 5.J46–J49**: skeleton + token-cookie Proxy + Test version probe + Download (add-url / add-file multipart + post-add chain: SetTorrentLabel + MoveTorrentToTopInQueue + SetState) + GetItems (list=1 with 19+ column row decode + Status bitflag mapping + OutputPath basename quirk + CanMoveFiles gate) + RemoveItem (remove / removedata) + GetStatus + MarkItemAsImported (action=setprops s=label). Documented divergences: cacheID delta optimization on list deferred (always full-refresh — extra bandwidth, no functional gap); RemoveTorrentLabel post-import old-label cleanup deferred — leaves the post-import torrent tagged with BOTH labels which is harmless visually.), ~~Vuze~~ (**CLOSED 5.J54** in a single slice via embedding `*transmission.Transmission` + overriding Name() + Test() — the C# Vuze class similarly inherits from TransmissionBase. Test uses integer `rpc-version >= 14` check vs Transmission's semver. Documented divergences: SupportsLabels=false enforced only at the WebUI layer; GetOutputPath single-file quirk deferred — user impact limited to single-file torrents whose basename doesn't match the torrent name). **All four highest-share missing torrent DCs (rTorrent + uTorrent + Aria2 + Vuze) now closed — 11 missing remain.**
+**Download clients ALL PORTED:** Aria2 (J50–J53), Blackhole-Usenet, Blackhole-Torrent (J57), Deluge, DownloadStation-Usenet, DownloadStation-Torrent (J120–J124), Flood (J118), FreeboxDownload-Torrent, Hadouken, NzbGet, NzbVortex, Pneumatic, QBittorrent, RQBit, rTorrent (J41–J45), Sabnzbd, Transmission, Tribler, uTorrent (J46–J49), Vuze (J54). Every package self-registers via init() against `downloadclients.Default()`.
 
-**Sequencing (per `PHASE_5_AUDIT.md §Tier 2` and Phase 6 priorities):**
+**J145 composition-root closure:** discovered that only 9 of the 18 DC packages were blank-imported at cmd/sonarr/main.go — the other 9 (blackhole, downloadstation, flood, freebox, hadouken, nzbvortex, pneumatic, rqbit, tribler) never had their `init()` fire at boot, so the production registry didn't know about them despite the packages being fully implemented. J145 added the missing 9 blank imports; the registry now sees all 18.
 
-- Tier 1 by real-world share: rTorrent + uTorrent (each ~3-5% of torrent installs).
-- Tier 2: Aria2 (multi-protocol downloader, popular in niche setups), Vuze (legacy).
-- Tier 3: indexer ports — IPTorrents + Torrentleech are highest-share among the missing.
-- Tier 4: everything else only as users report missing-impl gaps.
+**Sequencing for remaining indexer ports:**
+
+- Tier A: IPTorrents + Torrentleech are highest-share among the missing.
+- Tier B: HDBits, FileList — public/private mix.
+- Tier C: BroadcastheNet, Fanzub, Nyaa — long-tail / niche.
 
 Each provider arc = its own multi-slice sequence (constructor + Download + GetItems + GetStatus + RemoveItem + tests + registry registration).
 
