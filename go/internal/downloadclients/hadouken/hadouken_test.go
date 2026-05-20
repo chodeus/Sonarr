@@ -284,7 +284,11 @@ func TestProvider_GetStatus_LocalhostHostFlagsLocalhostTrue(t *testing.T) {
 		t.Run(host, func(t *testing.T) {
 			s := newSettings()
 			s.Host = host
-			p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, s, hadouken.NewProxy(&stubDoer{}, nil), nil)
+			// Empty body → GetConfig fails internally; GetStatus
+			// swallows the error and returns the IsLocalhost-only
+			// info value. That's the documented "config probe is
+			// best-effort" branch.
+			p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, s, hadouken.NewProxy(&stubDoer{respBody: `{"result":{}}`}, nil), nil)
 			info, err := p.GetStatus(context.Background())
 			if err != nil {
 				t.Fatalf("err = %v", err)
@@ -293,6 +297,58 @@ func TestProvider_GetStatus_LocalhostHostFlagsLocalhostTrue(t *testing.T) {
 				t.Errorf("host=%q IsLocalhost = %v, want %v", host, info.IsLocalhost, want)
 			}
 		})
+	}
+}
+
+func TestProvider_GetStatus_ReadsBittorrentDefaultSavePath(t *testing.T) {
+	doer := &stubDoer{respBody: `{"result":{"bittorrent.defaultSavePath":"/var/downloads","other":"ignored"}}`}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	info, err := p.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(info.OutputRootFolders) != 1 {
+		t.Fatalf("OutputRootFolders = %v, want one entry", info.OutputRootFolders)
+	}
+	if info.OutputRootFolders[0].FullPath() != "/var/downloads" {
+		t.Errorf("OutputRootFolders[0] = %v, want /var/downloads", info.OutputRootFolders[0])
+	}
+}
+
+func TestProvider_GetStatus_AppliesRemotePathMapper(t *testing.T) {
+	doer := &stubDoer{respBody: `{"result":{"bittorrent.defaultSavePath":"/remote/dl"}}`}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	p.SetRemotePathMapper(stubRemapper{from: "/remote/dl", to: "/local/dl"})
+	info, _ := p.GetStatus(context.Background())
+	if len(info.OutputRootFolders) != 1 {
+		t.Fatalf("OutputRootFolders = %v", info.OutputRootFolders)
+	}
+	if info.OutputRootFolders[0].FullPath() != "/local/dl" {
+		t.Errorf("OutputRootFolders[0] = %v, want /local/dl (remapped)", info.OutputRootFolders[0])
+	}
+}
+
+func TestProvider_GetStatus_BlankSavePathProducesEmptyRoots(t *testing.T) {
+	doer := &stubDoer{respBody: `{"result":{"bittorrent.defaultSavePath":""}}`}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	info, _ := p.GetStatus(context.Background())
+	if len(info.OutputRootFolders) != 0 {
+		t.Errorf("OutputRootFolders = %v, want empty when savePath blank", info.OutputRootFolders)
+	}
+}
+
+func TestProvider_GetStatus_ConfigProbeErrorIsSwallowed(t *testing.T) {
+	doer := &stubDoer{respStatus: http.StatusInternalServerError, respBody: "boom"}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	info, err := p.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus err = %v, want nil (probe failure is non-fatal)", err)
+	}
+	if !info.IsLocalhost {
+		t.Errorf("IsLocalhost = false, want true (localhost still resolves)")
+	}
+	if len(info.OutputRootFolders) != 0 {
+		t.Errorf("OutputRootFolders = %v, want empty after probe failure", info.OutputRootFolders)
 	}
 }
 
@@ -435,10 +491,61 @@ func TestProvider_Download_PropagatesProxyError(t *testing.T) {
 	}
 }
 
-func TestProvider_RemoveItemStub_ReturnsNotImplemented(t *testing.T) {
-	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(&stubDoer{}, nil), nil)
-	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); !errors.Is(err, hadouken.ErrNotImplemented) {
-		t.Errorf("err = %v, want ErrNotImplemented", err)
+func TestProvider_RemoveItem_DeleteDataTrue(t *testing.T) {
+	doer := &stubDoer{respBody: `{"result":true}`}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "ABCDEF"}, true); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	var env map[string]any
+	_ = json.Unmarshal(doer.lastBody, &env)
+	if env["method"] != "webui.perform" {
+		t.Errorf("method = %v, want webui.perform", env["method"])
+	}
+	params, _ := env["params"].([]any)
+	if len(params) != 2 || params[0] != "removedata" {
+		t.Errorf("params = %v, want ['removedata', [id]]", params)
+	}
+	ids, _ := params[1].([]any)
+	if len(ids) != 1 || ids[0] != "ABCDEF" {
+		t.Errorf("ids = %v, want [ABCDEF]", ids)
+	}
+}
+
+func TestProvider_RemoveItem_DeleteDataFalse(t *testing.T) {
+	doer := &stubDoer{respBody: `{"result":true}`}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "ABCDEF"}, false); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	var env map[string]any
+	_ = json.Unmarshal(doer.lastBody, &env)
+	params, _ := env["params"].([]any)
+	if len(params) != 2 || params[0] != "remove" {
+		t.Errorf("params = %v, want ['remove', [id]]", params)
+	}
+}
+
+func TestProvider_RemoveItem_NilItem(t *testing.T) {
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(&stubDoer{respBody: `{"result":true}`}, nil), nil)
+	if err := p.RemoveItem(context.Background(), nil, true); err == nil {
+		t.Fatal("err = nil, want nil-item error")
+	}
+}
+
+func TestProvider_RemoveItem_EmptyDownloadID(t *testing.T) {
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(&stubDoer{respBody: `{"result":true}`}, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); err == nil {
+		t.Fatal("err = nil, want empty-DownloadID error")
+	}
+}
+
+func TestProvider_RemoveItem_PropagatesError(t *testing.T) {
+	doer := &stubDoer{respStatus: http.StatusInternalServerError, respBody: "boom"}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "X"}, true)
+	if !errors.Is(err, hadouken.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable propagated", err)
 	}
 }
 

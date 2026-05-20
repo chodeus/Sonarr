@@ -248,20 +248,70 @@ func (h *Hadouken) GetImportItem(_ context.Context, item *downloadclients.Item, 
 	return item, nil
 }
 
-// RemoveItem is a STUB at 5.J62. Follow-up slice ports
-// [Proxy.RemoveTorrent] / [Proxy.RemoveTorrentAndData] →
-// `webui.perform` with action="remove" / "removedata".
-func (h *Hadouken) RemoveItem(_ context.Context, _ *downloadclients.Item, _ bool) error {
-	return fmt.Errorf("%w: RemoveItem", ErrNotImplemented)
+// RemoveItem ports `Hadouken.RemoveItem` at C# `Hadouken.cs:106-116`.
+// Dispatches to [Proxy.RemoveTorrentAndData] when deleteData=true,
+// otherwise [Proxy.RemoveTorrent]. The download-id is sent as the
+// uppercased infohash the queue layer holds.
+func (h *Hadouken) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
+	if h.proxy == nil {
+		return errors.New("hadouken: nil Proxy")
+	}
+	if item == nil {
+		return errors.New("hadouken: nil item")
+	}
+	id := strings.TrimSpace(item.DownloadID)
+	if id == "" {
+		return errors.New("hadouken: item has empty DownloadID")
+	}
+	if deleteData {
+		if err := h.proxy.RemoveTorrentAndData(ctx, h.settings, id); err != nil {
+			return fmt.Errorf("hadouken: RemoveTorrentAndData(%s): %w", id, err)
+		}
+		return nil
+	}
+	if err := h.proxy.RemoveTorrent(ctx, h.settings, id); err != nil {
+		return fmt.Errorf("hadouken: RemoveTorrent(%s): %w", id, err)
+	}
+	return nil
 }
 
-// GetStatus ports the IsLocalhost arm of C# `:118-134`. The
-// OutputRootFolders arm (which calls `webui.getSettings` and reads
-// `bittorrent.defaultSavePath`) is deferred to the GetItems
-// follow-up — IsLocalhost on its own is enough for the
-// remote-path-mapping healthcheck path at this commit.
-func (h *Hadouken) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return &downloadclients.ClientInfo{IsLocalhost: isLocalHost(h.settings.Host)}, nil
+// GetStatus ports `Hadouken.GetStatus` at C# `Hadouken.cs:118-134`.
+// Calls `webui.getSettings`, reads `bittorrent.defaultSavePath`,
+// and populates OutputRootFolders with the RemotePathMapper-
+// translated path. IsLocalhost is keyed off the configured Host.
+//
+// Config probe failures are NOT fatal — the GetStatus call still
+// returns a populated [downloadclients.ClientInfo] with
+// IsLocalhost set and OutputRootFolders empty so the healthcheck
+// loop can still report on the configured host (mirrors the C#
+// behaviour where ProcessRequest throws → bubbles up, but Sonarr's
+// queue probe catches and surfaces as a warning rather than
+// blanking the entire client).
+func (h *Hadouken) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
+	info := &downloadclients.ClientInfo{IsLocalhost: isLocalHost(h.settings.Host)}
+	if h.proxy == nil {
+		return info, nil
+	}
+	cfg, err := h.proxy.GetConfig(ctx, h.settings)
+	if err != nil {
+		h.log.Debug("hadouken: GetConfig failed", "err", err)
+		return info, nil
+	}
+	destDir, _ := cfg["bittorrent.defaultSavePath"].(string)
+	destDir = strings.TrimSpace(destDir)
+	if destDir == "" {
+		return info, nil
+	}
+	remote := ospath.New(destDir)
+	if h.rpm != nil {
+		if mapped, mapErr := h.rpm.RemapRemoteToLocal(ctx, h.settings.Host, remote); mapErr == nil {
+			remote = mapped
+		} else {
+			h.log.Debug("hadouken: GetStatus RemapRemoteToLocal failed", "savePath", destDir, "err", mapErr)
+		}
+	}
+	info.OutputRootFolders = append(info.OutputRootFolders, remote)
+	return info, nil
 }
 
 // MarkItemAsImported is the C# base default — Hadouken has no

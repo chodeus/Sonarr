@@ -208,6 +208,44 @@ func (p *Proxy) AddTorrentFile(ctx context.Context, s Settings, contents []byte)
 	return result, nil
 }
 
+// RemoveTorrent fires `webui.perform` with action="remove" + the
+// download-id wrapped in a single-element string array. Mirrors C#
+// `HadoukenProxy.RemoveTorrent` at `HadoukenProxy.cs:60-63`. The
+// server replies with a boolean which the Go port discards — same
+// shape as the C# void-typed return.
+//
+// Params order:
+//
+//	["remove", [downloadID]]
+func (p *Proxy) RemoveTorrent(ctx context.Context, s Settings, downloadID string) error {
+	return p.call(ctx, s, "webui.perform", []any{"remove", []string{downloadID}}, nil)
+}
+
+// RemoveTorrentAndData fires `webui.perform` with action="removedata"
+// — Hadouken deletes both the torrent entry AND the on-disk files.
+// Mirrors C# `HadoukenProxy.RemoveTorrentAndData` at
+// `HadoukenProxy.cs:65-68`.
+//
+// Params order:
+//
+//	["removedata", [downloadID]]
+func (p *Proxy) RemoveTorrentAndData(ctx context.Context, s Settings, downloadID string) error {
+	return p.call(ctx, s, "webui.perform", []any{"removedata", []string{downloadID}}, nil)
+}
+
+// GetConfig fires `webui.getSettings`. Mirrors C#
+// `HadoukenProxy.GetConfig` at `HadoukenProxy.cs:45-48`. The reply
+// is a flat map of `<dotted-key>` → value; the [Hadouken.GetStatus]
+// path reads `bittorrent.defaultSavePath` to populate
+// OutputRootFolders.
+func (p *Proxy) GetConfig(ctx context.Context, s Settings) (map[string]any, error) {
+	out := map[string]any{}
+	if err := p.call(ctx, s, "webui.getSettings", []any{}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TorrentState ports C# `HadoukenTorrentState` at
 // `Models/HadoukenTorrentState.cs`. The Hadouken server sends the
 // state as an integer bitmask; [parseState] derives the discrete
