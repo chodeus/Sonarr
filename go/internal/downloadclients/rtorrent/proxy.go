@@ -119,6 +119,74 @@ func (p *Proxy) GetVersion(ctx context.Context, settings Settings) (string, erro
 	return "0.0.0", nil
 }
 
+// AddTorrentFromURL fires load.start (or load.normal when
+// settings.AddStopped) with the torrent URL / magnet link. Mirrors
+// C# `RTorrentProxy.AddTorrentFromUrl` at `:70-89`.
+//
+// Args wire-shape:
+//
+//	["", torrentURL, "d.custom1.set=<label>", "d.priority.set=<p>", "d.directory.set=<dir>"]
+//
+// where the trailing per-d-command strings are emitted only when
+// label / priority / directory are non-empty (priority != Normal
+// inhibits emission per C# `:170-175`).
+//
+// Returns the non-zero fault-equivalent integer response as an
+// error to mirror C# `:78-82` `response.GetIntResponse() != 0` arm.
+func (p *Proxy) AddTorrentFromURL(ctx context.Context, torrentURL, label string, priority Priority, directory string, settings Settings) error {
+	method := "load.start"
+	if settings.AddStopped {
+		method = "load.normal"
+	}
+	args := append([]any{"", torrentURL}, dCommands(label, priority, directory)...)
+	value, err := p.call(ctx, settings, method, args...)
+	if err != nil {
+		return err
+	}
+	if v := value.intValue(); v != 0 {
+		return fmt.Errorf("rtorrent: could not add torrent (load returned %d): %s", v, torrentURL)
+	}
+	return nil
+}
+
+// AddTorrentFromFile fires load.raw_start (or load.raw when
+// settings.AddStopped) with the .torrent file bytes as the base64-
+// encoded second arg. Mirrors C# `RTorrentProxy.AddTorrentFromFile`
+// at `:91-110`.
+func (p *Proxy) AddTorrentFromFile(ctx context.Context, fileName string, content []byte, label string, priority Priority, directory string, settings Settings) error {
+	method := "load.raw_start"
+	if settings.AddStopped {
+		method = "load.raw"
+	}
+	args := append([]any{"", content}, dCommands(label, priority, directory)...)
+	value, err := p.call(ctx, settings, method, args...)
+	if err != nil {
+		return err
+	}
+	if v := value.intValue(); v != 0 {
+		return fmt.Errorf("rtorrent: could not add torrent (load_raw returned %d): %s", v, fileName)
+	}
+	return nil
+}
+
+// dCommands builds the per-d-method "command string" args appended
+// to load.start / load.raw_start. Mirrors C# `GetCommands(label,
+// priority, directory)` at `:160-178`. The d.priority.set arm is
+// elided when priority == Normal (matches C# `:170-174`).
+func dCommands(label string, priority Priority, directory string) []any {
+	var out []any
+	if strings.TrimSpace(label) != "" {
+		out = append(out, "d.custom1.set="+label)
+	}
+	if priority != PriorityNormal {
+		out = append(out, fmt.Sprintf("d.priority.set=%d", int(priority)))
+	}
+	if strings.TrimSpace(directory) != "" {
+		out = append(out, "d.directory.set="+directory)
+	}
+	return out
+}
+
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s

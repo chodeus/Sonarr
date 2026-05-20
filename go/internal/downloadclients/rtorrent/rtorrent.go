@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
@@ -74,10 +75,96 @@ func (r *RTorrent) Definition() *downloadclients.DownloadClient { return r.def }
 // to assert against the round-tripped JSON without re-decoding.
 func (r *RTorrent) Settings() Settings { return r.settings }
 
-// Download is a stub. Returns [downloadclients.ErrNotImplementedYet]
-// pending the XML-RPC proxy port (slice 5.J41-follow-up).
-func (r *RTorrent) Download(_ context.Context, _ *downloadclients.GrabRequest) (string, error) {
-	return "", downloadclients.ErrNotImplementedYet
+// Download ports the C# Download orchestrator at `RTorrent.cs:82-118`
+// (AddFromMagnetLink + AddFromTorrentFile). Picks the add path
+// based on the GrabRequest shape:
+//
+//   - TorrentBody bytes set → AddTorrentFromFile (base64 upload).
+//   - MagnetURL set → AddTorrentFromURL with the magnet link.
+//   - DownloadURL set → AddTorrentFromURL with the http URL.
+//
+// Returns the upper-cased info-hash. Sourcing:
+//
+//   - req.InfoHash trusted when set (typical for rss-grabbed
+//     torrents — the parser extracts it from the .torrent or
+//     magnet upstream).
+//   - Otherwise extracted from MagnetURL's `xt=urn:btih:HASH` query
+//     parameter.
+//   - Otherwise returns an error — rTorrent's load.* RPC doesn't
+//     return the hash and the C# code's WaitForTorrent poll relies
+//     on a pre-known hash.
+//
+// WaitForTorrent (C# `:91-99,107-115`) is replaced by a fire-and-
+// trust posture — the orchestrator stamps the hash on the queue
+// row, and the next refresh-monitored-downloads tick reconciles via
+// GetItems. Same divergence as the qBittorrent port (slice 5.G1e).
+//
+// Per-grab priority resolution: req.IsRecent → RecentTvPriority,
+// otherwise OlderTvPriority. Matches C# `:84,103`.
+func (r *RTorrent) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
+	if req == nil {
+		return "", errors.New("rtorrent: nil GrabRequest")
+	}
+	if r.proxy == nil {
+		return "", errors.New("rtorrent: Download requires a wired Proxy")
+	}
+	priority := r.recencyPriority(req.IsRecent)
+
+	hash, err := resolveInfoHash(req)
+	if err != nil {
+		return "", err
+	}
+
+	switch {
+	case len(req.TorrentBody) > 0:
+		if err := r.proxy.AddTorrentFromFile(ctx, req.ReleaseTitle, req.TorrentBody, r.settings.TvCategory, priority, r.settings.TvDirectory, r.settings); err != nil {
+			return "", err
+		}
+	case req.MagnetURL != "":
+		if err := r.proxy.AddTorrentFromURL(ctx, req.MagnetURL, r.settings.TvCategory, priority, r.settings.TvDirectory, r.settings); err != nil {
+			return "", err
+		}
+	case req.DownloadURL != "":
+		if err := r.proxy.AddTorrentFromURL(ctx, req.DownloadURL, r.settings.TvCategory, priority, r.settings.TvDirectory, r.settings); err != nil {
+			return "", err
+		}
+	default:
+		return "", errors.New("rtorrent: Download: no TorrentBody / MagnetURL / DownloadURL on GrabRequest")
+	}
+
+	return strings.ToUpper(hash), nil
+}
+
+// recencyPriority resolves the per-grab IsRecent flag to the
+// Priority value the proxy applies via d.priority.set. Mirrors C#
+// `:84,103`.
+func (r *RTorrent) recencyPriority(isRecent bool) Priority {
+	if isRecent {
+		return Priority(r.settings.RecentTvPriority)
+	}
+	return Priority(r.settings.OlderTvPriority)
+}
+
+// resolveInfoHash returns the hex info-hash for a GrabRequest.
+// Trust order: req.InfoHash → magnet xt=urn:btih: → error. The
+// returned hash is lower-case (the proxy lower-cases at the wire
+// boundary anyway; the Download caller upper-cases for the
+// orchestrator's queue-item DownloadID).
+func resolveInfoHash(req *downloadclients.GrabRequest) (string, error) {
+	if h := strings.TrimSpace(req.InfoHash); h != "" {
+		return strings.ToLower(h), nil
+	}
+	if req.MagnetURL == "" {
+		return "", errors.New("rtorrent: cannot extract info-hash: neither InfoHash nor MagnetURL set")
+	}
+	const xtPrefix = "xt=urn:btih:"
+	for _, segment := range strings.Split(req.MagnetURL, "&") {
+		segment = strings.TrimPrefix(segment, "magnet:?")
+		if strings.HasPrefix(strings.ToLower(segment), xtPrefix) {
+			return strings.ToLower(strings.TrimSpace(segment[len(xtPrefix):])), nil
+		}
+	}
+	return "", fmt.Errorf("rtorrent: magnet URL missing xt=urn:btih: parameter: %s", req.MagnetURL)
 }
 
 // GetItems is a stub. See [Download] for the deferred-impl

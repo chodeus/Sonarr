@@ -26,6 +26,25 @@ type xmlrpcServer struct {
 	respStatus atomic.Int32 // 0 → 200
 }
 
+// newXMLRPCServerCapture is newXMLRPCServer + a slice the test
+// can read after the call to inspect every received body. Used by
+// the d-commands wire-shape tests that need to assert on the
+// emitted command-string args.
+func newXMLRPCServerCapture(t *testing.T, respBody string, bodies *[]string) *xmlrpcServer {
+	t.Helper()
+	h := &xmlrpcServer{}
+	h.respBody.Store(respBody)
+	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.calls.Add(1)
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+		*bodies = append(*bodies, string(body))
+		w.Header().Set("Content-Type", "text/xml")
+		_, _ = io.WriteString(w, h.respBody.Load().(string))
+	}))
+	t.Cleanup(h.srv.Close)
+	return h
+}
+
 func newXMLRPCServer(t *testing.T, respBody string) *xmlrpcServer {
 	t.Helper()
 	h := &xmlrpcServer{}

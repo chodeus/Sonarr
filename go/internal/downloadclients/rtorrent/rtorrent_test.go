@@ -150,8 +150,10 @@ func TestProvider_StubsReturnNotImplementedYet(t *testing.T) {
 	rt := rtorrent.New(nil, rtorrent.NewSettings(), nil, nil)
 	ctx := context.Background()
 
-	if _, err := rt.Download(ctx, &downloadclients.GrabRequest{}); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("Download: %v, want ErrNotImplementedYet", err)
+	// Download is wired in 5.J43 — surfaces a "no proxy / no source"
+	// error rather than ErrNotImplementedYet now.
+	if _, err := rt.Download(ctx, &downloadclients.GrabRequest{}); err == nil {
+		t.Errorf("Download: want error (nil proxy)")
 	}
 	if _, err := rt.GetItems(ctx); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
 		t.Errorf("GetItems: %v, want ErrNotImplementedYet", err)
