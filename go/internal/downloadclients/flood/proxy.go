@@ -172,6 +172,58 @@ func (p *Proxy) GetTorrents(ctx context.Context, s Settings) (map[string]*Torren
 	return out.Torrents, nil
 }
 
+// DeleteTorrent fires POST `/api/torrents/delete` with the
+// `{hashes:[hash], deleteData:bool}` body. Mirrors C#
+// `FloodProxy.DeleteTorrent` at `:167-179`.
+func (p *Proxy) DeleteTorrent(ctx context.Context, s Settings, hash string, deleteData bool) error {
+	body, err := json.Marshal(map[string]any{
+		"hashes":     []string{hash},
+		"deleteData": deleteData,
+	})
+	if err != nil {
+		return fmt.Errorf("flood: marshal delete body: %w", err)
+	}
+	return p.callAuth(ctx, s, http.MethodPost, "torrents/delete", body, nil)
+}
+
+// SetTorrentsTags fires PATCH `/api/torrents/tags` with the
+// `{hashes:[hash], tags:[tags...]}` body. Mirrors C#
+// `FloodProxy.SetTorrentsTags` at `:199-213`. Used by
+// MarkItemAsImported to apply PostImportTags.
+func (p *Proxy) SetTorrentsTags(ctx context.Context, s Settings, hash string, tags []string) error {
+	if tags == nil {
+		tags = []string{}
+	}
+	body, err := json.Marshal(map[string]any{
+		"hashes": []string{hash},
+		"tags":   tags,
+	})
+	if err != nil {
+		return fmt.Errorf("flood: marshal tags body: %w", err)
+	}
+	return p.callAuth(ctx, s, http.MethodPatch, "torrents/tags", body, nil)
+}
+
+// GetTorrentContentPaths fires GET `/api/torrents/{hash}/contents`
+// and returns the per-content `path` field. Mirrors C#
+// `FloodProxy.GetTorrentContentPaths` at `:190-197`.
+//
+// The wire shape is `[{"path": "..."}]`; the Go port unmarshals
+// directly into a slice and projects to []string.
+func (p *Proxy) GetTorrentContentPaths(ctx context.Context, s Settings, hash string) ([]string, error) {
+	var raw []struct {
+		Path string `json:"path"`
+	}
+	if err := p.callAuth(ctx, s, http.MethodGet, "torrents/"+hash+"/contents", nil, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(raw))
+	for _, c := range raw {
+		out = append(out, c.Path)
+	}
+	return out, nil
+}
+
 // AddTorrentByFile fires POST `/api/torrents/add-files` with the
 // base64-encoded .torrent body. Mirrors C# `FloodProxy.AddTorrentByFile`
 // at `:117-140`. Body shape:

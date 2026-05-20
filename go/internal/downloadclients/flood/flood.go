@@ -19,11 +19,18 @@ import (
 // C# `Flood` class at
 // `src/NzbDrone.Core/Download/Clients/Flood/Flood.cs:21-275`.
 //
-// Skeleton-only at 5.J71: Test (AuthVerify) + GetStatus
-// (IsLocalhost-only — OutputRootFolders pulled into the
-// GetClientSettings follow-up) + identity methods are real;
-// Download / GetItems / RemoveItem / MarkItemAsImported /
-// GetImportItem stub out to [ErrNotImplemented].
+// Functionally complete after the 5.J71 → 5.J74 arc: Test runs
+// AuthVerify; Download dispatches torrent-file vs magnet via the
+// add-files/add-urls POST shape; GetItems walks the torrents map
+// with the Tags + PostImportTags gates + 4-arm status table;
+// RemoveItem fires the delete POST; MarkItemAsImported applies the
+// PostImportTags PATCH; GetImportItem resolves the single-file vs
+// shared-base OutputPath via the contents endpoint. GetStatus
+// remains IsLocalhost-only — the C# `GetClientSettings` arm that
+// populates OutputRootFolders from `client/settings.directoryDefault`
+// is the only deferred piece (along with the seed-config cleanup
+// gate in GetItems — both are post-import niceties, not load-
+// bearing).
 type Flood struct {
 	settings Settings
 	def      *downloadclients.DownloadClient
@@ -279,25 +286,165 @@ func statusContains(status []string, needle string) bool {
 	return false
 }
 
-// GetImportItem is a STUB at 5.J71. Follow-up J74 ports C#
-// `Flood.cs:190-222` — calls torrents/{hash}/contents and resolves
-// single-file vs base-directory OutputPath.
-func (f *Flood) GetImportItem(_ context.Context, item *downloadclients.Item, _ *downloadclients.Item) (*downloadclients.Item, error) {
-	return item, nil
+// GetImportItem ports C# `Flood.GetImportItem` at `Flood.cs:190-222`.
+// Calls Proxy.GetTorrentContentPaths and refines the cloned item's
+// OutputPath:
+//
+//   - 0 contents → ErrUnavailable-wrapped error (matches C# `:198`'s
+//     `DownloadClientUnavailableException`).
+//   - 1 content → OutputPath = item.OutputPath + content[0].
+//   - >1 contents that share a common first-segment base → OutputPath
+//     = item.OutputPath + base. If first segments diverge, leave
+//     OutputPath at the item's base directory (matches C# `:212-218`).
+//
+// First-segment extraction splits on both forward and back slashes
+// (the C# code at `:210` uses `Split(new char[]{'\\','/'}, RemoveEmptyEntries)`).
+func (f *Flood) GetImportItem(ctx context.Context, item *downloadclients.Item, _ *downloadclients.Item) (*downloadclients.Item, error) {
+	if item == nil {
+		return nil, errors.New("flood: GetImportItem nil item")
+	}
+	if f.proxy == nil {
+		return nil, errors.New("flood: nil Proxy")
+	}
+	result := item.Clone()
+	paths, err := f.proxy.GetTorrentContentPaths(ctx, f.settings, item.DownloadID)
+	if err != nil {
+		return nil, fmt.Errorf("flood: GetImportItem(%s): %w", item.DownloadID, err)
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("%w: torrent %s reported zero content paths", ErrUnavailable, item.DownloadID)
+	}
+	if len(paths) == 1 {
+		result.OutputPath = ospath.New(joinPath(item.OutputPath.FullPath(), paths[0]))
+		return result, nil
+	}
+	first := firstSegment(paths[0])
+	allSame := true
+	for _, p := range paths[1:] {
+		if firstSegment(p) != first {
+			allSame = false
+			break
+		}
+	}
+	if allSame {
+		result.OutputPath = ospath.New(joinPath(item.OutputPath.FullPath(), first))
+	}
+	return result, nil
 }
 
-// RemoveItem is a STUB at 5.J71. Follow-up J74: torrents/delete
-// POST (body={hashes:[id], deleteData:bool}).
-func (f *Flood) RemoveItem(_ context.Context, _ *downloadclients.Item, _ bool) error {
-	return fmt.Errorf("%w: RemoveItem", ErrNotImplemented)
+// firstSegment returns the leading path component of p, splitting
+// on either separator. Mirrors C# `:210`'s mixed-slash split.
+func firstSegment(p string) string {
+	p = strings.TrimLeft(p, "/\\")
+	for i := 0; i < len(p); i++ {
+		if p[i] == '/' || p[i] == '\\' {
+			return p[:i]
+		}
+	}
+	return p
 }
 
-// MarkItemAsImported is a STUB at 5.J71. Follow-up J74 ports
-// C# `Flood.cs:224-237` — when PostImportTags is non-empty, GET
-// torrents → look up the matching hash → PATCH torrents/tags with
-// (existing-tags ∪ PostImportTags).
-func (f *Flood) MarkItemAsImported(_ context.Context, _ *downloadclients.Item) error {
-	return downloadclients.ErrMarkAsImportedUnsupported
+// joinPath wraps [filepath.Join] without the package needing to
+// import path/filepath at the file head just for this one helper.
+// The C# `OsPath + OsPath` operator concatenates with a separator;
+// the Go port uses filepath.Join which collapses double-separators
+// the same way.
+func joinPath(base, suffix string) string {
+	if base == "" {
+		return suffix
+	}
+	if suffix == "" {
+		return base
+	}
+	// Use forward slash join — Flood is POSIX-leaning + matches the
+	// existing ospath helper conventions in nzbvortex/hadouken.
+	b := strings.TrimRight(base, "/\\")
+	s := strings.TrimLeft(suffix, "/\\")
+	return b + "/" + s
+}
+
+// RemoveItem ports `Flood.RemoveItem` at C# `:239-242`. Forwards
+// the DownloadID + deleteData straight through to
+// [Proxy.DeleteTorrent].
+func (f *Flood) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
+	if f.proxy == nil {
+		return errors.New("flood: nil Proxy")
+	}
+	if item == nil {
+		return errors.New("flood: nil item")
+	}
+	if strings.TrimSpace(item.DownloadID) == "" {
+		return errors.New("flood: item has empty DownloadID")
+	}
+	if err := f.proxy.DeleteTorrent(ctx, f.settings, item.DownloadID, deleteData); err != nil {
+		return fmt.Errorf("flood: DeleteTorrent(%s): %w", item.DownloadID, err)
+	}
+	return nil
+}
+
+// MarkItemAsImported ports C# `Flood.MarkItemAsImported` at
+// `:224-237`. When Settings.PostImportTags is non-empty:
+//
+//  1. Fetch the current torrent list.
+//  2. If the DownloadID matches a hash in the list, PATCH the tags
+//     with (existing-tags ∪ PostImportTags).
+//  3. Otherwise no-op (matches the C# `if list.ContainsKey(...)`
+//     guard which silently skips).
+//
+// When PostImportTags is empty, returns nil immediately (the C#
+// `:226`'s `.Any()` guard short-circuits the whole branch).
+//
+// Errors from GetTorrents / SetTorrentsTags wrap the proxy sentinels.
+func (f *Flood) MarkItemAsImported(ctx context.Context, item *downloadclients.Item) error {
+	if f.proxy == nil {
+		return errors.New("flood: nil Proxy")
+	}
+	if item == nil {
+		return errors.New("flood: nil item")
+	}
+	if len(f.settings.PostImportTags) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(item.DownloadID) == "" {
+		return errors.New("flood: item has empty DownloadID")
+	}
+	torrents, err := f.proxy.GetTorrents(ctx, f.settings)
+	if err != nil {
+		return fmt.Errorf("flood: MarkItemAsImported GetTorrents: %w", err)
+	}
+	existing, ok := torrents[item.DownloadID]
+	if !ok {
+		f.log.Debug("flood: MarkItemAsImported no matching torrent", "downloadID", item.DownloadID)
+		return nil
+	}
+	merged := mergeTags(existing.Tags, f.settings.PostImportTags)
+	if err := f.proxy.SetTorrentsTags(ctx, f.settings, item.DownloadID, merged); err != nil {
+		return fmt.Errorf("flood: SetTorrentsTags(%s): %w", item.DownloadID, err)
+	}
+	return nil
+}
+
+// mergeTags returns the union of two string slices, preserving the
+// `existing` order and appending any new entries from `additional`.
+// Mirrors C# `existing.Concat(additional).ToImmutableHashSet()` at
+// `Flood.cs:233-234` — but the Go port preserves order so the wire
+// payload is reproducible across test runs.
+func mergeTags(existing, additional []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(existing)+len(additional))
+	for _, t := range existing {
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	for _, t := range additional {
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // GetStatus ports the IsLocalhost arm of C# `Flood.cs:244-258`.
@@ -344,9 +491,6 @@ func isLocalHost(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
-
-// ErrNotImplemented signals a 5.J71 skeleton stub.
-var ErrNotImplemented = errors.New("flood: not yet implemented in this build")
 
 // Compile-time guard.
 var _ downloadclients.Provider = (*Flood)(nil)

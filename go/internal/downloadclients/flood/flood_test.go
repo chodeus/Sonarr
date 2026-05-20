@@ -402,14 +402,9 @@ func TestProvider_GetStatus_LocalhostFlag(t *testing.T) {
 	}
 }
 
-func TestProvider_RemainingStubs(t *testing.T) {
-	// Download + GetItems are now wired (J72 + J73); RemoveItem
-	// is the last remaining stub before the J74 closure.
-	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(newScripted(), nil), nil)
-	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); !errors.Is(err, flood.ErrNotImplemented) {
-		t.Errorf("RemoveItem err = %v, want ErrNotImplemented", err)
-	}
-}
+// (5.J74 closed the arc — Download, GetItems, RemoveItem,
+// MarkItemAsImported, and GetImportItem are all wired. Per-method
+// tests cover the behaviour individually.)
 
 // queueAuthOnce queues the authenticate response + a cookie so
 // subsequent authenticated calls find a fresh cookie in the cache.
@@ -626,10 +621,223 @@ func TestProvider_Download_PropagatesProxyError(t *testing.T) {
 	}
 }
 
-func TestProvider_MarkItemAsImported_ReturnsUnsupported(t *testing.T) {
+func TestProvider_MarkItemAsImported_BlankPostImportTagsSkips(t *testing.T) {
+	// PostImportTags empty → MarkItemAsImported returns nil without
+	// touching the proxy.
+	doer := newScripted()
+	s := newSettings()
+	s.PostImportTags = nil
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, s, flood.NewProxy(doer, nil), nil)
+	if err := p.MarkItemAsImported(context.Background(), &downloadclients.Item{DownloadID: "h"}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(doer.calls) != 0 {
+		t.Errorf("proxy called despite blank PostImportTags: %d calls", len(doer.calls))
+	}
+}
+
+func TestProvider_MarkItemAsImported_PatchTagsForMatchingHash(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.responses["/api/torrents"] = append(doer.responses["/api/torrents"], scriptedResp{
+		status: http.StatusOK,
+		body:   `{"torrents":{"h":{"name":"X","tags":["sonarr","tv"]}}}`,
+	})
+	doer.queue("/api/torrents/tags")
+
+	s := newSettings()
+	s.PostImportTags = []string{"imported"}
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, s, flood.NewProxy(doer, nil), nil)
+	if err := p.MarkItemAsImported(context.Background(), &downloadclients.Item{DownloadID: "h"}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	var patchCall *scriptedCall
+	for i := range doer.calls {
+		if doer.calls[i].path == "/api/torrents/tags" {
+			patchCall = &doer.calls[i]
+		}
+	}
+	if patchCall == nil {
+		t.Fatal("no /api/torrents/tags call recorded")
+	}
+	if patchCall.method != http.MethodPatch {
+		t.Errorf("method = %q, want PATCH", patchCall.method)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(patchCall.body, &body)
+	hashes, _ := body["hashes"].([]any)
+	if len(hashes) != 1 || hashes[0] != "h" {
+		t.Errorf("hashes = %v, want [h]", body["hashes"])
+	}
+	tags, _ := body["tags"].([]any)
+	if len(tags) != 3 {
+		t.Errorf("tags = %v, want 3 entries (sonarr, tv, imported)", body["tags"])
+	}
+}
+
+func TestProvider_MarkItemAsImported_NoMatchingHashSkipsPatch(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.responses["/api/torrents"] = append(doer.responses["/api/torrents"], scriptedResp{
+		status: http.StatusOK,
+		body:   `{"torrents":{"other":{"name":"X","tags":["sonarr"]}}}`,
+	})
+	s := newSettings()
+	s.PostImportTags = []string{"imported"}
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, s, flood.NewProxy(doer, nil), nil)
+	if err := p.MarkItemAsImported(context.Background(), &downloadclients.Item{DownloadID: "missing"}); err != nil {
+		t.Errorf("err = %v, want nil (no-match silently skips)", err)
+	}
+	// No PATCH call should have been issued.
+	for _, c := range doer.calls {
+		if c.path == "/api/torrents/tags" {
+			t.Errorf("PATCH was issued despite no matching hash: %v", c)
+		}
+	}
+}
+
+func TestProvider_RemoveItem_DispatchesDelete(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queue("/api/torrents/delete")
+
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "ABCDEF"}, true); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	var deleteCall *scriptedCall
+	for i := range doer.calls {
+		if doer.calls[i].path == "/api/torrents/delete" {
+			deleteCall = &doer.calls[i]
+		}
+	}
+	if deleteCall == nil {
+		t.Fatal("no /api/torrents/delete call recorded")
+	}
+	if deleteCall.method != http.MethodPost {
+		t.Errorf("method = %q, want POST", deleteCall.method)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(deleteCall.body, &body)
+	hashes, _ := body["hashes"].([]any)
+	if len(hashes) != 1 || hashes[0] != "ABCDEF" {
+		t.Errorf("hashes = %v, want [ABCDEF]", body["hashes"])
+	}
+	if body["deleteData"] != true {
+		t.Errorf("deleteData = %v, want true", body["deleteData"])
+	}
+}
+
+func TestProvider_RemoveItem_DeleteDataFalse(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queue("/api/torrents/delete")
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "h"}, false); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	for _, c := range doer.calls {
+		if c.path == "/api/torrents/delete" {
+			var body map[string]any
+			_ = json.Unmarshal(c.body, &body)
+			if body["deleteData"] != false {
+				t.Errorf("deleteData = %v, want false", body["deleteData"])
+			}
+		}
+	}
+}
+
+func TestProvider_RemoveItem_NilItem(t *testing.T) {
 	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(newScripted(), nil), nil)
-	if err := p.MarkItemAsImported(context.Background(), &downloadclients.Item{}); !errors.Is(err, downloadclients.ErrMarkAsImportedUnsupported) {
-		t.Errorf("err = %v, want ErrMarkAsImportedUnsupported", err)
+	if err := p.RemoveItem(context.Background(), nil, true); err == nil {
+		t.Fatal("err = nil, want nil-item error")
+	}
+}
+
+func TestProvider_RemoveItem_EmptyDownloadID(t *testing.T) {
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(newScripted(), nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); err == nil {
+		t.Fatal("err = nil, want empty-DownloadID error")
+	}
+}
+
+func TestProvider_RemoveItem_PropagatesProxyError(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queueErr("/api/torrents/delete", errors.New("dial"))
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "h"}, true); !errors.Is(err, flood.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestProvider_GetImportItem_SingleFile(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.responses["/api/torrents/h/contents"] = append(doer.responses["/api/torrents/h/contents"], scriptedResp{
+		status: http.StatusOK,
+		body:   `[{"path":"file.mkv"}]`,
+	})
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	item := &downloadclients.Item{DownloadID: "h", OutputPath: ospath.New("/local/dl")}
+	out, err := p.GetImportItem(context.Background(), item, nil)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if out.OutputPath.FullPath() != "/local/dl/file.mkv" {
+		t.Errorf("OutputPath = %q, want /local/dl/file.mkv (single-file branch)", out.OutputPath.FullPath())
+	}
+}
+
+func TestProvider_GetImportItem_MultiFileSharedBase(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.responses["/api/torrents/h/contents"] = append(doer.responses["/api/torrents/h/contents"], scriptedResp{
+		status: http.StatusOK,
+		body:   `[{"path":"Show.S01/ep01.mkv"},{"path":"Show.S01/ep02.mkv"}]`,
+	})
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	item := &downloadclients.Item{DownloadID: "h", OutputPath: ospath.New("/local/dl")}
+	out, _ := p.GetImportItem(context.Background(), item, nil)
+	if out.OutputPath.FullPath() != "/local/dl/Show.S01" {
+		t.Errorf("OutputPath = %q, want /local/dl/Show.S01 (shared-base branch)", out.OutputPath.FullPath())
+	}
+}
+
+func TestProvider_GetImportItem_MultiFileDivergentBase(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.responses["/api/torrents/h/contents"] = append(doer.responses["/api/torrents/h/contents"], scriptedResp{
+		status: http.StatusOK,
+		body:   `[{"path":"alpha/ep01.mkv"},{"path":"beta/ep02.mkv"}]`,
+	})
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	item := &downloadclients.Item{DownloadID: "h", OutputPath: ospath.New("/local/dl")}
+	out, _ := p.GetImportItem(context.Background(), item, nil)
+	// Divergent first-segment → OutputPath stays at the item's base.
+	if out.OutputPath.FullPath() != "/local/dl" {
+		t.Errorf("OutputPath = %q, want /local/dl (divergent first-segment leaves it untouched)", out.OutputPath.FullPath())
+	}
+}
+
+func TestProvider_GetImportItem_EmptyContentsSurfacesUnavailable(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.responses["/api/torrents/h/contents"] = append(doer.responses["/api/torrents/h/contents"], scriptedResp{
+		status: http.StatusOK,
+		body:   `[]`,
+	})
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	_, err := p.GetImportItem(context.Background(), &downloadclients.Item{DownloadID: "h", OutputPath: ospath.New("/x")}, nil)
+	if !errors.Is(err, flood.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestProvider_GetImportItem_NilItem(t *testing.T) {
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(newScripted(), nil), nil)
+	if _, err := p.GetImportItem(context.Background(), nil, nil); err == nil {
+		t.Fatal("err = nil, want nil-item error")
 	}
 }
 
