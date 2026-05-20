@@ -43,8 +43,23 @@ type versionHandler struct {
 	versionStatus int
 	versionBody   string
 
-	loginCalls   atomic.Int32
-	versionCalls atomic.Int32
+	// J104 — Test-arm follow-up endpoints. Defaults emit a healthy
+	// preferences body + the canonical "tv-sonarr" category so the
+	// existing TestQBit_Test_OK + friends keep passing.
+	prefsBody      string
+	prefsStatus    int
+	categoriesBody string
+	categoriesHook func(after int) string
+	torrentsBody   string
+	torrentsStatus int
+
+	loginCalls       atomic.Int32
+	versionCalls     atomic.Int32
+	prefsCalls       atomic.Int32
+	categoriesCalls  atomic.Int32
+	addCategoryCalls atomic.Int32
+	torrentsCalls    atomic.Int32
+	addedCategories  []string
 }
 
 func (h *versionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -76,9 +91,61 @@ func (h *versionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			body = "v4.5.0"
 		}
 		_, _ = io.WriteString(w, body)
+	case "/api/v2/app/preferences":
+		h.prefsCalls.Add(1)
+		status := h.prefsStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		w.WriteHeader(status)
+		body := h.prefsBody
+		if body == "" {
+			body = `{"max_ratio_enabled":false,"max_ratio_act":0,"max_seeding_time_enabled":false,"queueing_enabled":true,"dht":true}`
+		}
+		_, _ = io.WriteString(w, body)
+	case "/api/v2/torrents/categories":
+		count := h.categoriesCalls.Add(1)
+		body := h.categoriesBody
+		if h.categoriesHook != nil {
+			body = h.categoriesHook(int(count))
+		}
+		if body == "" {
+			body = `{"tv-sonarr":{"name":"tv-sonarr","savePath":"/data/tv"}}`
+		}
+		_, _ = io.WriteString(w, body)
+	case "/api/v2/torrents/createCategory":
+		h.addCategoryCalls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		cat := extractFormParam(string(body), "category")
+		h.addedCategories = append(h.addedCategories, cat)
+		w.WriteHeader(http.StatusOK)
+	case "/api/v2/torrents/info":
+		h.torrentsCalls.Add(1)
+		status := h.torrentsStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		w.WriteHeader(status)
+		body := h.torrentsBody
+		if body == "" {
+			body = `[]`
+		}
+		_, _ = io.WriteString(w, body)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// extractFormParam parses out the value of the named form parameter
+// from a url-encoded request body. Returns "" when absent.
+func extractFormParam(body, name string) string {
+	prefix := name + "="
+	for _, pair := range strings.Split(body, "&") {
+		if strings.HasPrefix(pair, prefix) {
+			return strings.TrimPrefix(pair, prefix)
+		}
+	}
+	return ""
 }
 
 func TestQBit_Test_OK(t *testing.T) {
@@ -295,7 +362,18 @@ func TestQBit_Test_ApiKeyAuthPath(t *testing.T) {
 			return
 		}
 		seenAuth.Store(r.Header.Get("Authorization"))
-		_, _ = io.WriteString(w, "v4.5.0")
+		switch r.URL.Path {
+		case "/api/v2/app/version":
+			_, _ = io.WriteString(w, "v4.5.0")
+		case "/api/v2/app/preferences":
+			_, _ = io.WriteString(w, `{"max_ratio_enabled":false,"queueing_enabled":true}`)
+		case "/api/v2/torrents/categories":
+			_, _ = io.WriteString(w, `{"tv-sonarr":{"name":"tv-sonarr","savePath":""}}`)
+		case "/api/v2/torrents/info":
+			_, _ = io.WriteString(w, `[]`)
+		default:
+			_, _ = io.WriteString(w, "v4.5.0")
+		}
 	})
 	srv := httptest.NewServer(h)
 	defer srv.Close()
@@ -346,5 +424,201 @@ func TestQBit_Test_NilProxyReturnsError(t *testing.T) {
 	_, err := q.Test(context.Background())
 	if err == nil {
 		t.Fatal("Test() err = nil, want error for nil proxy")
+	}
+}
+
+// --- J104 TestCategory / TestPrioritySupport / TestGetTorrents ----
+
+func TestQBit_TestJ104_RecommendedCategoryWarningWhenEmpty(t *testing.T) {
+	t.Parallel()
+	h := &versionHandler{loginCookie: "sid"}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := newQBit(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+		s.TvCategory = "" // empty → C# :484-491 warning
+	})
+	failures, err := q.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFailure(failures, "TvCategory") {
+		t.Errorf("Test() = %+v, want TvCategory warning when empty", failures)
+	}
+}
+
+func TestQBit_TestJ104_RemovesAtRatioFailure(t *testing.T) {
+	t.Parallel()
+	h := &versionHandler{
+		loginCookie: "sid",
+		prefsBody:   `{"max_ratio_enabled":true,"max_ratio_act":1,"queueing_enabled":true}`,
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := newQBit(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+	})
+	failures, err := q.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "" && strings.Contains(f.ErrorMessage, "maximum ratio") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Test() = %+v, want RemovesAtRatioLimit whole-form failure", failures)
+	}
+}
+
+func TestQBit_TestJ104_CategoryMissingAutoCreated(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	h := &versionHandler{
+		loginCookie: "sid",
+		categoriesHook: func(_ int) string {
+			calls++
+			if calls == 1 {
+				return `{}`
+			}
+			return `{"tv-sonarr":{"name":"tv-sonarr","savePath":""}}`
+		},
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := newQBit(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+	})
+	failures, err := q.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Errorf("Test() = %+v, want no failures (auto-create succeeded)", failures)
+	}
+	if h.addCategoryCalls.Load() != 1 {
+		t.Errorf("createCategory fired %d times, want 1", h.addCategoryCalls.Load())
+	}
+	if len(h.addedCategories) != 1 || h.addedCategories[0] != "tv-sonarr" {
+		t.Errorf("addedCategories=%v, want [tv-sonarr]", h.addedCategories)
+	}
+}
+
+func TestQBit_TestJ104_CategoryPersistentFailureSurfaces(t *testing.T) {
+	t.Parallel()
+	// Server keeps returning empty categories even after createCategory.
+	h := &versionHandler{
+		loginCookie:    "sid",
+		categoriesBody: `{}`,
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := newQBit(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+	})
+	failures, err := q.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFailure(failures, "TvCategory") {
+		t.Errorf("Test() = %+v, want TvCategory failure when auto-create silently fails", failures)
+	}
+}
+
+func TestQBit_TestJ104_PrioritySupport_QueueingDisabled(t *testing.T) {
+	t.Parallel()
+	h := &versionHandler{
+		loginCookie: "sid",
+		prefsBody:   `{"queueing_enabled":false}`,
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := newQBit(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+		s.RecentTvPriority = qbittorrent.PriorityFirst
+	})
+	failures, err := q.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFailure(failures, "RecentTvPriority") {
+		t.Errorf("Test() = %+v, want RecentTvPriority failure when queueing disabled", failures)
+	}
+}
+
+func TestQBit_TestJ104_PrioritySupport_BothLastSkips(t *testing.T) {
+	t.Parallel()
+	// Both at Last (default) → no priority probe needed.
+	h := &versionHandler{
+		loginCookie: "sid",
+		prefsBody:   `{"queueing_enabled":false}`,
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := newQBit(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+		// Defaults: RecentTvPriority + OlderTvPriority both = Last.
+	})
+	failures, err := q.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range failures {
+		if f.PropertyName == "RecentTvPriority" || f.PropertyName == "OlderTvPriority" {
+			t.Errorf("Test() = %+v, want no priority failure when both Last", failures)
+		}
+	}
+}
+
+func TestQBit_TestJ104_GetTorrentsFailureSurfaces(t *testing.T) {
+	t.Parallel()
+	h := &versionHandler{
+		loginCookie:    "sid",
+		torrentsStatus: http.StatusInternalServerError,
+		torrentsBody:   "boom",
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := newQBit(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+	})
+	failures, err := q.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "" && strings.Contains(f.ErrorMessage, "list of torrents") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Test() = %+v, want whole-form torrent-list failure", failures)
+	}
+}
+
+func TestQBit_TestJ104_GetTorrentsFiresOnHappyPath(t *testing.T) {
+	t.Parallel()
+	h := &versionHandler{loginCookie: "sid"}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	q := newQBit(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+	})
+	if _, err := q.Test(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h.torrentsCalls.Load() != 1 {
+		t.Errorf("torrents/info fired %d times, want 1", h.torrentsCalls.Load())
 	}
 }

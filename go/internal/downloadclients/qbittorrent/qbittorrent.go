@@ -789,10 +789,192 @@ func (q *QBittorrent) Test(ctx context.Context) ([]downloadclients.TestFailure, 
 		}}, nil
 	}
 
-	// Beyond TestConnection the C# tree also runs TestCategory /
-	// TestPrioritySupport / TestGetTorrents (`:454-456`). Those
-	// land in later slices once GetItems / category support arrive.
-	return nil, nil
+	// J104 — extended Test arm matching C# `:454-456` ordering.
+	// TestConnection finishing in-place (above) already covers the
+	// authentication-version-floor portion; the remaining C# arm
+	// (`:494-502` RemovesAtRatioLimit + recommended-category warning)
+	// is rolled into testConnectionExtras below so it shares the
+	// GetConfig call with TestPrioritySupport.
+	prefs, prefsErr := q.proxy.GetConfig(ctx, q.settings)
+	var failures []downloadclients.TestFailure
+	if prefsErr != nil {
+		// C# at :513-524 catches WebException + Exception differently;
+		// the Go port pins the config-fetch failure to Host so the
+		// user knows it's a connection-layer issue. Subsequent
+		// validators that need prefs skip — they're best-effort.
+		failures = append(failures, downloadclients.TestFailure{
+			PropertyName:        "Host",
+			ErrorMessage:        fmt.Sprintf("Unable to fetch qBittorrent preferences: %v", prefsErr),
+			DetailedDescription: prefsErr.Error(),
+		})
+		return failures, nil
+	}
+	if f := testConnectionExtras(prefs, q.settings); f != nil {
+		failures = append(failures, *f)
+	}
+	if f := q.testCategory(ctx); f != nil {
+		failures = append(failures, *f)
+	}
+	if f := testPrioritySupport(prefs, q.settings); f != nil {
+		failures = append(failures, *f)
+	}
+	if f := q.testGetTorrents(ctx); f != nil {
+		failures = append(failures, *f)
+	}
+	return failures, nil
+}
+
+// testConnectionExtras ports the tail of C# `TestConnection` at
+// `:484-502`: empty-category recommendation warning + the
+// RemovesAtRatioLimit whole-form failure that fires when qBit is
+// configured to remove torrents at max ratio (which would race the
+// Sonarr import handoff).
+//
+// The "recommended-category" arm at C# `:484-492` is surfaced as a
+// TvCategory failure with the Sonarr-side "warning" intent — the Go
+// TestFailure shape doesn't yet distinguish errors-vs-warnings, so
+// downstream UI consumers should treat any TvCategory failure
+// missing a DetailedDescription containing "Add a category" as a
+// warning. Matches the C# `IsWarning=true` annotation at :489.
+func testConnectionExtras(prefs *QBittorrentPreferences, settings Settings) *downloadclients.TestFailure {
+	if strings.TrimSpace(settings.TvCategory) == "" {
+		return &downloadclients.TestFailure{
+			PropertyName:        "TvCategory",
+			ErrorMessage:        "Category is recommended for qBittorrent",
+			DetailedDescription: "Set a category so Sonarr can manage downloads independently of other torrents.",
+		}
+	}
+	if removesCompletedDownloads(prefs) {
+		return &downloadclients.TestFailure{
+			PropertyName:        "",
+			ErrorMessage:        "qBittorrent is configured to remove torrents when they reach the maximum ratio",
+			DetailedDescription: "Sonarr handles the post-import cleanup itself; configure qBittorrent's max-ratio action to Pause (not Remove) to avoid races with the import handoff.",
+		}
+	}
+	return nil
+}
+
+// testCategory ports C# `TestCategory` at `:539-584`. Both
+// TvCategory + TvImportedCategory empty → noop. Otherwise the C#
+// version-gate at `:546-551` skips the probe entirely on API
+// version < 2.0 (qBit 4.1+); the Go port already requires API v2
+// for the proxy to work at all (the version-floor at TestConnection
+// rejects < 4.1.0), so we always run the label probe here.
+//
+// Per-category: when the configured label is missing from
+// /api/v2/torrents/categories, fire AddLabel + re-fetch; still-
+// missing surfaces "label add failure" per C# `:560-566` /
+// `:574-580`.
+func (q *QBittorrent) testCategory(ctx context.Context) *downloadclients.TestFailure {
+	tv := strings.TrimSpace(q.settings.TvCategory)
+	tvImported := strings.TrimSpace(q.settings.TvImportedCategory)
+	if tv == "" && tvImported == "" {
+		return nil
+	}
+	labels, err := q.proxy.GetLabels(ctx, q.settings)
+	if err != nil {
+		return &downloadclients.TestFailure{
+			PropertyName:        "TvCategory",
+			ErrorMessage:        "Unable to fetch qBittorrent categories",
+			DetailedDescription: err.Error(),
+		}
+	}
+	if f := q.ensureLabel(ctx, tv, "TvCategory", labels); f != nil {
+		return f
+	}
+	if f := q.ensureLabel(ctx, tvImported, "TvImportedCategory", labels); f != nil {
+		return f
+	}
+	return nil
+}
+
+// ensureLabel ports the C# auto-create arm at `:555-580`. Empty
+// label → noop. Present → noop. Missing → AddLabel + re-fetch;
+// still-missing surfaces a "label add failure" on the configured
+// property. AddLabel RPC failure short-circuits with the same
+// failure (matches C# behaviour where an AddLabel exception bubbles
+// through the surrounding try/catch).
+func (q *QBittorrent) ensureLabel(ctx context.Context, label, prop string, labels map[string]QBittorrentLabel) *downloadclients.TestFailure {
+	if label == "" {
+		return nil
+	}
+	if _, ok := labels[label]; ok {
+		return nil
+	}
+	if err := q.proxy.AddLabel(ctx, label, q.settings); err != nil {
+		return &downloadclients.TestFailure{
+			PropertyName:        prop,
+			ErrorMessage:        "Failed to add the configured category to qBittorrent",
+			DetailedDescription: err.Error(),
+		}
+	}
+	refreshed, err := q.proxy.GetLabels(ctx, q.settings)
+	if err != nil {
+		return &downloadclients.TestFailure{
+			PropertyName:        prop,
+			ErrorMessage:        "Unable to re-fetch qBittorrent categories after add",
+			DetailedDescription: err.Error(),
+		}
+	}
+	for k, v := range refreshed {
+		labels[k] = v
+	}
+	if _, ok := labels[label]; ok {
+		return nil
+	}
+	return &downloadclients.TestFailure{
+		PropertyName:        prop,
+		ErrorMessage:        "Failed to add the configured category to qBittorrent",
+		DetailedDescription: fmt.Sprintf("qBittorrent accepted the createCategory request for %q but the category is still missing from /api/v2/torrents/categories.", label),
+	}
+}
+
+// testPrioritySupport ports C# `TestPrioritySupport` at `:586-625`.
+// When EITHER RecentTvPriority OR OlderTvPriority is set to First
+// (priority that triggers MoveTorrentToTopInQueue), qBittorrent's
+// QueueingEnabled global must be on; otherwise the move-to-top RPC
+// silently fails. Both priorities at Last → noop (no MoveToTop
+// needed). Only one priority at First + queueing off → property-
+// pinned failure on the offending priority field.
+//
+// Shares the prefs already fetched by the caller for the
+// RemovesAtRatioLimit check — no extra round-trip.
+func testPrioritySupport(prefs *QBittorrentPreferences, settings Settings) *downloadclients.TestFailure {
+	if prefs == nil {
+		return nil
+	}
+	recentDefault := settings.RecentTvPriority != PriorityFirst
+	olderDefault := settings.OlderTvPriority != PriorityFirst
+	if recentDefault && olderDefault {
+		return nil
+	}
+	if prefs.QueueingEnabled {
+		return nil
+	}
+	prop := "RecentTvPriority"
+	if recentDefault {
+		prop = "OlderTvPriority"
+	}
+	return &downloadclients.TestFailure{
+		PropertyName:        prop,
+		ErrorMessage:        "qBittorrent's torrent queueing is disabled",
+		DetailedDescription: "Sonarr's First priority setting requires qBittorrent's torrent-queueing global to be enabled. Open qBittorrent > Options > BitTorrent > 'Torrent Queueing' and enable it, or change Sonarr's priority back to Last.",
+	}
+}
+
+// testGetTorrents ports C# `TestGetTorrents` at `:627-640`. One-shot
+// GetTorrents probe against the live daemon; any error surfaces a
+// whole-form failure containing the cause. Mirrors the J102
+// Transmission TestGetTorrents arm + the J101 Deluge testGetTorrents.
+func (q *QBittorrent) testGetTorrents(ctx context.Context) *downloadclients.TestFailure {
+	if _, err := q.proxy.GetTorrents(ctx, q.settings); err != nil {
+		return &downloadclients.TestFailure{
+			PropertyName:        "",
+			ErrorMessage:        fmt.Sprintf("Failed to get the list of torrents: %v", err),
+			DetailedDescription: "Sonarr was able to authenticate against qBittorrent but the torrent-list query failed; check the qBittorrent log.",
+		}
+	}
+	return nil
 }
 
 // classifyAuthError converts a proxy auth/transport error to a

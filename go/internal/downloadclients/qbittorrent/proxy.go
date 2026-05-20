@@ -545,6 +545,29 @@ func (p *Proxy) GetLabels(ctx context.Context, settings Settings) (map[string]QB
 	return labels, nil
 }
 
+// AddLabel fires POST /api/v2/torrents/createCategory. Mirrors C#
+// `QBittorrentProxyV2.AddLabel` at `:213-219`. Used by the J104
+// TestCategory probe to auto-create the configured TvCategory /
+// TvImportedCategory when they're missing from the server.
+//
+// qBittorrent accepts duplicate-creates (returns 200 + ignores)
+// rather than 4xx, so the no-op-on-existing case bubbles up
+// without an error here. The TestCategory caller verifies success
+// via a follow-on GetLabels re-fetch.
+func (p *Proxy) AddLabel(ctx context.Context, label string, settings Settings) error {
+	form := url.Values{}
+	form.Set("category", label)
+	status, body, err := p.DoRequest(ctx, http.MethodPost, "/api/v2/torrents/createCategory",
+		strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", settings)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("%w: createCategory status=%d body=%s", ErrUnexpected, status, truncate(body, 128))
+	}
+	return nil
+}
+
 // SetForceStart fires POST /api/v2/torrents/setForceStart. Mirrors
 // C# `QBittorrentProxyV2.SetForceStart` at `:329-336`.
 func (p *Proxy) SetForceStart(ctx context.Context, hash string, enabled bool, settings Settings) error {
