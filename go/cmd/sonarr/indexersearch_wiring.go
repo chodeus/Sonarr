@@ -237,12 +237,14 @@ func (s *dbIndexerSource) buildAdapter(row *indexers.Indexer, def *provider.Defi
 			rs, err := idx.FetchRecent(ctx)
 			return upcastReleaseInfos(rs), err
 		}
-		// Slice 5.J150 (first slice of the Fanzub arc): only the RSS
-		// FetchRecent path lands. The per-criteria search-URL routing
-		// (FanzubRequestGenerator.cs:32-92 — Season + AnimeEpisode +
-		// AnimeSeason) ships as a follow-up slice. Leave FetchSearchFunc
-		// nil so the adapter surfaces the "does not support search"
-		// error instead of silently returning empty.
+		// Slice 5.J151 closes the J150 deferral — FetchSearch routes
+		// Season + AnimeEpisode + AnimeSeason criteria through the
+		// per-overload search-string builders + pipe-joins them into
+		// one q=<...> value.
+		common.FetchSearchFunc = func(ctx context.Context, c indexersearch.Criteria) ([]any, error) {
+			rs, err := idx.FetchSearch(ctx, c)
+			return upcastReleaseInfos(rs), err
+		}
 		return common, nil
 
 	case "Nyaa":

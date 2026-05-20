@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/indexers/newznab"
+	"sonarr.tv/sonarr/internal/indexersearch"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/provider"
 )
@@ -116,11 +118,160 @@ func (i *Indexer) FetchRecent(ctx context.Context) ([]*parser.ReleaseInfo, error
 	return releases, nil
 }
 
-// FetchSearch returns empty for any criteria. The C# per-criteria
-// search-URL routing at FanzubRequestGenerator.cs:32-92 is deferred
-// to a follow-up slice — see the package doc-comment.
-func (i *Indexer) FetchSearch(_ context.Context, _ any) ([]*parser.ReleaseInfo, error) {
-	return []*parser.ReleaseInfo{}, nil
+// FetchSearch dispatches the typed criteria through the per-type
+// search-URL routing at C# `FanzubRequestGenerator.cs:32-92`. Slice
+// 5.J151 closes the J150 deferral.
+//
+// Per criteria type:
+//   - SeasonCriteria: if AnimeStandardFormatSearch + season > 0,
+//     emit per-clean-scene-title BOTH `<title>%20S<ss>` AND
+//     `<title>%20-%20S<ss>` (matches C# GetSeasonSearchStrings at
+//     :107-112).
+//   - AnimeEpisodeCriteria: per-clean-scene-title, build absolute-
+//     episode search strings (`<title>%20<aa>` + `<title>%20-%20<aa>`)
+//     when AbsoluteEpisodeNumber > 0 — the GetTitleSearchStrings
+//     2-format overload at :114-119. Then if AnimeStandardFormatSearch
+//   - season + episode > 0, ALSO append the S/E 2-format overload
+//     at :121-126 (`<title>%20S<ss>E<ee>` + `<title>%20-%20S<ss>E<ee>`).
+//   - AnimeSeasonCriteria: if AnimeStandardFormatSearch + season > 0,
+//     emit the per-clean-scene-title 2-format overload.
+//   - SingleEpisode + Daily / DailySeason / SpecialEpisode / unknown:
+//     empty (C# overloads at :32-34, :50-58, :89-92 all return empty
+//     IndexerPageableRequestChain).
+//
+// All non-empty search strings get wrapped in literal quote
+// characters (`"..."`) and joined with `|` into a SINGLE q=<...>
+// query parameter. The C# tree does the join at the per-criteria
+// callsite (`string.Join("|", searchTitles)` at :44, :71, :83) —
+// unlike Nyaa which emits one URL per term, Fanzub emits ONE URL
+// per criteria with all terms collapsed into the q= value.
+//
+// Title source is `CleanSceneTitles()` (the cleaned form), NOT raw
+// SceneTitles — matches the C# `searchCriteria.CleanSceneTitles`
+// references at :43, :64, :82.
+//
+// CleanTitle (`cleanFanzubTitle`) strips `[!?` and the backtick
+// before format substitution — mirrors C# `:130-131`.
+func (i *Indexer) FetchSearch(ctx context.Context, criteria any) ([]*parser.ReleaseInfo, error) {
+	settings, err := i.settings()
+	if err != nil {
+		return nil, err
+	}
+	query := buildSearchQuery(settings, criteria)
+	if query == "" {
+		// Short-circuit BEFORE the HTTPClient check (same posture as
+		// Nyaa). C# overloads that return empty don't touch HTTP.
+		return []*parser.ReleaseInfo{}, nil
+	}
+	if i.HTTPClient == nil {
+		return nil, errors.New("fanzub: no HTTPClient configured")
+	}
+	feedURL := buildFeedURL(settings, query)
+	req, err := httpclient.NewRequest(feedURL, httpclient.AcceptRSS)
+	if err != nil {
+		return nil, fmt.Errorf("fanzub: build request: %w", err)
+	}
+	resp, err := i.HTTPClient.Get(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	releases, err := newznab.ParseRSS([]byte(resp.Content()), &newznab.ParseOptions{
+		IndexerName: i.bindingName(),
+		IndexerID:   i.bindingID(),
+		FeedURL:     feedURL,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return releases, nil
+}
+
+// buildSearchQuery dispatches per criteria type and returns the
+// pipe-joined query string. Empty string for the no-op criteria
+// types.
+func buildSearchQuery(s *Settings, criteria any) string {
+	var terms []string
+	switch c := criteria.(type) {
+	case *indexersearch.SeasonCriteria:
+		if !s.AnimeStandardFormatSearch || c.SeasonNumber <= 0 {
+			return ""
+		}
+		for _, t := range c.CleanSceneTitles() {
+			terms = append(terms, seasonSearchStrings(t, c.SeasonNumber)...)
+		}
+	case *indexersearch.AnimeEpisodeCriteria:
+		for _, t := range c.CleanSceneTitles() {
+			if c.AbsoluteEpisodeNumber > 0 {
+				terms = append(terms, absoluteEpisodeSearchStrings(t, c.AbsoluteEpisodeNumber)...)
+			}
+		}
+		if s.AnimeStandardFormatSearch && c.SeasonNumber > 0 && c.EpisodeNumber > 0 {
+			for _, t := range c.CleanSceneTitles() {
+				terms = append(terms, standardEpisodeSearchStrings(t, c.SeasonNumber, c.EpisodeNumber)...)
+			}
+		}
+	case *indexersearch.AnimeSeasonCriteria:
+		if !s.AnimeStandardFormatSearch || c.SeasonNumber <= 0 {
+			return ""
+		}
+		for _, t := range c.CleanSceneTitles() {
+			terms = append(terms, seasonSearchStrings(t, c.SeasonNumber)...)
+		}
+	default:
+		// SingleEpisode + DailyEpisode + DailySeason + SpecialEpisode
+		// + unknown → empty (matches C# overloads that return empty
+		// IndexerPageableRequestChain at :32-34, :50-58, :89-92).
+		return ""
+	}
+	if len(terms) == 0 {
+		return ""
+	}
+	return strings.Join(terms, "|")
+}
+
+// seasonSearchStrings mirrors C# `:107-112` —
+// `"{0}%20S{1:00}"` + `"{0}%20-%20S{1:00}"` with the title cleaned
+// and wrapped in literal quotes.
+func seasonSearchStrings(title string, season int) []string {
+	clean := cleanFanzubTitle(title)
+	return []string{
+		fmt.Sprintf("\"%s%%20S%02d\"", clean, season),
+		fmt.Sprintf("\"%s%%20-%%20S%02d\"", clean, season),
+	}
+}
+
+// absoluteEpisodeSearchStrings mirrors C# `:114-119` —
+// `"{0}%20{1:00}"` + `"{0}%20-%20{1:00}"`.
+func absoluteEpisodeSearchStrings(title string, abs int) []string {
+	clean := cleanFanzubTitle(title)
+	return []string{
+		fmt.Sprintf("\"%s%%20%02d\"", clean, abs),
+		fmt.Sprintf("\"%s%%20-%%20%02d\"", clean, abs),
+	}
+}
+
+// standardEpisodeSearchStrings mirrors C# `:121-126` —
+// `"{0}%20S{1:00}E{2:00}"` + `"{0}%20-%20S{1:00}E{2:00}"`.
+func standardEpisodeSearchStrings(title string, season, episode int) []string {
+	clean := cleanFanzubTitle(title)
+	return []string{
+		fmt.Sprintf("\"%s%%20S%02dE%02d\"", clean, season, episode),
+		fmt.Sprintf("\"%s%%20-%%20S%02dE%02d\"", clean, season, episode),
+	}
+}
+
+// removeCharactersRegex mirrors C# `:13`:
+//
+//	private static readonly Regex RemoveCharactersRegex =
+//	    new Regex(@"[!?` + "`" + `]", RegexOptions.Compiled);
+//
+// Strips `!`, `?`, and the backtick character before format
+// substitution.
+var removeCharactersRegex = regexp.MustCompile("[!?`]")
+
+// cleanFanzubTitle mirrors C# `:128-131`.
+func cleanFanzubTitle(title string) string {
+	return removeCharactersRegex.ReplaceAllString(title, "")
 }
 
 // buildFeedURL composes the request URL. Mirrors

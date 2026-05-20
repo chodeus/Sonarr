@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/indexers/fanzub"
+	"sonarr.tv/sonarr/internal/indexersearch"
 	"sonarr.tv/sonarr/internal/provider"
 )
 
@@ -201,7 +203,7 @@ func TestIndexer_FetchRecentParsesReleaseInfo(t *testing.T) {
 	}
 }
 
-func TestIndexer_FetchSearchAlwaysEmpty(t *testing.T) {
+func TestIndexer_FetchSearch_UnknownCriteriaEmpty(t *testing.T) {
 	t.Parallel()
 	i := fanzub.NewIndexer(nil)
 	d := i.DefaultDefinitions()[0]
@@ -211,7 +213,247 @@ func TestIndexer_FetchSearchAlwaysEmpty(t *testing.T) {
 		t.Fatalf("FetchSearch: %v", err)
 	}
 	if len(rels) != 0 {
-		t.Errorf("FetchSearch (J150) always returns empty; got %d", len(rels))
+		t.Errorf("Unknown criteria should yield empty; got %d", len(rels))
+	}
+}
+
+func TestIndexer_FetchSearch_EmptyCriteriaShape(t *testing.T) {
+	t.Parallel()
+	i := fanzub.NewIndexer(nil)
+	d := i.DefaultDefinitions()[0]
+	d.Settings.(*fanzub.Settings).AnimeStandardFormatSearch = true
+	i.SetDefinition(d)
+
+	// SingleEpisode + DailyEpisode + DailySeason + SpecialEpisode
+	// all return empty per the C# overloads :32-34 :50-58 :89-92.
+	// Plus Season/AnimeSeason with season=0 short-circuit. All
+	// must NOT touch HTTP (i.e. the nil-client path doesn't error).
+	cases := []any{
+		&indexersearch.SingleEpisodeCriteria{SeasonNumber: 1, EpisodeNumber: 5},
+		&indexersearch.DailyEpisodeCriteria{},
+		&indexersearch.DailySeasonCriteria{},
+		&indexersearch.SpecialEpisodeCriteria{EpisodeQueryTitles: []string{"Show OVA"}},
+		&indexersearch.SeasonCriteria{SeasonNumber: 0},
+		&indexersearch.AnimeSeasonCriteria{SeasonNumber: 0},
+	}
+	for ci, c := range cases {
+		rels, err := i.FetchSearch(context.Background(), c)
+		if err != nil {
+			t.Errorf("case %d (%T): %v", ci, c, err)
+		}
+		if len(rels) != 0 {
+			t.Errorf("case %d (%T): expected empty; got %d", ci, c, len(rels))
+		}
+	}
+}
+
+func TestIndexer_FetchSearch_SeasonEmits2FormatsJoined(t *testing.T) {
+	t.Parallel()
+	urls := []string{}
+	stub := &stubClient{
+		getFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			urls = append(urls, req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := fanzub.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	s := d.Settings.(*fanzub.Settings)
+	s.AnimeStandardFormatSearch = true
+	i.SetDefinition(d)
+
+	c := &indexersearch.SeasonCriteria{SeasonNumber: 2}
+	c.SceneTitles = []string{"Show"}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	// Fanzub emits ONE URL with `q=<pipe-joined terms>`. For
+	// SeasonCriteria + clean-title "show" (the GetCleanSceneTitle
+	// lowercases) + season=2: two formats `"show%20S02"` and
+	// `"show%20-%20S02"` pipe-joined.
+	if len(urls) != 1 {
+		t.Fatalf("expected 1 URL; got %d (%v)", len(urls), urls)
+	}
+	got := urls[0]
+	if !strings.Contains(got, `&q=`) {
+		t.Errorf("URL missing &q=; got %q", got)
+	}
+	// Verify both formats appear in the q= value. GetCleanSceneTitle
+	// preserves case ("Show" stays "Show"); the C# regex builds two
+	// formats in order: bare `<title>%20S<ss>` then dash-form
+	// `<title>%20-%20S<ss>`. The httpclient URL stringification
+	// re-encodes the inline `%20` as `%2520`, so the assertion
+	// accepts either form.
+	if !strings.Contains(got, `Show%20S02`) && !strings.Contains(got, `Show%2520S02`) {
+		t.Errorf("URL missing first format; got %q", got)
+	}
+	if !strings.Contains(got, `%20-%20S02`) && !strings.Contains(got, `%2520-%2520S02`) {
+		t.Errorf("URL missing second format; got %q", got)
+	}
+}
+
+func TestIndexer_FetchSearch_SeasonSkippedWhenAnimeFlagOff(t *testing.T) {
+	t.Parallel()
+	stub := &stubClient{
+		getFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			t.Errorf("HTTP should not be called when AnimeStandardFormatSearch=false; got %s", req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := fanzub.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	// Anime flag NOT set.
+	i.SetDefinition(d)
+
+	c := &indexersearch.SeasonCriteria{SeasonNumber: 2}
+	c.SceneTitles = []string{"Show"}
+	rels, err := i.FetchSearch(context.Background(), c)
+	if err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(rels) != 0 {
+		t.Errorf("expected empty; got %d", len(rels))
+	}
+}
+
+func TestIndexer_FetchSearch_AnimeEpisodeEmitsAbsoluteAndStandardForms(t *testing.T) {
+	t.Parallel()
+	urls := []string{}
+	stub := &stubClient{
+		getFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			urls = append(urls, req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := fanzub.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	d.Settings.(*fanzub.Settings).AnimeStandardFormatSearch = true
+	i.SetDefinition(d)
+
+	c := &indexersearch.AnimeEpisodeCriteria{
+		AbsoluteEpisodeNumber: 7,
+		SeasonNumber:          1,
+		EpisodeNumber:         5,
+	}
+	c.SceneTitles = []string{"Show"}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(urls) != 1 {
+		t.Fatalf("expected 1 URL (pipe-joined); got %d (%v)", len(urls), urls)
+	}
+	got := urls[0]
+	// All four format-strings should appear in the q= value (two
+	// for absolute episode + two for standard S/E).
+	wants := []string{`07`, `S01E05`}
+	for _, w := range wants {
+		if !strings.Contains(got, w) {
+			t.Errorf("URL missing %q; got %q", w, got)
+		}
+	}
+}
+
+func TestIndexer_FetchSearch_AnimeEpisodeAbsoluteOnly(t *testing.T) {
+	t.Parallel()
+	urls := []string{}
+	stub := &stubClient{
+		getFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			urls = append(urls, req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := fanzub.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	// Anime flag NOT set → S/E branch skipped, abs branch still emits.
+	i.SetDefinition(d)
+
+	c := &indexersearch.AnimeEpisodeCriteria{
+		AbsoluteEpisodeNumber: 12,
+		SeasonNumber:          1, // ignored when AnimeStandardFormatSearch=false
+		EpisodeNumber:         5,
+	}
+	c.SceneTitles = []string{"Show"}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(urls) != 1 {
+		t.Fatalf("expected 1 URL; got %d (%v)", len(urls), urls)
+	}
+	got := urls[0]
+	if !strings.Contains(got, "12") {
+		t.Errorf("URL missing absolute episode 12; got %q", got)
+	}
+	if strings.Contains(got, "S01E05") {
+		t.Errorf("URL should NOT include S/E when AnimeStandardFormatSearch=false; got %q", got)
+	}
+}
+
+func TestIndexer_FetchSearch_AnimeSeasonEmits(t *testing.T) {
+	t.Parallel()
+	urls := []string{}
+	stub := &stubClient{
+		getFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			urls = append(urls, req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := fanzub.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	d.Settings.(*fanzub.Settings).AnimeStandardFormatSearch = true
+	i.SetDefinition(d)
+
+	c := &indexersearch.AnimeSeasonCriteria{SeasonNumber: 3}
+	c.SceneTitles = []string{"Show"}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(urls) != 1 {
+		t.Fatalf("expected 1 URL; got %d (%v)", len(urls), urls)
+	}
+	if !strings.Contains(urls[0], "S03") {
+		t.Errorf("URL missing S03; got %q", urls[0])
+	}
+}
+
+func TestIndexer_FetchSearch_CleanTitleStripsForbiddenChars(t *testing.T) {
+	t.Parallel()
+	urls := []string{}
+	stub := &stubClient{
+		getFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			urls = append(urls, req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := fanzub.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	d.Settings.(*fanzub.Settings).AnimeStandardFormatSearch = true
+	i.SetDefinition(d)
+
+	c := &indexersearch.SeasonCriteria{SeasonNumber: 1}
+	// Title with the three forbidden chars: ! ? backtick. After
+	// GetCleanSceneTitle (which lowercases + strips non-alnum) +
+	// cleanFanzubTitle (which strips ! ? `): the cleaned form
+	// should NOT contain any of them.
+	c.SceneTitles = []string{"Show!? Title`"}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(urls) != 1 {
+		t.Fatalf("expected 1 URL; got %d (%v)", len(urls), urls)
+	}
+	// Only inspect the q= value, NOT the whole URL — the `?cat=anime`
+	// query separator legitimately contains `?` and isn't a
+	// forbidden-char failure.
+	got := urls[0]
+	idx := strings.Index(got, "&q=")
+	if idx < 0 {
+		t.Fatalf("URL missing &q=; got %q", got)
+	}
+	qValue := got[idx+3:]
+	for _, bad := range []string{"!", "?", "`", "%21", "%3F", "%60"} {
+		if strings.Contains(qValue, bad) {
+			t.Errorf("q= value contains forbidden char %q; got %q (full URL %q)", bad, qValue, got)
+		}
 	}
 }
 
