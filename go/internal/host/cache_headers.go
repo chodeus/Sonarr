@@ -1,6 +1,9 @@
 package host
 
 import (
+	"bufio"
+	"errors"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -52,6 +55,32 @@ func (w *cacheHeaderWriter) WriteHeader(status int) {
 func (w *cacheHeaderWriter) Write(b []byte) (int, error) {
 	w.applyOnce()
 	return w.ResponseWriter.Write(b)
+}
+
+// Hijack forwards to the embedded ResponseWriter when it implements
+// http.Hijacker — required for the SignalR WebSocket upgrade path
+// (`/signalr/messages`). The cache-disable headers don't apply to
+// hijacked connections (the upgraded WebSocket has its own framing
+// that doesn't go through ResponseWriter.Write), so applyOnce is
+// intentionally NOT called here.
+func (w *cacheHeaderWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("host: cacheHeaderWriter: ResponseWriter does not implement Hijacker")
+	}
+	return h.Hijack()
+}
+
+// Flush forwards to the embedded ResponseWriter when it implements
+// http.Flusher. Streaming responses (Server-Sent Events, chunked
+// JSON) need this so the upstream handler's flushes survive the
+// wrapper. applyOnce fires first so the no-cache headers are present
+// in the initial flush.
+func (w *cacheHeaderWriter) Flush() {
+	w.applyOnce()
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func (w *cacheHeaderWriter) applyOnce() {

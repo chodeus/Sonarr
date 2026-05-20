@@ -1,7 +1,10 @@
 package host
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
+	"net"
 	"net/http"
 	"path"
 	"regexp"
@@ -95,6 +98,19 @@ func (w *baseHrefBufferingWriter) WriteHeader(status int) {
 // after the inner handler returns.
 func (w *baseHrefBufferingWriter) Write(p []byte) (int, error) {
 	return w.body.Write(p)
+}
+
+// Hijack forwards to the embedded ResponseWriter when it implements
+// http.Hijacker. The static handler shouldn't ever hit a WebSocket
+// upgrade, but exposing Hijack here keeps the wrapper transparent to
+// any future middleware composition. The buffer is discarded — a
+// hijacked connection takes over the wire entirely.
+func (w *baseHrefBufferingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("host: baseHrefBufferingWriter: ResponseWriter does not implement Hijacker")
+	}
+	return h.Hijack()
 }
 
 func (w *baseHrefBufferingWriter) flushRaw() {
