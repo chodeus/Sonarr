@@ -3,6 +3,8 @@ package trackeddownloads
 import (
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/downloadclients"
+	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/quality"
 )
@@ -157,6 +159,52 @@ type DownloadIgnoredEvent struct {
 // downloadclients at every consumer. Defined here in trackeddownloads
 // so the event-package boundary stays self-contained.
 type ItemClientInfo = downloadclients.ItemClientInfo
+
+// DownloadCompletedEvent ports the C# `DownloadCompletedEvent : IEvent`
+// at `src/NzbDrone.Core/Download/DownloadCompletedEvent.cs:1-24`.
+// Published by `CompletedDownloadService` (Phase 4) after the
+// download-client reports a completed payload that's been handed off
+// to the import pipeline. Subscribed-to by [downloadhistory.Service]
+// (slice 5.J140's HandleDownloadCompleted handler) — the audit log
+// captures the lifecycle DownloadImported step against the same
+// DownloadID the Grabbed row recorded.
+//
+// Field-shape parity with the C# class:
+//
+//   - TrackedDownload: the in-memory tracked-download cache record
+//     for the completed item. The DownloadHistory handler reads
+//     Protocol + DownloadClient (the int row id) + DownloadItem
+//     (DownloadID, Title, DownloadClientInfo).
+//   - SeriesID: the matched series.
+//   - EpisodeFiles: the freshly-written EpisodeFile rows the import
+//     pipeline produced. Not read by the DownloadHistory handler
+//     but published for downstream subscribers (notifications,
+//     metadata writers) that need the per-file context.
+//   - Release: the originating GrabbedReleaseInfo so subscribers
+//     can correlate completion with the grab event without a
+//     history-lookup round-trip.
+//
+// Wire-stable: field names match the C# JsonPropertyName defaults.
+// Like the sister Failed/Ignored events the local subscribers
+// don't serialize today but a future cross-process bus would.
+type DownloadCompletedEvent struct {
+	// TrackedDownload — required. Producers that don't have a tracked
+	// record should not publish (the C# tree never publishes without
+	// one — CompletedDownloadService.cs:226+271 always pass a non-nil
+	// TrackedDownload to the ctor).
+	TrackedDownload *TrackedDownload
+
+	// SeriesID — the completed download's matched series.
+	SeriesID int
+
+	// EpisodeFiles — freshly-imported file rows. Optional / nil for
+	// pre-import dispatches; the DownloadHistory handler ignores.
+	EpisodeFiles []episodefiles.File
+
+	// Release — originating GrabbedReleaseInfo. Optional / nil when
+	// the producer couldn't recover the originating grab metadata.
+	Release *episodeimport.GrabbedReleaseInfo
+}
 
 // TrackedDownloadRefreshedEvent ports the C#
 // `TrackedDownloadRefreshedEvent : IEvent` at

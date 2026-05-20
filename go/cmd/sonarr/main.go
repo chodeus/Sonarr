@@ -1007,12 +1007,21 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// Slice 5.J139: downloadhistory IHandle<DownloadIgnoredEvent>
 	// subscriber. Single DownloadIgnored row per event. Protocol +
 	// DownloadClientID sourced from ev.DownloadClientInfo (not from
-	// TrackedDownload, unlike the Failed handler). Closes the
-	// DownloadHistoryService event-bus arc at 5/6 — only the
-	// DownloadCompletedEvent-blocked handler remains.
+	// TrackedDownload, unlike the Failed handler).
 	messaging.Subscribe(bus, "downloadhistory.HandleDownloadIgnored",
 		func(ctx context.Context, ev trackeddownloads.DownloadIgnoredEvent) error {
 			return downloadhistoryhandlers.HandleDownloadIgnored(ctx, dlHistorySvc, &ev)
+		})
+
+	// Slice 5.J140: downloadhistory IHandle<DownloadCompletedEvent>
+	// subscriber. Closes the DownloadHistoryService event-bus arc at
+	// 6/6. Single DownloadImported row per event (distinct from the
+	// FileImported ordinal that J137 emits). Producer
+	// (CompletedDownloadService) is Phase-4 territory — lit but no
+	// listeners on the publisher side until that ports.
+	messaging.Subscribe(bus, "downloadhistory.HandleDownloadCompleted",
+		func(ctx context.Context, ev trackeddownloads.DownloadCompletedEvent) error {
+			return downloadhistoryhandlers.HandleDownloadCompleted(ctx, dlHistorySvc, &ev)
 		})
 
 	// Per-augmenter wiring (Phase 3.88 + 3.AF). Slice 3.AF lights up
