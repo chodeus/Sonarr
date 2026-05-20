@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/ospath"
 )
 
@@ -64,31 +65,34 @@ var (
 // invalidate, so the 10s TTL is a defensive bound that never
 // triggers in practice.
 //
-// No event publication: the C# class doesn't define any
-// `IEventAggregator` field and emits no events on
-// Add/Update/Remove. Higher-level config-changed events (when they
-// land) can subscribe at the surrounding boundary.
+// SignalR posture: C# emits no IEvent on CUD — its sync rides the
+// inherited ModelEvent<RemotePathMapping>. The Go port publishes a
+// Go-port additive [RemotePathMappingUpdatedEvent] from Add/Update/Remove
+// so the SignalR `remotepathmapping` channel can subscribe.
 type Service struct {
 	repo *Repo
 	disk DiskProvider
+	bus  *messaging.Bus
 
 	mu     sync.RWMutex
 	cache  []Mapping
 	loaded bool
 }
 
-// NewService binds a Repo + DiskProvider into a Service. The disk
-// provider is required — Add validation depends on it. Callers in
-// migration / batch contexts that want to skip the FolderExists
-// check can pass a stub that always returns true.
-func NewService(r *Repo, disk DiskProvider) (*Service, error) {
+// NewService binds a Repo + DiskProvider + an optional *messaging.Bus
+// into a Service. The disk provider is required — Add validation
+// depends on it. Callers in migration / batch contexts that want to
+// skip the FolderExists check can pass a stub that always returns
+// true. nil bus is supported — the Service skips event publishing
+// (matches the established Phase 2/3 skip-publish convention).
+func NewService(r *Repo, disk DiskProvider, bus *messaging.Bus) (*Service, error) {
 	if r == nil {
 		return nil, errors.New("remotepathmappings: nil repo")
 	}
 	if disk == nil {
 		return nil, errors.New("remotepathmappings: nil disk provider")
 	}
-	return &Service{repo: r, disk: disk}, nil
+	return &Service{repo: r, disk: disk, bus: bus}, nil
 }
 
 // All returns the cached mapping list, populating on first call.
@@ -153,6 +157,7 @@ func (s *Service) Add(ctx context.Context, m *Mapping) (*Mapping, error) {
 		return nil, fmt.Errorf("remotepathmappings: insert: %w", err)
 	}
 	s.invalidate()
+	s.publishUpdated(ctx)
 	return m, nil
 }
 
@@ -181,6 +186,7 @@ func (s *Service) Update(ctx context.Context, m *Mapping) (*Mapping, error) {
 		return nil, fmt.Errorf("remotepathmappings: update: %w", err)
 	}
 	s.invalidate()
+	s.publishUpdated(ctx)
 	return m, nil
 }
 
@@ -190,7 +196,15 @@ func (s *Service) Remove(ctx context.Context, id int) error {
 		return fmt.Errorf("remotepathmappings: delete: %w", err)
 	}
 	s.invalidate()
+	s.publishUpdated(ctx)
 	return nil
+}
+
+func (s *Service) publishUpdated(ctx context.Context) {
+	if s.bus == nil {
+		return
+	}
+	_ = messaging.Publish(ctx, s.bus, RemotePathMappingUpdatedEvent{})
 }
 
 func (s *Service) invalidate() {

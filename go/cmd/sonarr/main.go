@@ -672,7 +672,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("remotepathmappings repo: %w", err)
 	}
-	remotePathMappingsSvc, err := remotepathmappings.NewService(remotePathMappingsRepo, diskProv)
+	remotePathMappingsSvc, err := remotepathmappings.NewService(remotePathMappingsRepo, diskProv, bus)
 	if err != nil {
 		return fmt.Errorf("remotepathmappings service: %w", err)
 	}

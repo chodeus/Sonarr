@@ -1,10 +1,14 @@
 package remotepathmappings_test
 
 import (
+	"context"
 	"errors"
+	"log/slog"
+	"sync/atomic"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
+	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/ospath"
 	rpm "sonarr.tv/sonarr/internal/remotepathmappings"
 )
@@ -25,7 +29,7 @@ func newServiceSQLite(t *testing.T) (*rpm.Service, *rpm.Repo, *stubDisk) {
 		t.Fatalf("NewRepo: %v", err)
 	}
 	disk := &stubDisk{exists: true}
-	svc, err := rpm.NewService(repo, disk)
+	svc, err := rpm.NewService(repo, disk, nil)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -357,5 +361,50 @@ func TestService_All_CachesAndInvalidates(t *testing.T) {
 	all3, _ := svc.All(t.Context())
 	if len(all3) != 1 {
 		t.Errorf("post-mutation reload: len=%d want 1 (the row inserted via repo)", len(all3))
+	}
+}
+
+// Slice 5.J32 (audit B.2 second wave). All three CUD paths publish
+// RemotePathMappingUpdatedEvent for the SignalR `remotepathmapping`
+// channel. Go-port additive (C# class doesn't emit).
+func TestService_PublishesUpdatedEventOnCUD(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	repo, err := rpm.NewRepo(db)
+	if err != nil {
+		t.Fatalf("NewRepo: %v", err)
+	}
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+	svc, err := rpm.NewService(repo, &stubDisk{exists: true}, bus)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	var got atomic.Int32
+	messaging.Subscribe(bus, "test.remotepathmapping.updated",
+		func(_ context.Context, _ rpm.RemotePathMappingUpdatedEvent) error {
+			got.Add(1)
+			return nil
+		})
+
+	m := &rpm.Mapping{
+		Host:       "host.local",
+		RemotePath: "/mnt/storage/",
+		LocalPath:  "/mnt/mountedstorage/",
+	}
+	added, err := svc.Add(context.Background(), m)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	added.Host = "host2.local"
+	if _, err := svc.Update(context.Background(), added); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if err := svc.Remove(context.Background(), added.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if got.Load() != 3 {
+		t.Errorf("RemotePathMappingUpdatedEvent count: got %d, want 3 (Add+Update+Remove)", got.Load())
 	}
 }

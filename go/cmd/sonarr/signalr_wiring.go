@@ -38,6 +38,7 @@ import (
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
+	"sonarr.tv/sonarr/internal/remotepathmappings"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
@@ -557,6 +558,25 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 		func(ctx context.Context, _ releaseprofiles.ReleaseProfileUpdatedEvent) error {
 			if err := releaseProfileBroadcaster.Sync(ctx); err != nil {
 				logger.Warn("signalr: releaseprofile sync broadcast failed", "err", err)
+			}
+			return nil
+		})
+
+	// Slice 5.J32 (audit B.2 second wave): `remotepathmapping` channel.
+	// RemotePathMappingUpdatedEvent fires from remotepathmappings.Service
+	// on Add / Update / Remove. Go-port additive. Channel name matches
+	// the C# resource name (singular `remotepathmapping`, even though
+	// the route is `/api/v3/remotepathmapping` — the React UI listener
+	// is keyed on the resource name, not the plural route segment).
+	remotePathMappingBroadcaster := &signalr.ResourceBroadcaster[emptySyncPayload]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "remotepathmapping",
+		Version:     signalr.V3Version,
+	}
+	messaging.Subscribe(bus, "signalr.remotepathmapping.Updated",
+		func(ctx context.Context, _ remotepathmappings.RemotePathMappingUpdatedEvent) error {
+			if err := remotePathMappingBroadcaster.Sync(ctx); err != nil {
+				logger.Warn("signalr: remotepathmapping sync broadcast failed", "err", err)
 			}
 			return nil
 		})
