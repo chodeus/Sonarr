@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha1" //nolint:gosec // Freebox auth protocol mandates HMAC-SHA1 (matches the wire spec; not a security primitive choice in test).
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -356,11 +358,9 @@ func TestProvider_GetStatus_LocalhostFlag(t *testing.T) {
 	}
 }
 
-func TestProvider_StubReturns(t *testing.T) {
+func TestProvider_RemainingStubs(t *testing.T) {
+	// J85 wires Download. GetItems + RemoveItem remain stubs.
 	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(newScripted(), nil), nil)
-	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{ReleaseTitle: "X"}); !errors.Is(err, freebox.ErrNotImplemented) {
-		t.Errorf("Download err = %v, want ErrNotImplemented", err)
-	}
 	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); !errors.Is(err, freebox.ErrNotImplemented) {
 		t.Errorf("RemoveItem err = %v, want ErrNotImplemented", err)
 	}
@@ -377,6 +377,239 @@ func TestProvider_MarkItemAsImported_ReturnsUnsupported(t *testing.T) {
 	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(newScripted(), nil), nil)
 	if err := p.MarkItemAsImported(context.Background(), &downloadclients.Item{}); !errors.Is(err, downloadclients.ErrMarkAsImportedUnsupported) {
 		t.Errorf("err = %v, want ErrMarkAsImportedUnsupported", err)
+	}
+}
+
+// queueAuthFlow queues the standard nonce + login responses so a
+// follow-on authenticated call can find a cookie / session-token.
+func queueAuthFlow(doer *scriptedDoer) {
+	doer.queue("/api/v1/login", `{"success":true,"result":{"challenge":"CH-1"}}`)
+	doer.queue("/api/v1/login/session", `{"success":true,"result":{"session_token":"SESS-1"}}`)
+}
+
+// captureDoer wraps scriptedDoer and grabs the body + Content-Type
+// of the last add-task POST so the wire shape can be asserted.
+type captureDoer struct {
+	scripted     *scriptedDoer
+	lastBody     []byte
+	lastCT       string
+	lastURL      string
+	lastMethod   string
+	lastSessTok  string
+	settingsBody []byte
+	settingsURL  string
+}
+
+func (c *captureDoer) Do(req *http.Request) (*http.Response, error) {
+	body, _ := readReqBody(req)
+	if req.URL.Path == "/api/v1/downloads/add" {
+		c.lastBody = body
+		c.lastCT = req.Header.Get("Content-Type")
+		c.lastURL = req.URL.String()
+		c.lastMethod = req.Method
+		c.lastSessTok = req.Header.Get("X-Fbx-App-Auth")
+	}
+	if strings.HasPrefix(req.URL.Path, "/api/v1/downloads/") && req.Method == http.MethodPut {
+		c.settingsBody = body
+		c.settingsURL = req.URL.Path
+	}
+	// Replace body so the underlying scripted doer can read it again.
+	req.Body = io.NopCloser(strings.NewReader(string(body)))
+	return c.scripted.Do(req)
+}
+
+func readReqBody(req *http.Request) ([]byte, error) {
+	if req.Body == nil {
+		return nil, nil
+	}
+	return io.ReadAll(req.Body)
+}
+
+func TestProvider_Download_TorrentBody_HappyPath_MultipartShape(t *testing.T) {
+	doer := &captureDoer{scripted: newScripted()}
+	queueAuthFlow(doer.scripted)
+	doer.scripted.queue("/api/v1/downloads/add", `{"success":true,"result":{"id":"new-task-42"}}`)
+	// The SetTorrentSettings PUT is a no-op when AddPaused=false +
+	// no addFirst + no seed-ratio; for this test we make sure the
+	// add returns the ID even when the PUT is skipped.
+
+	settings := newSettings()
+	settings.DestinationDirectory = "/freebox/tv"
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, settings, freebox.NewProxy(doer, nil), nil)
+
+	id, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show.S01E01",
+		TorrentBody:  []byte("RAW-TORRENT-BYTES"),
+	})
+	if err != nil {
+		t.Fatalf("Download err = %v", err)
+	}
+	if id != "new-task-42" {
+		t.Errorf("id = %q, want new-task-42", id)
+	}
+	if !strings.HasPrefix(doer.lastCT, "multipart/form-data;") {
+		t.Errorf("Content-Type = %q, want multipart/form-data;", doer.lastCT)
+	}
+	body := string(doer.lastBody)
+	if !strings.Contains(body, `name="download_file"`) {
+		t.Errorf("body missing download_file form field: %q", body)
+	}
+	if !strings.Contains(body, `filename="Show.S01E01.torrent"`) {
+		t.Errorf("body missing filename: %q", body)
+	}
+	if !strings.Contains(body, "RAW-TORRENT-BYTES") {
+		t.Errorf("body missing torrent payload")
+	}
+	if !strings.Contains(body, `name="download_dir"`) {
+		t.Errorf("body missing download_dir form-part")
+	}
+	wantDir := base64.StdEncoding.EncodeToString([]byte("/freebox/tv"))
+	if !strings.Contains(body, wantDir) {
+		t.Errorf("body missing base64(download_dir) = %q", wantDir)
+	}
+}
+
+func TestProvider_Download_MagnetArm_FormShape(t *testing.T) {
+	doer := &captureDoer{scripted: newScripted()}
+	queueAuthFlow(doer.scripted)
+	doer.scripted.queue("/api/v1/downloads/add", `{"success":true,"result":{"id":"mag-task-1"}}`)
+
+	settings := newSettings()
+	settings.DestinationDirectory = "/dl"
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, settings, freebox.NewProxy(doer, nil), nil)
+	id, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		MagnetURL:    "magnet:?xt=urn:btih:abc",
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if id != "mag-task-1" {
+		t.Errorf("id = %q", id)
+	}
+	if doer.lastCT != "application/x-www-form-urlencoded" {
+		t.Errorf("Content-Type = %q, want application/x-www-form-urlencoded", doer.lastCT)
+	}
+	form, _ := url.ParseQuery(string(doer.lastBody))
+	if form.Get("download_url") != "magnet:?xt=urn:btih:abc" {
+		t.Errorf("download_url = %q, want the magnet URL", form.Get("download_url"))
+	}
+	if form.Get("download_dir") != base64.StdEncoding.EncodeToString([]byte("/dl")) {
+		t.Errorf("download_dir = %q, want base64(/dl)", form.Get("download_dir"))
+	}
+}
+
+func TestProvider_Download_DirectoryFromConfigPlusCategory(t *testing.T) {
+	// No DestinationDirectory set, TvCategory=sonarr → GetConfig
+	// is called for the base, then base+category becomes the dir.
+	doer := &captureDoer{scripted: newScripted()}
+	queueAuthFlow(doer.scripted)
+	doer.scripted.queue("/api/v1/downloads/config/", `{"success":true,"result":{"download_dir":"`+base64.StdEncoding.EncodeToString([]byte("/freebox/dl"))+`"}}`)
+	doer.scripted.queue("/api/v1/downloads/add", `{"success":true,"result":{"id":"task"}}`)
+
+	settings := newSettings()
+	settings.Category = "sonarr"
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, settings, freebox.NewProxy(doer, nil), nil)
+	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{MagnetURL: "magnet:?abc"}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	form, _ := url.ParseQuery(string(doer.lastBody))
+	wantDir := base64.StdEncoding.EncodeToString([]byte("/freebox/dl/sonarr"))
+	if form.Get("download_dir") != wantDir {
+		t.Errorf("download_dir = %q, want base64(/freebox/dl/sonarr)", form.Get("download_dir"))
+	}
+}
+
+func TestProvider_Download_AddPausedTriggersSetTorrentSettings(t *testing.T) {
+	doer := &captureDoer{scripted: newScripted()}
+	queueAuthFlow(doer.scripted)
+	doer.scripted.queue("/api/v1/downloads/add", `{"success":true,"result":{"id":"task-99"}}`)
+	doer.scripted.queue("/api/v1/downloads/task-99", `{"success":true,"result":{}}`)
+
+	settings := newSettings()
+	settings.DestinationDirectory = "/dl"
+	settings.AddPaused = true
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, settings, freebox.NewProxy(doer, nil), nil)
+	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{MagnetURL: "magnet:?abc"}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if doer.settingsURL != "/api/v1/downloads/task-99" {
+		t.Errorf("settings PUT URL = %q, want /api/v1/downloads/task-99", doer.settingsURL)
+	}
+	if !strings.Contains(string(doer.settingsBody), `"status":"stopped"`) {
+		t.Errorf("settings body = %s, want status:stopped", doer.settingsBody)
+	}
+}
+
+func TestProvider_Download_QueueFirstPriority(t *testing.T) {
+	doer := &captureDoer{scripted: newScripted()}
+	queueAuthFlow(doer.scripted)
+	doer.scripted.queue("/api/v1/downloads/add", `{"success":true,"result":{"id":"task-7"}}`)
+	doer.scripted.queue("/api/v1/downloads/task-7", `{"success":true,"result":{}}`)
+
+	settings := newSettings()
+	settings.DestinationDirectory = "/dl"
+	settings.RecentPriority = freebox.PriorityFirst
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, settings, freebox.NewProxy(doer, nil), nil)
+	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		MagnetURL: "magnet:?abc",
+		IsRecent:  true,
+	}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(string(doer.settingsBody), `"queue_pos":"1"`) {
+		t.Errorf("settings body = %s, want queue_pos:1", doer.settingsBody)
+	}
+}
+
+func TestProvider_Download_SeedRatioMultipliedBy100(t *testing.T) {
+	doer := &captureDoer{scripted: newScripted()}
+	queueAuthFlow(doer.scripted)
+	doer.scripted.queue("/api/v1/downloads/add", `{"success":true,"result":{"id":"task-8"}}`)
+	doer.scripted.queue("/api/v1/downloads/task-8", `{"success":true,"result":{}}`)
+
+	settings := newSettings()
+	settings.DestinationDirectory = "/dl"
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, settings, freebox.NewProxy(doer, nil), nil)
+	ratio := 2.5
+	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		MagnetURL:         "magnet:?abc",
+		SeedConfiguration: &downloadclients.TorrentSeedConfiguration{Ratio: &ratio},
+	}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	// 2.5 * 100 = 250 — verify it's in the body.
+	if !strings.Contains(string(doer.settingsBody), `"stop_ratio":250`) {
+		t.Errorf("settings body = %s, want stop_ratio:250 (2.5 * 100)", doer.settingsBody)
+	}
+}
+
+func TestProvider_Download_NeitherBodyNorMagnet(t *testing.T) {
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(newScripted(), nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{ReleaseTitle: "X"})
+	if err == nil {
+		t.Fatal("err = nil, want neither-body-nor-magnet error")
+	}
+}
+
+func TestProvider_Download_EmptyTitleOnTorrentBody(t *testing.T) {
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(newScripted(), nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{TorrentBody: []byte("x")})
+	if err == nil {
+		t.Fatal("err = nil, want empty-title error for torrent-body arm")
+	}
+}
+
+func TestProvider_Download_EmptyIDSurfacesRPC(t *testing.T) {
+	doer := newScripted()
+	queueAuthFlow(doer)
+	doer.queue("/api/v1/downloads/add", `{"success":true,"result":{"id":""}}`)
+	settings := newSettings()
+	settings.DestinationDirectory = "/dl"
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, settings, freebox.NewProxy(doer, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{MagnetURL: "magnet:?abc"})
+	if !errors.Is(err, freebox.ErrRPC) {
+		t.Errorf("err = %v, want ErrRPC", err)
 	}
 }
 

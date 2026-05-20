@@ -5,13 +5,17 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha1" //nolint:gosec // Freebox auth protocol mandates HMAC-SHA1 (NOT a security primitive choice — wire spec).
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
+	"net/url"
 	"strings"
 	"sync"
 )
@@ -163,6 +167,149 @@ func (p *Proxy) Authenticate(ctx context.Context, s Settings) error {
 	return nil
 }
 
+// DownloadConfiguration ports C# `Responses/FreeboxDownloadConfiguration.cs`.
+// `DownloadDirectory` is base64-encoded on the wire — the
+// `DecodedDownloadDirectory()` helper returns the UTF-8 plaintext
+// the Provider's GetDownloadDirectory helper composes against.
+type DownloadConfiguration struct {
+	DownloadDirectory string `json:"download_dir"`
+}
+
+// DecodedDownloadDirectory returns the base64-decoded UTF-8 form
+// of [DownloadConfiguration.DownloadDirectory]. Mirrors C#
+// `DecodedDownloadDirectory` getter.
+func (c *DownloadConfiguration) DecodedDownloadDirectory() string {
+	if c == nil || c.DownloadDirectory == "" {
+		return ""
+	}
+	raw, err := base64.StdEncoding.DecodeString(c.DownloadDirectory)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// AddTaskResult is the [Response.Result] envelope content for
+// `/downloads/add`. Mirrors C# `FreeboxDownloadTask` reduced to the
+// `Id` field the add-flow consumes.
+type AddTaskResult struct {
+	ID string `json:"id"`
+}
+
+// GetDownloadConfiguration fires GET `/downloads/config/`. Auth-
+// required. Mirrors C# `FreeboxDownloadProxy.GetDownloadConfiguration`
+// at `:102-107`. Used by the Provider's GetDownloadDirectory helper
+// when DestinationDirectory is blank.
+func (p *Proxy) GetDownloadConfiguration(ctx context.Context, s Settings) (*DownloadConfiguration, error) {
+	var cfg DownloadConfiguration
+	if err := p.doRequest(ctx, s, http.MethodGet, "/downloads/config/", nil, "", true, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// AddTaskFromURL fires POST `/downloads/add` with the URL as a
+// `download_url` form parameter. Mirrors C#
+// `FreeboxDownloadProxy.AddTaskFromUrl` at `:49-66`. After adding
+// the task, calls [SetTorrentSettings] when any of addPaused /
+// addFirst / seedRatio is non-zero (matches C# `:63`).
+//
+// downloadDir is the base64-encoded destination directory (the
+// Provider's GetDownloadDirectory helper does the encoding).
+// addPaused, addFirst flip the queue + status; seedRatio is
+// non-nil → sets stop_ratio on the new task. Returns the new task
+// ID.
+func (p *Proxy) AddTaskFromURL(ctx context.Context, s Settings, downloadURL, downloadDir string, addPaused, addFirst bool, seedRatio *float64) (string, error) {
+	form := url.Values{}
+	form.Set("download_url", downloadURL)
+	if downloadDir != "" {
+		form.Set("download_dir", downloadDir)
+	}
+	body := []byte(form.Encode())
+
+	var task AddTaskResult
+	if err := p.doRequest(ctx, s, http.MethodPost, "/downloads/add", body, "application/x-www-form-urlencoded", true, &task); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(task.ID) == "" {
+		return "", fmt.Errorf("%w: /downloads/add returned empty id", ErrRPC)
+	}
+	if err := p.SetTorrentSettings(ctx, s, task.ID, addPaused, addFirst, seedRatio); err != nil {
+		return "", err
+	}
+	return task.ID, nil
+}
+
+// AddTaskFromFile fires POST `/downloads/add` with the .torrent
+// bytes as a `download_file` multipart-upload part. Mirrors C#
+// `FreeboxDownloadProxy.AddTaskFromFile` at `:68-84`. After adding
+// the task, calls [SetTorrentSettings] for the post-add flags.
+func (p *Proxy) AddTaskFromFile(ctx context.Context, s Settings, filename string, contents []byte, downloadDir string, addPaused, addFirst bool, seedRatio *float64) (string, error) {
+	body := &bytes.Buffer{}
+	mw := multipart.NewWriter(body)
+	if downloadDir != "" {
+		hdr := textproto.MIMEHeader{}
+		hdr.Set("Content-Disposition", `form-data; name="download_dir"`)
+		part, err := mw.CreatePart(hdr)
+		if err != nil {
+			return "", fmt.Errorf("freebox: multipart download_dir field: %w", err)
+		}
+		if _, err := part.Write([]byte(downloadDir)); err != nil {
+			return "", fmt.Errorf("freebox: write download_dir field: %w", err)
+		}
+	}
+	fileHdr := textproto.MIMEHeader{}
+	fileHdr.Set("Content-Disposition", fmt.Sprintf(`form-data; name="download_file"; filename=%q`, filename))
+	fileHdr.Set("Content-Type", "application/octet-stream")
+	part, err := mw.CreatePart(fileHdr)
+	if err != nil {
+		return "", fmt.Errorf("freebox: multipart download_file part: %w", err)
+	}
+	if _, err := part.Write(contents); err != nil {
+		return "", fmt.Errorf("freebox: write download_file part: %w", err)
+	}
+	if err := mw.Close(); err != nil {
+		return "", fmt.Errorf("freebox: close multipart writer: %w", err)
+	}
+
+	var task AddTaskResult
+	if err := p.doRequest(ctx, s, http.MethodPost, "/downloads/add", body.Bytes(), mw.FormDataContentType(), true, &task); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(task.ID) == "" {
+		return "", fmt.Errorf("%w: /downloads/add returned empty id", ErrRPC)
+	}
+	if err := p.SetTorrentSettings(ctx, s, task.ID, addPaused, addFirst, seedRatio); err != nil {
+		return "", err
+	}
+	return task.ID, nil
+}
+
+// SetTorrentSettings fires PUT `/downloads/<id>` with a body that
+// can include any combination of {status:"stopped", queue_pos:"1",
+// stop_ratio:<float>}. No-op when all three knobs are at their
+// neutral defaults. Mirrors C# `SetTorrentSettings` at `:121-153`.
+func (p *Proxy) SetTorrentSettings(ctx context.Context, s Settings, id string, addPaused, addFirst bool, seedRatio *float64) error {
+	body := map[string]any{}
+	if addPaused {
+		body["status"] = "stopped"
+	}
+	if addFirst {
+		body["queue_pos"] = "1"
+	}
+	if seedRatio != nil {
+		body["stop_ratio"] = *seedRatio
+	}
+	if len(body) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("freebox: marshal settings body: %w", err)
+	}
+	return p.doRequest(ctx, s, http.MethodPut, "/downloads/"+id, raw, "application/json", true, nil)
+}
+
 // GetSessionToken runs the HMAC-SHA1 challenge → session-token
 // flow. Mirrors C# `GetSessionToken` at `:155-203`. force=true
 // bypasses the cache.
@@ -252,11 +399,11 @@ func (p *Proxy) fireOnce(ctx context.Context, s Settings, method, resource strin
 	if body != nil {
 		reqBody = bytes.NewReader(body)
 	}
-	full := baseURL(s) + strings.TrimRight(resource, "/")
-	if resource == "/login" || resource == "/login/session" {
-		// Bootstrap auth calls retain the resource path as-is.
-		full = baseURL(s) + resource
-	}
+	// Preserve the resource path verbatim — Freebox's
+	// `/downloads/config/` endpoint requires the trailing slash,
+	// and bootstrap auth paths (`/login`, `/login/session`) work
+	// regardless.
+	full := baseURL(s) + resource
 	req, err := http.NewRequestWithContext(ctx, method, full, reqBody)
 	if err != nil {
 		return fmt.Errorf("freebox: build %s %s: %w", method, resource, err)

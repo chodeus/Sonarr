@@ -2,6 +2,7 @@ package freebox
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,14 +56,116 @@ func (f *TorrentFreeboxDownload) Definition() *downloadclients.DownloadClient { 
 // Settings returns the bound Settings.
 func (f *TorrentFreeboxDownload) Settings() Settings { return f.settings }
 
-// Download is a STUB at 5.J79. Follow-up ports
-// [Proxy.AddTaskFromURL] / [Proxy.AddTaskFromFile] —
-// /downloads/add POST with download_url or download_file form-
-// field, optional download_dir, plus the follow-up
-// SetTorrentSettings PUT for status=stopped / queue_pos /
-// stop_ratio.
-func (f *TorrentFreeboxDownload) Download(_ context.Context, _ *downloadclients.GrabRequest) (string, error) {
-	return "", fmt.Errorf("%w: Download", ErrNotImplemented)
+// Download ports `TorrentFreeboxDownload.AddFromMagnetLink` +
+// `AddFromTorrentFile` at C# `TorrentFreeboxDownload.cs:130-149`.
+// Dispatches:
+//
+//   - TorrentBody non-empty → [Proxy.AddTaskFromFile] (multipart
+//     POST with the .torrent bytes as a `download_file` form-part).
+//   - MagnetURL non-empty → [Proxy.AddTaskFromURL] (form-encoded
+//     POST with the URL as a `download_url` form parameter).
+//
+// Both arms post a base64-encoded `download_dir` derived from
+// [resolveDownloadDirectory] (Settings.DestinationDirectory wins;
+// else GetDownloadConfiguration.DecodedDownloadDirectory +
+// `/<Category>` when Settings.Category is non-empty). The
+// post-add SetTorrentSettings PUT applies AddPaused + the per-grab
+// queue-first selection + the seed-ratio (from req.SeedConfiguration).
+//
+// Returns the new task ID. Empty add response surfaces an error.
+func (f *TorrentFreeboxDownload) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
+	if req == nil {
+		return "", errors.New("freebox: nil GrabRequest")
+	}
+	if f.proxy == nil {
+		return "", errors.New("freebox: nil Proxy")
+	}
+
+	dir, err := f.resolveDownloadDirectory(ctx)
+	if err != nil {
+		return "", err
+	}
+	dirEncoded := ""
+	if dir != "" {
+		dirEncoded = base64.StdEncoding.EncodeToString([]byte(dir))
+	}
+	addFirst := f.shouldQueueFirst(req)
+	ratio := computeSeedRatio(req)
+
+	switch {
+	case len(req.TorrentBody) > 0:
+		title := strings.TrimSpace(req.ReleaseTitle)
+		if title == "" {
+			return "", errors.New("freebox: GrabRequest.ReleaseTitle is empty (required for the torrent-file filename)")
+		}
+		filename := title + ".torrent"
+		id, err := f.proxy.AddTaskFromFile(ctx, f.settings, filename, req.TorrentBody, dirEncoded, f.settings.AddPaused, addFirst, ratio)
+		if err != nil {
+			return "", fmt.Errorf("freebox: AddTaskFromFile(%q): %w", filename, err)
+		}
+		return id, nil
+
+	case strings.TrimSpace(req.MagnetURL) != "":
+		id, err := f.proxy.AddTaskFromURL(ctx, f.settings, req.MagnetURL, dirEncoded, f.settings.AddPaused, addFirst, ratio)
+		if err != nil {
+			return "", fmt.Errorf("freebox: AddTaskFromURL: %w", err)
+		}
+		return id, nil
+
+	default:
+		return "", errors.New("freebox: GrabRequest has neither TorrentBody nor MagnetURL")
+	}
+}
+
+// resolveDownloadDirectory mirrors C# `GetDownloadDirectory` at
+// `:189-204`. DestinationDirectory wins (trailing `/` trimmed);
+// else [Proxy.GetDownloadConfiguration].DecodedDownloadDirectory
+// is fetched; when Category is non-empty, `<base>/<Category>` is
+// composed. The Provider returns the UTF-8 plaintext; the Download
+// dispatch base64-encodes before posting.
+func (f *TorrentFreeboxDownload) resolveDownloadDirectory(ctx context.Context) (string, error) {
+	if d := strings.TrimSpace(f.settings.DestinationDirectory); d != "" {
+		return strings.TrimRight(d, "/"), nil
+	}
+	cfg, err := f.proxy.GetDownloadConfiguration(ctx, f.settings)
+	if err != nil {
+		return "", fmt.Errorf("freebox: resolve download directory: %w", err)
+	}
+	base := strings.TrimRight(cfg.DecodedDownloadDirectory(), "/")
+	if strings.TrimSpace(f.settings.Category) == "" {
+		return base, nil
+	}
+	if base == "" {
+		return f.settings.Category, nil
+	}
+	return base + "/" + f.settings.Category, nil
+}
+
+// shouldQueueFirst ports C# `ToBeQueuedFirst` at `:211-220` —
+// IsRecent maps to RecentPriority, !IsRecent to OlderPriority.
+// Both compare against [PriorityFirst].
+func (f *TorrentFreeboxDownload) shouldQueueFirst(req *downloadclients.GrabRequest) bool {
+	if req.IsRecent && f.settings.RecentPriority == PriorityFirst {
+		return true
+	}
+	if !req.IsRecent && f.settings.OlderPriority == PriorityFirst {
+		return true
+	}
+	return false
+}
+
+// computeSeedRatio ports C# `GetSeedRatio` at `:222-230`. Returns
+// nil when req.SeedConfiguration is nil OR SeedConfiguration.Ratio
+// is nil/zero. Otherwise returns ratio * 100 (matches C# `:229`'s
+// `Ratio.Value * 100` since Freebox expresses stop_ratio as a
+// percentage rather than the fractional form the C# typed
+// SeedConfiguration uses).
+func computeSeedRatio(req *downloadclients.GrabRequest) *float64 {
+	if req.SeedConfiguration == nil || req.SeedConfiguration.Ratio == nil {
+		return nil
+	}
+	v := *req.SeedConfiguration.Ratio * 100
+	return &v
 }
 
 // GetItems is a STUB at 5.J79. Follow-up ports
