@@ -508,16 +508,16 @@ func (t *TorrentDownloadStation) RequestAction(_ context.Context, _ string, _ ma
 	return nil, nil
 }
 
-// Test ports the connection + auth arm of C# `Test(failures)` at
-// `:206-216`. Runs Settings.Validate first, then drives the
-// auth-probe via [Proxy.Authenticate].
+// Test ports the connection + auth + version + task-list arms of
+// C# `Test(failures)` at `:206-216` PLUS (slice 5.J123) the
+// TestOutputPath arm at C# `:309-357` validating the configured
+// TvDirectory against the SYNO.FileStation API.
 //
-// The C# version also runs `TestOutputPath` (validates the
-// configured TvDirectory against SharedFolderResolver) and
-// `TestGetTorrents` (lists tasks to verify the API surface is
-// reachable post-login). Both are deferred: TestOutputPath
-// requires the SharedFolderResolver port (5.J79), TestGetTorrents
-// requires the V1/V2 task proxy (5.J76).
+// Algorithm: Settings.Validate first; then TestConnection
+// (auth-probe); then ValidateVersion (API >= 2); then
+// TestGetTorrents (live task-list probe); then TestOutputPath
+// (folder-validity probe). Each arm short-circuits on failure
+// matching the C# `HasErrors` guard between probes.
 func (t *TorrentDownloadStation) Test(ctx context.Context) ([]downloadclients.TestFailure, error) {
 	failures := t.settings.Validate()
 	if len(failures) > 0 {
@@ -561,7 +561,76 @@ func (t *TorrentDownloadStation) Test(ctx context.Context) ([]downloadclients.Te
 			ErrorMessage: fmt.Sprintf("Unable to list tasks: %v", err),
 		}}, nil
 	}
+	// TestOutputPath arm (slice 5.J123, ports C# :309-357). Only
+	// fires when TvDirectory is configured — the C#
+	// `GetDownloadDirectory == null` arm at :313-321 (NoDefaultDestination)
+	// requires DSMInfoProxy.GetDefaultDestination which isn't ported.
+	if f := t.testOutputPath(ctx); f != nil {
+		return []downloadclients.TestFailure{*f}, nil
+	}
 	return nil, nil
+}
+
+// testOutputPath ports the body of C# `TorrentDownloadStation.TestOutputPath`
+// at `:309-357`. Returns nil when no TvDirectory is configured
+// (Go-port narrowing — the C# also handles TvCategory-only via
+// GetDefaultDir but that requires DSMInfoProxy which isn't ported).
+//
+// Probes [Proxy.GetFileInfo] on `/{TvDirectory}` to verify:
+//   - The path resolves (FileStation returns non-empty Additional).
+//   - The path is a directory (IsDir==true).
+//
+// Property-name selection: C# `:324` picks "TvDirectory" when set,
+// "TvCategory" otherwise. Since the Go port only probes when
+// TvDirectory IS set, all failures pin to TvDirectory.
+//
+// FileStation transport failures degrade to nil so a transiently
+// unreachable Synology box during Test doesn't double-surface a
+// failure already captured by the TestGetTorrents arm above
+// (matches C# `:346-356` catch-arms which surface as empty-field
+// failures rather than rethrows — the Go port simplifies).
+func (t *TorrentDownloadStation) testOutputPath(ctx context.Context) *downloadclients.TestFailure {
+	tv := strings.TrimSpace(t.settings.TvDirectory)
+	if tv == "" {
+		return nil
+	}
+	if !strings.HasPrefix(tv, "/") {
+		tv = "/" + tv
+	}
+	info, err := t.proxy.GetFileInfo(ctx, t.settings, tv)
+	if err != nil {
+		t.log.Debug("downloadstation: TestOutputPath GetFileInfo failed; degrading to silent",
+			slog.String("path", tv),
+			slog.Any("err", err))
+		return nil
+	}
+	if len(info.Additional) == 0 {
+		return &downloadclients.TestFailure{
+			PropertyName:        "TvDirectory",
+			ErrorMessage:        fmt.Sprintf("Shared folder %q not found on the Diskstation", firstPathComponent(tv)),
+			DetailedDescription: fmt.Sprintf("Sonarr couldn't find the shared folder %q on the Diskstation. Open Synology Control Panel > Shared Folder and verify it exists.", firstPathComponent(tv)),
+		}
+	}
+	if !info.IsDir {
+		return &downloadclients.TestFailure{
+			PropertyName:        "TvDirectory",
+			ErrorMessage:        fmt.Sprintf("Folder %q does not exist on the Diskstation", tv),
+			DetailedDescription: fmt.Sprintf("The configured TvDirectory %q resolves to a file or non-existent path under shared folder %q.", tv, firstPathComponent(tv)),
+		}
+	}
+	return nil
+}
+
+// firstPathComponent returns the first path component (the
+// SharedFolder name) of the supplied absolute path. Matches the C#
+// `:323` `downloadDir.Split('\\', '/')[0]` heuristic with a leading-
+// slash strip first.
+func firstPathComponent(path string) string {
+	trimmed := strings.TrimLeft(path, "/")
+	if i := strings.IndexAny(trimmed, "/\\"); i != -1 {
+		return trimmed[:i]
+	}
+	return trimmed
 }
 
 // isLocalHost ports the C# `Settings.Host == "127.0.0.1" || ==

@@ -1101,7 +1101,7 @@ func TestProvider_GetStatus_J122_TvDirectoryResolved(t *testing.T) {
 	]}}`)
 	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
 	s := newSettings()
-	s.TvDirectory = "/data/tv"
+	s.TvDirectory = "data/tv"
 	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, s, proxy, nil)
 	info, err := prov.GetStatus(context.Background())
 	if err != nil {
@@ -1142,7 +1142,7 @@ func TestProvider_GetStatus_J122_ResolverFailureDegrades(t *testing.T) {
 	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":false,"error":{"code":408}}`)
 	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
 	s := newSettings()
-	s.TvDirectory = "/data/tv"
+	s.TvDirectory = "data/tv"
 	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, s, proxy, nil)
 	info, err := prov.GetStatus(context.Background())
 	if err != nil {
@@ -1173,5 +1173,129 @@ func TestProvider_GetStatus_J122_RelativeTvDirectoryGetsLeadingSlash(t *testing.
 	}
 	if got := info.OutputRootFolders[0].FullPath(); got != "/volume1/data/tv" {
 		t.Errorf("OutputRootFolders[0] = %q, want /volume1/data/tv", got)
+	}
+}
+
+// --- J123 TestOutputPath wire-up ---------------------------------
+
+// queueAllArmsPass queues API discovery + auth + version-info +
+// empty task-list (passes the first 4 Test arms unchanged).
+func queueAllArmsPass(doer *scriptedDoer) {
+	queueAPIDiscoveryWithFileStation(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	// Test() ALSO calls GetTasks (task list). Queue an empty list.
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[]}}`)
+}
+
+func TestProvider_TestOutputPath_J123_HappyPathOnValidDir(t *testing.T) {
+	doer := newScripted()
+	queueAllArmsPass(doer)
+	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":true,"data":{"files":[
+		{"isdir":true,"name":"tv","path":"/data/tv","additional":{"real_path":"/volume1/data/tv"}}
+	]}}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	s := newSettings()
+	s.TvDirectory = "data/tv"
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, s, proxy, nil)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Errorf("failures = %+v, want none", failures)
+	}
+}
+
+func TestProvider_TestOutputPath_J123_EmptyAdditionalSurfacesSharedFolderMissing(t *testing.T) {
+	doer := newScripted()
+	queueAllArmsPass(doer)
+	// FileStation returns a file row WITHOUT an "additional" field —
+	// signals that the SharedFolder doesn't exist.
+	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":true,"data":{"files":[
+		{"isdir":true,"name":"tv","path":"/data/tv"}
+	]}}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	s := newSettings()
+	s.TvDirectory = "missing-shared/tv"
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, s, proxy, nil)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 1 || failures[0].PropertyName != "TvDirectory" {
+		t.Fatalf("failures = %+v, want one TvDirectory failure", failures)
+	}
+	if !strings.Contains(failures[0].ErrorMessage, "Shared folder") {
+		t.Errorf("ErrorMessage = %q, want shared-folder failure", failures[0].ErrorMessage)
+	}
+	if !strings.Contains(failures[0].ErrorMessage, "missing-shared") {
+		t.Errorf("ErrorMessage = %q, want first-path-component in message", failures[0].ErrorMessage)
+	}
+}
+
+func TestProvider_TestOutputPath_J123_NotADirectorySurfacesFolderMissing(t *testing.T) {
+	doer := newScripted()
+	queueAllArmsPass(doer)
+	// File-not-folder: isdir=false with non-empty additional.
+	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":true,"data":{"files":[
+		{"isdir":false,"name":"thing","path":"/data/thing","additional":{"real_path":"/volume1/data/thing"}}
+	]}}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	s := newSettings()
+	s.TvDirectory = "data/thing"
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, s, proxy, nil)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 1 || failures[0].PropertyName != "TvDirectory" {
+		t.Fatalf("failures = %+v, want one TvDirectory failure", failures)
+	}
+	if !strings.Contains(failures[0].ErrorMessage, "Folder") || !strings.Contains(failures[0].ErrorMessage, "does not exist") {
+		t.Errorf("ErrorMessage = %q, want folder-missing failure", failures[0].ErrorMessage)
+	}
+}
+
+func TestProvider_TestOutputPath_J123_EmptyTvDirectorySkipsProbe(t *testing.T) {
+	// No TvDirectory configured → no FileStation call. The earlier
+	// arms still pass.
+	doer := newScripted()
+	queueAllArmsPass(doer)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	s := newSettings()
+	s.TvDirectory = ""
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, s, proxy, nil)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Errorf("failures = %+v, want none (TvDirectory empty -> skip probe)", failures)
+	}
+	// Confirm no /webapi/FileStation/file_share.cgi call landed.
+	for _, c := range doer.calls {
+		if c.path == "/webapi/FileStation/file_share.cgi" {
+			t.Errorf("FileStation probe fired despite empty TvDirectory; calls=%+v", doer.calls)
+			break
+		}
+	}
+}
+
+func TestProvider_TestOutputPath_J123_FileStationFailureDegradesSilent(t *testing.T) {
+	// FileStation transport-error → degrade to silent (no failure
+	// surfaced). Same posture as the C# `:346-356` catch-arms.
+	doer := newScripted()
+	queueAllArmsPass(doer)
+	doer.queueErr("/webapi/FileStation/file_share.cgi", errors.New("transient"))
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	s := newSettings()
+	s.TvDirectory = "data/tv"
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, s, proxy, nil)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Errorf("failures = %+v, want none (silent degradation on FileStation error)", failures)
 	}
 }

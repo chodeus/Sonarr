@@ -299,9 +299,10 @@ func (u *UsenetDownloadStation) RequestAction(_ context.Context, _ string, _ map
 }
 
 // Test ports `UsenetDownloadStation.Test(failures)` at C# `:198-208`.
-// Same 4-arm chain as the torrent half: connection → version →
-// task-list (TestOutputPath deferred until SharedFolderResolver
-// lands).
+// 5-arm chain identical to the torrent half: connection → version →
+// task-list → TestOutputPath. Slice 5.J123 wires the TestOutputPath
+// arm via [Proxy.GetFileInfo] (J120) — see
+// [TorrentDownloadStation.testOutputPath] for the per-arm doc.
 func (u *UsenetDownloadStation) Test(ctx context.Context) ([]downloadclients.TestFailure, error) {
 	failures := u.settings.Validate()
 	if len(failures) > 0 {
@@ -338,7 +339,46 @@ func (u *UsenetDownloadStation) Test(ctx context.Context) ([]downloadclients.Tes
 			ErrorMessage: fmt.Sprintf("Unable to list tasks: %v", err),
 		}}, nil
 	}
+	if f := u.testOutputPath(ctx); f != nil {
+		return []downloadclients.TestFailure{*f}, nil
+	}
 	return nil, nil
+}
+
+// testOutputPath is the Usenet half's TestOutputPath arm. Same
+// algorithm as [TorrentDownloadStation.testOutputPath] — fires
+// Proxy.GetFileInfo on the configured TvDirectory and surfaces
+// SharedFolderMissing / FolderMissing failures. Slice 5.J123.
+func (u *UsenetDownloadStation) testOutputPath(ctx context.Context) *downloadclients.TestFailure {
+	tv := strings.TrimSpace(u.settings.TvDirectory)
+	if tv == "" {
+		return nil
+	}
+	if !strings.HasPrefix(tv, "/") {
+		tv = "/" + tv
+	}
+	info, err := u.proxy.GetFileInfo(ctx, u.settings, tv)
+	if err != nil {
+		u.log.Debug("downloadstation: TestOutputPath GetFileInfo failed; degrading to silent",
+			slog.String("path", tv),
+			slog.Any("err", err))
+		return nil
+	}
+	if len(info.Additional) == 0 {
+		return &downloadclients.TestFailure{
+			PropertyName:        "TvDirectory",
+			ErrorMessage:        fmt.Sprintf("Shared folder %q not found on the Diskstation", firstPathComponent(tv)),
+			DetailedDescription: fmt.Sprintf("Sonarr couldn't find the shared folder %q on the Diskstation. Open Synology Control Panel > Shared Folder and verify it exists.", firstPathComponent(tv)),
+		}
+	}
+	if !info.IsDir {
+		return &downloadclients.TestFailure{
+			PropertyName:        "TvDirectory",
+			ErrorMessage:        fmt.Sprintf("Folder %q does not exist on the Diskstation", tv),
+			DetailedDescription: fmt.Sprintf("The configured TvDirectory %q resolves to a file or non-existent path under shared folder %q.", tv, firstPathComponent(tv)),
+		}
+	}
+	return nil
 }
 
 // SetRemotePathMapper binds the optional remote-path mapper. Same
