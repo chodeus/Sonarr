@@ -134,6 +134,7 @@ import (
 	// global registry at grab time; without these imports the
 	// registry is empty and every grab buckets to Pending. Pattern-
 	// mirror of the metadata-writer blank imports above.
+	_ "sonarr.tv/sonarr/internal/downloadclients/aria2"
 	_ "sonarr.tv/sonarr/internal/downloadclients/deluge"
 	_ "sonarr.tv/sonarr/internal/downloadclients/nzbget"
 	_ "sonarr.tv/sonarr/internal/downloadclients/qbittorrent"
