@@ -203,6 +203,56 @@ func (p *Proxy) GetDownloadFiles(ctx context.Context, s Settings, infohash strin
 	return resp.Files, nil
 }
 
+// RemoveDownloadRequest is the wire body for `DELETE /api/downloads/<hash>`.
+// Mirrors C# `Models/TriblerDownloadClientApi.cs:113-117` with the
+// same JSON tag (snake_case via [JsonProperty]).
+type RemoveDownloadRequest struct {
+	RemoveData bool `json:"remove_data"`
+}
+
+// deleteDownloadResponse mirrors C# `DeleteDownloadResponse` at
+// `:119-123`. The Provider doesn't surface either field but the
+// envelope is decoded to confirm a 2xx body decodes cleanly.
+type deleteDownloadResponse struct {
+	Removed  *bool  `json:"removed,omitempty"`
+	Infohash string `json:"infohash,omitempty"`
+}
+
+// RemoveDownload fires DELETE `/api/downloads/<infohash>` with the
+// `{remove_data:bool}` body. Mirrors C#
+// `TriblerDownloadClientProxy.RemoveDownload` at `:92-106`.
+//
+// Lowercases the infohash before composing the URL (matches C#
+// `:99`'s `item.DownloadId.ToLower()`).
+func (p *Proxy) RemoveDownload(ctx context.Context, s Settings, infohash string, deleteData bool) error {
+	hash := strings.ToLower(strings.TrimSpace(infohash))
+	if hash == "" {
+		return fmt.Errorf("tribler: RemoveDownload: empty infohash")
+	}
+	body, err := json.Marshal(RemoveDownloadRequest{RemoveData: deleteData})
+	if err != nil {
+		return fmt.Errorf("tribler: marshal remove body: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, baseURL(s)+"/api/downloads/"+hash, strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Errorf("tribler: build remove request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	respBody, err := p.execute(httpReq, s, "RemoveDownload")
+	if err != nil {
+		return err
+	}
+	// Decode the envelope; we don't inspect the fields but the
+	// unmarshal catches malformed payloads.
+	var resp deleteDownloadResponse
+	if len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, &resp); err != nil {
+			return fmt.Errorf("tribler: unmarshal remove response: %w", err)
+		}
+	}
+	return nil
+}
+
 // AddDownloadRequest is the wire body for `PUT /api/downloads`.
 // Mirrors C# `Models/TriblerDownloadClientApi.cs:93-105` with the
 // same JSON tags (snake_case via [JsonProperty]).

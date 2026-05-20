@@ -18,10 +18,16 @@ import (
 // implementation for the C# `TriblerDownloadClient` class at
 // `src/NzbDrone.Core/Download/Clients/Tribler/TriblerDownloadClient.cs:1-298`.
 //
-// Skeleton-only at 5.J81: Test (auth probe via /api/settings) +
-// GetStatus (IsLocalhost-only) + identity methods are real;
-// Download / GetItems / RemoveItem stub out to [ErrNotImplemented]
-// until the follow-up slices port the /api/downloads endpoints.
+// Functionally complete after the 5.J81 → 5.J84 arc: Test runs
+// against /api/settings (auth probe); Download dispatches via PUT
+// /api/downloads (magnet-only — torrent files surface
+// ErrTorrentFileUnsupported); GetItems walks /api/downloads with
+// the 6-arm status table + ETA clamp + OutputPath resolution
+// (single-file suffix from /api/downloads/<hash>/files); RemoveItem
+// fires DELETE /api/downloads/<hash>; GetStatus is IsLocalhost-only.
+// Documented deferred pieces: the HasReachedSeedLimit cleanup-gate
+// (needs SeedingMode/SeedingRatio/SeedingTime in Config) + the
+// GetStatus OutputRootFolders arm (the SaveAs+category composition).
 type TriblerDownloadClient struct {
 	settings Settings
 	def      *downloadclients.DownloadClient
@@ -313,11 +319,26 @@ func (t *TriblerDownloadClient) GetImportItem(_ context.Context, item *downloadc
 	return item, nil
 }
 
-// RemoveItem is a STUB at 5.J81. Follow-up ports
-// `Proxy.RemoveDownload` (DELETE `/api/downloads/<hash>` with body
-// `{remove_data:bool}`) per C# `TriblerDownloadClientProxy.cs:92-106`.
-func (t *TriblerDownloadClient) RemoveItem(_ context.Context, _ *downloadclients.Item, _ bool) error {
-	return fmt.Errorf("%w: RemoveItem", ErrNotImplemented)
+// RemoveItem ports C# `TriblerDownloadClient.RemoveItem` at
+// `:158-161`. Delegates to [Proxy.RemoveDownload] — DELETE
+// `/api/downloads/<hash>` with the `{remove_data:bool}` body
+// where deleteData controls whether Tribler erases the on-disk
+// files alongside the queue entry.
+func (t *TriblerDownloadClient) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
+	if t.proxy == nil {
+		return errors.New("tribler: nil Proxy")
+	}
+	if item == nil {
+		return errors.New("tribler: nil item")
+	}
+	id := strings.TrimSpace(item.DownloadID)
+	if id == "" {
+		return errors.New("tribler: item has empty DownloadID")
+	}
+	if err := t.proxy.RemoveDownload(ctx, t.settings, id, deleteData); err != nil {
+		return fmt.Errorf("tribler: RemoveDownload(%s): %w", id, err)
+	}
+	return nil
 }
 
 // GetStatus ports the IsLocalhost arm of C# `:163`. The
@@ -373,10 +394,6 @@ func isLocalHost(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
-
-// ErrNotImplemented signals a 5.J81 skeleton stub (GetItems +
-// RemoveItem). Removed once those arms wire up.
-var ErrNotImplemented = errors.New("tribler: not yet implemented in this build")
 
 // ErrTorrentFileUnsupported mirrors C# `:237`'s NotSupportedException
 // — Tribler 8.x does not support adding via a .torrent file

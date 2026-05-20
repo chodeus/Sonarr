@@ -13,22 +13,29 @@
 //   - PUT `/api/downloads` — add task from magnet URL.
 //   - DELETE `/api/downloads/<hash>` body `{remove_data:bool}` — remove.
 //
-// Slice 5.J81 (this slice + the LAST long-tail DC) ships the
-// SKELETON:
+// Functionally complete across the 5.J81 → 5.J84 arc:
 //
 //   - [Settings] + [NewSettings] + Validate.
-//   - [Proxy] with [Proxy.GetConfig] for the Test arm; the X-Api-Key
-//     header is applied on every authenticated call.
-//   - [TriblerDownloadClient] Provider with Name + Protocol +
-//     Definition + Settings + Test (GetConfig probe) + GetStatus
-//     (IsLocalhost-only) + identity methods. Download / GetItems
-//     / RemoveItem stub out to [ErrNotImplemented].
-//   - Registry registration via init().
+//   - [Proxy] with the static X-Api-Key header applied on every
+//     call: [Proxy.GetConfig] (Test arm + GetDownloadDirectory
+//     base), [Proxy.GetDownloads] + [Proxy.GetDownloadFiles]
+//     (GetItems list + per-task file resolution),
+//     [Proxy.AddFromMagnetLink] (Download magnet arm),
+//     [Proxy.RemoveDownload] (RemoveItem with remove_data).
+//   - [TriblerDownloadClient] Provider implementing every
+//     [downloadclients.Provider] method against the V8 Tribler API.
+//   - Registry registration of (TriblerDownloadClient,
+//     TriblerDownloadSettings) via init().
 //
-// Follow-up slices fill in the per-method ports (Download via PUT
-// /api/downloads with the magnet URL payload, GetItems via GET
-// /api/downloads with the per-state status mapping, RemoveItem via
-// DELETE with the remove_data flag).
+// Documented deferred pieces:
+//
+//   - The HasReachedSeedLimit cleanup-gate (SeedingMode +
+//     SeedingRatio + SeedingTime fields under the Config payload).
+//   - The GetStatus OutputRootFolders arm (composes
+//     <SaveAs>/<TvCategory> + RemotePathMapper translation).
+//   - The torrent-file Download arm (Tribler 8.x doesn't support
+//     /api/downloads with .torrent bytes — surfaces
+//     [ErrTorrentFileUnsupported]).
 package tribler
 
 import (

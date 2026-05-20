@@ -268,14 +268,8 @@ func TestProvider_GetStatus_LocalhostFlag(t *testing.T) {
 	}
 }
 
-func TestProvider_RemoveItem_StillStub(t *testing.T) {
-	// J83 wires Download + GetItems; RemoveItem remains the last
-	// stub before the J84 closure.
-	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(newScripted(), nil), nil)
-	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); !errors.Is(err, tribler.ErrNotImplemented) {
-		t.Errorf("RemoveItem err = %v, want ErrNotImplemented", err)
-	}
-}
+// (J84 wires RemoveItem; the Tribler arc is functionally complete.
+// Per-method RemoveItem tests cover the behaviour individually.)
 
 func TestProvider_Download_TorrentBodyUnsupported(t *testing.T) {
 	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(newScripted(), nil), nil)
@@ -616,6 +610,105 @@ func ftoa(f float64) string {
 	default:
 		// 366 * 86400 = 31622400.
 		return "31622400"
+	}
+}
+
+// captureDeleteDoer wraps scriptedDoer and grabs the last DELETE
+// body + URL path so the RemoveItem tests can assert the wire
+// shape.
+type captureDeleteDoer struct {
+	scripted   *scriptedDoer
+	lastBody   []byte
+	lastPath   string
+	lastMethod string
+}
+
+func (c *captureDeleteDoer) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodDelete {
+		if req.Body != nil {
+			body, _ := io.ReadAll(req.Body)
+			c.lastBody = body
+			req.Body = io.NopCloser(strings.NewReader(""))
+		}
+		c.lastPath = req.URL.Path
+		c.lastMethod = req.Method
+	}
+	return c.scripted.Do(req)
+}
+
+func TestProvider_RemoveItem_DeleteDataTrue_RequestShape(t *testing.T) {
+	doer := &captureDeleteDoer{scripted: newScripted()}
+	doer.scripted.responses["/api/downloads/abc"] = append(doer.scripted.responses["/api/downloads/abc"], scriptedResp{
+		status: http.StatusOK,
+		body:   `{"removed":true,"infohash":"abc"}`,
+	})
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "abc"}, true); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if doer.lastMethod != http.MethodDelete {
+		t.Errorf("method = %q, want DELETE", doer.lastMethod)
+	}
+	if doer.lastPath != "/api/downloads/abc" {
+		t.Errorf("path = %q, want /api/downloads/abc", doer.lastPath)
+	}
+	if !strings.Contains(string(doer.lastBody), `"remove_data":true`) {
+		t.Errorf("body = %s, want it to contain remove_data:true", doer.lastBody)
+	}
+}
+
+func TestProvider_RemoveItem_DeleteDataFalse(t *testing.T) {
+	doer := &captureDeleteDoer{scripted: newScripted()}
+	doer.scripted.responses["/api/downloads/abc"] = append(doer.scripted.responses["/api/downloads/abc"], scriptedResp{
+		status: http.StatusOK,
+		body:   `{"removed":true}`,
+	})
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "abc"}, false); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(string(doer.lastBody), `"remove_data":false`) {
+		t.Errorf("body = %s, want remove_data:false", doer.lastBody)
+	}
+}
+
+func TestProvider_RemoveItem_LowercasesInfohash(t *testing.T) {
+	// C# `:99` lowercases the DownloadId — the Go port mirrors so
+	// case-flipped queue IDs hit the same Tribler-side identifier.
+	doer := &captureDeleteDoer{scripted: newScripted()}
+	doer.scripted.responses["/api/downloads/abcdef"] = append(doer.scripted.responses["/api/downloads/abcdef"], scriptedResp{
+		status: http.StatusOK,
+		body:   `{"removed":true}`,
+	})
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "ABCDEF"}, false); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if doer.lastPath != "/api/downloads/abcdef" {
+		t.Errorf("path = %q, want /api/downloads/abcdef (lowercased)", doer.lastPath)
+	}
+}
+
+func TestProvider_RemoveItem_NilItem(t *testing.T) {
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(newScripted(), nil), nil)
+	if err := p.RemoveItem(context.Background(), nil, false); err == nil {
+		t.Fatal("err = nil, want nil-item error")
+	}
+}
+
+func TestProvider_RemoveItem_EmptyDownloadID(t *testing.T) {
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(newScripted(), nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, false); err == nil {
+		t.Fatal("err = nil, want empty-id error")
+	}
+}
+
+func TestProvider_RemoveItem_PropagatesProxyError(t *testing.T) {
+	doer := newScripted()
+	doer.responses["/api/downloads/abc"] = append(doer.responses["/api/downloads/abc"], scriptedResp{status: http.StatusInternalServerError})
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "abc"}, true); !errors.Is(err, tribler.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable", err)
 	}
 }
 
