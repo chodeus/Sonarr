@@ -236,13 +236,15 @@ func (s *dbIndexerSource) buildAdapter(row *indexers.Indexer, def *provider.Defi
 			rs, err := idx.FetchRecent(ctx)
 			return upcastTorrentInfos(rs), err
 		}
-		// Slice 5.J148 (first slice of the Nyaa arc): only the RSS
-		// FetchRecent path lands. The per-criteria search-URL
-		// routing (NyaaRequestGenerator.cs:21-111) ships as a
-		// follow-up slice once a real consumer drives the
-		// criteria-typed dispatch. Leave FetchSearchFunc nil so
-		// the adapter surfaces the "does not support search" error
-		// instead of silently returning empty.
+		// Slice 5.J149 closes the J148 FetchSearch deferral —
+		// FetchSearch now routes the typed criteria through the
+		// per-overload dispatch (SingleEpisode + Anime + Special
+		// emit per-title term URLs; Daily / Season / non-anime
+		// short-circuit empty) and dedupes by Guid.
+		common.FetchSearchFunc = func(ctx context.Context, c indexersearch.Criteria) ([]any, error) {
+			rs, err := idx.FetchSearch(ctx, c)
+			return upcastTorrentInfos(rs), err
+		}
 		return common, nil
 
 	default:

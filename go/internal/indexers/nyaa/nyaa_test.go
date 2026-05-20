@@ -9,6 +9,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/indexers/nyaa"
+	"sonarr.tv/sonarr/internal/indexersearch"
 	"sonarr.tv/sonarr/internal/provider"
 )
 
@@ -203,7 +204,7 @@ func TestIndexer_FetchRecentURLNoDoubleSlash(t *testing.T) {
 	}
 }
 
-func TestIndexer_FetchSearchAlwaysEmpty(t *testing.T) {
+func TestIndexer_FetchSearchUnknownCriteriaEmpty(t *testing.T) {
 	t.Parallel()
 	i := nyaa.NewIndexer(nil)
 	d := i.DefaultDefinitions()[0]
@@ -214,7 +215,234 @@ func TestIndexer_FetchSearchAlwaysEmpty(t *testing.T) {
 		t.Fatalf("FetchSearch: %v", err)
 	}
 	if len(rels) != 0 {
-		t.Errorf("FetchSearch (J148) always returns empty; got %d", len(rels))
+		t.Errorf("Unknown criteria type should yield empty (matches C# overloads that return empty); got %d", len(rels))
+	}
+}
+
+func TestIndexer_FetchSearch_DailyAndSeasonAndSpecialEmptyShape(t *testing.T) {
+	t.Parallel()
+	i := nyaa.NewIndexer(nil)
+	d := i.DefaultDefinitions()[0]
+	d.Settings.(*nyaa.Settings).BaseUrl = "https://nyaa.si"
+	d.Settings.(*nyaa.Settings).AnimeStandardFormatSearch = true
+	i.SetDefinition(d)
+
+	cases := []any{
+		&indexersearch.DailyEpisodeCriteria{},
+		&indexersearch.DailySeasonCriteria{},
+		&indexersearch.SeasonCriteria{SeasonNumber: 1},
+		&indexersearch.AnimeSeasonCriteria{SeasonNumber: 0},
+	}
+	for ci, c := range cases {
+		rels, err := i.FetchSearch(context.Background(), c)
+		if err != nil {
+			t.Errorf("case %d (%T): %v", ci, c, err)
+		}
+		if len(rels) != 0 {
+			t.Errorf("case %d (%T): expected empty; got %d releases", ci, c, len(rels))
+		}
+	}
+}
+
+func TestIndexer_FetchSearch_SingleEpisodeAnimeStandardEmitsURL(t *testing.T) {
+	t.Parallel()
+	urls := []string{}
+	stub := &stubClient{
+		getFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			urls = append(urls, req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := nyaa.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	settings := d.Settings.(*nyaa.Settings)
+	settings.BaseUrl = "https://nyaa.si"
+	settings.AnimeStandardFormatSearch = true
+	i.SetDefinition(d)
+
+	c := &indexersearch.SingleEpisodeCriteria{SeasonNumber: 1, EpisodeNumber: 5}
+	c.SceneTitles = []string{"Some Anime"}
+	rels, err := i.FetchSearch(context.Background(), c)
+	if err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(rels) != 1 {
+		t.Errorf("expected 1 release; got %d", len(rels))
+	}
+	if len(urls) != 1 {
+		t.Fatalf("expected 1 HTTP call; got %d (%v)", len(urls), urls)
+	}
+	want := "https://nyaa.si/?page=rss&cats=1_0&filter=1&term=Some+Anime+s01e05"
+	if urls[0] != want {
+		t.Errorf("URL = %q, want %q", urls[0], want)
+	}
+}
+
+func TestIndexer_FetchSearch_SingleEpisodeSkippedWhenAnimeFlagOff(t *testing.T) {
+	t.Parallel()
+	stub := &stubClient{
+		getFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			t.Errorf("HTTP should not be called when AnimeStandardFormatSearch=false; got %s", req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := nyaa.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	d.Settings.(*nyaa.Settings).BaseUrl = "https://nyaa.si"
+	i.SetDefinition(d)
+
+	c := &indexersearch.SingleEpisodeCriteria{SeasonNumber: 1, EpisodeNumber: 5}
+	c.SceneTitles = []string{"Some Anime"}
+	rels, err := i.FetchSearch(context.Background(), c)
+	if err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(rels) != 0 {
+		t.Errorf("expected empty; got %d", len(rels))
+	}
+}
+
+func TestIndexer_FetchSearch_AnimeEpisodeAbsoluteEmitsBothPaddedFormats(t *testing.T) {
+	t.Parallel()
+	urls := []string{}
+	stub := &stubClient{
+		getFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			urls = append(urls, req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := nyaa.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	d.Settings.(*nyaa.Settings).BaseUrl = "https://nyaa.si"
+	i.SetDefinition(d)
+
+	c := &indexersearch.AnimeEpisodeCriteria{AbsoluteEpisodeNumber: 7}
+	c.SceneTitles = []string{"Some Anime"}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	want := []string{
+		"https://nyaa.si/?page=rss&cats=1_0&filter=1&term=Some+Anime+7",
+		"https://nyaa.si/?page=rss&cats=1_0&filter=1&term=Some+Anime+07",
+	}
+	if len(urls) != 2 {
+		t.Fatalf("expected 2 URLs; got %d (%v)", len(urls), urls)
+	}
+	for i, u := range want {
+		if urls[i] != u {
+			t.Errorf("urls[%d] = %q, want %q", i, urls[i], u)
+		}
+	}
+}
+
+func TestIndexer_FetchSearch_AnimeEpisodeAbsoluteAtTenSinglePad(t *testing.T) {
+	t.Parallel()
+	urls := []string{}
+	stub := &stubClient{
+		getFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			urls = append(urls, req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := nyaa.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	d.Settings.(*nyaa.Settings).BaseUrl = "https://nyaa.si"
+	i.SetDefinition(d)
+
+	c := &indexersearch.AnimeEpisodeCriteria{AbsoluteEpisodeNumber: 10}
+	c.SceneTitles = []string{"Show"}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(urls) != 1 {
+		t.Fatalf("expected 1 URL; got %d (%v)", len(urls), urls)
+	}
+	want := "https://nyaa.si/?page=rss&cats=1_0&filter=1&term=Show+10"
+	if urls[0] != want {
+		t.Errorf("URL = %q, want %q", urls[0], want)
+	}
+}
+
+func TestIndexer_FetchSearch_AnimeSeasonStandardEmitsSeasonForm(t *testing.T) {
+	t.Parallel()
+	urls := []string{}
+	stub := &stubClient{
+		getFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			urls = append(urls, req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := nyaa.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	settings := d.Settings.(*nyaa.Settings)
+	settings.BaseUrl = "https://nyaa.si"
+	settings.AnimeStandardFormatSearch = true
+	i.SetDefinition(d)
+
+	c := &indexersearch.AnimeSeasonCriteria{SeasonNumber: 2}
+	c.SceneTitles = []string{"Show"}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(urls) != 1 || urls[0] != "https://nyaa.si/?page=rss&cats=1_0&filter=1&term=Show+s02" {
+		t.Errorf("urls = %v", urls)
+	}
+}
+
+func TestIndexer_FetchSearch_SpecialEpisodeEmitsPerQueryTitle(t *testing.T) {
+	t.Parallel()
+	urls := []string{}
+	stub := &stubClient{
+		getFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			urls = append(urls, req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := nyaa.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	d.Settings.(*nyaa.Settings).BaseUrl = "https://nyaa.si"
+	i.SetDefinition(d)
+
+	c := &indexersearch.SpecialEpisodeCriteria{
+		EpisodeQueryTitles: []string{"Show OVA 1", "Show Movie"},
+	}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(urls) != 2 {
+		t.Fatalf("expected 2 URLs; got %d (%v)", len(urls), urls)
+	}
+	want := []string{
+		"https://nyaa.si/?page=rss&cats=1_0&filter=1&term=Show+OVA+1",
+		"https://nyaa.si/?page=rss&cats=1_0&filter=1&term=Show+Movie",
+	}
+	for i, u := range want {
+		if urls[i] != u {
+			t.Errorf("urls[%d] = %q, want %q", i, urls[i], u)
+		}
+	}
+}
+
+func TestIndexer_FetchSearch_DedupsByGuid(t *testing.T) {
+	t.Parallel()
+	stub := &stubClient{
+		getFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := nyaa.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	d.Settings.(*nyaa.Settings).BaseUrl = "https://nyaa.si"
+	i.SetDefinition(d)
+
+	c := &indexersearch.AnimeEpisodeCriteria{AbsoluteEpisodeNumber: 3}
+	c.SceneTitles = []string{"Show"}
+	rels, err := i.FetchSearch(context.Background(), c)
+	if err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(rels) != 1 {
+		t.Errorf("expected 1 deduped release; got %d", len(rels))
 	}
 }
 
