@@ -38,6 +38,13 @@ type TorrentDownloadStation struct {
 	// GetItems to translate the DSM-side `destination` path into
 	// Sonarr-side paths. Nil → pass-through.
 	rpm downloadclients.RemotePathMapper
+
+	// resolver translates DSM SharedFolder-prefixed paths
+	// (`/data/tv/Show`) to physical paths (`/volume1/data/tv/Show`)
+	// via [SharedFolderResolver]. Auto-bound by New when a proxy is
+	// available; tests may override via [SetSharedFolderResolver].
+	// Slice 5.J122 wire-up.
+	resolver *SharedFolderResolver
 }
 
 // New constructs a TorrentDownloadStation Provider. proxy=nil
@@ -49,7 +56,17 @@ func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, l
 	if proxy == nil {
 		proxy = NewProxy(nil, log, nil)
 	}
-	return &TorrentDownloadStation{settings: settings, def: def, log: log, proxy: proxy}
+	t := &TorrentDownloadStation{settings: settings, def: def, log: log, proxy: proxy}
+	// Auto-bind the SharedFolderResolver when a real proxy is
+	// wired. Tests that pin a stubbed Doer get the resolver "for
+	// free" — the resolver only fires its proxy round-trips when
+	// Resolve is called, which itself only happens when the
+	// GetStatus arm finds a non-empty TvDirectory. Tests that need
+	// to override the resolver pin call [SetSharedFolderResolver].
+	if proxy != nil {
+		t.resolver = NewSharedFolderResolver(proxy)
+	}
+	return t
 }
 
 // Name returns the user-facing label. C# `:53`.
@@ -378,6 +395,15 @@ func (t *TorrentDownloadStation) SetRemotePathMapper(rpm downloadclients.RemoteP
 	t.rpm = rpm
 }
 
+// SetSharedFolderResolver overrides the SharedFolderResolver that
+// GetStatus (+ future TestOutputPath + deleteData disk arm) consult
+// to translate DSM SharedFolder-prefixed paths to physical paths.
+// nil disables the resolver — GetStatus falls back to IsLocalhost-only.
+// Slice 5.J122.
+func (t *TorrentDownloadStation) SetSharedFolderResolver(r *SharedFolderResolver) {
+	t.resolver = r
+}
+
 // GetImportItem is the C# base passthrough.
 func (t *TorrentDownloadStation) GetImportItem(_ context.Context, item *downloadclients.Item, _ *downloadclients.Item) (*downloadclients.Item, error) {
 	return item, nil
@@ -413,12 +439,63 @@ func (t *TorrentDownloadStation) RemoveItem(ctx context.Context, item *downloadc
 	return nil
 }
 
-// GetStatus ports the IsLocalhost arm of C# `:392-417`. The
-// OutputRootFolders arm (which calls DSMInfoProxy.GetSerialNumber +
-// SharedFolderResolver) is deferred to the SharedFolderResolver
-// follow-up — IsLocalhost suffices for the healthcheck path.
-func (t *TorrentDownloadStation) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return &downloadclients.ClientInfo{IsLocalhost: isLocalHost(t.settings.Host)}, nil
+// GetStatus ports C# `TorrentDownloadStation.GetStatus` at `:118-142`.
+//
+// IsLocalhost matches C# `:132` — 127.0.0.1 / ::1 / localhost.
+// OutputRootFolders wires the J121 SharedFolderResolver: when
+// Settings.TvDirectory is non-empty, the configured path is fed
+// through [SharedFolderResolver.Resolve] to translate the DSM
+// SharedFolder prefix to a physical mount path; the result is then
+// routed through [RemotePathMapper.RemapRemoteToLocal] (when wired)
+// to surface a Sonarr-side path.
+//
+// The C# tree at `:122` also resolves a hashed serial number for
+// the resolver cache key, but the Go port keys on Host (J121
+// divergence note) so the serialNumber dance isn't needed.
+//
+// Failures from the resolver are NON-fatal — GetStatus returns
+// IsLocalhost-only when the proxy fails to fetch the SharedFolder
+// mapping. Same posture as the other DCs' GetStatus arms.
+//
+// The TvCategory-only path (TvDirectory empty + TvCategory set)
+// is still deferred: it requires DSMInfoProxy.GetDefaultDestination
+// to resolve the DSM-side default folder, which hasn't ported.
+// Documented; the GetStatus path stays IsLocalhost-only when only
+// TvCategory is configured.
+func (t *TorrentDownloadStation) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
+	info := &downloadclients.ClientInfo{IsLocalhost: isLocalHost(t.settings.Host)}
+	if t.resolver == nil {
+		return info, nil
+	}
+	dir := strings.TrimSpace(t.settings.TvDirectory)
+	if dir == "" {
+		return info, nil
+	}
+	// C# at `:124-126` prefixes a leading `/` because Download
+	// Station returns paths without it but expects it on the way
+	// in. The Go port mirrors so the resolver's IndexOf-after-1
+	// shared-folder extraction works the same way.
+	if !strings.HasPrefix(dir, "/") {
+		dir = "/" + dir
+	}
+	resolved, err := t.resolver.Resolve(ctx, t.settings, dir)
+	if err != nil {
+		t.log.Debug("downloadstation: GetStatus resolver failed; degrading to IsLocalhost-only",
+			slog.String("dir", dir),
+			slog.Any("err", err))
+		return info, nil
+	}
+	if t.rpm != nil {
+		if mapped, err := t.rpm.RemapRemoteToLocal(ctx, t.settings.Host, resolved); err == nil {
+			resolved = mapped
+		} else {
+			t.log.Debug("downloadstation: GetStatus RemapRemoteToLocal failed",
+				slog.String("dir", resolved.FullPath()),
+				slog.Any("err", err))
+		}
+	}
+	info.OutputRootFolders = []ospath.OsPath{resolved}
+	return info, nil
 }
 
 // MarkItemAsImported is the C# base default.

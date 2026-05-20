@@ -34,6 +34,12 @@ type UsenetDownloadStation struct {
 	log      *slog.Logger
 	proxy    *Proxy
 	rpm      downloadclients.RemotePathMapper
+
+	// resolver mirrors the TorrentDownloadStation wire-up at slice
+	// 5.J122 — same SharedFolderResolver shape consumed by GetStatus
+	// to populate OutputRootFolders from the resolved download
+	// directory.
+	resolver *SharedFolderResolver
 }
 
 // NewUsenet constructs a UsenetDownloadStation Provider. proxy=nil
@@ -45,7 +51,17 @@ func NewUsenet(def *downloadclients.DownloadClient, settings Settings, proxy *Pr
 	if proxy == nil {
 		proxy = NewProxy(nil, log, nil)
 	}
-	return &UsenetDownloadStation{settings: settings, def: def, log: log, proxy: proxy}
+	u := &UsenetDownloadStation{settings: settings, def: def, log: log, proxy: proxy}
+	if proxy != nil {
+		u.resolver = NewSharedFolderResolver(proxy)
+	}
+	return u
+}
+
+// SetSharedFolderResolver overrides the auto-bound resolver
+// (matches the Torrent half's pattern). Slice 5.J122.
+func (u *UsenetDownloadStation) SetSharedFolderResolver(r *SharedFolderResolver) {
+	u.resolver = r
 }
 
 // Name returns the user-facing label. Same as the torrent half —
@@ -235,11 +251,41 @@ func (u *UsenetDownloadStation) RemoveItem(ctx context.Context, item *downloadcl
 	return nil
 }
 
-// GetStatus mirrors the torrent half — IsLocalhost-only at this
-// commit. The SharedFolderResolver-driven OutputRootFolders arm
-// at C# `:140-164` is deferred to the SharedFolderResolver port.
-func (u *UsenetDownloadStation) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return &downloadclients.ClientInfo{IsLocalhost: isLocalHost(u.settings.Host)}, nil
+// GetStatus mirrors the torrent half — slice 5.J122 wires the J121
+// SharedFolderResolver to populate OutputRootFolders when
+// Settings.TvDirectory is non-empty. See
+// [TorrentDownloadStation.GetStatus] for the algorithm + the
+// TvCategory-only deferral note.
+func (u *UsenetDownloadStation) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
+	info := &downloadclients.ClientInfo{IsLocalhost: isLocalHost(u.settings.Host)}
+	if u.resolver == nil {
+		return info, nil
+	}
+	dir := strings.TrimSpace(u.settings.TvDirectory)
+	if dir == "" {
+		return info, nil
+	}
+	if !strings.HasPrefix(dir, "/") {
+		dir = "/" + dir
+	}
+	resolved, err := u.resolver.Resolve(ctx, u.settings, dir)
+	if err != nil {
+		u.log.Debug("downloadstation: GetStatus resolver failed; degrading to IsLocalhost-only",
+			slog.String("dir", dir),
+			slog.Any("err", err))
+		return info, nil
+	}
+	if u.rpm != nil {
+		if mapped, err := u.rpm.RemapRemoteToLocal(ctx, u.settings.Host, resolved); err == nil {
+			resolved = mapped
+		} else {
+			u.log.Debug("downloadstation: GetStatus RemapRemoteToLocal failed",
+				slog.String("dir", resolved.FullPath()),
+				slog.Any("err", err))
+		}
+	}
+	info.OutputRootFolders = []ospath.OsPath{resolved}
+	return info, nil
 }
 
 // MarkItemAsImported is the C# base default.

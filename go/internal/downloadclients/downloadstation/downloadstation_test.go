@@ -1089,3 +1089,89 @@ func TestProxy_GetSharedFolderMapping_MissingRealPathErrors(t *testing.T) {
 		t.Fatal("err = nil, want missing-real_path error")
 	}
 }
+
+// --- J122 GetStatus OutputRootFolders projection -----------------
+
+func TestProvider_GetStatus_J122_TvDirectoryResolved(t *testing.T) {
+	doer := newScripted()
+	queueAPIDiscoveryWithFileStation(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":true,"data":{"files":[
+		{"isdir":true,"name":"data","path":"/data","additional":{"real_path":"/volume1/data"}}
+	]}}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	s := newSettings()
+	s.TvDirectory = "/data/tv"
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, s, proxy, nil)
+	info, err := prov.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if !info.IsLocalhost && newSettings().Host == "localhost" {
+		t.Errorf("IsLocalhost should propagate for host=localhost")
+	}
+	if len(info.OutputRootFolders) != 1 {
+		t.Fatalf("OutputRootFolders = %v, want 1 entry", info.OutputRootFolders)
+	}
+	if got := info.OutputRootFolders[0].FullPath(); got != "/volume1/data/tv" {
+		t.Errorf("OutputRootFolders[0] = %q, want /volume1/data/tv", got)
+	}
+}
+
+func TestProvider_GetStatus_J122_EmptyTvDirectoryDegradesToIsLocalhost(t *testing.T) {
+	doer := newScripted()
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	s := newSettings()
+	s.TvDirectory = ""
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, s, proxy, nil)
+	info, err := prov.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(info.OutputRootFolders) != 0 {
+		t.Errorf("OutputRootFolders = %v, want empty (no TvDirectory)", info.OutputRootFolders)
+	}
+}
+
+func TestProvider_GetStatus_J122_ResolverFailureDegrades(t *testing.T) {
+	// FileStation getinfo returns nothing → resolver fails → GetStatus
+	// degrades to IsLocalhost-only rather than surfacing an error.
+	doer := newScripted()
+	queueAPIDiscoveryWithFileStation(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":false,"error":{"code":408}}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	s := newSettings()
+	s.TvDirectory = "/data/tv"
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, s, proxy, nil)
+	info, err := prov.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v, want nil (resolver failure non-fatal)", err)
+	}
+	if len(info.OutputRootFolders) != 0 {
+		t.Errorf("OutputRootFolders = %v, want empty on resolver failure", info.OutputRootFolders)
+	}
+}
+
+func TestProvider_GetStatus_J122_RelativeTvDirectoryGetsLeadingSlash(t *testing.T) {
+	// C# `:124-126` prefixes a leading `/` because DSM returns paths
+	// without it. The Go port mirrors so users who configured
+	// TvDirectory as `data/tv` (no leading slash) still resolve.
+	doer := newScripted()
+	queueAPIDiscoveryWithFileStation(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":true,"data":{"files":[
+		{"isdir":true,"name":"data","path":"/data","additional":{"real_path":"/volume1/data"}}
+	]}}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	s := newSettings()
+	s.TvDirectory = "data/tv" // no leading slash
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, s, proxy, nil)
+	info, err := prov.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got := info.OutputRootFolders[0].FullPath(); got != "/volume1/data/tv" {
+		t.Errorf("OutputRootFolders[0] = %q, want /volume1/data/tv", got)
+	}
+}
