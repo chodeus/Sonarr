@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/blackhole"
@@ -15,7 +16,7 @@ import (
 
 func newUsenetWithFS(t *testing.T, settings blackhole.UsenetSettings, fs blackhole.FS) *blackhole.UsenetBlackhole {
 	t.Helper()
-	return blackhole.NewUsenet(&downloadclients.DownloadClient{Name: "UBH"}, settings, fs, nil)
+	return blackhole.NewUsenet(&downloadclients.DownloadClient{Name: "UBH"}, settings, fs, nil, nil)
 }
 
 func TestUsenetSettings_Defaults(t *testing.T) {
@@ -142,7 +143,7 @@ func TestUsenet_Download_EmptyTitle(t *testing.T) {
 	}
 }
 
-func TestUsenet_GetItems_ReturnsEmptyNonNil(t *testing.T) {
+func TestUsenet_GetItems_NilScannerReturnsEmptyNonNil(t *testing.T) {
 	p := newUsenetWithFS(t, blackhole.NewUsenetSettings(), newFakeFS())
 	items, err := p.GetItems(context.Background())
 	if err != nil {
@@ -152,7 +153,50 @@ func TestUsenet_GetItems_ReturnsEmptyNonNil(t *testing.T) {
 		t.Fatal("items = nil, want non-nil empty slice")
 	}
 	if len(items) != 0 {
-		t.Errorf("len(items) = %d, want 0 (ScanWatchFolder not yet ported)", len(items))
+		t.Errorf("len(items) = %d, want 0", len(items))
+	}
+}
+
+func TestUsenet_GetItems_WiredScanner_Conversion(t *testing.T) {
+	fd := newFakeDisk()
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	folder := "/watch/Movie.2026"
+	file := "/watch/Movie.2026/payload.mkv"
+	fd.dirs["/watch"] = []string{folder}
+	fd.files[folder] = []string{file}
+	fd.entries[folder] = fakeDiskEntry{isDir: true, mtime: now.Add(-2 * time.Minute)}
+	fd.entries[file] = fakeDiskEntry{mtime: now.Add(-2 * time.Minute), size: 1500}
+	scanner := blackhole.NewScanWatchFolder(fd, newFakeScanner(), nil, func() time.Time { return now })
+
+	settings := blackhole.UsenetSettings{NzbFolder: "/n", WatchFolder: "/watch"}
+	def := &downloadclients.DownloadClient{Name: "BH-Usenet", ID: 11, RemoveCompletedDownloads: false}
+	p := blackhole.NewUsenet(def, settings, newFakeFS(), scanner, nil)
+
+	items, err := p.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d", len(items))
+	}
+	got := items[0]
+	if !strings.HasPrefix(got.DownloadID, "BH-Usenet_") {
+		t.Errorf("DownloadID = %q, want BH-Usenet_<...> prefix", got.DownloadID)
+	}
+	if got.Category != "sonarr" {
+		t.Errorf("Category = %q", got.Category)
+	}
+	if !got.CanMoveFiles {
+		t.Errorf("CanMoveFiles = false, want true (Usenet half is always movable)")
+	}
+	if got.CanBeRemoved {
+		t.Errorf("CanBeRemoved = true, want false (RemoveCompletedDownloads=false)")
+	}
+	if got.DownloadClientInfo == nil || got.DownloadClientInfo.Type != blackhole.UsenetImplementation {
+		t.Errorf("DownloadClientInfo Type mismatch: %+v", got.DownloadClientInfo)
+	}
+	if got.TotalSize != 1500 {
+		t.Errorf("TotalSize = %d, want 1500", got.TotalSize)
 	}
 }
 

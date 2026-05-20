@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
@@ -82,18 +83,33 @@ type UsenetBlackhole struct {
 	def      *downloadclients.DownloadClient
 	log      *slog.Logger
 	fs       FS
+
+	// scanner + gracePeriod mirror the [TorrentBlackhole] fields —
+	// both halves share the same [ScanWatchFolder]-driven queue
+	// projection. Nil scanner → empty GetItems slice.
+	scanner     *ScanWatchFolder
+	gracePeriod time.Duration
 }
 
 // NewUsenet constructs a UsenetBlackhole Provider against the
-// resolved settings + an optional [FS] override (nil → [osFS]).
-func NewUsenet(def *downloadclients.DownloadClient, settings UsenetSettings, fs FS, log *slog.Logger) *UsenetBlackhole {
+// resolved settings + an optional [FS] override (nil → [osFS]) + an
+// optional [ScanWatchFolder] scanner (nil → GetItems returns empty
+// slice).
+func NewUsenet(def *downloadclients.DownloadClient, settings UsenetSettings, fs FS, scanner *ScanWatchFolder, log *slog.Logger) *UsenetBlackhole {
 	if log == nil {
 		log = slog.Default()
 	}
 	if fs == nil {
 		fs = osFS{}
 	}
-	return &UsenetBlackhole{settings: settings, def: def, log: log, fs: fs}
+	return &UsenetBlackhole{
+		settings:    settings,
+		def:         def,
+		log:         log,
+		fs:          fs,
+		scanner:     scanner,
+		gracePeriod: ScanGracePeriodDefault,
+	}
 }
 
 // Name returns the user-facing label. Mirrors C# `Name` at
@@ -149,14 +165,69 @@ func (u *UsenetBlackhole) Download(_ context.Context, req *downloadclients.GrabR
 
 // GetItems ports `UsenetBlackhole.GetItems` at C# `:58-82`.
 //
-// Same divergence as [TorrentBlackhole.GetItems]: the C# code walks
-// `_scanWatchFolder.GetItems(Settings.WatchFolder, ScanGracePeriod)`
-// and yields filesystem-derived items. ScanWatchFolder (C#
-// `ScanWatchFolder.cs:1-202`) is the ~200 LOC file-walk + locking +
-// grace-period + cache-TTL service that warrants its own slice.
-// Until it ports, GetItems returns an empty slice (never nil).
+// Walks the configured WatchFolder via the bound
+// [ScanWatchFolder] and yields one [downloadclients.Item] per
+// [WatchFolderItem]. The conversion mirrors C# `:62-80`:
+//
+//   - DownloadID prefixed with `<Definition.Name>_` so two
+//     blackhole instances pointed at the same folder don't collide.
+//   - Category fixed to "sonarr".
+//   - CanMoveFiles = true unconditionally (Usenet has no ReadOnly
+//     toggle — C# `:77`).
+//   - CanBeRemoved tracks the definition's RemoveCompletedDownloads.
+//
+// Nil scanner → empty slice.
 func (u *UsenetBlackhole) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return []*downloadclients.Item{}, nil
+	if u.scanner == nil {
+		return []*downloadclients.Item{}, nil
+	}
+	raw, err := u.scanner.GetItems(u.settings.WatchFolder, u.gracePeriod)
+	if err != nil {
+		return nil, fmt.Errorf("blackhole: ScanWatchFolder.GetItems: %w", err)
+	}
+	out := make([]*downloadclients.Item, 0, len(raw))
+	for _, w := range raw {
+		out = append(out, u.toItem(w))
+	}
+	return out, nil
+}
+
+// toItem projects one [WatchFolderItem] into a
+// [downloadclients.Item] using the per-Provider conversion rules
+// documented on [UsenetBlackhole.GetItems].
+func (u *UsenetBlackhole) toItem(w *WatchFolderItem) *downloadclients.Item {
+	info := u.itemClientInfo()
+	prefix := ""
+	if u.def != nil {
+		prefix = u.def.Name + "_"
+	}
+	return &downloadclients.Item{
+		DownloadClientInfo: info,
+		DownloadID:         prefix + w.DownloadID,
+		Category:           "sonarr",
+		Title:              w.Title,
+		TotalSize:          w.TotalSize,
+		RemainingTime:      w.RemainingTime,
+		OutputPath:         w.OutputPath,
+		Status:             w.Status,
+		CanMoveFiles:       true,
+		CanBeRemoved:       info != nil && info.RemoveCompletedDownloads,
+	}
+}
+
+// itemClientInfo mirrors C# `DownloadClientItemClientInfo.FromDownloadClient(this, false)`.
+func (u *UsenetBlackhole) itemClientInfo() *downloadclients.ItemClientInfo {
+	info := &downloadclients.ItemClientInfo{
+		Protocol: u.Protocol(),
+		Type:     UsenetImplementation,
+		Name:     u.Name(),
+	}
+	if u.def != nil {
+		info.ID = u.def.ID
+		info.Name = u.def.Name
+		info.RemoveCompletedDownloads = u.def.RemoveCompletedDownloads
+	}
+	return info
 }
 
 // GetImportItem is the C# base passthrough (see
@@ -241,7 +312,7 @@ func usenetConstructor(def *downloadclients.DownloadClient, deps downloadclients
 	if l, ok := deps.Logger.(*slog.Logger); ok {
 		log = l
 	}
-	return NewUsenet(def, settings, nil, log), nil
+	return NewUsenet(def, settings, nil, nil, log), nil
 }
 
 func init() {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/blackhole"
@@ -49,7 +50,7 @@ func (f *fakeFS) RemoveAll(path string) error {
 
 func newProviderWithFS(t *testing.T, settings blackhole.TorrentSettings, fs blackhole.FS) *blackhole.TorrentBlackhole {
 	t.Helper()
-	return blackhole.New(&downloadclients.DownloadClient{Name: "BH"}, settings, fs, nil)
+	return blackhole.New(&downloadclients.DownloadClient{Name: "BH"}, settings, fs, nil, nil)
 }
 
 func TestTorrentSettings_Defaults(t *testing.T) {
@@ -255,7 +256,10 @@ func TestDownload_EmptyTitle(t *testing.T) {
 	}
 }
 
-func TestGetItems_ReturnsEmptyNonNil(t *testing.T) {
+func TestGetItems_NilScannerReturnsEmptyNonNil(t *testing.T) {
+	// Nil-scanner constructor → empty-slice fallback (degraded
+	// mode; only the wired-up production path produces queue
+	// items).
 	p := newProviderWithFS(t, blackhole.NewTorrentSettings(), newFakeFS())
 	items, err := p.GetItems(context.Background())
 	if err != nil {
@@ -265,7 +269,80 @@ func TestGetItems_ReturnsEmptyNonNil(t *testing.T) {
 		t.Fatal("items = nil, want non-nil empty slice")
 	}
 	if len(items) != 0 {
-		t.Errorf("len(items) = %d, want 0 (ScanWatchFolder not yet ported)", len(items))
+		t.Errorf("len(items) = %d, want 0", len(items))
+	}
+}
+
+func TestGetItems_WiredScanner_TorrentConversion(t *testing.T) {
+	// Build a real ScanWatchFolder over fakeDisk + fakeScanner so
+	// the GetItems → toItem conversion path is exercised end-to-end.
+	fd := newFakeDisk()
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	folder := "/watch/Show.S01E01"
+	file := "/watch/Show.S01E01/episode.mkv"
+	fd.dirs["/watch"] = []string{folder}
+	fd.files[folder] = []string{file}
+	fd.entries[folder] = fakeDiskEntry{isDir: true, mtime: now.Add(-2 * time.Minute)}
+	fd.entries[file] = fakeDiskEntry{mtime: now.Add(-2 * time.Minute), size: 2048}
+	scanner := blackhole.NewScanWatchFolder(fd, newFakeScanner(), nil, func() time.Time { return now })
+
+	settings := blackhole.NewTorrentSettings()
+	settings.TorrentFolder = "/t"
+	settings.WatchFolder = "/watch"
+	settings.ReadOnly = true
+	def := &downloadclients.DownloadClient{Name: "BH-Torrent", ID: 7, RemoveCompletedDownloads: true}
+	p := blackhole.New(def, settings, newFakeFS(), scanner, nil)
+
+	items, err := p.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d (%+v)", len(items), items)
+	}
+	got := items[0]
+	if !strings.HasPrefix(got.DownloadID, "BH-Torrent_") {
+		t.Errorf("DownloadID = %q, want BH-Torrent_<...> prefix", got.DownloadID)
+	}
+	if got.Category != "sonarr" {
+		t.Errorf("Category = %q, want sonarr", got.Category)
+	}
+	if got.CanMoveFiles {
+		t.Errorf("CanMoveFiles = true, want false (ReadOnly=true → CanMoveFiles=!ReadOnly)")
+	}
+	if !got.CanBeRemoved {
+		t.Errorf("CanBeRemoved = false, want true (RemoveCompletedDownloads=true)")
+	}
+	if got.TotalSize != 2048 {
+		t.Errorf("TotalSize = %d, want 2048", got.TotalSize)
+	}
+	if got.DownloadClientInfo == nil {
+		t.Fatal("DownloadClientInfo = nil")
+	}
+	if got.DownloadClientInfo.Type != blackhole.TorrentImplementation {
+		t.Errorf("Type = %q, want %q", got.DownloadClientInfo.Type, blackhole.TorrentImplementation)
+	}
+}
+
+func TestGetItems_WiredScanner_TorrentReadOnlyFalse_CanMoveTrue(t *testing.T) {
+	fd := newFakeDisk()
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	folder := "/w/X"
+	fd.dirs["/w"] = []string{folder}
+	fd.entries[folder] = fakeDiskEntry{isDir: true, mtime: now.Add(-2 * time.Hour)}
+	scanner := blackhole.NewScanWatchFolder(fd, newFakeScanner(), nil, func() time.Time { return now })
+
+	settings := blackhole.NewTorrentSettings()
+	settings.WatchFolder = "/w"
+	settings.ReadOnly = false
+	p := blackhole.New(&downloadclients.DownloadClient{Name: "BH"}, settings, newFakeFS(), scanner, nil)
+
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d", len(items))
+	}
+	if !items[0].CanMoveFiles {
+		t.Errorf("CanMoveFiles = false, want true (ReadOnly=false)")
 	}
 }
 

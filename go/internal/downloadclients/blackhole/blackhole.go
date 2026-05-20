@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
@@ -34,6 +35,19 @@ type TorrentBlackhole struct {
 	// the default os.WriteFile / os.Stat-based implementation is
 	// used. Production binds nil.
 	fs FS
+
+	// scanner drives the GetItems queue projection. Nil-tolerant:
+	// when nil, GetItems returns an empty slice (the same behaviour
+	// shipped in 5.J57 before the [ScanWatchFolder] port). Phase 4
+	// wiring binds a shared scanner instance across both Blackhole
+	// halves.
+	scanner *ScanWatchFolder
+
+	// gracePeriod is the wait-period the ScanWatchFolder state
+	// machine uses to gate downloading→completed promotion. Default
+	// [ScanGracePeriodDefault] (30s) matches the C# field
+	// initialisation at `TorrentBlackhole.cs:41`.
+	gracePeriod time.Duration
 }
 
 // FS is the narrow filesystem surface [TorrentBlackhole] consumes.
@@ -92,15 +106,23 @@ func (osFS) IsDir(path string) (bool, error) {
 func (osFS) RemoveAll(path string) error { return os.RemoveAll(path) }
 
 // New constructs a TorrentBlackhole Provider against the resolved
-// settings + an optional [FS] override (nil → [osFS]).
-func New(def *downloadclients.DownloadClient, settings TorrentSettings, fs FS, log *slog.Logger) *TorrentBlackhole {
+// settings + an optional [FS] override (nil → [osFS]) + an optional
+// [ScanWatchFolder] scanner (nil → GetItems returns empty slice).
+func New(def *downloadclients.DownloadClient, settings TorrentSettings, fs FS, scanner *ScanWatchFolder, log *slog.Logger) *TorrentBlackhole {
 	if log == nil {
 		log = slog.Default()
 	}
 	if fs == nil {
 		fs = osFS{}
 	}
-	return &TorrentBlackhole{settings: settings, def: def, log: log, fs: fs}
+	return &TorrentBlackhole{
+		settings:    settings,
+		def:         def,
+		log:         log,
+		fs:          fs,
+		scanner:     scanner,
+		gracePeriod: ScanGracePeriodDefault,
+	}
 }
 
 // Name returns the user-facing label. Mirrors C# `Name` at
@@ -178,18 +200,77 @@ func (t *TorrentBlackhole) Download(_ context.Context, req *downloadclients.Grab
 
 // GetItems ports `TorrentBlackhole.GetItems` at C# `:88-112`.
 //
-// Divergence (5.J57): the C# code walks `_scanWatchFolder.GetItems
-// (Settings.WatchFolder, ScanGracePeriod)` and yields the file-
-// system-derived items. The ScanWatchFolder service (C#
-// `ScanWatchFolder.cs:1-202`) is ~200 LOC of disk-scanning,
-// file-locking detection, hashing, 30s grace-period gating, and
-// 5-min cache TTL — out of scope for the package-skeleton slice.
-// Until ScanWatchFolder ports, GetItems returns an empty slice
-// (never nil). The queue UI shows no in-flight Blackhole items;
-// the manual-import flow still discovers completed downloads by
-// walking the watch folder directly.
+// Walks the configured WatchFolder via the bound
+// [ScanWatchFolder] and yields one [downloadclients.Item] per
+// [WatchFolderItem]. The conversion mirrors C# `:92-110`:
+//
+//   - DownloadID prefixed with `<Definition.Name>_` so two
+//     blackhole instances pointed at the same folder don't collide
+//     on the queue-side join key.
+//   - Category fixed to "sonarr".
+//   - CanMoveFiles = !Settings.ReadOnly — the C# Read-Only toggle
+//     forces the writer to copy rather than move so the seeding
+//     torrent stays on disk.
+//   - CanBeRemoved tracks the definition's RemoveCompletedDownloads
+//     boolean — the post-import cleanup is what drives the
+//     blackhole-folder DeleteFolder in [RemoveItem].
+//
+// Nil scanner → empty slice (the documented degraded mode from
+// 5.J57); the Phase 4 polling loop binds a shared scanner across
+// both halves before this matters in production.
 func (t *TorrentBlackhole) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return []*downloadclients.Item{}, nil
+	if t.scanner == nil {
+		return []*downloadclients.Item{}, nil
+	}
+	raw, err := t.scanner.GetItems(t.settings.WatchFolder, t.gracePeriod)
+	if err != nil {
+		return nil, fmt.Errorf("blackhole: ScanWatchFolder.GetItems: %w", err)
+	}
+	out := make([]*downloadclients.Item, 0, len(raw))
+	for _, w := range raw {
+		out = append(out, t.toItem(w))
+	}
+	return out, nil
+}
+
+// toItem projects one [WatchFolderItem] into a
+// [downloadclients.Item] using the per-Provider conversion rules
+// documented on [TorrentBlackhole.GetItems].
+func (t *TorrentBlackhole) toItem(w *WatchFolderItem) *downloadclients.Item {
+	info := t.itemClientInfo()
+	prefix := ""
+	if t.def != nil {
+		prefix = t.def.Name + "_"
+	}
+	return &downloadclients.Item{
+		DownloadClientInfo: info,
+		DownloadID:         prefix + w.DownloadID,
+		Category:           "sonarr",
+		Title:              w.Title,
+		TotalSize:          w.TotalSize,
+		RemainingTime:      w.RemainingTime,
+		OutputPath:         w.OutputPath,
+		Status:             w.Status,
+		CanMoveFiles:       !t.settings.ReadOnly,
+		CanBeRemoved:       info != nil && info.RemoveCompletedDownloads,
+	}
+}
+
+// itemClientInfo mirrors C# `DownloadClientItemClientInfo.FromDownloadClient(this, false)`.
+// The bool arg in C# is `hasPostImportCategory`; Blackhole never
+// supports a post-import category — always false here.
+func (t *TorrentBlackhole) itemClientInfo() *downloadclients.ItemClientInfo {
+	info := &downloadclients.ItemClientInfo{
+		Protocol: t.Protocol(),
+		Type:     TorrentImplementation,
+		Name:     t.Name(),
+	}
+	if t.def != nil {
+		info.ID = t.def.ID
+		info.Name = t.def.Name
+		info.RemoveCompletedDownloads = t.def.RemoveCompletedDownloads
+	}
+	return info
 }
 
 // GetImportItem is the C# base passthrough (see
@@ -320,7 +401,7 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	if l, ok := deps.Logger.(*slog.Logger); ok {
 		log = l
 	}
-	return New(def, settings, nil, log), nil
+	return New(def, settings, nil, nil, log), nil
 }
 
 // init registers TorrentBlackhole with the global registry.
