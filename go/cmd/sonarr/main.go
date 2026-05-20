@@ -65,6 +65,7 @@ import (
 	"sonarr.tv/sonarr/internal/downloadclientstatus"
 	"sonarr.tv/sonarr/internal/downloadedimport"
 	"sonarr.tv/sonarr/internal/downloadhistory"
+	"sonarr.tv/sonarr/internal/downloadhistoryhandlers"
 	"sonarr.tv/sonarr/internal/downloadmonitoring"
 	"sonarr.tv/sonarr/internal/episodefilemoving"
 	"sonarr.tv/sonarr/internal/episodefiles"
@@ -945,6 +946,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	messaging.Subscribe(bus, "history.HandleSeriesDeleted",
 		func(ctx context.Context, ev series.SeriesDeletedEvent) error {
 			return historyhandlers.HandleSeriesDeleted(ctx, historySvc, &ev)
+		})
+
+	// Slice 5.J135: downloadhistory IHandle<SeriesDeletedEvent>
+	// subscriber. Mirrors the historyhandlers fan-out exactly — the
+	// DownloadHistory.SeriesId column is also not a FK in the schema,
+	// so the cleanup is application-side. Runs side-by-side with the
+	// historyhandlers subscriber above; no ordering dependency.
+	messaging.Subscribe(bus, "downloadhistory.HandleSeriesDeleted",
+		func(ctx context.Context, ev series.SeriesDeletedEvent) error {
+			return downloadhistoryhandlers.HandleSeriesDeleted(ctx, dlHistorySvc, &ev)
 		})
 
 	// Slice 3.AZ: history IHandle<DownloadIgnoredEvent> subscriber.

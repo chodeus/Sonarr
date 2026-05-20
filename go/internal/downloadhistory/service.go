@@ -69,12 +69,13 @@ func (t EventType) String() string {
 // out so callers can inject a stub in tests without dragging the full
 // CRUD surface; the real repo satisfies the interface.
 //
-// AllByDownloadID is the only repo method the service needs today —
-// every readonly query in the C# `IDownloadHistoryService` walks
-// `_repository.FindByDownloadId(downloadId)` (rows already date-DESC)
-// and short-circuits on the first matching event.
+// AllByDownloadID feeds the readonly three (DownloadAlreadyImported /
+// GetLatestDownloadHistoryItem / GetLatestGrab); DeleteBySeriesIDs
+// feeds the SeriesDeletedEvent IHandle subscriber that DELETEs every
+// row for a removed series (slice 5.J135).
 type EntryReader interface {
 	AllByDownloadID(ctx context.Context, downloadID string) ([]Entry, error)
+	DeleteBySeriesIDs(ctx context.Context, seriesIDs []int) (int64, error)
 }
 
 // Service ports the readonly half of `IDownloadHistoryService` at
@@ -200,6 +201,35 @@ func (s *Service) GetLatestGrab(ctx context.Context, downloadID string) (*Entry,
 		}
 	}
 	return nil, nil
+}
+
+// DeleteForSeries ports the SeriesDeletedEvent path at
+// `DownloadHistoryService.cs:230-233` —
+//
+//	_repository.DeleteBySeriesIds(message.Series.Select(m => m.Id).ToList())
+//
+// Bulk-removes every DownloadHistory row whose SeriesId is in the
+// supplied list. Returns rows affected; 0 with nil error when
+// seriesIDs is empty (no-op short-circuit). Repo errors propagate
+// wrapped.
+//
+// Mirrors the C# behaviour where a SeriesDeletedEvent fan-out cleans
+// up DownloadHistory rows alongside other per-series children — the
+// DownloadHistory.SeriesId column is NOT a foreign key in the schema,
+// so the cleanup is application-side rather than DB-cascade (same
+// posture as [history.Service.DeleteForSeries]).
+func (s *Service) DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, error) {
+	if s == nil || s.repo == nil {
+		return 0, errors.New("downloadhistory: DeleteForSeries on nil receiver")
+	}
+	if len(seriesIDs) == 0 {
+		return 0, nil
+	}
+	n, err := s.repo.DeleteBySeriesIDs(ctx, seriesIDs)
+	if err != nil {
+		return 0, fmt.Errorf("downloadhistory: DeleteForSeries: %w", err)
+	}
+	return n, nil
 }
 
 // Compile-time interface-satisfaction guard. A refactor that breaks

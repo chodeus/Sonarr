@@ -15,12 +15,23 @@ import (
 // service-level tests that don't need a real DB. The repo-backed
 // tests use the real engines via runServiceSuite below.
 type stubReader struct {
-	out []downloadhistory.Entry
-	err error
+	out             []downloadhistory.Entry
+	err             error
+	gotDeleteSeries []int
+	deleteCount     int64
+	deleteErr       error
 }
 
-func (s stubReader) AllByDownloadID(_ context.Context, _ string) ([]downloadhistory.Entry, error) {
+func (s *stubReader) AllByDownloadID(_ context.Context, _ string) ([]downloadhistory.Entry, error) {
 	return s.out, s.err
+}
+
+func (s *stubReader) DeleteBySeriesIDs(_ context.Context, ids []int) (int64, error) {
+	if s.deleteErr != nil {
+		return 0, s.deleteErr
+	}
+	s.gotDeleteSeries = append([]int(nil), ids...)
+	return s.deleteCount, nil
 }
 
 func TestNewServiceNilRepoReturnsNil(t *testing.T) {
@@ -57,7 +68,7 @@ func TestEventTypeStringMatchesCSharpNames(t *testing.T) {
 
 func TestDownloadAlreadyImportedRepoErrPropagates(t *testing.T) {
 	t.Parallel()
-	s := downloadhistory.NewService(stubReader{err: errors.New("EIO")})
+	s := downloadhistory.NewService(&stubReader{err: errors.New("EIO")})
 	got, err := s.DownloadAlreadyImported(context.Background(), "abc")
 	if err == nil || got {
 		t.Errorf("got (%v, %v), want (false, error)", got, err)
@@ -66,7 +77,7 @@ func TestDownloadAlreadyImportedRepoErrPropagates(t *testing.T) {
 
 func TestDownloadAlreadyImportedEmptyReturnsFalse(t *testing.T) {
 	t.Parallel()
-	s := downloadhistory.NewService(stubReader{})
+	s := downloadhistory.NewService(&stubReader{})
 	got, err := s.DownloadAlreadyImported(context.Background(), "abc")
 	if err != nil || got {
 		t.Errorf("empty: got (%v, %v), want (false, nil)", got, err)
@@ -138,7 +149,7 @@ func TestDownloadAlreadyImportedTable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := downloadhistory.NewService(stubReader{out: tc.events})
+			s := downloadhistory.NewService(&stubReader{out: tc.events})
 			got, err := s.DownloadAlreadyImported(context.Background(), "abc")
 			if err != nil {
 				t.Fatalf("err: %v", err)
@@ -154,7 +165,7 @@ func TestDownloadAlreadyImportedTable(t *testing.T) {
 
 func TestGetLatestDownloadHistoryItemRepoErrPropagates(t *testing.T) {
 	t.Parallel()
-	s := downloadhistory.NewService(stubReader{err: errors.New("EIO")})
+	s := downloadhistory.NewService(&stubReader{err: errors.New("EIO")})
 	got, err := s.GetLatestDownloadHistoryItem(context.Background(), "abc")
 	if err == nil || got != nil {
 		t.Errorf("got (%v, %v), want (nil, error)", got, err)
@@ -163,7 +174,7 @@ func TestGetLatestDownloadHistoryItemRepoErrPropagates(t *testing.T) {
 
 func TestGetLatestDownloadHistoryItemEmptyReturnsNil(t *testing.T) {
 	t.Parallel()
-	s := downloadhistory.NewService(stubReader{})
+	s := downloadhistory.NewService(&stubReader{})
 	got, err := s.GetLatestDownloadHistoryItem(context.Background(), "abc")
 	if err != nil || got != nil {
 		t.Errorf("empty: got (%v, %v), want (nil, nil)", got, err)
@@ -230,7 +241,7 @@ func TestGetLatestDownloadHistoryItemTable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := downloadhistory.NewService(stubReader{out: tc.events})
+			s := downloadhistory.NewService(&stubReader{out: tc.events})
 			got, err := s.GetLatestDownloadHistoryItem(context.Background(), "abc")
 			if err != nil {
 				t.Fatalf("err: %v", err)
@@ -255,7 +266,7 @@ func TestGetLatestDownloadHistoryItemTable(t *testing.T) {
 
 func TestGetLatestGrabRepoErrPropagates(t *testing.T) {
 	t.Parallel()
-	s := downloadhistory.NewService(stubReader{err: errors.New("EIO")})
+	s := downloadhistory.NewService(&stubReader{err: errors.New("EIO")})
 	got, err := s.GetLatestGrab(context.Background(), "abc")
 	if err == nil || got != nil {
 		t.Errorf("got (%v, %v), want (nil, error)", got, err)
@@ -264,7 +275,7 @@ func TestGetLatestGrabRepoErrPropagates(t *testing.T) {
 
 func TestGetLatestGrabEmptyReturnsNil(t *testing.T) {
 	t.Parallel()
-	s := downloadhistory.NewService(stubReader{})
+	s := downloadhistory.NewService(&stubReader{})
 	got, err := s.GetLatestGrab(context.Background(), "abc")
 	if err != nil || got != nil {
 		t.Errorf("empty: got (%v, %v), want (nil, nil)", got, err)
@@ -280,7 +291,7 @@ func TestGetLatestGrabSkipsNonGrabEvents(t *testing.T) {
 		{ID: 3, EventType: int(downloadhistory.EventTypeGrabbed), SourceTitle: "wanted"},
 		{ID: 4, EventType: int(downloadhistory.EventTypeGrabbed), SourceTitle: "older"},
 	}
-	s := downloadhistory.NewService(stubReader{out: events})
+	s := downloadhistory.NewService(&stubReader{out: events})
 	got, err := s.GetLatestGrab(context.Background(), "abc")
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -296,10 +307,65 @@ func TestGetLatestGrabNoGrabReturnsNil(t *testing.T) {
 		{EventType: int(downloadhistory.EventTypeImported)},
 		{EventType: int(downloadhistory.EventTypeFailed)},
 	}
-	s := downloadhistory.NewService(stubReader{out: events})
+	s := downloadhistory.NewService(&stubReader{out: events})
 	got, err := s.GetLatestGrab(context.Background(), "abc")
 	if err != nil || got != nil {
 		t.Errorf("got (%+v, %v), want (nil, nil)", got, err)
+	}
+}
+
+// --- Service.DeleteForSeries (slice 5.J135) -------------------------
+
+func TestDeleteForSeries_NilReceiverErrors(t *testing.T) {
+	t.Parallel()
+	var s *downloadhistory.Service
+	if _, err := s.DeleteForSeries(context.Background(), []int{1}); err == nil {
+		t.Errorf("nil receiver: want error")
+	}
+}
+
+func TestDeleteForSeries_EmptyIDsIsNoOp(t *testing.T) {
+	t.Parallel()
+	r := &stubReader{}
+	s := downloadhistory.NewService(r)
+	n, err := s.DeleteForSeries(context.Background(), nil)
+	if err != nil {
+		t.Errorf("err: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("rows = %d, want 0", n)
+	}
+	if r.gotDeleteSeries != nil {
+		t.Errorf("repo.DeleteBySeriesIDs should not be called for empty input; got %v", r.gotDeleteSeries)
+	}
+}
+
+func TestDeleteForSeries_PassesIDsThrough(t *testing.T) {
+	t.Parallel()
+	r := &stubReader{deleteCount: 5}
+	s := downloadhistory.NewService(r)
+	n, err := s.DeleteForSeries(context.Background(), []int{4, 9, 16})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("rows = %d, want 5 (stub-pinned)", n)
+	}
+	if got := r.gotDeleteSeries; len(got) != 3 || got[0] != 4 || got[1] != 9 || got[2] != 16 {
+		t.Errorf("repo.DeleteBySeriesIDs got %v, want [4 9 16]", got)
+	}
+}
+
+func TestDeleteForSeries_RepoErrorPropagates(t *testing.T) {
+	t.Parallel()
+	repoErr := errors.New("EIO")
+	s := downloadhistory.NewService(&stubReader{deleteErr: repoErr})
+	_, err := s.DeleteForSeries(context.Background(), []int{1})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, repoErr) {
+		t.Errorf("error chain missing repo err: %v", err)
 	}
 }
 
@@ -378,6 +444,30 @@ func runServiceSuite(t *testing.T, db *datastore.DB) {
 	}
 	if got, err := svc.GetLatestGrab(t.Context(), "missing"); err != nil || got != nil {
 		t.Errorf("GetLatestGrab(missing): got (%+v, %v)", got, err)
+	}
+
+	// DeleteForSeries — bulk-removes the 3 rows seeded above (all
+	// SeriesID=50). Repo-level integration: verifies the IN-list SQL
+	// shape works on the live engine and the rows-affected count
+	// matches what we seeded.
+	n, err := svc.DeleteForSeries(t.Context(), []int{50})
+	if err != nil {
+		t.Fatalf("DeleteForSeries: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("DeleteForSeries rows = %d, want 3", n)
+	}
+	// Post-delete: lookups for the same downloadID return empty.
+	if rows, err := repo.AllByDownloadID(t.Context(), "test-grab-svc"); err != nil || len(rows) != 0 {
+		t.Errorf("AllByDownloadID after DeleteForSeries: got (%v, %v); want empty", rows, err)
+	}
+	// Re-deleting the same series is a no-op (no rows match).
+	if n, err := svc.DeleteForSeries(t.Context(), []int{50}); err != nil || n != 0 {
+		t.Errorf("DeleteForSeries(re-run): got (%d, %v); want (0, nil)", n, err)
+	}
+	// Deleting an unknown series id returns 0 with no error.
+	if n, err := svc.DeleteForSeries(t.Context(), []int{999}); err != nil || n != 0 {
+		t.Errorf("DeleteForSeries(unknown): got (%d, %v); want (0, nil)", n, err)
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"sonarr.tv/sonarr/internal/datastore"
@@ -127,6 +128,45 @@ func (r *Repo) AllBySeriesID(ctx context.Context, seriesID int) ([]Entry, error)
 		`SELECT "Id","EventType","SeriesId","DownloadId","SourceTitle","Date","Protocol","IndexerId","DownloadClientId","Release","Data" FROM "DownloadHistory" WHERE "SeriesId" = %s ORDER BY "Date" DESC`,
 		datastore.Placeholder(db.Engine, 1))
 	return r.scanQuery(ctx, q, seriesID, "allBySeriesID")
+}
+
+// DeleteBySeriesIDs ports
+// `DownloadHistoryRepository.DeleteBySeriesIds(List<int>)` at
+// `src/NzbDrone.Core/Download/History/DownloadHistoryRepository.cs`.
+// Bulk DELETE every DownloadHistory row whose SeriesId is in the
+// supplied list. Returns rows affected. Empty input is a no-op
+// (0, nil) — matches the C# Delete predicate against an empty IN
+// clause yielding zero rows.
+//
+// Production binding: the SeriesDeletedEvent IHandle subscriber
+// (slice 5.J135) calls this so DownloadHistory rows don't linger
+// after the parent series is removed (the SeriesId column is not
+// a FK in the schema, so the cleanup is application-side — same
+// posture as History.DeleteForSeries).
+func (r *Repo) DeleteBySeriesIDs(ctx context.Context, seriesIDs []int) (int64, error) {
+	if len(seriesIDs) == 0 {
+		return 0, nil
+	}
+	db := r.DB()
+	placeholders := make([]string, len(seriesIDs))
+	args := make([]any, len(seriesIDs))
+	for i, id := range seriesIDs {
+		placeholders[i] = datastore.Placeholder(db.Engine, i+1)
+		args[i] = id
+	}
+	q := fmt.Sprintf(
+		`DELETE FROM "DownloadHistory" WHERE "SeriesId" IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+	res, err := db.SQL.ExecContext(ctx, q, args...)
+	if err != nil {
+		return 0, fmt.Errorf("downloadhistory: DeleteBySeriesIDs: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("downloadhistory: DeleteBySeriesIDs: rowsAffected: %w", err)
+	}
+	return n, nil
 }
 
 func (r *Repo) scanQuery(ctx context.Context, query string, arg any, op string) ([]Entry, error) {
