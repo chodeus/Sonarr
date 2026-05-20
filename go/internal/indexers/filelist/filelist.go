@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/httpclient"
+	"sonarr.tv/sonarr/internal/indexersearch"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/provider"
 )
@@ -93,11 +96,224 @@ func (i *Indexer) FetchRecent(ctx context.Context) ([]*parser.TorrentInfo, error
 	return i.fetch(ctx, settings, feedURL)
 }
 
-// FetchSearch returns empty for any criteria. The C# per-criteria
-// routing at FileListRequestGenerator.cs:24-120 is deferred to a
-// follow-up slice — see the package doc-comment.
-func (i *Indexer) FetchSearch(_ context.Context, _ any) ([]*parser.TorrentInfo, error) {
-	return []*parser.TorrentInfo{}, nil
+// FetchSearch dispatches the typed criteria through the per-type
+// search-URL routing at C# `FileListRequestGenerator.cs:24-120`.
+// Slice 5.J153 closes the J152 deferral.
+//
+// Per criteria type (`searchType = "search-torrents"`):
+//   - SingleEpisodeCriteria + SeasonCriteria: dual-flow IMDB +
+//     Name search, gated on the C# SearchMode flag:
+//   - SearchID || Default → AddImdbRequests (tier 0)
+//   - SearchTitle → AddNameRequests (tier 0)
+//   - then `pageableRequests.AddTier()` to bump tier
+//   - Default → AddNameRequests (tier 1, fallback)
+//   - AnimeEpisodeCriteria: 4 tiers — IMDB at abs / IMDB at per-
+//     episode / Name at abs / Name at per-episode. Uses
+//     AnimeCategories (not Categories).
+//   - AnimeSeasonCriteria: 2 tiers — IMDB / Name. AnimeCategories.
+//   - Daily / DailySeason / Special / unknown: empty.
+//
+// # Tier semantics
+//
+// The C# tree's IndexerPageableRequestChain walks tiers in order,
+// short-circuiting once a tier produces any results. The Go port
+// mirrors via [filelist.runTiers] which fetches each URL in a tier,
+// dedupes by Guid, and returns the accumulated set on the first
+// non-empty tier. Mirrors the existing torznab.runChain shape
+// (the J147-era IPTorrents arc settled on a simpler one-tier
+// model — FileList is the first indexer in the port to actually
+// exercise the tier-short-circuit machinery).
+//
+// AddImdbRequests at C# `:122-128` only emits a request when the
+// series ImdbId is non-empty. AddNameRequests at C# `:130-136`
+// iterates `searchCriteria.SceneTitles` (NOT CleanSceneTitles —
+// FileList passes raw scene titles through Uri.EscapeDataString).
+func (i *Indexer) FetchSearch(ctx context.Context, criteria any) ([]*parser.TorrentInfo, error) {
+	settings, err := i.settings()
+	if err != nil {
+		return nil, err
+	}
+	tiers := buildSearchTiers(settings, criteria)
+	if len(tiers) == 0 {
+		// Short-circuit BEFORE the HTTPClient check (same posture as
+		// the Nyaa / Fanzub close-outs).
+		return []*parser.TorrentInfo{}, nil
+	}
+	if i.HTTPClient == nil {
+		return nil, errors.New("filelist: no HTTPClient configured")
+	}
+	return i.runTiers(ctx, settings, tiers), nil
+}
+
+// runTiers walks tier-list-of-URLs in order. Each tier accumulates
+// dedupe-by-Guid; the first non-empty tier's results are returned.
+// Per-URL fetch / parse failures are swallowed within a tier
+// (matches the C# tree's per-request try/catch posture).
+func (i *Indexer) runTiers(ctx context.Context, settings *Settings, tiers [][]string) []*parser.TorrentInfo {
+	for _, urls := range tiers {
+		dedup := make(map[string]struct{}, len(urls)*16)
+		var acc []*parser.TorrentInfo
+		for _, u := range urls {
+			rels, err := i.fetch(ctx, settings, u)
+			if err != nil {
+				continue
+			}
+			for _, r := range rels {
+				if _, dup := dedup[r.Guid]; dup {
+					continue
+				}
+				dedup[r.Guid] = struct{}{}
+				acc = append(acc, r)
+			}
+		}
+		if len(acc) > 0 {
+			return acc
+		}
+	}
+	return []*parser.TorrentInfo{}
+}
+
+// buildSearchTiers dispatches per criteria type and returns the
+// tier-of-URLs structure that runTiers walks.
+//
+// Categories source for each criteria type:
+//   - SingleEpisode / Season: Settings.Categories
+//   - AnimeEpisode / AnimeSeason: Settings.AnimeCategories
+//
+// Category sets that are empty produce zero URLs (C# yield-break
+// at `:140-143`).
+func buildSearchTiers(s *Settings, criteria any) [][]string {
+	switch c := criteria.(type) {
+	case *indexersearch.SingleEpisodeCriteria:
+		params := fmt.Sprintf("&season=%d&episode=%d", c.SeasonNumber, c.EpisodeNumber)
+		return standardSearchTiers(s, &c.CriteriaBase, s.Categories, params)
+	case *indexersearch.SeasonCriteria:
+		params := fmt.Sprintf("&season=%d", c.SeasonNumber)
+		return standardSearchTiers(s, &c.CriteriaBase, s.Categories, params)
+	case *indexersearch.AnimeEpisodeCriteria:
+		return animeEpisodeSearchTiers(s, c)
+	case *indexersearch.AnimeSeasonCriteria:
+		return animeSeasonSearchTiers(s, c)
+	default:
+		// DailyEpisode + DailySeason + SpecialEpisode + unknown → empty
+		// (matches C# overloads at :72-80, :117-120 that all return
+		// an empty IndexerPageableRequestChain).
+		return nil
+	}
+}
+
+// standardSearchTiers ports the C# SingleEpisode + Season dispatch.
+// Both follow the same shape: optional tier 0 (IMDB and/or Name
+// depending on SearchMode flag) + AddTier + optional tier 1 (Name
+// fallback when SearchMode is Default).
+func standardSearchTiers(s *Settings, sc *decisionengine.SearchCriteria, categories []int, params string) [][]string {
+	mode := sc.SearchMode
+	isDefault := mode == decisionengine.SearchModeDefault
+
+	var tier0 []string
+	if mode.HasFlag(decisionengine.SearchModeSearchID) || isDefault {
+		tier0 = append(tier0, imdbRequests(s, sc, categories, params)...)
+	}
+	if mode.HasFlag(decisionengine.SearchModeSearchTitle) {
+		tier0 = append(tier0, nameRequests(s, sc, categories, params)...)
+	}
+
+	var tiers [][]string
+	if len(tier0) > 0 {
+		tiers = append(tiers, tier0)
+	}
+
+	if isDefault {
+		if tier1 := nameRequests(s, sc, categories, params); len(tier1) > 0 {
+			tiers = append(tiers, tier1)
+		}
+	}
+	return tiers
+}
+
+// animeEpisodeSearchTiers ports the C# AnimeEpisode 4-tier dispatch
+// at `:82-104`.
+func animeEpisodeSearchTiers(s *Settings, c *indexersearch.AnimeEpisodeCriteria) [][]string {
+	cats := s.AnimeCategories
+	absParams := fmt.Sprintf("&season=0&episode=%d", c.AbsoluteEpisodeNumber)
+
+	var tiers [][]string
+	// Tier 0: IMDB at abs.
+	if t := imdbRequests(s, &c.CriteriaBase, cats, absParams); len(t) > 0 {
+		tiers = append(tiers, t)
+	}
+	// Tier 1: IMDB per-episode.
+	var tier1 []string
+	for _, ep := range c.Episodes {
+		params := fmt.Sprintf("&season=%d&episode=%d", ep.SeasonNumber, ep.EpisodeNumber)
+		tier1 = append(tier1, imdbRequests(s, &c.CriteriaBase, cats, params)...)
+	}
+	if len(tier1) > 0 {
+		tiers = append(tiers, tier1)
+	}
+	// Tier 2: Name at abs.
+	if t := nameRequests(s, &c.CriteriaBase, cats, absParams); len(t) > 0 {
+		tiers = append(tiers, t)
+	}
+	// Tier 3: Name per-episode.
+	var tier3 []string
+	for _, ep := range c.Episodes {
+		params := fmt.Sprintf("&season=%d&episode=%d", ep.SeasonNumber, ep.EpisodeNumber)
+		tier3 = append(tier3, nameRequests(s, &c.CriteriaBase, cats, params)...)
+	}
+	if len(tier3) > 0 {
+		tiers = append(tiers, tier3)
+	}
+	return tiers
+}
+
+// animeSeasonSearchTiers ports the C# AnimeSeason 2-tier dispatch
+// at `:106-115`.
+func animeSeasonSearchTiers(s *Settings, c *indexersearch.AnimeSeasonCriteria) [][]string {
+	cats := s.AnimeCategories
+	params := fmt.Sprintf("&season=%d", c.SeasonNumber)
+
+	var tiers [][]string
+	if t := imdbRequests(s, &c.CriteriaBase, cats, params); len(t) > 0 {
+		tiers = append(tiers, t)
+	}
+	if t := nameRequests(s, &c.CriteriaBase, cats, params); len(t) > 0 {
+		tiers = append(tiers, t)
+	}
+	return tiers
+}
+
+// imdbRequests mirrors C# AddImdbRequests at `:122-128`. Returns a
+// single-URL list when the series has an ImdbId; empty otherwise.
+func imdbRequests(s *Settings, sc *decisionengine.SearchCriteria, categories []int, params string) []string {
+	if sc.Series == nil || strings.TrimSpace(sc.Series.ImdbID) == "" {
+		return nil
+	}
+	if len(categories) == 0 {
+		return nil
+	}
+	q := "&type=imdb&query=" + url.QueryEscape(strings.TrimSpace(sc.Series.ImdbID)) + params
+	return []string{buildAPIURL(s, "search-torrents", categories, q)}
+}
+
+// nameRequests mirrors C# AddNameRequests at `:130-136`. One URL
+// per SceneTitle (raw, NOT CleanSceneTitles). Title is
+// Uri.EscapeDataString'd via url.QueryEscape (which uses the same
+// reserved-char set).
+func nameRequests(s *Settings, sc *decisionengine.SearchCriteria, categories []int, params string) []string {
+	if len(categories) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(sc.SceneTitles))
+	for _, title := range sc.SceneTitles {
+		title = strings.TrimSpace(title)
+		if title == "" {
+			continue
+		}
+		q := "&type=name&query=" + url.QueryEscape(title) + params
+		out = append(out, buildAPIURL(s, "search-torrents", categories, q))
+	}
+	return out
 }
 
 // fetch performs the HTTP request, parses the response, and stamps

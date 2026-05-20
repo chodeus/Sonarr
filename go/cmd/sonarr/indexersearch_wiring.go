@@ -238,13 +238,13 @@ func (s *dbIndexerSource) buildAdapter(row *indexers.Indexer, def *provider.Defi
 			rs, err := idx.FetchRecent(ctx)
 			return upcastTorrentInfos(rs), err
 		}
-		// Slice 5.J152 (first slice of the FileList arc): only the
-		// JSON `latest-torrents` FetchRecent path lands. The
-		// per-criteria search routing (FileListRequestGenerator.cs:24-120
-		// — IMDB-search + Name-search dual-flow with anime-episode
-		// fan-out) ships as a follow-up slice. Leave FetchSearchFunc
-		// nil so the adapter surfaces the "does not support search"
-		// error instead of silently returning empty.
+		// Slice 5.J153 closes the J152 FetchSearch deferral with
+		// the 4-criteria type-switch + tier-walking dispatch
+		// (IMDB / Name dual-flow + AnimeEpisode per-episode fan-out).
+		common.FetchSearchFunc = func(ctx context.Context, c indexersearch.Criteria) ([]any, error) {
+			rs, err := idx.FetchSearch(ctx, c)
+			return upcastTorrentInfos(rs), err
+		}
 		return common, nil
 
 	case "Fanzub":
