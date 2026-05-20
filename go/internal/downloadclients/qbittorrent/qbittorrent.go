@@ -324,11 +324,13 @@ func fallbackFilename(req *downloadclients.GrabRequest) string {
 //     forcedMetaDL state as Queued unconditionally — the worst case
 //     is a metadata stall that takes longer to surface as a
 //     warning, which matches qBittorrent's own UI behaviour pre-2.6.
-//   - The remote-path-mapping translation at C# `:346` is deferred
-//     until the [downloadclients.Dependencies.RemotePathMappingService]
-//     port lands (see queue [15] follow-up). 5.G1d emits the raw
-//     RPC-side ContentPath / SavePath; the orchestrator's path-
-//     mapping helper translates at consumption time.
+//   - The remote-path-mapping translation at C# `:346` is wired via
+//     [QBittorrent.SetRemotePathMapper] (Phase 6.B) — slice 6.B
+//     plumbs `*remotepathmappings.Service` through
+//     [downloadclients.Dependencies.RemotePathMappingService] and the
+//     constructor casts to [downloadclients.RemotePathMapper]. Nil
+//     binding falls through to the raw RPC-side ContentPath /
+//     SavePath (matches the pre-6.B posture).
 //   - The version-gate at C# `:342` (ContentPath only at WebUI API
 //     >= 2.6.1) is dropped — minVersion at 5.G1c already pins to
 //     qBittorrent 4.1+ which always has API >= 2.6.

@@ -31,9 +31,9 @@ import (
 // shared-base OutputPath via the contents endpoint. GetStatus
 // remains IsLocalhost-only — the C# `GetClientSettings` arm that
 // populates OutputRootFolders from `client/settings.directoryDefault`
-// is the only deferred piece (along with the seed-config cleanup
-// gate in GetItems — both are post-import niceties, not load-
-// bearing).
+// is the only outstanding deferral (slices J95 + J99 closed the
+// previously-documented seed-config cleanup gate and the
+// AdditionalTags per-Subject tag expansion).
 type Flood struct {
 	settings Settings
 	def      *downloadclients.DownloadClient

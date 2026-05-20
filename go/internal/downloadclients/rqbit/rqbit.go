@@ -26,8 +26,14 @@ import (
 // RemotePathMapper-translated OutputPath), RemoveItem (delete /
 // forget endpoints), GetStatus (IsLocalhost).
 //
-// Documented divergence: the seed-config cleanup gate at C#
-// `:98-122` is approximated — see [RQBit.GetItems].
+// Slice 5.J94 wired the seed-config cleanup gate at C# `:98-122`
+// via [applyCleanupGate] consuming [downloadclients.SeedConfigProvider]
+// (see [RQBit.GetItems]). The remaining divergence is the FinishedTime
+// field which RQBit's wire shape doesn't populate — the time-arm
+// degenerates to "now since 1970 >= SeedTime" trivially true once
+// IsFinished, matching the C# observable behaviour where C# also
+// leaves the field unpopulated. No outstanding divergences on this
+// type today.
 type RQBit struct {
 	settings Settings
 	def      *downloadclients.DownloadClient

@@ -26,14 +26,13 @@
 //
 // Documented divergences:
 //
-//   - The C# `IDownloadSeedConfigProvider`-driven cleanup-gate
-//     at `RQBit.cs:98-122` (flips CanMoveFiles/CanBeRemoved when
-//     ratio/seed-time goals are met) is deferred — the Go port
-//     doesn't yet have a seed-config-provider. Cleanup flags
-//     default to (RemoveCompletedDownloads AND IsFinished) to
-//     keep the manual-import flow predictable.
 //   - The C# `SetTorrentLabel` no-op (`:194-197`) is omitted —
 //     "currently unsupported by RQBit" per the C# comment.
+//
+// (Slice 5.J94 closed the previously-documented seed-config cleanup-
+// gate divergence — the gate at C# `:98-122` is now wired via
+// [downloadclients.SeedConfigProvider]; see [RQBit.applyCleanupGate]
+// for the per-arm port.)
 package rqbit
 
 import (
