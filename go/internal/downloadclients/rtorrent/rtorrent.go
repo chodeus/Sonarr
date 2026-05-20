@@ -26,24 +26,34 @@ const (
 // rTorrent torrent client. Ports C# `RTorrent` at
 // `src/NzbDrone.Core/Download/Clients/RTorrent/RTorrent.cs:14-322`.
 //
-// Slice 5.J41 scope: Name / Protocol / Definition / RequestAction
-// are live; Download / GetItems / GetStatus / RemoveItem /
-// GetImportItem / MarkItemAsImported / Test return
-// [downloadclients.ErrNotImplementedYet]. Subsequent slices fill in
-// each method via the XML-RPC proxy.
+// Slice 5.J42 scope: Name / Protocol / Definition / RequestAction
+// are live; Test runs the system.client_version XML-RPC probe via
+// the bound proxy + minVersion floor. Download / GetItems /
+// GetStatus / RemoveItem / GetImportItem / MarkItemAsImported still
+// return [downloadclients.ErrNotImplementedYet]. Subsequent slices
+// fill in each method.
 type RTorrent struct {
 	settings Settings
+	proxy    *Proxy
 	def      *downloadclients.DownloadClient
 	log      *slog.Logger
 }
 
-// New constructs an rTorrent Provider against the resolved settings.
-// Used by both the registry [Constructor] and by tests.
-func New(def *downloadclients.DownloadClient, settings Settings, log *slog.Logger) *RTorrent {
+// minVersion is the rTorrent product-version floor [Test] enforces.
+// rTorrent 0.9.0 was the first release shipping the XML-RPC surface
+// Sonarr's d.multicall.2 / load.start_magnet calls target. Older
+// builds may work in practice but aren't supported.
+var minVersion = versionPair{major: 0, minor: 9}
+
+// New constructs an rTorrent Provider against the resolved settings
+// + an optional Proxy. Used by both the registry [Constructor] and
+// by tests. nil proxy → Test surfaces Settings.Validate failures
+// only (matches the pre-5.J42 stub).
+func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, log *slog.Logger) *RTorrent {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &RTorrent{settings: settings, def: def, log: log}
+	return &RTorrent{settings: settings, proxy: proxy, def: def, log: log}
 }
 
 // Name returns the user-facing label. Mirrors the C# `RTorrent.Name`
@@ -100,15 +110,33 @@ func (r *RTorrent) MarkItemAsImported(_ context.Context, _ *downloadclients.Item
 	return downloadclients.ErrNotImplementedYet
 }
 
-// Test runs the per-client connection self-check. Stub — the real
-// Test() will run a system.client_version XML-RPC probe against the
-// configured endpoint.
-func (r *RTorrent) Test(_ context.Context) ([]downloadclients.TestFailure, error) {
+// Test runs the per-client connection self-check. Mirrors C#
+// `DownloadClientBase.Test()` at `:148-163`: validates the Settings
+// first, then (when no failures and a proxy is wired) probes
+// `system.client_version` and gates on [minVersion].
+func (r *RTorrent) Test(ctx context.Context) ([]downloadclients.TestFailure, error) {
 	failures := r.settings.Validate()
-	// Settings-level failures are surfaced as Test() failures so
-	// the orchestrator can show them without invoking the network
-	// probe. The network probe lands in a follow-up slice.
-	return failures, nil
+	if len(failures) > 0 || r.proxy == nil {
+		return failures, nil
+	}
+	version, err := r.proxy.GetVersion(ctx, r.settings)
+	if err != nil {
+		// Network / auth / fault failures surface as a Host-attached
+		// connection failure (the C# tree's
+		// `_logger.Error(ex, ...) + return new ValidationFailure("Host", ...)`
+		// shape at `RTorrent.cs:280-300`).
+		return []downloadclients.TestFailure{{
+			PropertyName: "Host",
+			ErrorMessage: fmt.Sprintf("Unable to connect to rTorrent: %v", err),
+		}}, nil
+	}
+	if !versionAtLeast(version, minVersion) {
+		return []downloadclients.TestFailure{{
+			PropertyName: "Host",
+			ErrorMessage: fmt.Sprintf("rTorrent version %s is too old; minimum supported is %d.%d", version, minVersion.major, minVersion.minor),
+		}}, nil
+	}
+	return nil, nil
 }
 
 // RequestAction returns (nil, nil) for every action — the default
@@ -124,7 +152,10 @@ func (r *RTorrent) RequestAction(_ context.Context, _ string, _ map[string]strin
 var _ downloadclients.Provider = (*RTorrent)(nil)
 
 // constructor is the registry factory. Mirrors the qBittorrent +
-// Transmission factory pattern.
+// Transmission factory pattern. When an HTTPDoer is present in
+// `deps.HTTPClient` the constructor builds the XML-RPC Proxy; when
+// not (e.g. round-trip tests without a wired client), Test surfaces
+// only Settings.Validate failures.
 func constructor(def *downloadclients.DownloadClient, deps downloadclients.Dependencies) (downloadclients.Provider, error) {
 	if def == nil {
 		return nil, errors.New("rtorrent: nil DownloadClient row")
@@ -139,7 +170,15 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	if l, ok := deps.Logger.(*slog.Logger); ok {
 		log = l
 	}
-	return New(def, settings, log), nil
+	var proxy *Proxy
+	if deps.HTTPClient != nil {
+		doer, ok := deps.HTTPClient.(HTTPDoer)
+		if !ok {
+			return nil, fmt.Errorf("rtorrent: deps.HTTPClient (%T) does not satisfy HTTPDoer", deps.HTTPClient)
+		}
+		proxy = NewProxy(doer, log)
+	}
+	return New(def, settings, proxy, log), nil
 }
 
 // init registers rTorrent with the global registry.

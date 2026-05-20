@@ -136,7 +136,7 @@ func TestSettings_JSONRoundTrip(t *testing.T) {
 
 func TestProvider_NameAndProtocol(t *testing.T) {
 	t.Parallel()
-	rt := rtorrent.New(nil, rtorrent.NewSettings(), nil)
+	rt := rtorrent.New(nil, rtorrent.NewSettings(), nil, nil)
 	if rt.Name() != "rTorrent" {
 		t.Errorf("Name: %q, want rTorrent (lowercase r)", rt.Name())
 	}
@@ -147,7 +147,7 @@ func TestProvider_NameAndProtocol(t *testing.T) {
 
 func TestProvider_StubsReturnNotImplementedYet(t *testing.T) {
 	t.Parallel()
-	rt := rtorrent.New(nil, rtorrent.NewSettings(), nil)
+	rt := rtorrent.New(nil, rtorrent.NewSettings(), nil, nil)
 	ctx := context.Background()
 
 	if _, err := rt.Download(ctx, &downloadclients.GrabRequest{}); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
@@ -169,7 +169,7 @@ func TestProvider_StubsReturnNotImplementedYet(t *testing.T) {
 
 func TestProvider_GetImportItemPassesThrough(t *testing.T) {
 	t.Parallel()
-	rt := rtorrent.New(nil, rtorrent.NewSettings(), nil)
+	rt := rtorrent.New(nil, rtorrent.NewSettings(), nil, nil)
 	in := &downloadclients.Item{DownloadID: "abc"}
 	out, err := rt.GetImportItem(context.Background(), in, nil)
 	if err != nil {
@@ -182,7 +182,7 @@ func TestProvider_GetImportItemPassesThrough(t *testing.T) {
 
 func TestProvider_RequestActionReturnsNilNil(t *testing.T) {
 	t.Parallel()
-	rt := rtorrent.New(nil, rtorrent.NewSettings(), nil)
+	rt := rtorrent.New(nil, rtorrent.NewSettings(), nil, nil)
 	out, err := rt.RequestAction(context.Background(), "getCategories", nil)
 	if err != nil {
 		t.Errorf("RequestAction: %v", err)
@@ -196,13 +196,62 @@ func TestProvider_TestSurfacesSettingsFailures(t *testing.T) {
 	t.Parallel()
 	s := rtorrent.NewSettings()
 	s.Host = "" // → Host failure
-	rt := rtorrent.New(nil, s, nil)
+	rt := rtorrent.New(nil, s, nil, nil)
 	failures, err := rt.Test(context.Background())
 	if err != nil {
 		t.Errorf("Test: %v", err)
 	}
 	if !containsFailure(failures, "Host") {
 		t.Errorf("Test: %+v, want Host failure surfaced", failures)
+	}
+}
+
+func TestProvider_TestProbesVersionWhenProxyWired(t *testing.T) {
+	t.Parallel()
+	h := newXMLRPCServer(t, sampleVersionResponse)
+	p := rtorrent.NewProxy(h.srv.Client(), nil)
+	rt := rtorrent.New(nil, h.settings("RPC2"), p, nil)
+	failures, err := rt.Test(context.Background())
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if len(failures) != 0 {
+		t.Errorf("Test on good version: %+v, want no failures", failures)
+	}
+	if h.calls.Load() != 1 {
+		t.Errorf("system.client_version probe didn't fire (%d calls)", h.calls.Load())
+	}
+}
+
+func TestProvider_TestRejectsBelowMinVersion(t *testing.T) {
+	t.Parallel()
+	resp := `<?xml version="1.0"?>
+<methodResponse><params><param><value><string>0.8.5</string></value></param></params></methodResponse>`
+	h := newXMLRPCServer(t, resp)
+	p := rtorrent.NewProxy(h.srv.Client(), nil)
+	rt := rtorrent.New(nil, h.settings("RPC2"), p, nil)
+	failures, err := rt.Test(context.Background())
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if !containsFailure(failures, "Host") {
+		t.Errorf("Test on old version: %+v, want Host failure (too old)", failures)
+	}
+}
+
+func TestProvider_TestNetworkFailureSurfacesHostFailure(t *testing.T) {
+	t.Parallel()
+	// Use a closed httptest server URL — connect should fail.
+	h := newXMLRPCServer(t, sampleVersionResponse)
+	h.srv.Close() // force connection failure
+	p := rtorrent.NewProxy(h.srv.Client(), nil)
+	rt := rtorrent.New(nil, h.settings("RPC2"), p, nil)
+	failures, err := rt.Test(context.Background())
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if !containsFailure(failures, "Host") {
+		t.Errorf("Test on dead host: %+v, want Host failure", failures)
 	}
 }
 
