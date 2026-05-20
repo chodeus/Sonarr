@@ -3,6 +3,7 @@ package hadouken
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,11 @@ import (
 	"strings"
 	"sync/atomic"
 )
+
+// base64StdEncoding aliases the stdlib codec; defined as a package-
+// level var so the [base64Encode] helper doesn't pull the import
+// list onto every call site.
+var base64StdEncoding = base64.StdEncoding
 
 // HTTPDoer is the [*http.Client] slice the [Proxy] depends on.
 type HTTPDoer interface {
@@ -177,6 +183,62 @@ func (p *Proxy) GetSystemInfo(ctx context.Context, s Settings) (*SystemInfo, err
 		return nil, err
 	}
 	return &info, nil
+}
+
+// AddTorrentFile fires `webui.addTorrent` with the base64-encoded
+// .torrent body. Mirrors C# `HadoukenProxy.AddTorrentFile` at
+// `HadoukenProxy.cs:50-53`. Returns whatever string the Hadouken
+// server replies with (typically the infohash); the caller is
+// responsible for uppercasing and the fallback-to-req.InfoHash
+// branch when the response is empty.
+//
+// Params order matches the C# call:
+//
+//	["file", "<base64-encoded-torrent>", {"label": "<Category>"}]
+func (p *Proxy) AddTorrentFile(ctx context.Context, s Settings, contents []byte) (string, error) {
+	var result string
+	params := []any{
+		"file",
+		base64Encode(contents),
+		labelParam(s.Category),
+	}
+	if err := p.call(ctx, s, "webui.addTorrent", params, &result); err != nil {
+		return "", err
+	}
+	return result, nil
+}
+
+// AddTorrentUri fires `webui.addTorrent` with a URL (magnet link
+// or HTTP(S) DownloadURL). Mirrors C# `HadoukenProxy.AddTorrentUri`
+// at `HadoukenProxy.cs:55-58`. C# discards the result string and
+// returns void; the Go port follows suit — the caller composes the
+// DownloadID from req.InfoHash since Hadouken does not echo the
+// hash back on the URL-add path reliably.
+//
+// Params order matches the C# call:
+//
+//	["url", "<url-or-magnet>", {"label": "<Category>"}]
+func (p *Proxy) AddTorrentUri(ctx context.Context, s Settings, url string) error {
+	params := []any{
+		"url",
+		url,
+		labelParam(s.Category),
+	}
+	return p.call(ctx, s, "webui.addTorrent", params, nil)
+}
+
+// labelParam builds the third positional arg to `webui.addTorrent`:
+// `{"label": "<category>"}`. The C# code passes an anonymous
+// object; the Go port emits the same JSON shape.
+func labelParam(category string) map[string]string {
+	return map[string]string{"label": category}
+}
+
+// base64Encode wraps [encoding/base64] without taking the import at
+// the top of this file (it's not referenced anywhere else). Mirrors
+// C# `Convert.ToBase64String` at `HadoukenProxy.cs:52`.
+func base64Encode(contents []byte) string {
+	return base64StdEncoding.EncodeToString(contents)
 }
 
 // truncate clips s to n chars with an ellipsis when overflowing.

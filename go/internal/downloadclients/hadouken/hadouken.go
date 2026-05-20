@@ -54,10 +54,58 @@ func (h *Hadouken) Definition() *downloadclients.DownloadClient { return h.def }
 // Settings returns the bound Settings.
 func (h *Hadouken) Settings() Settings { return h.settings }
 
-// Download is a STUB at 5.J62. Follow-up slice ports
-// AddFromTorrentFile / AddFromMagnetLink → `webui.addTorrent`.
-func (h *Hadouken) Download(_ context.Context, _ *downloadclients.GrabRequest) (string, error) {
-	return "", fmt.Errorf("%w: Download", ErrNotImplemented)
+// Download ports `Hadouken.AddFromTorrentFile` + `AddFromMagnetLink`
+// at C# `Hadouken.cs:147-157`. Dispatches:
+//
+//   - TorrentBody non-empty → [Proxy.AddTorrentFile] (base64-encoded
+//     bytes + Settings.Category label). The C# return value is the
+//     server response uppercased — when the response is empty (some
+//     Hadouken versions reply with just `true`), the Go port falls
+//     back to req.InfoHash so the queue join key is still populated.
+//   - MagnetURL non-empty → [Proxy.AddTorrentUri] (magnet + label).
+//     The C# code discards the server response and returns the
+//     pre-computed hash uppercased; the Go port mirrors — using
+//     req.InfoHash.
+//
+// Returns an error when both fields are empty or when the
+// resolved infohash is blank (no orchestrator-side pre-parse
+// happened). InfoHash is uppercased before return to match the
+// C# `.ToUpper()` calls.
+func (h *Hadouken) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
+	if req == nil {
+		return "", errors.New("hadouken: nil GrabRequest")
+	}
+	if h.proxy == nil {
+		return "", errors.New("hadouken: nil Proxy")
+	}
+
+	switch {
+	case len(req.TorrentBody) > 0:
+		resp, err := h.proxy.AddTorrentFile(ctx, h.settings, req.TorrentBody)
+		if err != nil {
+			return "", fmt.Errorf("hadouken: AddTorrentFile(%q): %w", req.ReleaseTitle, err)
+		}
+		id := strings.TrimSpace(resp)
+		if id == "" {
+			id = req.InfoHash
+		}
+		if id == "" {
+			return "", errors.New("hadouken: AddTorrentFile returned empty response and req.InfoHash is unset")
+		}
+		return strings.ToUpper(id), nil
+
+	case strings.TrimSpace(req.MagnetURL) != "":
+		if err := h.proxy.AddTorrentUri(ctx, h.settings, req.MagnetURL); err != nil {
+			return "", fmt.Errorf("hadouken: AddTorrentUri(%q): %w", req.ReleaseTitle, err)
+		}
+		if strings.TrimSpace(req.InfoHash) == "" {
+			return "", errors.New("hadouken: AddTorrentUri requires req.InfoHash to compose the DownloadID")
+		}
+		return strings.ToUpper(req.InfoHash), nil
+
+	default:
+		return "", errors.New("hadouken: GrabRequest has neither TorrentBody nor MagnetURL")
+	}
 }
 
 // GetItems is a STUB at 5.J62. Follow-up slice ports

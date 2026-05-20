@@ -2,6 +2,7 @@ package hadouken_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +14,10 @@ import (
 	"sonarr.tv/sonarr/internal/downloadclients/hadouken"
 	"sonarr.tv/sonarr/internal/indexers"
 )
+
+// base64Decode is a thin alias for [base64.StdEncoding.DecodeString]
+// so the request-shape assertions read cleanly.
+func base64Decode(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(s) }
 
 // stubDoer records the last seen request and replies with the
 // canned response.
@@ -290,11 +295,142 @@ func TestProvider_GetStatus_LocalhostHostFlagsLocalhostTrue(t *testing.T) {
 	}
 }
 
-func TestProvider_DownloadStub_ReturnsNotImplemented(t *testing.T) {
+func TestProvider_Download_NilRequest(t *testing.T) {
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(&stubDoer{}, nil), nil)
+	_, err := p.Download(context.Background(), nil)
+	if err == nil {
+		t.Fatal("err = nil, want nil-request error")
+	}
+}
+
+func TestProvider_Download_NoBodyOrMagnet(t *testing.T) {
 	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(&stubDoer{}, nil), nil)
 	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{ReleaseTitle: "X"})
-	if !errors.Is(err, hadouken.ErrNotImplemented) {
-		t.Errorf("err = %v, want ErrNotImplemented", err)
+	if err == nil {
+		t.Fatal("err = nil, want neither-body-nor-magnet error")
+	}
+}
+
+func TestProvider_Download_TorrentBody_RequestShapeAndResponse(t *testing.T) {
+	// Server replies with a plain string (lowercase hash) — Provider
+	// uppercases it.
+	doer := &stubDoer{respBody: `{"jsonrpc":"2.0","id":1,"result":"abcdef0123"}`}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	id, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show S01E01",
+		TorrentBody:  []byte("FAKE-TORRENT-BYTES"),
+	})
+	if err != nil {
+		t.Fatalf("Download err = %v", err)
+	}
+	if id != "ABCDEF0123" {
+		t.Errorf("id = %q, want uppercased ABCDEF0123", id)
+	}
+	// Verify the request body shape: webui.addTorrent + ["file",
+	// "<base64>", {"label":"sonarr-tv"}].
+	var env map[string]any
+	_ = json.Unmarshal(doer.lastBody, &env)
+	if env["method"] != "webui.addTorrent" {
+		t.Errorf("method = %v, want webui.addTorrent", env["method"])
+	}
+	params, ok := env["params"].([]any)
+	if !ok || len(params) != 3 {
+		t.Fatalf("params = %v, want 3-element slice", env["params"])
+	}
+	if params[0] != "file" {
+		t.Errorf("params[0] = %v, want 'file'", params[0])
+	}
+	// params[1] is the base64-encoded body — must decode back to original.
+	encoded, _ := params[1].(string)
+	if encoded == "" {
+		t.Fatalf("params[1] = %v, want base64 string", params[1])
+	}
+	decoded, derr := base64Decode(encoded)
+	if derr != nil || string(decoded) != "FAKE-TORRENT-BYTES" {
+		t.Errorf("params[1] decode = %q (err=%v), want FAKE-TORRENT-BYTES", decoded, derr)
+	}
+	labelObj, _ := params[2].(map[string]any)
+	if labelObj["label"] != "sonarr-tv" {
+		t.Errorf("label = %v, want sonarr-tv", labelObj["label"])
+	}
+}
+
+func TestProvider_Download_TorrentBody_EmptyResponseFallsBackToInfoHash(t *testing.T) {
+	// Hadouken replies with empty string → Provider falls back to req.InfoHash.
+	doer := &stubDoer{respBody: `{"result":""}`}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	id, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		TorrentBody:  []byte("y"),
+		InfoHash:     "deadbeef",
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if id != "DEADBEEF" {
+		t.Errorf("id = %q, want DEADBEEF (fallback path)", id)
+	}
+}
+
+func TestProvider_Download_TorrentBody_EmptyResponseAndNoInfoHash_Errors(t *testing.T) {
+	doer := &stubDoer{respBody: `{"result":""}`}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		TorrentBody:  []byte("y"),
+	})
+	if err == nil {
+		t.Fatal("err = nil, want empty-response + no-InfoHash error")
+	}
+}
+
+func TestProvider_Download_Magnet_RequestShapeAndInfoHashReturn(t *testing.T) {
+	doer := &stubDoer{respBody: `{"result":"ignored-by-provider"}`}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	id, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		MagnetURL:    "magnet:?xt=urn:btih:cafebabe",
+		InfoHash:     "cafebabe",
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if id != "CAFEBABE" {
+		t.Errorf("id = %q, want CAFEBABE (req.InfoHash uppercased)", id)
+	}
+	var env map[string]any
+	_ = json.Unmarshal(doer.lastBody, &env)
+	params, _ := env["params"].([]any)
+	if len(params) != 3 || params[0] != "url" {
+		t.Errorf("params = %v, want ['url', <magnet>, {label}]", params)
+	}
+	if params[1] != "magnet:?xt=urn:btih:cafebabe" {
+		t.Errorf("params[1] = %v, want the magnet URL verbatim", params[1])
+	}
+}
+
+func TestProvider_Download_Magnet_MissingInfoHashErrors(t *testing.T) {
+	doer := &stubDoer{respBody: `{"result":"ok"}`}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		MagnetURL:    "magnet:?xt=urn:btih:abc",
+	})
+	if err == nil {
+		t.Fatal("err = nil, want missing-InfoHash error on magnet path")
+	}
+}
+
+func TestProvider_Download_PropagatesProxyError(t *testing.T) {
+	doer := &stubDoer{respStatus: http.StatusInternalServerError, respBody: "boom"}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		TorrentBody:  []byte("y"),
+		InfoHash:     "abc",
+	})
+	if !errors.Is(err, hadouken.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable propagated", err)
 	}
 }
 
