@@ -27,9 +27,12 @@ import (
 // fires DELETE /api/downloads/<hash>; GetStatus reads SaveAs from
 // /api/settings + appends `/.<TvCategory>` (note leading dot — see
 // the GetStatus doc comment) + RemotePathMapper translation.
-// Documented deferred piece: the HasReachedSeedLimit cleanup-gate
-// (needs SeedingMode/SeedingRatio/SeedingTime in Config) — surfaces
-// in GetItems as CanBeRemoved/CanMoveFiles defaulting to false.
+// J96 wires the HasReachedSeedLimit cleanup-gate via the extended
+// Config (SeedingMode/SeedingRatio/SeedingTime now surfaced from
+// /api/settings). Tribler's gate diverges from RQBit (J94) / Flood
+// (J95): it consumes Tribler's OWN per-client config rather than
+// the per-grab IDownloadSeedConfigProvider, so the J91/J92/J93 chain
+// is NOT plumbed through this DC.
 type TriblerDownloadClient struct {
 	settings Settings
 	def      *downloadclients.DownloadClient
@@ -40,6 +43,11 @@ type TriblerDownloadClient struct {
 	// GetItems to translate the Tribler-side Destination into
 	// Sonarr-side paths.
 	rpm downloadclients.RemotePathMapper
+
+	// now is the injectable clock the SeedingModeTime gate reads.
+	// Defaults to time.Now; tests pin a fixed time to step over
+	// the TimeAdded + SeedingTime predicate.
+	now func() time.Time
 }
 
 // New constructs a TriblerDownloadClient Provider. proxy=nil binds
@@ -51,7 +59,7 @@ func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, l
 	if proxy == nil {
 		proxy = NewProxy(nil, log)
 	}
-	return &TriblerDownloadClient{settings: settings, def: def, log: log, proxy: proxy}
+	return &TriblerDownloadClient{settings: settings, def: def, log: log, proxy: proxy, now: time.Now}
 }
 
 // Name returns "Tribler" matching C# `:41`.
@@ -162,14 +170,18 @@ func (t *TriblerDownloadClient) resolveDownloadDirectory(ctx context.Context) (s
 // ETA clamping mirrors C# `:91-102`: negative → 0, >= 365 days →
 // 365 days, otherwise direct conversion.
 //
-// Documented divergence: the C# `HasReachedSeedLimit` cleanup-gate
-// at `:150,180-215` (sets CanBeRemoved + CanMoveFiles based on the
-// configured SeedingMode + SeedingRatio + SeedingTime + per-torrent
-// AllTimeRatio + TimeAdded) is APPROXIMATED — the Go port lacks a
-// port of the SeedingMode/SeedingRatio settings struct and defaults
-// the flags to false. This is consistent with the rest of the
-// long-tail DCs where seed-config gating is a follow-up. Documented;
-// no functional impact on the import path itself.
+// Cleanup-gate wired at slice 5.J96 via [TriblerDownloadClient.applyCleanupGate]
+// which ports C# `HasReachedSeedLimit` at `:180-215`. Tribler's gate
+// consults its OWN /api/settings response (SeedingMode +
+// SeedingRatio + SeedingTime) — NOT the per-grab
+// IDownloadSeedConfigProvider — so J91/J92/J93 do not plumb through
+// this DC. The Config is fetched ONCE per GetItems call (matches C#
+// `:49` `configAsync = _proxy.GetConfig(Settings)`) and shared
+// across the per-torrent gate evaluations.
+//
+// Errors from GetConfig are logged at Debug and the gate degrades
+// to "never satisfy" — preserves the pre-J96 false-default posture
+// when the config endpoint is unreachable.
 func (t *TriblerDownloadClient) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
 	if t.proxy == nil {
 		return []*downloadclients.Item{}, nil
@@ -177,6 +189,11 @@ func (t *TriblerDownloadClient) GetItems(ctx context.Context) ([]*downloadclient
 	downloads, err := t.proxy.GetDownloads(ctx, t.settings)
 	if err != nil {
 		return nil, fmt.Errorf("tribler: GetDownloads: %w", err)
+	}
+	config, cfgErr := t.proxy.GetConfig(ctx, t.settings)
+	if cfgErr != nil {
+		t.log.Debug("tribler: GetConfig failed; cleanup gate disabled this poll", "err", cfgErr)
+		config = nil
 	}
 	info := t.itemClientInfo()
 	out := make([]*downloadclients.Item, 0, len(downloads))
@@ -189,15 +206,17 @@ func (t *TriblerDownloadClient) GetItems(ctx context.Context) ([]*downloadclient
 			// torrent has a size.
 			continue
 		}
-		out = append(out, t.toItem(ctx, info, d))
+		out = append(out, t.toItem(ctx, info, d, config))
 	}
 	return out, nil
 }
 
 // toItem projects one [Download] into a [downloadclients.Item].
 // Per-file OutputPath resolution may issue a [Proxy.GetDownloadFiles]
-// call (matches C# `:72`'s per-torrent lookup).
-func (t *TriblerDownloadClient) toItem(ctx context.Context, info *downloadclients.ItemClientInfo, d *Download) *downloadclients.Item {
+// call (matches C# `:72`'s per-torrent lookup). config is the
+// /api/settings response shared across one GetItems call (may be nil
+// when GetConfig failed; the cleanup gate handles that).
+func (t *TriblerDownloadClient) toItem(ctx context.Context, info *downloadclients.ItemClientInfo, d *Download, config *Config) *downloadclients.Item {
 	totalSize := int64(0)
 	if d.Size != nil {
 		totalSize = *d.Size
@@ -277,8 +296,70 @@ func (t *TriblerDownloadClient) toItem(ctx context.Context, info *downloadclient
 		item.Message = d.Error
 	}
 
-	// Seed-config cleanup gate deferred (see GetItems doc note).
+	if t.hasReachedSeedLimit(d, config) {
+		item.CanMoveFiles = true
+		item.CanBeRemoved = true
+	}
 	return item
+}
+
+// hasReachedSeedLimit ports the C# `HasReachedSeedLimit` predicate
+// at `TriblerDownloadClient.cs:180-219`.
+//
+// Tribler's gate doesn't consult the per-grab IDownloadSeedConfigProvider
+// — it reads Tribler's OWN config (SeedingMode + SeedingRatio +
+// SeedingTime) and the per-torrent AllTimeRatio / TimeAdded fields.
+// The wire shape comes from /api/settings, fetched once per GetItems
+// call and threaded through here as `config`.
+//
+// Algorithm:
+//  1. nil config (GetConfig failed) → false. Diverges from C# which
+//     throws ArgumentNullException at `:182-185`; the Go port returns
+//     false so a transient settings-endpoint failure degrades the
+//     gate rather than crashing the GetItems loop.
+//  2. d.Status != Stopped → false. C# `:193-196` — a still-running
+//     download isn't "finished" in Tribler's sense (note: Tribler's
+//     Seeding state is a separate ordinal from Stopped, and only
+//     Stopped counts as cleanup-eligible).
+//  3. Switch on SeedingMode:
+//     - Ratio: `AllTimeRatio.HasValue && AllTimeRatio >= SeedingRatio`.
+//     C# `:200-203`. nil SeedingRatio compares to "0" via
+//     nullable-double semantics — the C# `>= null` returns false,
+//     Go mirrors with a non-nil guard.
+//     - Time: `TimeAdded.HasValue && epoch(TimeAdded) + SeedingTime < now`.
+//     C# `:205-210`. SeedingTime is in SECONDS (C# `TimeSpan.FromSeconds`).
+//     - Never: always true. C# `:212-213`.
+//     - Forever / default / unknown: false. C# `:215-217`.
+func (t *TriblerDownloadClient) hasReachedSeedLimit(d *Download, config *Config) bool {
+	if config == nil {
+		return false
+	}
+	if d.Status != DownloadStatusStopped {
+		return false
+	}
+	mode := SeedingModeUnknown
+	if m := config.Settings.LibTorrent.DownloadDefaults.SeedingMode; m != nil {
+		mode = *m
+	}
+	switch mode {
+	case SeedingModeRatio:
+		ratioGoal := config.Settings.LibTorrent.DownloadDefaults.SeedingRatio
+		return d.AllTimeRatio != nil && ratioGoal != nil && *d.AllTimeRatio >= *ratioGoal
+	case SeedingModeTime:
+		timeGoal := config.Settings.LibTorrent.DownloadDefaults.SeedingTime
+		if d.TimeAdded == nil || timeGoal == nil {
+			return false
+		}
+		downloadStarted := time.Unix(*d.TimeAdded, 0)
+		maxSeeding := time.Duration(*timeGoal * float64(time.Second))
+		return downloadStarted.Add(maxSeeding).Before(t.now())
+	case SeedingModeNever:
+		return true
+	case SeedingModeForever, SeedingModeUnknown:
+		fallthrough
+	default:
+		return false
+	}
 }
 
 // clampETA mirrors C# `:91-102`'s clamp: negative → 0, >= 365 days

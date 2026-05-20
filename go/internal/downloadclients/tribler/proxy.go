@@ -51,23 +51,78 @@ func baseURL(s Settings) string {
 	return fmt.Sprintf("%s://%s:%d%s", scheme, s.Host, s.Port, strings.TrimRight(ub, "/"))
 }
 
-// Config ports the minimal subset of C# `TriblerSettingsResponse`
-// the Test arm needs. Tribler's `/api/settings` payload nests the
-// useful bits under `settings.libtorrent.download_defaults.saveas`;
-// the full path resolver is deferred — for now Test only proves
-// the endpoint+auth works by issuing the GET.
+// Config ports the subset of C# `TriblerSettingsResponse` consumed
+// by the Provider. Tribler's `/api/settings` payload nests both the
+// save-as directory AND the seeding-policy knobs the cleanup-gate
+// reads under `settings.libtorrent.download_defaults`.
 //
-// The Go-port `Config` struct surfaces the same `Settings.LibTorrent.DownloadDefaults.SaveAS`
-// path so the eventual GetStatus + GetDownloadDirectory ports can
-// reach it.
+// J96 extends the struct to surface SeedingMode/SeedingRatio/SeedingTime —
+// the per-client seeding policy [TriblerDownloadClient.applyCleanupGate]
+// consults. (Tribler diverges from RQBit/Flood: it does NOT consult
+// the per-grab IDownloadSeedConfigProvider; the seeding gate is
+// driven entirely by Tribler's own LibTorrent config.)
 type Config struct {
 	Settings struct {
 		LibTorrent struct {
 			DownloadDefaults struct {
-				SaveAs string `json:"saveas"`
+				SaveAs       string       `json:"saveas"`
+				SeedingMode  *SeedingMode `json:"seeding_mode"`
+				SeedingRatio *float64     `json:"seeding_ratio"`
+				SeedingTime  *float64     `json:"seeding_time"`
 			} `json:"download_defaults"`
 		} `json:"libtorrent"`
 	} `json:"settings"`
+}
+
+// SeedingMode ports the C# `DownloadDefaultsSeedingMode` enum at
+// `Models/TriblerSettingsApi.cs:175-188`. Tribler's wire format is a
+// lowercase string ("ratio", "forever", "time", "never") — UnmarshalJSON
+// maps each to its ordinal so call sites can switch on a typed
+// constant rather than a magic string. Unknown strings unmarshal as
+// SeedingModeUnknown so the cleanup-gate's default arm (matches C#
+// `:215-217` `Forever / default`) fails safe (returns false).
+type SeedingMode int
+
+// SeedingMode ordinals. Order matches C# enum at `:175-188` so the
+// numeric mapping stays stable for any future int-payload variant.
+const (
+	// SeedingModeRatio - "ratio" - C# `:177`. Gate fires when
+	// AllTimeRatio >= SeedingRatio.
+	SeedingModeRatio SeedingMode = 0
+	// SeedingModeForever - "forever" - C# `:180`. Gate never fires;
+	// torrent stays seeding indefinitely.
+	SeedingModeForever SeedingMode = 1
+	// SeedingModeTime - "time" - C# `:183`. Gate fires when
+	// now - epoch(TimeAdded) >= SeedingTime seconds.
+	SeedingModeTime SeedingMode = 2
+	// SeedingModeNever - "never" - C# `:186`. Gate always fires the
+	// moment the torrent reaches Stopped state.
+	SeedingModeNever SeedingMode = 3
+
+	// SeedingModeUnknown is the Go-port sentinel for an unrecognised
+	// wire string. Treated identically to Forever (gate never fires).
+	SeedingModeUnknown SeedingMode = -1
+)
+
+// UnmarshalJSON decodes the lowercase string wire format. Empty /
+// null payload → SeedingModeUnknown (the C# nullable
+// `DownloadDefaultsSeedingMode?` evaluates null in the switch's
+// default arm, which returns false).
+func (m *SeedingMode) UnmarshalJSON(data []byte) error {
+	s := strings.Trim(string(data), `"`)
+	switch strings.ToLower(s) {
+	case "ratio":
+		*m = SeedingModeRatio
+	case "forever":
+		*m = SeedingModeForever
+	case "time":
+		*m = SeedingModeTime
+	case "never":
+		*m = SeedingModeNever
+	default:
+		*m = SeedingModeUnknown
+	}
+	return nil
 }
 
 // DownloadStatus ports C# `Models/TriblerDownloadClientApi.cs:9-45`

@@ -803,3 +803,180 @@ func TestRegistry_RegistersTribler(t *testing.T) {
 		t.Errorf("registry missing (%s, %s)", tribler.Implementation, tribler.ConfigContract)
 	}
 }
+
+// --- J96 cleanup-gate (HasReachedSeedLimit) tests ----------------
+
+// queueSettingsForGate is a helper that queues an /api/settings
+// response carrying SeedingMode + SeedingRatio + SeedingTime knobs.
+func queueSettingsForGate(doer *scriptedDoer, body string) {
+	doer.queue("/api/settings", body)
+}
+
+func TestProvider_GetItems_Cleanup_NotStoppedDefaultsFalse(t *testing.T) {
+	// SeedingMode=Never would fire the gate, BUT Status != Stopped
+	// short-circuits to false at C# :193-196.
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"a","status":"SEEDING","size":100,"progress":1,"destination":"/dl","all_time_ratio":5.0}
+	]}`)
+	doer.queue("/api/downloads/a/files", `{"files":[]}`)
+	queueSettingsForGate(doer, `{"settings":{"libtorrent":{"download_defaults":{"saveas":"/dl","seeding_mode":"never"}}}}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("Status=Seeding (not Stopped) should fail gate: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_RatioModeFires(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"a","status":"STOPPED","size":100,"progress":1,"destination":"/dl","all_time_ratio":2.0}
+	]}`)
+	doer.queue("/api/downloads/a/files", `{"files":[]}`)
+	queueSettingsForGate(doer, `{"settings":{"libtorrent":{"download_defaults":{"saveas":"/dl","seeding_mode":"ratio","seeding_ratio":1.5}}}}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if !items[0].CanMoveFiles || !items[0].CanBeRemoved {
+		t.Errorf("ratio 2.0 >= 1.5 should fire: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_RatioModeBelowGoalDefaults(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"a","status":"STOPPED","size":100,"progress":1,"destination":"/dl","all_time_ratio":0.5}
+	]}`)
+	doer.queue("/api/downloads/a/files", `{"files":[]}`)
+	queueSettingsForGate(doer, `{"settings":{"libtorrent":{"download_defaults":{"saveas":"/dl","seeding_mode":"ratio","seeding_ratio":1.5}}}}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("ratio 0.5 < 1.5 should not fire: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_RatioModeNilAllTimeRatioDefaults(t *testing.T) {
+	// AllTimeRatio absent → C# `:202` `HasValue` guard fails.
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"a","status":"STOPPED","size":100,"progress":1,"destination":"/dl"}
+	]}`)
+	doer.queue("/api/downloads/a/files", `{"files":[]}`)
+	queueSettingsForGate(doer, `{"settings":{"libtorrent":{"download_defaults":{"saveas":"/dl","seeding_mode":"ratio","seeding_ratio":1.5}}}}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("nil AllTimeRatio: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_RatioModeNilGoalDefaults(t *testing.T) {
+	// SeedingRatio absent → arm doesn't fire.
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"a","status":"STOPPED","size":100,"progress":1,"destination":"/dl","all_time_ratio":2.0}
+	]}`)
+	doer.queue("/api/downloads/a/files", `{"files":[]}`)
+	queueSettingsForGate(doer, `{"settings":{"libtorrent":{"download_defaults":{"saveas":"/dl","seeding_mode":"ratio"}}}}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("nil SeedingRatio: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_TimeModeFires(t *testing.T) {
+	// SeedingMode=time, TimeAdded=10 (10s past epoch), SeedingTime=60
+	// (60s). epoch(10) + 60s = epoch(70) < now (always) → gate fires.
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"a","status":"STOPPED","size":100,"progress":1,"destination":"/dl","time_added":10}
+	]}`)
+	doer.queue("/api/downloads/a/files", `{"files":[]}`)
+	queueSettingsForGate(doer, `{"settings":{"libtorrent":{"download_defaults":{"saveas":"/dl","seeding_mode":"time","seeding_time":60}}}}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if !items[0].CanMoveFiles || !items[0].CanBeRemoved {
+		t.Errorf("time-mode with epoch(10)+60s < now should fire: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_TimeModeNilTimeAddedDefaults(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"a","status":"STOPPED","size":100,"progress":1,"destination":"/dl"}
+	]}`)
+	doer.queue("/api/downloads/a/files", `{"files":[]}`)
+	queueSettingsForGate(doer, `{"settings":{"libtorrent":{"download_defaults":{"saveas":"/dl","seeding_mode":"time","seeding_time":60}}}}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("nil TimeAdded: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_NeverModeAlwaysFires(t *testing.T) {
+	// SeedingMode=Never fires regardless of ratio/time fields.
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"a","status":"STOPPED","size":100,"progress":1,"destination":"/dl"}
+	]}`)
+	doer.queue("/api/downloads/a/files", `{"files":[]}`)
+	queueSettingsForGate(doer, `{"settings":{"libtorrent":{"download_defaults":{"saveas":"/dl","seeding_mode":"never"}}}}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if !items[0].CanMoveFiles || !items[0].CanBeRemoved {
+		t.Errorf("Never mode should always fire: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_ForeverModeNeverFires(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"a","status":"STOPPED","size":100,"progress":1,"destination":"/dl","all_time_ratio":99.0}
+	]}`)
+	doer.queue("/api/downloads/a/files", `{"files":[]}`)
+	queueSettingsForGate(doer, `{"settings":{"libtorrent":{"download_defaults":{"saveas":"/dl","seeding_mode":"forever"}}}}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("Forever mode should never fire: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_UnknownModeNeverFires(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"a","status":"STOPPED","size":100,"progress":1,"destination":"/dl","all_time_ratio":99.0}
+	]}`)
+	doer.queue("/api/downloads/a/files", `{"files":[]}`)
+	queueSettingsForGate(doer, `{"settings":{"libtorrent":{"download_defaults":{"saveas":"/dl","seeding_mode":"surprise"}}}}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("Unknown mode should never fire: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_GetConfigErrorDegradesToFalse(t *testing.T) {
+	// /api/settings fails → config nil → gate fails. The GetItems
+	// loop still produces items (errors from GetConfig don't propagate).
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"a","status":"STOPPED","size":100,"progress":1,"destination":"/dl","all_time_ratio":99.0}
+	]}`)
+	doer.queue("/api/downloads/a/files", `{"files":[]}`)
+	// no /api/settings queued — scripted doer will fail the call.
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, err := p.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("GetItems should not fail on GetConfig error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len=%d, want 1", len(items))
+	}
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("nil config (GetConfig failed): %+v", items[0])
+	}
+}
