@@ -8,8 +8,15 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 )
+
+// urlQueryUnescape is a renamed alias for net/url.QueryUnescape
+// (referenced via the small wrapper above so the GetTorrents body
+// reads cleanly). Inlined into a const-style binding via the
+// re-export wrapper below.
+var urlQueryUnescape = url.QueryUnescape
 
 // HTTPDoer is the slice of [*http.Client] the [Proxy] depends on.
 // The stdlib `*http.Client` satisfies it; tests inject a stub.
@@ -167,6 +174,91 @@ func (p *Proxy) AddTorrentFromFile(ctx context.Context, fileName string, content
 		return fmt.Errorf("rtorrent: could not add torrent (load_raw returned %d): %s", v, fileName)
 	}
 	return nil
+}
+
+// Torrent is the post-decoded shape returned by [Proxy.GetTorrents].
+// Mirrors C# `RTorrentTorrent` at `RTorrentTorrent.cs:9-46`.
+type Torrent struct {
+	Name          string
+	Hash          string
+	Path          string
+	Category      string
+	TotalSize     int64
+	RemainingSize int64
+	DownRate      int64
+	Ratio         int64 // rTorrent ratio in per-mille (1000 = 1.0)
+	IsOpen        bool
+	IsActive      bool
+	IsFinished    bool
+	FinishedTime  int64 // unix seconds
+}
+
+// GetTorrents fires d.multicall.2 against the empty target view
+// with the 12-field column projection. Mirrors C#
+// `RTorrentProxy.GetTorrents` at `:42-67`. The C# code uses
+// `HttpUtility.UrlDecode` on the custom1 column (rTorrent stores
+// labels URL-encoded); the Go port uses net/url.QueryUnescape which
+// is the stdlib equivalent (returns the input unchanged on a
+// decode failure — matches the C# permissive behaviour).
+func (p *Proxy) GetTorrents(ctx context.Context, settings Settings) ([]Torrent, error) {
+	value, err := p.call(ctx, settings,
+		"d.multicall.2",
+		"",
+		"",
+		"d.name=",
+		"d.hash=",
+		"d.base_path=",
+		"d.custom1=",
+		"d.size_bytes=",
+		"d.left_bytes=",
+		"d.down.rate=",
+		"d.ratio=",
+		"d.is_open=",
+		"d.is_active=",
+		"d.complete=",
+		"d.timestamp.finished=",
+	)
+	if err != nil {
+		return nil, err
+	}
+	rows := value.elements()
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make([]Torrent, 0, len(rows))
+	for _, row := range rows {
+		cols := row.elements()
+		if len(cols) < 12 {
+			// Partial row — skip silently rather than indexing OOB.
+			continue
+		}
+		category := cols[3].stringValue()
+		if dec, err := urlUnescape(category); err == nil {
+			category = dec
+		}
+		out = append(out, Torrent{
+			Name:          cols[0].stringValue(),
+			Hash:          cols[1].stringValue(),
+			Path:          cols[2].stringValue(),
+			Category:      category,
+			TotalSize:     cols[4].int64Value(),
+			RemainingSize: cols[5].int64Value(),
+			DownRate:      cols[6].int64Value(),
+			Ratio:         cols[7].int64Value(),
+			IsOpen:        cols[8].int64Value() != 0,
+			IsActive:      cols[9].int64Value() != 0,
+			IsFinished:    cols[10].int64Value() != 0,
+			FinishedTime:  cols[11].int64Value(),
+		})
+	}
+	return out, nil
+}
+
+// urlUnescape is a small wrapper to keep the GetTorrents body free
+// of import noise. net/url.QueryUnescape is the stdlib equivalent
+// of C# HttpUtility.UrlDecode for the +→ space + %xx-decode subset.
+func urlUnescape(s string) (string, error) {
+	return urlQueryUnescape(s)
 }
 
 // dCommands builds the per-d-method "command string" args appended

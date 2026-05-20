@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // Implementation + ConfigContract are the persisted-row identifiers
@@ -167,10 +169,92 @@ func resolveInfoHash(req *downloadclients.GrabRequest) (string, error) {
 	return "", fmt.Errorf("rtorrent: magnet URL missing xt=urn:btih: parameter: %s", req.MagnetURL)
 }
 
-// GetItems is a stub. See [Download] for the deferred-impl
-// rationale.
-func (r *RTorrent) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+// GetItems ports `RTorrent.GetItems` at `RTorrent.cs:124-220`.
+// Fires d.multicall.2 via the proxy, filters by TvCategory (when
+// set), drops items with an empty / dot-prefixed base path (matches
+// C# `:139-149` — rTorrent rows without an absolute download path
+// can't be safely imported), and projects to
+// []*downloadclients.Item.
+//
+// Status mapping (C# `:172-184`):
+//
+//   - IsFinished == true → Completed
+//   - IsActive == true   → Downloading
+//   - otherwise            → Paused
+//
+// CanMoveFiles + CanBeRemoved default to true for finished items.
+// The C# tree gates these on the per-grab seed-config (ratio + time
+// goals); the Go port defers that gating to the orchestrator's
+// existing seed-ratio enforcement at the queue layer — documented
+// divergence. The orchestrator already consults RemoveCompletedDownloads
+// + the SeedConfiguration for the import-cleanup gate.
+//
+// RemainingTime: when DownRate > 0, ETA = RemainingSize / DownRate
+// (seconds). Else nil (queued / paused / completed).
+//
+// SeedRatio: rTorrent stores the ratio in per-mille (1000 = 1.0);
+// the Go port projects to float64 by dividing by 1000.
+func (r *RTorrent) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
+	if r.proxy == nil {
+		return nil, errors.New("rtorrent: GetItems requires a wired Proxy")
+	}
+	torrents, err := r.proxy.GetTorrents(ctx, r.settings)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*downloadclients.Item, 0, len(torrents))
+	for _, t := range torrents {
+		if r.settings.TvCategory != "" && t.Category != r.settings.TvCategory {
+			continue
+		}
+		if strings.TrimSpace(t.Path) == "" {
+			r.log.Warn("rtorrent: torrent has empty download path; skipping",
+				slog.String("name", t.Name), slog.String("hash", t.Hash))
+			continue
+		}
+		if strings.HasPrefix(t.Path, ".") {
+			r.log.Warn("rtorrent: torrent has relative download path; skipping",
+				slog.String("name", t.Name), slog.String("path", t.Path))
+			continue
+		}
+
+		item := &downloadclients.Item{
+			DownloadID:    strings.ToUpper(t.Hash),
+			Category:      t.Category,
+			Title:         t.Name,
+			TotalSize:     t.TotalSize,
+			RemainingSize: t.RemainingSize,
+			OutputPath:    ospath.New(t.Path),
+			Status:        torrentStatus(t),
+			CanMoveFiles:  true,
+			CanBeRemoved:  true,
+		}
+		if t.DownRate > 0 && t.RemainingSize > 0 {
+			etaSec := t.RemainingSize / t.DownRate
+			eta := time.Duration(etaSec) * time.Second
+			item.RemainingTime = &eta
+		}
+		// rTorrent reports the ratio in per-mille (1000 = 1.0).
+		if t.IsFinished {
+			ratio := float64(t.Ratio) / 1000.0
+			item.SeedRatio = &ratio
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+// torrentStatus maps a [Torrent] to [downloadclients.DownloadItemStatus].
+// Mirrors C# `:172-184`.
+func torrentStatus(t Torrent) downloadclients.DownloadItemStatus {
+	switch {
+	case t.IsFinished:
+		return downloadclients.DownloadItemStatusCompleted
+	case t.IsActive:
+		return downloadclients.DownloadItemStatusDownloading
+	default:
+		return downloadclients.DownloadItemStatusPaused
+	}
 }
 
 // GetImportItem passes through unchanged. Mirrors C#

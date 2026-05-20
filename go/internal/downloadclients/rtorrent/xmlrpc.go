@@ -137,11 +137,52 @@ type responseValue struct {
 // rawValue captures any of the value-typed children. The decoder
 // reads each tag — only one is populated per response.
 type rawValue struct {
-	String  *string `xml:"string,omitempty"`
-	Int     *int    `xml:"int,omitempty"`
-	I4      *int    `xml:"i4,omitempty"`
-	I8      *int64  `xml:"i8,omitempty"`
-	Boolean *int    `xml:"boolean,omitempty"`
+	String  *string   `xml:"string,omitempty"`
+	Int     *int      `xml:"int,omitempty"`
+	I4      *int      `xml:"i4,omitempty"`
+	I8      *int64    `xml:"i8,omitempty"`
+	Boolean *int      `xml:"boolean,omitempty"`
+	Array   *rawArray `xml:"array,omitempty"`
+}
+
+// rawArray captures <array><data><value>...</value>...</data></array>.
+// d.multicall.2 returns a nested array (outer = per-torrent rows;
+// each inner = the projected column values per row).
+type rawArray struct {
+	Data rawArrayData `xml:"data"`
+}
+
+type rawArrayData struct {
+	Value []rawValue `xml:"value"`
+}
+
+// elements returns the array's row slice or nil for non-arrays.
+func (v rawValue) elements() []rawValue {
+	if v.Array == nil {
+		return nil
+	}
+	return v.Array.Data.Value
+}
+
+// int64Value returns the i8/i4/int/boolean as an int64. Falls back
+// to int64 parse on string responses to tolerate the older rTorrent
+// builds that emit numerics as <string>.
+func (v rawValue) int64Value() int64 {
+	switch {
+	case v.I8 != nil:
+		return *v.I8
+	case v.Int != nil:
+		return int64(*v.Int)
+	case v.I4 != nil:
+		return int64(*v.I4)
+	case v.Boolean != nil:
+		return int64(*v.Boolean)
+	case v.String != nil:
+		if n, err := strconv.ParseInt(strings.TrimSpace(*v.String), 10, 64); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 // responseFault is the XML-RPC <fault> envelope. faultCode +
