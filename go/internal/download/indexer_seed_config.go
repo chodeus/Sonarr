@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"time"
 
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/parser"
 )
 
 // IndexerSeedConfigProvider ports the (int, bool) overload of the C#
@@ -118,6 +120,77 @@ func pickRatio(criteria *indexers.SeedCriteriaSettings, fullSeason, useSeasonPac
 		return criteria.SeasonPackSeedRatio
 	}
 	return criteria.SeedRatio
+}
+
+// GetSeedConfigurationForSubject ports the (RemoteEpisode) overload
+// of the C# `ISeedConfigProvider` at
+// `Indexers/SeedConfigProvider.cs:22-35`. Renamed from the C#
+// `GetSeedConfiguration` to disambiguate from the (int, bool)
+// overload — Go doesn't support method overloading on parameter
+// shape.
+//
+// Algorithm tracks C# verbatim:
+//  1. nil subject → (nil, nil). Defensive Go-port addition; the C#
+//     tree assumes the caller passed a non-null RemoteEpisode (the
+//     CSharp DI graph guarantees this) but Go callers in tests
+//     occasionally pass nil — fail safe.
+//  2. Release isn't a torrent → (nil, nil). C# `:24-27`. Reads
+//     `Release.DownloadProtocol` via the [parser.ReleaseInfo] or
+//     [parser.TorrentInfo] type-assertion (subject.Release is `any`).
+//     Non-torrent → no seed override; let the client default.
+//  3. IndexerID == 0 → (nil, nil). C# `:29-32`. The 0-sentinel
+//     matches the J92 (int, bool) overload short-circuit.
+//  4. Delegate to [IndexerSeedConfigProvider.GetSeedConfiguration]
+//     with (IndexerID, ParsedEpisodeInfo.FullSeason). C# `:34`.
+//     nil ParsedEpisodeInfo → fullSeason=false (Go-port divergence;
+//     C# would NRE, the Go port treats missing PEI as "single
+//     episode" so the gate stays conservative).
+//
+// Wired here rather than as a free function so the IndexerSeedConfigProvider's
+// IndexerSettingsLookup binding (and any future per-provider knobs)
+// stay consistent across both overloads — calling
+// GetSeedConfigurationForSubject and GetSeedConfiguration on the
+// same instance returns the same result for the same (indexerID,
+// fullSeason) pair.
+func (p *IndexerSeedConfigProvider) GetSeedConfigurationForSubject(ctx context.Context, subject *decisionengine.Subject) (*downloadclients.TorrentSeedConfiguration, error) {
+	if subject == nil {
+		return nil, nil
+	}
+	release := subjectReleaseInfo(subject)
+	if release == nil {
+		return nil, nil
+	}
+	if release.DownloadProtocol != indexers.DownloadProtocolTorrent {
+		return nil, nil
+	}
+	if release.IndexerID == 0 {
+		return nil, nil
+	}
+	fullSeason := false
+	if subject.ParsedEpisodeInfo != nil {
+		fullSeason = subject.ParsedEpisodeInfo.FullSeason
+	}
+	return p.GetSeedConfiguration(ctx, release.IndexerID, fullSeason)
+}
+
+// subjectReleaseInfo narrows Subject.Release (any) to
+// [*parser.ReleaseInfo]. Same shape as
+// [historyhandlers.releaseInfoFromSubject] — duplicated here
+// rather than imported because historyhandlers depends on download
+// (via process_decisions wiring), so a download→historyhandlers
+// import would create a cycle. The duplication is small and
+// preserves the package layering.
+func subjectReleaseInfo(s *decisionengine.Subject) *parser.ReleaseInfo {
+	if s == nil {
+		return nil
+	}
+	if r, ok := s.Release.(*parser.ReleaseInfo); ok && r != nil {
+		return r
+	}
+	if t, ok := s.Release.(*parser.TorrentInfo); ok && t != nil {
+		return &t.ReleaseInfo
+	}
+	return nil
 }
 
 // pickSeedTimeMinutes selects between SeasonPackSeedTime and

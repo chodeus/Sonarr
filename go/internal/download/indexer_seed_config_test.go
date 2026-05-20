@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/download"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/parser"
 )
 
 // stubIndexerSettings is a hand-rolled [indexers.IndexerSettingsLookup].
@@ -275,4 +277,165 @@ func TestIndexerSeedConfigProvider_SatisfiesIndexerSeedConfig(t *testing.T) {
 	t.Parallel()
 	lookup := &stubIndexerSettings{byID: map[int]*indexers.CachedIndexerSettings{}}
 	var _ download.IndexerSeedConfig = download.NewIndexerSeedConfigProvider(lookup)
+}
+
+// --- J97 GetSeedConfigurationForSubject (RemoteEpisode overload) ---
+
+func newTorrentSubject(indexerID int, fullSeason bool) *decisionengine.Subject {
+	return &decisionengine.Subject{
+		Release: &parser.ReleaseInfo{
+			IndexerID:        indexerID,
+			DownloadProtocol: indexers.DownloadProtocolTorrent,
+			Title:            "T",
+		},
+		ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{
+			FullSeason: fullSeason,
+		},
+	}
+}
+
+func TestGetSeedConfigurationForSubject_NilSubjectReturnsNil(t *testing.T) {
+	t.Parallel()
+	lookup := &stubIndexerSettings{}
+	p := download.NewIndexerSeedConfigProvider(lookup)
+	cfg, err := p.GetSeedConfigurationForSubject(context.Background(), nil)
+	if cfg != nil || err != nil {
+		t.Errorf("nil subject: cfg=%v err=%v, want both nil", cfg, err)
+	}
+}
+
+func TestGetSeedConfigurationForSubject_NilReleaseReturnsNil(t *testing.T) {
+	t.Parallel()
+	lookup := &stubIndexerSettings{}
+	p := download.NewIndexerSeedConfigProvider(lookup)
+	cfg, err := p.GetSeedConfigurationForSubject(context.Background(), &decisionengine.Subject{Release: nil})
+	if cfg != nil || err != nil {
+		t.Errorf("nil release: cfg=%v err=%v", cfg, err)
+	}
+}
+
+func TestGetSeedConfigurationForSubject_UsenetProtocolReturnsNil(t *testing.T) {
+	t.Parallel()
+	lookup := &stubIndexerSettings{}
+	p := download.NewIndexerSeedConfigProvider(lookup)
+	subject := &decisionengine.Subject{
+		Release: &parser.ReleaseInfo{
+			IndexerID:        7,
+			DownloadProtocol: indexers.DownloadProtocolUsenet,
+		},
+		ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{},
+	}
+	cfg, err := p.GetSeedConfigurationForSubject(context.Background(), subject)
+	if cfg != nil || err != nil {
+		t.Errorf("usenet protocol: cfg=%v err=%v", cfg, err)
+	}
+}
+
+func TestGetSeedConfigurationForSubject_ZeroIndexerIDReturnsNil(t *testing.T) {
+	t.Parallel()
+	lookup := &stubIndexerSettings{}
+	p := download.NewIndexerSeedConfigProvider(lookup)
+	cfg, err := p.GetSeedConfigurationForSubject(context.Background(), newTorrentSubject(0, false))
+	if cfg != nil || err != nil {
+		t.Errorf("indexerID=0: cfg=%v err=%v", cfg, err)
+	}
+}
+
+func TestGetSeedConfigurationForSubject_DelegatesWithFullSeason(t *testing.T) {
+	t.Parallel()
+	lookup := &stubIndexerSettings{byID: map[int]*indexers.CachedIndexerSettings{
+		11: {SeedCriteriaSettings: &indexers.SeedCriteriaSettings{
+			SeedRatio:           ptrf(1.5),
+			SeasonPackSeedGoal:  indexers.SeasonPackSeedGoalUseSeasonPack,
+			SeasonPackSeedRatio: ptrf(3.0),
+		}},
+	}}
+	p := download.NewIndexerSeedConfigProvider(lookup)
+
+	cfg, err := p.GetSeedConfigurationForSubject(context.Background(), newTorrentSubject(11, true))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cfg == nil || cfg.Ratio == nil || *cfg.Ratio != 3.0 {
+		t.Errorf("fullSeason+seasonPackGoal: Ratio=%v, want 3.0 (delegated to int-overload)", cfg)
+	}
+}
+
+func TestGetSeedConfigurationForSubject_DelegatesWithoutFullSeason(t *testing.T) {
+	t.Parallel()
+	lookup := &stubIndexerSettings{byID: map[int]*indexers.CachedIndexerSettings{
+		11: {SeedCriteriaSettings: &indexers.SeedCriteriaSettings{
+			SeedRatio: ptrf(1.5),
+		}},
+	}}
+	p := download.NewIndexerSeedConfigProvider(lookup)
+
+	cfg, err := p.GetSeedConfigurationForSubject(context.Background(), newTorrentSubject(11, false))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cfg == nil || cfg.Ratio == nil || *cfg.Ratio != 1.5 {
+		t.Errorf("single-episode: Ratio=%v, want 1.5", cfg)
+	}
+}
+
+func TestGetSeedConfigurationForSubject_TorrentInfoReleaseShape(t *testing.T) {
+	t.Parallel()
+	// Subject.Release can be either *parser.ReleaseInfo or
+	// *parser.TorrentInfo (which embeds ReleaseInfo). The Go port's
+	// subjectReleaseInfo narrows both shapes — exercise the
+	// torrent-info branch.
+	lookup := &stubIndexerSettings{byID: map[int]*indexers.CachedIndexerSettings{
+		22: {SeedCriteriaSettings: &indexers.SeedCriteriaSettings{
+			SeedRatio: ptrf(2.0),
+		}},
+	}}
+	p := download.NewIndexerSeedConfigProvider(lookup)
+	subject := &decisionengine.Subject{
+		Release: &parser.TorrentInfo{
+			ReleaseInfo: parser.ReleaseInfo{
+				IndexerID:        22,
+				DownloadProtocol: indexers.DownloadProtocolTorrent,
+				Title:            "Show.S01E02",
+			},
+		},
+		ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{},
+	}
+
+	cfg, err := p.GetSeedConfigurationForSubject(context.Background(), subject)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cfg == nil || cfg.Ratio == nil || *cfg.Ratio != 2.0 {
+		t.Errorf("TorrentInfo release shape: Ratio=%v, want 2.0", cfg)
+	}
+}
+
+func TestGetSeedConfigurationForSubject_NilPEITreatsAsSingleEpisode(t *testing.T) {
+	t.Parallel()
+	// Go-port divergence: C# would NRE on null ParsedEpisodeInfo;
+	// Go treats missing PEI as fullSeason=false (single episode
+	// fallback - more conservative gate).
+	lookup := &stubIndexerSettings{byID: map[int]*indexers.CachedIndexerSettings{
+		33: {SeedCriteriaSettings: &indexers.SeedCriteriaSettings{
+			SeedRatio:           ptrf(1.0),
+			SeasonPackSeedGoal:  indexers.SeasonPackSeedGoalUseSeasonPack,
+			SeasonPackSeedRatio: ptrf(5.0),
+		}},
+	}}
+	p := download.NewIndexerSeedConfigProvider(lookup)
+	subject := &decisionengine.Subject{
+		Release: &parser.ReleaseInfo{
+			IndexerID:        33,
+			DownloadProtocol: indexers.DownloadProtocolTorrent,
+		},
+		ParsedEpisodeInfo: nil,
+	}
+	cfg, err := p.GetSeedConfigurationForSubject(context.Background(), subject)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if cfg == nil || cfg.Ratio == nil || *cfg.Ratio != 1.0 {
+		t.Errorf("nil PEI: Ratio=%v, want 1.0 (single-episode fallback)", cfg)
+	}
 }
