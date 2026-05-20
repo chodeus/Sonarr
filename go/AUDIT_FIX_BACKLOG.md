@@ -46,14 +46,14 @@ For closure narrative, see commit history `5.J1` … `5.J22` on `go-port`. The t
 
 **Sequencing:** RefreshMonitoredDownloads + CheckForFinishedDownloads are the most user-visible — without them, qBittorrent / SAB items grabbed via the API don't refresh in the UI without manual reload. Worth a slice each.
 
-## B.5 — Missing healthchecks (3 of 10 remain)
+## B.5 — Missing healthchecks (2 of 10 remain)
 
-**Status:** PARTIAL. 8 closed (5.J10/J11/J12/J13/J14/J18/J34). 3 remain:
+**Status:** PARTIAL. 8 closed + 1 partial (5.J10/J11/J12/J13/J14/J18/J34 closed, 5.J35 partial UpdateCheck — see row). 2 fully remain:
 
 | Check | Blocker / size |
 |---|---|
 | `MountCheck` | Needs `disk.Provider.GetMount(path)` returning a Mount struct with `IsReadOnly`. Platform-specific syscall work — Linux `unix.Statfs_t.Flags & ST_RDONLY`, macOS `unix.Statfs_t.Flags & MNT_RDONLY`, Windows `GetVolumeInformation`. ~150 LOC + the per-platform test scaffolding. |
-| `UpdateCheck` | Needs disk-capability + version-string compare. The update folder is `<AppData>/UpdateClient` — check writable + startup folder; compare current `buildinfo.Version` against package_info `PackageVersion`. ~120 LOC. **UNBLOCKED 5.J34** — DeploymentInfoProvider port landed. |
+| ~~`UpdateCheck`~~ | ~~Needs disk-capability + version-string compare…~~ — **PARTIAL 5.J35.** The three writability concerns (translocation, startup-not-writable, UI-not-writable) ported with the same Auto+BuiltIn+!Docker gate as C#. Step 4 (`update available` banner) is wired through an `UpdateAvailableLookup` interface that returns nil today — the upstream services.sonarr.tv fetcher (`CheckUpdateService` in C#) isn't ported yet; the wiring path is stable so the lookup can be retrofitted in a later slice without re-touching the check. |
 | ~~`PackageGlobalMessageCheck`~~ | ~~Needs `DeploymentInfoProvider` port…~~ — **CLOSED 5.J34** via `internal/deploymentinfo` package (new) + `PackageGlobalMessageCheck` in healthcheck registry. Both DEB/RPM `package_info` + tarball `release_info` parses ported; severity-prefix dispatch (`Error:` / `Warn:`) mirrors C#. |
 | `RemotePathMappingCheck` | Heaviest single check — 387 LOC of docker-detection logic (cross-references DC path → root folder → remote-path-mapping table). Probably its own multi-slice arc. |
 
