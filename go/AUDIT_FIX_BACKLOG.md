@@ -46,16 +46,16 @@ For closure narrative, see commit history `5.J1` … `5.J22` on `go-port`. The t
 
 **Sequencing:** RefreshMonitoredDownloads + CheckForFinishedDownloads are the most user-visible — without them, qBittorrent / SAB items grabbed via the API don't refresh in the UI without manual reload. Worth a slice each.
 
-## B.5 — Missing healthchecks (1 of 10 remains)
+## B.5 — Missing healthchecks (ALL CLOSED — 9 full, 2 with deferred sub-arms)
 
-**Status:** PARTIAL. 9 closed + 1 partial (5.J10/J11/J12/J13/J14/J18/J34/J36 closed, 5.J35 partial UpdateCheck — see row). 1 fully remains:
+**Status:** EFFECTIVELY CLOSED. 9 fully closed + 2 partials (5.J10/J11/J12/J13/J14/J18/J34/J36/J55 closed; 5.J35 UpdateCheck has deferred banner-fetcher; 5.J55 RemotePathMappingCheck has deferred event-driven Check(IEvent) path — both sub-arms can be retrofitted without touching the existing checks). 0 fully remain:
 
 | Check | Blocker / size |
 |---|---|
 | ~~`MountCheck`~~ | ~~Needs `disk.Provider.GetMount(path)` returning a Mount struct with `IsReadOnly`. Platform-specific syscall work — Linux `unix.Statfs_t.Flags & ST_RDONLY`, macOS `unix.Statfs_t.Flags & MNT_RDONLY`, Windows `GetVolumeInformation`.~~ — **CLOSED 5.J36** via new `internal/disk/mount.go` (Mount struct + GetMount platform-dispatch) with build-tagged impls: `mount_unix.go` (statfs), `mount_linux.go` (ST_RDONLY isReadOnly), `mount_darwin.go` (MNT_RDONLY isReadOnly), `mount_windows.go` (GetVolumeInformationW + FILE_READ_ONLY_VOLUME flag). MountCheck at `internal/healthcheck/mount_check.go` ports the C# logic verbatim — de-duplicates by RootDirectory, walks series-ID-sorted for deterministic message ordering. |
 | ~~`UpdateCheck`~~ | ~~Needs disk-capability + version-string compare…~~ — **PARTIAL 5.J35.** The three writability concerns (translocation, startup-not-writable, UI-not-writable) ported with the same Auto+BuiltIn+!Docker gate as C#. Step 4 (`update available` banner) is wired through an `UpdateAvailableLookup` interface that returns nil today — the upstream services.sonarr.tv fetcher (`CheckUpdateService` in C#) isn't ported yet; the wiring path is stable so the lookup can be retrofitted in a later slice without re-touching the check. |
 | ~~`PackageGlobalMessageCheck`~~ | ~~Needs `DeploymentInfoProvider` port…~~ — **CLOSED 5.J34** via `internal/deploymentinfo` package (new) + `PackageGlobalMessageCheck` in healthcheck registry. Both DEB/RPM `package_info` + tarball `release_info` parses ported; severity-prefix dispatch (`Error:` / `Warn:`) mirrors C#. |
-| `RemotePathMappingCheck` | Heaviest single check — 387 LOC of docker-detection logic (cross-references DC path → root folder → remote-path-mapping table). Probably its own multi-slice arc. |
+| ~~`RemotePathMappingCheck`~~ | ~~Heaviest single check — 387 LOC of docker-detection logic.~~ — **CLOSED 5.J55** (scheduled-Check() path; event-driven Check(IEvent) deferred). Walks every enabled DC's OutputRootFolders, surfaces the FIRST failure per the C# `:48-182` 6-branch decision tree: !IsValid+!IsLocalhost → WrongOSPath; !IsValid+IsDocker → BadDockerPath; !IsValid+local+!docker → LocalWrongOSPath; !FolderExists+IsDocker → DockerFolderMissing; !FolderExists+!IsLocalhost → LocalFolderMissing; !FolderExists+local+!docker → GenericPermissions. Narrow interfaces for cfg/clients/folder-exister/os-info. Event-driven Check(IEvent) path (EpisodeImportFailedEvent with 7+ additional reasons) deferred — needs import-pipeline event wiring. |
 
 Also still in scope: `ProxyCheck` is wired but stubbed (the `proxyHostConfigStub` always reports ProxyEnabled=false because the HostConfig keyvalues-backed IConfigService hasn't ported). Closing this means porting `IConfigService.ProxyEnabled` / `ProxyHostname` properly — moderate work.
 
