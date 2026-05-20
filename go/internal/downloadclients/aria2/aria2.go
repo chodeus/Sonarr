@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // Implementation + ConfigContract are the persisted-row identifiers
@@ -110,9 +113,146 @@ func (a *Aria2) Download(ctx context.Context, req *downloadclients.GrabRequest) 
 	return strings.ToUpper(gid), nil
 }
 
-// GetItems is a stub.
-func (a *Aria2) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+// GetItems ports `Aria2.GetItems` at `Aria2.cs:76-150`. Fires the
+// 3-call fanout (tellActive + tellWaiting + tellStopped), drops
+// metadata-only torrents + "removed" status, projects each
+// AriaStatus into a downloadclients.Item with the C# status
+// mapping:
+//
+//   - "active" + completed==total → Completed.
+//   - "active" otherwise          → Downloading.
+//   - "waiting"                   → Queued.
+//   - "paused"                    → Paused.
+//   - "error"                     → Failed.
+//   - "complete"                  → Completed.
+//   - anything else               → Failed (defensive).
+//
+// CanMoveFiles = false (aria2 doesn't support file deletion per
+// https://github.com/aria2/aria2/issues/728 — matches C# `:140-142`
+// posture). CanBeRemoved = true only when the torrent is in
+// "complete" status (matches C# `:147`).
+func (a *Aria2) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
+	if a.proxy == nil {
+		return nil, errors.New("aria2: GetItems requires a wired Proxy")
+	}
+	torrents, err := a.proxy.GetTorrents(ctx, a.settings)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*downloadclients.Item, 0, len(torrents))
+	for _, t := range torrents {
+		// Skip metadata-only downloads (file path contains [METADATA])
+		// + already-removed torrents.
+		if t.Status == "removed" {
+			continue
+		}
+		if len(t.FilePaths) > 0 && strings.Contains(t.FilePaths[0], "[METADATA]") {
+			continue
+		}
+
+		totalLength := parseInt64(t.TotalLength)
+		completedLength := parseInt64(t.CompletedLength)
+		uploadLength := parseInt64(t.UploadLength)
+		downloadSpeed := parseInt64(t.DownloadSpeed)
+
+		status := downloadclients.DownloadItemStatusFailed
+		switch t.Status {
+		case "active":
+			if completedLength == totalLength && totalLength > 0 {
+				status = downloadclients.DownloadItemStatusCompleted
+			} else {
+				status = downloadclients.DownloadItemStatusDownloading
+			}
+		case "waiting":
+			status = downloadclients.DownloadItemStatusQueued
+		case "paused":
+			status = downloadclients.DownloadItemStatusPaused
+		case "error":
+			status = downloadclients.DownloadItemStatusFailed
+		case "complete":
+			status = downloadclients.DownloadItemStatusCompleted
+		}
+
+		item := &downloadclients.Item{
+			DownloadID:    strings.ToUpper(t.InfoHash),
+			Title:         t.BittorrentName,
+			TotalSize:     totalLength,
+			RemainingSize: totalLength - completedLength,
+			Status:        status,
+			Message:       t.ErrorMessage,
+			CanMoveFiles:  false,
+			CanBeRemoved:  t.Status == "complete",
+		}
+		if downloadSpeed > 0 && totalLength-completedLength > 0 {
+			eta := time.Duration((totalLength-completedLength)/downloadSpeed) * time.Second
+			item.RemainingTime = &eta
+		}
+		if totalLength > 0 {
+			ratio := float64(uploadLength) / float64(totalLength)
+			item.SeedRatio = &ratio
+		}
+		if outputPath := outputPathFor(t); outputPath != "" {
+			item.OutputPath = ospath.New(outputPath)
+		}
+
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+// outputPathFor returns the OutputPath for a torrent. C#
+// `GetOutputPath` at `:260-268`: single-file torrent → that file's
+// path; multi-file → longest-common-prefix across all file paths.
+func outputPathFor(t AriaStatus) string {
+	switch len(t.FilePaths) {
+	case 0:
+		return ""
+	case 1:
+		return t.FilePaths[0]
+	default:
+		return longestCommonPath(t.FilePaths)
+	}
+}
+
+// longestCommonPath returns the longest path prefix shared by all
+// inputs, truncated at the last `/` so the result is a directory
+// path. Empty input → empty string. Mirrors C# extension
+// `GetLongestCommonPath` (Common.Extensions).
+func longestCommonPath(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	if len(paths) == 1 {
+		return paths[0]
+	}
+	prefix := paths[0]
+	for _, p := range paths[1:] {
+		// Trim prefix from the right until it's a prefix of p.
+		for !strings.HasPrefix(p, prefix) {
+			if i := strings.LastIndex(prefix, "/"); i >= 0 {
+				prefix = prefix[:i]
+			} else {
+				return ""
+			}
+		}
+	}
+	return prefix
+}
+
+// parseInt64 parses a string to int64 — aria2's numeric fields
+// arrive as strings on the wire. Returns 0 on parse failure
+// (matches the C# `long.Parse` posture which throws on bad input;
+// the Go-port silently defaults to keep the GetItems loop
+// non-fatal).
+func parseInt64(s string) int64 {
+	if strings.TrimSpace(s) == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // GetImportItem passes through unchanged.
@@ -120,19 +260,80 @@ func (a *Aria2) GetImportItem(_ context.Context, item *downloadclients.Item, _ *
 	return item, nil
 }
 
-// RemoveItem is a stub.
-func (a *Aria2) RemoveItem(_ context.Context, _ *downloadclients.Item, _ bool) error {
-	return downloadclients.ErrNotImplementedYet
+// RemoveItem ports `Aria2.RemoveItem` at `:152-189`. aria2 doesn't
+// support file deletion (https://github.com/aria2/aria2/issues/728)
+// — deleteData is documented as unsupported. The implementation
+// looks up the torrent by InfoHash to get the GID, then dispatches
+// to forceRemove (for active downloads) or removeDownloadResult
+// (for complete/error/removed).
+//
+// Returns nil + warn-log when the torrent isn't found (matches C#
+// `:160-163` posture — log + return, don't surface as fatal).
+func (a *Aria2) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
+	if a.proxy == nil {
+		return errors.New("aria2: RemoveItem requires a wired Proxy")
+	}
+	if item == nil {
+		return errors.New("aria2: RemoveItem: nil Item")
+	}
+	hash := strings.ToLower(strings.TrimSpace(item.DownloadID))
+	if hash == "" {
+		return errors.New("aria2: RemoveItem: empty DownloadID")
+	}
+	if deleteData {
+		a.log.Warn("aria2: deleteData requested but aria2 doesn't support file deletion (issue #728) — only removing from queue",
+			slog.String("hash", hash))
+	}
+	torrents, err := a.proxy.GetTorrents(ctx, a.settings)
+	if err != nil {
+		return err
+	}
+	var match *AriaStatus
+	for i, t := range torrents {
+		if strings.EqualFold(t.InfoHash, hash) {
+			match = &torrents[i]
+			break
+		}
+	}
+	if match == nil {
+		a.log.Warn("aria2: could not find infoHash for removal",
+			slog.String("hash", hash))
+		return nil
+	}
+	if match.Status == "complete" || match.Status == "error" || match.Status == "removed" {
+		return a.proxy.RemoveCompletedTorrent(ctx, match.GID, a.settings)
+	}
+	return a.proxy.RemoveTorrent(ctx, match.GID, a.settings)
 }
 
-// GetStatus is a stub.
-func (a *Aria2) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+// GetStatus ports `Aria2.GetStatus` at `:191-198`. Returns
+// IsLocalhost (host contains "127.0.0.1" or "localhost" — C# uses
+// `Contains` so we mirror) + OutputRootFolders sourced from the
+// global `dir` option (aria2.getGlobalOption).
+func (a *Aria2) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
+	if a.proxy == nil {
+		return nil, errors.New("aria2: GetStatus requires a wired Proxy")
+	}
+	host := a.settings.Host
+	info := &downloadclients.ClientInfo{
+		IsLocalhost: strings.Contains(host, "127.0.0.1") || strings.Contains(host, "localhost"),
+	}
+	globals, err := a.proxy.GetGlobals(ctx, a.settings)
+	if err != nil {
+		return nil, err
+	}
+	if dir, ok := globals["dir"]; ok && dir != "" {
+		info.OutputRootFolders = []ospath.OsPath{ospath.New(dir)}
+	}
+	return info, nil
 }
 
-// MarkItemAsImported is a stub.
+// MarkItemAsImported isn't supported by aria2 — the C# base class
+// `TorrentClientBase.MarkItemAsImported` throws NotImplementedException;
+// aria2 doesn't override. Mirrors the Go-port pattern with
+// [downloadclients.ErrMarkAsImportedUnsupported].
 func (a *Aria2) MarkItemAsImported(_ context.Context, _ *downloadclients.Item) error {
-	return downloadclients.ErrNotImplementedYet
+	return downloadclients.ErrMarkAsImportedUnsupported
 }
 
 // Test runs the per-client connection self-check. Validates the

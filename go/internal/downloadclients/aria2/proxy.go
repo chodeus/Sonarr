@@ -168,6 +168,154 @@ func buildAddOptions(settings Settings) map[string]string {
 	return opts
 }
 
+// AriaStatus is the per-torrent shape returned by aria2.tellActive /
+// tellWaiting / tellStopped. Mirrors C# `Aria2Status` at
+// `Aria2Containers.cs:97-160`. Numeric fields are strings on the
+// wire — preserved as strings here; the Provider parses to int64
+// at projection time.
+type AriaStatus struct {
+	GID             string
+	InfoHash        string
+	Status          string // "active" / "waiting" / "paused" / "complete" / "error" / "removed"
+	TotalLength     string
+	CompletedLength string
+	UploadLength    string
+	DownloadSpeed   string
+	ErrorMessage    string
+	BittorrentName  string   // from bittorrent.info.name
+	FilePaths       []string // file.path entries
+}
+
+// GetTorrents fires the 3-call fanout — tellActive + tellWaiting +
+// tellStopped — and returns the union. Mirrors C#
+// `Aria2Proxy.GetTorrents` at `:74-87`. tellWaiting + tellStopped
+// take (offset=0, num=10240) per the C# `0, 10 * 1024` args.
+func (p *Proxy) GetTorrents(ctx context.Context, settings Settings) ([]AriaStatus, error) {
+	active, err := p.tellMethod(ctx, settings, "aria2.tellActive")
+	if err != nil {
+		return nil, err
+	}
+	waiting, err := p.tellMethod(ctx, settings, "aria2.tellWaiting", 0, 10*1024)
+	if err != nil {
+		return nil, err
+	}
+	stopped, err := p.tellMethod(ctx, settings, "aria2.tellStopped", 0, 10*1024)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AriaStatus, 0, len(active)+len(waiting)+len(stopped))
+	out = append(out, active...)
+	out = append(out, waiting...)
+	out = append(out, stopped...)
+	return out, nil
+}
+
+func (p *Proxy) tellMethod(ctx context.Context, settings Settings, method string, extraArgs ...any) ([]AriaStatus, error) {
+	args := append([]any{tokenArg(settings)}, extraArgs...)
+	value, err := p.call(ctx, settings, method, args...)
+	if err != nil {
+		return nil, err
+	}
+	rows := value.arrayElements()
+	out := make([]AriaStatus, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, decodeAriaStatus(row))
+	}
+	return out, nil
+}
+
+// decodeAriaStatus projects one struct-typed rawValue into
+// [AriaStatus]. Missing fields → zero values.
+func decodeAriaStatus(v rawValue) AriaStatus {
+	var s AriaStatus
+	if v.Struct == nil {
+		return s
+	}
+	for _, m := range v.Struct.Member {
+		switch m.Name {
+		case "gid":
+			s.GID = m.Value.stringValue()
+		case "infoHash":
+			s.InfoHash = m.Value.stringValue()
+		case "status":
+			s.Status = m.Value.stringValue()
+		case "totalLength":
+			s.TotalLength = m.Value.stringValue()
+		case "completedLength":
+			s.CompletedLength = m.Value.stringValue()
+		case "uploadLength":
+			s.UploadLength = m.Value.stringValue()
+		case "downloadSpeed":
+			s.DownloadSpeed = m.Value.stringValue()
+		case "errorMessage":
+			s.ErrorMessage = m.Value.stringValue()
+		case "bittorrent":
+			// bittorrent.info.name → BittorrentName. The C# tree at
+			// Aria2Containers.cs:79-92 uses Descendants("member") to
+			// walk the nested chain; we do an explicit field-by-field
+			// drill to keep the decoder typed.
+			if info, ok := m.Value.structField("info"); ok {
+				if name, ok := info.structField("name"); ok {
+					s.BittorrentName = name.stringValue()
+				}
+			}
+		case "files":
+			for _, fileRow := range m.Value.arrayElements() {
+				if path, ok := fileRow.structField("path"); ok {
+					s.FilePaths = append(s.FilePaths, path.stringValue())
+				}
+			}
+		}
+	}
+	return s
+}
+
+// RemoveTorrent fires aria2.forceRemove for active downloads.
+// Mirrors C# `RemoveTorrent` at `:131-138`.
+func (p *Proxy) RemoveTorrent(ctx context.Context, gid string, settings Settings) error {
+	value, err := p.call(ctx, settings, "aria2.forceRemove", tokenArg(settings), gid)
+	if err != nil {
+		return err
+	}
+	if returned := value.stringValue(); returned != gid {
+		return fmt.Errorf("aria2: forceRemove returned %q for gid %q", returned, gid)
+	}
+	return nil
+}
+
+// RemoveCompletedTorrent fires aria2.removeDownloadResult for
+// completed / errored / removed downloads. The response is "OK" on
+// success. Mirrors C# `RemoveCompletedTorrent` at `:140-147`.
+func (p *Proxy) RemoveCompletedTorrent(ctx context.Context, gid string, settings Settings) error {
+	value, err := p.call(ctx, settings, "aria2.removeDownloadResult", tokenArg(settings), gid)
+	if err != nil {
+		return err
+	}
+	if v := value.stringValue(); v != "OK" {
+		return fmt.Errorf("aria2: removeDownloadResult returned %q for gid %q (want OK)", v, gid)
+	}
+	return nil
+}
+
+// GetGlobals fires aria2.getGlobalOption + decodes the struct
+// response into a map. Mirrors C# `GetGlobals` at `:89-96`. Used
+// by GetStatus to populate OutputRootFolders from the global
+// `dir` option.
+func (p *Proxy) GetGlobals(ctx context.Context, settings Settings) (map[string]string, error) {
+	value, err := p.call(ctx, settings, "aria2.getGlobalOption", tokenArg(settings))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	if value.Struct == nil {
+		return out, nil
+	}
+	for _, m := range value.Struct.Member {
+		out[m.Name] = m.Value.stringValue()
+	}
+	return out, nil
+}
+
 // ErrAuthFailed is a sentinel placeholder — aria2's auth-failure
 // surfaces as a FaultError with a specific message (e.g.
 // "Unauthorized"); callers should match against the FaultError's
