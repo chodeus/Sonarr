@@ -327,15 +327,42 @@ func (h *Hadouken) RequestAction(_ context.Context, _ string, _ map[string]strin
 
 // Test ports `Hadouken.Test(failures)` at C# `:136-145`. Runs
 // Settings.Validate first, then TestConnection (version-gate via
-// `core.getSystemInfo`). The C# code also runs TestGetTorrents
-// after the version check — deferred to the GetItems follow-up.
+// `core.getSystemInfo`), then (slice 5.J106) TestGetTorrents
+// (one-shot list call to confirm the API surface is reachable
+// post-auth). Mirrors the J101/J102/J104/J105 pattern of additive
+// Test-arm probes shared across the major DCs.
+//
+// HasErrors guard at C# `:138-143`: TestConnection failures short-
+// circuit the follow-on TestGetTorrents — a broken connection
+// shouldn't dispatch a second probe that's guaranteed to fail with
+// the same root cause.
 func (h *Hadouken) Test(ctx context.Context) ([]downloadclients.TestFailure, error) {
 	failures := h.settings.Validate()
 	if len(failures) > 0 {
 		return failures, nil
 	}
 	failures = append(failures, h.testConnection(ctx)...)
+	if len(failures) > 0 {
+		return failures, nil
+	}
+	if f := h.testGetTorrents(ctx); f != nil {
+		failures = append(failures, *f)
+	}
 	return failures, nil
+}
+
+// testGetTorrents ports C# `TestGetTorrents` at `Hadouken.cs:191-204`.
+// One probe call against the live daemon; any error surfaces a
+// whole-form failure containing the cause.
+func (h *Hadouken) testGetTorrents(ctx context.Context) *downloadclients.TestFailure {
+	if _, err := h.proxy.GetTorrents(ctx, h.settings); err != nil {
+		return &downloadclients.TestFailure{
+			PropertyName:        "",
+			ErrorMessage:        fmt.Sprintf("Failed to get the list of torrents: %v", err),
+			DetailedDescription: "Sonarr was able to authenticate against Hadouken but the webui.list RPC failed; check the Hadouken log.",
+		}
+	}
+	return nil
 }
 
 // testConnection ports C# `TestConnection` at `:159-189`. Calls

@@ -801,3 +801,108 @@ func TestRegistry_RegistersHadouken(t *testing.T) {
 		t.Errorf("registry missing (%s, %s)", hadouken.Implementation, hadouken.ConfigContract)
 	}
 }
+
+// --- J106 TestGetTorrents ----------------------------------------
+
+// routedDoer is a per-method-routed stub for the J106 Test-arm
+// follow-up tests. It returns different bodies / status depending
+// on the JSON-RPC method name in the request body.
+type routedDoer struct {
+	bodyByMethod   map[string]string
+	statusByMethod map[string]int
+	calls          map[string]int
+}
+
+func (r *routedDoer) Do(req *http.Request) (*http.Response, error) {
+	if r.calls == nil {
+		r.calls = map[string]int{}
+	}
+	body, _ := io.ReadAll(req.Body)
+	bs := string(body)
+	method := ""
+	for _, m := range []string{"core.getSystemInfo", "webui.list"} {
+		if strings.Contains(bs, `"method":"`+m+`"`) {
+			method = m
+			break
+		}
+	}
+	r.calls[method]++
+	respBody := r.bodyByMethod[method]
+	if respBody == "" {
+		respBody = `{"result":{}}`
+	}
+	status := r.statusByMethod[method]
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(respBody)),
+	}, nil
+}
+
+func TestProvider_TestJ106_GetTorrentsFires(t *testing.T) {
+	doer := &routedDoer{
+		bodyByMethod: map[string]string{
+			"core.getSystemInfo": `{"result":{"versions":{"hadouken":"5.2.0"}}}`,
+			"webui.list":         `{"result":{"torrents":[]}}`,
+		},
+	}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	failures, err := p.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Errorf("failures = %+v, want none", failures)
+	}
+	if doer.calls["webui.list"] != 1 {
+		t.Errorf("webui.list fired %d times, want 1 (J106 TestGetTorrents)", doer.calls["webui.list"])
+	}
+}
+
+func TestProvider_TestJ106_GetTorrentsFailureSurfaces(t *testing.T) {
+	doer := &routedDoer{
+		bodyByMethod: map[string]string{
+			"core.getSystemInfo": `{"result":{"versions":{"hadouken":"5.2.0"}}}`,
+			"webui.list":         "boom",
+		},
+		statusByMethod: map[string]int{
+			"webui.list": http.StatusInternalServerError,
+		},
+	}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	failures, err := p.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "" && strings.Contains(f.ErrorMessage, "list of torrents") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("failures = %+v, want whole-form 'list of torrents' failure", failures)
+	}
+}
+
+func TestProvider_TestJ106_ConnectionFailureShortCircuits(t *testing.T) {
+	// core.getSystemInfo fails → testGetTorrents must NOT fire.
+	doer := &routedDoer{
+		statusByMethod: map[string]int{
+			"core.getSystemInfo": http.StatusUnauthorized,
+		},
+		bodyByMethod: map[string]string{
+			"core.getSystemInfo": "denied",
+		},
+	}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	if _, err := p.Test(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if doer.calls["webui.list"] != 0 {
+		t.Errorf("webui.list fired despite connection failure; calls=%v", doer.calls)
+	}
+}
