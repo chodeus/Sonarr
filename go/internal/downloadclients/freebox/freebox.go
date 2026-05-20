@@ -19,11 +19,17 @@ import (
 // implementation for the C# `TorrentFreeboxDownload` class at
 // `src/NzbDrone.Core/Download/Clients/FreeboxDownload/TorrentFreeboxDownload.cs:1-232`.
 //
-// Skeleton-only at 5.J79: Test (auth probe via /login → HMAC-SHA1
-// session-token exchange) + GetStatus (IsLocalhost-only) + identity
-// methods are real; Download / GetItems / RemoveItem stub out to
-// [ErrNotImplemented] until the follow-up slices port the
-// /downloads endpoints.
+// Functionally complete after the 5.J79 → 5.J87 arc: Test runs
+// the HMAC-SHA1 session-token probe; Download dispatches via POST
+// /downloads/add (URL form-encoded for magnets, multipart for
+// .torrent bytes) + SetTorrentSettings PUT for AddPaused/queue
+// position/seed ratio; GetItems walks /downloads/ with the BT type
+// filter + DestinationDirectory/Category path gates + 6-arm status
+// table + ETA + SeedRatio composition; RemoveItem fires DELETE
+// /downloads/<id> with the optional /erase suffix; GetStatus is
+// IsLocalhost-only. Only deferred piece: the GetStatus
+// OutputRootFolders arm (composes the configured destination
+// directory via the GetDownloadConfiguration probe).
 type TorrentFreeboxDownload struct {
 	settings Settings
 	def      *downloadclients.DownloadClient
@@ -342,11 +348,26 @@ func (f *TorrentFreeboxDownload) GetImportItem(_ context.Context, item *download
 	return item, nil
 }
 
-// RemoveItem is a STUB at 5.J79. Follow-up ports
-// [Proxy.DeleteTask] — /downloads/<id> DELETE (with /erase suffix
-// when deleteData=true).
-func (f *TorrentFreeboxDownload) RemoveItem(_ context.Context, _ *downloadclients.Item, _ bool) error {
-	return fmt.Errorf("%w: RemoveItem", ErrNotImplemented)
+// RemoveItem ports `TorrentFreeboxDownload.RemoveItem` at C#
+// `:151-154`. Delegates to [Proxy.DeleteTask] — DELETE
+// `/downloads/<id>` (deleteData=false) or `/downloads/<id>/erase`
+// (deleteData=true; the `/erase` suffix tells Freebox to also
+// remove the downloaded files from disk).
+func (f *TorrentFreeboxDownload) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
+	if f.proxy == nil {
+		return errors.New("freebox: nil Proxy")
+	}
+	if item == nil {
+		return errors.New("freebox: nil item")
+	}
+	id := strings.TrimSpace(item.DownloadID)
+	if id == "" {
+		return errors.New("freebox: item has empty DownloadID")
+	}
+	if err := f.proxy.DeleteTask(ctx, f.settings, id, deleteData); err != nil {
+		return fmt.Errorf("freebox: DeleteTask(%s): %w", id, err)
+	}
+	return nil
 }
 
 // GetStatus is IsLocalhost-only at 5.J79. The C# version reads
@@ -416,9 +437,6 @@ func isLocalHost(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
-
-// ErrNotImplemented signals a 5.J79 skeleton stub.
-var ErrNotImplemented = errors.New("freebox: not yet implemented in this build")
 
 // Compile-time guard.
 var _ downloadclients.Provider = (*TorrentFreeboxDownload)(nil)

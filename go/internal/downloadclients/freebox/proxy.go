@@ -302,6 +302,23 @@ var taskErrorDescriptions = map[string]string{
 	"nzb_authentication_required": "Nzb server need authentication.",
 }
 
+// DeleteTask fires DELETE `/downloads/<id>` (deleteData=false) or
+// DELETE `/downloads/<id>/erase` (deleteData=true). Auth-required.
+// Mirrors C# `FreeboxDownloadProxy.DeleteTask` at `:86-100`. The
+// `/erase` suffix tells Freebox to also remove the downloaded
+// files from disk; without it the queue entry alone is removed.
+func (p *Proxy) DeleteTask(ctx context.Context, s Settings, id string, deleteData bool) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("freebox: DeleteTask: empty id")
+	}
+	resource := "/downloads/" + id
+	if deleteData {
+		resource += "/erase"
+	}
+	return p.doRequest(ctx, s, http.MethodDelete, resource, nil, "", true, nil)
+}
+
 // GetTasks fires GET `/downloads/`. Auth-required. Mirrors C#
 // `FreeboxDownloadProxy.GetTasks` at `:109-114`. Returns the full
 // list — the Provider's GetItems applies the BT type-filter +

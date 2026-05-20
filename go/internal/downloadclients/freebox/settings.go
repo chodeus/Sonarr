@@ -17,21 +17,23 @@
 //   - `/downloads/config/` (GET) — global download config
 //     (GetStatus uses it for OutputRootFolders).
 //
-// Slice 5.J79 (this slice) ships the SKELETON:
+// Functionally complete across the 5.J79 → 5.J87 arc:
 //
 //   - [Settings] + [NewSettings] + Validate.
-//   - [Proxy] with the HMAC-SHA1 session-token flow + the
-//     [Proxy.Authenticate] probe (logged-in gate) used by Test.
-//   - [TorrentFreeboxDownload] Provider with Name + Protocol +
-//     Definition + Settings + Test (auth probe) + GetStatus
-//     (IsLocalhost-only) + identity methods. Download / GetItems
-//     / RemoveItem stub out to [ErrNotImplemented].
+//   - [Proxy] with the HMAC-SHA1 session-token flow + the full
+//     /downloads surface: GetDownloadConfiguration (Test path
+//     resolver), AddTaskFromURL (magnet add via form-encoded POST),
+//     AddTaskFromFile (.torrent add via multipart POST),
+//     SetTorrentSettings (PUT for status/queue_pos/stop_ratio),
+//     GetTasks (list with the snake-case status enum), DeleteTask
+//     (cancel via DELETE with optional /erase suffix).
+//   - [TorrentFreeboxDownload] Provider implementing every
+//     [downloadclients.Provider] method against the Freebox V1 API.
 //   - Registry registration via init().
 //
-// Follow-up slices fill in (per-method ports of the Proxy
-// surface — AddTaskFromURL, AddTaskFromFile, GetTasks, DeleteTask,
-// GetDownloadConfiguration — plus the Provider Download/GetItems/
-// RemoveItem wiring).
+// Documented deferred piece: the GetStatus OutputRootFolders arm
+// (the C# version composes the OutputRootFolders entry from the
+// GetDownloadConfiguration result + RemotePathMapper translation).
 package freebox
 
 import (

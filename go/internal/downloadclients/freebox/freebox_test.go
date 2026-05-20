@@ -360,14 +360,8 @@ func TestProvider_GetStatus_LocalhostFlag(t *testing.T) {
 	}
 }
 
-func TestProvider_RemoveItem_StillStub(t *testing.T) {
-	// J86 wires GetItems; RemoveItem is the last remaining stub
-	// before J87 closes the arc.
-	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(newScripted(), nil), nil)
-	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); !errors.Is(err, freebox.ErrNotImplemented) {
-		t.Errorf("RemoveItem err = %v, want ErrNotImplemented", err)
-	}
-}
+// (J87 wires RemoveItem; the Freebox arc is functionally complete.
+// Per-method RemoveItem tests cover the behaviour individually.)
 
 func TestProvider_MarkItemAsImported_ReturnsUnsupported(t *testing.T) {
 	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(newScripted(), nil), nil)
@@ -792,6 +786,79 @@ func TestProvider_GetItems_PropagatesProxyError(t *testing.T) {
 	doer.queueErr("/api/v1/login", errors.New("dial"))
 	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(doer, nil), nil)
 	_, err := p.GetItems(context.Background())
+	if !errors.Is(err, freebox.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable", err)
+	}
+}
+
+// captureDeleteDoer wraps scriptedDoer and grabs the DELETE
+// request URL so the RemoveItem tests can assert the /erase
+// suffix is applied correctly.
+type captureDeleteDoer struct {
+	scripted   *scriptedDoer
+	lastMethod string
+	lastPath   string
+}
+
+func (c *captureDeleteDoer) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodDelete {
+		c.lastMethod = req.Method
+		c.lastPath = req.URL.Path
+	}
+	return c.scripted.Do(req)
+}
+
+func TestProvider_RemoveItem_DeleteDataFalse_NoEraseSuffix(t *testing.T) {
+	doer := &captureDeleteDoer{scripted: newScripted()}
+	queueAuthFlow(doer.scripted)
+	doer.scripted.queue("/api/v1/downloads/task-42", `{"success":true}`)
+
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "task-42"}, false); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if doer.lastMethod != http.MethodDelete {
+		t.Errorf("method = %q, want DELETE", doer.lastMethod)
+	}
+	if doer.lastPath != "/api/v1/downloads/task-42" {
+		t.Errorf("path = %q, want /api/v1/downloads/task-42 (no /erase for deleteData=false)", doer.lastPath)
+	}
+}
+
+func TestProvider_RemoveItem_DeleteDataTrue_EraseSuffix(t *testing.T) {
+	doer := &captureDeleteDoer{scripted: newScripted()}
+	queueAuthFlow(doer.scripted)
+	doer.scripted.queue("/api/v1/downloads/task-42/erase", `{"success":true}`)
+
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "task-42"}, true); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if doer.lastPath != "/api/v1/downloads/task-42/erase" {
+		t.Errorf("path = %q, want /api/v1/downloads/task-42/erase (deleteData=true adds /erase)", doer.lastPath)
+	}
+}
+
+func TestProvider_RemoveItem_NilItem(t *testing.T) {
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(newScripted(), nil), nil)
+	if err := p.RemoveItem(context.Background(), nil, false); err == nil {
+		t.Fatal("err = nil, want nil-item error")
+	}
+}
+
+func TestProvider_RemoveItem_EmptyID(t *testing.T) {
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(newScripted(), nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, false); err == nil {
+		t.Fatal("err = nil, want empty-DownloadID error")
+	}
+}
+
+func TestProvider_RemoveItem_PropagatesProxyError(t *testing.T) {
+	doer := newScripted()
+	queueAuthFlow(doer)
+	doer.queueStatus("/api/v1/downloads/abc", http.StatusInternalServerError, ``)
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(doer, nil), nil)
+	err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "abc"}, false)
 	if !errors.Is(err, freebox.ErrUnavailable) {
 		t.Errorf("err = %v, want ErrUnavailable", err)
 	}
