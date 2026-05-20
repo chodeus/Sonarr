@@ -1,12 +1,16 @@
 package delayprofiles_test
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"sort"
+	"sync/atomic"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
 	"sonarr.tv/sonarr/internal/delayprofiles"
+	"sonarr.tv/sonarr/internal/messaging"
 )
 
 func newServiceSQLite(t *testing.T) (*delayprofiles.Service, *delayprofiles.Repo) {
@@ -16,7 +20,7 @@ func newServiceSQLite(t *testing.T) (*delayprofiles.Service, *delayprofiles.Repo
 	if err != nil {
 		t.Fatalf("NewRepo: %v", err)
 	}
-	return delayprofiles.NewService(r), r
+	return delayprofiles.NewService(r, nil), r
 }
 
 func TestService_Add_AssignsOrderAndPersists(t *testing.T) {
@@ -371,5 +375,50 @@ func TestService_Reorder_UnknownIDIsNoOp(t *testing.T) {
 			t.Errorf("Order changed under no-op Reorder at i=%d: pre=%d post=%d",
 				i, preOrders[i], postOrders[i])
 		}
+	}
+}
+
+// Slice 5.J29 (audit B.2 second wave). All four CUD paths publish
+// DelayProfileUpdatedEvent so the SignalR `delayprofile` channel can
+// emit Sync. Go-port additive (C# class doesn't emit).
+func TestService_PublishesUpdatedEventOnCUD(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	r, err := delayprofiles.NewRepo(db)
+	if err != nil {
+		t.Fatalf("NewRepo: %v", err)
+	}
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+	svc := delayprofiles.NewService(r, bus)
+
+	var got atomic.Int32
+	messaging.Subscribe(bus, "test.delayprofile.updated",
+		func(_ context.Context, _ delayprofiles.DelayProfileUpdatedEvent) error {
+			got.Add(1)
+			return nil
+		})
+
+	// Add.
+	p := &delayprofiles.Profile{Tags: []int{1}}
+	if _, err := svc.Add(context.Background(), p); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// Update.
+	p.EnableTorrent = true
+	if err := svc.Update(context.Background(), p); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	// Reorder (no-op afterID for an existing id).
+	if _, err := svc.Reorder(context.Background(), p.ID, nil); err != nil {
+		t.Fatalf("Reorder: %v", err)
+	}
+	// Delete.
+	if err := svc.Delete(context.Background(), p.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if got.Load() != 4 {
+		t.Errorf("DelayProfileUpdatedEvent count: got %d, want 4 (Add+Update+Reorder+Delete)", got.Load())
 	}
 }

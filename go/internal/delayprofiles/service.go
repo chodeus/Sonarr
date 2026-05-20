@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"sonarr.tv/sonarr/internal/messaging"
 )
 
 // Service ports `DelayProfileService.cs:22-167`. Wraps the Repo with
@@ -37,11 +39,13 @@ import (
 //
 // What's deferred:
 //
-//   - No event publishing — the C# `DelayProfileService` does NOT emit
-//     any IEvent on Add/Update/Delete/Reorder. (Confirmed: no
-//     `_eventAggregator` field, no `PublishEvent` calls in the C# class.)
-//     Future consumers that want change notifications will subscribe
-//     to a higher-level config-changed event when one arrives.
+//   - C# `DelayProfileService` does NOT emit any IEvent on
+//     Add/Update/Delete/Reorder (no `_eventAggregator` field, no
+//     `PublishEvent` calls). Its SignalR sync rides the inherited
+//     ModelEvent<DelayProfile>. The Go port publishes a Go-port
+//     additive [DelayProfileUpdatedEvent] from each CUD path so the
+//     SignalR `delayprofile` channel can subscribe — see the
+//     event's doc-comment.
 //   - The 30-second TTL on `_bestForTagsCache` is omitted. The C# cache
 //     uses TimeSpan.FromSeconds(30) as a fallback bound; in practice
 //     the cache is always cleared by the next mutation. The Go port
@@ -49,14 +53,18 @@ import (
 //     Delete/Reorder clears the entire memo.
 type Service struct {
 	repo *Repo
+	bus  *messaging.Bus
 
 	mu         sync.RWMutex
 	bestByTags map[string]Profile // keyed by sortedTagsKey
 }
 
-// NewService binds a Repo into a DelayProfile Service.
-func NewService(r *Repo) *Service {
-	return &Service{repo: r, bestByTags: make(map[string]Profile)}
+// NewService binds a Repo and an optional *messaging.Bus into a
+// DelayProfile Service. nil bus is supported — the Service skips
+// event publishing (matches the established Phase 2/3 skip-publish
+// convention across other services).
+func NewService(r *Repo, bus *messaging.Bus) *Service {
+	return &Service{repo: r, bus: bus, bestByTags: make(map[string]Profile)}
 }
 
 // Add ports `DelayProfileService.Add(profile)` at `:33-41`. Assigns
@@ -78,6 +86,7 @@ func (s *Service) Add(ctx context.Context, profile *Profile) (*Profile, error) {
 		return nil, fmt.Errorf("delayprofiles: add: %w", err)
 	}
 	s.invalidateBest()
+	s.publishUpdated(ctx)
 	return profile, nil
 }
 
@@ -90,6 +99,7 @@ func (s *Service) Update(ctx context.Context, profile *Profile) error {
 		return fmt.Errorf("delayprofiles: update: %w", err)
 	}
 	s.invalidateBest()
+	s.publishUpdated(ctx)
 	return nil
 }
 
@@ -120,6 +130,7 @@ func (s *Service) Delete(ctx context.Context, id int) error {
 	}
 
 	s.invalidateBest()
+	s.publishUpdated(ctx)
 	return nil
 }
 
@@ -223,7 +234,18 @@ func (s *Service) Reorder(ctx context.Context, id int, afterID *int) ([]Profile,
 	}
 
 	s.invalidateBest()
+	s.publishUpdated(ctx)
 	return s.repo.All(ctx)
+}
+
+// publishUpdated emits [DelayProfileUpdatedEvent] best-effort.
+// No-op when bus is nil (matches the established skip-publish
+// pattern across other services).
+func (s *Service) publishUpdated(ctx context.Context) {
+	if s.bus == nil {
+		return
+	}
+	_ = messaging.Publish(ctx, s.bus, DelayProfileUpdatedEvent{})
 }
 
 // invalidateBest clears the BestForTags memo. Called after every

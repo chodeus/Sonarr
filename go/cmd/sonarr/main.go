@@ -2131,7 +2131,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("delayprofiles repo: %w", err)
 	}
-	delayProfilesSvc := delayprofiles.NewService(delayProfilesRepo)
+	delayProfilesSvc := delayprofiles.NewService(delayProfilesRepo, bus)
 	if delayProfilesSvc == nil {
 		return fmt.Errorf("delayprofiles service: nil — required dep regressed")
 	}

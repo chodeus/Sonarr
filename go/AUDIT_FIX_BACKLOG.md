@@ -17,7 +17,7 @@ For closure narrative, see commit history `5.J1` … `5.J22` on `go-port`. The t
 
 | Family | Service-side work | Subscriber site |
 |---|---|---|
-| `delayprofile` | Add `Service.bus` field + publish `DelayProfileUpdatedEvent` on Add/Update/Delete/Reorder. NewService signature change. | `cmd/sonarr/signalr_wiring.go` Sync broadcaster |
+| ~~`delayprofile`~~ | ~~Add `Service.bus` field + publish `DelayProfileUpdatedEvent` on Add/Update/Delete/Reorder. NewService signature change.~~ — **CLOSED 5.J29** via payload-less `DelayProfileUpdatedEvent` from all 4 CUD paths. NewService gained `*messaging.Bus` param. | `delayprofile` Sync broadcaster |
 | `customfilter` | Same shape as delayprofile. | Same. |
 | `releaseprofile` | Same. | Same. |
 | `remotepathmap` | Same. | Same. |

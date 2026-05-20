@@ -28,6 +28,7 @@ import (
 	"sonarr.tv/sonarr/internal/blocklist"
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/customformats"
+	"sonarr.tv/sonarr/internal/delayprofiles"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/healthcheck"
@@ -502,6 +503,25 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 		func(ctx context.Context, _ blocklist.BlocklistChangedEvent) error {
 			if err := blocklistBroadcaster.Sync(ctx); err != nil {
 				logger.Warn("signalr: blocklist sync broadcast failed", "err", err)
+			}
+			return nil
+		})
+
+	// Slice 5.J29 (audit B.2 second wave): `delayprofile` channel.
+	// DelayProfileUpdatedEvent fires from delayprofiles.Service on
+	// Add / Update / Delete / Reorder. Go-port additive (C# class
+	// has no `_eventAggregator` — sync rides the inherited
+	// ModelEvent<DelayProfile>). The React UI's delay-profile list
+	// refetches on Sync.
+	delayProfileBroadcaster := &signalr.ResourceBroadcaster[emptySyncPayload]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "delayprofile",
+		Version:     signalr.V3Version,
+	}
+	messaging.Subscribe(bus, "signalr.delayprofile.Updated",
+		func(ctx context.Context, _ delayprofiles.DelayProfileUpdatedEvent) error {
+			if err := delayProfileBroadcaster.Sync(ctx); err != nil {
+				logger.Warn("signalr: delayprofile sync broadcast failed", "err", err)
 			}
 			return nil
 		})
