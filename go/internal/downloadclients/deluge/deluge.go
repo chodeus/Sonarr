@@ -219,16 +219,21 @@ func fallbackFilename(req *downloadclients.GrabRequest) string {
 //
 // Differences from the C# port:
 //
-//   - The ReconnectToDaemon arm at C# `:198-208` (when ignored
-//     torrents trip a stale-daemon reconnect) is deferred — the
-//     reconnect helper lands when 5.G2g GetStatus drives the
-//     web.connected probe.
-//   - Remote-path-mapping translation at C# `:147` is deferred
-//     until the [downloadclients.Dependencies.RemotePathMappingService]
-//     port lands (same as 5.G1d / qBittorrent).
+//   - The ReconnectToDaemon arm at C# `:198-208` is documented as
+//     buggy upstream — the outer `&& _hasAttemptedReconnecting`
+//     guard makes the reconnect-arm dead code (the inner `else`
+//     branch can never fire), so the C# tree only ever logs the
+//     warn line. The Go port intentionally omits the reconnect dance
+//     for the same observable behavior.
+//   - Remote-path-mapping translation at C# `:147` is wired via
+//     [Deluge.SetRemotePathMapper] (Phase 6.B) — the constructor
+//     casts [downloadclients.Dependencies.RemotePathMappingService]
+//     to [downloadclients.RemotePathMapper] and OutputPath flows
+//     through `remapOutput` per-call.
 //   - Ignored-torrent counter at C# `:128,136-138` collapses to a
-//     single slog.Warn per call rather than the stateful "have
-//     we tried reconnecting yet" branch.
+//     single slog.Warn per call (the reconnect dance is unreachable
+//     in C# so the stateful "have we tried reconnecting yet" branch
+//     buys nothing).
 func (d *Deluge) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
 	if d.proxy == nil {
 		return nil, errors.New("deluge: GetItems: nil proxy")
@@ -423,9 +428,10 @@ func (d *Deluge) RemoveItem(ctx context.Context, item *downloadclients.Item, del
 // this field for Deluge, matching the absence of a global
 // remove-on-completion preference in deluge.
 //
-// The remote-path-mapping translation at C# `:258` is deferred
-// until the [downloadclients.Dependencies.RemotePathMappingService]
-// port lands (same as 5.G1g / qBittorrent).
+// The remote-path-mapping translation at C# `:258` is wired via
+// [Deluge.SetRemotePathMapper] (Phase 6.B) — the resolved destDir
+// flows through `remapOutput` so off-host Deluge instances surface
+// a Sonarr-side path. Nil-mapper falls through to the raw destDir.
 func (d *Deluge) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
 	if d.proxy == nil {
 		return nil, errors.New("deluge: GetStatus: nil proxy")

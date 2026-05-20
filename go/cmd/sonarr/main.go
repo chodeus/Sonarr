@@ -2415,9 +2415,13 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	//
 	//   - HTTPClient: every client's proxy.
 	//   - ConfigProvider: read-only access at construction time.
-	//   - DiskProvider: rTorrent (J111), Aria2 (J112), SAB (J116),
-	//     NZBGet (6.C3) — clients whose own API doesn't support
-	//     delete-with-data fall back to Sonarr-side DiskProvider.DeleteFolder.
+	//   - DiskProvider: NZBGet (6.C3), rTorrent (J111), Aria2 (J112),
+	//     SAB (J116), DownloadStation Torrent+Usenet (J124) — clients
+	//     whose own API doesn't support delete-with-data fall back to
+	//     Sonarr-side DiskProvider.DeleteFolder. DS additionally uses
+	//     the J121 SharedFolderResolver to translate the DSM-side
+	//     OutputPath to a Sonarr-visible physical path before the
+	//     DeleteFolder call.
 	//   - Logger: every client.
 	//   - StatusService: downloadclientstatus back-off escalation.
 	//   - RemotePathMappingService: every RPM-aware client (Phase 6.B
