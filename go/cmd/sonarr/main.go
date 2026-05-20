@@ -1504,6 +1504,23 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("healthcheck indexerLongTermStatus: %w", err)
 	}
+	// Audit fix B.5d: DownloadClientSortingCheck warns when any
+	// enabled download client reports a non-empty SortingMode (which
+	// would conflict with Sonarr's import pipeline). The DC enumerator
+	// adapter is constructed here with nil deps; its registry +
+	// Dependencies bundle gets bound later (line ~2330) once
+	// httpClient + downloadClientStatusSvc + remotePathMappingsSvc are
+	// all in scope. Until that bind fires the check reports OK (every
+	// row's Err is "registry not yet wired", which the check logs +
+	// skips). After bind the check runs the GetStatus RPC per enabled
+	// client. The same enumerator will be reused for the
+	// DownloadClient{RemovesCompleted,RootFolder} checks in follow-up
+	// slices.
+	dcStatusEnumerator := newDownloadClientStatusEnumeratorAdapter(downloadClientsRepo, logger)
+	downloadClientSortingCheck, err := healthcheck.NewDownloadClientSortingCheck(dcStatusEnumerator, logger)
+	if err != nil {
+		return fmt.Errorf("healthcheck downloadClientSorting: %w", err)
+	}
 
 	// Slice 4.AI (queue [N5]): NotificationStatusCheck wires
 	// EnabledNotificationLister (over notifications.Repo via the
@@ -1691,6 +1708,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		indexerJackettAllCheck,
 		indexerDCCheck,
 		indexerLongTermStatusCheck,
+		downloadClientSortingCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)
@@ -2317,26 +2335,32 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// structural typing. The 6.C3 NZBGet RemoveItem deleteData arm
 	// consumes this dep first; 6.C4 may add SABnzbd as a follow-up.
 	var _ downloadclients.DiskProvider = (*disk.Provider)(nil)
+	dcDeps := downloadclients.Dependencies{
+		HTTPClient:               httpClient,
+		ConfigProvider:           configProv,
+		DiskProvider:             diskProv,
+		Logger:                   logger,
+		StatusService:            downloadClientStatusSvc,
+		RemotePathMappingService: remotePathMappingsSvc,
+		// Slice 6.B2 (Phase 6.B): wired here so the per-client
+		// constructors (sabnzbd / transmission / qbittorrent /
+		// deluge / nzbget) consume it via the downloadclients.
+		// RemotePathMapper narrow interface. Until 6.B3-6.B7 land
+		// the per-client casts + OutputPath remap calls, the dep
+		// is in scope but unread by every constructor; behaviour
+		// is unchanged.
+	}
 	downloadClientLister := newDownloadClientLister(
 		downloadClientsRepo,
 		downloadclients.Default(),
-		downloadclients.Dependencies{
-			HTTPClient:               httpClient,
-			ConfigProvider:           configProv,
-			DiskProvider:             diskProv,
-			Logger:                   logger,
-			StatusService:            downloadClientStatusSvc,
-			RemotePathMappingService: remotePathMappingsSvc,
-			// Slice 6.B2 (Phase 6.B): wired here so the per-client
-			// constructors (sabnzbd / transmission / qbittorrent /
-			// deluge / nzbget) consume it via the downloadclients.
-			// RemotePathMapper narrow interface. Until 6.B3-6.B7 land
-			// the per-client casts + OutputPath remap calls, the dep
-			// is in scope but unread by every constructor; behaviour
-			// is unchanged.
-		},
+		dcDeps,
 		logger,
 	)
+	// Audit fix B.5d: now that the deps bundle exists, late-bind the
+	// healthcheck DC-status enumerator. Pre-bind it returned an
+	// "registry not yet wired" Err per row; post-bind it constructs
+	// each enabled client + calls GetStatus on every check run.
+	dcStatusEnumerator.SetDeps(downloadclients.Default(), dcDeps)
 	// Slice 6.D (Phase 6.D — DecisionPrioritizer wiring): construct
 	// *decisionengine.DecisionComparer with three deps.
 	//

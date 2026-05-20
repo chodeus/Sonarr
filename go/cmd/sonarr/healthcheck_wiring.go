@@ -15,7 +15,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
@@ -406,6 +408,92 @@ func (a enabledDownloadClientCountAdapter) EnabledDownloadClientCount(ctx contex
 	return count, nil
 }
 
+// downloadClientStatusEnumeratorAdapter implements
+// healthcheck.DownloadClientStatusEnumerator. Walks the
+// downloadclients table, filters to enabled rows, constructs each
+// row via the registry, and calls Provider.GetStatus per row.
+// Mirrors the C# `DownloadClientProvider.GetDownloadClients(true)`
+// surface the DC-status family of healthchecks
+// (DownloadClientSortingCheck, DownloadClientRemovesCompletedCheck,
+// DownloadClientRootFolderCheck) consume. Per-row construction or
+// status failures land on the EnumeratedDownloadClient.Err field so
+// the calling check can log + skip without aborting the
+// enumeration.
+//
+// Audit fix B.5d. The adapter is constructed at healthSvc-wire time
+// (before httpClient and the downloadclients.Dependencies bundle
+// exist) with a nil bundle, then has its deps bound late via
+// SetDeps once the wiring at main.go:~2320 puts httpClient,
+// downloadClientStatusSvc, and remotePathMappingsSvc in scope. Until
+// SetDeps fires, EnabledDownloadClients returns rows with Err set
+// to "registry not yet wired" — the consuming healthchecks log +
+// skip and report OK. After SetDeps, every enabled row is
+// constructed + status-fetched on each Run.
+type downloadClientStatusEnumeratorAdapter struct {
+	repo *downloadclients.Repo
+	log  *slog.Logger
+
+	mu       sync.RWMutex
+	registry *downloadclients.Registry
+	deps     downloadclients.Dependencies
+}
+
+func newDownloadClientStatusEnumeratorAdapter(repo *downloadclients.Repo, log *slog.Logger) *downloadClientStatusEnumeratorAdapter {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &downloadClientStatusEnumeratorAdapter{repo: repo, log: log}
+}
+
+// SetDeps binds the registry + Dependencies bundle. Safe to call
+// after the adapter is already in service — the check
+// orchestrator's per-cadence Run() acquires the read lock.
+func (a *downloadClientStatusEnumeratorAdapter) SetDeps(registry *downloadclients.Registry, deps downloadclients.Dependencies) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.registry = registry
+	a.deps = deps
+}
+
+func (a *downloadClientStatusEnumeratorAdapter) EnabledDownloadClients(ctx context.Context) ([]healthcheck.EnumeratedDownloadClient, error) {
+	a.mu.RLock()
+	registry := a.registry
+	deps := a.deps
+	a.mu.RUnlock()
+
+	rows, err := a.repo.All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("downloadclients.All: %w", err)
+	}
+	out := make([]healthcheck.EnumeratedDownloadClient, 0, len(rows))
+	for i := range rows {
+		row := &rows[i]
+		if !row.Enable {
+			continue
+		}
+		entry := healthcheck.EnumeratedDownloadClient{Name: row.Name}
+		if registry == nil {
+			entry.Err = fmt.Errorf("downloadclients: registry not yet wired")
+			out = append(out, entry)
+			continue
+		}
+		provider, err := registry.Construct(row, deps)
+		if err != nil {
+			entry.Err = err
+			out = append(out, entry)
+			continue
+		}
+		status, err := provider.GetStatus(ctx)
+		if err != nil {
+			entry.Err = err
+		} else {
+			entry.Status = status
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
 // Compile-time guards. Adapter shapes wire into the healthcheck
 // constructors via Go's structural typing.
 var (
@@ -417,4 +505,5 @@ var (
 	_ healthcheck.RssEnabledLister               = rssIndexerCountAdapter{}
 	_ healthcheck.SearchEnabledLister            = searchIndexerCountAdapter{}
 	_ healthcheck.DownloadClientLister           = enabledDownloadClientCountAdapter{}
+	_ healthcheck.DownloadClientStatusEnumerator = (*downloadClientStatusEnumeratorAdapter)(nil)
 )
