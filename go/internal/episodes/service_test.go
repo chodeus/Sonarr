@@ -1,13 +1,17 @@
 package episodes_test
 
 import (
+	"context"
 	"errors"
+	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -388,5 +392,156 @@ func TestService_NewServiceErrors(t *testing.T) {
 	t.Parallel()
 	if _, err := episodes.NewService(nil, nil); err == nil {
 		t.Errorf("NewService(nil) want error")
+	}
+}
+
+// Slice 5.J26 (audit B.2 second wave). Monitored-flip publishes drive
+// the `episode` SignalR Sync channel — verify the three flip paths
+// each publish exactly once with the expected payload shape.
+func TestService_SetEpisodeMonitored_PublishesEvent(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	r, err := episodes.NewRepo(db)
+	if err != nil {
+		t.Fatalf("NewRepo: %v", err)
+	}
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+	svc, err := episodes.NewService(r, bus)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	ep := episodes.Episode{SeriesID: 1, SeasonNumber: 1, EpisodeNumber: 1, Monitored: false}
+	if _, err := r.Insert(t.Context(), &ep); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	var got atomic.Int32
+	var lastEv atomic.Pointer[episodes.EpisodeMonitoredChangedEvent]
+	messaging.Subscribe(bus, "test.episode.monitored.single",
+		func(_ context.Context, ev episodes.EpisodeMonitoredChangedEvent) error {
+			got.Add(1)
+			cp := ev
+			lastEv.Store(&cp)
+			return nil
+		})
+
+	if err := svc.SetEpisodeMonitored(t.Context(), ep.ID, true); err != nil {
+		t.Fatalf("SetEpisodeMonitored: %v", err)
+	}
+	if got.Load() != 1 {
+		t.Fatalf("expected 1 event, got %d", got.Load())
+	}
+	ev := lastEv.Load()
+	if ev == nil || len(ev.IDs) != 1 || ev.IDs[0] != ep.ID || !ev.Monitored {
+		t.Errorf("event payload: %+v (want IDs=[%d], Monitored=true)", ev, ep.ID)
+	}
+}
+
+func TestService_SetMonitored_PublishesEventWithBulkIDs(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	r, err := episodes.NewRepo(db)
+	if err != nil {
+		t.Fatalf("NewRepo: %v", err)
+	}
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+	svc, err := episodes.NewService(r, bus)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	eps := []episodes.Episode{
+		{SeriesID: 1, SeasonNumber: 1, EpisodeNumber: 1, Monitored: true},
+		{SeriesID: 1, SeasonNumber: 1, EpisodeNumber: 2, Monitored: true},
+	}
+	for i := range eps {
+		if _, err := r.Insert(t.Context(), &eps[i]); err != nil {
+			t.Fatalf("Insert seed: %v", err)
+		}
+	}
+
+	var lastEv atomic.Pointer[episodes.EpisodeMonitoredChangedEvent]
+	messaging.Subscribe(bus, "test.episode.monitored.bulk",
+		func(_ context.Context, ev episodes.EpisodeMonitoredChangedEvent) error {
+			cp := ev
+			lastEv.Store(&cp)
+			return nil
+		})
+
+	ids := []int{eps[0].ID, eps[1].ID}
+	if err := svc.SetMonitored(t.Context(), ids, false); err != nil {
+		t.Fatalf("SetMonitored: %v", err)
+	}
+	ev := lastEv.Load()
+	if ev == nil || len(ev.IDs) != 2 || ev.Monitored {
+		t.Errorf("event payload: %+v (want IDs=%v, Monitored=false)", ev, ids)
+	}
+
+	// Empty IDs → no event (skip publish, matches the guard).
+	got := atomic.Int32{}
+	messaging.Subscribe(bus, "test.episode.monitored.empty",
+		func(_ context.Context, _ episodes.EpisodeMonitoredChangedEvent) error {
+			got.Add(1)
+			return nil
+		})
+	if err := svc.SetMonitored(t.Context(), nil, true); err != nil {
+		t.Fatalf("SetMonitored(nil): %v", err)
+	}
+	// The previous bulk publish reached the empty subscriber too;
+	// only the new empty-call must produce zero additional events.
+	before := got.Load()
+	if err := svc.SetMonitored(t.Context(), []int{}, false); err != nil {
+		t.Fatalf("SetMonitored([]): %v", err)
+	}
+	if after := got.Load(); after != before {
+		t.Errorf("empty-IDs path published; before=%d after=%d", before, after)
+	}
+}
+
+func TestService_SetEpisodeMonitoredBySeason_PublishesOnAffected(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	r, err := episodes.NewRepo(db)
+	if err != nil {
+		t.Fatalf("NewRepo: %v", err)
+	}
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+	svc, err := episodes.NewService(r, bus)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		ep := episodes.Episode{SeriesID: 1, SeasonNumber: 1, EpisodeNumber: i + 1, Monitored: true}
+		if _, err := r.Insert(t.Context(), &ep); err != nil {
+			t.Fatalf("Insert seed: %v", err)
+		}
+	}
+
+	var got atomic.Int32
+	messaging.Subscribe(bus, "test.episode.monitored.bySeason",
+		func(_ context.Context, _ episodes.EpisodeMonitoredChangedEvent) error {
+			got.Add(1)
+			return nil
+		})
+
+	if n, err := svc.SetEpisodeMonitoredBySeason(t.Context(), 1, 1, false); err != nil || n != 2 {
+		t.Fatalf("SetEpisodeMonitoredBySeason: n=%d err=%v", n, err)
+	}
+	if got.Load() != 1 {
+		t.Errorf("expected 1 event on affected=2; got %d", got.Load())
+	}
+
+	// No-affected season → no publish.
+	got.Store(0)
+	if n, err := svc.SetEpisodeMonitoredBySeason(t.Context(), 1, 99, true); err != nil || n != 0 {
+		t.Fatalf("SetEpisodeMonitoredBySeason no-match: n=%d err=%v", n, err)
+	}
+	if got.Load() != 0 {
+		t.Errorf("expected 0 events on affected=0; got %d", got.Load())
 	}
 }

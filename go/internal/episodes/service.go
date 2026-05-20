@@ -315,27 +315,63 @@ func (s *Service) UpdateEpisode(ctx context.Context, e *Episode) error {
 
 // SetEpisodeMonitored ports `:176-182`. Loads the row first (so the
 // in-place mutation has somewhere to land), flips the flag, and
-// persists.
+// persists. Publishes [EpisodeMonitoredChangedEvent] on success.
 func (s *Service) SetEpisodeMonitored(ctx context.Context, episodeID int, monitored bool) error {
 	row, err := s.repo.Get(ctx, episodeID)
 	if err != nil {
 		return err
 	}
-	return s.repo.SetMonitoredFlat(ctx, row, monitored)
+	if err := s.repo.SetMonitoredFlat(ctx, row, monitored); err != nil {
+		return err
+	}
+	s.publishMonitoredChanged(ctx, []int{episodeID}, monitored)
+	return nil
 }
 
 // SetMonitored ports `:184-187`. Bulk variant; missing IDs are
 // silently skipped (the WHERE Id IN (...) covers only existing rows).
+// Publishes [EpisodeMonitoredChangedEvent] carrying the input IDs
+// when the bulk update succeeds (even if some IDs miss — matches the
+// C# ModelEvent fan-out which fires per affected row regardless of
+// whether the caller's ID list was a subset).
 func (s *Service) SetMonitored(ctx context.Context, ids []int, monitored bool) error {
-	_, err := s.repo.SetMonitoredByIDs(ctx, ids, monitored)
-	return err
+	if _, err := s.repo.SetMonitoredByIDs(ctx, ids, monitored); err != nil {
+		return err
+	}
+	if len(ids) > 0 {
+		s.publishMonitoredChanged(ctx, ids, monitored)
+	}
+	return nil
 }
 
 // SetEpisodeMonitoredBySeason ports `:189-192`. Returns the number of
 // rows actually flipped — surfaces in the SeriesService cascade as
-// the EpisodesChanged signal in 2.64.
+// the EpisodesChanged signal in 2.64. Publishes
+// [EpisodeMonitoredChangedEvent] when the underlying repo update
+// affects at least one row; the carried IDs slice is nil because the
+// repo's bulk WHERE-by-season path doesn't return affected IDs.
 func (s *Service) SetEpisodeMonitoredBySeason(ctx context.Context, seriesID, seasonNumber int, monitored bool) (int64, error) {
-	return s.repo.SetMonitoredBySeason(ctx, seriesID, seasonNumber, monitored)
+	n, err := s.repo.SetMonitoredBySeason(ctx, seriesID, seasonNumber, monitored)
+	if err != nil {
+		return n, err
+	}
+	if n > 0 {
+		s.publishMonitoredChanged(ctx, nil, monitored)
+	}
+	return n, nil
+}
+
+// publishMonitoredChanged emits [EpisodeMonitoredChangedEvent]
+// best-effort. No-op when bus is nil (matches the established
+// skip-publish pattern across the package).
+func (s *Service) publishMonitoredChanged(ctx context.Context, ids []int, monitored bool) {
+	if s.bus == nil {
+		return
+	}
+	_ = messaging.Publish(ctx, s.bus, EpisodeMonitoredChangedEvent{
+		IDs:       ids,
+		Monitored: monitored,
+	})
 }
 
 // UpdateEpisodes ports `:194-197`. Bulk update (per-row).

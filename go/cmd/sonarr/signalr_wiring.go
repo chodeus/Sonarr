@@ -28,6 +28,7 @@ import (
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/pendingreleases"
@@ -403,6 +404,30 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 			res := apiv3.ToCommandResource(*ev.Command)
 			if err := commandBroadcaster.Updated(ctx, res); err != nil {
 				logger.Warn("signalr: command updated broadcast failed", "err", err)
+			}
+			return nil
+		})
+
+	// Slice 5.J26 (audit B.2 second wave): `episode` channel —
+	// EpisodeMonitoredChangedEvent fires from episodes.Service on
+	// SetEpisodeMonitored / SetMonitored / SetEpisodeMonitoredBySeason.
+	// C# broadcasts per-row Updated via the generic ModelEvent<Episode>
+	// inherited handler; the Go-port matches the audit spec by
+	// emitting Sync on the `episode` channel (the React UI refetches
+	// the relevant episode list on Sync, so the wire shape is
+	// functionally equivalent for the monitor-toggle use case). A
+	// later slice can tighten this to per-row Updated with the
+	// projected EpisodeResource once the Episode→Resource mapper is
+	// reachable from this file without forming an import cycle.
+	episodeBroadcaster := &signalr.ResourceBroadcaster[emptySyncPayload]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "episode",
+		Version:     signalr.V3Version,
+	}
+	messaging.Subscribe(bus, "signalr.episode.MonitoredChanged",
+		func(ctx context.Context, _ episodes.EpisodeMonitoredChangedEvent) error {
+			if err := episodeBroadcaster.Sync(ctx); err != nil {
+				logger.Warn("signalr: episode sync broadcast failed", "err", err)
 			}
 			return nil
 		})
