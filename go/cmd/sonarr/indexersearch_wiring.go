@@ -240,14 +240,17 @@ func (s *dbIndexerSource) buildAdapter(row *indexers.Indexer, def *provider.Defi
 			rs, err := idx.FetchRecent(ctx)
 			return upcastTorrentInfos(rs), err
 		}
-		// Slice 5.J156 (first slice of the BroadcastheNet arc):
-		// only the Age=<=86400 paginated FetchRecent tier lands.
-		// The C# LastRecentTorrentId optimization at
-		// `BroadcastheNetRequestGenerator.cs:26-32` (requires
-		// IIndexerStatusService) + the per-criteria search routing
-		// at `:42-225` ship as follow-up slices. Leave
-		// FetchSearchFunc nil so the adapter surfaces the
-		// "does not support search" error.
+		// Slice 5.J157 closes the J156 FetchSearch deferral with
+		// the per-criteria 7-overload dispatch (SingleEpisode /
+		// Season / Daily / DailySeason / AnimeEpisode / AnimeSeason
+		// / SpecialEpisode). Tvdb/Tvrage-keyed, Name-based with
+		// %-wildcards. Daily variants AddTier. The
+		// LastRecentTorrentId optimization (C# `:26-32`) is still
+		// deferred — requires IIndexerStatusService wiring.
+		common.FetchSearchFunc = func(ctx context.Context, c indexersearch.Criteria) ([]any, error) {
+			rs, err := idx.FetchSearch(ctx, c)
+			return upcastTorrentInfos(rs), err
+		}
 		return common, nil
 
 	case "HDBits":

@@ -6,11 +6,15 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/indexers/broadcasthenet"
+	"sonarr.tv/sonarr/internal/indexersearch"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/provider"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 type stubClient struct {
@@ -417,19 +421,282 @@ func TestIndexer_FetchRecentRateLimitInBody(t *testing.T) {
 	}
 }
 
-func TestIndexer_FetchSearchAlwaysEmpty(t *testing.T) {
-	t.Parallel()
-	i := broadcasthenet.NewIndexer(nil)
+// --- FetchSearch dispatch (J157) ---
+
+// seenQuery captures the (tvdb, tvrage, category, name) tuple from one
+// JSON-RPC `getTorrents` body — the four BTN-specific filter fields the
+// per-criteria dispatch sets.
+type seenQuery struct {
+	Tvdb, Tvrage, Category, Name string
+}
+
+func decodeSeenQuery(t *testing.T, body []byte) seenQuery {
+	t.Helper()
+	var rpc map[string]any
+	if err := json.Unmarshal(body, &rpc); err != nil {
+		t.Fatalf("decodeSeenQuery: %v (raw=%q)", err, body)
+	}
+	params, _ := rpc["params"].([]any)
+	if len(params) < 2 {
+		t.Fatalf("params shape: %v", rpc["params"])
+	}
+	q, _ := params[1].(map[string]any)
+	getStr := func(k string) string {
+		v, _ := q[k].(string)
+		return v
+	}
+	return seenQuery{
+		Tvdb:     getStr("tvdb"),
+		Tvrage:   getStr("tvrage"),
+		Category: getStr("category"),
+		Name:     getStr("name"),
+	}
+}
+
+// newRecordingStub returns a stubClient that records each request's
+// query body + a pointer to the captured-query slice. Every response
+// is the empty feed — sufficient for tier-fallback and shape tests
+// since fetchPaged breaks on zero new results.
+func newRecordingStub(t *testing.T) (*stubClient, *[]seenQuery) {
+	t.Helper()
+	seen := &[]seenQuery{}
+	stub := &stubClient{}
+	stub.postFn = func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+		*seen = append(*seen, decodeSeenQuery(t, req.ContentData))
+		return mkResponse(req, []byte(emptyFeed), 200), nil
+	}
+	return stub, seen
+}
+
+func newBoundIndexer(t *testing.T, c httpclient.Client) *broadcasthenet.Indexer {
+	t.Helper()
+	i := broadcasthenet.NewIndexer(c)
 	d := i.DefaultDefinitions()[0]
 	s := d.Settings.(*broadcasthenet.Settings)
 	s.ApiKey = "k"
 	i.SetDefinition(d)
+	return i
+}
+
+func TestIndexer_FetchSearch_UnknownCriteriaEmpty(t *testing.T) {
+	t.Parallel()
+	// Unrecognized criteria type → buildSearchTiers returns nil → no
+	// HTTP, empty result, no error.
+	stub := &stubClient{
+		postFn: func(_ context.Context, _ *httpclient.Request) (*httpclient.Response, error) {
+			t.Fatal("HTTPClient must not be called for unknown criteria")
+			return nil, nil
+		},
+	}
+	i := newBoundIndexer(t, stub)
 	rels, err := i.FetchSearch(context.Background(), struct{}{})
 	if err != nil {
 		t.Fatalf("FetchSearch: %v", err)
 	}
 	if len(rels) != 0 {
-		t.Errorf("FetchSearch (J156) always returns empty; got %d", len(rels))
+		t.Errorf("expected empty; got %d", len(rels))
+	}
+}
+
+func TestIndexer_FetchSearch_NoSeriesIDsSkipsHTTP(t *testing.T) {
+	t.Parallel()
+	// AddSeriesSearchParameters returns false when both Tvdb + Tvrage
+	// are zero → newSeriesQuery returns nil → no tiers → no HTTP.
+	stub := &stubClient{
+		postFn: func(_ context.Context, _ *httpclient.Request) (*httpclient.Response, error) {
+			t.Fatal("HTTPClient must not be called when both TvdbID and TvRageID are zero")
+			return nil, nil
+		},
+	}
+	i := newBoundIndexer(t, stub)
+
+	c := &indexersearch.SingleEpisodeCriteria{}
+	c.Series = &series.Series{} // TvdbID = 0, TvRageID = 0
+	c.Episodes = []episodes.Episode{{SeasonNumber: 1, EpisodeNumber: 1}}
+	rels, err := i.FetchSearch(context.Background(), c)
+	if err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(rels) != 0 {
+		t.Errorf("expected empty; got %d", len(rels))
+	}
+}
+
+func TestIndexer_FetchSearch_SingleEpisodeEmitsCorrectNamePattern(t *testing.T) {
+	t.Parallel()
+	stub, seen := newRecordingStub(t)
+	i := newBoundIndexer(t, stub)
+
+	c := &indexersearch.SingleEpisodeCriteria{}
+	c.Series = &series.Series{TvdbID: 42}
+	c.Episodes = []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 5},
+		{SeasonNumber: 1, EpisodeNumber: 6},
+	}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if got := len(*seen); got != 2 {
+		t.Fatalf("expected 2 queries; got %d (%+v)", got, *seen)
+	}
+	for i, want := range []seenQuery{
+		{Tvdb: "42", Category: "Episode", Name: "S01%E05%"},
+		{Tvdb: "42", Category: "Episode", Name: "S01%E06%"},
+	} {
+		if (*seen)[i] != want {
+			t.Errorf("query[%d] = %+v, want %+v", i, (*seen)[i], want)
+		}
+	}
+}
+
+func TestIndexer_FetchSearch_TvRageFallback(t *testing.T) {
+	t.Parallel()
+	stub, seen := newRecordingStub(t)
+	i := newBoundIndexer(t, stub)
+
+	c := &indexersearch.SingleEpisodeCriteria{}
+	c.Series = &series.Series{TvRageID: 99} // TvdbID stays 0 → tvrage takes over
+	c.Episodes = []episodes.Episode{{SeasonNumber: 2, EpisodeNumber: 3}}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if got := len(*seen); got != 1 {
+		t.Fatalf("expected 1 query; got %d (%+v)", got, *seen)
+	}
+	q := (*seen)[0]
+	if q.Tvrage != "99" {
+		t.Errorf("tvrage = %q, want \"99\"", q.Tvrage)
+	}
+	if q.Tvdb != "" {
+		t.Errorf("tvdb = %q, want empty when TvdbID is zero", q.Tvdb)
+	}
+}
+
+func TestIndexer_FetchSearch_SeasonDualPerSeason(t *testing.T) {
+	t.Parallel()
+	stub, seen := newRecordingStub(t)
+	i := newBoundIndexer(t, stub)
+
+	c := &indexersearch.SeasonCriteria{}
+	c.Series = &series.Series{TvdbID: 7}
+	c.Episodes = []episodes.Episode{
+		{SeasonNumber: 2, EpisodeNumber: 1},
+		{SeasonNumber: 2, EpisodeNumber: 2}, // same season — distinct should dedupe
+		{SeasonNumber: 3, EpisodeNumber: 1},
+	}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	// 2 distinct seasons × 2 shapes (Season + Episode) = 4 queries.
+	if got := len(*seen); got != 4 {
+		t.Fatalf("expected 4 queries; got %d (%+v)", got, *seen)
+	}
+	wants := []seenQuery{
+		{Tvdb: "7", Category: "Season", Name: "Season 2%"},
+		{Tvdb: "7", Category: "Episode", Name: "S02E%"},
+		{Tvdb: "7", Category: "Season", Name: "Season 3%"},
+		{Tvdb: "7", Category: "Episode", Name: "S03E%"},
+	}
+	for i, want := range wants {
+		if (*seen)[i] != want {
+			t.Errorf("query[%d] = %+v, want %+v", i, (*seen)[i], want)
+		}
+	}
+}
+
+func TestIndexer_FetchSearch_DailyEpisodeTierFallback(t *testing.T) {
+	t.Parallel()
+	// Tier 1 (airdate) returns empty → tier 2 (per-episode S/E) fires.
+	stub, seen := newRecordingStub(t) // all-empty feeds
+	i := newBoundIndexer(t, stub)
+
+	c := &indexersearch.DailyEpisodeCriteria{
+		AirDate: time.Date(2025, 5, 20, 0, 0, 0, 0, time.UTC),
+	}
+	c.Series = &series.Series{TvdbID: 8}
+	c.Episodes = []episodes.Episode{{SeasonNumber: 12, EpisodeNumber: 5}}
+
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if got := len(*seen); got != 2 {
+		t.Fatalf("expected 2 queries (tier1 airdate + tier2 S/E); got %d (%+v)", got, *seen)
+	}
+	if got, want := (*seen)[0], (seenQuery{Tvdb: "8", Category: "Episode", Name: "2025.05.20"}); got != want {
+		t.Errorf("tier1 = %+v, want %+v", got, want)
+	}
+	if got, want := (*seen)[1], (seenQuery{Tvdb: "8", Category: "Episode", Name: "S12E05"}); got != want {
+		t.Errorf("tier2 = %+v, want %+v", got, want)
+	}
+}
+
+func TestIndexer_FetchSearch_DailySeasonYearWildcard(t *testing.T) {
+	t.Parallel()
+	stub, seen := newRecordingStub(t)
+	i := newBoundIndexer(t, stub)
+
+	c := &indexersearch.DailySeasonCriteria{Year: 2025}
+	c.Series = &series.Series{TvdbID: 11}
+	c.Episodes = []episodes.Episode{{SeasonNumber: 25, EpisodeNumber: 7}}
+
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if got := len(*seen); got != 2 {
+		t.Fatalf("expected 2 queries; got %d (%+v)", got, *seen)
+	}
+	if got, want := (*seen)[0], (seenQuery{Tvdb: "11", Category: "Episode", Name: "2025%"}); got != want {
+		t.Errorf("tier1 = %+v, want %+v", got, want)
+	}
+	if got, want := (*seen)[1], (seenQuery{Tvdb: "11", Category: "Episode", Name: "S25E07"}); got != want {
+		t.Errorf("tier2 = %+v, want %+v", got, want)
+	}
+}
+
+func TestIndexer_FetchSearch_AnimeEpisodeSinglePoolEpisodesAndSeasons(t *testing.T) {
+	t.Parallel()
+	stub, seen := newRecordingStub(t)
+	i := newBoundIndexer(t, stub)
+
+	c := &indexersearch.AnimeEpisodeCriteria{}
+	c.Series = &series.Series{TvdbID: 13}
+	c.Episodes = []episodes.Episode{{SeasonNumber: 1, EpisodeNumber: 12}}
+
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	// 1 episode S/E + 1 distinct-season Season% = 2 queries, single tier.
+	if got := len(*seen); got != 2 {
+		t.Fatalf("expected 2 queries; got %d (%+v)", got, *seen)
+	}
+	if got, want := (*seen)[0], (seenQuery{Tvdb: "13", Category: "Episode", Name: "S01E12"}); got != want {
+		t.Errorf("query[0] = %+v, want %+v", got, want)
+	}
+	if got, want := (*seen)[1], (seenQuery{Tvdb: "13", Category: "Season", Name: "Season 1%"}); got != want {
+		t.Errorf("query[1] = %+v, want %+v", got, want)
+	}
+}
+
+func TestIndexer_FetchSearch_SpecialEpisodeUsesCleanTitle(t *testing.T) {
+	t.Parallel()
+	stub, seen := newRecordingStub(t)
+	i := newBoundIndexer(t, stub)
+
+	c := &indexersearch.SpecialEpisodeCriteria{}
+	c.Series = &series.Series{TvdbID: 21}
+	c.Episodes = []episodes.Episode{
+		{SeasonNumber: 0, EpisodeNumber: 1, Title: "Pilot"},
+		{SeasonNumber: 0, EpisodeNumber: 2, Title: "   "}, // blank → skipped
+	}
+
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if got := len(*seen); got != 1 {
+		t.Fatalf("expected 1 query (blank title skipped); got %d (%+v)", got, *seen)
+	}
+	if got, want := (*seen)[0], (seenQuery{Tvdb: "21", Category: "Episode", Name: "%Pilot%"}); got != want {
+		t.Errorf("query[0] = %+v, want %+v", got, want)
 	}
 }
 
