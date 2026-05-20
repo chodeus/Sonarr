@@ -2382,6 +2382,34 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// structural typing. The 6.C3 NZBGet RemoveItem deleteData arm
 	// consumes this dep first; 6.C4 may add SABnzbd as a follow-up.
 	var _ downloadclients.DiskProvider = (*disk.Provider)(nil)
+	// Slice 5.J98 (Phase 5.J seed-config wire-up arc): construct the
+	// seed-config chain end-to-end so the J94/J95 RQBit+Flood
+	// cleanup-gate predicates flip from "never satisfy (nil binding)"
+	// to seed-config-driven in production.
+	//
+	//   - indexers.CachedSettingsProvider (J93) wraps an
+	//     indexers.RepoIndexerFinder around the existing indexersRepo —
+	//     maps ErrNotFound → nil so the cached provider's null-handling
+	//     matches the C# `?.` chaining. 1-hour rolling cache window.
+	//   - download.IndexerSeedConfigProvider (J92) consumes the cached
+	//     settings provider and produces TorrentSeedConfiguration with
+	//     the SeasonPackSeedGoal / SeedRatio / SeedTime resolution.
+	//   - download.SeedConfigProvider (J91) wraps the indexer-side
+	//     provider with the dlHistorySvc.GetLatestGrab → ReleaseInfo
+	//     parse → IndexerID + FullSeason composition + per-infohash
+	//     rolling cache.
+	//
+	// Compile-time guards confirm the J93→J92→J91 chain assembles
+	// cleanly without per-cast surprises at boot.
+	var _ indexers.IndexerSettingsLookup = (*indexers.CachedSettingsProvider)(nil)
+	var _ download.IndexerSeedConfig = (*download.IndexerSeedConfigProvider)(nil)
+	var _ downloadclients.SeedConfigProvider = download.SeedConfigProvider(nil)
+	cachedIndexerSettingsProv := indexers.NewCachedSettingsProvider(
+		indexers.RepoIndexerFinder{Repo: indexersRepo},
+		logger,
+	)
+	indexerSeedConfigProv := download.NewIndexerSeedConfigProvider(cachedIndexerSettingsProv)
+	seedConfigProv := download.NewSeedConfigProvider(dlHistorySvc, indexerSeedConfigProv, logger)
 	dcDeps := downloadclients.Dependencies{
 		HTTPClient:               httpClient,
 		ConfigProvider:           configProv,
@@ -2389,6 +2417,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		Logger:                   logger,
 		StatusService:            downloadClientStatusSvc,
 		RemotePathMappingService: remotePathMappingsSvc,
+		SeedConfigProvider:       seedConfigProv,
 		// Slice 6.B2 (Phase 6.B): wired here so the per-client
 		// constructors (sabnzbd / transmission / qbittorrent /
 		// deluge / nzbget) consume it via the downloadclients.
