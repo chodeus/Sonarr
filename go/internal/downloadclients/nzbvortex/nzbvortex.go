@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,12 +20,14 @@ import (
 // the C# `NzbVortex` class at
 // `src/NzbDrone.Core/Download/Clients/NzbVortex/NzbVortex.cs:18-262`.
 //
-// Skeleton-only at 5.J66: Test (connection + API-version-gate) +
-// GetStatus + identity methods are real; Download / GetItems /
-// RemoveItem stub out to [ErrNotImplemented] until the per-method
-// follow-up slices land. The auth-flow + session cache + retry-on-
-// NotLoggedIn machinery in [Proxy] is fully live so the follow-up
-// slices only add the per-endpoint call shape.
+// Functionally complete after the 5.J66 → 5.J70 arc: Test runs
+// the 4-arm probe chain (connection + API-version + auth +
+// category); Download writes via multipart `nzb/add`; GetItems
+// walks `nzb` + maps the 25-value state table + resolves multi-
+// file output paths via `file/{id}`; RemoveItem cancels via
+// `nzb/{id}/cancel` or `cancelDelete`. The auth-flow + session
+// cache + retry-on-NotLoggedIn machinery in [Proxy] backs every
+// authenticated call.
 type NzbVortex struct {
 	settings Settings
 	def      *downloadclients.DownloadClient
@@ -256,10 +259,52 @@ func (n *NzbVortex) GetImportItem(_ context.Context, item *downloadclients.Item,
 	return item, nil
 }
 
-// RemoveItem is a STUB at 5.J66. Follow-up: Proxy.Remove via
-// `nzb/{id}/cancel` or `cancelDelete`.
-func (n *NzbVortex) RemoveItem(_ context.Context, _ *downloadclients.Item, _ bool) error {
-	return fmt.Errorf("%w: RemoveItem", ErrNotImplemented)
+// RemoveItem ports `NzbVortex.RemoveItem` at C# `:114-132`. Two
+// resolution paths for the numeric Hadouken-side id:
+//
+//   - DownloadID parses as an int → use it directly.
+//   - Otherwise (it's an AddUUID string) → fetch the queue and
+//     look up the matching AddUUID. If no match → silently
+//     succeed (matches C# `:127` — the queueItem != null guard).
+//
+// deleteData picks the endpoint: `cancelDelete` vs `cancel`. The C#
+// version returns void; the Go port surfaces proxy errors verbatim.
+func (n *NzbVortex) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
+	if n.proxy == nil {
+		return errors.New("nzbvortex: nil Proxy")
+	}
+	if item == nil {
+		return errors.New("nzbvortex: nil item")
+	}
+	if strings.TrimSpace(item.DownloadID) == "" {
+		return errors.New("nzbvortex: item has empty DownloadID")
+	}
+
+	if id, err := strconv.Atoi(item.DownloadID); err == nil {
+		if removeErr := n.proxy.Remove(ctx, n.settings, id, deleteData); removeErr != nil {
+			return fmt.Errorf("nzbvortex: Remove(%d): %w", id, removeErr)
+		}
+		return nil
+	}
+
+	// AddUUID path: scan the queue, find the matching item, use its
+	// numeric Id.
+	queue, err := n.proxy.GetQueue(ctx, n.settings, 30)
+	if err != nil {
+		return fmt.Errorf("nzbvortex: RemoveItem GetQueue: %w", err)
+	}
+	for _, q := range queue {
+		if q != nil && q.AddUUID == item.DownloadID {
+			if removeErr := n.proxy.Remove(ctx, n.settings, q.ID, deleteData); removeErr != nil {
+				return fmt.Errorf("nzbvortex: Remove(%d): %w", q.ID, removeErr)
+			}
+			return nil
+		}
+	}
+	// No match → C# `:127`'s `if (queueItem != null)` guard skips
+	// the Remove call. Same here: success without action.
+	n.log.Debug("nzbvortex: RemoveItem no queue match", "downloadID", item.DownloadID)
+	return nil
 }
 
 // GetStatus ports `NzbVortex.GetStatus` at C# `Hadouken.cs:139-147`
@@ -448,9 +493,6 @@ func splitVersion(v string) []int {
 	}
 	return out
 }
-
-// ErrNotImplemented signals a 5.J66 skeleton stub.
-var ErrNotImplemented = errors.New("nzbvortex: not yet implemented in this build")
 
 // Compile-time guard.
 var _ downloadclients.Provider = (*NzbVortex)(nil)

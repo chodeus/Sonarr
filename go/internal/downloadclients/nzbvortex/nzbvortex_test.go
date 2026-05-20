@@ -497,12 +497,8 @@ func TestProvider_GetStatus_LocalhostFlag(t *testing.T) {
 	}
 }
 
-func TestProvider_RemainingStubs(t *testing.T) {
-	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(newScripted(), nil), nil)
-	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); !errors.Is(err, nzbvortex.ErrNotImplemented) {
-		t.Errorf("RemoveItem err = %v, want ErrNotImplemented", err)
-	}
-}
+// (RemoveItem stub test removed — RemoveItem is now functionally
+// complete, see the wired-up tests further down.)
 
 func TestProvider_Download_NilRequest(t *testing.T) {
 	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(newScripted(), nil), nil)
@@ -909,6 +905,96 @@ func TestProvider_GetItems_PropagatesGetQueueError(t *testing.T) {
 	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
 	_, err := p.GetItems(context.Background())
 	if !errors.Is(err, nzbvortex.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestProvider_RemoveItem_NumericID_CancelArm(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	doer.queue("/api/nzb/42/cancel", `{"result":"Ok"}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "42"}, false); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	// Must NOT have called /api/nzb (the GetQueue fallback path).
+	for _, c := range doer.calls {
+		if c.path == "/api/nzb" {
+			t.Errorf("GetQueue ran despite numeric DownloadID parsing successfully")
+		}
+	}
+}
+
+func TestProvider_RemoveItem_NumericID_CancelDeleteArm(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	doer.queue("/api/nzb/7/cancelDelete", `{"result":"Ok"}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "7"}, true); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestProvider_RemoveItem_AddUUID_QueueLookup(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[
+		{"id":1,"addUUID":"u-1"},
+		{"id":5,"addUUID":"u-target"},
+		{"id":9,"addUUID":"u-9"}
+	]}`)
+	doer.queue("/api/nzb/5/cancel", `{"result":"Ok"}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "u-target"}, false); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	// Verify the cancel call hit /api/nzb/5/cancel (id from queue lookup).
+	hit := false
+	for _, c := range doer.calls {
+		if c.path == "/api/nzb/5/cancel" {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Errorf("cancel did not hit /api/nzb/5/cancel; calls=%v", doer.calls)
+	}
+}
+
+func TestProvider_RemoveItem_AddUUID_NoMatchSucceedsSilently(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[{"id":1,"addUUID":"u-1"}]}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "u-not-there"}, true); err != nil {
+		t.Errorf("err = %v, want nil (matches C# `if queueItem != nil` silent skip)", err)
+	}
+	for _, c := range doer.calls {
+		if strings.HasPrefix(c.path, "/api/nzb/") && strings.Contains(c.path, "/cancel") {
+			t.Errorf("cancel was called despite no matching AddUUID: %v", c)
+		}
+	}
+}
+
+func TestProvider_RemoveItem_NilItem(t *testing.T) {
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(newScripted(), nil), nil)
+	if err := p.RemoveItem(context.Background(), nil, true); err == nil {
+		t.Fatal("err = nil, want nil-item error")
+	}
+}
+
+func TestProvider_RemoveItem_EmptyDownloadID(t *testing.T) {
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(newScripted(), nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); err == nil {
+		t.Fatal("err = nil, want empty-DownloadID error")
+	}
+}
+
+func TestProvider_RemoveItem_PropagatesProxyError(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	doer.queueErr("/api/nzb/42/cancel", errors.New("boom"))
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "42"}, false); !errors.Is(err, nzbvortex.ErrUnavailable) {
 		t.Errorf("err = %v, want ErrUnavailable", err)
 	}
 }

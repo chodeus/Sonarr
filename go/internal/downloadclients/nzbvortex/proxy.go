@@ -393,6 +393,21 @@ type queueResponse struct {
 	Items []*QueueItem `json:"nzbs"`
 }
 
+// Remove fires `nzb/{id}/cancel` (deleteData=false) or
+// `nzb/{id}/cancelDelete` (deleteData=true). Auth required.
+// Mirrors C# `NzbVortexProxy.Remove` at `:58-63`. The C# void
+// return is preserved — the response body's `result` field is
+// inspected via the [Proxy.get] auth-retry path; a non-Ok result
+// surfaces as [ErrRPC].
+func (p *Proxy) Remove(ctx context.Context, s Settings, id int, deleteData bool) error {
+	action := "cancel"
+	if deleteData {
+		action = "cancelDelete"
+	}
+	var out struct{ responseBase }
+	return p.get(ctx, s, fmt.Sprintf("nzb/%d/%s", id, action), nil, true, &out)
+}
+
 // File ports C# `NzbVortexFile` at `NzbVortexFile.cs:3-15`. Only
 // the columns Sonarr reads are surfaced — Id, FileName. (The C#
 // class has a typo'd `DileSize` field at `:7` that goes
