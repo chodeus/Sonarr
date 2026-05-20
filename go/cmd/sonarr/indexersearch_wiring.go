@@ -36,6 +36,7 @@ import (
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/indexers/broadcasthenet"
 	"sonarr.tv/sonarr/internal/indexers/fanzub"
 	"sonarr.tv/sonarr/internal/indexers/filelist"
 	"sonarr.tv/sonarr/internal/indexers/hdbits"
@@ -232,6 +233,23 @@ func (s *dbIndexerSource) buildAdapter(row *indexers.Indexer, def *provider.Defi
 		// torrentleech — leave FetchSearchFunc nil.
 		return common, nil
 
+	case "BroadcastheNet":
+		idx := broadcasthenet.NewIndexer(s.httpClient)
+		idx.SetDefinition(def)
+		common.FetchRecentFunc = func(ctx context.Context) ([]any, error) {
+			rs, err := idx.FetchRecent(ctx)
+			return upcastTorrentInfos(rs), err
+		}
+		// Slice 5.J156 (first slice of the BroadcastheNet arc):
+		// only the Age=<=86400 paginated FetchRecent tier lands.
+		// The C# LastRecentTorrentId optimization at
+		// `BroadcastheNetRequestGenerator.cs:26-32` (requires
+		// IIndexerStatusService) + the per-criteria search routing
+		// at `:42-225` ship as follow-up slices. Leave
+		// FetchSearchFunc nil so the adapter surfaces the
+		// "does not support search" error.
+		return common, nil
+
 	case "HDBits":
 		idx := hdbits.NewIndexer(s.httpClient)
 		idx.SetDefinition(def)
@@ -423,6 +441,8 @@ func (a minimumSeedersAdapter) MinimumSeeders(ctx context.Context, id int) (int,
 	case *filelist.Settings:
 		return s.MinimumSeeders, true, nil
 	case *hdbits.Settings:
+		return s.MinimumSeeders, true, nil
+	case *broadcasthenet.Settings:
 		return s.MinimumSeeders, true, nil
 	default:
 		// Newznab + any non-torrent provider class.

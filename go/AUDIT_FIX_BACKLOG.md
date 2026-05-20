@@ -61,11 +61,11 @@ For closure narrative, see commit history `5.J1` … `5.J22` on `go-port`. The t
 
 ~~Also still in scope: `ProxyCheck` is wired but stubbed.~~ — **CLOSED 5.J56.** The `*config.Provider` already exposed keyvalues-backed Proxy{Enabled,Hostname,Port,Type,Username,Password} accessors. Replaced `proxyHostConfigStub` with `proxyHostConfigAdapter{cfg: *config.Provider}` and `newProxyPingerStub` with `newProxyPinger(cfg)` — net/http.Client with `Transport.Proxy = http.ProxyURL(buildProxyURL(cfg))` that pings `services.sonarr.tv/v1/ping` through the configured proxy. Documented divergence: SOCKS5 proxy type deferred (needs `golang.org/x/net/proxy` integration — Go-port HTTP/HTTPS-only for now).
 
-## B.6 — Stub providers (7 indexers remaining; DC family fully ported and registered)
+## B.6 — Stub providers (ALL CLOSED — 10/10 indexers + 18/18 DCs ported and registered)
 
-**Status:** Download clients DONE (18 of 18 ported + all self-registered + composition-root blank-imports landed in J145). Indexer ports remain — 7 still missing.
+**Status:** FULLY CLOSED. All 10 indexers + all 18 download clients ported, self-registered via init(), and blank-imported at the composition root.
 
-**Indexers missing:** BroadcastheNet, Fanzub, FileList, HDBits, IPTorrents, Nyaa, Torrentleech (7).
+**Indexer wave (J146-J156):** Torrentleech (J146), IPTorrents (J147), Nyaa-RSS (J148), Nyaa-search (J149), Fanzub-RSS (J150), Fanzub-search (J151), FileList-RSS (J152), FileList-search (J153), HDBits-RSS (J154), HDBits-search (J155), BroadcastheNet-RSS (J156). All 10 indexers ported and registered. Search routing closed for 8 of 10 (BroadcastheNet still has a deferred follow-up: 7-overload criteria dispatch + LastRecentTorrentId optimization requiring IIndexerStatusService wiring).
 
 **Download clients ALL PORTED:** Aria2 (J50–J53), Blackhole-Usenet, Blackhole-Torrent (J57), Deluge, DownloadStation-Usenet, DownloadStation-Torrent (J120–J124), Flood (J118), FreeboxDownload-Torrent, Hadouken, NzbGet, NzbVortex, Pneumatic, QBittorrent, RQBit, rTorrent (J41–J45), Sabnzbd, Transmission, Tribler, uTorrent (J46–J49), Vuze (J54). Every package self-registers via init() against `downloadclients.Default()`.
 
