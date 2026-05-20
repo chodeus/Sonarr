@@ -3,12 +3,15 @@ package blocklist_test
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"sonarr.tv/sonarr/internal/blocklist"
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
+	"sonarr.tv/sonarr/internal/messaging"
 )
 
 // stubWriter captures the last Insert call + lets tests inject an
@@ -76,7 +79,7 @@ func validEntry() *blocklist.Entry {
 
 func TestNewServiceNilWriterReturnsNil(t *testing.T) {
 	t.Parallel()
-	if s := blocklist.NewService(nil); s != nil {
+	if s := blocklist.NewService(nil, nil); s != nil {
 		t.Errorf("NewService(nil) = %+v, want nil", s)
 	}
 }
@@ -91,7 +94,7 @@ func TestAddNilReceiverErrors(t *testing.T) {
 
 func TestAddNilEntryErrors(t *testing.T) {
 	t.Parallel()
-	s := blocklist.NewService(&stubWriter{})
+	s := blocklist.NewService(&stubWriter{}, nil)
 	if _, err := s.Add(context.Background(), nil); err == nil {
 		t.Errorf("nil entry: want error")
 	}
@@ -99,7 +102,7 @@ func TestAddNilEntryErrors(t *testing.T) {
 
 func TestAddRequiresSeriesID(t *testing.T) {
 	t.Parallel()
-	s := blocklist.NewService(&stubWriter{})
+	s := blocklist.NewService(&stubWriter{}, nil)
 	e := validEntry()
 	e.SeriesID = 0
 	if _, err := s.Add(context.Background(), e); err == nil {
@@ -109,7 +112,7 @@ func TestAddRequiresSeriesID(t *testing.T) {
 
 func TestAddRequiresSourceTitle(t *testing.T) {
 	t.Parallel()
-	s := blocklist.NewService(&stubWriter{})
+	s := blocklist.NewService(&stubWriter{}, nil)
 	e := validEntry()
 	e.SourceTitle = ""
 	if _, err := s.Add(context.Background(), e); err == nil {
@@ -119,7 +122,7 @@ func TestAddRequiresSourceTitle(t *testing.T) {
 
 func TestAddRequiresDate(t *testing.T) {
 	t.Parallel()
-	s := blocklist.NewService(&stubWriter{})
+	s := blocklist.NewService(&stubWriter{}, nil)
 	e := validEntry()
 	e.Date = time.Time{}
 	if _, err := s.Add(context.Background(), e); err == nil {
@@ -130,7 +133,7 @@ func TestAddRequiresDate(t *testing.T) {
 func TestAddAllowsEmptyEpisodeIDs(t *testing.T) {
 	t.Parallel()
 	w := &stubWriter{}
-	s := blocklist.NewService(w)
+	s := blocklist.NewService(w, nil)
 	e := validEntry()
 	e.EpisodeIDs = nil
 	if _, err := s.Add(context.Background(), e); err != nil {
@@ -144,7 +147,7 @@ func TestAddAllowsEmptyEpisodeIDs(t *testing.T) {
 func TestAddRepoErrorPropagates(t *testing.T) {
 	t.Parallel()
 	repoErr := errors.New("EIO")
-	s := blocklist.NewService(&stubWriter{insertErr: repoErr})
+	s := blocklist.NewService(&stubWriter{insertErr: repoErr}, nil)
 	_, err := s.Add(context.Background(), validEntry())
 	if err == nil {
 		t.Fatal("expected error from stub writer")
@@ -157,7 +160,7 @@ func TestAddRepoErrorPropagates(t *testing.T) {
 func TestAddSuccessReturnsRepoResult(t *testing.T) {
 	t.Parallel()
 	w := &stubWriter{insertedID: 42}
-	s := blocklist.NewService(w)
+	s := blocklist.NewService(w, nil)
 	e := validEntry()
 	out, err := s.Add(context.Background(), e)
 	if err != nil {
@@ -184,7 +187,7 @@ func TestDeleteForSeriesNilReceiverErrors(t *testing.T) {
 func TestDeleteForSeriesEmptyIDsIsNoOp(t *testing.T) {
 	t.Parallel()
 	w := &stubWriter{}
-	s := blocklist.NewService(w)
+	s := blocklist.NewService(w, nil)
 	n, err := s.DeleteForSeries(context.Background(), nil)
 	if err != nil || n != 0 {
 		t.Errorf("got (%d, %v); want (0, nil)", n, err)
@@ -197,7 +200,7 @@ func TestDeleteForSeriesEmptyIDsIsNoOp(t *testing.T) {
 func TestDeleteForSeriesPassesIDsThrough(t *testing.T) {
 	t.Parallel()
 	w := &stubWriter{deleteSeriesAffected: 11}
-	s := blocklist.NewService(w)
+	s := blocklist.NewService(w, nil)
 	n, err := s.DeleteForSeries(context.Background(), []int{4, 9})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -213,7 +216,7 @@ func TestDeleteForSeriesPassesIDsThrough(t *testing.T) {
 func TestDeleteForSeriesRepoErrorPropagates(t *testing.T) {
 	t.Parallel()
 	repoErr := errors.New("EIO")
-	s := blocklist.NewService(&stubWriter{deleteSeriesErr: repoErr})
+	s := blocklist.NewService(&stubWriter{deleteSeriesErr: repoErr}, nil)
 	_, err := s.DeleteForSeries(context.Background(), []int{1})
 	if err == nil {
 		t.Fatal("expected error")
@@ -233,7 +236,7 @@ func runServiceSuite(t *testing.T, db *datastore.DB) {
 	if err != nil {
 		t.Fatalf("NewRepo: %v", err)
 	}
-	svc := blocklist.NewService(repo)
+	svc := blocklist.NewService(repo, nil)
 	if svc == nil {
 		t.Fatal("NewService returned nil for non-nil repo")
 	}
@@ -289,4 +292,91 @@ func TestService_SQLite(t *testing.T) {
 
 func TestService_Postgres(t *testing.T) {
 	runServiceSuite(t, datastoretest.OpenPostgres(t))
+}
+
+// Slice 5.J28 (audit B.2 second wave). Delete paths publish
+// BlocklistChangedEvent for the SignalR `blocklist` channel.
+func TestService_DeletePublishesChangedEvent(t *testing.T) {
+	t.Parallel()
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+
+	var got atomic.Int32
+	var lastIDs atomic.Pointer[[]int]
+	var lastCount atomic.Int64
+	messaging.Subscribe(bus, "test.blocklist.changed",
+		func(_ context.Context, ev blocklist.BlocklistChangedEvent) error {
+			got.Add(1)
+			ids := append([]int(nil), ev.IDs...)
+			lastIDs.Store(&ids)
+			lastCount.Store(ev.Count)
+			return nil
+		})
+
+	w := &stubWriter{deleteByIDsAffected: 2}
+	svc := blocklist.NewService(w, bus)
+
+	// Delete single → one event with IDs=[7], Count=1.
+	if err := svc.Delete(context.Background(), 7); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if got.Load() != 1 {
+		t.Errorf("expected 1 event from Delete, got %d", got.Load())
+	}
+	if ids := lastIDs.Load(); ids == nil || len(*ids) != 1 || (*ids)[0] != 7 {
+		t.Errorf("Delete event IDs: %+v, want [7]", ids)
+	}
+	if lastCount.Load() != 1 {
+		t.Errorf("Delete event Count: %d, want 1", lastCount.Load())
+	}
+
+	// DeleteByIDs → one event with input IDs, Count = affected.
+	if _, err := svc.DeleteByIDs(context.Background(), []int{4, 5}); err != nil {
+		t.Fatalf("DeleteByIDs: %v", err)
+	}
+	if got.Load() != 2 {
+		t.Errorf("expected 2 events after DeleteByIDs, got %d", got.Load())
+	}
+	if ids := lastIDs.Load(); ids == nil || len(*ids) != 2 {
+		t.Errorf("DeleteByIDs event IDs: %+v, want [4 5]", ids)
+	}
+	if lastCount.Load() != 2 {
+		t.Errorf("DeleteByIDs event Count: %d, want 2", lastCount.Load())
+	}
+
+	// DeleteByIDs with affected=0 → no event.
+	w.deleteByIDsAffected = 0
+	if _, err := svc.DeleteByIDs(context.Background(), []int{99}); err != nil {
+		t.Fatalf("DeleteByIDs no-affected: %v", err)
+	}
+	if got.Load() != 2 {
+		t.Errorf("no-affected DeleteByIDs should not publish; total=%d", got.Load())
+	}
+}
+
+func TestService_DeleteForSeriesPublishesWhenAffected(t *testing.T) {
+	t.Parallel()
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+
+	var got atomic.Int32
+	var lastIDs atomic.Pointer[[]int]
+	messaging.Subscribe(bus, "test.blocklist.delseries",
+		func(_ context.Context, ev blocklist.BlocklistChangedEvent) error {
+			got.Add(1)
+			ids := append([]int(nil), ev.IDs...)
+			lastIDs.Store(&ids)
+			return nil
+		})
+
+	svc := blocklist.NewService(&stubWriter{deleteSeriesAffected: 5}, bus)
+	if _, err := svc.DeleteForSeries(context.Background(), []int{1, 2}); err != nil {
+		t.Fatalf("DeleteForSeries: %v", err)
+	}
+	if got.Load() != 1 {
+		t.Errorf("DeleteForSeries: events=%d, want 1", got.Load())
+	}
+	if ids := lastIDs.Load(); ids == nil || len(*ids) != 0 {
+		t.Errorf("DeleteForSeries event IDs: %+v, want empty (repo bulk WHERE doesn't return IDs)", ids)
+	}
 }

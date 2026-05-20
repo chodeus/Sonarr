@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"sonarr.tv/sonarr/internal/messaging"
 )
 
 // EntryWriter is the slice of [Repo] the [Service] reaches for. Pulled
@@ -39,18 +41,22 @@ type EntryWriter interface {
 // Goroutine-safe: stateless after construction.
 type Service struct {
 	repo EntryWriter
+	bus  *messaging.Bus
 }
 
-// NewService binds an EntryWriter. nil writer returns nil so a caller
-// wiring a service stack at startup can skip optional subscribers
-// without an explicit guard. Mirrors the nil-tolerance pattern in
-// [history.NewService] (slice 3.62/3.AQ) and
-// [downloadhistory.NewService] (slice 3.63).
-func NewService(w EntryWriter) *Service {
+// NewService binds an EntryWriter and an optional *messaging.Bus.
+// nil writer returns nil so a caller wiring a service stack at
+// startup can skip optional subscribers without an explicit guard
+// (matches the nil-tolerance pattern in [history.NewService] (slice
+// 3.62/3.AQ) and [downloadhistory.NewService] (slice 3.63)). nil
+// bus is supported — the Service simply skips event publishing
+// (matches the established Phase 2/3 skip-publish convention across
+// other services).
+func NewService(w EntryWriter, bus *messaging.Bus) *Service {
 	if w == nil {
 		return nil
 	}
-	return &Service{repo: w}
+	return &Service{repo: w, bus: bus}
 }
 
 // Add inserts a new Blocklist row. Mirrors the C# write call sites
@@ -132,15 +138,21 @@ func (s *Service) DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, 
 	if err != nil {
 		return 0, fmt.Errorf("blocklist: DeleteForSeries: %w", err)
 	}
+	if n > 0 {
+		// IDs unknown — the repo bulk WHERE doesn't return affected
+		// row IDs. Subscribers must not assume non-nil IDs (see the
+		// event doc-comment).
+		s.publishChanged(ctx, nil, n)
+	}
 	return n, nil
 }
 
 // Delete ports `BlocklistService.Delete(int id)` at
 // `BlocklistService.cs:165-168` — removes a single Blocklist row.
-// Returns blocklist.ErrNotFound when no row matches.
-//
-// SignalR/event-bus fan-out (the C# `BlocklistService.Delete` does
-// not publish; only `Block` does) is intentionally absent.
+// Returns blocklist.ErrNotFound when no row matches. Publishes
+// [BlocklistChangedEvent] with the removed id on success (Go-port
+// additive — see the event's doc-comment for the C# ModelEvent
+// divergence note).
 func (s *Service) Delete(ctx context.Context, id int) error {
 	if s == nil || s.repo == nil {
 		return errors.New("blocklist: Delete on nil receiver")
@@ -148,13 +160,15 @@ func (s *Service) Delete(ctx context.Context, id int) error {
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("blocklist: Delete(%d): %w", id, err)
 	}
+	s.publishChanged(ctx, []int{id}, 1)
 	return nil
 }
 
 // DeleteByIDs ports `BlocklistService.Delete(List<int> ids)` at
 // `BlocklistService.cs:170-173`. Bulk-removes every Blocklist row
 // whose Id is in the supplied list. Returns rows affected. Empty
-// input is no-op (0, nil).
+// input is no-op (0, nil). Publishes [BlocklistChangedEvent] with
+// the input id slice + the affected-row count when n > 0.
 func (s *Service) DeleteByIDs(ctx context.Context, ids []int) (int64, error) {
 	if s == nil || s.repo == nil {
 		return 0, errors.New("blocklist: DeleteByIDs on nil receiver")
@@ -166,7 +180,20 @@ func (s *Service) DeleteByIDs(ctx context.Context, ids []int) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("blocklist: DeleteByIDs: %w", err)
 	}
+	if n > 0 {
+		s.publishChanged(ctx, ids, n)
+	}
 	return n, nil
+}
+
+// publishChanged emits [BlocklistChangedEvent] best-effort. No-op
+// when bus is nil (matches the established skip-publish pattern
+// across other services).
+func (s *Service) publishChanged(ctx context.Context, ids []int, count int64) {
+	if s == nil || s.bus == nil {
+		return
+	}
+	_ = messaging.Publish(ctx, s.bus, BlocklistChangedEvent{IDs: ids, Count: count})
 }
 
 // Compile-time interface-satisfaction guard. A refactor that breaks

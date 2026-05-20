@@ -2104,7 +2104,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// blocklistSvc binds the repo via the slice-3.BA write surface;
 	// the handlers route through it (Add for the failed insert,
 	// DeleteForSeries for the series-cascade cleanup).
-	blocklistSvc := blocklist.NewService(blocklistRepo)
+	blocklistSvc := blocklist.NewService(blocklistRepo, bus)
 	if blocklistSvc == nil {
 		return fmt.Errorf("blocklist service: nil — required dep regressed")
 	}
@@ -2702,7 +2702,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if backupTempPath == "" {
 		backupTempPath = os.TempDir()
 	}
-	hostSrv, err := buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
+	hostSrv, err := buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
 	if err != nil {
 		return err
 	}

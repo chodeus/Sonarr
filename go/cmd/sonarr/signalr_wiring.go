@@ -25,6 +25,7 @@ import (
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/autotagging"
+	"sonarr.tv/sonarr/internal/blocklist"
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/episodefiles"
@@ -480,6 +481,27 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 		func(ctx context.Context, _ customformats.CustomFormatUpdatedEvent) error {
 			if err := customFormatBroadcaster.Sync(ctx); err != nil {
 				logger.Warn("signalr: customformat update sync broadcast failed", "err", err)
+			}
+			return nil
+		})
+
+	// Slice 5.J28 (audit B.2 second wave): `blocklist` channel.
+	// BlocklistChangedEvent fires from blocklist.Service Delete /
+	// DeleteByIDs / DeleteForSeries (Go-port additive — C#
+	// `BlocklistService.cs:165-173` doesn't emit a typed event; its
+	// SignalR sync flows through the inherited generic
+	// ModelEvent<Blocklist>). The React UI's blocklist list refetches
+	// on Sync; per-row Updated/Deleted projections are a tightening
+	// for a later slice if needed.
+	blocklistBroadcaster := &signalr.ResourceBroadcaster[emptySyncPayload]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "blocklist",
+		Version:     signalr.V3Version,
+	}
+	messaging.Subscribe(bus, "signalr.blocklist.Changed",
+		func(ctx context.Context, _ blocklist.BlocklistChangedEvent) error {
+			if err := blocklistBroadcaster.Sync(ctx); err != nil {
+				logger.Warn("signalr: blocklist sync broadcast failed", "err", err)
 			}
 			return nil
 		})
