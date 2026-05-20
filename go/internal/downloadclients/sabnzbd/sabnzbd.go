@@ -42,6 +42,7 @@ type Sabnzbd struct {
 	proxy    *Proxy
 	def      *downloadclients.DownloadClient
 	rpm      downloadclients.RemotePathMapper
+	disk     downloadclients.DiskProvider
 	log      *slog.Logger
 }
 
@@ -71,6 +72,23 @@ func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, l
 // Returns the receiver for chainable construction.
 func (s *Sabnzbd) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) *Sabnzbd {
 	s.rpm = rpm
+	return s
+}
+
+// SetDiskProvider binds the optional [downloadclients.DiskProvider]
+// the RemoveItem deleteData arm consults to call DeleteFolder
+// against item.OutputPath when SAB has moved the item to history
+// (matches the C# DeleteItemData step at `Sabnzbd.cs:203-205`,
+// which fires BEFORE the SAB-side `del_files=1` cleanup). Nil
+// binding leaves the disk arm in its pre-J116 degraded state — the
+// SAB-side cleanup via del_files still runs, but Sonarr won't
+// remove a folder SAB has lost track of (moved by SAB post-import).
+// Slice 5.J116 — same pattern as J111 rTorrent + J112 Aria2 +
+// NZBGet 6.C3.
+//
+// Returns the receiver for chainable construction.
+func (s *Sabnzbd) SetDiskProvider(d downloadclients.DiskProvider) *Sabnzbd {
+	s.disk = d
 	return s
 }
 
@@ -341,11 +359,30 @@ func (s *Sabnzbd) RemoveItem(ctx context.Context, item *downloadclients.Item, de
 		}
 		return nil
 	}
-	// Not in queue → history. C# `:203-205`: if deleteData && Completed,
-	// delete on-disk data via DeleteItemData first. The DeleteItemData
-	// step calls into the disk provider; the Go port defers that to a
-	// follow-up — for now we pass deleteData through to SAB which also
-	// has its own RemoveFromHistory del_files arm.
+	// Not in queue → history. C# `:203-205`: when deleteData==true AND
+	// status==Completed, fire DiskProvider.DeleteFolder against
+	// item.OutputPath BEFORE the SAB history-delete (the C# ordering
+	// — Sonarr handles the post-import-move folder that SAB has
+	// lost track of, then SAB's own del_files arm cleans up whatever
+	// SAB still knows about). Slice 5.J116 wire-up mirrors the
+	// J111 rTorrent + J112 Aria2 disk-arm pattern.
+	if deleteData && item.Status == downloadclients.DownloadItemStatusCompleted {
+		switch {
+		case s.disk == nil:
+			s.log.Warn("sabnzbd: RemoveItem: deleteData=true requested on Completed item but no DiskProvider is wired; SAB's del_files arm will still run but Sonarr won't remove the post-import folder",
+				slog.String("downloadID", item.DownloadID))
+		case item.OutputPath.IsEmpty():
+			s.log.Debug("sabnzbd: RemoveItem: deleteData=true but item.OutputPath is empty; skipping Sonarr-side delete",
+				slog.String("downloadID", item.DownloadID))
+		default:
+			if err := s.disk.DeleteFolder(item.OutputPath.FullPath(), true); err != nil {
+				s.log.Warn("sabnzbd: RemoveItem: DiskProvider.DeleteFolder failed; the history-delete will still run",
+					slog.String("downloadID", item.DownloadID),
+					slog.String("path", item.OutputPath.FullPath()),
+					slog.Any("err", err))
+			}
+		}
+	}
 	deletePermanently := item.Status == downloadclients.DownloadItemStatusFailed
 	if err := s.proxy.RemoveFromHistory(ctx, item.DownloadID, deleteData, deletePermanently, s.settings); err != nil {
 		return fmt.Errorf("sabnzbd: RemoveItem: RemoveFromHistory: %w", err)
@@ -810,6 +847,13 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	// run with nil and behave identically to the pre-6.B port.
 	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
 		sab.SetRemotePathMapper(rpm)
+	}
+	// Slice 5.J116: same pattern for the DiskProvider; nil dep / cast
+	// miss leaves sab.disk nil → the RemoveItem deleteData arm
+	// degrades to a warn log (SAB's del_files still cleans up what
+	// SAB knows about).
+	if disk, ok := deps.DiskProvider.(downloadclients.DiskProvider); ok {
+		sab.SetDiskProvider(disk)
 	}
 	return sab, nil
 }

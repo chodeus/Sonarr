@@ -838,6 +838,155 @@ func TestSabnzbd_RemoveItemHistoryBranchPermanentFlagOnFailed(t *testing.T) {
 	}
 }
 
+// --- J116 RemoveItem deleteData history-branch DiskProvider arm ---
+
+type sabStubDisk struct {
+	called bool
+	path   string
+	err    error
+}
+
+func (s *sabStubDisk) DeleteFolder(path string, _ bool) error {
+	s.called = true
+	s.path = path
+	return s.err
+}
+
+func TestSabnzbd_RemoveItem_J116_HistoryCompletedDeleteDataCallsDisk(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":false,"slots":[]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+	sab := newSabnzbdForURL(t, srv)
+	disk := &sabStubDisk{}
+	sab.SetDiskProvider(disk)
+	item := &downloadclients.Item{
+		DownloadID: "abc",
+		Status:     downloadclients.DownloadItemStatusCompleted,
+		OutputPath: ospath.New("/data/tv/Show.S01E02"),
+	}
+	if err := sab.RemoveItem(context.Background(), item, true); err != nil {
+		t.Fatal(err)
+	}
+	if !disk.called {
+		t.Errorf("DiskProvider.DeleteFolder was not called")
+	}
+	if disk.path != "/data/tv/Show.S01E02" {
+		t.Errorf("disk path=%q, want /data/tv/Show.S01E02", disk.path)
+	}
+	if !strings.Contains(fake.deleteQuery, "mode=history") {
+		t.Errorf("deleteQuery=%q, want mode=history", fake.deleteQuery)
+	}
+}
+
+func TestSabnzbd_RemoveItem_J116_HistoryDeleteDataFalseSkipsDisk(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":false,"slots":[]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+	sab := newSabnzbdForURL(t, srv)
+	disk := &sabStubDisk{}
+	sab.SetDiskProvider(disk)
+	item := &downloadclients.Item{
+		DownloadID: "abc",
+		Status:     downloadclients.DownloadItemStatusCompleted,
+		OutputPath: ospath.New("/data/tv/Show"),
+	}
+	if err := sab.RemoveItem(context.Background(), item, false); err != nil {
+		t.Fatal(err)
+	}
+	if disk.called {
+		t.Errorf("DiskProvider fired despite deleteData=false")
+	}
+}
+
+func TestSabnzbd_RemoveItem_J116_HistoryNotCompletedSkipsDisk(t *testing.T) {
+	t.Parallel()
+	// Failed status → SAB does the permanent-delete via archive=0;
+	// the Sonarr-side disk arm only applies to Completed (matches
+	// C# `:203` `status == DownloadItemStatus.Completed` guard).
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":false,"slots":[]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+	sab := newSabnzbdForURL(t, srv)
+	disk := &sabStubDisk{}
+	sab.SetDiskProvider(disk)
+	item := &downloadclients.Item{
+		DownloadID: "abc",
+		Status:     downloadclients.DownloadItemStatusFailed,
+		OutputPath: ospath.New("/data/tv/Show"),
+	}
+	if err := sab.RemoveItem(context.Background(), item, true); err != nil {
+		t.Fatal(err)
+	}
+	if disk.called {
+		t.Errorf("DiskProvider fired on Failed status; only Completed should trigger disk arm")
+	}
+}
+
+func TestSabnzbd_RemoveItem_J116_DiskErrorDoesNotAbortHistoryDelete(t *testing.T) {
+	t.Parallel()
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":false,"slots":[]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+	sab := newSabnzbdForURL(t, srv)
+	disk := &sabStubDisk{err: errors.New("permission denied")}
+	sab.SetDiskProvider(disk)
+	item := &downloadclients.Item{
+		DownloadID: "abc",
+		Status:     downloadclients.DownloadItemStatusCompleted,
+		OutputPath: ospath.New("/data/tv/Show"),
+	}
+	if err := sab.RemoveItem(context.Background(), item, true); err != nil {
+		t.Errorf("RemoveItem must not abort on disk-arm failure: %v", err)
+	}
+	if !disk.called {
+		t.Errorf("disk arm did not fire")
+	}
+	if !strings.Contains(fake.deleteQuery, "mode=history") {
+		t.Errorf("SAB history delete didn't run after disk failure; deleteQuery=%q", fake.deleteQuery)
+	}
+}
+
+func TestSabnzbd_RemoveItem_J116_QueueBranchUnaffected(t *testing.T) {
+	t.Parallel()
+	// Item still in queue → queue-branch path, no disk arm even with
+	// deleteData=true (matches C# `:210-212` which goes straight to
+	// RemoveFromQueue).
+	fake := &fakeSAB{
+		queueJSON:   `{"queue":{"paused":false,"slots":[{"nzo_id":"abc","status":"Downloading","filename":"x","sizeleft":"0 B","size":"0 B","cat":"tv"}]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	defer srv.Close()
+	sab := newSabnzbdForURL(t, srv)
+	disk := &sabStubDisk{}
+	sab.SetDiskProvider(disk)
+	item := &downloadclients.Item{
+		DownloadID: "abc",
+		Status:     downloadclients.DownloadItemStatusDownloading,
+		OutputPath: ospath.New("/data/tv/Show"),
+	}
+	if err := sab.RemoveItem(context.Background(), item, true); err != nil {
+		t.Fatal(err)
+	}
+	if disk.called {
+		t.Errorf("disk arm fired on queue-branch path")
+	}
+}
+
 func TestSabnzbd_MarkItemAsImportedReturnsUnsupportedSentinel(t *testing.T) {
 	t.Parallel()
 	sab := newSabnzbdForURL(t, nil)
