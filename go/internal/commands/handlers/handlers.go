@@ -214,7 +214,7 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 		Handler: NewRefreshMonitoredDownloads(deps.MonitoredDownloadRefresher, deps.Log),
 	})
 	registry.Register(CheckForFinishedDownloadsName, commands.CommandSpec{
-		Handler: NewCheckForFinishedDownloads(deps.Log),
+		Handler: NewCheckForFinishedDownloads(deps.MonitoredDownloadRefresher, deps.Log),
 	})
 	if deps.Backup != nil {
 		backupHandler, err := NewBackup(deps.Backup, deps.Log)

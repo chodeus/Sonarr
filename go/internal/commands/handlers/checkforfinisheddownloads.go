@@ -1,34 +1,17 @@
-// CheckForFinishedDownloads handler. Ports the
-// IExecute<CheckForFinishedDownloadCommand> implementation — AS A STUB.
+// CheckForFinishedDownloads handler. Ports the deprecated
+// IExecute<CheckForFinishedDownloadCommand> implementation at
+// `src/NzbDrone.Core/Download/TrackedDownloads/DownloadMonitoringService.cs:166-170`.
 //
-// Slice 4.Z (queue [15]). The real-world job in C# at
-// `src/NzbDrone.Core/Download/DownloadProcessingService.cs` (the
-// `CheckForFinishedDownload` command handler — bare class at
-// `Download/CheckForFinishedDownloadCommand.cs:1-8` triggers the
-// service's recurring scan) iterates every download client's
-// GetItems output, filters by category, and routes completed items
-// through the import pipeline.
+// In the C# tree (post-deprecation) this command is an alias for
+// RefreshMonitoredDownloads with a warn log nudging third-party
+// callers to migrate. The Go port matches that posture — slice 5.J38
+// delegates to the same [Refresher] interface as
+// RefreshMonitoredDownloads (`*downloadmonitoring.Service`).
 //
-// The Go port stubs because the consumer chain requires:
-//
-//   - Provider.GetItems implementations across SAB + Transmission
-//     (sub-arcs 14a/14b shipped only Download + Test; GetItems is
-//     ErrNotImplementedYet today).
-//   - TrackedDownloadService — the in-flight queue + history join
-//     not yet ported.
-//   - Import pipeline integration — connects to
-//     downloadedimport.Service which is ported but expects the
-//     full scan input.
-//
-// What this slice DOES close:
-//
-//   - The CheckForFinishedDownloads command is push-routable via the
-//     registry (the API/v3 command-push path + the scheduler tick).
-//   - The 1-minute scheduled-task entry materialises at boot
-//     (matches C# `TaskManager.cs:74` — same frequency tier as
-//     RefreshMonitoredDownloads).
-//   - API callers pushing CheckForFinishedDownloads get a structured
-//     log line instead of an "Unknown command" rejection.
+// When no Refresher is wired the handler falls back to the original
+// stub-shaped log so hosts that haven't yet wired a refresher still
+// satisfy the registry slot — the 1-minute scheduled-task entry
+// depends on the registry key existing.
 
 package handlers
 
@@ -52,28 +35,56 @@ const CheckForFinishedDownloadsName = "CheckForFinishedDownload"
 const CheckForFinishedDownloadsIntervalDefault = 1
 
 // CheckForFinishedDownloads is the IExecute<CheckForFinishedDownloadCommand>
-// port stub. Logs and returns nil.
+// port. Delegates to the configured [Refresher] (same instance as
+// RefreshMonitoredDownloads) with a deprecation warn-log per call.
 type CheckForFinishedDownloads struct {
-	log *slog.Logger
+	refresher Refresher
+	log       *slog.Logger
 }
 
-// NewCheckForFinishedDownloads builds the handler. log defaults to
-// slog.Default.
-func NewCheckForFinishedDownloads(log *slog.Logger) *CheckForFinishedDownloads {
+// NewCheckForFinishedDownloads builds the handler with an optional
+// refresher. When refresher is nil, Execute logs the stub-shaped
+// "command fired" line and returns nil (matches the pre-5.J38
+// behaviour so hosts without a wired downloadmonitoring.Service
+// still register the slot).
+//
+// log defaults to slog.Default.
+func NewCheckForFinishedDownloads(refresher Refresher, log *slog.Logger) *CheckForFinishedDownloads {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &CheckForFinishedDownloads{log: log}
+	return &CheckForFinishedDownloads{refresher: refresher, log: log}
 }
 
-// Execute logs the command fire-event and returns nil. The real port
-// will replace this with a delegation into a future
-// downloadprocessing.Service that iterates every Provider.GetItems
-// and dispatches the completed-import branch.
+// Execute logs a deprecation warning (matches C# `:168`) and
+// delegates to the Refresher. When no Refresher is wired, falls
+// back to the stub fired-event log.
 func (h *CheckForFinishedDownloads) Execute(ctx context.Context, _ string) error {
-	h.log.LogAttrs(ctx, slog.LevelInfo,
-		"checkforfinisheddownloads: stub Execute (DownloadProcessingService not yet ported)",
+	if h.refresher == nil {
+		h.log.LogAttrs(ctx, slog.LevelInfo,
+			"checkforfinisheddownloads: stub Execute (no DownloadMonitoringService wired)",
+			slog.String("command", CheckForFinishedDownloadsName))
+		return nil
+	}
+	// Mirrors C# `_logger.Warn("A third party app used the deprecated
+	// CheckForFinishedDownload command, it should be updated
+	// RefreshMonitoredDownloads instead");` at `:168`.
+	h.log.LogAttrs(ctx, slog.LevelWarn,
+		"checkforfinisheddownloads: deprecated command — use RefreshMonitoredDownloads instead",
 		slog.String("command", CheckForFinishedDownloadsName))
+	items, err := h.refresher.Refresh(ctx)
+	if err != nil {
+		h.log.LogAttrs(ctx, slog.LevelWarn,
+			"checkforfinisheddownloads: Refresh completed with errors (per-client poll failure absorbed)",
+			slog.String("command", CheckForFinishedDownloadsName),
+			slog.Int("items", items),
+			slog.Any("err", err))
+		return nil
+	}
+	h.log.LogAttrs(ctx, slog.LevelDebug,
+		"checkforfinisheddownloads: Refresh complete",
+		slog.String("command", CheckForFinishedDownloadsName),
+		slog.Int("items", items))
 	return nil
 }
 
