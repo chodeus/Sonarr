@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/tribler"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // scriptedDoer queues responses per-path so the test can stage
@@ -266,18 +268,12 @@ func TestProvider_GetStatus_LocalhostFlag(t *testing.T) {
 	}
 }
 
-func TestProvider_RemainingStubs(t *testing.T) {
-	// J82 wires Download; GetItems + RemoveItem remain stubs.
+func TestProvider_RemoveItem_StillStub(t *testing.T) {
+	// J83 wires Download + GetItems; RemoveItem remains the last
+	// stub before the J84 closure.
 	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(newScripted(), nil), nil)
 	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); !errors.Is(err, tribler.ErrNotImplemented) {
 		t.Errorf("RemoveItem err = %v, want ErrNotImplemented", err)
-	}
-	items, err := p.GetItems(context.Background())
-	if err != nil {
-		t.Fatalf("GetItems err = %v", err)
-	}
-	if len(items) != 0 {
-		t.Errorf("GetItems len = %d, want 0", len(items))
 	}
 }
 
@@ -409,6 +405,232 @@ func TestProvider_MarkItemAsImported_ReturnsUnsupported(t *testing.T) {
 		t.Errorf("err = %v, want ErrMarkAsImportedUnsupported", err)
 	}
 }
+
+// queueDownloadsWithFiles queues a /api/downloads list + a series
+// of /api/downloads/<hash>/files responses (one per torrent).
+func queueDownloadsWithFiles(doer *scriptedDoer, downloadsBody string, filesByHash map[string]string) {
+	doer.queue("/api/downloads", downloadsBody)
+	for hash, body := range filesByHash {
+		doer.queue("/api/downloads/"+hash+"/files", body)
+	}
+}
+
+func TestProvider_GetItems_EmptyList(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[]}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, err := p.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("len = %d, want 0", len(items))
+	}
+}
+
+func TestProvider_GetItems_SkipsMagnetMetadata(t *testing.T) {
+	// size==0 → still fetching magnet metadata; skip per C# :58.
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"a","status":"DOWNLOADING","size":0,"progress":0.5,"destination":"/dl"}
+	]}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 0 {
+		t.Errorf("len = %d, want 0 (size=0 skipped)", len(items))
+	}
+}
+
+func TestProvider_GetItems_StatusTable(t *testing.T) {
+	// One row per arm of the status table. Files responses are
+	// queued for each so the OutputPath single-file path doesn't
+	// blow up.
+	rows := `{"downloads":[
+		{"name":"Down","infohash":"d","status":"DOWNLOADING","size":100,"progress":0.5,"destination":"/dl"},
+		{"name":"Meta","infohash":"m","status":"METADATA","size":100,"progress":0,"destination":"/dl"},
+		{"name":"Done","infohash":"f","status":"SEEDING","size":100,"progress":1,"destination":"/dl"},
+		{"name":"PausedDl","infohash":"p","status":"STOPPED","size":100,"progress":0.5,"destination":"/dl"},
+		{"name":"Stopped100","infohash":"s","status":"STOPPED","size":100,"progress":1,"destination":"/dl"},
+		{"name":"Errored","infohash":"e","status":"STOPPED_ON_ERROR","size":100,"progress":0.5,"destination":"/dl"},
+		{"name":"WithError","infohash":"w","status":"DOWNLOADING","size":100,"progress":0.5,"destination":"/dl","error":"disk full"}
+	]}`
+	doer := newScripted()
+	doer.queue("/api/downloads", rows)
+	for _, h := range []string{"d", "m", "f", "p", "s", "e", "w"} {
+		doer.queue("/api/downloads/"+h+"/files", `{"files":[{"name":"file.mkv"}]}`)
+	}
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, err := p.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(items) != 7 {
+		t.Fatalf("len = %d, want 7", len(items))
+	}
+	byID := map[string]*downloadclients.Item{}
+	for _, it := range items {
+		byID[it.DownloadID] = it
+	}
+	want := map[string]downloadclients.DownloadItemStatus{
+		"d": downloadclients.DownloadItemStatusDownloading,
+		"m": downloadclients.DownloadItemStatusQueued,
+		"f": downloadclients.DownloadItemStatusCompleted,
+		"p": downloadclients.DownloadItemStatusPaused, // Stopped + Progress < 1 override
+		"s": downloadclients.DownloadItemStatusCompleted,
+		"e": downloadclients.DownloadItemStatusFailed,
+		"w": downloadclients.DownloadItemStatusWarning, // error override
+	}
+	for id, st := range want {
+		got, ok := byID[id]
+		if !ok {
+			t.Errorf("missing item %s", id)
+			continue
+		}
+		if got.Status != st {
+			t.Errorf("%s Status = %v, want %v", id, got.Status, st)
+		}
+	}
+	if byID["w"].Message != "disk full" {
+		t.Errorf("error-arm Message = %q, want 'disk full'", byID["w"].Message)
+	}
+}
+
+func TestProvider_GetItems_OutputPath_SingleFileFromFilesResponse(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"Show","infohash":"abc","status":"SEEDING","size":100,"progress":1,"destination":"/dl"}
+	]}`)
+	doer.queue("/api/downloads/abc/files", `{"files":[{"name":"episode.mkv"}]}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 {
+		t.Fatalf("len = %d", len(items))
+	}
+	if items[0].OutputPath.FullPath() != "/dl/episode.mkv" {
+		t.Errorf("OutputPath = %q, want /dl/episode.mkv (single-file suffix)", items[0].OutputPath.FullPath())
+	}
+}
+
+func TestProvider_GetItems_OutputPath_MultiFileFallsBackToTitle(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"PackTitle","infohash":"abc","status":"SEEDING","size":100,"progress":1,"destination":"/dl"}
+	]}`)
+	doer.queue("/api/downloads/abc/files", `{"files":[{"name":"a.mkv"},{"name":"b.mkv"}]}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].OutputPath.FullPath() != "/dl/PackTitle" {
+		t.Errorf("OutputPath = %q, want /dl/PackTitle (multi-file → title fallback)", items[0].OutputPath.FullPath())
+	}
+}
+
+func TestProvider_GetItems_OutputPath_FilesErrorFallsBackToTitle(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"abc","status":"SEEDING","size":100,"progress":1,"destination":"/dl"}
+	]}`)
+	doer.queueErr("/api/downloads/abc/files", errors.New("dial"))
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].OutputPath.FullPath() != "/dl/X" {
+		t.Errorf("OutputPath = %q, want /dl/X (files-error → title fallback)", items[0].OutputPath.FullPath())
+	}
+}
+
+func TestProvider_GetItems_ETAClamp(t *testing.T) {
+	cases := []struct {
+		name string
+		eta  float64
+		want time.Duration
+	}{
+		{"negative", -10, 0},
+		{"normal", 60, 60 * time.Second},
+		{"over a year", 366 * 24 * 3600, 365 * 24 * time.Hour},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"downloads":[
+				{"name":"X","infohash":"abc","status":"DOWNLOADING","size":100,"progress":0.5,"destination":"/dl","eta":` + ftoa(tt.eta) + `}
+			]}`
+			doer := newScripted()
+			doer.queue("/api/downloads", body)
+			doer.queue("/api/downloads/abc/files", `{"files":[{"name":"f.mkv"}]}`)
+			p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+			items, _ := p.GetItems(context.Background())
+			if items[0].RemainingTime == nil || *items[0].RemainingTime != tt.want {
+				t.Errorf("eta=%v RemainingTime = %v, want %v", tt.eta, items[0].RemainingTime, tt.want)
+			}
+		})
+	}
+}
+
+func TestProvider_GetItems_RemainingSizeComputed(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"abc","status":"DOWNLOADING","size":1000,"progress":0.4,"destination":"/dl"}
+	]}`)
+	doer.queue("/api/downloads/abc/files", `{"files":[{"name":"f.mkv"}]}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].RemainingSize != 600 {
+		t.Errorf("RemainingSize = %d, want 600 (1000 * (1 - 0.4))", items[0].RemainingSize)
+	}
+	if items[0].TotalSize != 1000 {
+		t.Errorf("TotalSize = %d, want 1000", items[0].TotalSize)
+	}
+}
+
+func TestProvider_GetItems_RemotePathMapperApplied(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/downloads", `{"downloads":[
+		{"name":"X","infohash":"abc","status":"SEEDING","size":100,"progress":1,"destination":"/remote/dl"}
+	]}`)
+	doer.queue("/api/downloads/abc/files", `{"files":[{"name":"f.mkv"}]}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	p.SetRemotePathMapper(triblerStubRemapper{from: "/remote/dl", to: "/local/dl"})
+	items, _ := p.GetItems(context.Background())
+	if items[0].OutputPath.FullPath() != "/local/dl/f.mkv" {
+		t.Errorf("OutputPath = %q, want /local/dl/f.mkv (remap + file suffix)", items[0].OutputPath.FullPath())
+	}
+}
+
+func TestProvider_GetItems_PropagatesGetDownloadsError(t *testing.T) {
+	doer := newScripted()
+	doer.queueErr("/api/downloads", errors.New("dial"))
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	_, err := p.GetItems(context.Background())
+	if !errors.Is(err, tribler.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable", err)
+	}
+}
+
+// ftoa is a tiny float-to-string helper for inline JSON in tests.
+func ftoa(f float64) string {
+	switch f {
+	case 0:
+		return "0"
+	case -10:
+		return "-10"
+	case 60:
+		return "60"
+	default:
+		// 366 * 86400 = 31622400.
+		return "31622400"
+	}
+}
+
+type triblerStubRemapper struct{ from, to string }
+
+func (s triblerStubRemapper) RemapRemoteToLocal(_ context.Context, _ string, p ospath.OsPath) (ospath.OsPath, error) {
+	if p.FullPath() == s.from {
+		return ospath.New(s.to), nil
+	}
+	return p, nil
+}
+
+// Reference the queueDownloadsWithFiles helper so it stays linked
+// even if unused this slice.
+var _ = queueDownloadsWithFiles
 
 func TestRegistry_RegistersTribler(t *testing.T) {
 	reg := downloadclients.Default()

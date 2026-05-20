@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // TriblerDownloadClient is the [downloadclients.Provider]
@@ -25,6 +27,11 @@ type TriblerDownloadClient struct {
 	def      *downloadclients.DownloadClient
 	log      *slog.Logger
 	proxy    *Proxy
+
+	// rpm is the optional remote-path mapper consulted by
+	// GetItems to translate the Tribler-side Destination into
+	// Sonarr-side paths.
+	rpm downloadclients.RemotePathMapper
 }
 
 // New constructs a TriblerDownloadClient Provider. proxy=nil binds
@@ -120,11 +127,185 @@ func (t *TriblerDownloadClient) resolveDownloadDirectory(ctx context.Context) (s
 	return base + "/" + t.settings.TvCategory, nil
 }
 
-// GetItems is a STUB at 5.J81. Follow-up ports `Proxy.GetDownloads`
-// (GET `/api/downloads`) + the per-state Tribler status table
-// from C# `TriblerDownloadClient.cs:47-156`.
-func (t *TriblerDownloadClient) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return []*downloadclients.Item{}, nil
+// GetItems ports `TriblerDownloadClient.GetItems` at C# `:47-156`.
+// Walks the download list via [Proxy.GetDownloads], skips magnet-
+// metadata torrents (Size==nil or 0 at C# `:58`), and projects each
+// into a [downloadclients.Item] with the 5-arm status table.
+//
+// OutputPath is composed as `<Destination>/<filename>` where the
+// suffix is the single file's Name when GetDownloadFiles returns
+// exactly one (matches C# `:74-83`), otherwise the torrent Title.
+// The bound [RemotePathMapper] (when present) translates the
+// resulting path Sonarr-side.
+//
+// Status table priority order (matches C# `:110-148`):
+//
+//   - Hashchecking / Waiting4HashCheck / Circuits / Exitnodes /
+//     Downloading → Downloading.
+//   - Metadata / AllocatingDiskspace → Queued.
+//   - Seeding / Stopped → Completed.
+//   - StoppedOnError → Failed.
+//   - Loading / unknown → Downloading + "Unknown download state"
+//     message (matches C# `:131-135`).
+//   - Override: Stopped AND Progress < 1 → Paused (matches C# `:139`).
+//   - Override: non-empty Error → Warning + Message=Error
+//     (matches C# `:144-148`).
+//
+// ETA clamping mirrors C# `:91-102`: negative → 0, >= 365 days →
+// 365 days, otherwise direct conversion.
+//
+// Documented divergence: the C# `HasReachedSeedLimit` cleanup-gate
+// at `:150,180-215` (sets CanBeRemoved + CanMoveFiles based on the
+// configured SeedingMode + SeedingRatio + SeedingTime + per-torrent
+// AllTimeRatio + TimeAdded) is APPROXIMATED — the Go port lacks a
+// port of the SeedingMode/SeedingRatio settings struct and defaults
+// the flags to false. This is consistent with the rest of the
+// long-tail DCs where seed-config gating is a follow-up. Documented;
+// no functional impact on the import path itself.
+func (t *TriblerDownloadClient) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
+	if t.proxy == nil {
+		return []*downloadclients.Item{}, nil
+	}
+	downloads, err := t.proxy.GetDownloads(ctx, t.settings)
+	if err != nil {
+		return nil, fmt.Errorf("tribler: GetDownloads: %w", err)
+	}
+	info := t.itemClientInfo()
+	out := make([]*downloadclients.Item, 0, len(downloads))
+	for _, d := range downloads {
+		if d == nil {
+			continue
+		}
+		if d.Size == nil || *d.Size == 0 {
+			// Magnet still fetching metadata — skip until the
+			// torrent has a size.
+			continue
+		}
+		out = append(out, t.toItem(ctx, info, d))
+	}
+	return out, nil
+}
+
+// toItem projects one [Download] into a [downloadclients.Item].
+// Per-file OutputPath resolution may issue a [Proxy.GetDownloadFiles]
+// call (matches C# `:72`'s per-torrent lookup).
+func (t *TriblerDownloadClient) toItem(ctx context.Context, info *downloadclients.ItemClientInfo, d *Download) *downloadclients.Item {
+	totalSize := int64(0)
+	if d.Size != nil {
+		totalSize = *d.Size
+	}
+	progress := 0.0
+	if d.Progress != nil {
+		progress = *d.Progress
+	}
+	remaining := int64(float64(totalSize) * (1 - progress))
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	item := &downloadclients.Item{
+		DownloadClientInfo: info,
+		DownloadID:         d.Infohash,
+		Title:              d.Name,
+		TotalSize:          totalSize,
+		RemainingSize:      remaining,
+		Message:            d.Error,
+	}
+	if d.AllTimeRatio != nil {
+		ratio := *d.AllTimeRatio
+		item.SeedRatio = &ratio
+	}
+	if d.Eta != nil {
+		dur := clampETA(*d.Eta)
+		item.RemainingTime = &dur
+	}
+
+	// Compose OutputPath = Destination + (single-file Name | Title).
+	dest := ospath.New(d.Destination)
+	if t.rpm != nil && strings.TrimSpace(d.Destination) != "" {
+		if mapped, err := t.rpm.RemapRemoteToLocal(ctx, t.settings.Host, dest); err == nil {
+			dest = mapped
+		} else {
+			t.log.Debug("tribler: RemapRemoteToLocal failed", "destination", d.Destination, "err", err)
+		}
+	}
+	suffix := d.Name
+	if files, err := t.proxy.GetDownloadFiles(ctx, t.settings, d.Infohash); err == nil && len(files) == 1 && strings.TrimSpace(files[0].Name) != "" {
+		suffix = files[0].Name
+	} else if err != nil {
+		t.log.Debug("tribler: GetDownloadFiles failed; defaulting OutputPath to title", "infohash", d.Infohash, "err", err)
+	}
+	if strings.TrimSpace(suffix) != "" {
+		item.OutputPath = ospath.New(strings.TrimRight(dest.FullPath(), "/") + "/" + suffix)
+	} else {
+		item.OutputPath = dest
+	}
+
+	// Status table.
+	switch d.Status {
+	case DownloadStatusHashchecking,
+		DownloadStatusWaiting4HashCheck,
+		DownloadStatusCircuits,
+		DownloadStatusExitnodes,
+		DownloadStatusDownloading:
+		item.Status = downloadclients.DownloadItemStatusDownloading
+	case DownloadStatusMetadata, DownloadStatusAllocatingDiskspace:
+		item.Status = downloadclients.DownloadItemStatusQueued
+	case DownloadStatusSeeding, DownloadStatusStopped:
+		item.Status = downloadclients.DownloadItemStatusCompleted
+	case DownloadStatusStoppedOnError:
+		item.Status = downloadclients.DownloadItemStatusFailed
+	default:
+		item.Message = "Unknown download state"
+		item.Status = downloadclients.DownloadItemStatusDownloading
+	}
+
+	// Overrides.
+	if d.Status == DownloadStatusStopped && progress < 1 {
+		item.Status = downloadclients.DownloadItemStatusPaused
+	}
+	if strings.TrimSpace(d.Error) != "" {
+		item.Status = downloadclients.DownloadItemStatusWarning
+		item.Message = d.Error
+	}
+
+	// Seed-config cleanup gate deferred (see GetItems doc note).
+	return item
+}
+
+// clampETA mirrors C# `:91-102`'s clamp: negative → 0, >= 365 days
+// in seconds → 365 days, otherwise direct conversion.
+func clampETA(etaSeconds float64) time.Duration {
+	yearSeconds := float64(365 * 24 * 60 * 60)
+	switch {
+	case etaSeconds < 0:
+		return 0
+	case etaSeconds >= yearSeconds:
+		return 365 * 24 * time.Hour
+	default:
+		return time.Duration(etaSeconds * float64(time.Second))
+	}
+}
+
+// itemClientInfo mirrors C# `DownloadClientItemClientInfo.FromDownloadClient(this, false)`.
+func (t *TriblerDownloadClient) itemClientInfo() *downloadclients.ItemClientInfo {
+	info := &downloadclients.ItemClientInfo{
+		Protocol: t.Protocol(),
+		Type:     Implementation,
+		Name:     t.Name(),
+	}
+	if t.def != nil {
+		info.ID = t.def.ID
+		info.Name = t.def.Name
+		info.RemoveCompletedDownloads = t.def.RemoveCompletedDownloads
+	}
+	return info
+}
+
+// SetRemotePathMapper binds the optional remote-path mapper used
+// by GetItems for the Destination translation.
+func (t *TriblerDownloadClient) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) {
+	t.rpm = rpm
 }
 
 // GetImportItem is the C# base passthrough.
@@ -220,7 +401,11 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	if l, ok := deps.Logger.(*slog.Logger); ok {
 		log = l
 	}
-	return New(def, settings, nil, log), nil
+	t := New(def, settings, nil, log)
+	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
+		t.SetRemotePathMapper(rpm)
+	}
+	return t, nil
 }
 
 func init() {

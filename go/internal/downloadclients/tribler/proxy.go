@@ -70,6 +70,139 @@ type Config struct {
 	} `json:"settings"`
 }
 
+// DownloadStatus ports C# `Models/TriblerDownloadClientApi.cs:9-45`
+// — the snake-or-UPPERCASE-tagged enum the Tribler API emits for
+// the per-task state. The Go-port enum is a typed int with the
+// same numeric ordering for in-package comparisons; the wire
+// shape is a string handled by the custom UnmarshalJSON.
+type DownloadStatus int
+
+// DownloadStatus values mirror the C# enum at `:11-43` verbatim.
+const (
+	DownloadStatusWaiting4HashCheck   DownloadStatus = 0
+	DownloadStatusHashchecking        DownloadStatus = 1
+	DownloadStatusMetadata            DownloadStatus = 2
+	DownloadStatusDownloading         DownloadStatus = 3
+	DownloadStatusSeeding             DownloadStatus = 4
+	DownloadStatusStopped             DownloadStatus = 5
+	DownloadStatusAllocatingDiskspace DownloadStatus = 6
+	DownloadStatusExitnodes           DownloadStatus = 7
+	DownloadStatusCircuits            DownloadStatus = 8
+	DownloadStatusStoppedOnError      DownloadStatus = 9
+	DownloadStatusLoading             DownloadStatus = 10
+)
+
+// downloadStatusByWire maps the [EnumMember(Value=...)] strings
+// from C# `:11-43` to the typed enum. Unknown values map to
+// DownloadStatusLoading (matches C# default-arm fallback at
+// `TriblerDownloadClient.cs:130-134`).
+var downloadStatusByWire = map[string]DownloadStatus{
+	"WAITING4HASHCHECK":    DownloadStatusWaiting4HashCheck,
+	"HASHCHECKING":         DownloadStatusHashchecking,
+	"METADATA":             DownloadStatusMetadata,
+	"DOWNLOADING":          DownloadStatusDownloading,
+	"SEEDING":              DownloadStatusSeeding,
+	"STOPPED":              DownloadStatusStopped,
+	"ALLOCATING_DISKSPACE": DownloadStatusAllocatingDiskspace,
+	"EXIT_NODES":           DownloadStatusExitnodes,
+	"CIRCUITS":             DownloadStatusCircuits,
+	"STOPPED_ON_ERROR":     DownloadStatusStoppedOnError,
+	"LOADING":              DownloadStatusLoading,
+}
+
+// UnmarshalJSON decodes the UPPER-snake-case wire string into the
+// typed enum.
+func (s *DownloadStatus) UnmarshalJSON(data []byte) error {
+	var raw string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		// Tolerate numeric form just in case.
+		var n int
+		if err2 := json.Unmarshal(data, &n); err2 == nil {
+			*s = DownloadStatus(n)
+			return nil
+		}
+		return err
+	}
+	if v, ok := downloadStatusByWire[strings.ToUpper(strings.TrimSpace(raw))]; ok {
+		*s = v
+		return nil
+	}
+	*s = DownloadStatusLoading
+	return nil
+}
+
+// Download ports the subset of C# `Models/TriblerDownloadClientApi.cs:57-86`
+// the Provider GetItems consumes. Pointer-types match the C#
+// nullable shape — Tribler emits sparse payloads.
+type Download struct {
+	Name         string         `json:"name"`
+	Progress     *float64       `json:"progress"`
+	Infohash     string         `json:"infohash"`
+	Status       DownloadStatus `json:"status"`
+	AllTimeRatio *float64       `json:"all_time_ratio"`
+	TimeAdded    *int64         `json:"time_added"`
+	Eta          *float64       `json:"eta"`
+	Error        string         `json:"error"`
+	Size         *int64         `json:"size"`
+	Destination  string         `json:"destination"`
+}
+
+// File ports C# `:142-149` — only the Name field is read at GetItems
+// time (for the single-file OutputPath suffix).
+type File struct {
+	Name string `json:"name"`
+}
+
+// downloadsResponse + filesResponse are the top-level wrappers C#
+// `:88-91, 151-154` use.
+type downloadsResponse struct {
+	Downloads []*Download `json:"downloads"`
+}
+
+type filesResponse struct {
+	Files []*File `json:"files"`
+}
+
+// GetDownloads fires GET `/api/downloads`. Mirrors C#
+// `TriblerDownloadClientProxy.GetDownloads` at `:85-90`.
+func (p *Proxy) GetDownloads(ctx context.Context, s Settings) ([]*Download, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL(s)+"/api/downloads", nil)
+	if err != nil {
+		return nil, fmt.Errorf("tribler: build downloads request: %w", err)
+	}
+	body, err := p.execute(req, s, "GetDownloads")
+	if err != nil {
+		return nil, err
+	}
+	var resp downloadsResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("tribler: unmarshal downloads: %w", err)
+	}
+	return resp.Downloads, nil
+}
+
+// GetDownloadFiles fires GET `/api/downloads/<infohash>/files`.
+// Mirrors C# `:79-83`. Used by GetItems to compose the single-file
+// OutputPath suffix.
+func (p *Proxy) GetDownloadFiles(ctx context.Context, s Settings, infohash string) ([]*File, error) {
+	if strings.TrimSpace(infohash) == "" {
+		return nil, fmt.Errorf("tribler: GetDownloadFiles: empty infohash")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL(s)+"/api/downloads/"+infohash+"/files", nil)
+	if err != nil {
+		return nil, fmt.Errorf("tribler: build files request: %w", err)
+	}
+	body, err := p.execute(req, s, "GetDownloadFiles")
+	if err != nil {
+		return nil, err
+	}
+	var resp filesResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("tribler: unmarshal files: %w", err)
+	}
+	return resp.Files, nil
+}
+
 // AddDownloadRequest is the wire body for `PUT /api/downloads`.
 // Mirrors C# `Models/TriblerDownloadClientApi.cs:93-105` with the
 // same JSON tags (snake_case via [JsonProperty]).
