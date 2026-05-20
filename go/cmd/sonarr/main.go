@@ -1837,6 +1837,34 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	deployInfo := deploymentinfo.New(folder.Startup, deploymentinfo.OSFileSystem{})
 	packageGlobalMessageCheck := healthcheck.NewPackageGlobalMessageCheck(deployInfo)
 
+	// Slice 5.J143 (closes audit B.5 UpdateCheck deferral): wire
+	// the previously-unwired UpdateCheck (J35-era port) against the
+	// J40 update.Service. Construction relocated here from its
+	// previous post-healthSvc spot so the same *update.Service can
+	// satisfy both the UpdateCheck.UpdateAvailableLookup AND the
+	// later ApplicationCheckUpdate handler.
+	updateSvc, err := update.NewService(
+		&http.Client{Timeout: 30 * time.Second},
+		updateBranchAdapter{cfg: cfg},
+		buildinfo.Version,
+		update.DefaultServicesBaseURL,
+		10*time.Second,
+	)
+	if err != nil {
+		return fmt.Errorf("update service: %w", err)
+	}
+	updateCheck, err := healthcheck.NewUpdateCheck(
+		diskProv,
+		folder.Startup,
+		cfg,
+		updateCheckOsInfoAdapter{info: appenv.DetectOs()},
+		updateAvailableLookupAdapter{svc: updateSvc},
+		parseBuildDate(buildinfo.BuildDate),
+	)
+	if err != nil {
+		return fmt.Errorf("healthcheck updateCheck: %w", err)
+	}
+
 	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
 		healthcheck.NewAppDataLocationCheck(folder),
 		apiKeyCheck,
@@ -1861,6 +1889,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		downloadClientRootFolderCheck,
 		importMechanismCheck,
 		packageGlobalMessageCheck,
+		updateCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)
@@ -2764,24 +2793,11 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// as the C# bulk missing-search default).
 	episodeSearchAdapter := handlerEpisodeSearchAdapter{svc: indexerSearchSvc}
 
-	// Slice 5.J40 (audit B.3 close-out + closes 5.J35
-	// UpdateCheck-banner partial): construct the update.Service +
-	// adapter satisfying handlers.UpdateChecker. The Service hits
-	// services.sonarr.tv/v1/update/{branch} with the build's version
-	// + OS + arch + runtime=netcore params; returns the latest
-	// available UpdatePackage when newer than the running build, or
-	// nil. The adapter narrows to the version-string-only shape the
-	// ApplicationCheckUpdate handler consumes.
-	updateSvc, err := update.NewService(
-		&http.Client{Timeout: 30 * time.Second},
-		updateBranchAdapter{cfg: cfg},
-		buildinfo.Version,
-		update.DefaultServicesBaseURL,
-		10*time.Second,
-	)
-	if err != nil {
-		return fmt.Errorf("update service: %w", err)
-	}
+	// Slice 5.J40's update.Service + handlers.UpdateChecker adapter
+	// is constructed earlier (around the healthSvc-build site,
+	// relocated in slice 5.J143 so the same updateSvc satisfies both
+	// the ApplicationCheckUpdate handler AND the UpdateCheck
+	// healthcheck's UpdateAvailableLookup).
 	updateChecker := updateCheckerAdapter{svc: updateSvc}
 
 	if err := handlers.RegisterAll(registry, handlers.Deps{
@@ -3099,4 +3115,49 @@ func (a updateCheckerAdapter) AvailableVersion(ctx context.Context) (string, err
 		return "", nil
 	}
 	return pkg.Version, nil
+}
+
+// updateCheckOsInfoAdapter narrows [appenv.OsInfo] (a struct with
+// flag fields) to the [healthcheck.UpdateCheckOsInfo] interface (a
+// pair of methods). Slice 5.J143.
+type updateCheckOsInfoAdapter struct {
+	info appenv.OsInfo
+}
+
+func (a updateCheckOsInfoAdapter) IsDocker() bool { return a.info.IsDocker }
+func (a updateCheckOsInfoAdapter) IsDarwin() bool { return appenv.IsDarwin() }
+
+// updateAvailableLookupAdapter bridges [*update.Service] to the
+// [healthcheck.UpdateAvailableLookup] interface — re-projects the
+// update.Package shape into the narrower AvailableUpdate the check
+// consumes. Slice 5.J143.
+type updateAvailableLookupAdapter struct {
+	svc *update.Service
+}
+
+func (a updateAvailableLookupAdapter) AvailableUpdate(ctx context.Context) (*healthcheck.AvailableUpdate, error) {
+	pkg, err := a.svc.AvailableUpdate(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if pkg == nil {
+		return nil, nil
+	}
+	return &healthcheck.AvailableUpdate{Version: pkg.Version}, nil
+}
+
+// parseBuildDate parses [buildinfo.BuildDate] (an RFC3339 UTC
+// timestamp stamped at link time) into a [time.Time]. Returns zero
+// when BuildDate is empty / "unknown" / unparseable — the UpdateCheck
+// at slice 5.J35 treats a zero-time as "build age unknown" and skips
+// step 4 (the > 14d-old gate).
+func parseBuildDate(raw string) time.Time {
+	if raw == "" || raw == "unknown" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return t.UTC()
 }

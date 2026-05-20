@@ -121,11 +121,17 @@ func NewUpdateCheck(
 	}, nil
 }
 
-// Source returns the canonical identifier.
-func (c *UpdateCheck) Source() string { return UpdateCheckName }
+// Name returns the canonical identifier.
+func (*UpdateCheck) Name() string { return UpdateCheckName }
 
-// Check evaluates the four conditions in order.
-func (c *UpdateCheck) Check(ctx context.Context) HealthCheck {
+// CheckOnStartup defaults true (HealthCheckBase default).
+func (*UpdateCheck) CheckOnStartup() bool { return true }
+
+// CheckOnSchedule defaults true (HealthCheckBase default).
+func (*UpdateCheck) CheckOnSchedule() bool { return true }
+
+// Run evaluates the four conditions in order.
+func (c *UpdateCheck) Run(ctx context.Context) HealthCheck {
 	if c == nil {
 		return OK(UpdateCheckName)
 	}

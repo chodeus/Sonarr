@@ -70,7 +70,7 @@ func TestUpdateCheck_AllPassesPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewUpdateCheck: %v", err)
 	}
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("Type: got %v, want OK", got.Type)
 	}
@@ -87,7 +87,7 @@ func TestUpdateCheck_TranslocationOnDarwin(t *testing.T) {
 		stubUpdateLookup{},
 		time.Now().UTC(),
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultError {
 		t.Fatalf("Type: got %v, want Error (translocation)", got.Type)
 	}
@@ -107,7 +107,7 @@ func TestUpdateCheck_TranslocationIgnoredOnNonDarwin(t *testing.T) {
 		stubUpdateLookup{},
 		time.Now().UTC(),
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("Type: got %v, want OK (translocation check is Darwin-only)", got.Type)
 	}
@@ -124,7 +124,7 @@ func TestUpdateCheck_StartupNotWritable(t *testing.T) {
 		stubUpdateLookup{},
 		time.Now().UTC(),
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultError {
 		t.Fatalf("Type: got %v, want Error", got.Type)
 	}
@@ -145,7 +145,7 @@ func TestUpdateCheck_UiNotWritable(t *testing.T) {
 		stubUpdateLookup{},
 		time.Now().UTC(),
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultError {
 		t.Fatalf("Type: got %v, want Error", got.Type)
 	}
@@ -166,7 +166,7 @@ func TestUpdateCheck_DockerSkipsWritabilityChecks(t *testing.T) {
 		stubUpdateLookup{},
 		time.Now().UTC(),
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("Type: got %v, want OK (Docker skips writability gating)", got.Type)
 	}
@@ -187,7 +187,7 @@ func TestUpdateCheck_NonBuiltInSkipsWritabilityChecks(t *testing.T) {
 				stubUpdateLookup{},
 				time.Now().UTC(),
 			)
-			got := c.Check(context.Background())
+			got := c.Run(context.Background())
 			if got.Type != healthcheck.ResultOK {
 				t.Errorf("Type: got %v, want OK (UpdateMechanism=%q skips writability)", got.Type, mech)
 			}
@@ -206,7 +206,7 @@ func TestUpdateCheck_UpdateAvailableOnOldBuild(t *testing.T) {
 		stubUpdateLookup{out: &healthcheck.AvailableUpdate{Version: "5.0.42"}},
 		old,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultWarning {
 		t.Fatalf("Type: got %v, want Warning", got.Type)
 	}
@@ -229,7 +229,7 @@ func TestUpdateCheck_UpdateAvailableSkippedOnFreshBuild(t *testing.T) {
 		stubUpdateLookup{out: &healthcheck.AvailableUpdate{Version: "5.0.42"}},
 		fresh,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("Type: got %v, want OK (build < 14d old → no nag)", got.Type)
 	}
@@ -246,7 +246,7 @@ func TestUpdateCheck_NilLookupTolerated(t *testing.T) {
 		nil, // no upstream lookup wired yet
 		old,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("Type: got %v, want OK (nil lookup → no banner)", got.Type)
 	}
@@ -263,7 +263,7 @@ func TestUpdateCheck_LookupErrorTolerated(t *testing.T) {
 		stubUpdateLookup{err: errors.New("network")},
 		old,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("Type: got %v, want OK (lookup error degrades to silent)", got.Type)
 	}
