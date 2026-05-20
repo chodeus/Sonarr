@@ -2,6 +2,12 @@ package utorrent_test
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"strings"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
@@ -193,6 +199,86 @@ func TestProvider_TestSurfacesSettingsFailures(t *testing.T) {
 	}
 	if !hasFailure(failures, "Host") {
 		t.Errorf("Test: %+v, want Host failure surfaced", failures)
+	}
+}
+
+// --- J109 TestGetTorrents -----------------------------------------
+
+func TestProvider_TestJ109_TestGetTorrentsFires(t *testing.T) {
+	t.Parallel()
+	h := newUTorrentServer(t, "TOKEN", sampleGetSettingsResponse)
+	p := utorrent.NewProxy(h.srv.Client(), nil)
+	u := utorrent.New(nil, h.settings(), p, nil)
+	failures, err := u.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Errorf("failures = %+v, want none", failures)
+	}
+	// J109 — Test now fires getsettings + list=1 against /gui/.
+	if h.calls.Load() != 2 {
+		t.Errorf("gui calls = %d, want 2 (getsettings + list=1)", h.calls.Load())
+	}
+}
+
+func TestProvider_TestJ109_TestGetTorrentsFailureSurfaces(t *testing.T) {
+	t.Parallel()
+	// Dispatch by action so getsettings succeeds (returns the canned
+	// build) while list=1 returns a 500. The Test arm should
+	// surface a whole-form torrent-list failure.
+	token := "TOKEN"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/token.html") {
+			http.SetCookie(w, &http.Cookie{Name: "GUID", Value: "g"})
+			_, _ = io.WriteString(w, `<html><div id='token' style='display:none;'>`+token+`</div></html>`)
+			return
+		}
+		action := r.URL.Query().Get("action")
+		w.Header().Set("Content-Type", "application/json")
+		switch action {
+		case "getsettings":
+			_, _ = io.WriteString(w, sampleGetSettingsResponse)
+		default:
+			// list=1 has no action= param — falls through here.
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+	settings := utorrent.NewSettings()
+	settings.Host = u.Hostname()
+	settings.Port = port
+	p := utorrent.NewProxy(srv.Client(), nil)
+	prov := utorrent.New(nil, settings, p, nil)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "" && strings.Contains(f.ErrorMessage, "list of torrents") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("failures = %+v, want whole-form 'list of torrents' failure", failures)
+	}
+}
+
+func TestProvider_TestJ109_VersionFailureSkipsListProbe(t *testing.T) {
+	t.Parallel()
+	// Version returns build well below minBuild — Test must short-
+	// circuit BEFORE firing list=1.
+	h := newUTorrentServer(t, "TOKEN", `{"build":1000}`)
+	p := utorrent.NewProxy(h.srv.Client(), nil)
+	u := utorrent.New(nil, h.settings(), p, nil)
+	if _, err := u.Test(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h.calls.Load() != 1 {
+		t.Errorf("gui calls = %d, want 1 (list=1 must not fire below minBuild)", h.calls.Load())
 	}
 }
 

@@ -337,8 +337,15 @@ func (u *UTorrent) MarkItemAsImported(ctx context.Context, item *downloadclients
 // Test runs the per-client connection self-check. Validates the
 // Settings first, then (when no failures and a proxy is wired)
 // runs the token+cookie auth flow + the `getsettings` version
-// probe and gates on [minBuild]. Mirrors C#
-// `DownloadClientBase.Test()` posture.
+// probe and gates on [minBuild]; finally (slice 5.J109)
+// TestGetTorrents fires a one-shot list call to confirm the
+// orchestrator's GetItems query works against the live daemon.
+// Mirrors C# `UTorrent.Test` at `:256-330`.
+//
+// HasErrors guard at C# `:259-262`: TestConnection failures short-
+// circuit the follow-on TestGetTorrents — a broken connection
+// shouldn't dispatch a second probe that's guaranteed to fail with
+// the same root cause.
 func (u *UTorrent) Test(ctx context.Context) ([]downloadclients.TestFailure, error) {
 	failures := u.settings.Validate()
 	if len(failures) > 0 || u.proxy == nil {
@@ -355,6 +362,16 @@ func (u *UTorrent) Test(ctx context.Context) ([]downloadclients.TestFailure, err
 		return []downloadclients.TestFailure{{
 			PropertyName: "Host",
 			ErrorMessage: fmt.Sprintf("uTorrent build %d is too old; minimum supported is %d", build, minBuild),
+		}}, nil
+	}
+	// J109 — TestGetTorrents at C# `:317-329`. One probe call against
+	// the live daemon; any error surfaces a whole-form failure.
+	// Mirrors the J101/J102/J104/J105/J106 cross-DC pattern.
+	if _, err := u.proxy.GetTorrents(ctx, u.settings); err != nil {
+		return []downloadclients.TestFailure{{
+			PropertyName:        "",
+			ErrorMessage:        fmt.Sprintf("Failed to get the list of torrents: %v", err),
+			DetailedDescription: "Sonarr was able to authenticate against uTorrent but the list=1 RPC failed; check the uTorrent log.",
 		}}, nil
 	}
 	return nil, nil
