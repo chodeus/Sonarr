@@ -563,11 +563,29 @@ func (p *Proxy) MoveTorrentToTopInQueue(ctx context.Context, hash string, settin
 }
 
 // AddLabel fires label.add. Mirrors C# `DelugeProxy.AddLabel` at
-// `:184-187`. Used by [Deluge.Test] (deferred) to pre-create the
+// `:184-187`. Used by [Deluge.Test] (slice 5.J101) to pre-create the
 // TvCategory label when it's missing.
 func (p *Proxy) AddLabel(ctx context.Context, label string, settings Settings) error {
 	_, err := p.Call(ctx, "label.add", []any{label}, settings)
 	return err
+}
+
+// GetAvailableLabels fires label.get_labels. Mirrors C#
+// `DelugeProxy.GetAvailableLabels` at `:158-163`. Returns the
+// labels currently registered with the Deluge `label` plugin
+// (empty slice when the plugin reports none). Used by the J101
+// TestCategory probe to confirm TvCategory + TvImportedCategory
+// exist on the server (with auto-create fallback via [AddLabel]).
+func (p *Proxy) GetAvailableLabels(ctx context.Context, settings Settings) ([]string, error) {
+	raw, err := p.Call(ctx, "label.get_labels", nil, settings)
+	if err != nil {
+		return nil, err
+	}
+	var labels []string
+	if err := json.Unmarshal(raw, &labels); err != nil {
+		return nil, fmt.Errorf("deluge: parse label.get_labels response: %w", err)
+	}
+	return labels, nil
 }
 
 // buildAddOptions assembles the per-add options dict. Mirrors C#

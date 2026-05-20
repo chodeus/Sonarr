@@ -545,9 +545,13 @@ func (d *Deluge) MarkItemAsImported(ctx context.Context, item *downloadclients.I
 // No version floor enforced — the C# tree's TestConnection doesn't
 // check version numerics, just connectivity + auth. Matches.
 //
-// TestCategory + TestGetTorrents at C# `:325-385` are deferred —
-// they require label-plugin probes that land at 5.G2h + GetItems
-// at 5.G2d.
+// TestCategory + TestGetTorrents at C# `:325-385` wired at slice
+// 5.J101 — both layer on top of the daemon.info probe by issuing
+// (a) system.listMethods + label.get_labels for the label-plugin
+// probe with TvCategory/TvImportedCategory auto-create fallback,
+// and (b) web.update_ui to confirm the GetItems query works against
+// the live daemon. See [Deluge.testCategory] + [Deluge.testGetTorrents]
+// for the per-probe doc-comments.
 func (d *Deluge) Test(ctx context.Context) ([]downloadclients.TestFailure, error) {
 	if failures := d.settings.Validate(); len(failures) > 0 {
 		return failures, nil
@@ -585,9 +589,139 @@ func (d *Deluge) Test(ctx context.Context) ([]downloadclients.TestFailure, error
 		}}, nil
 	}
 
-	// TestCategory + TestGetTorrents (C# :272-273) deferred to
-	// the GetItems + label-plugin slices.
-	return nil, nil
+	var failures []downloadclients.TestFailure
+	if f := d.testCategory(ctx); f != nil {
+		failures = append(failures, *f)
+	}
+	if f := d.testGetTorrents(ctx); f != nil {
+		failures = append(failures, *f)
+	}
+	return failures, nil
+}
+
+// testCategory ports C# `Deluge.TestCategory` at `:325-373`.
+//
+// Algorithm:
+//  1. Both TvCategory + TvImportedCategory empty → no probe needed,
+//     return nil. Matches C# `:327-330`.
+//  2. system.listMethods — confirm the `label.*` plugin RPCs are
+//     registered. Missing → "label plugin inactive" failure on
+//     TvCategory (C# `:332-340`). The C# message is i18n; the Go
+//     port surfaces the English equivalent.
+//  3. label.get_labels — fetch the current label set.
+//  4. For each configured category that's missing, fire label.add
+//     then re-fetch labels. Still missing → "label plugin failure"
+//     failure on that property (C# `:344-370`).
+//
+// RPC errors at any step surface as the corresponding failure
+// (transient errors at the label-add boundary mean the plugin is
+// installed but uncooperative — same user-facing message).
+func (d *Deluge) testCategory(ctx context.Context) *downloadclients.TestFailure {
+	tv := strings.TrimSpace(d.settings.TvCategory)
+	tvImported := strings.TrimSpace(d.settings.TvImportedCategory)
+	if tv == "" && tvImported == "" {
+		return nil
+	}
+	methods, err := d.proxy.GetMethods(ctx, d.settings)
+	if err != nil {
+		return &downloadclients.TestFailure{
+			PropertyName:        "TvCategory",
+			ErrorMessage:        "Unable to determine whether the Deluge label plugin is active",
+			DetailedDescription: err.Error(),
+		}
+	}
+	hasLabelPlugin := false
+	for _, m := range methods {
+		if strings.HasPrefix(m, "label.") {
+			hasLabelPlugin = true
+			break
+		}
+	}
+	if !hasLabelPlugin {
+		return &downloadclients.TestFailure{
+			PropertyName:        "TvCategory",
+			ErrorMessage:        "Label plugin is not active",
+			DetailedDescription: fmt.Sprintf("Sonarr's Deluge integration requires Deluge's Label plugin to be enabled to assign the %q category.", tv),
+		}
+	}
+
+	labels, err := d.proxy.GetAvailableLabels(ctx, d.settings)
+	if err != nil {
+		return &downloadclients.TestFailure{
+			PropertyName:        "TvCategory",
+			ErrorMessage:        "Unable to fetch Deluge labels",
+			DetailedDescription: err.Error(),
+		}
+	}
+	labelSet := make(map[string]struct{}, len(labels))
+	for _, l := range labels {
+		labelSet[l] = struct{}{}
+	}
+
+	if f := d.ensureLabel(ctx, tv, "TvCategory", labelSet); f != nil {
+		return f
+	}
+	if f := d.ensureLabel(ctx, tvImported, "TvImportedCategory", labelSet); f != nil {
+		return f
+	}
+	return nil
+}
+
+// ensureLabel ports the C# label-auto-create arm at `:344-356,358-370`.
+// Empty label → noop. Present → noop. Missing → label.add + re-fetch;
+// still-missing surfaces a "label plugin failure" failure on the
+// configured property. Add-error short-circuits with the same
+// failure message so a failed add is indistinguishable from a
+// post-add re-fetch miss (matches C# which catches the AddLabel
+// error implicitly by checking re-fetched labels).
+func (d *Deluge) ensureLabel(ctx context.Context, label, prop string, labelSet map[string]struct{}) *downloadclients.TestFailure {
+	if label == "" {
+		return nil
+	}
+	if _, ok := labelSet[label]; ok {
+		return nil
+	}
+	if err := d.proxy.AddLabel(ctx, label, d.settings); err != nil {
+		return &downloadclients.TestFailure{
+			PropertyName:        prop,
+			ErrorMessage:        "Failed to add the configured label to Deluge",
+			DetailedDescription: err.Error(),
+		}
+	}
+	refreshed, err := d.proxy.GetAvailableLabels(ctx, d.settings)
+	if err != nil {
+		return &downloadclients.TestFailure{
+			PropertyName:        prop,
+			ErrorMessage:        "Unable to re-fetch Deluge labels after add",
+			DetailedDescription: err.Error(),
+		}
+	}
+	for _, l := range refreshed {
+		labelSet[l] = struct{}{}
+	}
+	if _, ok := labelSet[label]; ok {
+		return nil
+	}
+	return &downloadclients.TestFailure{
+		PropertyName:        prop,
+		ErrorMessage:        "Failed to add the configured label to Deluge",
+		DetailedDescription: fmt.Sprintf("Deluge accepted the label.add RPC for %q but the label is still missing from label.get_labels. The label plugin may be misconfigured.", label),
+	}
+}
+
+// testGetTorrents ports C# `Deluge.TestGetTorrents` at `:375-388`.
+// Confirms the live daemon answers a GetTorrents (web.update_ui)
+// request; surfaces a whole-form failure on any error so the user
+// learns the connection works at the WebUI level but not the RPC.
+func (d *Deluge) testGetTorrents(ctx context.Context) *downloadclients.TestFailure {
+	if _, err := d.proxy.GetTorrents(ctx, d.settings); err != nil {
+		return &downloadclients.TestFailure{
+			PropertyName:        "",
+			ErrorMessage:        fmt.Sprintf("Failed to get the list of torrents: %v", err),
+			DetailedDescription: "Sonarr was able to authenticate against Deluge but the web.update_ui RPC failed; check the Deluge log.",
+		}
+	}
+	return nil
 }
 
 // classifyAuthError converts a proxy auth/transport error to a
