@@ -37,6 +37,7 @@ import (
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/indexers/newznab"
+	"sonarr.tv/sonarr/internal/indexers/torrentleech"
 	"sonarr.tv/sonarr/internal/indexers/torrentrss"
 	"sonarr.tv/sonarr/internal/indexers/torznab"
 	"sonarr.tv/sonarr/internal/indexersearch"
@@ -202,6 +203,18 @@ func (s *dbIndexerSource) buildAdapter(row *indexers.Indexer, def *provider.Defi
 		// routes around it gracefully.
 		return common, nil
 
+	case "Torrentleech":
+		idx := torrentleech.NewIndexer(s.httpClient)
+		idx.SetDefinition(def)
+		common.FetchRecentFunc = func(ctx context.Context) ([]any, error) {
+			rs, err := idx.FetchRecent(ctx)
+			return upcastTorrentInfos(rs), err
+		}
+		// Slice 5.J146: Torrentleech is RSS-only (SupportsSearch=false
+		// on the C# side at Torrentleech.cs:14). Same posture as
+		// torrentrss — leave FetchSearchFunc nil.
+		return common, nil
+
 	default:
 		return nil, fmt.Errorf("unknown Implementation %q", row.Implementation)
 	}
@@ -315,6 +328,8 @@ func (a minimumSeedersAdapter) MinimumSeeders(ctx context.Context, id int) (int,
 	case *torznab.Settings:
 		return s.MinimumSeeders, true, nil
 	case *torrentrss.Settings:
+		return s.MinimumSeeders, true, nil
+	case *torrentleech.Settings:
 		return s.MinimumSeeders, true, nil
 	default:
 		// Newznab + any non-torrent provider class.
