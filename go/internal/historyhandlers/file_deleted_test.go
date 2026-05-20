@@ -147,7 +147,7 @@ func TestHandleEpisodeFileDeleted_DataMapShape(t *testing.T) {
 		{"ReleaseGroup", "GROUP"},
 		{"Size", "2000000000"},
 		{"IndexerFlags", strconv.Itoa(int(parser.IndexerFlagFreeleech))},
-		{"ReleaseType", strconv.Itoa(int(parser.ReleaseTypeMultiEpisode))},
+		{"ReleaseType", "MultiEpisode"},
 	}
 	for _, c := range cases {
 		if got := d[c.key]; got != c.want {

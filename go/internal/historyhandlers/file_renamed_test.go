@@ -168,7 +168,7 @@ func TestHandleEpisodeFileRenamed_DataMapShape(t *testing.T) {
 		{"ReleaseGroup", "GROUP"},
 		{"Size", "700000000"},
 		{"IndexerFlags", strconv.Itoa(int(parser.IndexerFlagInternal))},
-		{"ReleaseType", strconv.Itoa(int(parser.ReleaseTypeSingleEpisode))},
+		{"ReleaseType", "SingleEpisode"},
 	}
 	for _, c := range cases {
 		if got := d[c.key]; got != c.want {

@@ -188,8 +188,8 @@ func TestHandleEpisodeGrabbed_DataMapShape(t *testing.T) {
 		{"CustomFormatScore", "75"},
 		{"SeriesMatchType", "Alias"},
 		{"ReleaseSource", "InteractiveSearch"},
-		{"ReleaseType", "0"},  // ParsedEpisodeInfo with no episode numbers + FullSeason=false → ReleaseTypeUnknown (int 0)
-		{"IndexerFlags", "9"}, // Freeleech (1) + Internal (8) = 9
+		{"ReleaseType", "Unknown"}, // ParsedEpisodeInfo with no episode numbers + FullSeason=false → ReleaseTypeUnknown name
+		{"IndexerFlags", "9"},      // Freeleech (1) + Internal (8) = 9
 	}
 	for _, c := range cases {
 		if got := d[c.key]; got != c.want {
@@ -213,9 +213,9 @@ func TestHandleEpisodeGrabbed_ReleaseTypePopulated(t *testing.T) {
 		mutate  func(*parser.ParsedEpisodeInfo)
 		wantStr string
 	}{
-		{"single_episode", func(p *parser.ParsedEpisodeInfo) { p.EpisodeNumbers = []int{1} }, "1"},
-		{"multi_episode", func(p *parser.ParsedEpisodeInfo) { p.EpisodeNumbers = []int{1, 2} }, "2"},
-		{"season_pack", func(p *parser.ParsedEpisodeInfo) { p.FullSeason = true }, "3"},
+		{"single_episode", func(p *parser.ParsedEpisodeInfo) { p.EpisodeNumbers = []int{1} }, "SingleEpisode"},
+		{"multi_episode", func(p *parser.ParsedEpisodeInfo) { p.EpisodeNumbers = []int{1, 2} }, "MultiEpisode"},
+		{"season_pack", func(p *parser.ParsedEpisodeInfo) { p.FullSeason = true }, "SeasonPack"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -246,8 +246,8 @@ func TestHandleEpisodeGrabbed_ReleaseTypeNilPEI(t *testing.T) {
 	if err := historyhandlers.HandleEpisodeGrabbed(t.Context(), w, ev); err != nil {
 		t.Fatalf("HandleEpisodeGrabbed: %v", err)
 	}
-	if got := w.added[0].Data["ReleaseType"]; got != "0" {
-		t.Errorf("ReleaseType: got %q, want %q", got, "0")
+	if got := w.added[0].Data["ReleaseType"]; got != "Unknown" {
+		t.Errorf("ReleaseType: got %q, want %q", got, "Unknown")
 	}
 }
 

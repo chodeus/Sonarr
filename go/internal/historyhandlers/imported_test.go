@@ -243,7 +243,7 @@ func TestHandleEpisodeImported_DataMapShape(t *testing.T) {
 		{"CustomFormatScore", "125"},
 		{"Size", "1500000000"},
 		{"IndexerFlags", strconv.Itoa(int(parser.IndexerFlagFreeleech | parser.IndexerFlagInternal))},
-		{"ReleaseType", strconv.Itoa(int(parser.ReleaseTypeSingleEpisode))},
+		{"ReleaseType", "SingleEpisode"},
 	}
 	for _, c := range cases {
 		if got := d[c.key]; got != c.want {

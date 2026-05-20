@@ -2,7 +2,6 @@ package historyhandlers_test
 
 import (
 	"errors"
-	"strconv"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/decisionengine"
@@ -126,7 +125,7 @@ func TestHandleDownloadIgnored_DataMapShape(t *testing.T) {
 		{"ReleaseGroup", "GROUP-Z"},
 		{"Size", "555444333"},
 		{"Indexer", "Indexer-Z"},
-		{"ReleaseType", strconv.Itoa(int(parser.ReleaseTypeMultiEpisode))},
+		{"ReleaseType", "MultiEpisode"},
 	}
 	for _, c := range cases {
 		if got := d[c.key]; got != c.want {

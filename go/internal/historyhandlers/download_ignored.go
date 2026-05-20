@@ -49,10 +49,10 @@ import (
 //
 // ReleaseType pulls off TrackedDownload→RemoteEpisode→
 // ParsedEpisodeInfo→ReleaseType() — the parser-derived enum, NOT
-// the EpisodeFile.ReleaseType column. Emitted in int-string form
-// via strconv.Itoa(int(...)) for posture-consistency with the
-// other handlers; a future slice that ports a Stringer on the
-// parser enum can swap to the named form.
+// the EpisodeFile.ReleaseType column. Emitted as the PascalCase
+// name via [parser.ReleaseType.String] — J159 sweep — matching C#
+// `HistoryService.cs:360`
+// (`message.TrackedDownload?.RemoteEpisode?.ParsedEpisodeInfo?.ReleaseType.ToString()`).
 //
 // # Defensive arms
 //
@@ -174,17 +174,16 @@ func ignoredIndexer(td *trackeddownloads.TrackedDownload) string {
 //
 // The Go-port [parser.ParsedEpisodeInfo.ReleaseType] is a derived
 // METHOD (not a field) at `parser/model.go:114-125` — returns
-// SingleEpisode / MultiEpisode / SeasonPack / Unknown based on
-// the parsed numbers. Emitted in int-string form via
-// strconv.Itoa(int(...)) matching the slice-3.AT/3.AU/3.AV/3.AW
-// posture; a future Stringer on the parser enum can swap to the
-// named form. nil chain link → "0" (the int value of
-// ReleaseTypeUnknown), preserving the C# `.ToString()` behaviour
-// where calling on the zero-valued enum emits "Unknown" (which
-// our Go port renders as the int "0").
+// SingleEpisode / MultiEpisode / SeasonPack / Unknown based on the
+// parsed numbers. Emitted as the PascalCase name via
+// [parser.ReleaseType.String] — J159 sweep. Any nil link in the
+// chain renders as "" rather than "Unknown" — the C# `?.` null-
+// propagation collapses to `null` then dictionary-Add converts to
+// empty (matches the C# tree's emit for the nil-RemoteEpisode case
+// that this guard exists for).
 func ignoredReleaseType(td *trackeddownloads.TrackedDownload) string {
 	if td == nil || td.RemoteEpisode == nil || td.RemoteEpisode.ParsedEpisodeInfo == nil {
 		return ""
 	}
-	return strconv.Itoa(int(td.RemoteEpisode.ParsedEpisodeInfo.ReleaseType()))
+	return td.RemoteEpisode.ParsedEpisodeInfo.ReleaseType().String()
 }

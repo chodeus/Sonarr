@@ -77,13 +77,16 @@ type EntryWriter interface {
 // Go's [parser.ParsedEpisodeInfo] exposes the same value as a derived
 // method `ReleaseType()` (not a field — same semantic). The handler
 // sources from `subject.ParsedEpisodeInfo.ReleaseType()` and emits
-// the int-string form via `strconv.Itoa`, matching the convention
-// shared with imported.go / file_deleted.go / file_renamed.go /
-// download_ignored.go. Nil-ParsedEpisodeInfo degrades to
-// [parser.ReleaseTypeUnknown] ("0"). C# emits the PascalCase enum
-// name via `.ToString()`; the Go-port int-string convention is a
-// known wire-shape divergence across all 5 history handlers — worth
-// reconsidering as a single sweep, not piecemeal.
+// the PascalCase enum name via [parser.ReleaseType.String], matching
+// C# `HistoryService.cs:180` (`message.Episode.ParsedEpisodeInfo.ReleaseType.ToString()`).
+// Nil-ParsedEpisodeInfo degrades to [parser.ReleaseTypeUnknown]
+// (`"Unknown"`). Slice 5.J159 sweep flipped this from the int-string
+// form to the PascalCase name across all 5 history handlers
+// (grabbed / imported / file_deleted / file_renamed /
+// download_ignored) for byte-equal contract with the C# wire shape;
+// [parser.ParseReleaseType] still accepts both the numeric and named
+// forms case-insensitively so any consumer round-tripping through
+// it stays compatible.
 //
 // # Defensive arms
 //
@@ -260,7 +263,7 @@ func buildGrabbedData(ev *decisionengine.EpisodeGrabbedEvent, subject *decisione
 	if subject != nil && subject.ParsedEpisodeInfo != nil {
 		rt = subject.ParsedEpisodeInfo.ReleaseType()
 	}
-	data["ReleaseType"] = strconv.Itoa(int(rt))
+	data["ReleaseType"] = rt.String()
 
 	if torrent != nil {
 		data["TorrentInfoHash"] = torrent.InfoHash

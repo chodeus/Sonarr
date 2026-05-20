@@ -10,6 +10,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/history"
+	"sonarr.tv/sonarr/internal/parser"
 )
 
 // HandleEpisodeFileDeleted ports
@@ -55,9 +56,12 @@ import (
 //
 // 5 fixed keys — Reason / ReleaseGroup / Size / IndexerFlags /
 // ReleaseType. Reason emits the enum's String() form per
-// [episodefiles.DeleteMediaFileReason.String]. IndexerFlags +
-// ReleaseType emit the int-string form via strconv.Itoa(int(...))
-// matching the slice-3.AT/3.AU/3.AV posture.
+// [episodefiles.DeleteMediaFileReason.String]. IndexerFlags emits the
+// int-string form (C# `[Flags] enum.ToString()` flip is a separate
+// sweep). ReleaseType emits the PascalCase name via
+// [parser.ReleaseType.String] — J159 sweep — matching C#
+// `HistoryService.cs:297`
+// (`message.EpisodeFile.ReleaseType.ToString()`).
 //
 // # Defensive arms
 //
@@ -88,7 +92,7 @@ func HandleEpisodeFileDeleted(ctx context.Context, w EntryWriter, ev *episodefil
 			"ReleaseGroup": file.ReleaseGroup,
 			"Size":         strconv.FormatInt(file.Size, 10),
 			"IndexerFlags": strconv.Itoa(file.IndexerFlags),
-			"ReleaseType":  strconv.Itoa(file.ReleaseType),
+			"ReleaseType":  parser.ReleaseType(file.ReleaseType).String(),
 		}
 		entry := &history.Entry{
 			EventType:   eventTypePtr(history.EventTypeEpisodeFileDeleted),

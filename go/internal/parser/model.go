@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"sonarr.tv/sonarr/internal/language"
@@ -33,6 +34,26 @@ const (
 	// ReleaseTypeSeasonPack covers `FullSeason=true` releases.
 	ReleaseTypeSeasonPack ReleaseType = 3
 )
+
+// String mirrors C# `Enum.ToString()` for [ReleaseType] — emits the
+// PascalCase identifier for named values, falls through to the
+// numeric string for unnamed values (the exact C# behaviour for
+// out-of-range enum casts). Wire-shape parity with C#
+// `HistoryService.cs:180,233,297,330,360` which use
+// `ReleaseType.ToString()` when packing history.Data payloads.
+func (r ReleaseType) String() string {
+	switch r {
+	case ReleaseTypeUnknown:
+		return "Unknown"
+	case ReleaseTypeSingleEpisode:
+		return "SingleEpisode"
+	case ReleaseTypeMultiEpisode:
+		return "MultiEpisode"
+	case ReleaseTypeSeasonPack:
+		return "SeasonPack"
+	}
+	return strconv.Itoa(int(r))
+}
 
 // SeriesTitleInfo mirrors `NzbDrone.Core.Parser.Model.SeriesTitleInfo`.
 // The Title / TitleWithoutYear / Year split is populated from the

@@ -12,6 +12,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/history"
+	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
 )
 
@@ -119,9 +120,11 @@ func WithDownloadIDLookup(l LookupDownloadID) HandleEpisodeImportedOption {
 // Freeleech|Internal=1|8) — same pattern as the slice-3.AT
 // HandleEpisodeGrabbed handler. The C# `[Flags] enum.ToString()` would
 // emit comma-separated names; the int form round-trips through
-// [parser.ParseIndexerFlags] unchanged. Same posture for ReleaseType:
-// emit the integer string, not the named form, for consistency with
-// the persisted column form.
+// [parser.ParseIndexerFlags] unchanged. ReleaseType emits the
+// PascalCase enum name via [parser.ReleaseType.String] (J159 sweep —
+// matches C# `HistoryService.cs:233`
+// `message.ImportedEpisode.ReleaseType.ToString()`); the column on
+// disk stays the int form, but the wire payload follows C#.
 //
 // # Defensive arms
 //
@@ -278,13 +281,15 @@ func buildImportedData(ev *episodeimport.EpisodeImportedEvent, le *episodeimport
 	data["ReleaseGroup"] = le.ReleaseGroup
 	data["CustomFormatScore"] = strconv.Itoa(le.CustomFormatScore)
 	data["Size"] = strconv.FormatInt(le.Size, 10)
-	// IndexerFlags / ReleaseType — emit the int-string form to match
-	// the slice-3.AT HandleEpisodeGrabbed handler's posture for the
-	// shared `data["IndexerFlags"]` audit-log key. Both round-trip
-	// through [parser.ParseIndexerFlags] / [parser.ParseReleaseType]
-	// since those parsers accept the numeric form.
+	// IndexerFlags stays as the int-string form (the C# `[Flags]`
+	// enum's `.ToString()` would emit comma-separated names —
+	// flipping IndexerFlags is a separate sweep). ReleaseType emits
+	// the PascalCase name via [parser.ReleaseType.String] to match
+	// C# `HistoryService.cs:233`. [parser.ParseReleaseType] accepts
+	// both numeric + named forms case-insensitively so consumers
+	// round-tripping through it stay compatible.
 	data["IndexerFlags"] = strconv.Itoa(ev.EpisodeFile.IndexerFlags)
-	data["ReleaseType"] = strconv.Itoa(ev.EpisodeFile.ReleaseType)
+	data["ReleaseType"] = parser.ReleaseType(ev.EpisodeFile.ReleaseType).String()
 	return data
 }
 
