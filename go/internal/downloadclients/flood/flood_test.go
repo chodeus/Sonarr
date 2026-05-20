@@ -11,10 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/flood"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/ospath"
+	"sonarr.tv/sonarr/internal/parser"
+	"sonarr.tv/sonarr/internal/quality"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 // scriptedDoer queues responses per-path so the cookie auth flow +
@@ -1246,5 +1251,274 @@ func TestRegistry_RegistersFlood(t *testing.T) {
 	reg := downloadclients.Default()
 	if !reg.Has(flood.Implementation, flood.ConfigContract) {
 		t.Errorf("registry missing (%s, %s)", flood.Implementation, flood.ConfigContract)
+	}
+}
+
+// --- J99 AdditionalTags composition tests ------------------------
+
+// captureAddURLsBody pops the /api/torrents/add-urls request body and
+// returns the parsed JSON map. Helper for the J99 tag-shape tests.
+func captureAddURLsBody(t *testing.T, doer *scriptedDoer) map[string]any {
+	t.Helper()
+	for _, c := range doer.calls {
+		if c.path == "/api/torrents/add-urls" {
+			var body map[string]any
+			if err := json.Unmarshal(c.body, &body); err != nil {
+				t.Fatalf("unmarshal body: %v", err)
+			}
+			return body
+		}
+	}
+	t.Fatal("no /api/torrents/add-urls call recorded")
+	return nil
+}
+
+func tagsFromBody(t *testing.T, body map[string]any) []string {
+	t.Helper()
+	raw, ok := body["tags"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// newSubjectWithFields builds a populated *decisionengine.Subject so
+// each AdditionalTag arm can exercise its source field.
+func newSubjectWithFields() *decisionengine.Subject {
+	return &decisionengine.Subject{
+		Series: &series.Series{
+			Title:     "Big Buck Bunny",
+			TitleSlug: "big-buck-bunny",
+			Year:      2008,
+			Network:   "C-SPAN",
+		},
+		ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{
+			ReleaseGroup: "Example-Raws",
+			Quality:      quality.NewModel(quality.HDTV720p),
+		},
+		Languages: []language.Language{
+			{ID: 1, Name: "English"},
+		},
+		Release: &parser.ReleaseInfo{
+			Indexer:          "Torznab",
+			IndexerID:        7,
+			DownloadProtocol: indexers.DownloadProtocolTorrent,
+			Title:            "Show.S01E02",
+		},
+	}
+}
+
+func runDownloadWithSubject(t *testing.T, settings flood.Settings, subject *decisionengine.Subject) map[string]any {
+	t.Helper()
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queue("/api/torrents/add-urls")
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, settings, flood.NewProxy(doer, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		MagnetURL:    "magnet:?xt=urn:btih:cafebabe",
+		InfoHash:     "cafebabe",
+		Subject:      subject,
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	return captureAddURLsBody(t, doer)
+}
+
+func TestComposeTags_NoSubjectFallsBackToSettingsTagsOnly(t *testing.T) {
+	settings := newSettings()
+	settings.Tags = []string{"sonarr"}
+	settings.AdditionalTags = []int{flood.AdditionalTagTitleSlug, flood.AdditionalTagYear}
+	body := runDownloadWithSubject(t, settings, nil)
+	got := tagsFromBody(t, body)
+	if len(got) != 1 || got[0] != "sonarr" {
+		t.Errorf("tags=%v, want [sonarr] only (no subject)", got)
+	}
+}
+
+func TestComposeTags_NoAdditionalTagsIDsEmitsSettingsTagsOnly(t *testing.T) {
+	settings := newSettings()
+	settings.Tags = []string{"sonarr", "tv"}
+	settings.AdditionalTags = nil
+	body := runDownloadWithSubject(t, settings, newSubjectWithFields())
+	got := tagsFromBody(t, body)
+	if len(got) != 2 || got[0] != "sonarr" || got[1] != "tv" {
+		t.Errorf("tags=%v, want [sonarr, tv]", got)
+	}
+}
+
+func TestComposeTags_TitleSlugArm(t *testing.T) {
+	settings := newSettings()
+	settings.Tags = nil
+	settings.AdditionalTags = []int{flood.AdditionalTagTitleSlug}
+	body := runDownloadWithSubject(t, settings, newSubjectWithFields())
+	got := tagsFromBody(t, body)
+	if len(got) != 1 || got[0] != "big-buck-bunny" {
+		t.Errorf("tags=%v, want [big-buck-bunny]", got)
+	}
+}
+
+func TestComposeTags_QualityArm(t *testing.T) {
+	settings := newSettings()
+	settings.Tags = nil
+	settings.AdditionalTags = []int{flood.AdditionalTagQuality}
+	body := runDownloadWithSubject(t, settings, newSubjectWithFields())
+	got := tagsFromBody(t, body)
+	if len(got) != 1 || got[0] != quality.HDTV720p.Name {
+		t.Errorf("tags=%v, want [%s]", got, quality.HDTV720p.Name)
+	}
+}
+
+func TestComposeTags_LanguagesArm(t *testing.T) {
+	settings := newSettings()
+	settings.Tags = nil
+	settings.AdditionalTags = []int{flood.AdditionalTagLanguages}
+	subject := newSubjectWithFields()
+	subject.Languages = []language.Language{
+		{ID: 1, Name: "English"},
+		{ID: 2, Name: "French"},
+	}
+	body := runDownloadWithSubject(t, settings, subject)
+	got := tagsFromBody(t, body)
+	if len(got) != 2 || got[0] != "English" || got[1] != "French" {
+		t.Errorf("tags=%v, want [English, French]", got)
+	}
+}
+
+func TestComposeTags_ReleaseGroupArm(t *testing.T) {
+	settings := newSettings()
+	settings.Tags = nil
+	settings.AdditionalTags = []int{flood.AdditionalTagReleaseGroup}
+	body := runDownloadWithSubject(t, settings, newSubjectWithFields())
+	got := tagsFromBody(t, body)
+	if len(got) != 1 || got[0] != "Example-Raws" {
+		t.Errorf("tags=%v, want [Example-Raws]", got)
+	}
+}
+
+func TestComposeTags_YearArm(t *testing.T) {
+	settings := newSettings()
+	settings.Tags = nil
+	settings.AdditionalTags = []int{flood.AdditionalTagYear}
+	body := runDownloadWithSubject(t, settings, newSubjectWithFields())
+	got := tagsFromBody(t, body)
+	if len(got) != 1 || got[0] != "2008" {
+		t.Errorf("tags=%v, want [2008]", got)
+	}
+}
+
+func TestComposeTags_YearZeroSkipped(t *testing.T) {
+	settings := newSettings()
+	settings.Tags = nil
+	settings.AdditionalTags = []int{flood.AdditionalTagYear}
+	subject := newSubjectWithFields()
+	subject.Series.Year = 0
+	body := runDownloadWithSubject(t, settings, subject)
+	got := tagsFromBody(t, body)
+	if len(got) != 0 {
+		t.Errorf("tags=%v, want [] (Year=0 skipped)", got)
+	}
+}
+
+func TestComposeTags_IndexerArm(t *testing.T) {
+	settings := newSettings()
+	settings.Tags = nil
+	settings.AdditionalTags = []int{flood.AdditionalTagIndexer}
+	body := runDownloadWithSubject(t, settings, newSubjectWithFields())
+	got := tagsFromBody(t, body)
+	if len(got) != 1 || got[0] != "Torznab" {
+		t.Errorf("tags=%v, want [Torznab]", got)
+	}
+}
+
+func TestComposeTags_NetworkArm(t *testing.T) {
+	settings := newSettings()
+	settings.Tags = nil
+	settings.AdditionalTags = []int{flood.AdditionalTagNetwork}
+	body := runDownloadWithSubject(t, settings, newSubjectWithFields())
+	got := tagsFromBody(t, body)
+	if len(got) != 1 || got[0] != "C-SPAN" {
+		t.Errorf("tags=%v, want [C-SPAN]", got)
+	}
+}
+
+func TestComposeTags_UnionAndDedup(t *testing.T) {
+	// Settings.Tags + AdditionalTags compose; duplicates between the
+	// two halves collapse (Settings.Tags wins position order).
+	settings := newSettings()
+	settings.Tags = []string{"sonarr", "Torznab"} // overlap with Indexer arm
+	settings.AdditionalTags = []int{
+		flood.AdditionalTagTitleSlug, // big-buck-bunny
+		flood.AdditionalTagIndexer,   // Torznab (dupe; skipped)
+		flood.AdditionalTagYear,      // 2008
+	}
+	body := runDownloadWithSubject(t, settings, newSubjectWithFields())
+	got := tagsFromBody(t, body)
+	want := []string{"sonarr", "Torznab", "big-buck-bunny", "2008"}
+	if len(got) != len(want) {
+		t.Fatalf("tags=%v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("tags[%d]=%q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestComposeTags_NilSeriesSkipsSeriesArms(t *testing.T) {
+	settings := newSettings()
+	settings.Tags = nil
+	settings.AdditionalTags = []int{
+		flood.AdditionalTagTitleSlug,
+		flood.AdditionalTagYear,
+		flood.AdditionalTagNetwork,
+		flood.AdditionalTagReleaseGroup,
+	}
+	subject := newSubjectWithFields()
+	subject.Series = nil
+	body := runDownloadWithSubject(t, settings, subject)
+	got := tagsFromBody(t, body)
+	// Only ReleaseGroup (PEI-sourced) survives.
+	if len(got) != 1 || got[0] != "Example-Raws" {
+		t.Errorf("tags=%v, want [Example-Raws] only", got)
+	}
+}
+
+func TestComposeTags_UnknownIDIsSkipped(t *testing.T) {
+	settings := newSettings()
+	settings.Tags = nil
+	settings.AdditionalTags = []int{999, flood.AdditionalTagTitleSlug}
+	body := runDownloadWithSubject(t, settings, newSubjectWithFields())
+	got := tagsFromBody(t, body)
+	if len(got) != 1 || got[0] != "big-buck-bunny" {
+		t.Errorf("tags=%v, want [big-buck-bunny] (unknown ID skipped)", got)
+	}
+}
+
+func TestComposeTags_TorrentInfoReleaseShape(t *testing.T) {
+	// Subject.Release can be either *parser.ReleaseInfo or
+	// *parser.TorrentInfo. The Indexer-arm reads via subjectReleaseInfo
+	// which narrows both shapes.
+	settings := newSettings()
+	settings.Tags = nil
+	settings.AdditionalTags = []int{flood.AdditionalTagIndexer}
+	subject := newSubjectWithFields()
+	subject.Release = &parser.TorrentInfo{
+		ReleaseInfo: parser.ReleaseInfo{
+			Indexer:          "BroadcastTheNet",
+			DownloadProtocol: indexers.DownloadProtocolTorrent,
+		},
+	}
+	body := runDownloadWithSubject(t, settings, subject)
+	got := tagsFromBody(t, body)
+	if len(got) != 1 || got[0] != "BroadcastTheNet" {
+		t.Errorf("tags=%v, want [BroadcastTheNet] (TorrentInfo release)", got)
 	}
 }

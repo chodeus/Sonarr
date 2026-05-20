@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/ospath"
+	"sonarr.tv/sonarr/internal/parser"
 )
 
 // Flood is the [downloadclients.Provider] implementation for the
@@ -92,14 +95,12 @@ func (f *Flood) Settings() Settings { return f.settings }
 // passed but Sonarr's other torrent clients consistently uppercase
 // the queue join key — same convention applied here).
 //
-// Tag composition for 5.J72 covers `Settings.Tags` directly. The
-// `Settings.AdditionalTags` arm (which expands TitleSlug / Quality /
-// Languages / ReleaseGroup / Year / Indexer / Network from the
-// Subject + ParsedEpisodeInfo) is deferred — requires either a new
-// GrabRequest field surface or a decisionengine type-assertion that
-// would pull heavy transitive imports for one tag-list expansion.
-// Documented as a follow-up; for now `Settings.Tags` alone matches
-// the most common "tag with 'sonarr'" deploy.
+// Tag composition (J99 extends the J72 baseline): `Settings.Tags`
+// applied verbatim, then per-grab AdditionalTags expanded from the
+// GrabRequest.Subject when an AdditionalTags ID is configured. See
+// [composeTags] for the per-ID arm table — TitleSlug / Quality /
+// Languages / ReleaseGroup / Year / Indexer / Network ported from
+// C# `Flood.cs:42-85`.
 func (f *Flood) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
 	if req == nil {
 		return "", errors.New("flood: nil GrabRequest")
@@ -110,7 +111,7 @@ func (f *Flood) Download(ctx context.Context, req *downloadclients.GrabRequest) 
 	if strings.TrimSpace(req.InfoHash) == "" {
 		return "", errors.New("flood: GrabRequest.InfoHash is empty (orchestrator must pre-compute)")
 	}
-	tags := composeTags(f.settings)
+	tags := composeTags(f.settings, req)
 
 	switch {
 	case len(req.TorrentBody) > 0:
@@ -128,19 +129,108 @@ func (f *Flood) Download(ctx context.Context, req *downloadclients.GrabRequest) 
 	return strings.ToUpper(req.InfoHash), nil
 }
 
-// composeTags returns the tag list applied to every add-torrent
-// call. Skeleton coverage: returns `Settings.Tags` verbatim (filters
-// blank entries). The full AdditionalTags arm at C# `Flood.cs:42-85`
-// — which composes per-Subject tags — lands in a follow-up; see the
-// divergence note on [Flood.Download].
-func composeTags(s Settings) []string {
-	out := make([]string, 0, len(s.Tags))
+// composeTags ports C# `HandleTags` at `Flood.cs:42-85`.
+//
+// Output is the union of:
+//   - Settings.Tags applied verbatim (filtered for blank entries).
+//   - Per-Subject AdditionalTags expansion: for each ID in
+//     Settings.AdditionalTags, append the corresponding subject-
+//     derived label.
+//
+// Deduplication preserves first-insertion order — the C# uses
+// HashSet<string> which doesn't guarantee ordering, but Sonarr's
+// queue UI is stable across runs so the deterministic-order Go port
+// matches reasonable user expectation.
+//
+// Unknown AdditionalTags IDs are skipped (C# throws
+// DownloadClientException at `:79`; the Go port logs to caller
+// elsewhere and silently skips — a settings-validation slice should
+// reject invalid IDs at save time, not blow up the download pipeline).
+//
+// req nil OR Subject not present OR Subject not *decisionengine.Subject
+// → AdditionalTags expansion produces no extra tags (the Settings.Tags
+// half still applies). Each AdditionalTag arm degrades gracefully on
+// missing source fields (e.g. Series nil → TitleSlug/Year/Network
+// arms produce nothing).
+func composeTags(s Settings, req *downloadclients.GrabRequest) []string {
+	seen := make(map[string]struct{}, len(s.Tags)+len(s.AdditionalTags))
+	out := make([]string, 0, len(s.Tags)+len(s.AdditionalTags))
+	add := func(tag string) {
+		t := strings.TrimSpace(tag)
+		if t == "" {
+			return
+		}
+		if _, ok := seen[t]; ok {
+			return
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
 	for _, t := range s.Tags {
-		if strings.TrimSpace(t) != "" {
-			out = append(out, t)
+		add(t)
+	}
+	if len(s.AdditionalTags) == 0 {
+		return out
+	}
+	subject, _ := req.Subject.(*decisionengine.Subject)
+	if subject == nil {
+		return out
+	}
+	rel := subjectReleaseInfo(subject)
+	for _, id := range s.AdditionalTags {
+		switch id {
+		case AdditionalTagTitleSlug:
+			if subject.Series != nil {
+				add(subject.Series.TitleSlug)
+			}
+		case AdditionalTagQuality:
+			if subject.ParsedEpisodeInfo != nil {
+				add(subject.ParsedEpisodeInfo.Quality.Quality.Name)
+			}
+		case AdditionalTagLanguages:
+			for _, l := range subject.Languages {
+				add(l.Name)
+			}
+		case AdditionalTagReleaseGroup:
+			if subject.ParsedEpisodeInfo != nil {
+				add(subject.ParsedEpisodeInfo.ReleaseGroup)
+			}
+		case AdditionalTagYear:
+			if subject.Series != nil && subject.Series.Year > 0 {
+				add(strconv.Itoa(subject.Series.Year))
+			}
+		case AdditionalTagIndexer:
+			if rel != nil {
+				add(rel.Indexer)
+			}
+		case AdditionalTagNetwork:
+			if subject.Series != nil {
+				add(subject.Series.Network)
+			}
+		default:
+			// Unknown AdditionalTag ID — skip rather than C#'s throw.
 		}
 	}
 	return out
+}
+
+// subjectReleaseInfo narrows Subject.Release (any) to a
+// [*parser.ReleaseInfo]. Mirrors the pattern in
+// [historyhandlers.releaseInfoFromSubject] +
+// [download.subjectReleaseInfo] — duplicated here per the Go-port
+// convention of keeping the narrow type-assertion local to consumers
+// so the indexer→DC import direction stays one-way.
+func subjectReleaseInfo(s *decisionengine.Subject) *parser.ReleaseInfo {
+	if s == nil {
+		return nil
+	}
+	if r, ok := s.Release.(*parser.ReleaseInfo); ok && r != nil {
+		return r
+	}
+	if t, ok := s.Release.(*parser.TorrentInfo); ok && t != nil {
+		return &t.ReleaseInfo
+	}
+	return nil
 }
 
 // GetItems ports `Flood.GetItems` at C# `Flood.cs:104-188`. Walks
