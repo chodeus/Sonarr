@@ -46,15 +46,15 @@ For closure narrative, see commit history `5.J1` … `5.J22` on `go-port`. The t
 
 **Sequencing:** RefreshMonitoredDownloads + CheckForFinishedDownloads are the most user-visible — without them, qBittorrent / SAB items grabbed via the API don't refresh in the UI without manual reload. Worth a slice each.
 
-## B.5 — Missing healthchecks (4 of 10 remain)
+## B.5 — Missing healthchecks (3 of 10 remain)
 
-**Status:** PARTIAL. 7 closed (5.J10/J11/J12/J13/J14/J18). 4 remain, all with non-trivial blockers:
+**Status:** PARTIAL. 8 closed (5.J10/J11/J12/J13/J14/J18/J34). 3 remain:
 
 | Check | Blocker / size |
 |---|---|
 | `MountCheck` | Needs `disk.Provider.GetMount(path)` returning a Mount struct with `IsReadOnly`. Platform-specific syscall work — Linux `unix.Statfs_t.Flags & ST_RDONLY`, macOS `unix.Statfs_t.Flags & MNT_RDONLY`, Windows `GetVolumeInformation`. ~150 LOC + the per-platform test scaffolding. |
-| `UpdateCheck` | Needs disk-capability + version-string compare. The update folder is `<AppData>/UpdateClient` — check writable + startup folder; compare current `buildinfo.Version` against package_info `PackageVersion`. ~120 LOC. |
-| `PackageGlobalMessageCheck` | Needs `DeploymentInfoProvider` port — reads `<bin>/../package_info` key=value file (PackageVersion / PackageAuthor / PackageGlobalMessage / PackageBranch / etc.) shipped by DEB/RPM maintainers. ~60 LOC for the provider + ~50 LOC for the check. |
+| `UpdateCheck` | Needs disk-capability + version-string compare. The update folder is `<AppData>/UpdateClient` — check writable + startup folder; compare current `buildinfo.Version` against package_info `PackageVersion`. ~120 LOC. **UNBLOCKED 5.J34** — DeploymentInfoProvider port landed. |
+| ~~`PackageGlobalMessageCheck`~~ | ~~Needs `DeploymentInfoProvider` port…~~ — **CLOSED 5.J34** via `internal/deploymentinfo` package (new) + `PackageGlobalMessageCheck` in healthcheck registry. Both DEB/RPM `package_info` + tarball `release_info` parses ported; severity-prefix dispatch (`Error:` / `Warn:`) mirrors C#. |
 | `RemotePathMappingCheck` | Heaviest single check — 387 LOC of docker-detection logic (cross-references DC path → root folder → remote-path-mapping table). Probably its own multi-slice arc. |
 
 Also still in scope: `ProxyCheck` is wired but stubbed (the `proxyHostConfigStub` always reports ProxyEnabled=false because the HostConfig keyvalues-backed IConfigService hasn't ported). Closing this means porting `IConfigService.ProxyEnabled` / `ProxyHostname` properly — moderate work.
