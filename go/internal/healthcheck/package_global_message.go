@@ -45,13 +45,20 @@ func NewPackageGlobalMessageCheck(prov PackageGlobalMessageProvider) *PackageGlo
 	return &PackageGlobalMessageCheck{prov: prov}
 }
 
-// Source returns the canonical identifier.
-func (c *PackageGlobalMessageCheck) Source() string { return PackageGlobalMessageCheckName }
+// Name returns the canonical identifier. Mirrors the C#
+// `result.Source.Name` reflection at `HealthCheckService.cs:97`.
+func (*PackageGlobalMessageCheck) Name() string { return PackageGlobalMessageCheckName }
 
-// Check returns the healthcheck result. Empty / whitespace message →
+// CheckOnStartup defaults true (HealthCheckBase default).
+func (*PackageGlobalMessageCheck) CheckOnStartup() bool { return true }
+
+// CheckOnSchedule defaults true (HealthCheckBase default).
+func (*PackageGlobalMessageCheck) CheckOnSchedule() bool { return true }
+
+// Run returns the healthcheck result. Empty / whitespace message →
 // passing. Otherwise produces a Notice/Warning/Error per the prefix
 // inspection.
-func (c *PackageGlobalMessageCheck) Check(_ context.Context) HealthCheck {
+func (c *PackageGlobalMessageCheck) Run(_ context.Context) HealthCheck {
 	if c == nil {
 		return OK(PackageGlobalMessageCheckName)
 	}

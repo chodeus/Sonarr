@@ -59,6 +59,7 @@ import (
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/delayprofiles"
+	"sonarr.tv/sonarr/internal/deploymentinfo"
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/download"
 	"sonarr.tv/sonarr/internal/downloadclients"
@@ -1825,6 +1826,17 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("healthcheck indexerDownloadClient: %w", err)
 	}
 
+	// Slice 5.J142: PackageGlobalMessageCheck wired against the
+	// deploymentinfo.Provider built from the binary's startup
+	// folder. The Provider tolerates missing package_info /
+	// release_info files (returns zero-valued fields) so the check
+	// always passes for tarball / dev installs and surfaces a
+	// notice / warning / error only when an OS packager populated
+	// the PackageGlobalMessage field. Closes audit B.5's
+	// PackageGlobalMessageCheck deferral marker.
+	deployInfo := deploymentinfo.New(folder.Startup, deploymentinfo.OSFileSystem{})
+	packageGlobalMessageCheck := healthcheck.NewPackageGlobalMessageCheck(deployInfo)
+
 	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
 		healthcheck.NewAppDataLocationCheck(folder),
 		apiKeyCheck,
@@ -1848,6 +1860,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		downloadClientRemovesCompletedCheck,
 		downloadClientRootFolderCheck,
 		importMechanismCheck,
+		packageGlobalMessageCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)

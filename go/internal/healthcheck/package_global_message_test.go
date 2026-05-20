@@ -22,7 +22,7 @@ func TestPackageGlobalMessageCheck_EmptyPasses(t *testing.T) {
 		t.Run("msg="+msg, func(t *testing.T) {
 			t.Parallel()
 			c := healthcheck.NewPackageGlobalMessageCheck(stubGlobalMessageProvider{msg: msg})
-			got := c.Check(context.Background())
+			got := c.Run(context.Background())
 			if got.Type != healthcheck.ResultOK {
 				t.Errorf("Type: got %v, want OK (empty message should pass)", got.Type)
 			}
@@ -36,7 +36,7 @@ func TestPackageGlobalMessageCheck_EmptyPasses(t *testing.T) {
 func TestPackageGlobalMessageCheck_NoticeBare(t *testing.T) {
 	t.Parallel()
 	c := healthcheck.NewPackageGlobalMessageCheck(stubGlobalMessageProvider{msg: "Service migration window 2026-06-01"})
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultNotice {
 		t.Errorf("Type: got %v, want Notice (bare message default)", got.Type)
 	}
@@ -51,7 +51,7 @@ func TestPackageGlobalMessageCheck_NoticeBare(t *testing.T) {
 func TestPackageGlobalMessageCheck_WarnPrefixStrips(t *testing.T) {
 	t.Parallel()
 	c := healthcheck.NewPackageGlobalMessageCheck(stubGlobalMessageProvider{msg: "Warn: backup before upgrade"})
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultWarning {
 		t.Errorf("Type: got %v, want Warning", got.Type)
 	}
@@ -63,7 +63,7 @@ func TestPackageGlobalMessageCheck_WarnPrefixStrips(t *testing.T) {
 func TestPackageGlobalMessageCheck_ErrorPrefixStrips(t *testing.T) {
 	t.Parallel()
 	c := healthcheck.NewPackageGlobalMessageCheck(stubGlobalMessageProvider{msg: "Error: end-of-life package - upgrade required"})
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultError {
 		t.Errorf("Type: got %v, want Error", got.Type)
 	}
