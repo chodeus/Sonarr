@@ -65,6 +65,7 @@ import (
 	"sonarr.tv/sonarr/internal/downloadclientstatus"
 	"sonarr.tv/sonarr/internal/downloadedimport"
 	"sonarr.tv/sonarr/internal/downloadhistory"
+	"sonarr.tv/sonarr/internal/downloadmonitoring"
 	"sonarr.tv/sonarr/internal/episodefilemoving"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
@@ -2546,16 +2547,31 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	registry := commands.NewRegistry()
 	queue := commands.NewQueue(registry.Properties)
 	cmdSvc.SetQueue(queue)
+	// Slice 5.J37 (audit B.3): construct the downloadmonitoring.Service
+	// + thread into handlers.Deps so RefreshMonitoredDownloads no
+	// longer no-ops on the 1-minute scheduled tick. Service polls
+	// every enabled download client's GetItems() across both
+	// protocols and publishes QueueUpdatedEvent +
+	// TrackedDownloadRefreshedEvent on each refresh — the
+	// signalr_wiring already subscribes the queue/queue-details Sync
+	// broadcaster off those events, so the React UI's queue list
+	// refreshes on cadence without manual reload.
+	downloadMonitoringSvc, err := downloadmonitoring.NewService(downloadClientLister, bus, logger)
+	if err != nil {
+		return fmt.Errorf("downloadmonitoring service: %w", err)
+	}
+
 	if err := handlers.RegisterAll(registry, handlers.Deps{
-		Commands:       cmdSvc,
-		Housekeeping:   houseSvc,
-		HealthCheck:    healthSvc,
-		RescanSeries:   mediafilesSvc,
-		Backup:         backupSvc,
-		Lifecycle:      lifecycleSvc,
-		RssSync:        indexerSearchSvc,
-		RssSyncBus:     bus,
-		RssSyncDecider: downloadDecider,
+		Commands:                   cmdSvc,
+		Housekeeping:               houseSvc,
+		HealthCheck:                healthSvc,
+		RescanSeries:               mediafilesSvc,
+		Backup:                     backupSvc,
+		Lifecycle:                  lifecycleSvc,
+		MonitoredDownloadRefresher: downloadMonitoringSvc,
+		RssSync:                    indexerSearchSvc,
+		RssSyncBus:                 bus,
+		RssSyncDecider:             downloadDecider,
 		// Slice 6.A6d (queue [15]): the grab orchestrator (constructed
 		// above) consumes the decider's output. *download.ProcessDownloadDecisions
 		// satisfies handlers.GrabProcessor via Go's structural typing.

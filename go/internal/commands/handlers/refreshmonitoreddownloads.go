@@ -1,17 +1,18 @@
 // RefreshMonitoredDownloads handler. Ports the
-// IExecute<RefreshMonitoredDownloadsCommand> implementation — AS A STUB.
-// The real port depends on Phase 4 download-client integration. This
-// slot ships so:
+// IExecute<RefreshMonitoredDownloadsCommand> implementation at
+// `src/NzbDrone.Core/Download/TrackedDownloads/DownloadMonitoringService.cs`.
 //
-//   - The fifth IExecute<T> handler exists.
-//   - The 1-minute scheduled-task entry materialises in the
-//     ScheduledTasks table at boot (TaskManager.cs:71 — highest-frequency
-//     scheduled task; drives the "Downloading" queue refresh).
-//   - API callers pushing `RefreshMonitoredDownloads` get a structured
-//     log line instead of an "Unknown command" rejection.
+// Slice 5.J37 (audit B.3) replaces the original stub-shape (logged +
+// returned nil) with a real delegate to
+// [downloadmonitoring.Service.Refresh] when a [Refresher] is wired
+// at Deps.MonitoredDownloadRefresher. When unset the handler falls
+// back to the stub log line so hosts that haven't yet wired a
+// refresher still satisfy the registry slot — important because the
+// 1-minute scheduled-task entry depends on the registry key
+// existing.
 //
 // The C# `RefreshMonitoredDownloadsCommand` is a bare `Command`
-// subclass with no fields; the stub ignores the body entirely.
+// subclass with no fields; the body string is ignored.
 
 package handlers
 
@@ -25,27 +26,64 @@ import (
 // `RefreshMonitoredDownloadsCommand` → `RefreshMonitoredDownloads`.
 const RefreshMonitoredDownloadsName = "RefreshMonitoredDownloads"
 
-// RefreshMonitoredDownloads is the IExecute<RefreshMonitoredDownloadsCommand>
-// port stub.
-type RefreshMonitoredDownloads struct {
-	log *slog.Logger
+// Refresher is the narrow interface RefreshMonitoredDownloads
+// delegates to. `*downloadmonitoring.Service` satisfies this via
+// Go's structural typing — the handler doesn't import the
+// downloadmonitoring package directly to avoid a cycle (the service
+// imports trackeddownloads which transitively imports commands at
+// the host wiring tier).
+type Refresher interface {
+	Refresh(ctx context.Context) (int, error)
 }
 
-// NewRefreshMonitoredDownloads builds the handler. log defaults to
-// slog.Default.
-func NewRefreshMonitoredDownloads(log *slog.Logger) *RefreshMonitoredDownloads {
+// RefreshMonitoredDownloads is the IExecute<RefreshMonitoredDownloadsCommand>
+// port.
+type RefreshMonitoredDownloads struct {
+	refresher Refresher
+	log       *slog.Logger
+}
+
+// NewRefreshMonitoredDownloads builds the handler with an optional
+// refresher. When refresher is nil, Execute logs the stub-shaped
+// "command fired" line and returns nil (matches the pre-5.J37
+// behaviour so hosts without a wired downloadmonitoring.Service
+// still register the slot).
+//
+// log defaults to slog.Default.
+func NewRefreshMonitoredDownloads(refresher Refresher, log *slog.Logger) *RefreshMonitoredDownloads {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &RefreshMonitoredDownloads{log: log}
+	return &RefreshMonitoredDownloads{refresher: refresher, log: log}
 }
 
-// Execute logs that the command fired and returns nil. The real port
-// will replace this with a delegation into a future
-// downloadmonitoring.Service.Execute(ctx) call.
+// Execute delegates to the configured Refresher when set; otherwise
+// logs the stub fired-event line. Per-client poll failures are
+// already absorbed by the Refresher (Refresh returns a non-fatal
+// error after warn-logging each failure); the handler logs the
+// summary error at Warn level but returns nil so the scheduler
+// doesn't classify the command as failed (the C# tree's
+// `IExecute<>` posture is the same — partial poll failures don't
+// fail the command).
 func (h *RefreshMonitoredDownloads) Execute(ctx context.Context, _ string) error {
-	h.log.LogAttrs(ctx, slog.LevelInfo,
-		"refreshmonitoreddownloads: stub Execute (real DownloadMonitoringService not yet ported)",
-		slog.String("command", RefreshMonitoredDownloadsName))
+	if h.refresher == nil {
+		h.log.LogAttrs(ctx, slog.LevelInfo,
+			"refreshmonitoreddownloads: stub Execute (no DownloadMonitoringService wired)",
+			slog.String("command", RefreshMonitoredDownloadsName))
+		return nil
+	}
+	items, err := h.refresher.Refresh(ctx)
+	if err != nil {
+		h.log.LogAttrs(ctx, slog.LevelWarn,
+			"refreshmonitoreddownloads: Refresh completed with errors (per-client poll failure absorbed)",
+			slog.String("command", RefreshMonitoredDownloadsName),
+			slog.Int("items", items),
+			slog.Any("err", err))
+		return nil
+	}
+	h.log.LogAttrs(ctx, slog.LevelDebug,
+		"refreshmonitoreddownloads: Refresh complete",
+		slog.String("command", RefreshMonitoredDownloadsName),
+		slog.Int("items", items))
 	return nil
 }

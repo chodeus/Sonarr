@@ -128,6 +128,17 @@ type Deps struct {
 	// `*download.ProcessDownloadDecisions` via Go's structural typing.
 	RssSyncGrabber GrabProcessor
 
+	// MonitoredDownloadRefresher wires the
+	// IExecute<RefreshMonitoredDownloadsCommand> handler into the
+	// dispatcher with a real refresher. Slice 5.J37 (audit B.3).
+	// Optional — nil falls back to the pre-5.J37 stub-log behaviour so
+	// hosts without a wired downloadmonitoring.Service still register
+	// the slot (the 1-minute scheduled-task entry depends on the
+	// registry key existing).
+	// Production binds `*downloadmonitoring.Service` via structural
+	// typing.
+	MonitoredDownloadRefresher Refresher
+
 	// UpdateSceneMapping wires the IExecute<UpdateSceneMappingCommand>
 	// handler into the dispatcher. Slice 4.AZ (sub-arc M6b-ii of queue
 	// [M6]). Optional — nil skips registration entirely (the API
@@ -200,7 +211,7 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 		Handler: NewRefreshSeries(deps.Log),
 	})
 	registry.Register(RefreshMonitoredDownloadsName, commands.CommandSpec{
-		Handler: NewRefreshMonitoredDownloads(deps.Log),
+		Handler: NewRefreshMonitoredDownloads(deps.MonitoredDownloadRefresher, deps.Log),
 	})
 	registry.Register(CheckForFinishedDownloadsName, commands.CommandSpec{
 		Handler: NewCheckForFinishedDownloads(deps.Log),
