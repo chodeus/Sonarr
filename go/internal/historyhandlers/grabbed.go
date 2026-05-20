@@ -213,10 +213,13 @@ func buildGrabbedData(ev *decisionengine.EpisodeGrabbedEvent, subject *decisione
 		data["TvRageId"] = strconv.Itoa(rel.TvRageID)
 		data["ImdbId"] = rel.ImdbID
 		data["Protocol"] = strconv.Itoa(int(rel.DownloadProtocol))
-		// IndexerFlags has no String method on the Go port — emit the
-		// raw int form (the C# `[Flags]` ToString combines bit names
-		// but the audit-log column stores the int form anyway).
-		data["IndexerFlags"] = strconv.Itoa(int(rel.IndexerFlags))
+		// IndexerFlags emits the comma-separated `[Flags]` name form
+		// via [parser.IndexerFlags.String] — J160 sweep — matching C#
+		// `HistoryService.cs:179`
+		// (`message.Episode.Release.IndexerFlags.ToString()`). The
+		// audit-log column on disk stays the int form;
+		// [parser.ParseIndexerFlags] accepts both shapes.
+		data["IndexerFlags"] = rel.IndexerFlags.String()
 	} else {
 		data["Indexer"] = ""
 		data["NzbInfoUrl"] = ""

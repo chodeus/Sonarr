@@ -57,11 +57,11 @@ import (
 // 5 fixed keys — Reason / ReleaseGroup / Size / IndexerFlags /
 // ReleaseType. Reason emits the enum's String() form per
 // [episodefiles.DeleteMediaFileReason.String]. IndexerFlags emits the
-// int-string form (C# `[Flags] enum.ToString()` flip is a separate
-// sweep). ReleaseType emits the PascalCase name via
-// [parser.ReleaseType.String] — J159 sweep — matching C#
-// `HistoryService.cs:297`
-// (`message.EpisodeFile.ReleaseType.ToString()`).
+// comma-separated `[Flags]` name form via [parser.IndexerFlags.String]
+// — J160 sweep — matching C# `HistoryService.cs:296`
+// (`message.EpisodeFile.IndexerFlags.ToString()`). ReleaseType emits
+// the PascalCase name via [parser.ReleaseType.String] — J159 sweep —
+// matching C# `:297`.
 //
 // # Defensive arms
 //
@@ -91,7 +91,7 @@ func HandleEpisodeFileDeleted(ctx context.Context, w EntryWriter, ev *episodefil
 			"Reason":       ev.Reason.String(),
 			"ReleaseGroup": file.ReleaseGroup,
 			"Size":         strconv.FormatInt(file.Size, 10),
-			"IndexerFlags": strconv.Itoa(file.IndexerFlags),
+			"IndexerFlags": parser.IndexerFlags(file.IndexerFlags).String(),
 			"ReleaseType":  parser.ReleaseType(file.ReleaseType).String(),
 		}
 		entry := &history.Entry{

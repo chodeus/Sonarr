@@ -188,8 +188,8 @@ func TestHandleEpisodeGrabbed_DataMapShape(t *testing.T) {
 		{"CustomFormatScore", "75"},
 		{"SeriesMatchType", "Alias"},
 		{"ReleaseSource", "InteractiveSearch"},
-		{"ReleaseType", "Unknown"}, // ParsedEpisodeInfo with no episode numbers + FullSeason=false → ReleaseTypeUnknown name
-		{"IndexerFlags", "9"},      // Freeleech (1) + Internal (8) = 9
+		{"ReleaseType", "Unknown"},              // ParsedEpisodeInfo with no episode numbers + FullSeason=false → ReleaseTypeUnknown name
+		{"IndexerFlags", "Internal, Freeleech"}, // 9 = Internal | Freeleech, descending-value order per [Flags] enum.ToString()
 	}
 	for _, c := range cases {
 		if got := d[c.key]; got != c.want {

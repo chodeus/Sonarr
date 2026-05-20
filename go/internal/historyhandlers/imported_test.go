@@ -3,7 +3,6 @@ package historyhandlers_test
 import (
 	"context"
 	"errors"
-	"strconv"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/customformats"
@@ -242,7 +241,7 @@ func TestHandleEpisodeImported_DataMapShape(t *testing.T) {
 		{"ReleaseGroup", "GROUP"},
 		{"CustomFormatScore", "125"},
 		{"Size", "1500000000"},
-		{"IndexerFlags", strconv.Itoa(int(parser.IndexerFlagFreeleech | parser.IndexerFlagInternal))},
+		{"IndexerFlags", "Internal, Freeleech"},
 		{"ReleaseType", "SingleEpisode"},
 	}
 	for _, c := range cases {

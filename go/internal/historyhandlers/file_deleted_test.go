@@ -2,7 +2,6 @@ package historyhandlers_test
 
 import (
 	"errors"
-	"strconv"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/episodefiles"
@@ -146,7 +145,7 @@ func TestHandleEpisodeFileDeleted_DataMapShape(t *testing.T) {
 		{"Reason", "Upgrade"},
 		{"ReleaseGroup", "GROUP"},
 		{"Size", "2000000000"},
-		{"IndexerFlags", strconv.Itoa(int(parser.IndexerFlagFreeleech))},
+		{"IndexerFlags", "Freeleech"},
 		{"ReleaseType", "MultiEpisode"},
 	}
 	for _, c := range cases {

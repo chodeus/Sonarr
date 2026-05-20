@@ -3,7 +3,6 @@ package historyhandlers_test
 import (
 	"context"
 	"errors"
-	"strconv"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/episodefiles"
@@ -167,7 +166,7 @@ func TestHandleEpisodeFileRenamed_DataMapShape(t *testing.T) {
 		{"RelativePath", "Season 03/Show.S03E07.mkv"},
 		{"ReleaseGroup", "GROUP"},
 		{"Size", "700000000"},
-		{"IndexerFlags", strconv.Itoa(int(parser.IndexerFlagInternal))},
+		{"IndexerFlags", "Internal"},
 		{"ReleaseType", "SingleEpisode"},
 	}
 	for _, c := range cases {

@@ -116,15 +116,16 @@ func WithDownloadIDLookup(l LookupDownloadID) HandleEpisodeImportedOption {
 // # IndexerFlags / ReleaseType formatting
 //
 // EpisodeFile.IndexerFlags is the persisted int form (the schema column
-// is INT). This handler emits the integer string ("9" for
-// Freeleech|Internal=1|8) — same pattern as the slice-3.AT
-// HandleEpisodeGrabbed handler. The C# `[Flags] enum.ToString()` would
-// emit comma-separated names; the int form round-trips through
-// [parser.ParseIndexerFlags] unchanged. ReleaseType emits the
-// PascalCase enum name via [parser.ReleaseType.String] (J159 sweep —
-// matches C# `HistoryService.cs:233`
-// `message.ImportedEpisode.ReleaseType.ToString()`); the column on
-// disk stays the int form, but the wire payload follows C#.
+// is INT). This handler emits the comma-separated `[Flags]` name form
+// via [parser.IndexerFlags.String] (J160 sweep) — matches C#
+// `HistoryService.cs:232` (`message.ImportedEpisode.IndexerFlags.ToString()`);
+// the on-disk column stays the int form, the wire payload follows C#.
+// ReleaseType emits the PascalCase enum name via
+// [parser.ReleaseType.String] (J159 sweep — matches C#
+// `HistoryService.cs:233`).
+// [parser.ParseIndexerFlags] / [parser.ParseReleaseType] accept both
+// the numeric and named/comma forms case-insensitively, so consumers
+// round-tripping through them stay compatible.
 //
 // # Defensive arms
 //
@@ -281,14 +282,13 @@ func buildImportedData(ev *episodeimport.EpisodeImportedEvent, le *episodeimport
 	data["ReleaseGroup"] = le.ReleaseGroup
 	data["CustomFormatScore"] = strconv.Itoa(le.CustomFormatScore)
 	data["Size"] = strconv.FormatInt(le.Size, 10)
-	// IndexerFlags stays as the int-string form (the C# `[Flags]`
-	// enum's `.ToString()` would emit comma-separated names —
-	// flipping IndexerFlags is a separate sweep). ReleaseType emits
-	// the PascalCase name via [parser.ReleaseType.String] to match
-	// C# `HistoryService.cs:233`. [parser.ParseReleaseType] accepts
-	// both numeric + named forms case-insensitively so consumers
-	// round-tripping through it stay compatible.
-	data["IndexerFlags"] = strconv.Itoa(ev.EpisodeFile.IndexerFlags)
+	// IndexerFlags + ReleaseType both flip from the int-string form
+	// to the named form via the Stringers — J159 (ReleaseType, name
+	// e.g. "MultiEpisode") and J160 (IndexerFlags, `[Flags]` form
+	// e.g. "Internal, Freeleech"). On-disk columns stay int; only the
+	// wire payload follows C#. ParseIndexerFlags / ParseReleaseType
+	// keep both forms readable for round-trip-via-parser consumers.
+	data["IndexerFlags"] = parser.IndexerFlags(ev.EpisodeFile.IndexerFlags).String()
 	data["ReleaseType"] = parser.ReleaseType(ev.EpisodeFile.ReleaseType).String()
 	return data
 }

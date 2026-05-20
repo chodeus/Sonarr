@@ -63,10 +63,11 @@ type EpisodeFileReader interface {
 // (filepath.Join(Series.Path, EpisodeFile.RelativePath)). RelativePath
 // is the new relative path verbatim.
 //
-// IndexerFlags emits the int-string form (C# `[Flags] enum.ToString()`
-// flip is a separate sweep). ReleaseType emits the PascalCase name via
-// [parser.ReleaseType.String] — J159 sweep — matching C#
-// `HistoryService.cs:330` (`message.EpisodeFile.ReleaseType.ToString()`).
+// IndexerFlags emits the comma-separated `[Flags]` name form via
+// [parser.IndexerFlags.String] — J160 sweep — matching C#
+// `HistoryService.cs:329` (`message.EpisodeFile.IndexerFlags.ToString()`).
+// ReleaseType emits the PascalCase name via [parser.ReleaseType.String]
+// — J159 sweep — matching C# `:330`.
 //
 // # Defensive arms
 //
@@ -112,7 +113,7 @@ func HandleEpisodeFileRenamed(
 			"RelativePath":       newRelative,
 			"ReleaseGroup":       file.ReleaseGroup,
 			"Size":               strconv.FormatInt(file.Size, 10),
-			"IndexerFlags":       strconv.Itoa(file.IndexerFlags),
+			"IndexerFlags":       parser.IndexerFlags(file.IndexerFlags).String(),
 			"ReleaseType":        parser.ReleaseType(file.ReleaseType).String(),
 		}
 		entry := &history.Entry{
