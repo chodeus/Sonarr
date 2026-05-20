@@ -2,9 +2,12 @@ package history
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
+
+	"sonarr.tv/sonarr/internal/quality"
 )
 
 // EventType is the wire-stable enum for `History.EventType`. Mirrors
@@ -362,6 +365,143 @@ func (s *Service) GetBySeries(ctx context.Context, seriesID int, eventType *Even
 		return rows, nil
 	}
 	return filterByEventType(rows, *eventType), nil
+}
+
+// FindDownloadID ports `HistoryService.cs:101-142` —
+// recovers a download-client identifier for an imported episode whose
+// EpisodeImportedEvent carries no DownloadID of its own (manual /
+// rescan imports of files Sonarr originally grabbed). The algorithm
+// walks the series-scoped, quality-matched history rows and reasons
+// about grab/import pairs to deduce a single still-downloading grab.
+//
+// Algorithm (C# `:103-142`):
+//
+//  1. Pull every history row for the supplied SeriesID via
+//     AllBySeriesID, then filter to the quality-match subset whose
+//     EventType is one of {Grabbed, DownloadFailed,
+//     DownloadFolderImported}. Mirrors C#
+//     `HistoryRepository.FindDownloadHistory(:105-114)` — the C# repo
+//     pushes the filter into SQL; the Go port walks in memory because
+//     the schema's `Quality` column is opaque JSON and the existing
+//     repo surface doesn't expose a JSON-aware Where.
+//  2. Restrict further to rows whose EpisodeID is in the supplied set.
+//  3. Compute `processed = { row.DownloadID | row is non-Grabbed AND
+//     has DownloadID }` — every downloadId that has already finished
+//     a processing (import / fail) step. C# `:111-113`.
+//  4. `stillDownloading = { row | row.EventType=Grabbed AND
+//     row.DownloadID not in processed }`. The set of grabs that
+//     haven't been resolved by an import/fail row yet. C# `:115`.
+//  5. If `stillDownloading` is empty, return "". Otherwise iterate the
+//     supplied episodeIDs in order: for each, the stillDownloading
+//     rows must contain exactly one entry. Any episode with zero or
+//     multiple matches → ambiguous → return "". Each per-episode
+//     match must agree on the same DownloadID — disagreement → "".
+//     C# `:119-138`.
+//
+// Returns the unanimous downloadID, or "" when the algorithm declines
+// to guess. Repo errors propagate wrapped; JSON-decode errors on the
+// Quality column are non-fatal (row skipped, walk continues) so a
+// single corrupt row doesn't poison the lookup.
+//
+// Production caller: [historyhandlers.HandleEpisodeImported] via the
+// LookupDownloadID interface, wired through the variadic
+// WithDownloadIDLookup option (slice 5.J127).
+func (s *Service) FindDownloadID(ctx context.Context, seriesID int, qualityModel quality.Model, episodeIDs []int) (string, error) {
+	if s == nil || s.repo == nil {
+		return "", errors.New("history: FindDownloadID on nil receiver")
+	}
+	if seriesID <= 0 || len(episodeIDs) == 0 {
+		return "", nil
+	}
+	rows, err := s.repo.AllBySeriesID(ctx, seriesID)
+	if err != nil {
+		return "", fmt.Errorf("history: FindDownloadID: %w", err)
+	}
+	if len(rows) == 0 {
+		return "", nil
+	}
+	episodeSet := make(map[int]struct{}, len(episodeIDs))
+	for _, id := range episodeIDs {
+		episodeSet[id] = struct{}{}
+	}
+	matched := make([]Entry, 0, len(rows))
+	for _, r := range rows {
+		if r.EventType == nil {
+			continue
+		}
+		et := EventType(*r.EventType)
+		if et != EventTypeGrabbed && et != EventTypeDownloadFailed && et != EventTypeDownloadFolderImported {
+			continue
+		}
+		if _, ok := episodeSet[r.EpisodeID]; !ok {
+			continue
+		}
+		if !qualityEquals(r.Quality, qualityModel) {
+			continue
+		}
+		matched = append(matched, r)
+	}
+	if len(matched) == 0 {
+		return "", nil
+	}
+	processed := make(map[string]struct{}, len(matched))
+	for _, r := range matched {
+		if EventType(*r.EventType) == EventTypeGrabbed {
+			continue
+		}
+		if r.DownloadID == "" {
+			continue
+		}
+		processed[r.DownloadID] = struct{}{}
+	}
+	stillDownloading := make([]Entry, 0, len(matched))
+	for _, r := range matched {
+		if EventType(*r.EventType) != EventTypeGrabbed {
+			continue
+		}
+		if _, done := processed[r.DownloadID]; done {
+			continue
+		}
+		stillDownloading = append(stillDownloading, r)
+	}
+	if len(stillDownloading) == 0 {
+		return "", nil
+	}
+	var downloadID string
+	for _, ep := range episodeIDs {
+		count := 0
+		var candidate string
+		for _, r := range stillDownloading {
+			if r.EpisodeID != ep {
+				continue
+			}
+			count++
+			candidate = r.DownloadID
+		}
+		if count != 1 {
+			return "", nil
+		}
+		if downloadID == "" || downloadID == candidate {
+			downloadID = candidate
+		} else {
+			return "", nil
+		}
+	}
+	return downloadID, nil
+}
+
+// qualityEquals JSON-decodes a persisted Quality column and compares
+// it against the supplied target via [quality.Model.Equal]. Decode
+// failures yield `false` so a corrupt row is skipped, not propagated.
+func qualityEquals(persisted string, target quality.Model) bool {
+	if persisted == "" {
+		return false
+	}
+	var m quality.Model
+	if err := json.Unmarshal([]byte(persisted), &m); err != nil {
+		return false
+	}
+	return m.Equal(target)
 }
 
 func filterByEventType(rows []Entry, eventType EventType) []Entry {

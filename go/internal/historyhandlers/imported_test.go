@@ -1,6 +1,7 @@
 package historyhandlers_test
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"testing"
@@ -17,6 +18,35 @@ import (
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
 )
+
+// stubLookupDownloadID records every FindDownloadID call + returns
+// the canned response. Tests assert on `calls` to confirm the
+// fallback fires only when expected.
+type stubLookupDownloadID struct {
+	calls    []stubLookupCall
+	respond  string
+	respErr  error
+	callable bool
+}
+
+type stubLookupCall struct {
+	seriesID    int
+	qualityName int
+	episodeIDs  []int
+}
+
+func (s *stubLookupDownloadID) FindDownloadID(_ context.Context, seriesID int, q quality.Model, episodeIDs []int) (string, error) {
+	s.callable = true
+	s.calls = append(s.calls, stubLookupCall{
+		seriesID:    seriesID,
+		qualityName: q.Quality.ID,
+		episodeIDs:  append([]int(nil), episodeIDs...),
+	})
+	if s.respErr != nil {
+		return "", s.respErr
+	}
+	return s.respond, nil
+}
 
 func importedFile() *episodefiles.File {
 	return &episodefiles.File{
@@ -333,3 +363,148 @@ func TestHandleEpisodeImported_QualityRoundTrip(t *testing.T) {
 		t.Errorf("Quality.ID after round-trip = %d, want %d", m.Quality.ID, quality.Bluray1080p.ID)
 	}
 }
+
+// --- WithDownloadIDLookup fallback (slice 5.J127) ------------------
+
+func TestHandleEpisodeImported_LookupSkippedWhenDownloadIDPresent(t *testing.T) {
+	t.Parallel()
+	w := &stubWriter{}
+	lookup := &stubLookupDownloadID{respond: "tok-from-lookup"}
+	eps := []episodes.Episode{{ID: 11, SeriesID: 7}}
+	ev := &episodeimport.EpisodeImportedEvent{
+		LocalEpisode:       importedLocalEpisode(eps),
+		EpisodeFile:        importedFile(),
+		NewDownload:        true,
+		DownloadClientItem: importedDownloadItem(),
+	}
+	if err := historyhandlers.HandleEpisodeImported(t.Context(), w, ev,
+		historyhandlers.WithDownloadIDLookup(lookup)); err != nil {
+		t.Fatalf("HandleEpisodeImported: %v", err)
+	}
+	if w.added[0].DownloadID != "tok-import-1" {
+		t.Errorf("DownloadID = %q, want tok-import-1 (event id should win)", w.added[0].DownloadID)
+	}
+	if lookup.callable {
+		t.Errorf("lookup should not have been called; got %d calls", len(lookup.calls))
+	}
+}
+
+func TestHandleEpisodeImported_LookupFillsEmptyDownloadID(t *testing.T) {
+	t.Parallel()
+	w := &stubWriter{}
+	lookup := &stubLookupDownloadID{respond: "tok-from-lookup"}
+	eps := []episodes.Episode{{ID: 11, SeriesID: 7}, {ID: 12, SeriesID: 7}}
+	ev := &episodeimport.EpisodeImportedEvent{
+		LocalEpisode: importedLocalEpisode(eps),
+		EpisodeFile:  importedFile(),
+		NewDownload:  true,
+	}
+	if err := historyhandlers.HandleEpisodeImported(t.Context(), w, ev,
+		historyhandlers.WithDownloadIDLookup(lookup)); err != nil {
+		t.Fatalf("HandleEpisodeImported: %v", err)
+	}
+	if !lookup.callable || len(lookup.calls) != 1 {
+		t.Fatalf("lookup calls = %d, want 1", len(lookup.calls))
+	}
+	got := lookup.calls[0]
+	if got.seriesID != 7 {
+		t.Errorf("lookup.seriesID = %d, want 7 (from ev.EpisodeFile.SeriesID)", got.seriesID)
+	}
+	if got.qualityName != quality.Bluray1080p.ID {
+		t.Errorf("lookup.qualityID = %d, want %d", got.qualityName, quality.Bluray1080p.ID)
+	}
+	if len(got.episodeIDs) != 2 || got.episodeIDs[0] != 11 || got.episodeIDs[1] != 12 {
+		t.Errorf("lookup.episodeIDs = %v, want [11 12]", got.episodeIDs)
+	}
+	for i, e := range w.added {
+		if e.DownloadID != "tok-from-lookup" {
+			t.Errorf("entry %d DownloadID = %q, want tok-from-lookup", i, e.DownloadID)
+		}
+	}
+}
+
+func TestHandleEpisodeImported_LookupErrorIsNonFatal(t *testing.T) {
+	t.Parallel()
+	w := &stubWriter{}
+	lookup := &stubLookupDownloadID{respErr: errors.New("repo down")}
+	eps := []episodes.Episode{{ID: 11, SeriesID: 7}}
+	ev := &episodeimport.EpisodeImportedEvent{
+		LocalEpisode: importedLocalEpisode(eps),
+		EpisodeFile:  importedFile(),
+		NewDownload:  true,
+	}
+	if err := historyhandlers.HandleEpisodeImported(t.Context(), w, ev,
+		historyhandlers.WithDownloadIDLookup(lookup)); err != nil {
+		t.Fatalf("HandleEpisodeImported: %v", err)
+	}
+	if len(w.added) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(w.added))
+	}
+	if w.added[0].DownloadID != "" {
+		t.Errorf("DownloadID = %q, want empty (lookup error swallowed)", w.added[0].DownloadID)
+	}
+}
+
+func TestHandleEpisodeImported_LookupEmptyReturnLeavesDownloadIDEmpty(t *testing.T) {
+	t.Parallel()
+	w := &stubWriter{}
+	lookup := &stubLookupDownloadID{respond: ""}
+	eps := []episodes.Episode{{ID: 11, SeriesID: 7}}
+	ev := &episodeimport.EpisodeImportedEvent{
+		LocalEpisode: importedLocalEpisode(eps),
+		EpisodeFile:  importedFile(),
+		NewDownload:  true,
+	}
+	if err := historyhandlers.HandleEpisodeImported(t.Context(), w, ev,
+		historyhandlers.WithDownloadIDLookup(lookup)); err != nil {
+		t.Fatalf("HandleEpisodeImported: %v", err)
+	}
+	if w.added[0].DownloadID != "" {
+		t.Errorf("DownloadID = %q, want empty (lookup declined)", w.added[0].DownloadID)
+	}
+	if len(lookup.calls) != 1 {
+		t.Errorf("lookup calls = %d, want 1", len(lookup.calls))
+	}
+}
+
+func TestHandleEpisodeImported_WithDownloadIDLookupNilOptionIsNoOp(t *testing.T) {
+	t.Parallel()
+	w := &stubWriter{}
+	eps := []episodes.Episode{{ID: 11, SeriesID: 7}}
+	ev := &episodeimport.EpisodeImportedEvent{
+		LocalEpisode: importedLocalEpisode(eps),
+		EpisodeFile:  importedFile(),
+		NewDownload:  true,
+	}
+	if err := historyhandlers.HandleEpisodeImported(t.Context(), w, ev,
+		historyhandlers.WithDownloadIDLookup(nil)); err != nil {
+		t.Fatalf("HandleEpisodeImported: %v", err)
+	}
+	if w.added[0].DownloadID != "" {
+		t.Errorf("DownloadID = %q, want empty (no lookup wired)", w.added[0].DownloadID)
+	}
+}
+
+func TestHandleEpisodeImported_LookupSkippedWhenWhitespaceDownloadIDFromEvent(t *testing.T) {
+	t.Parallel()
+	w := &stubWriter{}
+	lookup := &stubLookupDownloadID{respond: "tok-from-lookup"}
+	eps := []episodes.Episode{{ID: 11, SeriesID: 7}}
+	ev := &episodeimport.EpisodeImportedEvent{
+		LocalEpisode: importedLocalEpisode(eps),
+		EpisodeFile:  importedFile(),
+		NewDownload:  true,
+		DownloadClientItem: &downloadclients.Item{
+			DownloadID: "   ",
+		},
+	}
+	if err := historyhandlers.HandleEpisodeImported(t.Context(), w, ev,
+		historyhandlers.WithDownloadIDLookup(lookup)); err != nil {
+		t.Fatalf("HandleEpisodeImported: %v", err)
+	}
+	if w.added[0].DownloadID != "tok-from-lookup" {
+		t.Errorf("DownloadID = %q, want tok-from-lookup (whitespace id triggers fallback)", w.added[0].DownloadID)
+	}
+}
+
+var _ historyhandlers.LookupDownloadID = (*history.Service)(nil)

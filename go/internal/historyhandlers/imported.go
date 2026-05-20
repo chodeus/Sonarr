@@ -12,7 +12,56 @@ import (
 
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/history"
+	"sonarr.tv/sonarr/internal/quality"
 )
+
+// LookupDownloadID narrows [*history.Service] to the
+// FindDownloadID surface that [HandleEpisodeImported] reaches for
+// when the event's DownloadClientItem has no DownloadID of its own.
+// Pulled out so tests can inject a stub without constructing a full
+// history.Service + repo.
+//
+// Returns "" + nil when the lookup declines to guess; non-empty
+// downloadID + nil for the unanimous-grab match; "" + error when the
+// underlying repo fails (handler logs + skips the backfill rather
+// than aborting the import history write).
+type LookupDownloadID interface {
+	FindDownloadID(ctx context.Context, seriesID int, qualityModel quality.Model, episodeIDs []int) (string, error)
+}
+
+// HandleEpisodeImportedOption tunes [HandleEpisodeImported] via the
+// variadic-options pattern so existing test callers that don't need
+// the FindDownloadID fallback don't have to thread a nil through.
+//
+// Future imported-handler tuning slots (event-bus retry policy,
+// custom clock for the per-row Date) plug in here without breaking
+// the signature.
+type HandleEpisodeImportedOption func(*importedConfig)
+
+// importedConfig is the resolved options bag the handler walks. Kept
+// unexported — callers tune via the public WithX option constructors.
+type importedConfig struct {
+	lookup LookupDownloadID
+}
+
+// WithDownloadIDLookup wires a LookupDownloadID into
+// [HandleEpisodeImported]. When the event's DownloadClientItem
+// carries no DownloadID, the handler consults the lookup and uses
+// any returned id for the per-episode Entry.DownloadID column.
+// Lookup errors are non-fatal (the handler proceeds with an empty
+// DownloadID — same as the C# behaviour where FindDownloadId's
+// underlying repo errors propagate and the EpisodeImportedEvent
+// handler doesn't try/catch).
+//
+// Pass nil → no-op (the option silently drops). Useful for wiring
+// sites that conditionally enable the fallback off a config flag.
+func WithDownloadIDLookup(l LookupDownloadID) HandleEpisodeImportedOption {
+	return func(c *importedConfig) {
+		if l != nil {
+			c.lookup = l
+		}
+	}
+}
 
 // HandleEpisodeImported ports
 // `src/NzbDrone.Core/History/HistoryService.cs:196-237` —
@@ -44,12 +93,14 @@ import (
 //     carries a download-client item; empty otherwise. The C# tree
 //     also runs a [HistoryService.FindDownloadId] fallback that walks
 //     existing Grabbed history rows to backfill the id when the event
-//     payload itself has no id (`:203-208`); the Go-port fallback is
-//     deferred — when the FindDownloadId port lands the slice that
-//     ships it will swap the empty arm in this handler for the call.
-//     The only audit-log effect of the missing fallback is that
-//     manual / scan imports of files originally grabbed by Sonarr lose
-//     their grab→import link until the fallback ports.
+//     payload itself has no id (`:203-208`). Pass
+//     [WithDownloadIDLookup] to enable the same backfill on the Go
+//     side — when the event's DownloadID is empty the handler
+//     consults the [LookupDownloadID] surface to resolve a still-
+//     downloading grab. The lookup is optional: without it (or with
+//     a nil lookup) the handler proceeds with an empty DownloadID,
+//     matching the pre-J127 behaviour where manual / scan imports
+//     of Sonarr-grabbed files lost their grab→import link.
 //   - Languages = LocalEpisode.Languages flattened to []int IDs.
 //
 // # Data map (mirrors C# `:224-233`)
@@ -79,7 +130,7 @@ import (
 // Entry written, no error). Per-episode Add errors abort the loop and
 // propagate (the C# tree relies on EF transaction semantics; the Go
 // port surfaces the first per-row failure rather than swallowing).
-func HandleEpisodeImported(ctx context.Context, w EntryWriter, ev *episodeimport.EpisodeImportedEvent) error {
+func HandleEpisodeImported(ctx context.Context, w EntryWriter, ev *episodeimport.EpisodeImportedEvent, opts ...HandleEpisodeImportedOption) error {
 	if w == nil {
 		return errors.New("historyhandlers: HandleEpisodeImported: nil writer")
 	}
@@ -97,12 +148,22 @@ func HandleEpisodeImported(ctx context.Context, w EntryWriter, ev *episodeimport
 		return nil
 	}
 
+	cfg := importedConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
 	sourceTitle := ev.EpisodeFile.SceneName
 	if strings.TrimSpace(sourceTitle) == "" {
 		sourceTitle = fileNameWithoutExt(le.Path)
 	}
 
 	downloadID, clientType, clientName := importedClientFields(ev)
+	if strings.TrimSpace(downloadID) == "" && cfg.lookup != nil {
+		downloadID = lookupDownloadIDFallback(ctx, cfg.lookup, ev.EpisodeFile.SeriesID, le)
+	}
 
 	qualityJSON, err := encodeImportedQuality(le)
 	if err != nil {
@@ -135,6 +196,29 @@ func HandleEpisodeImported(ctx context.Context, w EntryWriter, ev *episodeimport
 		}
 	}
 	return nil
+}
+
+// lookupDownloadIDFallback invokes the wired [LookupDownloadID] and
+// returns the resolved id, or "" when the lookup declines (no match)
+// or errors. Lookup errors are intentionally non-fatal: the C# tree
+// at `HistoryService.cs:203-208` lets the FindDownloadId repo call
+// propagate, but every callsite catches at the IHandle boundary —
+// the Go-port chooses to swallow at the helper so a transient repo
+// failure on the backfill doesn't abort the per-episode history Add
+// loop the user actually cares about.
+func lookupDownloadIDFallback(ctx context.Context, l LookupDownloadID, seriesID int, le *episodeimport.LocalEpisode) string {
+	if l == nil || le == nil || seriesID <= 0 || len(le.Episodes) == 0 {
+		return ""
+	}
+	ids := make([]int, 0, len(le.Episodes))
+	for _, ep := range le.Episodes {
+		ids = append(ids, ep.ID)
+	}
+	got, err := l.FindDownloadID(ctx, seriesID, le.Quality, ids)
+	if err != nil {
+		return ""
+	}
+	return got
 }
 
 // importedClientFields pulls the DownloadID + DownloadClientInfo

@@ -9,6 +9,7 @@ import (
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
 	"sonarr.tv/sonarr/internal/history"
+	"sonarr.tv/sonarr/internal/quality"
 )
 
 // stubReader is a deterministic [history.EntryReader] for service-
@@ -437,6 +438,268 @@ func TestDeleteForSeriesPassesIDsThrough(t *testing.T) {
 	}
 	if got := r.gotDeleteSeries; len(got) != 3 || got[0] != 4 || got[1] != 9 || got[2] != 16 {
 		t.Errorf("repo.DeleteForSeries got %v, want [4 9 16]", got)
+	}
+}
+
+// --- Service.FindDownloadID (slice 5.J127) -------------------------
+
+// qualityJSON serialises a quality.Model into the persisted Quality
+// column form. Mirrors what HandleEpisodeImported writes via
+// encodeImportedQuality so the FindDownloadID JSON-decode path round-
+// trips against representative fixtures.
+func qualityJSON(t *testing.T, m quality.Model) string {
+	t.Helper()
+	b, err := m.MarshalJSON()
+	if err != nil {
+		t.Fatalf("qualityJSON: %v", err)
+	}
+	return string(b)
+}
+
+func TestFindDownloadIDNilReceiverErrors(t *testing.T) {
+	t.Parallel()
+	var s *history.Service
+	if _, err := s.FindDownloadID(context.Background(), 7, quality.Model{}, []int{1}); err == nil {
+		t.Errorf("nil receiver: want error")
+	}
+}
+
+func TestFindDownloadIDEmptyEpisodeIDsIsNoOp(t *testing.T) {
+	t.Parallel()
+	r := &stubReader{}
+	s := history.NewService(r)
+	got, err := s.FindDownloadID(context.Background(), 7, quality.Model{}, nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty (no episodes → no work)", got)
+	}
+}
+
+func TestFindDownloadIDZeroSeriesIDIsNoOp(t *testing.T) {
+	t.Parallel()
+	r := &stubReader{}
+	s := history.NewService(r)
+	got, err := s.FindDownloadID(context.Background(), 0, quality.Model{}, []int{1})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty (zero SeriesID → skip)", got)
+	}
+}
+
+func TestFindDownloadIDRepoErrorPropagates(t *testing.T) {
+	t.Parallel()
+	repoErr := errors.New("EIO")
+	s := history.NewService(&stubReader{err: repoErr})
+	_, err := s.FindDownloadID(context.Background(), 7, quality.Model{}, []int{1})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, repoErr) {
+		t.Errorf("error chain missing repo err: %v", err)
+	}
+}
+
+func TestFindDownloadIDNoGrabbedRowsReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	g := func(t history.EventType) *int { v := int(t); return &v }
+	m := quality.NewModelWithRevision(quality.Bluray1080p, quality.Revision{Version: 1})
+	rows := []history.Entry{
+		// Wrong quality
+		{ID: 1, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-other-quality",
+			EventType: g(history.EventTypeGrabbed),
+			Quality:   qualityJSON(t, quality.NewModel(quality.HDTV720p))},
+		// Wrong episode (not in supplied set)
+		{ID: 2, SeriesID: 7, EpisodeID: 99, DownloadID: "tok-other-episode",
+			EventType: g(history.EventTypeGrabbed),
+			Quality:   qualityJSON(t, m)},
+		// Wrong event type (Imported with no Grabbed sibling)
+		{ID: 3, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-imported-only",
+			EventType: g(history.EventTypeDownloadFolderImported),
+			Quality:   qualityJSON(t, m)},
+	}
+	s := history.NewService(&stubReader{out: rows})
+
+	got, err := s.FindDownloadID(context.Background(), 7, m, []int{11})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	// Imported row's downloadID is in `processed`; no Grabbed row
+	// survives the still-downloading filter.
+	if got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestFindDownloadIDSingleEpisodeUnanimousGrabReturnsID(t *testing.T) {
+	t.Parallel()
+	g := func(t history.EventType) *int { v := int(t); return &v }
+	m := quality.NewModelWithRevision(quality.Bluray1080p, quality.Revision{Version: 2})
+	rows := []history.Entry{
+		{ID: 1, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-1",
+			EventType: g(history.EventTypeGrabbed),
+			Quality:   qualityJSON(t, m)},
+	}
+	s := history.NewService(&stubReader{out: rows})
+
+	got, err := s.FindDownloadID(context.Background(), 7, m, []int{11})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "tok-1" {
+		t.Errorf("got %q, want tok-1", got)
+	}
+}
+
+func TestFindDownloadIDMultipleGrabsPerEpisodeReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	g := func(t history.EventType) *int { v := int(t); return &v }
+	m := quality.NewModel(quality.Bluray1080p)
+	rows := []history.Entry{
+		{ID: 1, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-1",
+			EventType: g(history.EventTypeGrabbed), Quality: qualityJSON(t, m)},
+		{ID: 2, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-2",
+			EventType: g(history.EventTypeGrabbed), Quality: qualityJSON(t, m)},
+	}
+	s := history.NewService(&stubReader{out: rows})
+
+	got, err := s.FindDownloadID(context.Background(), 7, m, []int{11})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "" {
+		t.Errorf("ambiguous grabs: got %q, want empty", got)
+	}
+}
+
+func TestFindDownloadIDImportedGrabSiblingFilteredOut(t *testing.T) {
+	t.Parallel()
+	g := func(t history.EventType) *int { v := int(t); return &v }
+	m := quality.NewModel(quality.Bluray1080p)
+	rows := []history.Entry{
+		// Already-resolved pair: Grabbed + Imported on tok-old.
+		{ID: 1, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-old",
+			EventType: g(history.EventTypeGrabbed), Quality: qualityJSON(t, m)},
+		{ID: 2, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-old",
+			EventType: g(history.EventTypeDownloadFolderImported), Quality: qualityJSON(t, m)},
+		// Fresh in-flight grab: tok-new, no Imported sibling yet.
+		{ID: 3, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-new",
+			EventType: g(history.EventTypeGrabbed), Quality: qualityJSON(t, m)},
+	}
+	s := history.NewService(&stubReader{out: rows})
+
+	got, err := s.FindDownloadID(context.Background(), 7, m, []int{11})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "tok-new" {
+		t.Errorf("got %q, want tok-new (older pair filtered by processed-set)", got)
+	}
+}
+
+func TestFindDownloadIDMultiEpisodeAgreeingGrabReturnsID(t *testing.T) {
+	t.Parallel()
+	g := func(t history.EventType) *int { v := int(t); return &v }
+	m := quality.NewModel(quality.Bluray1080p)
+	rows := []history.Entry{
+		{ID: 1, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-pack",
+			EventType: g(history.EventTypeGrabbed), Quality: qualityJSON(t, m)},
+		{ID: 2, SeriesID: 7, EpisodeID: 12, DownloadID: "tok-pack",
+			EventType: g(history.EventTypeGrabbed), Quality: qualityJSON(t, m)},
+	}
+	s := history.NewService(&stubReader{out: rows})
+
+	got, err := s.FindDownloadID(context.Background(), 7, m, []int{11, 12})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "tok-pack" {
+		t.Errorf("got %q, want tok-pack", got)
+	}
+}
+
+func TestFindDownloadIDMultiEpisodeDisagreementReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	g := func(t history.EventType) *int { v := int(t); return &v }
+	m := quality.NewModel(quality.Bluray1080p)
+	rows := []history.Entry{
+		{ID: 1, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-a",
+			EventType: g(history.EventTypeGrabbed), Quality: qualityJSON(t, m)},
+		{ID: 2, SeriesID: 7, EpisodeID: 12, DownloadID: "tok-b",
+			EventType: g(history.EventTypeGrabbed), Quality: qualityJSON(t, m)},
+	}
+	s := history.NewService(&stubReader{out: rows})
+
+	got, err := s.FindDownloadID(context.Background(), 7, m, []int{11, 12})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty (per-episode grabs disagree)", got)
+	}
+}
+
+func TestFindDownloadIDMissingEpisodeReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	g := func(t history.EventType) *int { v := int(t); return &v }
+	m := quality.NewModel(quality.Bluray1080p)
+	rows := []history.Entry{
+		// Only ep 11 has a grab; ep 12 was asked for but has nothing.
+		{ID: 1, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-1",
+			EventType: g(history.EventTypeGrabbed), Quality: qualityJSON(t, m)},
+	}
+	s := history.NewService(&stubReader{out: rows})
+	got, err := s.FindDownloadID(context.Background(), 7, m, []int{11, 12})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty (one episode had zero matches)", got)
+	}
+}
+
+func TestFindDownloadIDNilEventTypeRowsSkipped(t *testing.T) {
+	t.Parallel()
+	g := func(t history.EventType) *int { v := int(t); return &v }
+	m := quality.NewModel(quality.Bluray1080p)
+	rows := []history.Entry{
+		// Pre-EventType-column row that scans as NULL → skipped.
+		{ID: 1, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-legacy",
+			EventType: nil, Quality: qualityJSON(t, m)},
+		{ID: 2, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-typed",
+			EventType: g(history.EventTypeGrabbed), Quality: qualityJSON(t, m)},
+	}
+	s := history.NewService(&stubReader{out: rows})
+	got, err := s.FindDownloadID(context.Background(), 7, m, []int{11})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "tok-typed" {
+		t.Errorf("got %q, want tok-typed (nil-EventType legacy row should not poison the result)", got)
+	}
+}
+
+func TestFindDownloadIDCorruptQualityRowsSkipped(t *testing.T) {
+	t.Parallel()
+	g := func(t history.EventType) *int { v := int(t); return &v }
+	m := quality.NewModel(quality.Bluray1080p)
+	rows := []history.Entry{
+		// Corrupt JSON in Quality column → skipped, not propagated.
+		{ID: 1, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-corrupt",
+			EventType: g(history.EventTypeGrabbed), Quality: `{not-json`},
+		{ID: 2, SeriesID: 7, EpisodeID: 11, DownloadID: "tok-clean",
+			EventType: g(history.EventTypeGrabbed), Quality: qualityJSON(t, m)},
+	}
+	s := history.NewService(&stubReader{out: rows})
+	got, err := s.FindDownloadID(context.Background(), 7, m, []int{11})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "tok-clean" {
+		t.Errorf("got %q, want tok-clean (corrupt Quality JSON should be skipped, not surface an error)", got)
 	}
 }
 
