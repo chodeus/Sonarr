@@ -22,28 +22,34 @@
 //   - TorrentDownloadStation + UsenetDownloadStation — symmetric
 //     Provider halves sharing the underlying proxies.
 //
-// Slice 5.J75 (this slice) ships the SKELETON for the Torrent
-// half:
+// Functionally complete against the V1 task API after the 5.J75 →
+// 5.J78 arc:
 //
 //   - [Settings] + [NewSettings] + Validate.
 //   - [Proxy] with API discovery (SYNO.API.Info query) + session
-//     login (SYNO.API.Auth) + per-(user,host,port) SID cache
-//     with the 6-hour TTL the C# code uses.
-//   - [TorrentDownloadStation] Provider with Name + Protocol +
-//     Definition + Settings + Test (auth probe) + GetStatus
-//     (IsLocalhost-only) + identity methods. Download / GetItems
-//     / RemoveItem stub out to [ErrNotImplemented].
-//   - Registry registration via init().
+//     login (SYNO.API.Auth) + per-(user,host,port) SID cache with
+//     the 6-hour TTL, plus the SYNO.DownloadStation.Task surface
+//     (AddTaskFromURL / AddTaskFromData multipart / GetTasks /
+//     RemoveTask).
+//   - [TorrentDownloadStation] Provider — Download (file + magnet
+//     dispatch), GetItems (BT-filtered + status table + cleanup
+//     gate), RemoveItem, Test (4-arm), GetStatus (IsLocalhost).
+//   - [UsenetDownloadStation] Provider — symmetric to the torrent
+//     half with NZB filter, unconditional cleanup flags, nil
+//     SeedRatio.
+//   - Registry registration of both halves via init().
 //
-// Follow-up slices fill in (in roughly the order they layer):
+// Deferred to follow-up slices:
 //
-//   - J76: DownloadStationTaskProxyV1 + the task-list/add/remove
-//     surface against the DSM 6 API set; Download + GetItems +
-//     RemoveItem for TorrentDownloadStation.
-//   - J77: DownloadStationTaskProxyV2 + the V1/V2 selector at
-//     runtime.
-//   - J78: UsenetDownloadStation half + nzb-upload path.
-//   - J79: SharedFolderResolver + the TestOutputPath arm in Test.
+//   - DownloadStationTaskProxyV2 + a V1/V2 selector for DSM 7+
+//     which exposes a different SYNO.DownloadStation2.Task surface.
+//   - SharedFolderResolver + the TestOutputPath arm in Test that
+//     verifies the configured TvDirectory / TvCategory resolves to
+//     an extant Synology shared folder.
+//   - SerialNumberProvider for the C# `<serial>:<id>` DownloadID
+//     prefix; the Go port currently uses bare task IDs since
+//     GetItems applies the same composition (no functional
+//     impact for single-server deploys).
 package downloadstation
 
 import (

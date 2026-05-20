@@ -19,10 +19,15 @@ import (
 // implementation for the C# `TorrentDownloadStation` class at
 // `src/NzbDrone.Core/Download/Clients/DownloadStation/TorrentDownloadStation.cs:1-466`.
 //
-// Skeleton-only at 5.J75: Test (auth probe via SYNO.API.Auth
-// login) + GetStatus (IsLocalhost-only) + identity methods are
-// real; Download / GetItems / RemoveItem stub out to
-// [ErrNotImplemented] until the V1/V2 task-proxy follow-ups land.
+// Functionally complete at 5.J78 against the V1 task surface:
+// Download dispatches torrent-file (multipart upload via
+// [Proxy.AddTaskFromData]) vs magnet (via [Proxy.AddTaskFromURL]);
+// GetItems walks the BT-filtered task list with the path gate +
+// 5-arm status table + SeedRatio + per-item cleanup gate; Test
+// runs the 4-arm chain; RemoveItem delegates to [Proxy.RemoveTask].
+// GetStatus is IsLocalhost-only — the SharedFolderResolver arm
+// that populates OutputRootFolders is the only deferred piece (plus
+// the V1/V2 selector for DSM 7+ which Phase 6 will layer on top).
 type TorrentDownloadStation struct {
 	settings Settings
 	def      *downloadclients.DownloadClient
@@ -62,24 +67,23 @@ func (t *TorrentDownloadStation) Definition() *downloadclients.DownloadClient { 
 // Settings returns the bound Settings.
 func (t *TorrentDownloadStation) Settings() Settings { return t.settings }
 
-// Download ports the magnet arm of C# `Flood.cs:166-183`. Wait,
-// that was the wrong reference — `TorrentDownloadStation.cs:166-204`.
-// Adds a task to Download Station via [Proxy.AddTaskFromURL] for
-// the magnet path; the torrent-file multipart-upload arm
-// ([Proxy.AddTaskFromData], C# `:185-204`) is deferred — multipart
-// support against the SYNO.DownloadStation.Task API needs a
-// follow-up slice.
+// Download ports C# `TorrentDownloadStation.cs:166-204` end-to-end.
+// Dispatches on the GrabRequest body:
 //
-// After AddTaskFromURL the C# code re-queries the task list
-// looking for a task whose `Additional.Detail["uri"]` matches the
-// magnet URL and returns its composed DownloadID. The Go port does
-// the same lookup; nil-match surfaces an error.
+//   - TorrentBody non-empty → [Proxy.AddTaskFromData] (multipart
+//     POST of the .torrent bytes; mirrors C#
+//     `AddFromTorrentFile` at `:185-204`). Post-add lookup matches
+//     `Additional.Detail["uri"]` against the ReleaseTitle (the
+//     extension-less form matching C# `Path.GetFileNameWithoutExtension(filename)`
+//     at `:191`).
+//   - MagnetURL non-empty → [Proxy.AddTaskFromURL] (mirrors C#
+//     `AddFromMagnetLink` at `:166-183`). Post-add lookup matches
+//     against the magnet URL verbatim (C# `:172`).
 //
-// DownloadID composition uses the task ID directly (the
-// SerialNumberProvider arm at C# `:435-438` that prefixes with
-// `<serial>:` is deferred until the SerialNumberProvider port lands —
-// the queue join key still works without it since GetItems applies
-// the same composition).
+// Returns the resolved Task.ID. The SerialNumberProvider-prefixed
+// DownloadID composition at C# `:435-438` (`<serial>:<id>`) is
+// deferred — the bare task ID still works as a queue join key
+// since GetItems applies the same composition.
 func (t *TorrentDownloadStation) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
 	if req == nil {
 		return "", errors.New("downloadstation: nil GrabRequest")
@@ -87,30 +91,58 @@ func (t *TorrentDownloadStation) Download(ctx context.Context, req *downloadclie
 	if t.proxy == nil {
 		return "", errors.New("downloadstation: nil Proxy")
 	}
-	if len(req.TorrentBody) > 0 {
-		return "", fmt.Errorf("%w: AddTaskFromData (torrent-file upload) — magnet-only at this commit", ErrNotImplemented)
-	}
-	magnet := strings.TrimSpace(req.MagnetURL)
-	if magnet == "" {
+	dest := downloadDirectory(t.settings)
+
+	switch {
+	case len(req.TorrentBody) > 0:
+		title := strings.TrimSpace(req.ReleaseTitle)
+		if title == "" {
+			return "", errors.New("downloadstation: GrabRequest.ReleaseTitle is empty (required for the torrent-file upload)")
+		}
+		filename := title + ".torrent"
+		if err := t.proxy.AddTaskFromData(ctx, t.settings, req.TorrentBody, filename, dest); err != nil {
+			return "", fmt.Errorf("downloadstation: AddTaskFromData(%q): %w", filename, err)
+		}
+		return t.findAddedTask(ctx, title) // matches C# `:191` extension-less lookup
+
+	case strings.TrimSpace(req.MagnetURL) != "":
+		magnet := req.MagnetURL
+		if err := t.proxy.AddTaskFromURL(ctx, t.settings, magnet, dest); err != nil {
+			return "", fmt.Errorf("downloadstation: AddTaskFromURL: %w", err)
+		}
+		return t.findAddedTask(ctx, magnet)
+
+	default:
 		return "", errors.New("downloadstation: GrabRequest has neither TorrentBody nor MagnetURL")
 	}
-	dest := downloadDirectory(t.settings)
-	if err := t.proxy.AddTaskFromURL(ctx, t.settings, magnet, dest); err != nil {
-		return "", fmt.Errorf("downloadstation: AddTaskFromURL: %w", err)
-	}
+}
+
+// findAddedTask re-fetches the task list after an add call and
+// returns the BT task whose `Additional.Detail["uri"]` matches the
+// supplied identifier. The C# code uses `SingleOrDefault` —
+// duplicate matches surface a "failed to add" error here to mirror
+// that strictness.
+func (t *TorrentDownloadStation) findAddedTask(ctx context.Context, uri string) (string, error) {
 	tasks, err := t.proxy.GetTasks(ctx, t.settings)
 	if err != nil {
 		return "", fmt.Errorf("downloadstation: post-add GetTasks: %w", err)
 	}
+	var match *Task
 	for _, task := range tasks {
 		if task == nil || !strings.EqualFold(task.Type, "BT") {
 			continue
 		}
-		if task.Additional.Detail["uri"] == magnet {
-			return task.ID, nil
+		if task.Additional.Detail["uri"] == uri {
+			if match != nil {
+				return "", fmt.Errorf("downloadstation: multiple BT tasks match uri %q", uri)
+			}
+			match = task
 		}
 	}
-	return "", fmt.Errorf("downloadstation: AddTaskFromURL succeeded but no matching task found for magnet %q", magnet)
+	if match == nil {
+		return "", fmt.Errorf("downloadstation: add succeeded but no matching BT task found for uri %q", uri)
+	}
+	return match.ID, nil
 }
 
 // GetItems ports `TorrentDownloadStation.GetItems` at C# `:64-116`.
@@ -461,9 +493,6 @@ func isLocalHost(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
-
-// ErrNotImplemented signals a 5.J75 skeleton stub.
-var ErrNotImplemented = errors.New("downloadstation: not yet implemented in this build")
 
 // Compile-time guard.
 var _ downloadclients.Provider = (*TorrentDownloadStation)(nil)

@@ -373,13 +373,90 @@ func TestProvider_GetStatus_LocalhostFlag(t *testing.T) {
 	}
 }
 
-func TestProvider_Download_TorrentBodyDeferred(t *testing.T) {
-	// J76 ships magnet-only; the torrent-body multipart upload arm
-	// is deferred and returns the ErrNotImplemented sentinel.
+func TestProvider_Download_TorrentBody_HappyPath_MultipartShape(t *testing.T) {
+	// J78 wires the torrent-file arm through Proxy.AddTaskFromData
+	// (multipart POST). The capture doer grabs the create-POST
+	// body so the multipart envelope can be asserted.
+	doer := newMultipartCapture()
+	queueAPIDiscovery(doer.scripted, 3)
+	doer.scripted.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"SID"}}`)
+	doer.scripted.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{}}`)
+	// Post-add list returns the new BT task; lookup matches the
+	// extension-less ReleaseTitle per C# Path.GetFileNameWithoutExtension.
+	doer.scripted.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[
+		{"id":"bt_42","title":"Show.S01E01","type":"BT","status":"downloading","additional":{"detail":{"uri":"Show.S01E01"}}}
+	]}}`)
+
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	id, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show.S01E01",
+		TorrentBody:  []byte("RAW-TORRENT-PAYLOAD"),
+		InfoHash:     "abc",
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if id != "bt_42" {
+		t.Errorf("id = %q, want bt_42", id)
+	}
+	if !strings.HasPrefix(doer.lastCreateContentType, "multipart/form-data;") {
+		t.Errorf("create Content-Type = %q, want multipart/form-data;...", doer.lastCreateContentType)
+	}
+	body := string(doer.lastCreateBody)
+	if !strings.Contains(body, "RAW-TORRENT-PAYLOAD") {
+		t.Errorf("multipart body missing torrent payload bytes")
+	}
+	if !strings.Contains(body, `filename="Show.S01E01.torrent"`) {
+		t.Errorf("multipart body missing filename=%q", "Show.S01E01.torrent")
+	}
+	if !strings.Contains(body, `name="_sid"`) {
+		t.Errorf("multipart body missing _sid form-field")
+	}
+}
+
+func TestProvider_Download_TorrentBody_EmptyTitleErrors(t *testing.T) {
 	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(newScripted(), nil, nil), nil)
 	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{TorrentBody: []byte("x")})
-	if !errors.Is(err, downloadstation.ErrNotImplemented) {
-		t.Errorf("Download err = %v, want ErrNotImplemented (torrent-body arm deferred)", err)
+	if err == nil {
+		t.Fatal("err = nil, want empty-title error")
+	}
+}
+
+func TestProvider_Download_TorrentBody_NoMatchSurfacesError(t *testing.T) {
+	doer := newMultipartCapture()
+	queueAPIDiscovery(doer.scripted, 3)
+	doer.scripted.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"SID"}}`)
+	doer.scripted.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{}}`)
+	doer.scripted.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[]}}`)
+
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show.S01E01",
+		TorrentBody:  []byte("x"),
+	})
+	if err == nil {
+		t.Fatal("err = nil, want no-matching-task error")
+	}
+}
+
+func TestProvider_Download_TorrentBody_DuplicateMatchErrors(t *testing.T) {
+	doer := newMultipartCapture()
+	queueAPIDiscovery(doer.scripted, 3)
+	doer.scripted.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"SID"}}`)
+	doer.scripted.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{}}`)
+	// Two BT tasks both matching the URI — mirrors C# SingleOrDefault
+	// strictness.
+	doer.scripted.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[
+		{"id":"a","title":"X","type":"BT","status":"downloading","additional":{"detail":{"uri":"X"}}},
+		{"id":"b","title":"X","type":"BT","status":"downloading","additional":{"detail":{"uri":"X"}}}
+	]}}`)
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		TorrentBody:  []byte("x"),
+	})
+	if err == nil {
+		t.Fatal("err = nil, want duplicate-match error")
 	}
 }
 
