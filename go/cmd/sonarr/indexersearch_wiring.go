@@ -36,6 +36,7 @@ import (
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/indexers/iptorrents"
 	"sonarr.tv/sonarr/internal/indexers/newznab"
 	"sonarr.tv/sonarr/internal/indexers/torrentleech"
 	"sonarr.tv/sonarr/internal/indexers/torrentrss"
@@ -215,6 +216,18 @@ func (s *dbIndexerSource) buildAdapter(row *indexers.Indexer, def *provider.Defi
 		// torrentrss — leave FetchSearchFunc nil.
 		return common, nil
 
+	case "IPTorrents":
+		idx := iptorrents.NewIndexer(s.httpClient)
+		idx.SetDefinition(def)
+		common.FetchRecentFunc = func(ctx context.Context) ([]any, error) {
+			rs, err := idx.FetchRecent(ctx)
+			return upcastTorrentInfos(rs), err
+		}
+		// Slice 5.J147: IPTorrents is RSS-only (SupportsSearch=false
+		// on the C# side at IPTorrents.cs:14). Same posture as
+		// torrentleech — leave FetchSearchFunc nil.
+		return common, nil
+
 	default:
 		return nil, fmt.Errorf("unknown Implementation %q", row.Implementation)
 	}
@@ -330,6 +343,8 @@ func (a minimumSeedersAdapter) MinimumSeeders(ctx context.Context, id int) (int,
 	case *torrentrss.Settings:
 		return s.MinimumSeeders, true, nil
 	case *torrentleech.Settings:
+		return s.MinimumSeeders, true, nil
+	case *iptorrents.Settings:
 		return s.MinimumSeeders, true, nil
 	default:
 		// Newznab + any non-torrent provider class.
