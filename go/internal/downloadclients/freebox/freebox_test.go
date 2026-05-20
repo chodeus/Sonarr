@@ -13,10 +13,12 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/freebox"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // scriptedDoer queues responses per-path so the multi-step
@@ -358,18 +360,12 @@ func TestProvider_GetStatus_LocalhostFlag(t *testing.T) {
 	}
 }
 
-func TestProvider_RemainingStubs(t *testing.T) {
-	// J85 wires Download. GetItems + RemoveItem remain stubs.
+func TestProvider_RemoveItem_StillStub(t *testing.T) {
+	// J86 wires GetItems; RemoveItem is the last remaining stub
+	// before J87 closes the arc.
 	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(newScripted(), nil), nil)
 	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); !errors.Is(err, freebox.ErrNotImplemented) {
 		t.Errorf("RemoveItem err = %v, want ErrNotImplemented", err)
-	}
-	items, err := p.GetItems(context.Background())
-	if err != nil {
-		t.Fatalf("GetItems err = %v", err)
-	}
-	if len(items) != 0 {
-		t.Errorf("GetItems len = %d, want 0", len(items))
 	}
 }
 
@@ -611,6 +607,203 @@ func TestProvider_Download_EmptyIDSurfacesRPC(t *testing.T) {
 	if !errors.Is(err, freebox.ErrRPC) {
 		t.Errorf("err = %v, want ErrRPC", err)
 	}
+}
+
+// b64 is a one-line helper for the inline-JSON encoding in tests.
+func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+
+func TestProvider_GetItems_BTFilter_StatusTable(t *testing.T) {
+	doer := newScripted()
+	queueAuthFlow(doer)
+	body := `{"success":true,"result":[
+		{"id":"d","name":"Dl","type":"bt","status":"downloading","size":100,"rx_pct":5000,"download_dir":"` + b64("/dl") + `"},
+		{"id":"p","name":"Pa","type":"bt","status":"stopped","size":100,"rx_pct":3000,"download_dir":"` + b64("/dl") + `"},
+		{"id":"q","name":"Qu","type":"bt","status":"queued","size":100,"download_dir":"` + b64("/dl") + `"},
+		{"id":"f","name":"Fi","type":"bt","status":"done","size":100,"rx_pct":10000,"download_dir":"` + b64("/dl") + `"},
+		{"id":"s","name":"Se","type":"bt","status":"seeding","size":100,"download_dir":"` + b64("/dl") + `"},
+		{"id":"e","name":"Er","type":"bt","status":"error","size":100,"error":"disk_full","download_dir":"` + b64("/dl") + `"},
+		{"id":"u","name":"Un","type":"bt","status":"some_new_state","size":100,"download_dir":"` + b64("/dl") + `"},
+		{"id":"h","name":"NotBT","type":"http","status":"downloading","size":100,"download_dir":"` + b64("/dl") + `"}
+	]}`
+	doer.queue("/api/v1/downloads/", body)
+
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(doer, nil), nil)
+	items, err := p.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(items) != 7 {
+		t.Fatalf("len = %d, want 7 (http task filtered out)", len(items))
+	}
+	byID := map[string]*downloadclients.Item{}
+	for _, it := range items {
+		byID[it.DownloadID] = it
+	}
+	want := map[string]downloadclients.DownloadItemStatus{
+		"d": downloadclients.DownloadItemStatusDownloading,
+		"p": downloadclients.DownloadItemStatusPaused,
+		"q": downloadclients.DownloadItemStatusQueued,
+		"f": downloadclients.DownloadItemStatusCompleted,
+		"s": downloadclients.DownloadItemStatusCompleted,
+		"e": downloadclients.DownloadItemStatusWarning,
+		"u": downloadclients.DownloadItemStatusDownloading, // unknown → default Downloading
+	}
+	for id, st := range want {
+		got, ok := byID[id]
+		if !ok {
+			t.Errorf("missing item %s", id)
+			continue
+		}
+		if got.Status != st {
+			t.Errorf("%s Status = %v, want %v", id, got.Status, st)
+		}
+	}
+	if byID["e"].Message != "The disk is full." {
+		t.Errorf("error-arm Message = %q, want translated disk_full description", byID["e"].Message)
+	}
+	if byID["u"].Message != "Unknown download state" {
+		t.Errorf("unknown-arm Message = %q, want 'Unknown download state'", byID["u"].Message)
+	}
+	// RemainingSize: 100 * (1 - 5000/10000) = 50.
+	if byID["d"].RemainingSize != 50 {
+		t.Errorf("d.RemainingSize = %d, want 50", byID["d"].RemainingSize)
+	}
+}
+
+func TestProvider_GetItems_DestinationGate(t *testing.T) {
+	doer := newScripted()
+	queueAuthFlow(doer)
+	body := `{"success":true,"result":[
+		{"id":"in","name":"In","type":"bt","status":"downloading","size":100,"download_dir":"` + b64("/freebox/tv/show") + `"},
+		{"id":"out","name":"Out","type":"bt","status":"downloading","size":100,"download_dir":"` + b64("/freebox/movies/x") + `"}
+	]}`
+	doer.queue("/api/v1/downloads/", body)
+
+	s := newSettings()
+	s.DestinationDirectory = "/freebox/tv"
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, s, freebox.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 || items[0].DownloadID != "in" {
+		t.Errorf("items = %+v, want only 'in' (destination gate)", items)
+	}
+}
+
+func TestProvider_GetItems_CategoryGate(t *testing.T) {
+	doer := newScripted()
+	queueAuthFlow(doer)
+	body := `{"success":true,"result":[
+		{"id":"in","name":"In","type":"bt","status":"downloading","size":100,"download_dir":"` + b64("/dl/sonarr/show") + `"},
+		{"id":"out","name":"Out","type":"bt","status":"downloading","size":100,"download_dir":"` + b64("/dl/radarr/x") + `"}
+	]}`
+	doer.queue("/api/v1/downloads/", body)
+
+	s := newSettings()
+	s.Category = "sonarr"
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, s, freebox.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 || items[0].DownloadID != "in" {
+		t.Errorf("items = %+v, want only 'in' (category gate)", items)
+	}
+}
+
+func TestProvider_GetItems_OutputPathRemapped(t *testing.T) {
+	doer := newScripted()
+	queueAuthFlow(doer)
+	body := `{"success":true,"result":[
+		{"id":"a","name":"X","type":"bt","status":"done","size":1,"rx_pct":10000,"download_dir":"` + b64("/remote/dl") + `"}
+	]}`
+	doer.queue("/api/v1/downloads/", body)
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(doer, nil), nil)
+	p.SetRemotePathMapper(freeboxStubRemapper{from: "/remote/dl", to: "/local/dl"})
+	items, _ := p.GetItems(context.Background())
+	if items[0].OutputPath.FullPath() != "/local/dl" {
+		t.Errorf("OutputPath = %q, want /local/dl (remapped)", items[0].OutputPath.FullPath())
+	}
+}
+
+func TestProvider_GetItems_ETAOnlyWhenPositive(t *testing.T) {
+	doer := newScripted()
+	queueAuthFlow(doer)
+	body := `{"success":true,"result":[
+		{"id":"a","name":"A","type":"bt","status":"downloading","size":1,"eta":42,"download_dir":"` + b64("/dl") + `"},
+		{"id":"b","name":"B","type":"bt","status":"downloading","size":1,"eta":0,"download_dir":"` + b64("/dl") + `"},
+		{"id":"c","name":"C","type":"bt","status":"downloading","size":1,"eta":-5,"download_dir":"` + b64("/dl") + `"}
+	]}`
+	doer.queue("/api/v1/downloads/", body)
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	byID := map[string]*downloadclients.Item{}
+	for _, it := range items {
+		byID[it.DownloadID] = it
+	}
+	if byID["a"].RemainingTime == nil || *byID["a"].RemainingTime != 42*time.Second {
+		t.Errorf("a RemainingTime = %v, want 42s", byID["a"].RemainingTime)
+	}
+	if byID["b"].RemainingTime != nil {
+		t.Errorf("b RemainingTime = %v, want nil (eta=0)", byID["b"].RemainingTime)
+	}
+	if byID["c"].RemainingTime != nil {
+		t.Errorf("c RemainingTime = %v, want nil (eta<0)", byID["c"].RemainingTime)
+	}
+}
+
+func TestProvider_GetItems_SeedRatioFromStopRatio(t *testing.T) {
+	doer := newScripted()
+	queueAuthFlow(doer)
+	// StopRatio=250 (Freebox %) → SeedRatio=2.5 (fractional Sonarr-side).
+	body := `{"success":true,"result":[
+		{"id":"a","name":"A","type":"bt","status":"seeding","size":1,"stop_ratio":250,"download_dir":"` + b64("/dl") + `"}
+	]}`
+	doer.queue("/api/v1/downloads/", body)
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].SeedRatio == nil || *items[0].SeedRatio != 2.5 {
+		t.Errorf("SeedRatio = %v, want 2.5", items[0].SeedRatio)
+	}
+}
+
+func TestProvider_GetItems_CleanupFlagsOnDoneWithRCD(t *testing.T) {
+	doer := newScripted()
+	queueAuthFlow(doer)
+	body := `{"success":true,"result":[
+		{"id":"a","name":"A","type":"bt","status":"done","size":1,"rx_pct":10000,"download_dir":"` + b64("/dl") + `"},
+		{"id":"b","name":"B","type":"bt","status":"seeding","size":1,"download_dir":"` + b64("/dl") + `"}
+	]}`
+	doer.queue("/api/v1/downloads/", body)
+	def := &downloadclients.DownloadClient{Name: "FB", RemoveCompletedDownloads: true}
+	p := freebox.New(def, newSettings(), freebox.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	byID := map[string]*downloadclients.Item{}
+	for _, it := range items {
+		byID[it.DownloadID] = it
+	}
+	if !byID["a"].CanBeRemoved || !byID["a"].CanMoveFiles {
+		t.Errorf("done item should have cleanup flags true: %+v", byID["a"])
+	}
+	// Seeding is NOT Done — cleanup flags should be false even
+	// though seeding maps to Completed status.
+	if byID["b"].CanBeRemoved || byID["b"].CanMoveFiles {
+		t.Errorf("seeding item should NOT have cleanup flags (C# gate strictly checks Done): %+v", byID["b"])
+	}
+}
+
+func TestProvider_GetItems_PropagatesProxyError(t *testing.T) {
+	doer := newScripted()
+	doer.queueErr("/api/v1/login", errors.New("dial"))
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(doer, nil), nil)
+	_, err := p.GetItems(context.Background())
+	if !errors.Is(err, freebox.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable", err)
+	}
+}
+
+type freeboxStubRemapper struct{ from, to string }
+
+func (s freeboxStubRemapper) RemapRemoteToLocal(_ context.Context, _ string, p ospath.OsPath) (ospath.OsPath, error) {
+	if p.FullPath() == s.from {
+		return ospath.New(s.to), nil
+	}
+	return p, nil
 }
 
 func TestRegistry_RegistersFreebox(t *testing.T) {

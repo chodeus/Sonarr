@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // TorrentFreeboxDownload is the [downloadclients.Provider]
@@ -27,6 +29,11 @@ type TorrentFreeboxDownload struct {
 	def      *downloadclients.DownloadClient
 	log      *slog.Logger
 	proxy    *Proxy
+
+	// rpm is the optional remote-path mapper consulted by GetItems
+	// to translate the Freebox-side DecodedDownloadDirectory into
+	// Sonarr-side paths. Nil → pass-through.
+	rpm downloadclients.RemotePathMapper
 }
 
 // New constructs a TorrentFreeboxDownload Provider. proxy=nil binds
@@ -168,11 +175,166 @@ func computeSeedRatio(req *downloadclients.GrabRequest) *float64 {
 	return &v
 }
 
-// GetItems is a STUB at 5.J79. Follow-up ports
-// [Proxy.GetTasks] — /downloads/ GET + the 9-arm status table at
-// C# `TorrentFreeboxDownload.cs:70-130`.
-func (f *TorrentFreeboxDownload) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return []*downloadclients.Item{}, nil
+// GetItems ports `TorrentFreeboxDownload.GetItems` at C# `:44-128`.
+// Walks the task list via [Proxy.GetTasks], filters to BT-type
+// tasks, applies the DestinationDirectory / Category path gates,
+// and projects each task into a [downloadclients.Item] using the
+// 6-arm status table from C# `:85-120`.
+//
+// Path gates (priority order — first miss skips the row):
+//
+//   - When Settings.DestinationDirectory is non-empty: skip
+//     torrents whose DecodedDownloadDirectory is not at-or-under
+//     DestinationDirectory (matches C# `:54-60`).
+//   - When Settings.Category is non-empty: skip torrents whose
+//     decoded-directory path segments don't contain the Category
+//     name (matches C# `:62-70`).
+//
+// Status table (matches C# `:85-120`):
+//
+//   - Stopped / Stopping → Paused.
+//   - Queued → Queued.
+//   - Starting / Downloading / Retry / Checking → Downloading.
+//   - Error → Warning + Message = ErrorDescription (decoded via
+//     the C# error-code table).
+//   - Done / Seeding → Completed.
+//   - Unknown / default → Downloading + "Unknown download state"
+//     Message (matches C# `:115-118`).
+//
+// CanMoveFiles + CanBeRemoved both flip true when
+// RemoveCompletedDownloads AND Status==Done (matches C# `:122`).
+func (f *TorrentFreeboxDownload) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
+	if f.proxy == nil {
+		return []*downloadclients.Item{}, nil
+	}
+	tasks, err := f.proxy.GetTasks(ctx, f.settings)
+	if err != nil {
+		return nil, fmt.Errorf("freebox: GetTasks: %w", err)
+	}
+	info := f.itemClientInfo()
+	out := make([]*downloadclients.Item, 0, len(tasks))
+	for _, task := range tasks {
+		if task == nil || !strings.EqualFold(task.Type, "bt") {
+			continue
+		}
+		if !passesPathGate(task, f.settings) {
+			continue
+		}
+		out = append(out, f.toItem(ctx, info, task))
+	}
+	return out, nil
+}
+
+// toItem projects one [Task] into a [downloadclients.Item].
+func (f *TorrentFreeboxDownload) toItem(ctx context.Context, info *downloadclients.ItemClientInfo, task *Task) *downloadclients.Item {
+	dir := task.DecodedDownloadDirectory()
+	output := ospath.New(dir)
+	if f.rpm != nil && strings.TrimSpace(dir) != "" {
+		if mapped, err := f.rpm.RemapRemoteToLocal(ctx, f.settings.Host, output); err == nil {
+			output = mapped
+		} else {
+			f.log.Debug("freebox: RemapRemoteToLocal failed", "directory", dir, "err", err)
+		}
+	}
+
+	// RemainingSize: Size * (1 - ReceivedPrct/10000). ReceivedPrct is
+	// per-myriad (basis-points × 100); divide by 10000 to get the
+	// fractional progress.
+	remaining := int64(float64(task.Size) * (1 - float64(task.ReceivedPrct)/10000))
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	var ratio float64
+	if task.StopRatio > 0 {
+		ratio = float64(task.StopRatio) / 100
+	}
+
+	item := &downloadclients.Item{
+		DownloadClientInfo: info,
+		Category:           f.settings.Category,
+		DownloadID:         task.ID,
+		Title:              task.Name,
+		TotalSize:          task.Size,
+		RemainingSize:      remaining,
+		OutputPath:         output,
+		SeedRatio:          &ratio,
+	}
+	if task.Eta > 0 {
+		d := time.Duration(task.Eta) * time.Second
+		item.RemainingTime = &d
+	}
+
+	switch task.Status {
+	case TaskStatusStopped, TaskStatusStopping:
+		item.Status = downloadclients.DownloadItemStatusPaused
+	case TaskStatusQueued:
+		item.Status = downloadclients.DownloadItemStatusQueued
+	case TaskStatusStarting, TaskStatusDownloading, TaskStatusRetry, TaskStatusChecking:
+		item.Status = downloadclients.DownloadItemStatusDownloading
+	case TaskStatusError:
+		item.Status = downloadclients.DownloadItemStatusWarning
+		item.Message = task.ErrorDescription()
+	case TaskStatusDone, TaskStatusSeeding:
+		item.Status = downloadclients.DownloadItemStatusCompleted
+	default:
+		item.Message = "Unknown download state"
+		item.Status = downloadclients.DownloadItemStatusDownloading
+	}
+
+	if info != nil && info.RemoveCompletedDownloads && task.Status == TaskStatusDone {
+		item.CanMoveFiles = true
+		item.CanBeRemoved = true
+	}
+	return item
+}
+
+// passesPathGate enforces the C# DestinationDirectory + Category
+// filters at `:54-70`.
+func passesPathGate(task *Task, s Settings) bool {
+	decoded := task.DecodedDownloadDirectory()
+	if dest := strings.TrimSpace(s.DestinationDirectory); dest != "" {
+		wanted := strings.TrimRight(dest, "/")
+		got := strings.TrimRight(decoded, "/")
+		if got != wanted && !strings.HasPrefix(got, wanted+"/") {
+			return false
+		}
+	}
+	if cat := strings.TrimSpace(s.Category); cat != "" {
+		segs := strings.FieldsFunc(decoded, func(r rune) bool { return r == '/' || r == '\\' })
+		found := false
+		for _, seg := range segs {
+			if seg == cat {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// itemClientInfo mirrors C# `DownloadClientItemClientInfo.FromDownloadClient(this, false)`.
+func (f *TorrentFreeboxDownload) itemClientInfo() *downloadclients.ItemClientInfo {
+	info := &downloadclients.ItemClientInfo{
+		Protocol: f.Protocol(),
+		Type:     Implementation,
+		Name:     f.Name(),
+	}
+	if f.def != nil {
+		info.ID = f.def.ID
+		info.Name = f.def.Name
+		info.RemoveCompletedDownloads = f.def.RemoveCompletedDownloads
+	}
+	return info
+}
+
+// SetRemotePathMapper binds the optional remote-path mapper. Same
+// Phase 6.B pattern as the other DCs.
+func (f *TorrentFreeboxDownload) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) {
+	f.rpm = rpm
 }
 
 // GetImportItem is the C# base passthrough.
@@ -276,7 +438,11 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	if l, ok := deps.Logger.(*slog.Logger); ok {
 		log = l
 	}
-	return New(def, settings, nil, log), nil
+	f := New(def, settings, nil, log)
+	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
+		f.SetRemotePathMapper(rpm)
+	}
+	return f, nil
 }
 
 func init() {

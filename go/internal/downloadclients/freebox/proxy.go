@@ -167,6 +167,153 @@ func (p *Proxy) Authenticate(ctx context.Context, s Settings) error {
 	return nil
 }
 
+// TaskStatus ports C# `FreeboxDownloadTaskStatus` at
+// `Responses/FreeboxDownloadTask.cs:13-29`. The wire shape is a
+// snake-case string (e.g. `"downloading"`) handled by the custom
+// UnmarshalJSON.
+type TaskStatus int
+
+// TaskStatus values mirror the C# enum order.
+const (
+	TaskStatusUnknown     TaskStatus = 0
+	TaskStatusStopped     TaskStatus = 1
+	TaskStatusQueued      TaskStatus = 2
+	TaskStatusStarting    TaskStatus = 3
+	TaskStatusDownloading TaskStatus = 4
+	TaskStatusStopping    TaskStatus = 5
+	TaskStatusError       TaskStatus = 6
+	TaskStatusDone        TaskStatus = 7
+	TaskStatusChecking    TaskStatus = 8
+	TaskStatusRepairing   TaskStatus = 9
+	TaskStatusExtracting  TaskStatus = 10
+	TaskStatusSeeding     TaskStatus = 11
+	TaskStatusRetry       TaskStatus = 12
+)
+
+var taskStatusByName = map[string]TaskStatus{
+	"unknown":     TaskStatusUnknown,
+	"stopped":     TaskStatusStopped,
+	"queued":      TaskStatusQueued,
+	"starting":    TaskStatusStarting,
+	"downloading": TaskStatusDownloading,
+	"stopping":    TaskStatusStopping,
+	"error":       TaskStatusError,
+	"done":        TaskStatusDone,
+	"checking":    TaskStatusChecking,
+	"repairing":   TaskStatusRepairing,
+	"extracting":  TaskStatusExtracting,
+	"seeding":     TaskStatusSeeding,
+	"retry":       TaskStatusRetry,
+}
+
+// UnmarshalJSON decodes the snake-case status string into the
+// typed enum. Unknown values map to [TaskStatusUnknown] (matches
+// C# `UnderscoreStringEnumConverter` with the default fallback at
+// `:62`).
+func (s *TaskStatus) UnmarshalJSON(data []byte) error {
+	var raw string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		var n int
+		if err2 := json.Unmarshal(data, &n); err2 == nil {
+			*s = TaskStatus(n)
+			return nil
+		}
+		return err
+	}
+	if v, ok := taskStatusByName[strings.ToLower(strings.TrimSpace(raw))]; ok {
+		*s = v
+		return nil
+	}
+	*s = TaskStatusUnknown
+	return nil
+}
+
+// Task ports C# `FreeboxDownloadTask` at `:39-99` reduced to the
+// fields the Provider GetItems consumes. `DownloadDirectory` is
+// base64-encoded on the wire — the [Task.DecodedDownloadDirectory]
+// helper returns the UTF-8 plaintext.
+type Task struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	DownloadDirectory string     `json:"download_dir"`
+	InfoHash          string     `json:"info_hash"`
+	Status            TaskStatus `json:"status"`
+	Eta               int64      `json:"eta"`
+	Error             string     `json:"error"`
+	Type              string     `json:"type"`
+	StopRatio         int64      `json:"stop_ratio"`
+	Size              int64      `json:"size"`
+	ReceivedPrct      int64      `json:"rx_pct"`
+}
+
+// DecodedDownloadDirectory returns the base64-decoded UTF-8 form
+// of [Task.DownloadDirectory]. Mirrors C# `DecodedDownloadDirectory`
+// getter at `:47-58`.
+func (t *Task) DecodedDownloadDirectory() string {
+	if t == nil || t.DownloadDirectory == "" {
+		return ""
+	}
+	raw, err := base64.StdEncoding.DecodeString(t.DownloadDirectory)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// ErrorDescription mirrors C# `GetErrorDescription` at `:117-126`
+// — returns the human-readable string for [Task.Error], falling
+// back to `<code> - Unknown error`.
+func (t *Task) ErrorDescription() string {
+	if t == nil || t.Error == "" {
+		return ""
+	}
+	if msg, ok := taskErrorDescriptions[t.Error]; ok {
+		return msg
+	}
+	return fmt.Sprintf("%s - Unknown error", t.Error)
+}
+
+// taskErrorDescriptions ports the C# message-table at
+// `FreeboxDownloadTask.cs:65-99` verbatim.
+var taskErrorDescriptions = map[string]string{
+	"internal":                    "Internal error.",
+	"disk_full":                   "The disk is full.",
+	"unknown":                     "Unknown error.",
+	"parse_error":                 "Parse error.",
+	"unknown_host":                "Unknown host.",
+	"timeout":                     "Timeout.",
+	"bad_authentication":          "Invalid credentials.",
+	"connection_refused":          "Remote host refused connection.",
+	"bt_tracker_error":            "Unable to announce on tracker.",
+	"bt_missing_files":            "Missing torrent files.",
+	"bt_file_error":               "Error accessing torrent files.",
+	"missing_ctx_file":            "Error accessing task context file.",
+	"nzb_no_group":                "Cannot find the requested group on server.",
+	"nzb_not_found":               "Article not found on the server.",
+	"nzb_invalid_crc":             "Invalid article CRC.",
+	"nzb_invalid_size":            "Invalid article size.",
+	"nzb_invalid_filename":        "Invalid filename.",
+	"nzb_open_failed":             "Error opening.",
+	"nzb_write_failed":            "Error writing.",
+	"nzb_missing_size":            "Missing article size.",
+	"nzb_decode_error":            "Article decoding error.",
+	"nzb_missing_segments":        "Missing article segments.",
+	"nzb_error":                   "Other nzb error.",
+	"nzb_authentication_required": "Nzb server need authentication.",
+}
+
+// GetTasks fires GET `/downloads/`. Auth-required. Mirrors C#
+// `FreeboxDownloadProxy.GetTasks` at `:109-114`. Returns the full
+// list — the Provider's GetItems applies the BT type-filter +
+// destination/category gates.
+func (p *Proxy) GetTasks(ctx context.Context, s Settings) ([]*Task, error) {
+	var tasks []*Task
+	if err := p.doRequest(ctx, s, http.MethodGet, "/downloads/", nil, "", true, &tasks); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
 // DownloadConfiguration ports C# `Responses/FreeboxDownloadConfiguration.cs`.
 // `DownloadDirectory` is base64-encoded on the wire — the
 // `DecodedDownloadDirectory()` helper returns the UTF-8 plaintext
