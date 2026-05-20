@@ -41,6 +41,11 @@ type EnumeratedDownloadClient struct {
 	// Name is the user-facing client name surfaced in healthcheck
 	// warning messages.
 	Name string
+	// Implementation is the persisted Implementation column —
+	// "Sabnzbd" / "QBittorrent" / "Nzbget" / etc. Used by checks
+	// that branch on the concrete client family (e.g.
+	// ImportMechanismCheck distinguishes Sabnzbd vs Nzbget).
+	Implementation string
 	// Status is the snapshot returned by Provider.GetStatus when
 	// the per-row Construct + status RPC succeeded. nil when Err
 	// is set.

@@ -1551,6 +1551,14 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("healthcheck downloadClientRootFolder: %w", err)
 	}
+	// Audit fix B.5g: warn when EnableCompletedDownloadHandling
+	// hasn't been explicitly set (migration helper) OR has been
+	// turned off. Mirrors C# ImportMechanismCheck. Reuses the
+	// dcStatusEnumerator from B.5d.
+	importMechanismCheck, err := healthcheck.NewImportMechanismCheck(configProv, dcStatusEnumerator, logger)
+	if err != nil {
+		return fmt.Errorf("healthcheck importMechanism: %w", err)
+	}
 
 	// Slice 4.AI (queue [N5]): NotificationStatusCheck wires
 	// EnabledNotificationLister (over notifications.Repo via the
@@ -1741,6 +1749,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		downloadClientSortingCheck,
 		downloadClientRemovesCompletedCheck,
 		downloadClientRootFolderCheck,
+		importMechanismCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)

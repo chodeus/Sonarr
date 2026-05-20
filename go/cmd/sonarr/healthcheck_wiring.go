@@ -471,7 +471,10 @@ func (a *downloadClientStatusEnumeratorAdapter) EnabledDownloadClients(ctx conte
 		if !row.Enable {
 			continue
 		}
-		entry := healthcheck.EnumeratedDownloadClient{Name: row.Name}
+		entry := healthcheck.EnumeratedDownloadClient{
+			Name:           row.Name,
+			Implementation: row.Implementation,
+		}
 		if registry == nil {
 			entry.Err = fmt.Errorf("downloadclients: registry not yet wired")
 			out = append(out, entry)

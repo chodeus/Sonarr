@@ -122,6 +122,22 @@ func (p *Provider) Subscribe(bus *messaging.Bus) {
 		})
 }
 
+// IsDefined reports whether `key` has a row persisted in the
+// `Config` table (i.e. has been explicitly set by the user / the
+// bootstrap), regardless of value. Mirrors C# `ConfigService.IsDefined`
+// at `ConfigService.cs:486-491`. Used by health checks that need to
+// distinguish "user hasn't touched this yet" from "user set it to
+// the default" — e.g. ImportMechanismCheck's first-run migration
+// helper logic.
+//
+// Audit fix B.5g.
+func (p *Provider) IsDefined(key string) bool {
+	p.mu.RLock()
+	v, ok := p.cache[strings.ToLower(key)]
+	p.mu.RUnlock()
+	return ok && v != ""
+}
+
 // getString returns the cached string value for key, or def if the
 // key is missing OR the cached value is empty. Mirrors C# `GetValue`
 // at `:454-474`: `!string.IsNullOrEmpty(dbValue)`.
