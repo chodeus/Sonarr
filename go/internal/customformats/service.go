@@ -25,6 +25,23 @@ type CustomFormatDeletedEvent struct {
 	Format *Format
 }
 
+// CustomFormatUpdatedEvent is a Go-port additive event fired by
+// [Service.Update] after a successful repo update. C# Sonarr's
+// `CustomFormatService.Update` at `:51-55` does NOT publish an
+// equivalent event — the React UI's CustomFormat list is kept in
+// sync via the inherited `RestControllerWithSignalR.Handle(
+// ModelEvent<CustomFormat>)` path which fires implicitly from the
+// generic Dapper Repository.Update.
+//
+// The Go port doesn't have a ModelEvent analogue, so the Service
+// publishes its own typed event. Subscriber: the existing
+// `customformat` channel Sync broadcaster in
+// cmd/sonarr/signalr_wiring.go (third subscriber alongside the
+// Added/Deleted pair already wired in slice 5.J20).
+type CustomFormatUpdatedEvent struct {
+	Format *Format
+}
+
 // Service ports `CustomFormatService.cs:1-95`. Wraps the Repo with
 // a typed-Format cache, CRUD passthroughs, and lifecycle event
 // publishing (Add / Delete — the C# Update path doesn't publish).
@@ -93,9 +110,12 @@ func (s *Service) Insert(ctx context.Context, row *CustomFormat) (*Format, error
 }
 
 // Update ports `CustomFormatService.Update(CustomFormat)` at
-// `:51-55`. Persists, invalidates cache. Mirrors the C# semantic
-// where Update does NOT publish a lifecycle event (only Insert
-// and Delete do).
+// `:51-55`. Persists, invalidates cache, publishes
+// [CustomFormatUpdatedEvent]. Go-port additive — C# doesn't fire a
+// dedicated lifecycle event on Update; its SignalR `customformat`
+// channel `updated` action comes from the implicit
+// `ModelEvent<CustomFormat>` (Dapper repository). See
+// CustomFormatUpdatedEvent doc-comment for the divergence note.
 func (s *Service) Update(ctx context.Context, row *CustomFormat) error {
 	if row == nil {
 		return errors.New("customformats: cannot update nil row")
@@ -104,6 +124,15 @@ func (s *Service) Update(ctx context.Context, row *CustomFormat) error {
 		return fmt.Errorf("customformats: update: %w", err)
 	}
 	s.invalidate()
+	updated, err := LoadFromRow(row)
+	if err != nil {
+		// Update succeeded at the DB layer but the typed-Format
+		// decode failed; surface the event with a nil Format so
+		// subscribers can still trigger their Sync re-fetch.
+		s.publishUpdated(ctx, nil)
+		return fmt.Errorf("customformats: update decode: %w", err)
+	}
+	s.publishUpdated(ctx, updated)
 	return nil
 }
 
@@ -177,4 +206,11 @@ func (s *Service) publishDeleted(ctx context.Context, f *Format) {
 		return
 	}
 	_ = messaging.Publish(ctx, s.bus, CustomFormatDeletedEvent{Format: f})
+}
+
+func (s *Service) publishUpdated(ctx context.Context, f *Format) {
+	if s.bus == nil {
+		return
+	}
+	_ = messaging.Publish(ctx, s.bus, CustomFormatUpdatedEvent{Format: f})
 }

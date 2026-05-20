@@ -26,7 +26,7 @@ For closure narrative, see commit history `5.J1` … `5.J22` on `go-port`. The t
 | ~~`episode` (monitor)~~ | ~~Publish `EpisodeMonitoredChangedEvent` from `episodes.Service.SetMonitored`.~~ — **CLOSED 5.J26** via new `EpisodeMonitoredChangedEvent` fired by `SetEpisodeMonitored` / `SetMonitored` / `SetEpisodeMonitoredBySeason`. | `episode` Sync broadcaster |
 | ~~`episodefile` (update/bulk/editor)~~ | ~~Already has Created/Deleted broadcasts; Update + Editor need their own event.~~ — **CLOSED 5.J24** via `EpisodeFileUpdatedEvent` published from `Service.Update` + `Service.UpdateMany`. The api/v3 EditorHandler + BulkUpdateHandler funnel through UpdateMany, so they're implicitly covered. | Third subscriber on existing `episodefile` broadcaster |
 | `config/*` (host, ui, naming, mediamanagement, downloadclient, indexer) | `ConfigFileSavedEvent` / `ConfigSavedEvent` already fire — wire the subscriptions per `config/*` channel the React UI listens to. | Sync broadcaster per channel |
-| `customformat` (update) | Publish `CustomFormatUpdatedEvent` on Update (C# `:51-55` doesn't emit; Go-port additive). | Third subscriber on existing customformat channel |
+| ~~`customformat` (update)~~ | ~~Publish `CustomFormatUpdatedEvent` on Update (C# `:51-55` doesn't emit; Go-port additive).~~ — **CLOSED 5.J27** via new `CustomFormatUpdatedEvent` published from `Service.Update`. | Third subscriber on existing `customformat` channel |
 
 **Acceptance:** every POST/PUT/DELETE handler in `internal/api/v3/` has either a direct-emitter call on its happy path OR a service-side bus event that signalr_wiring subscribes to.
 

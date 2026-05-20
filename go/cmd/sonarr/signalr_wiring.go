@@ -450,12 +450,13 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 			return nil
 		})
 
-	// Audit fix B.2 (first wave). `customformat` family —
+	// Audit fix B.2. `customformat` family —
 	// customformats.Service publishes CustomFormatAddedEvent on
-	// Insert + CustomFormatDeletedEvent on Delete. Update doesn't
-	// currently publish (matches C# behaviour at
-	// `CustomFormatService.cs:51-55`); a future slice that adds an
-	// Updated event would add a third subscriber here.
+	// Insert (5.J20), CustomFormatDeletedEvent on Delete (5.J20), and
+	// CustomFormatUpdatedEvent on Update (5.J27 — Go-port additive,
+	// C# `CustomFormatService.cs:51-55` doesn't emit; its UI sync on
+	// Update flows through the inherited ModelEvent<CustomFormat>
+	// pipeline which the Go port doesn't have).
 	customFormatBroadcaster := &signalr.ResourceBroadcaster[emptySyncPayload]{
 		Broadcaster: signalr.HubBroadcaster{Hub: hub},
 		Name:        "customformat",
@@ -472,6 +473,13 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 		func(ctx context.Context, _ customformats.CustomFormatDeletedEvent) error {
 			if err := customFormatBroadcaster.Sync(ctx); err != nil {
 				logger.Warn("signalr: customformat delete sync broadcast failed", "err", err)
+			}
+			return nil
+		})
+	messaging.Subscribe(bus, "signalr.customformat.Updated",
+		func(ctx context.Context, _ customformats.CustomFormatUpdatedEvent) error {
+			if err := customFormatBroadcaster.Sync(ctx); err != nil {
+				logger.Warn("signalr: customformat update sync broadcast failed", "err", err)
 			}
 			return nil
 		})

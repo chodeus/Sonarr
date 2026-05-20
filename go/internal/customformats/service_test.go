@@ -39,12 +39,18 @@ func TestCFService_Insert_PublishesAddedEvent(t *testing.T) {
 	}
 }
 
-func TestCFService_Update_DoesNotPublish(t *testing.T) {
+// Slice 5.J27 (audit B.2 second wave). Update publishes
+// CustomFormatUpdatedEvent — Go-port additive (C# `:51-55` doesn't
+// emit; its SignalR sync flows through the inherited generic
+// ModelEvent<CustomFormat>). Subscribers (SignalR layer) Sync on
+// the customformat channel.
+func TestCFService_Update_PublishesUpdatedEvent(t *testing.T) {
 	repo := newTestRepo(t)
 	bus := messaging.New(slog.Default())
 	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
 
-	var added, deleted atomic.Int32
+	var added, deleted, updated atomic.Int32
+	var updatedPayload atomic.Pointer[customformats.Format]
 	messaging.Subscribe(bus, "test.cf.added",
 		func(_ context.Context, _ customformats.CustomFormatAddedEvent) error {
 			added.Add(1)
@@ -53,6 +59,12 @@ func TestCFService_Update_DoesNotPublish(t *testing.T) {
 	messaging.Subscribe(bus, "test.cf.deleted",
 		func(_ context.Context, _ customformats.CustomFormatDeletedEvent) error {
 			deleted.Add(1)
+			return nil
+		})
+	messaging.Subscribe(bus, "test.cf.updated",
+		func(_ context.Context, ev customformats.CustomFormatUpdatedEvent) error {
+			updated.Add(1)
+			updatedPayload.Store(ev.Format)
 			return nil
 		})
 
@@ -67,10 +79,14 @@ func TestCFService_Update_DoesNotPublish(t *testing.T) {
 	if err := svc.Update(context.Background(), row); err != nil {
 		t.Fatal(err)
 	}
-	// Insert published Added; Update did NOT publish anything per
-	// C# semantic.
 	if added.Load() != 1 || deleted.Load() != 0 {
-		t.Errorf("Update should not publish; got added=%d deleted=%d", added.Load(), deleted.Load())
+		t.Errorf("Insert→1 Added; no Deleted: got added=%d deleted=%d", added.Load(), deleted.Load())
+	}
+	if updated.Load() != 1 {
+		t.Errorf("Update should publish exactly 1 Updated event; got %d", updated.Load())
+	}
+	if pl := updatedPayload.Load(); pl == nil || pl.ID != f.ID || pl.Name != "renamed" {
+		t.Errorf("Update event payload: got %+v, want non-nil Format with ID=%d Name=renamed", pl, f.ID)
 	}
 }
 
