@@ -144,16 +144,19 @@ The CI job catches NEW drift now even with the baseline budget — if any of the
 
 ---
 
-## B.4 — `/api/v3/release` search is fully stubbed
+## B.4 — CLOSED in slice 5.J19 (release-search dispatch wired)
 
-**Severity:** 🟡 Important — core user feature ("Search Releases") is non-functional
-**Source:** New finding
+`internal/api/v3/release.go` now accepts a `ReleaseSearcher` interface (`*indexersearch.Service` satisfies it via `EpisodeSearch` / `SeasonSearch`) and dispatches:
 
-**Problem:** `internal/api/v3/release.go:24-40` validates query params (seriesId/episodeId/seasonNumber) but always returns hardcoded `[]`. Comment at line 18-21 says "orchestration driver hasn't been assembled yet." The indexer search service exists (slices 3.AK/3.AL/4.A per STATUS.md) but isn't wired into this handler.
+- `episodeId=N` → `EpisodeSearch(ctx, N, settings)`.
+- `seriesId=N & seasonNumber=M` → `SeasonSearch(ctx, N, M, missingOnly=false, settings)` (matches C# `ReleaseController.GetSeasonReleases` at `:212`).
+- Neither → empty array (RSS-fetch search isn't ported yet — the C# `GetRss()` branch needs `IFetchAndParseRss` infrastructure that hasn't landed in Go).
 
-**Fix shape:** wire `internal/indexersearch.Service` (or whatever the search orchestrator is named) into the handler. Accept query params → dispatch parallel queries to enabled indexers → aggregate + score via decision engine → return ranked `ReleaseResource[]`. The C# reference is `src/Sonarr.Api.V3/Indexers/ReleaseController.cs`.
+Decisions are projected to a new `ReleaseResource` wire shape (40 fields, the **read-side subset** of the C# ~50-field ReleaseResource — Title / Quality / Indexer / Size / Age / Languages / EpisodeNumbers / FullSeason / Rejections / torrent peers, etc.). Custom-format scoring on search + scene-mapping indicators + the "send when queuing unknown release" fields are deferred to a follow-up.
 
-**Verification:** unit test with a fake indexer registered; assert the handler returns the fake's results with decision-engine scoring applied.
+Wired through `buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, ...)` → `v3Routes(..., indexerSearchSvc, ...)`; the previous no-arg `ReleaseHandler()` site at `host_wiring.go:1296` now passes the live searcher.
+
+Test coverage: empty-array path (no params, no calls), dispatch-routing for episode + season branches, query-param validation (400 on non-int seriesId/episodeId/seasonNumber), rejection propagation (multi-Rejection decision surfaces every message), and searcher-error propagation (500 with the underlying message).
 
 ---
 
