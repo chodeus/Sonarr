@@ -310,6 +310,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("housekeeping absPathMetadata: %w", err)
 	}
+	dcuPending, err := housekeeping.NewCleanupDownloadClientUnavailablePendingReleases(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping dcuPending: %w", err)
+	}
 	addlNaming, err := housekeeping.NewCleanupAdditionalNamingSpecs(db, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping addlNaming: %w", err)
@@ -377,6 +381,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		orphanSubtitle,
 		orphanMetadata,
 		absPathMetadata,
+		dcuPending,
 		addlNaming,
 		addlUsers,
 		updateClean,
