@@ -306,6 +306,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("housekeeping orphanMetadata: %w", err)
 	}
+	absPathMetadata, err := housekeeping.NewCleanupAbsolutePathMetadataFiles(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping absPathMetadata: %w", err)
+	}
 	addlNaming, err := housekeeping.NewCleanupAdditionalNamingSpecs(db, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping addlNaming: %w", err)
@@ -372,6 +376,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		orphanExtra,
 		orphanSubtitle,
 		orphanMetadata,
+		absPathMetadata,
 		addlNaming,
 		addlUsers,
 		updateClean,
