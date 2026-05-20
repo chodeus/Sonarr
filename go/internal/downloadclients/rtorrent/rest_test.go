@@ -2,11 +2,13 @@ package rtorrent_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/rtorrent"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // eraseOKResponse — d.erase returns <int>0</int> on success.
@@ -39,15 +41,113 @@ func TestRemoveItem_NonZeroResponseErrors(t *testing.T) {
 	}
 }
 
-func TestRemoveItem_DeleteDataLogsWarning(t *testing.T) {
+func TestRemoveItem_DeleteData_NoDiskProviderWarns(t *testing.T) {
 	t.Parallel()
-	// The deleteData arm is deferred — RemoveItem should still
-	// complete (only removes from queue) and log a warning.
+	// Without a wired DiskProvider, deleteData=true degrades to a
+	// warn log but still completes the d.erase. Same posture as
+	// NZBGet's 6.C3 fall-back.
 	h := newXMLRPCServer(t, eraseOKResponse)
 	p := rtorrent.NewProxy(h.srv.Client(), nil)
 	rt := rtorrent.New(nil, h.settings("RPC2"), p, nil)
 	if err := rt.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "ABC"}, true); err != nil {
 		t.Errorf("RemoveItem with deleteData=true should not error: %v", err)
+	}
+}
+
+// stubDisk is a minimal [downloadclients.DiskProvider] used by the
+// J111 deleteData-arm tests.
+type stubDisk struct {
+	called bool
+	path   string
+	err    error
+}
+
+func (s *stubDisk) DeleteFolder(path string, _ bool) error {
+	s.called = true
+	s.path = path
+	return s.err
+}
+
+func TestRemoveItem_DeleteData_DiskProviderCalledOnPath(t *testing.T) {
+	t.Parallel()
+	h := newXMLRPCServer(t, eraseOKResponse)
+	p := rtorrent.NewProxy(h.srv.Client(), nil)
+	rt := rtorrent.New(nil, h.settings("RPC2"), p, nil)
+	disk := &stubDisk{}
+	rt.SetDiskProvider(disk)
+	item := &downloadclients.Item{
+		DownloadID: "ABC",
+		OutputPath: ospath.New("/data/downloads/Foo.S01E02"),
+	}
+	if err := rt.RemoveItem(context.Background(), item, true); err != nil {
+		t.Fatal(err)
+	}
+	if !disk.called {
+		t.Errorf("DiskProvider.DeleteFolder not called")
+	}
+	if disk.path != "/data/downloads/Foo.S01E02" {
+		t.Errorf("DiskProvider path=%q, want /data/downloads/Foo.S01E02", disk.path)
+	}
+	if m, _ := h.lastMethod.Load().(string); m != "d.erase" {
+		t.Errorf("d.erase still expected after disk arm: got %q", m)
+	}
+}
+
+func TestRemoveItem_DeleteData_EmptyOutputPathSkipsDisk(t *testing.T) {
+	t.Parallel()
+	h := newXMLRPCServer(t, eraseOKResponse)
+	p := rtorrent.NewProxy(h.srv.Client(), nil)
+	rt := rtorrent.New(nil, h.settings("RPC2"), p, nil)
+	disk := &stubDisk{}
+	rt.SetDiskProvider(disk)
+	if err := rt.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "ABC"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if disk.called {
+		t.Errorf("DiskProvider.DeleteFolder should not fire when OutputPath empty")
+	}
+}
+
+func TestRemoveItem_DeleteData_DiskErrorDoesNotAbortErase(t *testing.T) {
+	t.Parallel()
+	// Disk-arm failure is logged but d.erase still fires — the
+	// queue removal is load-bearing.
+	h := newXMLRPCServer(t, eraseOKResponse)
+	p := rtorrent.NewProxy(h.srv.Client(), nil)
+	rt := rtorrent.New(nil, h.settings("RPC2"), p, nil)
+	disk := &stubDisk{err: errors.New("permission denied")}
+	rt.SetDiskProvider(disk)
+	item := &downloadclients.Item{
+		DownloadID: "ABC",
+		OutputPath: ospath.New("/data/Foo"),
+	}
+	if err := rt.RemoveItem(context.Background(), item, true); err != nil {
+		t.Errorf("RemoveItem should not error on disk-arm failure: %v", err)
+	}
+	if !disk.called {
+		t.Errorf("DiskProvider.DeleteFolder not called")
+	}
+	if m, _ := h.lastMethod.Load().(string); m != "d.erase" {
+		t.Errorf("d.erase didn't fire after disk failure: got %q", m)
+	}
+}
+
+func TestRemoveItem_DeleteDataFalseSkipsDiskEvenWhenWired(t *testing.T) {
+	t.Parallel()
+	h := newXMLRPCServer(t, eraseOKResponse)
+	p := rtorrent.NewProxy(h.srv.Client(), nil)
+	rt := rtorrent.New(nil, h.settings("RPC2"), p, nil)
+	disk := &stubDisk{}
+	rt.SetDiskProvider(disk)
+	item := &downloadclients.Item{
+		DownloadID: "ABC",
+		OutputPath: ospath.New("/data/Foo"),
+	}
+	if err := rt.RemoveItem(context.Background(), item, false); err != nil {
+		t.Fatal(err)
+	}
+	if disk.called {
+		t.Errorf("DiskProvider.DeleteFolder fired despite deleteData=false")
 	}
 }
 

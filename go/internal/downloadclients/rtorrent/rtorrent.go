@@ -40,6 +40,13 @@ type RTorrent struct {
 	proxy    *Proxy
 	def      *downloadclients.DownloadClient
 	log      *slog.Logger
+
+	// disk is the optional [downloadclients.DiskProvider] consumed by
+	// RemoveItem's deleteData arm to call DeleteFolder against
+	// item.OutputPath. Bound via [SetDiskProvider] post-construction
+	// (slice 5.J111 — mirrors the NZBGet 6.C3 wire-up pattern).
+	// Nil leaves the deleteData arm in its degraded warn-log state.
+	disk downloadclients.DiskProvider
 }
 
 // minVersion is the rTorrent product-version floor [Test] enforces.
@@ -265,11 +272,20 @@ func (r *RTorrent) GetImportItem(_ context.Context, item *downloadclients.Item, 
 }
 
 // RemoveItem ports `RTorrent.RemoveItem` at `:222-229`. Fires
-// d.erase via the proxy; the optional deleteData arm is documented
-// as a deferred feature — the C# tree calls DiskProvider.DeleteFolder
-// for the torrent's base_path, but the Go-port DiskProvider integration
-// at the queue layer hasn't ported through to per-DC cleanup yet
-// (same divergence as the qBittorrent port's deleteData arm).
+// d.erase via the proxy; the deleteData arm calls
+// [downloadclients.DiskProvider.DeleteFolder] on item.OutputPath
+// BEFORE the d.erase RPC (matches the C# DeleteItemData ordering at
+// `:226-228` where the base-class DeleteItemData runs first).
+//
+// Nil disk-provider OR empty OutputPath degrades to a warn log
+// matching the NZBGet 6.C3 pattern — the queue-removal still runs
+// so the user-facing "remove from client" intent still happens even
+// when files can't be cleaned up.
+//
+// Disk-arm failures are logged at Warn but the d.erase still fires —
+// the queue/history removal is load-bearing even when the on-disk
+// arm fails (same posture as NZBGet/qBittorrent).
+//
 // Returns nil when the item is removed; surfaces proxy errors
 // (including FaultError for missing-hash) verbatim.
 func (r *RTorrent) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
@@ -283,14 +299,32 @@ func (r *RTorrent) RemoveItem(ctx context.Context, item *downloadclients.Item, d
 		return errors.New("rtorrent: RemoveItem: empty DownloadID")
 	}
 	if deleteData {
-		// On-disk cleanup is deferred — the C# DeleteItemData arm
-		// reaches into a shared DiskProvider that the Go-port DC
-		// wiring doesn't expose per-client yet. Log so the operator
-		// sees the missing-cleanup signal.
-		r.log.Warn("rtorrent: deleteData requested but on-disk cleanup is deferred — only removing from rTorrent queue",
-			slog.String("hash", item.DownloadID))
+		switch {
+		case r.disk == nil:
+			r.log.Warn("rtorrent: RemoveItem: deleteData=true requested but no DiskProvider is wired; the torrent will be removed from rTorrent but files remain on disk",
+				slog.String("hash", item.DownloadID))
+		case item.OutputPath.IsEmpty():
+			r.log.Debug("rtorrent: RemoveItem: deleteData=true but item.OutputPath is empty; skipping on-disk delete",
+				slog.String("hash", item.DownloadID))
+		default:
+			if err := r.disk.DeleteFolder(item.OutputPath.FullPath(), true); err != nil {
+				r.log.Warn("rtorrent: RemoveItem: DiskProvider.DeleteFolder failed; the torrent will still be removed from rTorrent",
+					slog.String("hash", item.DownloadID),
+					slog.String("path", item.OutputPath.FullPath()),
+					slog.Any("err", err))
+			}
+		}
 	}
 	return r.proxy.RemoveTorrent(ctx, item.DownloadID, r.settings)
+}
+
+// SetDiskProvider binds the optional [downloadclients.DiskProvider]
+// the RemoveItem deleteData arm consults to remove on-disk payload.
+// Nil-binding leaves the arm in its pre-J111 warn-log state.
+// Slice 5.J111 — same pattern as NZBGet 6.C3.
+func (r *RTorrent) SetDiskProvider(d downloadclients.DiskProvider) *RTorrent {
+	r.disk = d
+	return r
 }
 
 // GetStatus ports `RTorrent.GetStatus` at `:231-242`. Returns a
@@ -429,7 +463,11 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 		}
 		proxy = NewProxy(doer, log)
 	}
-	return New(def, settings, proxy, log), nil
+	r := New(def, settings, proxy, log)
+	if disk, ok := deps.DiskProvider.(downloadclients.DiskProvider); ok {
+		r.SetDiskProvider(disk)
+	}
+	return r, nil
 }
 
 // init registers rTorrent with the global registry.
