@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestFileSystemHandler_ListsDirectories(t *testing.T) {
@@ -51,6 +52,38 @@ func TestFileSystemHandler_IncludeFiles(t *testing.T) {
 	}
 	if got.Files[0].Size != 4 {
 		t.Errorf("size: %d", got.Files[0].Size)
+	}
+}
+
+// TestFileSystemModel_NilLastModifiedOmitted pins the J165 fix —
+// nil-valued LastModified must omit the "lastModified" key entirely
+// rather than emit `"lastModified": null`. Matches C# `DateTime?
+// LastModified` under STJson's WhenWritingNull configuration. Catches
+// regressions if a future edit drops the `omitempty` tag.
+func TestFileSystemModel_NilLastModifiedOmitted(t *testing.T) {
+	t.Parallel()
+	// Construct the resource directly with nil LastModified — the
+	// production handler currently always sets it from
+	// info.ModTime().UTC(), but the wire-shape contract must hold for
+	// any caller that produces a partial entry.
+	m := FileSystemModel{Type: "folder", Name: "Series", Path: "/x/Series/"}
+	body, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if contains(string(body), `"lastModified"`) {
+		t.Errorf("nil LastModified should omit the key entirely; got %s", body)
+	}
+	// Sanity: a set LastModified MUST still emit (omitempty kicks in
+	// only for the zero/nil case).
+	now := time.Now().UTC()
+	m.LastModified = &now
+	body, err = json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal set: %v", err)
+	}
+	if !contains(string(body), `"lastModified"`) {
+		t.Errorf("non-nil LastModified must emit; got %s", body)
 	}
 }
 

@@ -15,24 +15,29 @@ import (
 // FileSystemModel mirrors `src/NzbDrone.Common/Disk/FileSystemModel.cs`.
 // Used as both the directory and file shape inside FileSystemResult.
 //
-// Field-shape notes (audit fix A.1 flag, partial-close at J164):
+// Field-shape notes (audit fix A.1 close-out across J164 + J165):
 //   - Size: C# is `long Size` non-nullable at `:11`. Under STJson's
 //     `WhenWritingNull` configuration, non-nullable properties are
 //     always emitted — including the zero value. The Go shape is
 //     `int64` without `omitempty` so directory entries (which never
 //     set Size and would otherwise omit "size":0 under the old
-//     omitempty tag) now emit `"size": 0` byte-for-byte with C#.
+//     omitempty tag) emit `"size": 0` byte-for-byte with C# (J164).
 //   - LastModified: C# is `DateTime? LastModified` nullable at `:12`.
 //     Under WhenWritingNull, null values are omitted from the wire.
-//     The Go shape carries `*time.Time` without `omitempty` so emits
-//     `"lastModified": null` where C# omits the key entirely — known
-//     B.7-class divergence per [JSON_CONVENTIONS.md] "Known
-//     divergence" callout; the bulk sweep is queued separately.
+//     The Go shape uses `*time.Time` WITH `omitempty` so nil-valued
+//     entries omit the key entirely instead of emitting
+//     `"lastModified": null` — matches C# byte-for-byte (J165).
+//   - Extension: C# is `string Extension` nullable reference at `:10`.
+//     Under WhenWritingNull, null reference values are omitted; empty
+//     strings emit. Go's `string` with `omitempty` omits on `""` —
+//     close-but-not-identical; in practice the Go-port always sets
+//     Extension to `filepath.Ext(name)` or "" (for directories) so
+//     emit behaviour matches.
 type FileSystemModel struct {
 	Type         string     `json:"type"` // "drive" | "folder" | "file"
 	Name         string     `json:"name"`
 	Path         string     `json:"path"`
-	LastModified *time.Time `json:"lastModified"`
+	LastModified *time.Time `json:"lastModified,omitempty"`
 	Extension    string     `json:"extension,omitempty"`
 	Size         int64      `json:"size"`
 }

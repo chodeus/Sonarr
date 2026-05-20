@@ -176,18 +176,43 @@ type MyResource struct {
 ## Known divergence
 
 **Deferred B.7-class sweep — not blocking releases.** The Go-port emits
-`"field": null` for nullable nil pointers where C# omits the key. Surfaces:
+`"field": null` for nullable nil pointers where C# omits the key. The
+divergence surface is much smaller than the J161 doc rewrite originally
+estimated — re-audited at J165 with `grep -rE '\*[a-zA-Z.]+\s+\`json:'
+internal/api/`:
 
-- Resources in `internal/series`, `internal/episodes`, `internal/episodefiles`,
-  `internal/customformats`, `internal/qualityprofiles`, `internal/indexers`,
-  `internal/downloadclients`, `internal/notifications`, `internal/importlists`,
-  and the related v3 handler types — `*T` fields lack `omitempty`.
-- Contract-replay tests have an established baseline of known-failing goldens
-  per slice 5.J7/J8 — the null-vs-missing divergence is one cause of the gap.
+- **v3 wire boundary:** the v3 handler resource types (`internal/api/v3/*.go`)
+  are mostly omitempty-correct already. After the J164 + J165 fixes on
+  `FileSystemModel.Size` and `FileSystemModel.LastModified`, the v3 handler
+  surface has **zero** known pointer-without-`omitempty` fields.
+- **Internal / persistence types:** ~129 `*T` fields without `omitempty`
+  across the rest of `internal/` (series, episodes, episodefiles, indexers,
+  scenemappings, broadcasthenet/api, torznab, delayprofiles, etc.).
+  Categories:
+  - **Embedded-JSON DB column shapes** (e.g., `series.Series` time fields,
+    `episodefiles.MediaInfo`): when Go writes back a row whose C# original
+    had a null property, Go's JSON emits `"field": null` where C#'s
+    Newtonsoft (`NullValueHandling.Ignore`) would omit. Newtonsoft on read
+    tolerates both shapes, so this affects on-disk JSON column contents,
+    not user-facing wire shape.
+  - **External upstream protocols** (e.g., `broadcasthenet/api.go` BTN
+    response struct, `scenemappings/proxy.go` SkyHook): these mirror
+    upstream wire formats, NOT Sonarr's API. They should NOT be flipped to
+    `omitempty` without matching what the upstream wire actually emits.
+  - **Internal config / partial-update shapes** (e.g.,
+    `indexers/cached_settings_provider.go` `SeedCriteria`): used inside
+    the indexer pipeline; not directly v3-emitted.
+- **Contract-replay baseline:** 9 known-failing goldens per slice 5.J7/J8.
+  Per the original B.1 closure note, these are "mostly environment-dependent
+  C# recording artifacts" — re-recording or expanding `redact_paths` is the
+  path forward; the null-vs-missing divergence does not appear to be the
+  primary cause given how few v3-boundary divergences actually exist.
 
-**Why deferred:** the cleanup is a 200+-field migration with a contract-replay
-baseline rebuild — needs its own sequenced slice (or audit B.7 sweep), not a
-piecemeal addition to a feature slice.
+**Why the bulk sweep stays deferred:** the persistence-layer and external-
+upstream surfaces need per-type analysis (some `*T` fields are deliberate,
+mirroring upstream `*T` shapes), and the embedded-JSON column changes need a
+read-tolerant migration plan. Picking these off case-by-case as types are
+touched in feature work is preferable to one big migration.
 
 **What changed from the prior policy.** The prior version of this doc claimed
 C# emitted nullable nulls as `null` and prescribed "no omitempty" to match.
