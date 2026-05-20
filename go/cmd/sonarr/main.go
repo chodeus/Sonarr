@@ -324,6 +324,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("housekeeping tempUpdate: %w", err)
 	}
+	commandQueueCleanup, err := housekeeping.NewCleanupCommandQueue(cmdSvc, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping commandQueueCleanup: %w", err)
+	}
 	extraFilesRepo, err := extrafiles.NewRepo(db)
 	if err != nil {
 		return fmt.Errorf("housekeeping extrafiles repo: %w", err)
@@ -2682,6 +2686,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		tempUpdate,
 		extraFilesExcluded,
 		badMediaCovers,
+		commandQueueCleanup,
 		addlNaming,
 		addlUsers,
 		updateClean,
