@@ -439,7 +439,7 @@ func (t *TriblerDownloadClient) RemoveItem(ctx context.Context, item *downloadcl
 // healthcheck still surfaces the configured host. Same posture as
 // the Hadouken / DownloadStation / Freebox GetStatus implementations.
 func (t *TriblerDownloadClient) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
-	info := &downloadclients.ClientInfo{IsLocalhost: isLocalHost(t.settings.Host)}
+	info := &downloadclients.ClientInfo{IsLocalhost: downloadclients.IsLocalhostHost(t.settings.Host)}
 	if t.proxy == nil {
 		return info, nil
 	}
@@ -505,13 +505,6 @@ func (t *TriblerDownloadClient) Test(ctx context.Context) ([]downloadclients.Tes
 		}}, nil
 	}
 	return nil, nil
-}
-
-// isLocalHost mirrors the C# `Settings.Host == "127.0.0.1" || ==
-// "localhost"` check.
-func isLocalHost(host string) bool {
-	h := strings.ToLower(strings.TrimSpace(host))
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
 // ErrTorrentFileUnsupported mirrors C# `:237`'s NotSupportedException

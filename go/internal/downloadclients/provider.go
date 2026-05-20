@@ -351,9 +351,18 @@ type GrabRequest struct {
 // `downloadclients.DownloadClientInfo` at call sites.
 type ClientInfo struct {
 	// IsLocalhost is true when the client RPC endpoint resolves to
-	// 127.0.0.1 / ::1. Used by the orchestrator to skip remote-path-
-	// mapping translation for downloads that landed on the same
-	// host. Mirrors C# `IsLocalhost { get; set; }` at `:13`.
+	// 127.0.0.1 / ::1 / localhost. Used by the orchestrator to skip
+	// remote-path-mapping translation for downloads that landed on
+	// the same host. Mirrors C# `IsLocalhost { get; set; }` at `:13`.
+	//
+	// NEW DOWNLOAD-CLIENT AUTHORS: populate this field from your
+	// GetStatus implementation. The canonical detector is
+	// [IsLocalhostHost] — pass `settings.Host` and store the result
+	// here. Forgetting the field falls back to false, which causes
+	// [healthcheck.ImportMechanismCheck] to misclassify the client as
+	// remote and surface bogus remote-path-mapping warnings (audit
+	// follow-up J162). The two file-system-based DCs (Blackhole,
+	// Pneumatic) hardcode `true` since they never reach a remote host.
 	IsLocalhost bool
 
 	// SortingMode is the client's reported "post-import folder

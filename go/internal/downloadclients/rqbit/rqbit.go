@@ -302,7 +302,7 @@ func (r *RQBit) RemoveItem(ctx context.Context, item *downloadclients.Item, dele
 
 // GetStatus ports C# `RQBit.cs:135-141` — IsLocalhost-only.
 func (r *RQBit) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return &downloadclients.ClientInfo{IsLocalhost: isLocalHost(r.settings.Host)}, nil
+	return &downloadclients.ClientInfo{IsLocalhost: downloadclients.IsLocalhostHost(r.settings.Host)}, nil
 }
 
 // MarkItemAsImported is the C# base default. RQBit has no
@@ -402,12 +402,6 @@ func compareVersion(a, b [3]int) int {
 		}
 	}
 	return 0
-}
-
-// isLocalHost mirrors C# `Settings.Host == "127.0.0.1" || == "localhost"`.
-func isLocalHost(host string) bool {
-	h := strings.ToLower(strings.TrimSpace(host))
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
 // Compile-time guard.

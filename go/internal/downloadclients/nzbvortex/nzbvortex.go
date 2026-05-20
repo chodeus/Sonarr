@@ -314,7 +314,7 @@ func (n *NzbVortex) RemoveItem(ctx context.Context, item *downloadclients.Item, 
 // GetItems (DestinationPath) rather than via a global config
 // probe, so this method stays minimal.
 func (n *NzbVortex) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return &downloadclients.ClientInfo{IsLocalhost: isLocalHost(n.settings.Host)}, nil
+	return &downloadclients.ClientInfo{IsLocalhost: downloadclients.IsLocalhostHost(n.settings.Host)}, nil
 }
 
 // MarkItemAsImported is the C# base default.
@@ -441,13 +441,6 @@ func (n *NzbVortex) testAPIVersion(ctx context.Context) []downloadclients.TestFa
 		}}
 	}
 	return nil
-}
-
-// isLocalHost ports the C# `Settings.Host == "127.0.0.1" || ==
-// "localhost"` check at `NzbVortex.cs:143`.
-func isLocalHost(host string) bool {
-	h := strings.ToLower(strings.TrimSpace(host))
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
 // compareVersion compares two dotted-numeric strings. Returns -1

@@ -305,7 +305,7 @@ func (u *UsenetDownloadStation) runDeleteData(ctx context.Context, item *downloa
 // [TorrentDownloadStation.GetStatus] for the algorithm + the
 // TvCategory-only deferral note.
 func (u *UsenetDownloadStation) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
-	info := &downloadclients.ClientInfo{IsLocalhost: isLocalHost(u.settings.Host)}
+	info := &downloadclients.ClientInfo{IsLocalhost: downloadclients.IsLocalhostHost(u.settings.Host)}
 	if u.resolver == nil {
 		return info, nil
 	}

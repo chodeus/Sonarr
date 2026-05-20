@@ -288,7 +288,7 @@ func (h *Hadouken) RemoveItem(ctx context.Context, item *downloadclients.Item, d
 // queue probe catches and surfaces as a warning rather than
 // blanking the entire client).
 func (h *Hadouken) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
-	info := &downloadclients.ClientInfo{IsLocalhost: isLocalHost(h.settings.Host)}
+	info := &downloadclients.ClientInfo{IsLocalhost: downloadclients.IsLocalhostHost(h.settings.Host)}
 	if h.proxy == nil {
 		return info, nil
 	}
@@ -400,13 +400,6 @@ func (h *Hadouken) testConnection(ctx context.Context) []downloadclients.TestFai
 		}}
 	}
 	return nil
-}
-
-// isLocalHost mirrors C# `Settings.Host == "127.0.0.1" || Settings.Host == "localhost"`
-// at `:125`.
-func isLocalHost(host string) bool {
-	h := strings.ToLower(strings.TrimSpace(host))
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
 // compareVersion compares two dotted-numeric version strings.

@@ -381,7 +381,7 @@ func (f *TorrentFreeboxDownload) RemoveItem(ctx context.Context, item *downloadc
 // healthcheck still surfaces the configured host. Same posture as
 // the Hadouken / DownloadStation GetStatus implementations.
 func (f *TorrentFreeboxDownload) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
-	info := &downloadclients.ClientInfo{IsLocalhost: isLocalHost(f.settings.Host)}
+	info := &downloadclients.ClientInfo{IsLocalhost: downloadclients.IsLocalhostHost(f.settings.Host)}
 	if f.proxy == nil {
 		return info, nil
 	}
@@ -464,15 +464,6 @@ func (f *TorrentFreeboxDownload) Test(ctx context.Context) ([]downloadclients.Te
 		}
 	}
 	return nil, nil
-}
-
-// isLocalHost mirrors the C# `Settings.Host == "127.0.0.1" || ==
-// "localhost"` check. mafreebox.freebox.fr resolves locally on a
-// Freebox-LAN but isn't `localhost` per se; the check stays exact-
-// match for parity.
-func isLocalHost(host string) bool {
-	h := strings.ToLower(strings.TrimSpace(host))
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
 // Compile-time guard.

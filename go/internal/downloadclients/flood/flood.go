@@ -635,7 +635,7 @@ func mergeTags(existing, additional []string) []string {
 // endpoint is transiently down. Same posture as the Tribler /
 // Hadouken / DownloadStation GetStatus implementations.
 func (f *Flood) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
-	info := &downloadclients.ClientInfo{IsLocalhost: isLocalHost(f.settings.Host)}
+	info := &downloadclients.ClientInfo{IsLocalhost: downloadclients.IsLocalhostHost(f.settings.Host)}
 
 	destDir := strings.TrimSpace(f.settings.Destination)
 	if destDir == "" && f.proxy != nil {
@@ -689,13 +689,6 @@ func (f *Flood) Test(ctx context.Context) ([]downloadclients.TestFailure, error)
 		}}, nil
 	}
 	return nil, nil
-}
-
-// isLocalHost mirrors C# `Settings.Host == "127.0.0.1" || ==
-// "::1" || == "localhost"` at `Flood.cs:255`.
-func isLocalHost(host string) bool {
-	h := strings.ToLower(strings.TrimSpace(host))
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
 // Compile-time guard.

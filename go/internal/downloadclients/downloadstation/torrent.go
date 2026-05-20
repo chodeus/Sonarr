@@ -525,7 +525,7 @@ func (t *TorrentDownloadStation) runDeleteData(ctx context.Context, item *downlo
 // Documented; the GetStatus path stays IsLocalhost-only when only
 // TvCategory is configured.
 func (t *TorrentDownloadStation) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
-	info := &downloadclients.ClientInfo{IsLocalhost: isLocalHost(t.settings.Host)}
+	info := &downloadclients.ClientInfo{IsLocalhost: downloadclients.IsLocalhostHost(t.settings.Host)}
 	if t.resolver == nil {
 		return info, nil
 	}
@@ -693,13 +693,6 @@ func firstPathComponent(path string) string {
 		return trimmed[:i]
 	}
 	return trimmed
-}
-
-// isLocalHost ports the C# `Settings.Host == "127.0.0.1" || ==
-// "::1" || == "localhost"` check.
-func isLocalHost(host string) bool {
-	h := strings.ToLower(strings.TrimSpace(host))
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
 // Compile-time guard.
