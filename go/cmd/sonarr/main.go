@@ -142,6 +142,7 @@ import (
 	_ "sonarr.tv/sonarr/internal/downloadclients/sabnzbd"
 	_ "sonarr.tv/sonarr/internal/downloadclients/transmission"
 	_ "sonarr.tv/sonarr/internal/downloadclients/utorrent"
+	_ "sonarr.tv/sonarr/internal/downloadclients/vuze"
 )
 
 func main() {
