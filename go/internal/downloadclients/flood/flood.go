@@ -41,6 +41,17 @@ type Flood struct {
 	// to translate Flood-side `directory` into Sonarr-side paths.
 	// Nil → pass-through.
 	rpm downloadclients.RemotePathMapper
+
+	// seedCfg is the optional seed-config lookup consulted by the
+	// post-import cleanup-gate in [Flood.applyCleanupGate]. Nil
+	// keeps the gate in its pre-J95 false-default state. Slice
+	// 5.J95 wire-up.
+	seedCfg downloadclients.SeedConfigProvider
+
+	// now is the injectable clock the seed-time arm reads. Defaults
+	// to time.Now; tests pin a fixed time to step over the
+	// DateFinished + SeedTime predicate without time.Sleep.
+	now func() time.Time
 }
 
 // New constructs a Flood Provider. proxy=nil binds a default
@@ -52,7 +63,7 @@ func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, l
 	if proxy == nil {
 		proxy = NewProxy(nil, log)
 	}
-	return &Flood{settings: settings, def: def, log: log, proxy: proxy}
+	return &Flood{settings: settings, def: def, log: log, proxy: proxy, now: time.Now}
 }
 
 // Name returns the user-facing label. C# `Flood.cs:87`.
@@ -154,14 +165,11 @@ func composeTags(s Settings) []string {
 //   - default → status field left at zero (the C# code does the same
 //     — no fall-through arm).
 //
-// CanMoveFiles + CanBeRemoved both default to false. The C#
-// cleanup-gate at `:161-182` (which reads `IDownloadSeedConfigProvider`
-// and flips both flags when the ratio OR seed-time threshold is
-// reached) is deferred — the Go port doesn't yet have a
-// seed-config-provider surface, and the gate is a "post-import
-// cleanup nicety" rather than load-bearing for the import path.
-// Documented; follow-up: port the seed-config-provider service +
-// wire the cleanup arm.
+// Cleanup-gate (C# `:161-182`) wired at slice 5.J95 via
+// [downloadclients.SeedConfigProvider]. See [Flood.applyCleanupGate].
+// Nil seedCfg binding (composition root hasn't injected) leaves
+// CanMoveFiles + CanBeRemoved at false — preserves the pre-J95
+// posture for partial-wiring environments.
 func (f *Flood) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
 	if f.proxy == nil {
 		return []*downloadclients.Item{}, nil
@@ -227,7 +235,69 @@ func (f *Flood) toItem(ctx context.Context, info *downloadclients.ItemClientInfo
 	case statusContains(t.Status, "downloading"):
 		item.Status = downloadclients.DownloadItemStatusDownloading
 	}
+	f.applyCleanupGate(ctx, info, hash, t, item)
 	return item
+}
+
+// applyCleanupGate ports C# `Flood.cs:161-182`.
+//
+// Differences vs RQBit's J94 gate (kept in mind so callers don't
+// assume the gates are identical):
+//   - Gates on item.Status == Completed (set by the "seeding" /
+//     "complete" status arm at C# `:144-146`), NOT a separate
+//     IsFinished bool. The C# `:161` checks
+//     `RemoveCompletedDownloads && item.Status == DownloadItemStatus.Completed`.
+//   - Ratio comparison uses item.SeedRatio directly — Flood does
+//     NOT divide by 1000.0 like RQBit's C# does. The wire-shape
+//     Ratio is a real number (e.g. 1.5).
+//   - SeedTime arm requires DateFinished > 0 — Flood explicitly
+//     skips the time-arm when the wire shape doesn't surface a
+//     finished-at timestamp. Matches C# `:173` `properties.DateFinished is > 0`.
+//
+// Algorithm tracks C# verbatim:
+//  1. `RemoveCompletedDownloads && Status==Completed && seedCfg!=nil`
+//     AND-chain at C# `:161`. Any fail-short circuits the gate.
+//  2. `seedConfig = GetSeedConfiguration(item.DownloadId)` at C# `:164`.
+//     nil → no override → fail gate. Lookup errors logged at Debug
+//     and treated as nil (transient DB errors mustn't aggressively
+//     remove torrents).
+//  3. Ratio arm: `item.SeedRatio >= seedConfig.Ratio` at C# `:168`.
+//     nil-Ratio in seedConfig → arm doesn't fire (nullable-comparison
+//     semantics).
+//  4. SeedTime arm (only if ratio arm didn't fire): C# `:173-180`.
+//     `DateFinished > 0 AND now - epoch(DateFinished) >= SeedTime`.
+//     nil-SeedTime in seedConfig → arm doesn't fire.
+//  5. Either arm sets CanMoveFiles = CanBeRemoved = true (C#
+//     `:171,178` couples them).
+func (f *Flood) applyCleanupGate(ctx context.Context, info *downloadclients.ItemClientInfo, hash string, t *Torrent, item *downloadclients.Item) {
+	if info == nil || !info.RemoveCompletedDownloads || item.Status != downloadclients.DownloadItemStatusCompleted || f.seedCfg == nil {
+		return
+	}
+	seedConfig, err := f.seedCfg.GetSeedConfiguration(ctx, hash)
+	if err != nil {
+		f.log.Debug("flood: GetSeedConfiguration failed; cleanup gate denied", "hash", hash, "err", err)
+		return
+	}
+	if seedConfig == nil {
+		return
+	}
+
+	if seedConfig.Ratio != nil && item.SeedRatio != nil && *item.SeedRatio >= *seedConfig.Ratio {
+		f.log.Debug("flood: torrent met seed ratio goal", "hash", hash, "goal", *seedConfig.Ratio)
+		item.CanMoveFiles = true
+		item.CanBeRemoved = true
+		return
+	}
+	if seedConfig.SeedTime != nil && t.DateFinished != nil && *t.DateFinished > 0 {
+		finishedAt := time.Unix(*t.DateFinished, 0)
+		if f.now().Sub(finishedAt) >= *seedConfig.SeedTime {
+			f.log.Debug("flood: torrent met seed time goal", "hash", hash, "goal", seedConfig.SeedTime.String())
+			item.CanMoveFiles = true
+			item.CanBeRemoved = true
+			return
+		}
+	}
+	f.log.Debug("flood: torrent seeding goals not yet reached", "hash", hash)
 }
 
 // itemClientInfo mirrors C# `DownloadClientItemClientInfo.FromDownloadClient(this, hasPostImportCategory)`
@@ -253,6 +323,13 @@ func (f *Flood) itemClientInfo(hasPostImportCategory bool) *downloadclients.Item
 // pattern as Transmission/qBittorrent/Hadouken/NzbVortex.
 func (f *Flood) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) {
 	f.rpm = rpm
+}
+
+// SetSeedConfigProvider binds the optional
+// [downloadclients.SeedConfigProvider] consumed by the cleanup-gate
+// in [Flood.applyCleanupGate]. Slice 5.J95 wire-up.
+func (f *Flood) SetSeedConfigProvider(s downloadclients.SeedConfigProvider) {
+	f.seedCfg = s
 }
 
 // containsAll returns true when every entry in `wanted` is present
@@ -513,6 +590,9 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	f := New(def, settings, nil, log)
 	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
 		f.SetRemotePathMapper(rpm)
+	}
+	if seedCfg, ok := deps.SeedConfigProvider.(downloadclients.SeedConfigProvider); ok {
+		f.SetSeedConfigProvider(seedCfg)
 	}
 	return f, nil
 }

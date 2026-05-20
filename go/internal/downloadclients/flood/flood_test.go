@@ -1032,10 +1032,29 @@ func TestProvider_GetItems_OutputPathRemapped(t *testing.T) {
 	}
 }
 
-func TestProvider_GetItems_CleanupFlagsDefaultFalse(t *testing.T) {
-	// The seed-config cleanup gate is deferred (no Go-port
-	// IDownloadSeedConfigProvider yet) — CanMoveFiles + CanBeRemoved
-	// should default false even for Completed items.
+// stubSeedCfg is a [downloadclients.SeedConfigProvider] returning
+// a canned config (and optional error) per-hash. Used by the J95
+// cleanup-gate tests.
+type stubSeedCfg struct {
+	byHash map[string]*downloadclients.TorrentSeedConfiguration
+	err    error
+}
+
+func (s *stubSeedCfg) GetSeedConfiguration(_ context.Context, infoHash string) (*downloadclients.TorrentSeedConfiguration, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.byHash[infoHash], nil
+}
+
+func ptrFloat(f float64) *float64           { return &f }
+func ptrDur(d time.Duration) *time.Duration { return &d }
+func ptrInt64(i int64) *int64               { return &i }
+
+func TestProvider_GetItems_Cleanup_NoSeedCfgBindingDefaultsFalse(t *testing.T) {
+	// J95: without an injected SeedConfigProvider the cleanup gate
+	// degrades to "never satisfy" — preserves the pre-J95 false-
+	// default posture.
 	doer := newScripted()
 	queueGetTorrents(doer, `{"torrents":{
 		"h":{"name":"X","status":["complete"],"tags":["sonarr"]}
@@ -1044,9 +1063,164 @@ func TestProvider_GetItems_CleanupFlagsDefaultFalse(t *testing.T) {
 	p := flood.New(def, newSettings(), flood.NewProxy(doer, nil), nil)
 	items, _ := p.GetItems(context.Background())
 	if items[0].CanMoveFiles || items[0].CanBeRemoved {
-		t.Errorf("cleanup flags = move=%v removed=%v, want both false (gate deferred)", items[0].CanMoveFiles, items[0].CanBeRemoved)
+		t.Errorf("nil seedCfg binding: flags=%+v, want both false", items[0])
 	}
 }
+
+func TestProvider_GetItems_Cleanup_RemoveCompletedFalseDefaults(t *testing.T) {
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"h":{"name":"X","status":["complete"],"tags":["sonarr"]}
+	}}`)
+	def := &downloadclients.DownloadClient{Name: "FL", RemoveCompletedDownloads: false}
+	p := flood.New(def, newSettings(), flood.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{
+		"h": {Ratio: ptrFloat(0.1)},
+	}})
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("RemoveCompletedDownloads=false: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_NotCompletedStatusDefaults(t *testing.T) {
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"h":{"name":"X","status":["downloading"],"tags":["sonarr"]}
+	}}`)
+	def := &downloadclients.DownloadClient{Name: "FL", RemoveCompletedDownloads: true}
+	p := flood.New(def, newSettings(), flood.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{
+		"h": {Ratio: ptrFloat(0.1)},
+	}})
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("status!=Completed: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_NilSeedConfigForHashDefaults(t *testing.T) {
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"h":{"name":"X","status":["complete"],"tags":["sonarr"]}
+	}}`)
+	def := &downloadclients.DownloadClient{Name: "FL", RemoveCompletedDownloads: true}
+	p := flood.New(def, newSettings(), flood.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{}})
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("nil seedConfig for hash: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_LookupErrorDefaults(t *testing.T) {
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"h":{"name":"X","status":["complete"],"tags":["sonarr"]}
+	}}`)
+	def := &downloadclients.DownloadClient{Name: "FL", RemoveCompletedDownloads: true}
+	p := flood.New(def, newSettings(), flood.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{err: errors.New("transient")})
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("transient lookup error: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_RatioArmFires(t *testing.T) {
+	// Flood does NOT divide ratio by 1000 (unlike RQBit's C#) —
+	// item.SeedRatio is taken from t.Ratio verbatim and compared
+	// directly. t.Ratio=1.5 >= seedConfig.Ratio=1.0 → gate fires.
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"h":{"name":"X","status":["complete"],"tags":["sonarr"],"ratio":1.5}
+	}}`)
+	def := &downloadclients.DownloadClient{Name: "FL", RemoveCompletedDownloads: true}
+	p := flood.New(def, newSettings(), flood.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{
+		"h": {Ratio: ptrFloat(1.0)},
+	}})
+	items, _ := p.GetItems(context.Background())
+	if !items[0].CanMoveFiles || !items[0].CanBeRemoved {
+		t.Errorf("ratio 1.5 >= 1.0 should fire: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_RatioArmBelowGoalDefaults(t *testing.T) {
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"h":{"name":"X","status":["complete"],"tags":["sonarr"],"ratio":0.4}
+	}}`)
+	def := &downloadclients.DownloadClient{Name: "FL", RemoveCompletedDownloads: true}
+	p := flood.New(def, newSettings(), flood.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{
+		"h": {Ratio: ptrFloat(1.0)},
+	}})
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("ratio 0.4 < 1.0 should not fire: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_TimeArmFires(t *testing.T) {
+	// DateFinished > 0 AND now - epoch(DateFinished) >= SeedTime
+	// → time arm fires. Inject DateFinished=10 (10s past epoch) and
+	// SeedTime=1h, default now=time.Now() (always > 10s past
+	// epoch + 1h, trivially satisfies).
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"h":{"name":"X","status":["complete"],"tags":["sonarr"],"ratio":0.1,"dateFinished":10}
+	}}`)
+	def := &downloadclients.DownloadClient{Name: "FL", RemoveCompletedDownloads: true}
+	p := flood.New(def, newSettings(), flood.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{
+		"h": {SeedTime: ptrDur(1 * time.Hour)},
+	}})
+	items, _ := p.GetItems(context.Background())
+	if !items[0].CanMoveFiles || !items[0].CanBeRemoved {
+		t.Errorf("time arm with DateFinished=10 + SeedTime=1h should fire: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_TimeArmSkipsWhenDateFinishedZero(t *testing.T) {
+	// Flood's C# `:173` check `properties.DateFinished is > 0` skips
+	// the time arm when the wire shape doesn't report a finished-at
+	// timestamp. The Go port mirrors via the *t.DateFinished > 0
+	// guard. No-DateFinished + ratio-only-nil → both arms fail.
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"h":{"name":"X","status":["complete"],"tags":["sonarr"],"ratio":0.1}
+	}}`)
+	def := &downloadclients.DownloadClient{Name: "FL", RemoveCompletedDownloads: true}
+	p := flood.New(def, newSettings(), flood.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{
+		"h": {SeedTime: ptrDur(1 * time.Hour)},
+	}})
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("missing DateFinished should skip time arm: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_Cleanup_BothArmsNilDefaults(t *testing.T) {
+	// Both seedConfig.Ratio AND .SeedTime nil → no arm fires.
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"h":{"name":"X","status":["complete"],"tags":["sonarr"],"ratio":10.0,"dateFinished":10}
+	}}`)
+	def := &downloadclients.DownloadClient{Name: "FL", RemoveCompletedDownloads: true}
+	p := flood.New(def, newSettings(), flood.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{
+		"h": {},
+	}})
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("all-nil seedConfig: %+v", items[0])
+	}
+}
+
+// avoid unused-import warning if ptrInt64 not used by future tests
+var _ = ptrInt64
 
 func TestProvider_GetItems_PropagatesGetTorrentsError(t *testing.T) {
 	doer := newScripted()
