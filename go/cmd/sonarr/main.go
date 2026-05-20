@@ -875,6 +875,18 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			return historyhandlers.HandleEpisodeGrabbed(ctx, historySvc, &ev)
 		})
 
+	// Slice 5.J136: downloadhistory IHandle<EpisodeGrabbedEvent>
+	// subscriber. Mirrors the historyhandlers fan-out exactly — both
+	// subscribers consume the same event and write to their own
+	// audit-log tables (History vs DownloadHistory). The
+	// downloadhistory variant gates on non-empty DownloadID and writes
+	// one row per event (not per-episode — DownloadHistory is keyed
+	// at the lifecycle granularity).
+	messaging.Subscribe(bus, "downloadhistory.HandleEpisodeGrabbed",
+		func(ctx context.Context, ev decisionengine.EpisodeGrabbedEvent) error {
+			return downloadhistoryhandlers.HandleEpisodeGrabbed(ctx, dlHistorySvc, &ev)
+		})
+
 	// Slice 3.AU: history IHandle<EpisodeImportedEvent> subscriber.
 	// Builds a per-episode history.Entry from the imported file +
 	// LocalEpisode and routes through history.Service.Add. Unlike

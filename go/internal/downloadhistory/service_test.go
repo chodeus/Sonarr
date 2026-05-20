@@ -20,6 +20,9 @@ type stubReader struct {
 	gotDeleteSeries []int
 	deleteCount     int64
 	deleteErr       error
+	gotInsert       *downloadhistory.Entry
+	insertErr       error
+	insertedID      int
 }
 
 func (s *stubReader) AllByDownloadID(_ context.Context, _ string) ([]downloadhistory.Entry, error) {
@@ -32,6 +35,20 @@ func (s *stubReader) DeleteBySeriesIDs(_ context.Context, ids []int) (int64, err
 	}
 	s.gotDeleteSeries = append([]int(nil), ids...)
 	return s.deleteCount, nil
+}
+
+func (s *stubReader) Insert(_ context.Context, e *downloadhistory.Entry) (*downloadhistory.Entry, error) {
+	s.gotInsert = e
+	if s.insertErr != nil {
+		return nil, s.insertErr
+	}
+	out := *e
+	if s.insertedID > 0 {
+		out.ID = s.insertedID
+	} else {
+		out.ID = 1
+	}
+	return &out, nil
 }
 
 func TestNewServiceNilRepoReturnsNil(t *testing.T) {

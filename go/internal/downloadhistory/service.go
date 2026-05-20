@@ -70,12 +70,15 @@ func (t EventType) String() string {
 // CRUD surface; the real repo satisfies the interface.
 //
 // AllByDownloadID feeds the readonly three (DownloadAlreadyImported /
-// GetLatestDownloadHistoryItem / GetLatestGrab); DeleteBySeriesIDs
-// feeds the SeriesDeletedEvent IHandle subscriber that DELETEs every
-// row for a removed series (slice 5.J135).
+// GetLatestDownloadHistoryItem / GetLatestGrab). DeleteBySeriesIDs
+// feeds the SeriesDeletedEvent IHandle subscriber (slice 5.J135).
+// Insert feeds the slice 5.J136 [Service.Add] wrapper that the
+// downloadhistoryhandlers IHandle subscribers (EpisodeGrabbedEvent +
+// the four still-deferred event-bus handlers) route through.
 type EntryReader interface {
 	AllByDownloadID(ctx context.Context, downloadID string) ([]Entry, error)
 	DeleteBySeriesIDs(ctx context.Context, seriesIDs []int) (int64, error)
+	Insert(ctx context.Context, e *Entry) (*Entry, error)
 }
 
 // Service ports the readonly half of `IDownloadHistoryService` at
@@ -201,6 +204,53 @@ func (s *Service) GetLatestGrab(ctx context.Context, downloadID string) (*Entry,
 		}
 	}
 	return nil, nil
+}
+
+// Add inserts a new DownloadHistory row. Mirrors the C# pattern at
+// `Download/History/DownloadHistoryService.cs:121, 162, 183, 208, 227`
+// — every IHandle subscriber builds a DownloadHistory locally and
+// calls `_repository.Insert(history)` directly. The Go port surfaces
+// the write as a public Service.Add so the slice 5.J136+ subscribers
+// can route through one wrapper rather than each importing the Repo.
+//
+// Validation expectations match the C# Insert callsites:
+//   - DownloadID required (the column is NOT NULL; the C# tree gates
+//     on `IsNullOrWhiteSpace` at the subscriber level — surface a
+//     typed error here as a defence in depth).
+//   - SeriesID > 0 required (NOT NULL column; orphan-row UI filter
+//     would drop zero-SeriesID rows anyway).
+//   - SourceTitle / Date required (both NOT NULL).
+//
+// Release / Data are JSON-shape strings the per-event handler builds
+// before calling Add — opaque text columns on the C# side too, so
+// Add does not validate them.
+//
+// Returns the inserted Entry (with ID populated by the underlying
+// Repo.Insert auto-increment).
+func (s *Service) Add(ctx context.Context, e *Entry) (*Entry, error) {
+	if s == nil || s.repo == nil {
+		return nil, errors.New("downloadhistory: Add on nil receiver")
+	}
+	if e == nil {
+		return nil, errors.New("downloadhistory: Add: nil entry")
+	}
+	if e.DownloadID == "" {
+		return nil, errors.New("downloadhistory: Add: DownloadID required")
+	}
+	if e.SeriesID <= 0 {
+		return nil, fmt.Errorf("downloadhistory: Add: SeriesID required, got %d", e.SeriesID)
+	}
+	if e.SourceTitle == "" {
+		return nil, errors.New("downloadhistory: Add: SourceTitle required")
+	}
+	if e.Date.IsZero() {
+		return nil, errors.New("downloadhistory: Add: Date required")
+	}
+	out, err := s.repo.Insert(ctx, e)
+	if err != nil {
+		return nil, fmt.Errorf("downloadhistory: Add: %w", err)
+	}
+	return out, nil
 }
 
 // DeleteForSeries ports the SeriesDeletedEvent path at
