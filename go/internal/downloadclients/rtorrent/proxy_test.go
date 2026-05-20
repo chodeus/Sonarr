@@ -58,21 +58,39 @@ func newXMLRPCServer(t *testing.T, respBody string) *xmlrpcServer {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
 		// Pull <methodName> from the body — primitive matching but
 		// adequate for the unit-test boundary.
+		method := ""
 		if i := strings.Index(string(body), "<methodName>"); i >= 0 {
 			rest := string(body)[i+len("<methodName>"):]
 			if j := strings.Index(rest, "</methodName>"); j >= 0 {
-				h.lastMethod.Store(rest[:j])
+				method = rest[:j]
+				h.lastMethod.Store(method)
 			}
 		}
 		if s := int(h.respStatus.Load()); s != 0 {
 			w.WriteHeader(s)
 		}
 		w.Header().Set("Content-Type", "text/xml")
-		_, _ = io.WriteString(w, h.respBody.Load().(string))
+		// J105 — when the canned respBody is a scalar (e.g. a version
+		// string) but the live method is d.multicall.2, return an
+		// empty multicall list so the new J105 Test-arm GetTorrents
+		// probe parses cleanly. Tests that canned a multicall-shaped
+		// body keep using it (the heuristic detects scalar shapes by
+		// `<value><string>` near the root).
+		body0 := h.respBody.Load().(string)
+		if method == "d.multicall.2" && strings.Contains(body0, "<value><string>") && !strings.Contains(body0, "<array><data><value><array>") {
+			_, _ = io.WriteString(w, emptyMulticallResponse)
+			return
+		}
+		_, _ = io.WriteString(w, body0)
 	}))
 	t.Cleanup(h.srv.Close)
 	return h
 }
+
+// emptyMulticallResponse is the canned empty-list response that
+// the J105 GetTorrents probe in Test() expects to decode cleanly.
+const emptyMulticallResponse = `<?xml version="1.0"?>
+<methodResponse><params><param><value><array><data></data></array></value></param></params></methodResponse>`
 
 func (h *xmlrpcServer) settings(urlBase string) rtorrent.Settings {
 	u, _ := url.Parse(h.srv.URL)

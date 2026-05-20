@@ -2,6 +2,12 @@ package rtorrent_test
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"strings"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
@@ -223,8 +229,10 @@ func TestProvider_TestProbesVersionWhenProxyWired(t *testing.T) {
 	if len(failures) != 0 {
 		t.Errorf("Test on good version: %+v, want no failures", failures)
 	}
-	if h.calls.Load() != 1 {
-		t.Errorf("system.client_version probe didn't fire (%d calls)", h.calls.Load())
+	// J105: Test now also fires d.multicall.2 (TestGetTorrents) after
+	// the version probe, so a happy-path Test makes 2 RPC calls.
+	if h.calls.Load() != 2 {
+		t.Errorf("Test made %d RPC calls, want 2 (version + d.multicall.2)", h.calls.Load())
 	}
 }
 
@@ -241,6 +249,52 @@ func TestProvider_TestRejectsBelowMinVersion(t *testing.T) {
 	}
 	if !containsFailure(failures, "Host") {
 		t.Errorf("Test on old version: %+v, want Host failure (too old)", failures)
+	}
+}
+
+func TestProvider_TestJ105_GetTorrentsFailureSurfacesWholeForm(t *testing.T) {
+	t.Parallel()
+	// Custom handler that returns the version body on system.client_version
+	// but an RPC fault on d.multicall.2 — exercises the new J105
+	// TestGetTorrents probe.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bs := string(body)
+		w.Header().Set("Content-Type", "text/xml")
+		switch {
+		case strings.Contains(bs, "system.client_version"):
+			_, _ = io.WriteString(w, sampleVersionResponse)
+		case strings.Contains(bs, "d.multicall.2"):
+			_, _ = io.WriteString(w, `<?xml version="1.0"?>
+<methodResponse><fault><value><struct>
+  <member><name>faultCode</name><value><int>-501</int></value></member>
+  <member><name>faultString</name><value><string>boom</string></value></member>
+</struct></value></fault></methodResponse>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+	settings := rtorrent.NewSettings()
+	settings.Host = u.Hostname()
+	settings.Port = port
+	settings.UrlBase = "/"
+	p := rtorrent.NewProxy(srv.Client(), nil)
+	rt := rtorrent.New(nil, settings, p, nil)
+	failures, err := rt.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "" && strings.Contains(f.ErrorMessage, "list of torrents") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("failures = %+v, want whole-form 'list of torrents' failure", failures)
 	}
 }
 

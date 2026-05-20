@@ -337,10 +337,21 @@ func (r *RTorrent) MarkItemAsImported(ctx context.Context, item *downloadclients
 	return nil
 }
 
-// Test runs the per-client connection self-check. Mirrors C#
-// `DownloadClientBase.Test()` at `:148-163`: validates the Settings
-// first, then (when no failures and a proxy is wired) probes
-// `system.client_version` and gates on [minVersion].
+// Test runs the per-client connection self-check. Ports C#
+// `RTorrent.Test` at `:239-249`:
+//  1. TestConnection — version probe with the >=0.9.0 floor at C#
+//     :251-278. Failure short-circuits the follow-on probes
+//     (matches C# `:242-245` HasErrors guard).
+//  2. TestGetTorrents — one-shot GetTorrents call (slice 5.J105
+//     wire-up) at C# :280-293. Surfaces a whole-form failure on
+//     any error.
+//
+// The C# Test arm also runs TestDirectory at `:295-307` which
+// validates Settings.TvDirectory via the RTorrentDirectoryValidator
+// (IsValidPath + RootFolderValidator + PathExistsValidator +
+// MappedNetworkDriveValidator). That requires three cross-cutting
+// validators that haven't ported to Go — still deferred; the gate
+// is documented but unwired.
 func (r *RTorrent) Test(ctx context.Context) ([]downloadclients.TestFailure, error) {
 	failures := r.settings.Validate()
 	if len(failures) > 0 || r.proxy == nil {
@@ -361,6 +372,19 @@ func (r *RTorrent) Test(ctx context.Context) ([]downloadclients.TestFailure, err
 		return []downloadclients.TestFailure{{
 			PropertyName: "Host",
 			ErrorMessage: fmt.Sprintf("rTorrent version %s is too old; minimum supported is %d.%d", version, minVersion.major, minVersion.minor),
+		}}, nil
+	}
+
+	// J105 — TestGetTorrents at C# `:280-293`. One probe call against
+	// the live daemon confirms the orchestrator's GetItems query
+	// works; any error surfaces as a whole-form failure containing
+	// the cause. Mirrors the J101 Deluge / J102 Transmission / J104
+	// qBittorrent pattern.
+	if _, err := r.proxy.GetTorrents(ctx, r.settings); err != nil {
+		return []downloadclients.TestFailure{{
+			PropertyName:        "",
+			ErrorMessage:        fmt.Sprintf("Failed to get the list of torrents: %v", err),
+			DetailedDescription: "Sonarr was able to authenticate against rTorrent but the d.multicall.2 RPC failed; check the rTorrent log.",
 		}}, nil
 	}
 	return nil, nil
