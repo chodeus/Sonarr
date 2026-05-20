@@ -102,8 +102,9 @@ func TestProvider_StubsReturnNotImplementedYet(t *testing.T) {
 	t.Parallel()
 	a := aria2.New(nil, aria2.NewSettings(), nil, nil)
 	ctx := context.Background()
-	if _, err := a.Download(ctx, &downloadclients.GrabRequest{}); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("Download: %v, want ErrNotImplementedYet", err)
+	// Download is wired in 5.J52 — nil-proxy surfaces a generic error.
+	if _, err := a.Download(ctx, &downloadclients.GrabRequest{}); err == nil {
+		t.Errorf("Download: want error (nil proxy)")
 	}
 	if _, err := a.GetItems(ctx); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
 		t.Errorf("GetItems: %v, want ErrNotImplementedYet", err)

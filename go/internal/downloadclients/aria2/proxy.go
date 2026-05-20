@@ -109,6 +109,65 @@ func (p *Proxy) GetVersion(ctx context.Context, settings Settings) (string, erro
 	return "", errors.New("aria2: getVersion: 'version' field missing from response")
 }
 
+// AddMagnet fires aria2.addUri with the magnet/URL wrapped in a
+// single-element URI list + the options dict (dir → Settings.Directory
+// when set). Returns the GID aria2 assigned to the new download.
+// Mirrors C# `AddMagnet` at `Aria2Proxy.cs:99-112`.
+func (p *Proxy) AddMagnet(ctx context.Context, magnetOrURL string, settings Settings) (string, error) {
+	opts := buildAddOptions(settings)
+	value, err := p.call(ctx, settings, "aria2.addUri",
+		tokenArg(settings),
+		[]string{magnetOrURL},
+		opts,
+	)
+	if err != nil {
+		return "", err
+	}
+	gid := value.stringValue()
+	if gid == "" {
+		return "", errors.New("aria2: addUri: empty GID in response")
+	}
+	return gid, nil
+}
+
+// AddTorrent fires aria2.addTorrent with the .torrent file bytes
+// (base64-encoded by the encoder) + an empty URI list + the options
+// dict. Returns the GID. Mirrors C# `AddTorrent` at `:114-129`.
+//
+// The empty-URI-list second arg is REQUIRED — aria2c rejects
+// addTorrent calls that have options but no URI-list slot. The C#
+// code's `emptyListOfUris` comment at `:117` documents this.
+func (p *Proxy) AddTorrent(ctx context.Context, torrentBody []byte, settings Settings) (string, error) {
+	opts := buildAddOptions(settings)
+	value, err := p.call(ctx, settings, "aria2.addTorrent",
+		tokenArg(settings),
+		torrentBody,
+		[]string{}, // empty URI list — required when options are passed.
+		opts,
+	)
+	if err != nil {
+		return "", err
+	}
+	gid := value.stringValue()
+	if gid == "" {
+		return "", errors.New("aria2: addTorrent: empty GID in response")
+	}
+	return gid, nil
+}
+
+// buildAddOptions returns the options dict for AddMagnet /
+// AddTorrent. Empty when no overrides apply — passes through to
+// aria2's defaults. Currently only `dir` is overrideable; future
+// settings (max-connections, split-count, etc.) can extend this
+// without touching the call sites.
+func buildAddOptions(settings Settings) map[string]string {
+	opts := map[string]string{}
+	if strings.TrimSpace(settings.Directory) != "" {
+		opts["dir"] = settings.Directory
+	}
+	return opts
+}
+
 // ErrAuthFailed is a sentinel placeholder — aria2's auth-failure
 // surfaces as a FaultError with a specific message (e.g.
 // "Unauthorized"); callers should match against the FaultError's

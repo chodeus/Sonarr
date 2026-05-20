@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
@@ -71,9 +72,42 @@ func (a *Aria2) Definition() *downloadclients.DownloadClient { return a.def }
 // to assert against the round-tripped JSON without re-decoding.
 func (a *Aria2) Settings() Settings { return a.settings }
 
-// Download is a stub.
-func (a *Aria2) Download(_ context.Context, _ *downloadclients.GrabRequest) (string, error) {
-	return "", downloadclients.ErrNotImplementedYet
+// Download ports `Aria2.AddFromMagnetLink` + `AddFromTorrentFile`
+// (mirrors C# `Aria2.cs` Download overrides). Picks the add path
+// based on the GrabRequest shape:
+//
+//   - TorrentBody bytes set → aria2.addTorrent (base64 upload).
+//   - MagnetURL set → aria2.addUri with the magnet URL.
+//   - DownloadURL set → aria2.addUri with the http URL.
+//
+// aria2 returns the assigned GID directly as the methodResponse's
+// string — different from rtorrent (which returns "0" success +
+// requires hash from elsewhere). The Go-port treats the GID as the
+// DownloadID and upper-cases it for the orchestrator's queue-item
+// row.
+func (a *Aria2) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
+	if req == nil {
+		return "", errors.New("aria2: nil GrabRequest")
+	}
+	if a.proxy == nil {
+		return "", errors.New("aria2: Download requires a wired Proxy")
+	}
+	var gid string
+	var err error
+	switch {
+	case len(req.TorrentBody) > 0:
+		gid, err = a.proxy.AddTorrent(ctx, req.TorrentBody, a.settings)
+	case req.MagnetURL != "":
+		gid, err = a.proxy.AddMagnet(ctx, req.MagnetURL, a.settings)
+	case req.DownloadURL != "":
+		gid, err = a.proxy.AddMagnet(ctx, req.DownloadURL, a.settings)
+	default:
+		return "", errors.New("aria2: Download: no TorrentBody / MagnetURL / DownloadURL on GrabRequest")
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.ToUpper(gid), nil
 }
 
 // GetItems is a stub.
