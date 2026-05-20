@@ -77,8 +77,11 @@ func TestWireSignalRSubscribers_TagsUpdatedEventReachesClient(t *testing.T) {
 	if !strings.Contains(body, `"action":"sync"`) {
 		t.Errorf("body action: %s", body)
 	}
-	if !strings.Contains(body, `"resource":null`) {
-		t.Errorf("sync body should carry resource:null: %s", body)
+	// Sync bodies must omit the `resource` key entirely (C# STJson
+	// `WhenWritingNull` parity — see signalr.ResourceChangeMessage
+	// doc-comment).
+	if strings.Contains(body, `"resource"`) {
+		t.Errorf("sync body must omit resource key: %s", body)
 	}
 }
 

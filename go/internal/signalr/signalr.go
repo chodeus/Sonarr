@@ -60,7 +60,9 @@ const (
 	// `Sonarr.Http/REST/RestControllerWithSignalR.cs:59-67`).
 	ActionDeleted
 	// ActionSync is the "your snapshot is stale; refetch via REST"
-	// marker. Body has no `resource` field.
+	// marker. Body omits the `resource` key entirely (C# emits null,
+	// then STJson's `WhenWritingNull` drops the property; Go matches
+	// via `omitempty` on `ResourceChangeMessage.Resource`).
 	ActionSync
 )
 
@@ -123,15 +125,22 @@ var V5Version = func() *int { v := 5; return &v }()
 //
 // Wire shape:
 //
-//	{ "resource": <TResource>|null, "action": "created|updated|deleted|sync" }
+//	Created/Updated/Deleted: { "resource": <TResource>, "action": "..." }
+//	Sync:                    { "action": "sync" }
 //
-// For Sync bodies Resource is nil → JSON null (omitempty kept off so
-// the field still emits as null, matching the C# private setter
-// semantic). For Deleted bodies Resource carries only the Id —
-// callers project to a minimal struct rather than handing in a
-// full row.
+// SignalR uses STJson via `services.AddSignalR().AddJsonProtocol(...
+// PayloadSerializerOptions = STJson.GetSerializerSettings())` at
+// `src/NzbDrone.Host/Startup.cs:219-223`, which sets
+// `DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull` at
+// `STJson.cs:27`. For Sync bodies the C# `Resource` property is the
+// default value (`null` since TResource : RestResource is a reference
+// type) so the property is OMITTED from the emitted JSON. The Go port
+// matches via `omitempty` on the pointer: nil Resource drops the key
+// entirely rather than emitting `"resource":null`. For Deleted bodies
+// Resource carries only the Id — callers project to a minimal struct
+// rather than handing in a full row.
 type ResourceChangeMessage[TResource any] struct {
-	Resource *TResource `json:"resource"`
+	Resource *TResource `json:"resource,omitempty"`
 	Action   Action     `json:"action"`
 }
 

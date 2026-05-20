@@ -62,8 +62,13 @@ func TestResourceChangeMessage_SyncWire(t *testing.T) {
 	msg := signalr.NewResourceSync[series]()
 	b, _ := json.Marshal(msg)
 	got := string(b)
-	if !strings.Contains(got, `"resource":null`) {
-		t.Errorf("sync body should emit resource:null: %s", got)
+	// Sync bodies must omit the `resource` key entirely. C#'s
+	// SignalR pipeline serializes ResourceChangeMessage with STJson
+	// `WhenWritingNull` (Startup.cs:219-223 + STJson.cs:27), which
+	// drops the null Resource property. Go matches via `omitempty`
+	// on `ResourceChangeMessage.Resource`.
+	if strings.Contains(got, `"resource"`) {
+		t.Errorf("sync body must omit resource key: %s", got)
 	}
 	if !strings.Contains(got, `"action":"sync"`) {
 		t.Errorf("sync action: %s", got)

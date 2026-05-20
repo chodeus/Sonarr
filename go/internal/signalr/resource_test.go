@@ -123,8 +123,12 @@ func TestResourceBroadcaster_Sync_NoResource(t *testing.T) {
 	}
 	b, _ := json.Marshal(rec.last())
 	got := string(b)
-	if !strings.Contains(got, `"resource":null`) {
-		t.Errorf("sync should emit resource:null; body=%s", got)
+	// C# parity: STJson `WhenWritingNull` drops the null Resource
+	// property over SignalR (Startup.cs:219-223 + STJson.cs:27), so
+	// Sync bodies emit just `{"action":"sync"}`. Go matches via
+	// `omitempty` on `ResourceChangeMessage.Resource`.
+	if strings.Contains(got, `"resource"`) {
+		t.Errorf("sync should omit resource key; body=%s", got)
 	}
 	if !strings.Contains(got, `"action":"sync"`) {
 		t.Errorf("sync action: %s", got)
