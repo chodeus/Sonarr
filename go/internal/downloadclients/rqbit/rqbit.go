@@ -34,10 +34,14 @@ type RQBit struct {
 	log      *slog.Logger
 	proxy    *Proxy
 	rpm      downloadclients.RemotePathMapper
+	seedCfg  downloadclients.SeedConfigProvider
+	now      func() time.Time
 }
 
 // New constructs an RQBit Provider. proxy=nil binds a default
-// [Proxy]; log=nil binds [slog.Default].
+// [Proxy]; log=nil binds [slog.Default]. The seed-config binding
+// is plumbed via [SetSeedConfigProvider] post-construction (matches
+// the existing RemotePathMapper pattern at [SetRemotePathMapper]).
 func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, log *slog.Logger) *RQBit {
 	if log == nil {
 		log = slog.Default()
@@ -45,7 +49,7 @@ func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, l
 	if proxy == nil {
 		proxy = NewProxy(nil, log)
 	}
-	return &RQBit{settings: settings, def: def, log: log, proxy: proxy}
+	return &RQBit{settings: settings, def: def, log: log, proxy: proxy, now: time.Now}
 }
 
 // Name returns "RQBit" matching C# `:23`.
@@ -101,17 +105,16 @@ func (r *RQBit) Download(ctx context.Context, req *downloadclients.GrabRequest) 
 // branches at `:51-61`), applies the 3-arm status table at
 // `:85-97`, computes RemainingTime via DownRate.
 //
-// Cleanup gate (C# `:101-122`) is approximated:
+// Cleanup gate (C# `:101-122`) wired via [downloadclients.SeedConfigProvider]
+// at slice 5.J94 — per-torrent seed-config lookup gates
+// CanMoveFiles+CanBeRemoved on (RemoveCompletedDownloads AND
+// IsFinished AND seedConfig != nil AND (ratio-arm OR time-arm)).
+// See [RQBit.applyCleanupGate] for the per-arm port.
 //
-//   - The C# seed-config gate gates CanMoveFiles+CanBeRemoved on
-//     RemoveCompletedDownloads AND IsFinished AND a seedConfig-
-//     driven ratio/time check. The Go port lacks an
-//     IDownloadSeedConfigProvider port and degrades the predicate
-//     to (RemoveCompletedDownloads AND IsFinished) — the
-//     post-import cleanup runs as soon as the torrent finishes
-//     rather than waiting for the share threshold. Documented;
-//     follow-up adds the seed-config-provider gate when that
-//     service ports.
+// nil seedCfg binding (composition root hasn't injected the
+// dependency) degrades the gate to "never satisfy" — preserves the
+// pre-J94 false-default posture so a partial-wiring environment
+// doesn't aggressively remove torrents the user expected to keep.
 func (r *RQBit) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
 	if r.proxy == nil {
 		return []*downloadclients.Item{}, nil
@@ -176,12 +179,79 @@ func (r *RQBit) toItem(ctx context.Context, info *downloadclients.ItemClientInfo
 		item.Status = downloadclients.DownloadItemStatusPaused
 	}
 
-	// Documented divergence: simplified cleanup gate (see GetItems).
-	if info != nil && info.RemoveCompletedDownloads && t.IsFinished {
+	r.applyCleanupGate(ctx, info, t, item)
+	return item
+}
+
+// applyCleanupGate ports the C# `RQBit.cs:101-122` predicate that
+// gates the post-import disk-cleanup arm.
+//
+// Algorithm:
+//  1. If RemoveCompletedDownloads is off OR the torrent isn't
+//     finished OR no seed-config binding is wired, the gate fails
+//     immediately — matches C# `:101` AND-chain.
+//  2. Look up the per-torrent seed configuration via
+//     [downloadclients.SeedConfigProvider]. C# `:99`. nil-config
+//     fails the gate (no recorded grab → no override → leave the
+//     torrent in place). Lookup errors are logged at debug + the
+//     gate fails — a transient DB error mustn't aggressively remove
+//     a torrent that might be retained on retry.
+//  3. Two-arm check at C# `:103-118`:
+//     a. Ratio arm: `torrent.Ratio / 1000.0 >= seedConfig.Ratio`.
+//     Ported verbatim INCLUDING the `/1000.0` divisor — the
+//     C# code carries this and we mirror it for behavioural
+//     parity even though the proxy's Ratio is already
+//     denominated as a real number (UploadedBytes/ProgressBytes
+//     at proxy.go:240). The discrepancy looks like a C# bug
+//     upstream, but the port preserves it so behaviour matches
+//     the reference until upstream fixes the divisor.
+//     b. SeedTime arm: `now - epoch(FinishedTime) >= seedConfig.SeedTime`.
+//     The RQBit wire shape doesn't surface FinishedTime (C#
+//     `RQBitTorrent.cs:16` declares the field but
+//     `RQbitProxy.cs:95-130` never populates it; the Go proxy
+//     omits it for the same reason). With FinishedTime
+//     unpopulated (zero), the arm degenerates to "now since
+//     1970 >= seedConfig.SeedTime" which is trivially true for
+//     any positive SeedTime — preserving the C# observable
+//     behaviour where the time arm fires once the torrent is
+//     finished regardless of when it actually finished.
+//  4. Either-arm match → CanMoveFiles = CanBeRemoved = true. C#
+//     `:121` couples them.
+//
+// Nullable arms: `seedConfig.Ratio` / `seedConfig.SeedTime` are
+// optional. When nil, the corresponding arm doesn't fire — matches
+// C# nullable-comparison semantics where `>=` against a null
+// returns false.
+func (r *RQBit) applyCleanupGate(ctx context.Context, info *downloadclients.ItemClientInfo, t *Torrent, item *downloadclients.Item) {
+	if info == nil || !info.RemoveCompletedDownloads || !t.IsFinished || r.seedCfg == nil {
+		return
+	}
+
+	seedConfig, err := r.seedCfg.GetSeedConfiguration(ctx, t.Hash)
+	if err != nil {
+		r.log.Debug("rqbit: GetSeedConfiguration failed; cleanup gate denied", "hash", t.Hash, "err", err)
+		return
+	}
+	if seedConfig == nil {
+		return
+	}
+
+	if seedConfig.Ratio != nil && (t.Ratio/1000.0) >= *seedConfig.Ratio {
+		r.log.Debug("rqbit: torrent met seed ratio goal", "hash", t.Hash, "goal", *seedConfig.Ratio)
 		item.CanMoveFiles = true
 		item.CanBeRemoved = true
+		return
 	}
-	return item
+	if seedConfig.SeedTime != nil {
+		finishedAt := time.Unix(t.FinishedTime, 0)
+		if r.now().Sub(finishedAt) >= *seedConfig.SeedTime {
+			r.log.Debug("rqbit: torrent met seed time goal", "hash", t.Hash, "goal", seedConfig.SeedTime.String())
+			item.CanMoveFiles = true
+			item.CanBeRemoved = true
+			return
+		}
+	}
+	r.log.Debug("rqbit: torrent seeding goals not yet reached", "hash", t.Hash)
 }
 
 // itemClientInfo mirrors C# `DownloadClientItemClientInfo.FromDownloadClient(this, false)`.
@@ -289,6 +359,14 @@ func (r *RQBit) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) {
 	r.rpm = rpm
 }
 
+// SetSeedConfigProvider binds the optional
+// [downloadclients.SeedConfigProvider]. nil-binding leaves
+// [RQBit.applyCleanupGate] in its degraded "never satisfy" state
+// (matches the pre-J94 false-default posture). Phase 5.J94 wire-up.
+func (r *RQBit) SetSeedConfigProvider(s downloadclients.SeedConfigProvider) {
+	r.seedCfg = s
+}
+
 // versionPattern matches the `X.Y.Z` prefix the RQBit `version`
 // field reports. Mirrors C# `Regex.Match(versionString,
 // @"(\d+)\.(\d+)\.(\d+)")` at `RQBit.cs:173`.
@@ -347,6 +425,9 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	r := New(def, settings, nil, log)
 	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
 		r.SetRemotePathMapper(rpm)
+	}
+	if seedCfg, ok := deps.SeedConfigProvider.(downloadclients.SeedConfigProvider); ok {
+		r.SetSeedConfigProvider(seedCfg)
 	}
 	return r, nil
 }

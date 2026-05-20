@@ -7,12 +7,31 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/rqbit"
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/ospath"
 )
+
+// stubSeedCfg is a [downloadclients.SeedConfigProvider] returning a
+// canned config (and optional error) per-hash. Used by the J94
+// cleanup-gate tests.
+type stubSeedCfg struct {
+	byHash map[string]*downloadclients.TorrentSeedConfiguration
+	err    error
+}
+
+func (s *stubSeedCfg) GetSeedConfiguration(_ context.Context, infoHash string) (*downloadclients.TorrentSeedConfiguration, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.byHash[infoHash], nil
+}
+
+func ptrFloat(f float64) *float64           { return &f }
+func ptrDur(d time.Duration) *time.Duration { return &d }
 
 // scriptedDoer queues responses by URL path. Multiple sequential
 // calls to the same path pop the head response in order.
@@ -426,24 +445,168 @@ func TestProvider_GetItems_RemotePathMapperApplied(t *testing.T) {
 	}
 }
 
-func TestProvider_GetItems_CleanupFlags(t *testing.T) {
+func TestProvider_GetItems_CleanupFlags_NoSeedConfigBindingDefaultsFalse(t *testing.T) {
+	// J94 wired the cleanup-gate to require a seed-config binding.
+	// Without one (composition root hasn't injected it), the gate
+	// degrades to "never satisfy" — even a finished torrent with
+	// RemoveCompletedDownloads=true keeps CanBeRemoved=false.
 	doer := newScripted()
 	doer.queue("/torrents", `{"torrents":[
-		{"id":1,"info_hash":"a","name":"A","output_folder":"/dl/","stats":{"state":"live","total_bytes":100,"progress_bytes":100,"finished":true}},
-		{"id":2,"info_hash":"b","name":"B","output_folder":"/dl/","stats":{"state":"live","total_bytes":100,"progress_bytes":50,"finished":false}}
+		{"id":1,"info_hash":"a","name":"A","output_folder":"/dl/","stats":{"state":"live","total_bytes":100,"progress_bytes":100,"finished":true}}
 	]}`)
 	def := &downloadclients.DownloadClient{Name: "RQ", RemoveCompletedDownloads: true}
 	p := rqbit.New(def, newSettings(), rqbit.NewProxy(doer, nil), nil)
 	items, _ := p.GetItems(context.Background())
-	byID := map[string]*downloadclients.Item{}
-	for _, it := range items {
-		byID[it.DownloadID] = it
+	if len(items) != 1 {
+		t.Fatalf("items=%d, want 1", len(items))
 	}
-	if !byID["a"].CanBeRemoved || !byID["a"].CanMoveFiles {
-		t.Errorf("finished item should have cleanup flags true: %+v", byID["a"])
+	if items[0].CanBeRemoved || items[0].CanMoveFiles {
+		t.Errorf("nil seedCfg binding: cleanup flags should stay false: %+v", items[0])
 	}
-	if byID["b"].CanBeRemoved || byID["b"].CanMoveFiles {
-		t.Errorf("non-finished item should have cleanup flags false: %+v", byID["b"])
+}
+
+func TestProvider_GetItems_CleanupFlags_RemoveCompletedFalseDefaults(t *testing.T) {
+	// RemoveCompletedDownloads=false (the C# `:101` AND-arm) →
+	// gate fails before consulting the seedCfg.
+	doer := newScripted()
+	doer.queue("/torrents", `{"torrents":[
+		{"id":1,"info_hash":"a","name":"A","output_folder":"/dl/","stats":{"state":"live","total_bytes":100,"progress_bytes":100,"finished":true}}
+	]}`)
+	def := &downloadclients.DownloadClient{Name: "RQ", RemoveCompletedDownloads: false}
+	p := rqbit.New(def, newSettings(), rqbit.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{
+		"a": {Ratio: ptrFloat(0.5)},
+	}})
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanBeRemoved || items[0].CanMoveFiles {
+		t.Errorf("RemoveCompletedDownloads=false: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_CleanupFlags_NotFinishedDefaults(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/torrents", `{"torrents":[
+		{"id":1,"info_hash":"a","name":"A","output_folder":"/dl/","stats":{"state":"live","total_bytes":100,"progress_bytes":50,"finished":false}}
+	]}`)
+	def := &downloadclients.DownloadClient{Name: "RQ", RemoveCompletedDownloads: true}
+	p := rqbit.New(def, newSettings(), rqbit.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{
+		"a": {Ratio: ptrFloat(0.5)},
+	}})
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanBeRemoved || items[0].CanMoveFiles {
+		t.Errorf("not-finished torrent: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_CleanupFlags_NilSeedConfigForHashDefaults(t *testing.T) {
+	// seedCfg lookup returns (nil, nil) — torrent wasn't grabbed
+	// via a recorded indexer. C# `:101` `seedConfig != null` guard
+	// fails the gate.
+	doer := newScripted()
+	doer.queue("/torrents", `{"torrents":[
+		{"id":1,"info_hash":"a","name":"A","output_folder":"/dl/","stats":{"state":"live","total_bytes":100,"progress_bytes":100,"finished":true}}
+	]}`)
+	def := &downloadclients.DownloadClient{Name: "RQ", RemoveCompletedDownloads: true}
+	p := rqbit.New(def, newSettings(), rqbit.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{}})
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanBeRemoved || items[0].CanMoveFiles {
+		t.Errorf("nil seedConfig for hash: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_CleanupFlags_LookupErrorDefaultsFalse(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/torrents", `{"torrents":[
+		{"id":1,"info_hash":"a","name":"A","output_folder":"/dl/","stats":{"state":"live","total_bytes":100,"progress_bytes":100,"finished":true}}
+	]}`)
+	def := &downloadclients.DownloadClient{Name: "RQ", RemoveCompletedDownloads: true}
+	p := rqbit.New(def, newSettings(), rqbit.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{err: errors.New("transient")})
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanBeRemoved || items[0].CanMoveFiles {
+		t.Errorf("transient lookup error: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_CleanupFlags_TimeArmFiresWhenFinishedTimeZero(t *testing.T) {
+	// FinishedTime is never populated by the wire shape (C#
+	// proxy at `RQbitProxy.cs:95-130` leaves it 0), so the
+	// time-arm at `RQBit.cs:110` degenerates to "now since 1970
+	// >= SeedTime" — trivially true for any positive SeedTime.
+	// This preserves C# observable behaviour where a finished
+	// torrent with a SeedTime config trivially passes the gate.
+	doer := newScripted()
+	doer.queue("/torrents", `{"torrents":[
+		{"id":1,"info_hash":"a","name":"A","output_folder":"/dl/","stats":{"state":"live","total_bytes":100,"progress_bytes":100,"finished":true}}
+	]}`)
+	def := &downloadclients.DownloadClient{Name: "RQ", RemoveCompletedDownloads: true}
+	p := rqbit.New(def, newSettings(), rqbit.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{
+		"a": {SeedTime: ptrDur(2 * time.Hour)},
+	}})
+	items, _ := p.GetItems(context.Background())
+	if !items[0].CanBeRemoved || !items[0].CanMoveFiles {
+		t.Errorf("seedTime-only config with finished torrent should fire time arm: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_CleanupFlags_BothArmsNilDefaultsFalse(t *testing.T) {
+	// seedConfig.Ratio = nil AND seedConfig.SeedTime = nil → neither
+	// arm fires, gate stays false. Matches C# nullable-comparison
+	// returning false when the right-hand side is null.
+	doer := newScripted()
+	doer.queue("/torrents", `{"torrents":[
+		{"id":1,"info_hash":"a","name":"A","output_folder":"/dl/","stats":{"state":"live","total_bytes":100,"progress_bytes":100,"finished":true,"uploaded_bytes":200}}
+	]}`)
+	def := &downloadclients.DownloadClient{Name: "RQ", RemoveCompletedDownloads: true}
+	p := rqbit.New(def, newSettings(), rqbit.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{
+		"a": {}, // both fields nil
+	}})
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanBeRemoved || items[0].CanMoveFiles {
+		t.Errorf("all-nil seedConfig: %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_CleanupFlags_RatioArmRequiresDivisor(t *testing.T) {
+	// C# `RQBit.cs:105` divides torrent.Ratio by 1000.0 before
+	// comparing — we mirror this verbatim (documented divergence).
+	// proxy.go computes Ratio = UploadedBytes/ProgressBytes, so a
+	// uploaded=2000, progress=100 → Ratio=20. Comparing 20/1000=0.02
+	// against seedConfig.Ratio=0.01 should fire the gate.
+	doer := newScripted()
+	doer.queue("/torrents", `{"torrents":[
+		{"id":1,"info_hash":"a","name":"A","output_folder":"/dl/","stats":{"state":"live","total_bytes":100,"progress_bytes":100,"finished":true,"uploaded_bytes":2000}}
+	]}`)
+	def := &downloadclients.DownloadClient{Name: "RQ", RemoveCompletedDownloads: true}
+	p := rqbit.New(def, newSettings(), rqbit.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{
+		"a": {Ratio: ptrFloat(0.01)},
+	}})
+	items, _ := p.GetItems(context.Background())
+	if !items[0].CanBeRemoved || !items[0].CanMoveFiles {
+		t.Errorf("ratio arm (20/1000 >= 0.01) should fire: %+v ratio=%v", items[0], items[0].SeedRatio)
+	}
+}
+
+func TestProvider_GetItems_CleanupFlags_RatioArmDoesntFireBelowGoal(t *testing.T) {
+	// uploaded=100, progress=100 → Ratio=1.0; 1.0/1000=0.001 < 0.5
+	// AND no SeedTime config → both arms fail, gate stays false.
+	doer := newScripted()
+	doer.queue("/torrents", `{"torrents":[
+		{"id":1,"info_hash":"a","name":"A","output_folder":"/dl/","stats":{"state":"live","total_bytes":100,"progress_bytes":100,"finished":true,"uploaded_bytes":100}}
+	]}`)
+	def := &downloadclients.DownloadClient{Name: "RQ", RemoveCompletedDownloads: true}
+	p := rqbit.New(def, newSettings(), rqbit.NewProxy(doer, nil), nil)
+	p.SetSeedConfigProvider(&stubSeedCfg{byHash: map[string]*downloadclients.TorrentSeedConfiguration{
+		"a": {Ratio: ptrFloat(0.5)},
+	}})
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanBeRemoved || items[0].CanMoveFiles {
+		t.Errorf("ratio arm should not fire (1/1000 < 0.5): %+v", items[0])
 	}
 }
 

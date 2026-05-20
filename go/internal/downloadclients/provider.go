@@ -171,6 +171,34 @@ type RemotePathMapper interface {
 	RemapRemoteToLocal(ctx context.Context, host string, remotePath ospath.OsPath) (ospath.OsPath, error)
 }
 
+// SeedConfigProvider is the narrow projection torrent download
+// clients consume for the post-import cleanup-gate predicate. Mirrors
+// the C# `IDownloadSeedConfigProvider` surface at
+// `Download/DownloadSeedConfigProvider.cs:12-15` reduced to the
+// single method concrete clients actually call from GetItems —
+// "given this torrent's infoHash, what seed-policy override (Ratio /
+// SeedTime) was attached at grab time?".
+//
+// Returns (nil, nil) when the torrent wasn't grabbed via a recorded
+// indexer (manual-add, pre-history-port grab) — concrete clients
+// MUST treat the nil-config case as "do not satisfy the gate"
+// matching C# `RQBit.cs:101` (the `seedConfig != null` guard short-
+// circuits the canRemove computation). This is the meaningful
+// distinction this interface introduces over the pre-J94 gate, which
+// was forced to false-default for lack of a seed-config binding.
+//
+// Production binds [*download.SeedConfigProvider] (slice 5.J91) via
+// Go's structural typing; concrete client constructors cast
+// [Dependencies.SeedConfigProvider] to this interface. A nil binding
+// degrades the gate to "never satisfy" — the pre-J94 stub-gate
+// posture preserved for any DC whose composition root doesn't yet
+// inject the binding.
+//
+// Slice 5.J94 (Phase 5.J seed-config wire-up arc).
+type SeedConfigProvider interface {
+	GetSeedConfiguration(ctx context.Context, infoHash string) (*TorrentSeedConfiguration, error)
+}
+
 // DiskProvider is the narrow projection concrete download clients
 // consume for the post-removal disk-cleanup arm of RemoveItem (when
 // the user requested deleteData=true). Mirrors the C# `IDiskProvider`

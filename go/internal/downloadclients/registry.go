@@ -77,6 +77,17 @@ type Dependencies struct {
 	// StatusService is the [*downloadclientstatus.Service] for
 	// back-off escalation. Bound by main.go.
 	StatusService any
+
+	// SeedConfigProvider is the per-grab seed-policy lookup the
+	// torrent clients' cleanup-gate predicate consumes. Bound to
+	// the future `*download.SeedConfigProvider` (slice 5.J91) via
+	// structural typing; concrete torrent client constructors cast
+	// to [SeedConfigProvider]. nil when the composition root
+	// doesn't yet inject the binding — the cleanup-gate degrades
+	// to "never satisfy" matching the pre-J94 stub posture.
+	//
+	// Slice 5.J94 (Phase 5.J seed-config wire-up arc).
+	SeedConfigProvider any
 }
 
 // Registry is the per-family typed Constructor map. Concurrent-

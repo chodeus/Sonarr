@@ -154,9 +154,15 @@ type addResponseDetails struct {
 }
 
 // Torrent is the proxy-side projection consumers see (mirrors C#
-// `RQBitTorrent.cs:3-17` minus the unused FinishedTime + Category
-// fields the Go port doesn't carry). Computed once by [Proxy.GetTorrents]
-// from the per-row wire shape.
+// `RQBitTorrent.cs:3-17` minus the unused Category field). Computed
+// once by [Proxy.GetTorrents] from the per-row wire shape.
+//
+// FinishedTime carries the C# `RQBitTorrent.cs:16` field declared on
+// the projection but never populated by the C# proxy (the RQBit
+// /torrents wire shape doesn't surface a finished-at timestamp). The
+// field is plumbed here so RQBit's seed-time cleanup-gate arm at
+// `RQBit.cs:110` ports verbatim — both impls observe FinishedTime=0,
+// which trivially passes the time gate (now - epoch(0) >= seedConfig.SeedTime).
 type Torrent struct {
 	ID            int64
 	Name          string
@@ -170,6 +176,7 @@ type Torrent struct {
 	HasError      bool
 	Path          string
 	Message       string
+	FinishedTime  int64
 }
 
 // GetVersion fires GET `/` and returns the `version` field. Used
