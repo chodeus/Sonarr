@@ -2,6 +2,7 @@ package aria2_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/aria2"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // stagedServer dispatches per-method responses so a single test can
@@ -359,6 +361,108 @@ func TestRemoveItem_FiresRemoveDownloadResultForComplete(t *testing.T) {
 	}
 	if h.calls["aria2.removeDownloadResult"] != 1 {
 		t.Errorf("removeDownloadResult fires once; got %d", h.calls["aria2.removeDownloadResult"])
+	}
+}
+
+// stubDisk for the J112 deleteData-arm tests.
+type stubDisk struct {
+	called bool
+	path   string
+	err    error
+}
+
+func (s *stubDisk) DeleteFolder(path string, _ bool) error {
+	s.called = true
+	s.path = path
+	return s.err
+}
+
+func TestRemoveItem_DeleteData_DiskProviderCalled(t *testing.T) {
+	t.Parallel()
+	h := newStagedServer(t)
+	h.set("aria2.tellStopped", tellResponse(torrent{
+		gid: "g2", infoHash: "ABC", status: "complete", total: 100, completed: 100,
+		files: []string{"/d/x"},
+	}.marshal()))
+	h.set("aria2.removeDownloadResult", okString)
+	p := aria2.NewProxy(h.srv.Client(), nil)
+	a := aria2.New(nil, h.settings(), p, nil)
+	disk := &stubDisk{}
+	a.SetDiskProvider(disk)
+	item := &downloadclients.Item{
+		DownloadID: "ABC",
+		OutputPath: ospath.New("/data/downloads/Foo.S01E02"),
+	}
+	if err := a.RemoveItem(context.Background(), item, true); err != nil {
+		t.Fatal(err)
+	}
+	if !disk.called {
+		t.Errorf("DiskProvider.DeleteFolder not called")
+	}
+	if disk.path != "/data/downloads/Foo.S01E02" {
+		t.Errorf("DiskProvider path=%q, want /data/downloads/Foo.S01E02", disk.path)
+	}
+	if h.calls["aria2.removeDownloadResult"] != 1 {
+		t.Errorf("aria2 removal still expected after disk arm; got %d", h.calls["aria2.removeDownloadResult"])
+	}
+}
+
+func TestRemoveItem_DeleteData_NoDiskProviderWarns(t *testing.T) {
+	t.Parallel()
+	h := newStagedServer(t)
+	h.set("aria2.tellStopped", tellResponse(torrent{
+		gid: "g2", infoHash: "ABC", status: "complete", total: 100, completed: 100,
+	}.marshal()))
+	h.set("aria2.removeDownloadResult", okString)
+	p := aria2.NewProxy(h.srv.Client(), nil)
+	a := aria2.New(nil, h.settings(), p, nil)
+	if err := a.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "ABC"}, true); err != nil {
+		t.Errorf("nil DiskProvider should degrade to warn, not error: %v", err)
+	}
+}
+
+func TestRemoveItem_DeleteData_EmptyOutputPathSkipsDisk(t *testing.T) {
+	t.Parallel()
+	h := newStagedServer(t)
+	h.set("aria2.tellStopped", tellResponse(torrent{
+		gid: "g2", infoHash: "ABC", status: "complete", total: 100, completed: 100,
+	}.marshal()))
+	h.set("aria2.removeDownloadResult", okString)
+	p := aria2.NewProxy(h.srv.Client(), nil)
+	a := aria2.New(nil, h.settings(), p, nil)
+	disk := &stubDisk{}
+	a.SetDiskProvider(disk)
+	if err := a.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "ABC"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if disk.called {
+		t.Errorf("DiskProvider.DeleteFolder fired on empty OutputPath")
+	}
+}
+
+func TestRemoveItem_DeleteData_DiskErrorDoesNotAbort(t *testing.T) {
+	t.Parallel()
+	h := newStagedServer(t)
+	h.set("aria2.tellStopped", tellResponse(torrent{
+		gid: "g2", infoHash: "ABC", status: "complete", total: 100, completed: 100,
+	}.marshal()))
+	h.set("aria2.removeDownloadResult", okString)
+	p := aria2.NewProxy(h.srv.Client(), nil)
+	a := aria2.New(nil, h.settings(), p, nil)
+	disk := &stubDisk{err: errors.New("permission denied")}
+	a.SetDiskProvider(disk)
+	item := &downloadclients.Item{
+		DownloadID: "ABC",
+		OutputPath: ospath.New("/data/Foo"),
+	}
+	if err := a.RemoveItem(context.Background(), item, true); err != nil {
+		t.Errorf("disk-arm failure should not abort: %v", err)
+	}
+	if !disk.called {
+		t.Error("disk provider expected to be called")
+	}
+	if h.calls["aria2.removeDownloadResult"] != 1 {
+		t.Errorf("aria2 removal expected after disk failure")
 	}
 }
 

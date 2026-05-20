@@ -37,6 +37,15 @@ type Aria2 struct {
 	proxy    *Proxy
 	def      *downloadclients.DownloadClient
 	log      *slog.Logger
+
+	// disk is the optional [downloadclients.DiskProvider] consumed by
+	// RemoveItem's deleteData arm to call DeleteFolder against
+	// item.OutputPath. aria2 itself doesn't support file deletion
+	// (issue #728), so the C# tree's DeleteItemData arm at
+	// `Aria2.cs:185-188` reaches into the shared DiskProvider for
+	// the on-disk cleanup. Slice 5.J112 wire-up mirrors the J111
+	// rTorrent + NZBGet 6.C3 pattern.
+	disk downloadclients.DiskProvider
 }
 
 // minVersion is the aria2c version floor [Test] enforces. Mirrors
@@ -264,11 +273,17 @@ func (a *Aria2) GetImportItem(_ context.Context, item *downloadclients.Item, _ *
 }
 
 // RemoveItem ports `Aria2.RemoveItem` at `:152-189`. aria2 doesn't
-// support file deletion (https://github.com/aria2/aria2/issues/728)
-// — deleteData is documented as unsupported. The implementation
-// looks up the torrent by InfoHash to get the GID, then dispatches
-// to forceRemove (for active downloads) or removeDownloadResult
-// (for complete/error/removed).
+// support file deletion via its own API (issue #728), so the
+// deleteData arm calls [downloadclients.DiskProvider.DeleteFolder]
+// AFTER the aria2-side removal (matches C# `:185-188` ordering
+// where DeleteItemData runs as the last step).
+//
+// The implementation looks up the torrent by InfoHash to get the
+// GID, then dispatches to forceRemove (for active downloads) or
+// removeDownloadResult (for complete/error/removed). Nil disk-provider
+// OR empty OutputPath degrades the deleteData arm to a warn log —
+// the aria2-side removal still runs, files just stay on disk
+// (same posture as NZBGet/rTorrent).
 //
 // Returns nil + warn-log when the torrent isn't found (matches C#
 // `:160-163` posture — log + return, don't surface as fatal).
@@ -282,10 +297,6 @@ func (a *Aria2) RemoveItem(ctx context.Context, item *downloadclients.Item, dele
 	hash := strings.ToLower(strings.TrimSpace(item.DownloadID))
 	if hash == "" {
 		return errors.New("aria2: RemoveItem: empty DownloadID")
-	}
-	if deleteData {
-		a.log.Warn("aria2: deleteData requested but aria2 doesn't support file deletion (issue #728) — only removing from queue",
-			slog.String("hash", hash))
 	}
 	torrents, err := a.proxy.GetTorrents(ctx, a.settings)
 	if err != nil {
@@ -304,9 +315,41 @@ func (a *Aria2) RemoveItem(ctx context.Context, item *downloadclients.Item, dele
 		return nil
 	}
 	if match.Status == "complete" || match.Status == "error" || match.Status == "removed" {
-		return a.proxy.RemoveCompletedTorrent(ctx, match.GID, a.settings)
+		if err := a.proxy.RemoveCompletedTorrent(ctx, match.GID, a.settings); err != nil {
+			return err
+		}
+	} else {
+		if err := a.proxy.RemoveTorrent(ctx, match.GID, a.settings); err != nil {
+			return err
+		}
 	}
-	return a.proxy.RemoveTorrent(ctx, match.GID, a.settings)
+	if deleteData {
+		switch {
+		case a.disk == nil:
+			a.log.Warn("aria2: RemoveItem: deleteData=true requested but no DiskProvider is wired; the torrent is removed from aria2 but files remain on disk",
+				slog.String("hash", hash))
+		case item.OutputPath.IsEmpty():
+			a.log.Debug("aria2: RemoveItem: deleteData=true but item.OutputPath is empty; skipping on-disk delete",
+				slog.String("hash", hash))
+		default:
+			if err := a.disk.DeleteFolder(item.OutputPath.FullPath(), true); err != nil {
+				a.log.Warn("aria2: RemoveItem: DiskProvider.DeleteFolder failed; the torrent is still removed from aria2",
+					slog.String("hash", hash),
+					slog.String("path", item.OutputPath.FullPath()),
+					slog.Any("err", err))
+			}
+		}
+	}
+	return nil
+}
+
+// SetDiskProvider binds the optional [downloadclients.DiskProvider]
+// the RemoveItem deleteData arm consults. Nil-binding leaves the
+// arm in its pre-J112 warn-log state.
+// Slice 5.J112 — same pattern as J111 rTorrent + NZBGet 6.C3.
+func (a *Aria2) SetDiskProvider(d downloadclients.DiskProvider) *Aria2 {
+	a.disk = d
+	return a
 }
 
 // GetStatus ports `Aria2.GetStatus` at `:191-198`. Returns
@@ -398,7 +441,11 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 		}
 		proxy = NewProxy(doer, log)
 	}
-	return New(def, settings, proxy, log), nil
+	a := New(def, settings, proxy, log)
+	if disk, ok := deps.DiskProvider.(downloadclients.DiskProvider); ok {
+		a.SetDiskProvider(disk)
+	}
+	return a, nil
 }
 
 // init registers Aria2 with the global registry.
