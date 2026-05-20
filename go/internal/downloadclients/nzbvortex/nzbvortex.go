@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // NzbVortex is the [downloadclients.Provider] implementation for
@@ -27,6 +30,12 @@ type NzbVortex struct {
 	def      *downloadclients.DownloadClient
 	log      *slog.Logger
 	proxy    *Proxy
+
+	// rpm is the optional remote-path mapper consulted by GetItems
+	// when resolving OutputPath from the NZBVortex-side DestinationPath.
+	// Nil → DestinationPath flows through verbatim (preserves the
+	// pre-Phase-6.B behaviour for unmapped setups).
+	rpm downloadclients.RemotePathMapper
 }
 
 // New constructs an NzbVortex Provider. proxy=nil binds a default
@@ -95,11 +104,151 @@ func (n *NzbVortex) Download(ctx context.Context, req *downloadclients.GrabReque
 	return id, nil
 }
 
-// GetItems is a STUB at 5.J66. Follow-up: Proxy.GetQueue + state
-// table at C# `:51-112` + GetFiles output-path resolution at
-// `:232-260`.
-func (n *NzbVortex) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return []*downloadclients.Item{}, nil
+// GetItems ports `NzbVortex.GetItems` at C# `:51-112`. Walks the
+// queue via [Proxy.GetQueue] with doneLimit=30 (matches C# `:53`),
+// then projects each [QueueItem] into a [downloadclients.Item]
+// with the status table from C# `:71-94` + the IsEncrypted gate
+// at `:98-101` + the RemainingTime=zero set on Completed at
+// `:103-106`. OutputPath is resolved via [resolveOutputPath]
+// which mirrors C# `GetOutputPath` at `:232-260` (the basename-
+// match short-circuit + the GetFiles fall-through for renamed
+// completed downloads).
+//
+// Status table (priority order — IsPaused short-circuits the
+// state-switch first):
+//
+//   - IsPaused → Paused
+//   - State==Waiting → Queued
+//   - State==Done → Completed
+//   - State in {UncompressFailed, CheckFailedDataCorrupt,
+//     BadlyEncoded} → Failed
+//   - default → Downloading
+func (n *NzbVortex) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
+	if n.proxy == nil {
+		return []*downloadclients.Item{}, nil
+	}
+	queue, err := n.proxy.GetQueue(ctx, n.settings, 30)
+	if err != nil {
+		return nil, fmt.Errorf("nzbvortex: GetQueue: %w", err)
+	}
+	info := n.itemClientInfo()
+	out := make([]*downloadclients.Item, 0, len(queue))
+	for _, q := range queue {
+		out = append(out, n.toItem(ctx, info, q))
+	}
+	return out, nil
+}
+
+// toItem projects one [QueueItem] into a [downloadclients.Item].
+func (n *NzbVortex) toItem(ctx context.Context, info *downloadclients.ItemClientInfo, q *QueueItem) *downloadclients.Item {
+	id := q.AddUUID
+	if strings.TrimSpace(id) == "" {
+		id = fmt.Sprintf("%d", q.ID)
+	}
+	item := &downloadclients.Item{
+		DownloadClientInfo: info,
+		DownloadID:         id,
+		Category:           q.GroupName,
+		Title:              q.UiTitle,
+		TotalSize:          q.TotalDownloadSize,
+		RemainingSize:      q.TotalDownloadSize - q.DownloadedSize,
+		CanBeRemoved:       true,
+		CanMoveFiles:       true,
+	}
+
+	switch {
+	case q.IsPaused:
+		item.Status = downloadclients.DownloadItemStatusPaused
+	case q.State == StateWaiting:
+		item.Status = downloadclients.DownloadItemStatusQueued
+	case q.State == StateDone:
+		item.Status = downloadclients.DownloadItemStatusCompleted
+	case q.State == StateUncompressFailed ||
+		q.State == StateCheckFailedDataCorrupt ||
+		q.State == StateBadlyEncoded:
+		item.Status = downloadclients.DownloadItemStatusFailed
+	default:
+		item.Status = downloadclients.DownloadItemStatusDownloading
+	}
+
+	item.OutputPath = n.resolveOutputPath(ctx, q, item)
+
+	if q.State == StatePasswordRequest {
+		item.IsEncrypted = true
+	}
+	if item.Status == downloadclients.DownloadItemStatusCompleted {
+		d := time.Duration(0)
+		item.RemainingTime = &d
+	}
+	return item
+}
+
+// resolveOutputPath ports `NzbVortex.GetOutputPath` at C# `:232-260`.
+//
+//  1. Remap DestinationPath through the bound [RemotePathMapper].
+//  2. If the basename matches UiTitle → return the remapped path.
+//  3. If State != Done → return empty OsPath (the C# code returns
+//     `new OsPath(null)` at `:244`; the Go port substitutes the
+//     zero OsPath value).
+//  4. Call Proxy.GetFiles(id). If >1 file → mark item Warning
+//     with a multi-files message (matches C# `:249-256`). Then
+//     return `outputPath + filesResponse[0].FileName` (matches C# `:259`).
+//
+// The function may also mutate `item` (Status + Message in the
+// multi-files branch) — same side-effect as the C# version that
+// passes the DownloadClientItem by-ref into GetOutputPath.
+func (n *NzbVortex) resolveOutputPath(ctx context.Context, q *QueueItem, item *downloadclients.Item) ospath.OsPath {
+	remote := ospath.New(q.DestinationPath)
+	if n.rpm != nil && strings.TrimSpace(q.DestinationPath) != "" {
+		if mapped, err := n.rpm.RemapRemoteToLocal(ctx, n.settings.Host, remote); err == nil {
+			remote = mapped
+		} else {
+			n.log.Debug("nzbvortex: RemapRemoteToLocal failed", "destinationPath", q.DestinationPath, "err", err)
+		}
+	}
+	if remote.FileName() == q.UiTitle {
+		return remote
+	}
+	if q.State != StateDone {
+		return ospath.OsPath{}
+	}
+	files, err := n.proxy.GetFiles(ctx, n.settings, q.ID)
+	if err != nil {
+		n.log.Debug("nzbvortex: GetFiles failed", "id", q.ID, "err", err)
+		return remote
+	}
+	if len(files) == 0 {
+		return remote
+	}
+	if len(files) > 1 {
+		item.Status = downloadclients.DownloadItemStatusWarning
+		item.Message = fmt.Sprintf("Multiple files in download path %q — Sonarr can't pick a canonical filename", remote.FullPath())
+		n.log.Debug("nzbvortex: multi-file completed download", "outputPath", remote.FullPath(), "count", len(files))
+	}
+	return ospath.New(filepath.Join(remote.FullPath(), files[0].FileName))
+}
+
+// itemClientInfo mirrors C# `DownloadClientItemClientInfo.FromDownloadClient(this, false)`.
+func (n *NzbVortex) itemClientInfo() *downloadclients.ItemClientInfo {
+	info := &downloadclients.ItemClientInfo{
+		Protocol: n.Protocol(),
+		Type:     Implementation,
+		Name:     n.Name(),
+	}
+	if n.def != nil {
+		info.ID = n.def.ID
+		info.Name = n.def.Name
+		info.RemoveCompletedDownloads = n.def.RemoveCompletedDownloads
+	}
+	return info
+}
+
+// SetRemotePathMapper binds the optional remote-path mapper. Same
+// pattern as Hadouken / Transmission / qBittorrent — production
+// wires this via the registry constructor's cast from
+// [downloadclients.Dependencies.RemotePathMappingService].
+func (n *NzbVortex) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) {
+	n.rpm = rpm
 }
 
 // GetImportItem is the C# base passthrough.
@@ -321,7 +470,11 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	if l, ok := deps.Logger.(*slog.Logger); ok {
 		log = l
 	}
-	return New(def, settings, nil, log), nil
+	n := New(def, settings, nil, log)
+	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
+		n.SetRemotePathMapper(rpm)
+	}
+	return n, nil
 }
 
 func init() {

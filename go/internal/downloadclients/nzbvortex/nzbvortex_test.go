@@ -14,6 +14,7 @@ import (
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/nzbvortex"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // scriptedDoer queues responses by URL path so the test can stage
@@ -501,13 +502,6 @@ func TestProvider_RemainingStubs(t *testing.T) {
 	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); !errors.Is(err, nzbvortex.ErrNotImplemented) {
 		t.Errorf("RemoveItem err = %v, want ErrNotImplemented", err)
 	}
-	items, err := p.GetItems(context.Background())
-	if err != nil {
-		t.Fatalf("GetItems err = %v", err)
-	}
-	if len(items) != 0 {
-		t.Errorf("GetItems len = %d, want 0", len(items))
-	}
 }
 
 func TestProvider_Download_NilRequest(t *testing.T) {
@@ -729,6 +723,205 @@ func TestProvider_MarkItemAsImported(t *testing.T) {
 	if err := p.MarkItemAsImported(context.Background(), &downloadclients.Item{}); !errors.Is(err, downloadclients.ErrMarkAsImportedUnsupported) {
 		t.Errorf("err = %v, want ErrMarkAsImportedUnsupported", err)
 	}
+}
+
+// queueAuth queues the nonce + login pair so subsequent auth-
+// required calls can run through.
+func queueAuth(doer *scriptedDoer) {
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Successful","sessionId":"SID"}`)
+}
+
+func TestProvider_GetItems_EmptyQueueReturnsEmpty(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[]}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	items, err := p.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("len = %d, want 0", len(items))
+	}
+}
+
+func TestProvider_GetItems_StatusTable(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	// One queue item per status arm. uiTitle matches destinationPath
+	// basename so the GetFiles fall-through is NOT triggered for
+	// status-table coverage.
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[
+		{"id":1,"uiTitle":"A","destinationPath":"/dl/A","addUUID":"u-A","groupName":"sonarr-tv","totalDownloadSize":100,"downloadedSize":50,"isPaused":true,"state":1},
+		{"id":2,"uiTitle":"B","destinationPath":"/dl/B","addUUID":"u-B","groupName":"sonarr-tv","totalDownloadSize":100,"downloadedSize":0,"isPaused":false,"state":0},
+		{"id":3,"uiTitle":"C","destinationPath":"/dl/C","addUUID":"u-C","groupName":"sonarr-tv","totalDownloadSize":100,"downloadedSize":100,"isPaused":false,"state":20},
+		{"id":4,"uiTitle":"D","destinationPath":"/dl/D","addUUID":"u-D","groupName":"sonarr-tv","totalDownloadSize":100,"downloadedSize":100,"isPaused":false,"state":21},
+		{"id":5,"uiTitle":"E","destinationPath":"/dl/E","addUUID":"u-E","groupName":"sonarr-tv","totalDownloadSize":100,"downloadedSize":100,"isPaused":false,"state":22},
+		{"id":6,"uiTitle":"F","destinationPath":"/dl/F","addUUID":"u-F","groupName":"sonarr-tv","totalDownloadSize":100,"downloadedSize":100,"isPaused":false,"state":24},
+		{"id":7,"uiTitle":"G","destinationPath":"/dl/G","addUUID":"u-G","groupName":"sonarr-tv","totalDownloadSize":100,"downloadedSize":50,"isPaused":false,"state":3}
+	]}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	items, err := p.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(items) != 7 {
+		t.Fatalf("len = %d, want 7", len(items))
+	}
+
+	want := map[string]downloadclients.DownloadItemStatus{
+		"u-A": downloadclients.DownloadItemStatusPaused,      // isPaused short-circuits state
+		"u-B": downloadclients.DownloadItemStatusQueued,      // Waiting (0)
+		"u-C": downloadclients.DownloadItemStatusCompleted,   // Done (20)
+		"u-D": downloadclients.DownloadItemStatusFailed,      // UncompressFailed (21)
+		"u-E": downloadclients.DownloadItemStatusFailed,      // CheckFailedDataCorrupt (22)
+		"u-F": downloadclients.DownloadItemStatusFailed,      // BadlyEncoded (24)
+		"u-G": downloadclients.DownloadItemStatusDownloading, // default (Saving=3)
+	}
+	for _, it := range items {
+		got, ok := want[it.DownloadID]
+		if !ok {
+			t.Errorf("unexpected DownloadID %q", it.DownloadID)
+			continue
+		}
+		if it.Status != got {
+			t.Errorf("%s Status = %v, want %v", it.DownloadID, it.Status, got)
+		}
+	}
+}
+
+func TestProvider_GetItems_DownloadIDFallsBackToNumericID(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[
+		{"id":42,"uiTitle":"X","destinationPath":"/dl/X","groupName":"sonarr-tv","totalDownloadSize":1,"isPaused":false,"state":1}
+	]}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 {
+		t.Fatalf("len = %d", len(items))
+	}
+	if items[0].DownloadID != "42" {
+		t.Errorf("DownloadID = %q, want '42' (numeric Id fallback when AddUUID empty)", items[0].DownloadID)
+	}
+}
+
+func TestProvider_GetItems_PasswordRequestFlagsEncrypted(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[
+		{"id":1,"uiTitle":"X","destinationPath":"/dl/X","addUUID":"u","groupName":"sonarr-tv","isPaused":false,"state":5}
+	]}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if !items[0].IsEncrypted {
+		t.Errorf("IsEncrypted = false, want true on PasswordRequest state")
+	}
+}
+
+func TestProvider_GetItems_CompletedZerosRemainingTime(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[
+		{"id":1,"uiTitle":"X","destinationPath":"/dl/X","addUUID":"u","groupName":"sonarr-tv","isPaused":false,"state":20}
+	]}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].RemainingTime == nil || *items[0].RemainingTime != 0 {
+		t.Errorf("RemainingTime = %v, want pointer to 0 on Completed", items[0].RemainingTime)
+	}
+}
+
+func TestProvider_GetItems_OutputPath_BasenameMatchReturnsRemapped(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	// UiTitle == basename(DestinationPath) → no GetFiles call.
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[
+		{"id":1,"uiTitle":"Show.S01E01","destinationPath":"/dl/Show.S01E01","addUUID":"u","groupName":"sonarr-tv","isPaused":false,"state":20}
+	]}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	p.SetRemotePathMapper(stubRemapper{from: "/dl/Show.S01E01", to: "/local/Show.S01E01"})
+	items, _ := p.GetItems(context.Background())
+	if items[0].OutputPath.FullPath() != "/local/Show.S01E01" {
+		t.Errorf("OutputPath = %q, want /local/Show.S01E01 (basename match → remapped, no GetFiles)", items[0].OutputPath.FullPath())
+	}
+	// Verify /api/file/1 was NOT called.
+	for _, c := range doer.calls {
+		if strings.HasPrefix(c.path, "/api/file/") {
+			t.Errorf("GetFiles was called for basename-match path: %v", c)
+		}
+	}
+}
+
+func TestProvider_GetItems_OutputPath_NotDoneReturnsEmpty(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	// UiTitle != basename AND State != Done → empty OsPath.
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[
+		{"id":1,"uiTitle":"Show.S01E01","destinationPath":"/dl/different.name","addUUID":"u","groupName":"sonarr-tv","isPaused":false,"state":3}
+	]}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].OutputPath.FullPath() != "" {
+		t.Errorf("OutputPath = %q, want empty (UiTitle mismatch + State != Done)", items[0].OutputPath.FullPath())
+	}
+}
+
+func TestProvider_GetItems_OutputPath_DoneWithSingleFile(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[
+		{"id":1,"uiTitle":"Show.S01E01","destinationPath":"/dl/different.name","addUUID":"u","groupName":"sonarr-tv","isPaused":false,"state":20}
+	]}`)
+	doer.queue("/api/file/1", `{"result":"Ok","files":[{"id":1,"fileName":"actual.mkv"}]}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].OutputPath.FullPath() != "/dl/different.name/actual.mkv" {
+		t.Errorf("OutputPath = %q, want /dl/different.name/actual.mkv", items[0].OutputPath.FullPath())
+	}
+	if items[0].Status != downloadclients.DownloadItemStatusCompleted {
+		t.Errorf("Status = %v, want Completed (single-file Done path)", items[0].Status)
+	}
+}
+
+func TestProvider_GetItems_OutputPath_DoneWithMultipleFilesFlagsWarning(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[
+		{"id":1,"uiTitle":"Pack.S01","destinationPath":"/dl/different.pack","addUUID":"u","groupName":"sonarr-tv","isPaused":false,"state":20}
+	]}`)
+	doer.queue("/api/file/1", `{"result":"Ok","files":[{"id":1,"fileName":"part1.mkv"},{"id":2,"fileName":"part2.mkv"}]}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].Status != downloadclients.DownloadItemStatusWarning {
+		t.Errorf("Status = %v, want Warning (multi-file branch)", items[0].Status)
+	}
+	if items[0].Message == "" {
+		t.Errorf("Message empty, want the multi-files warning")
+	}
+}
+
+func TestProvider_GetItems_PropagatesGetQueueError(t *testing.T) {
+	doer := newScripted()
+	queueAuth(doer)
+	doer.queueErr("/api/nzb", errors.New("dial tcp"))
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	_, err := p.GetItems(context.Background())
+	if !errors.Is(err, nzbvortex.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable", err)
+	}
+}
+
+// stubRemapper is a minimal RemotePathMapper for the OutputPath
+// tests.
+type stubRemapper struct{ from, to string }
+
+func (s stubRemapper) RemapRemoteToLocal(_ context.Context, _ string, p ospath.OsPath) (ospath.OsPath, error) {
+	if p.FullPath() == s.from {
+		return ospath.New(s.to), nil
+	}
+	return p, nil
 }
 
 func TestRegistry_RegistersNzbVortex(t *testing.T) {

@@ -393,6 +393,36 @@ type queueResponse struct {
 	Items []*QueueItem `json:"nzbs"`
 }
 
+// File ports C# `NzbVortexFile` at `NzbVortexFile.cs:3-15`. Only
+// the columns Sonarr reads are surfaced — Id, FileName. (The C#
+// class has a typo'd `DileSize` field at `:7` that goes
+// uncomputed in Sonarr's GetItems path; the Go port skips it
+// entirely.)
+type File struct {
+	ID       int    `json:"id"`
+	FileName string `json:"fileName"`
+}
+
+// filesResponse mirrors C# `NzbVortexFilesResponse` at
+// `Responses/NzbVortexFilesResponse.cs`.
+type filesResponse struct {
+	responseBase
+	Files []*File `json:"files"`
+}
+
+// GetFiles fires `file/{id}`. Auth required. Mirrors C#
+// `NzbVortexProxy.GetFiles` at `:107-114`. Used by GetItems to
+// resolve the on-disk filename when DestinationPath's basename
+// doesn't match the UiTitle (the C# fall-through at
+// `NzbVortex.cs:247-259`).
+func (p *Proxy) GetFiles(ctx context.Context, s Settings, id int) ([]*File, error) {
+	var out filesResponse
+	if err := p.get(ctx, s, fmt.Sprintf("file/%d", id), nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out.Files, nil
+}
+
 // AddResponse mirrors C# `NzbVortexAddResponse` at
 // `Responses/NzbVortexAddResponse.cs`. The C# `JsonProperty("add_uuid")`
 // at `:6` renames Id to `add_uuid` on the wire — the Go tag matches.
