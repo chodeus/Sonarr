@@ -136,39 +136,12 @@ func (e *errTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
 	return nil, e.err
 }
 
-// TestProxyHostConfigStub_ReportsDisabled locks the slice 4.BN
-// (C-cleanup [C10]) wiring contract: until HostConfig keyvalues
-// ports, the stub reports the proxy as disabled so ProxyCheck.Run
-// short-circuits to OK every cadence.
-func TestProxyHostConfigStub_ReportsDisabled(t *testing.T) {
-	t.Parallel()
-
-	var stub proxyHostConfigStub
-	if stub.ProxyEnabled() {
-		t.Errorf("ProxyEnabled = true, want false until HostConfig keyvalues port lands")
-	}
-	if got := stub.ProxyHostname(); got != "" {
-		t.Errorf("ProxyHostname = %q, want empty", got)
-	}
-}
-
-// TestProxyPingerStub_AlwaysErrors confirms the defensive pinger
-// returns a descriptive error. It is never invoked while the
-// hostconfig stub keeps ProxyEnabled=false; the test exists to catch
-// a future wiring change that flips the enable flag without swapping
-// the pinger.
-func TestProxyPingerStub_AlwaysErrors(t *testing.T) {
-	t.Parallel()
-
-	pinger := newProxyPingerStub()
-	status, err := pinger(t.Context())
-	if err == nil {
-		t.Fatalf("expected error from stub pinger, got nil (status=%d)", status)
-	}
-	if status != 0 {
-		t.Errorf("status = %d, want 0", status)
-	}
-	if !strings.Contains(err.Error(), "hostconfig") {
-		t.Errorf("error %q should mention the deferred HostConfig port", err)
-	}
-}
+// Slice 5.J56 (audit B.5 ProxyCheck closure): the previous
+// proxyHostConfigStub / newProxyPingerStub tests are removed —
+// the stubs were replaced with real adapters around
+// `*config.Provider` + a net/http pinger that uses the configured
+// proxy. The wiring contract is verified by the compile-time
+// guard `_ healthcheck.ProxyCheckConfig = proxyHostConfigAdapter{}`
+// in healthcheck_wiring.go and by the existing
+// `internal/healthcheck/proxy_test.go` which exercises the full
+// check logic against stubs.

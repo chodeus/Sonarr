@@ -1670,9 +1670,9 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// OK every cadence — mirrors C# behavior for a freshly-installed
 	// instance with no proxy configured.
 	proxyCheck, err := healthcheck.NewProxyCheck(
-		proxyHostConfigStub{},
+		proxyHostConfigAdapter{cfg: configProv},
 		nil, // resolver: defaults to net.LookupIP
-		newProxyPingerStub(),
+		newProxyPinger(configProv),
 	)
 	if err != nil {
 		return fmt.Errorf("healthcheck proxy: %w", err)

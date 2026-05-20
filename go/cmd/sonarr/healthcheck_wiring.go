@@ -17,9 +17,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
+	"sonarr.tv/sonarr/internal/config"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/importlists"
@@ -282,33 +285,83 @@ func (a skyHookProberAdapter) ProbeKnownSeries(ctx context.Context) error {
 	return err
 }
 
-// proxyHostConfigStub satisfies [healthcheck.ProxyCheckConfig] until
-// the C# `HostConfig` keyvalues-backed `IConfigService` ports. C#
-// reads `ProxyEnabled` + `ProxyHostname` from the keyvalues table
-// (`IConfigService.ProxyEnabled` / `IConfigService.ProxyHostname`);
-// the Go-port hasn't ported that persistence layer yet, so the stub
-// reports the proxy as disabled — which short-circuits
-// `ProxyCheck.Run` at C# `ProxyCheck.cs:35` and yields OK every
-// cadence. Once HostConfig keyvalues lands, swap this stub for a
-// real adapter; the call sites here are the only consumers.
+// proxyHostConfigAdapter satisfies [healthcheck.ProxyCheckConfig] by
+// reading from the keyvalues-backed `*config.Provider` (which ports
+// the C# `IConfigService.ProxyEnabled` + `IConfigService.ProxyHostname`).
+// Slice 5.J56 (audit B.5 ProxyCheck closure): replaced the
+// proxyHostConfigStub now that the config.Provider keyvalues
+// accessors exist.
+type proxyHostConfigAdapter struct {
+	cfg *config.Provider
+}
+
+func (a proxyHostConfigAdapter) ProxyEnabled() bool    { return a.cfg.ProxyEnabled() }
+func (a proxyHostConfigAdapter) ProxyHostname() string { return a.cfg.ProxyHostname() }
+
+// newProxyPinger returns a [healthcheck.ProxyCheckPinger] that pings
+// `services.sonarr.tv/v1/ping` THROUGH the configured proxy.
+// Mirrors C# `ProxyCheck.cs:54-89`: builds the request via the cloud
+// request builder + sends through the active HTTP client. The Go
+// port uses `net/http` with a `Transport.Proxy` set to the
+// configured proxy URL when ProxyEnabled is true; on a clean Sonarr
+// install (ProxyEnabled=false) the pinger is never invoked.
 //
-// Slice 4.BN (C-cleanup [C10]).
-type proxyHostConfigStub struct{}
-
-func (proxyHostConfigStub) ProxyEnabled() bool    { return false }
-func (proxyHostConfigStub) ProxyHostname() string { return "" }
-
-// newProxyPingerStub returns a pinger that always errors. It is never
-// invoked while `proxyHostConfigStub.ProxyEnabled()` returns false
-// (the check short-circuits at the enable gate), so the error path
-// here is purely defensive — it will only surface if a future wiring
-// change flips ProxyEnabled on without first swapping the pinger.
-// Mirrors the pattern of the "wires when X ports" deferred adapters
-// elsewhere in serve().
-func newProxyPingerStub() healthcheck.ProxyCheckPinger {
-	return func(_ context.Context) (int, error) {
-		return 0, fmt.Errorf("proxy pinger not yet wired: hostconfig keyvalues + cloud-request-builder ports pending")
+// Returns the HTTP status code on a 2xx-or-3xx response, or 400
+// when the upstream returns BadRequest (the check at C# `:63-75`
+// only treats 400 as a hard failure). Other status codes pass
+// through transparently — the check ignores non-400 statuses.
+//
+// Slice 5.J56 (audit B.5 ProxyCheck closure).
+func newProxyPinger(cfg *config.Provider) healthcheck.ProxyCheckPinger {
+	return func(ctx context.Context) (int, error) {
+		proxyURL := buildProxyURL(cfg)
+		transport := &http.Transport{}
+		if proxyURL != nil {
+			transport.Proxy = http.ProxyURL(proxyURL)
+		}
+		client := &http.Client{
+			Transport: transport,
+			Timeout:   10 * time.Second,
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://services.sonarr.tv/v1/ping", nil)
+		if err != nil {
+			return 0, err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode, nil
 	}
+}
+
+// buildProxyURL constructs a net/url.URL the http.Transport can
+// consume for `http.ProxyURL`. Returns nil when the proxy is
+// disabled or has an empty hostname. The C# tree supports HTTP +
+// SOCKS5; the Go port currently supports only HTTP/HTTPS — SOCKS5
+// would need `golang.org/x/net/proxy` integration, deferred until a
+// user reports the gap.
+func buildProxyURL(cfg *config.Provider) *url.URL {
+	if !cfg.ProxyEnabled() {
+		return nil
+	}
+	host := strings.TrimSpace(cfg.ProxyHostname())
+	if host == "" {
+		return nil
+	}
+	scheme := "http"
+	if t := strings.ToLower(strings.TrimSpace(cfg.ProxyType())); t == "https" {
+		scheme = "https"
+	}
+	u := &url.URL{
+		Scheme: scheme,
+		Host:   fmt.Sprintf("%s:%d", host, cfg.ProxyPort()),
+	}
+	if user := strings.TrimSpace(cfg.ProxyUsername()); user != "" {
+		u.User = url.UserPassword(user, cfg.ProxyPassword())
+	}
+	return u
 }
 
 // rssIndexerCountAdapter implements healthcheck.RssEnabledLister.
@@ -504,7 +557,7 @@ var (
 	_ healthcheck.AllImportListLister            = importListListerAdapter{}
 	_ healthcheck.ImportListRootFolderPathLister = rootFolderPathListerAdapter{}
 	_ healthcheck.SkyHookProber                  = skyHookProberAdapter{}
-	_ healthcheck.ProxyCheckConfig               = proxyHostConfigStub{}
+	_ healthcheck.ProxyCheckConfig               = proxyHostConfigAdapter{}
 	_ healthcheck.RssEnabledLister               = rssIndexerCountAdapter{}
 	_ healthcheck.SearchEnabledLister            = searchIndexerCountAdapter{}
 	_ healthcheck.DownloadClientLister           = enabledDownloadClientCountAdapter{}
