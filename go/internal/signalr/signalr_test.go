@@ -119,8 +119,9 @@ func TestSignalRMessage_EnvelopeShape(t *testing.T) {
 func TestSignalRMessage_VersionHandshake(t *testing.T) {
 	t.Parallel()
 	// The hub fires this body on every new client connect. The
-	// envelope's `version` is null (no resource version applies);
-	// the body's `version` is the running BuildInfo.Version string.
+	// envelope omits its `version` key entirely (C# `int? Version`
+	// + STJson `WhenWritingNull` drops null properties); the body
+	// carries its own `version` with the BuildInfo.Version string.
 	env := signalr.SignalRMessage{
 		Name:    "version",
 		Body:    signalr.VersionMessage{Version: "5.0.0.123"},
@@ -128,8 +129,12 @@ func TestSignalRMessage_VersionHandshake(t *testing.T) {
 	}
 	b, _ := signalr.MarshalEnvelope(env)
 	got := string(b)
-	if !strings.Contains(got, `"version":null`) {
-		t.Errorf("envelope version must be null: %s", got)
+	var top map[string]any
+	if err := json.Unmarshal(b, &top); err != nil {
+		t.Fatalf("unmarshal envelope: %v; got=%s", err, got)
+	}
+	if _, hasVersion := top["version"]; hasVersion {
+		t.Errorf("envelope must omit version key when nil: %s", got)
 	}
 	if !strings.Contains(got, `"body":{"version":"5.0.0.123"}`) {
 		t.Errorf("body version: %s", got)

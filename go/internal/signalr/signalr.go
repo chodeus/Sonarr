@@ -94,20 +94,26 @@ func (a Action) MarshalJSON() ([]byte, error) {
 //
 // Wire shape:
 //
-//	{ "name": "<resource>", "body": {...}, "version": 3 }
+//	Resource event: { "name": "<resource>", "body": {...}, "version": 3 }
+//	Handshake event: { "name": "version", "body": {"version": "..."} }
 //
 // The C# `Action` field is `[JsonIgnore]` on the envelope — the
 // action communicates via the body's own `action` field for
 // ResourceChangeMessage bodies. The Go port omits Action from the
 // envelope entirely; callers stash it in the body.
 //
-// Version is `*int` so the no-version handshake event
-// (`{name: "version", body: {version: "..."}, version: null}`) can
-// emit `null` while every resource event emits `3` or `5`.
+// Version is `*int` so the no-version handshake event can drop the
+// key entirely. C# `int? Version` is nullable and SignalR serializes
+// via STJson's `WhenWritingNull` (`Startup.cs:219-223` +
+// `STJson.cs:27`), which omits null properties — so C# emits
+// `{"name":"version","body":{...}}` without the envelope `version`
+// key on the handshake. Go matches via `omitempty` on the pointer.
+// Resource events keep emitting `"version":3` (or `5`) because the
+// `*int` is non-nil (`signalr.V3Version` / `signalr.V5Version`).
 type SignalRMessage struct {
 	Name    string `json:"name"`
 	Body    any    `json:"body"`
-	Version *int   `json:"version"`
+	Version *int   `json:"version,omitempty"`
 }
 
 // V3Version is the int pointer reused for every V3 emit. Allocated
