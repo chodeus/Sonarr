@@ -70,6 +70,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/extrafiles"
 	"sonarr.tv/sonarr/internal/faileddownloads"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/history"
@@ -322,6 +323,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("housekeeping tempUpdate: %w", err)
 	}
+	extraFilesRepo, err := extrafiles.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("housekeeping extrafiles repo: %w", err)
+	}
 	addlNaming, err := housekeeping.NewCleanupAdditionalNamingSpecs(db, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping addlNaming: %w", err)
@@ -333,6 +338,17 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	seriesRepo, err := series.NewRepo(db)
 	if err != nil {
 		return fmt.Errorf("housekeeping series repo: %w", err)
+	}
+	extraFilesExcluded, err := housekeeping.NewCleanupExtraFilesInExcludedFolders(
+		extraFilesRepo,
+		seriesRepo,
+		func(base string, paths []string) ([]string, error) {
+			return mediafiles.FilterPaths(base, paths, true)
+		},
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("housekeeping extraFilesExcluded: %w", err)
 	}
 	updateClean, err := housekeeping.NewUpdateCleanTitleForSeries(seriesRepo, logger)
 	if err != nil {
@@ -392,6 +408,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		dcuPending,
 		duplicateMetadata,
 		tempUpdate,
+		extraFilesExcluded,
 		addlNaming,
 		addlUsers,
 		updateClean,
