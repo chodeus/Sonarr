@@ -936,6 +936,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			return historyhandlers.HandleDownloadFailed(ctx, historySvc, &ev)
 		})
 
+	// Slice 5.J138: downloadhistory IHandle<DownloadFailedEvent>
+	// subscriber. Single DownloadFailed row per event, gated on
+	// non-nil TrackedDownload (the C# tree at :189-192 returns early —
+	// failed downloads without a tracked record have no Protocol /
+	// DownloadClientID to attribute).
+	messaging.Subscribe(bus, "downloadhistory.HandleDownloadFailed",
+		func(ctx context.Context, ev trackeddownloads.DownloadFailedEvent) error {
+			return downloadhistoryhandlers.HandleDownloadFailed(ctx, dlHistorySvc, &ev)
+		})
+
 	// Slice 3.AW: history IHandle<EpisodeFileDeletedEvent> subscriber.
 	// Walks ev.LinkedEpisodes and writes one history.Entry per id
 	// with the deletion metadata. Skips the NoLinkedEpisodes /
