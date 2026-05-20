@@ -261,6 +261,37 @@ func urlUnescape(s string) (string, error) {
 	return urlQueryUnescape(s)
 }
 
+// RemoveTorrent fires d.erase. Mirrors C#
+// `RTorrentProxy.RemoveTorrent` at `:138-145`. The C# code wraps
+// the non-zero response as a DownloadClientException; the Go port
+// returns the same shape as the other proxy methods (error wraps
+// the rTorrent integer response).
+func (p *Proxy) RemoveTorrent(ctx context.Context, hash string, settings Settings) error {
+	value, err := p.call(ctx, settings, "d.erase", strings.ToLower(hash))
+	if err != nil {
+		return err
+	}
+	if v := value.intValue(); v != 0 {
+		return fmt.Errorf("rtorrent: d.erase returned %d for hash %s", v, hash)
+	}
+	return nil
+}
+
+// SetTorrentLabel fires d.custom1.set. Mirrors C#
+// `RTorrentProxy.SetTorrentLabel` at `:114-122`. The C# code
+// verifies the response string equals the label; the Go port
+// preserves that check.
+func (p *Proxy) SetTorrentLabel(ctx context.Context, hash, label string, settings Settings) error {
+	value, err := p.call(ctx, settings, "d.custom1.set", strings.ToLower(hash), label)
+	if err != nil {
+		return err
+	}
+	if v := value.stringValue(); v != label {
+		return fmt.Errorf("rtorrent: d.custom1.set returned %q for hash %s (wanted %q)", v, hash, label)
+	}
+	return nil
+}
+
 // dCommands builds the per-d-method "command string" args appended
 // to load.start / load.raw_start. Mirrors C# `GetCommands(label,
 // priority, directory)` at `:160-178`. The d.priority.set arm is

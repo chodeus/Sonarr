@@ -65,7 +65,7 @@ Also still in scope: `ProxyCheck` is wired but stubbed (the `proxyHostConfigStub
 
 **Indexers missing:** BroadcastheNet, Fanzub, FileList, HDBits, IPTorrents, Nyaa, Torrentleech (7).
 
-**Download clients missing:** Aria2, TorrentDownloadStation, UsenetDownloadStation, Flood, TorrentFreeboxDownload, Hadouken, NzbVortex, Pneumatic, RQBit, ~~rTorrent~~ (**skeleton landed 5.J41 — Test/Download/GetItems/GetStatus/RemoveItem still return ErrNotImplementedYet; XML-RPC proxy is the follow-up slice arc**), TorrentBlackhole, TriblerDownloadClient, UsenetBlackhole, uTorrent, Vuze.
+**Download clients missing:** Aria2, TorrentDownloadStation, UsenetDownloadStation, Flood, TorrentFreeboxDownload, Hadouken, NzbVortex, Pneumatic, RQBit, ~~rTorrent~~ (**CLOSED across 5.J41–J45**: skeleton + XML-RPC Proxy + Test version probe + Download (load.start / load.raw_start) + GetItems (d.multicall.2 with 12-column projection) + RemoveItem (d.erase) + GetStatus + MarkItemAsImported (d.custom1.set for post-import label). Documented divergences: WaitForTorrent post-add poll replaced by fire-and-trust; deleteData on-disk cleanup deferred; PushTorrentUniqueView for the rTorrent UI view deferred; per-grab seed-config gating of CanMoveFiles/CanBeRemoved defers to the queue layer's existing enforcement.), TorrentBlackhole, TriblerDownloadClient, UsenetBlackhole, uTorrent, Vuze (14 still missing).
 
 **Sequencing (per `PHASE_5_AUDIT.md §Tier 2` and Phase 6 priorities):**
 

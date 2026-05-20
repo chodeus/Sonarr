@@ -2,7 +2,6 @@ package rtorrent_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
@@ -159,14 +158,17 @@ func TestProvider_StubsReturnNotImplementedYet(t *testing.T) {
 	if _, err := rt.GetItems(ctx); err == nil {
 		t.Errorf("GetItems: want error (nil proxy)")
 	}
-	if err := rt.RemoveItem(ctx, &downloadclients.Item{}, false); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("RemoveItem: %v, want ErrNotImplementedYet", err)
+	// RemoveItem + MarkItemAsImported are wired in 5.J45 — nil-proxy
+	// surfaces a generic error; GetStatus returns a minimal ClientInfo
+	// with no error (matches C# `:231-242` posture).
+	if err := rt.RemoveItem(ctx, &downloadclients.Item{DownloadID: "x"}, false); err == nil {
+		t.Errorf("RemoveItem: want error (nil proxy)")
 	}
-	if _, err := rt.GetStatus(ctx); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("GetStatus: %v, want ErrNotImplementedYet", err)
+	if info, err := rt.GetStatus(ctx); err != nil || info == nil {
+		t.Errorf("GetStatus: got (%v, %v), want (non-nil, nil)", info, err)
 	}
-	if err := rt.MarkItemAsImported(ctx, &downloadclients.Item{}); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("MarkItemAsImported: %v, want ErrNotImplementedYet", err)
+	if err := rt.MarkItemAsImported(ctx, &downloadclients.Item{}); err == nil {
+		t.Errorf("MarkItemAsImported: want error (nil proxy)")
 	}
 }
 

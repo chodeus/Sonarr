@@ -264,21 +264,77 @@ func (r *RTorrent) GetImportItem(_ context.Context, item *downloadclients.Item, 
 	return item, nil
 }
 
-// RemoveItem is a stub.
-func (r *RTorrent) RemoveItem(_ context.Context, _ *downloadclients.Item, _ bool) error {
-	return downloadclients.ErrNotImplementedYet
+// RemoveItem ports `RTorrent.RemoveItem` at `:222-229`. Fires
+// d.erase via the proxy; the optional deleteData arm is documented
+// as a deferred feature — the C# tree calls DiskProvider.DeleteFolder
+// for the torrent's base_path, but the Go-port DiskProvider integration
+// at the queue layer hasn't ported through to per-DC cleanup yet
+// (same divergence as the qBittorrent port's deleteData arm).
+// Returns nil when the item is removed; surfaces proxy errors
+// (including FaultError for missing-hash) verbatim.
+func (r *RTorrent) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
+	if r.proxy == nil {
+		return errors.New("rtorrent: RemoveItem requires a wired Proxy")
+	}
+	if item == nil {
+		return errors.New("rtorrent: RemoveItem: nil Item")
+	}
+	if strings.TrimSpace(item.DownloadID) == "" {
+		return errors.New("rtorrent: RemoveItem: empty DownloadID")
+	}
+	if deleteData {
+		// On-disk cleanup is deferred — the C# DeleteItemData arm
+		// reaches into a shared DiskProvider that the Go-port DC
+		// wiring doesn't expose per-client yet. Log so the operator
+		// sees the missing-cleanup signal.
+		r.log.Warn("rtorrent: deleteData requested but on-disk cleanup is deferred — only removing from rTorrent queue",
+			slog.String("hash", item.DownloadID))
+	}
+	return r.proxy.RemoveTorrent(ctx, item.DownloadID, r.settings)
 }
 
-// GetStatus is a stub.
+// GetStatus ports `RTorrent.GetStatus` at `:231-242`. Returns a
+// minimal ClientInfo with IsLocalhost set based on Settings.Host.
+// The C# tree's own comment at `:233` admits the correctness hasn't
+// been considered — the Go port matches that minimal posture.
+// OutputRootFolders is left empty (rTorrent stores per-torrent
+// base_path on the row itself; the global default is set via
+// rTorrent config which Sonarr doesn't enumerate via XML-RPC).
 func (r *RTorrent) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+	host := strings.TrimSpace(r.settings.Host)
+	isLocal := host == "127.0.0.1" || host == "localhost" || host == "::1"
+	return &downloadclients.ClientInfo{IsLocalhost: isLocal}, nil
 }
 
-// MarkItemAsImported applies the optional TvImportedCategory.
-// Stub — depends on the XML-RPC proxy for the
-// `d.custom1.set` (label change) call.
-func (r *RTorrent) MarkItemAsImported(_ context.Context, _ *downloadclients.Item) error {
-	return downloadclients.ErrNotImplementedYet
+// MarkItemAsImported ports `RTorrent.MarkItemAsImported` at
+// `:49-80`. Applies the optional TvImportedCategory via
+// d.custom1.set when set + non-equal to TvCategory. The C# tree
+// also fires d.views.push_back_unique to add the torrent to the
+// "sonarr_imported" view — the Go port defers that (the view is a
+// rTorrent-side UI concept; Sonarr's queue+import flow doesn't
+// observe it). Best-effort: failures warn + return nil so the
+// import pipeline doesn't abort on a label-set hiccup.
+func (r *RTorrent) MarkItemAsImported(ctx context.Context, item *downloadclients.Item) error {
+	if r.proxy == nil {
+		return errors.New("rtorrent: MarkItemAsImported requires a wired Proxy")
+	}
+	if item == nil {
+		return errors.New("rtorrent: MarkItemAsImported: nil Item")
+	}
+	if strings.TrimSpace(r.settings.TvImportedCategory) == "" {
+		return nil
+	}
+	if r.settings.TvImportedCategory == r.settings.TvCategory {
+		return nil
+	}
+	if err := r.proxy.SetTorrentLabel(ctx, item.DownloadID, r.settings.TvImportedCategory, r.settings); err != nil {
+		r.log.Warn("rtorrent: SetTorrentLabel (post-import) failed",
+			slog.String("hash", item.DownloadID),
+			slog.String("label", r.settings.TvImportedCategory),
+			slog.Any("err", err))
+		// Best-effort — don't fail the import pipeline.
+	}
+	return nil
 }
 
 // Test runs the per-client connection self-check. Mirrors C#
