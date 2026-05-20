@@ -559,7 +559,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("customfilters repo: %w", err)
 	}
-	customFiltersSvc := customfilters.NewService(customFiltersRepo)
+	customFiltersSvc := customfilters.NewService(customFiltersRepo, bus)
 
 	// QualityDefinitions service (slice 4.DJ — first read-side
 	// surface needed by GET /api/v3/qualitydefinition). C# wires

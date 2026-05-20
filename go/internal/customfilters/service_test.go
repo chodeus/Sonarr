@@ -1,11 +1,15 @@
 package customfilters_test
 
 import (
+	"context"
 	"errors"
+	"log/slog"
+	"sync/atomic"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/customfilters"
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
+	"sonarr.tv/sonarr/internal/messaging"
 )
 
 func newService(t *testing.T) (*customfilters.Service, *customfilters.Repo) {
@@ -15,7 +19,7 @@ func newService(t *testing.T) (*customfilters.Service, *customfilters.Repo) {
 	if err != nil {
 		t.Fatalf("NewRepo: %v", err)
 	}
-	return customfilters.NewService(r), r
+	return customfilters.NewService(r, nil), r
 }
 
 func TestService_AddRoundTrip(t *testing.T) {
@@ -110,5 +114,43 @@ func TestService_GetNotFound(t *testing.T) {
 	svc, _ := newService(t)
 	if _, err := svc.Get(t.Context(), 9999); !errors.Is(err, customfilters.ErrNotFound) {
 		t.Errorf("Get(missing) = %v, want ErrNotFound", err)
+	}
+}
+
+// Slice 5.J30 (audit B.2 second wave). All three CUD paths publish
+// CustomFilterUpdatedEvent for the SignalR `customfilter` channel.
+// Go-port additive (C# class doesn't emit).
+func TestService_PublishesUpdatedEventOnCUD(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	r, err := customfilters.NewRepo(db)
+	if err != nil {
+		t.Fatalf("NewRepo: %v", err)
+	}
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+	svc := customfilters.NewService(r, bus)
+
+	var got atomic.Int32
+	messaging.Subscribe(bus, "test.customfilter.updated",
+		func(_ context.Context, _ customfilters.CustomFilterUpdatedEvent) error {
+			got.Add(1)
+			return nil
+		})
+
+	f := &customfilters.Filter{Type: "series", Label: "x", Filters: "[]"}
+	added, err := svc.Add(context.Background(), f)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	added.Label = "y"
+	if err := svc.Update(context.Background(), added); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if err := svc.Delete(context.Background(), added.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if got.Load() != 3 {
+		t.Errorf("CustomFilterUpdatedEvent count: got %d, want 3 (Add+Update+Delete)", got.Load())
 	}
 }

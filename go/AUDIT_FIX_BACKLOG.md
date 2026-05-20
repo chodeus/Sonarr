@@ -18,7 +18,7 @@ For closure narrative, see commit history `5.J1` … `5.J22` on `go-port`. The t
 | Family | Service-side work | Subscriber site |
 |---|---|---|
 | ~~`delayprofile`~~ | ~~Add `Service.bus` field + publish `DelayProfileUpdatedEvent` on Add/Update/Delete/Reorder. NewService signature change.~~ — **CLOSED 5.J29** via payload-less `DelayProfileUpdatedEvent` from all 4 CUD paths. NewService gained `*messaging.Bus` param. | `delayprofile` Sync broadcaster |
-| `customfilter` | Same shape as delayprofile. | Same. |
+| ~~`customfilter`~~ | ~~Same shape as delayprofile.~~ — **CLOSED 5.J30** via payload-less `CustomFilterUpdatedEvent` from Add/Update/Delete. NewService gained `*messaging.Bus` param. | `customfilter` Sync broadcaster |
 | `releaseprofile` | Same. | Same. |
 | `remotepathmap` | Same. | Same. |
 | ~~`blocklist` (delete)~~ | ~~Publish `BlocklistChangedEvent` on Delete + Bulk.~~ — **CLOSED 5.J28** via new `BlocklistChangedEvent` published from `Service.Delete` / `DeleteByIDs` / `DeleteForSeries`. NewService gained an optional `*messaging.Bus` parameter — buildHostServer + v3Routes threaded the host's bus through. | `blocklist` Sync broadcaster |

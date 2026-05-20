@@ -27,6 +27,7 @@ import (
 	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/blocklist"
 	"sonarr.tv/sonarr/internal/commands"
+	"sonarr.tv/sonarr/internal/customfilters"
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/delayprofiles"
 	"sonarr.tv/sonarr/internal/episodefiles"
@@ -522,6 +523,23 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 		func(ctx context.Context, _ delayprofiles.DelayProfileUpdatedEvent) error {
 			if err := delayProfileBroadcaster.Sync(ctx); err != nil {
 				logger.Warn("signalr: delayprofile sync broadcast failed", "err", err)
+			}
+			return nil
+		})
+
+	// Slice 5.J30 (audit B.2 second wave): `customfilter` channel.
+	// CustomFilterUpdatedEvent fires from customfilters.Service on
+	// Add / Update / Delete. Go-port additive (C# class has no
+	// `_eventAggregator`).
+	customFilterBroadcaster := &signalr.ResourceBroadcaster[emptySyncPayload]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "customfilter",
+		Version:     signalr.V3Version,
+	}
+	messaging.Subscribe(bus, "signalr.customfilter.Updated",
+		func(ctx context.Context, _ customfilters.CustomFilterUpdatedEvent) error {
+			if err := customFilterBroadcaster.Sync(ctx); err != nil {
+				logger.Warn("signalr: customfilter sync broadcast failed", "err", err)
 			}
 			return nil
 		})
