@@ -2410,6 +2410,23 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	)
 	indexerSeedConfigProv := download.NewIndexerSeedConfigProvider(cachedIndexerSettingsProv)
 	seedConfigProv := download.NewSeedConfigProvider(dlHistorySvc, indexerSeedConfigProv, logger)
+	// Composition-root for download-client Dependencies. Every field
+	// is consumed by at least one concrete client:
+	//
+	//   - HTTPClient: every client's proxy.
+	//   - ConfigProvider: read-only access at construction time.
+	//   - DiskProvider: rTorrent (J111), Aria2 (J112), SAB (J116),
+	//     NZBGet (6.C3) — clients whose own API doesn't support
+	//     delete-with-data fall back to Sonarr-side DiskProvider.DeleteFolder.
+	//   - Logger: every client.
+	//   - StatusService: downloadclientstatus back-off escalation.
+	//   - RemotePathMappingService: every RPM-aware client (Phase 6.B
+	//     arc — sabnzbd / nzbget / qbittorrent / transmission /
+	//     deluge / rqbit / hadouken / nzbvortex / freebox / flood /
+	//     tribler).
+	//   - SeedConfigProvider: J94 RQBit + J95 Flood cleanup-gate
+	//     predicates (slice 5.J98 wired the J91/J92/J93 chain via
+	//     the indexer+history composition).
 	dcDeps := downloadclients.Dependencies{
 		HTTPClient:               httpClient,
 		ConfigProvider:           configProv,
@@ -2418,13 +2435,6 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		StatusService:            downloadClientStatusSvc,
 		RemotePathMappingService: remotePathMappingsSvc,
 		SeedConfigProvider:       seedConfigProv,
-		// Slice 6.B2 (Phase 6.B): wired here so the per-client
-		// constructors (sabnzbd / transmission / qbittorrent /
-		// deluge / nzbget) consume it via the downloadclients.
-		// RemotePathMapper narrow interface. Until 6.B3-6.B7 land
-		// the per-client casts + OutputPath remap calls, the dep
-		// is in scope but unread by every constructor; behaviour
-		// is unchanged.
 	}
 	downloadClientLister := newDownloadClientLister(
 		downloadClientsRepo,
