@@ -36,6 +36,7 @@ import (
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/indexers/fanzub"
 	"sonarr.tv/sonarr/internal/indexers/iptorrents"
 	"sonarr.tv/sonarr/internal/indexers/newznab"
 	"sonarr.tv/sonarr/internal/indexers/nyaa"
@@ -227,6 +228,21 @@ func (s *dbIndexerSource) buildAdapter(row *indexers.Indexer, def *provider.Defi
 		// Slice 5.J147: IPTorrents is RSS-only (SupportsSearch=false
 		// on the C# side at IPTorrents.cs:14). Same posture as
 		// torrentleech — leave FetchSearchFunc nil.
+		return common, nil
+
+	case "Fanzub":
+		idx := fanzub.NewIndexer(s.httpClient)
+		idx.SetDefinition(def)
+		common.FetchRecentFunc = func(ctx context.Context) ([]any, error) {
+			rs, err := idx.FetchRecent(ctx)
+			return upcastReleaseInfos(rs), err
+		}
+		// Slice 5.J150 (first slice of the Fanzub arc): only the RSS
+		// FetchRecent path lands. The per-criteria search-URL routing
+		// (FanzubRequestGenerator.cs:32-92 — Season + AnimeEpisode +
+		// AnimeSeason) ships as a follow-up slice. Leave FetchSearchFunc
+		// nil so the adapter surfaces the "does not support search"
+		// error instead of silently returning empty.
 		return common, nil
 
 	case "Nyaa":
