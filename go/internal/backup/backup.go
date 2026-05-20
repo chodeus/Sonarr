@@ -365,7 +365,11 @@ func (s *Service) GetBackups() ([]Backup, error) {
 			})
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
+	// C# `OrderBy(x => x.Time)` is stable; Go `sort.Slice` is not.
+	// Same-timestamp backups (rare at second precision but possible
+	// when multiple jobs run in the same second) preserve insertion
+	// order this way. Audit fix C.3.
+	sort.SliceStable(out, func(i, j int) bool {
 		return out[i].Time.Before(out[j].Time)
 	})
 	return out, nil

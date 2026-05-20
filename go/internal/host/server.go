@@ -330,13 +330,13 @@ func (s *Server) buildMux() *http.ServeMux {
 	// and `[HttpHead("/ping")]`; ServeMux requires explicit
 	// per-method registration. /ping is [AllowAnonymous] in C# —
 	// no requireAPIKey wrapping.
-	mux.Handle("GET /ping", ping)
-	mux.Handle("HEAD /ping", ping)
+	mux.Handle("GET /ping", disableCacheHeaders(ping))
+	mux.Handle("HEAD /ping", disableCacheHeaders(ping))
 
 	// /api: C# does not declare [AllowAnonymous] on
 	// ApiInfoController, so the Startup fallback policy enforces
 	// API-key auth. Wrap explicitly here.
-	mux.Handle("GET /api", s.requireAPIKey(s.apiInfoHandler()))
+	mux.Handle("GET /api", disableCacheHeaders(s.requireAPIKey(s.apiInfoHandler())))
 
 	for _, r := range s.routes {
 		h := r.Handler
@@ -352,6 +352,14 @@ func (s *Server) buildMux() *http.ServeMux {
 		// gain logging access independent of whether they're behind
 		// requireAPIKey.
 		h = injectLogger(s.logger, h)
+		// Audit fix C.1: emit the four "do not cache" headers C#
+		// Sonarr applies via `CacheHeaderMiddleware` on every API
+		// response. MediaCover routes skip this so the React UI can
+		// long-cache series posters (matches C# `CacheableSpecification`
+		// EnableCache behaviour on that prefix).
+		if !shouldSkipCacheHeaders(r.Path) {
+			h = disableCacheHeaders(h)
+		}
 		pattern := r.Path
 		if r.Method != "" {
 			pattern = r.Method + " " + r.Path
