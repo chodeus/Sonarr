@@ -547,10 +547,22 @@ func joinPath(base, tail string) string {
 }
 
 // Test ports `Transmission.ValidateVersion` at `:75-90` plus the
-// general "can we reach the RPC endpoint" probe. The C# Test has
-// additional checks (download-dir writable / category-folder
-// existence) under the base TransmissionBase — those are sub-arc
-// 14b consumer-demand follow-ups.
+// general "can we reach the RPC endpoint" probe + (slice 5.J102)
+// the `TestGetTorrents` arm at `TransmissionBase.cs:315-328`.
+//
+// Algorithm tracks C# `:248-257` literally: TestConnection runs
+// first (here implemented via GetClientVersion + version-floor
+// check); on any failure return early so a broken connection
+// doesn't dispatch a follow-on torrent-list probe. Then
+// TestGetTorrents fires a single GetTorrents call to confirm the
+// orchestrator's GetItems query works against the live daemon;
+// any error surfaces a whole-form failure containing the cause.
+//
+// The C# Test arm also has download-dir-writable + category-folder
+// existence checks via `DownloadClientBase.TestFolderForReadWriteAccess`
+// — those are still deferred (they require a DiskProvider probe
+// against the resolved DownloadDir / TvCategory path, which is a
+// sub-arc 14b consumer-demand follow-up).
 func (t *Transmission) Test(ctx context.Context) ([]downloadclients.TestFailure, error) {
 	var failures []downloadclients.TestFailure
 	if vFails := t.settings.Validate(); len(vFails) > 0 {
@@ -581,6 +593,21 @@ func (t *Transmission) Test(ctx context.Context) ([]downloadclients.TestFailure,
 		failures = append(failures, downloadclients.TestFailure{
 			PropertyName: "Version",
 			ErrorMessage: fmt.Sprintf("Transmission %s is too old; required version is 2.40 or newer", rawVersion),
+		})
+		return failures, nil
+	}
+
+	// J102 — TestGetTorrents at C# `TransmissionBase.cs:315-328`.
+	// Fire once against the live daemon to confirm the orchestrator's
+	// GetItems query works. Any error surfaces a whole-form failure;
+	// the C# `:319` passes `null` for the hashes filter so the call
+	// fetches every torrent, matching the orchestrator's GetItems
+	// call pattern.
+	if _, err := t.proxy.GetTorrents(ctx, nil, t.settings); err != nil {
+		failures = append(failures, downloadclients.TestFailure{
+			PropertyName:        "",
+			ErrorMessage:        fmt.Sprintf("Failed to get the list of torrents: %v", err),
+			DetailedDescription: "Sonarr was able to authenticate against Transmission but the torrent-list RPC failed; check the Transmission log.",
 		})
 	}
 

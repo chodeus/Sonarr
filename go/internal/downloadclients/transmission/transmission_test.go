@@ -430,6 +430,93 @@ func TestTransmission_TestVersionFloor(t *testing.T) {
 	}
 }
 
+func TestTransmission_TestJ102_TestGetTorrentsFires(t *testing.T) {
+	t.Parallel()
+	fake := &fakeTransmission{}
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+
+	prov := newTransmissionForURL(t, srv)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if len(failures) != 0 {
+		t.Errorf("failures = %+v, want none", failures)
+	}
+	saw := 0
+	for _, c := range fake.calls {
+		if c.method == "torrent-get" {
+			saw++
+		}
+	}
+	if saw != 1 {
+		t.Errorf("torrent-get fired %d times, want 1 (J102 TestGetTorrents)", saw)
+	}
+}
+
+func TestTransmission_TestJ102_TestGetTorrentsFailureSurfaces(t *testing.T) {
+	t.Parallel()
+	// Handler returns an RPC-error for torrent-get only (session-get
+	// succeeds so version-floor passes first).
+	sessionID := "test-session"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Transmission-Session-Id") != sessionID {
+			w.Header().Set("X-Transmission-Session-Id", sessionID)
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(body, &req)
+		switch req.Method {
+		case "session-get":
+			_, _ = w.Write([]byte(`{"result":"success","arguments":{"version":"3.00"}}`))
+		case "torrent-get":
+			_, _ = w.Write([]byte(`{"result":"error: storm","arguments":{}}`))
+		default:
+			_, _ = w.Write([]byte(`{"result":"success","arguments":{}}`))
+		}
+	}))
+	defer srv.Close()
+	prov := newTransmissionForURL(t, srv)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "" && strings.Contains(f.ErrorMessage, "list of torrents") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("failures = %+v, want whole-form torrent-list failure", failures)
+	}
+}
+
+func TestTransmission_TestJ102_VersionFailureSkipsTorrentGet(t *testing.T) {
+	t.Parallel()
+	// Version floor fails -> Test must short-circuit BEFORE firing
+	// torrent-get (matches C# :251-254 HasErrors guard).
+	fake := &fakeTransmission{
+		versionResp: `{"version":"2.39"}`,
+	}
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+	prov := newTransmissionForURL(t, srv)
+	if _, err := prov.Test(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range fake.calls {
+		if c.method == "torrent-get" {
+			t.Errorf("torrent-get fired despite version-floor failure; calls=%+v", fake.calls)
+		}
+	}
+}
+
 func TestTransmission_TestSurfacesUnreachable(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
