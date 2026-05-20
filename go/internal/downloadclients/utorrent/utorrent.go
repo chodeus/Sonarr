@@ -26,24 +26,33 @@ const (
 // uTorrent torrent client. Ports C# `UTorrent` at
 // `src/NzbDrone.Core/Download/Clients/uTorrent/UTorrent.cs`.
 //
-// Slice 5.J46 scope: Name / Protocol / Definition / RequestAction
-// are live; all other Provider methods return
-// [downloadclients.ErrNotImplementedYet] except Test (returns
-// Settings.Validate failures) and GetImportItem (passthrough).
-// Subsequent slices wire the token-cookie Proxy + each method.
+// Slice 5.J47 scope: Name / Protocol / Definition / RequestAction
+// are live; Test runs the token+cookie auth flow + the `getsettings`
+// version probe via the bound proxy + minBuild floor. Download /
+// GetItems / GetStatus / RemoveItem / GetImportItem /
+// MarkItemAsImported still return [downloadclients.ErrNotImplementedYet].
 type UTorrent struct {
 	settings Settings
+	proxy    *Proxy
 	def      *downloadclients.DownloadClient
 	log      *slog.Logger
 }
 
-// New constructs a uTorrent Provider against the resolved settings.
-// Used by both the registry [Constructor] and by tests.
-func New(def *downloadclients.DownloadClient, settings Settings, log *slog.Logger) *UTorrent {
+// minBuild is the uTorrent build-number floor [Test] enforces.
+// uTorrent build 25406 (3.0+) was the first release shipping the
+// /gui/ WebUI surface Sonarr's code targets. Older builds may work
+// in practice but aren't supported.
+const minBuild = 25406
+
+// New constructs a uTorrent Provider against the resolved settings
+// + an optional Proxy. Used by both the registry [Constructor] and
+// by tests. nil proxy → Test surfaces Settings.Validate failures
+// only (matches the pre-5.J47 stub).
+func New(def *downloadclients.DownloadClient, settings Settings, proxy *Proxy, log *slog.Logger) *UTorrent {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &UTorrent{settings: settings, def: def, log: log}
+	return &UTorrent{settings: settings, proxy: proxy, def: def, log: log}
 }
 
 // Name returns the user-facing label. Mirrors C# `UTorrent.Name`
@@ -99,12 +108,30 @@ func (u *UTorrent) MarkItemAsImported(_ context.Context, _ *downloadclients.Item
 	return downloadclients.ErrNotImplementedYet
 }
 
-// Test runs the per-client connection self-check. Slice 5.J46 scope
-// — returns Settings.Validate failures only; the real network probe
-// (token-fetch → /gui/?action=getversion) lands with the proxy
-// follow-up slice.
-func (u *UTorrent) Test(_ context.Context) ([]downloadclients.TestFailure, error) {
-	return u.settings.Validate(), nil
+// Test runs the per-client connection self-check. Validates the
+// Settings first, then (when no failures and a proxy is wired)
+// runs the token+cookie auth flow + the `getsettings` version
+// probe and gates on [minBuild]. Mirrors C#
+// `DownloadClientBase.Test()` posture.
+func (u *UTorrent) Test(ctx context.Context) ([]downloadclients.TestFailure, error) {
+	failures := u.settings.Validate()
+	if len(failures) > 0 || u.proxy == nil {
+		return failures, nil
+	}
+	build, err := u.proxy.GetVersion(ctx, u.settings)
+	if err != nil {
+		return []downloadclients.TestFailure{{
+			PropertyName: "Host",
+			ErrorMessage: fmt.Sprintf("Unable to connect to uTorrent: %v", err),
+		}}, nil
+	}
+	if build < minBuild {
+		return []downloadclients.TestFailure{{
+			PropertyName: "Host",
+			ErrorMessage: fmt.Sprintf("uTorrent build %d is too old; minimum supported is %d", build, minBuild),
+		}}, nil
+	}
+	return nil, nil
 }
 
 // RequestAction returns (nil, nil) for every action — the default
@@ -118,7 +145,9 @@ func (u *UTorrent) RequestAction(_ context.Context, _ string, _ map[string]strin
 var _ downloadclients.Provider = (*UTorrent)(nil)
 
 // constructor is the registry factory. Mirrors the qBittorrent +
-// Transmission + rTorrent factory pattern.
+// Transmission + rTorrent factory pattern. When an HTTPDoer is
+// present in deps.HTTPClient the constructor builds the
+// token-cookie Proxy.
 func constructor(def *downloadclients.DownloadClient, deps downloadclients.Dependencies) (downloadclients.Provider, error) {
 	if def == nil {
 		return nil, errors.New("utorrent: nil DownloadClient row")
@@ -133,7 +162,15 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	if l, ok := deps.Logger.(*slog.Logger); ok {
 		log = l
 	}
-	return New(def, settings, log), nil
+	var proxy *Proxy
+	if deps.HTTPClient != nil {
+		doer, ok := deps.HTTPClient.(HTTPDoer)
+		if !ok {
+			return nil, fmt.Errorf("utorrent: deps.HTTPClient (%T) does not satisfy HTTPDoer", deps.HTTPClient)
+		}
+		proxy = NewProxy(doer, log)
+	}
+	return New(def, settings, proxy, log), nil
 }
 
 // init registers uTorrent with the global registry.

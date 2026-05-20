@@ -127,7 +127,7 @@ func TestSettings_JSONRoundTrip(t *testing.T) {
 
 func TestProvider_NameAndProtocol(t *testing.T) {
 	t.Parallel()
-	u := utorrent.New(nil, utorrent.NewSettings(), nil)
+	u := utorrent.New(nil, utorrent.NewSettings(), nil, nil)
 	if u.Name() != "uTorrent" {
 		t.Errorf("Name: %q, want uTorrent (lowercase u)", u.Name())
 	}
@@ -138,7 +138,7 @@ func TestProvider_NameAndProtocol(t *testing.T) {
 
 func TestProvider_StubsReturnNotImplementedYet(t *testing.T) {
 	t.Parallel()
-	u := utorrent.New(nil, utorrent.NewSettings(), nil)
+	u := utorrent.New(nil, utorrent.NewSettings(), nil, nil)
 	ctx := context.Background()
 	if _, err := u.Download(ctx, &downloadclients.GrabRequest{}); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
 		t.Errorf("Download: %v, want ErrNotImplementedYet", err)
@@ -159,7 +159,7 @@ func TestProvider_StubsReturnNotImplementedYet(t *testing.T) {
 
 func TestProvider_GetImportItemPassthrough(t *testing.T) {
 	t.Parallel()
-	u := utorrent.New(nil, utorrent.NewSettings(), nil)
+	u := utorrent.New(nil, utorrent.NewSettings(), nil, nil)
 	in := &downloadclients.Item{DownloadID: "abc"}
 	got, err := u.GetImportItem(context.Background(), in, nil)
 	if err != nil {
@@ -172,7 +172,7 @@ func TestProvider_GetImportItemPassthrough(t *testing.T) {
 
 func TestProvider_RequestActionReturnsNilNil(t *testing.T) {
 	t.Parallel()
-	u := utorrent.New(nil, utorrent.NewSettings(), nil)
+	u := utorrent.New(nil, utorrent.NewSettings(), nil, nil)
 	out, err := u.RequestAction(context.Background(), "getCategories", nil)
 	if err != nil || out != nil {
 		t.Errorf("RequestAction: got (%v, %v), want (nil, nil)", out, err)
@@ -183,7 +183,7 @@ func TestProvider_TestSurfacesSettingsFailures(t *testing.T) {
 	t.Parallel()
 	s := utorrent.NewSettings()
 	s.Host = ""
-	u := utorrent.New(nil, s, nil)
+	u := utorrent.New(nil, s, nil, nil)
 	failures, err := u.Test(context.Background())
 	if err != nil {
 		t.Errorf("Test: %v", err)
