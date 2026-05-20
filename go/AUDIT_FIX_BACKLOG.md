@@ -239,18 +239,22 @@ Verified each route against `cmd/sonarr/host_wiring.go`:
 
 ---
 
-## B.9 — Forms and External authentication modes not implemented
+## B.9 — CLOSED in slice 5.J17 (Forms + External auth wired end-to-end)
 
-**Severity:** 🟡 Important — limits deployment topologies
-**Source:** Round-2 audit
+**Forms** mode: new `/login` POST + `/logout` GET routes (anonymous) in `cmd/sonarr/host_wiring.go`; login accepts both `application/x-www-form-urlencoded` (React UI's existing post shape) and `application/json` (programmatic clients). On success the server signs a session cookie with HMAC-SHA256 keyed off the API key (rotating the API key invalidates outstanding sessions) and sets it on the response with HttpOnly + SameSite=Lax + Secure-when-TLS. The cookie name derives from `InstanceName` via the existing `auth.DeriveCookieName`. Max-Age set to 7 days when `rememberMe=on`/`true`, session-only otherwise.
 
-**Problem:** `wellknown.go:272-304` recognizes all four C# `AuthenticationMethod` values (`None`, `Basic`, `Forms`, `External`) and includes a legacy "Basic"→"Forms" upgrade path, but only `None` and the API-key path are enforced. Users running C# with `Forms` (cookie-based login form, served at `/login`) or `External` (trusted reverse-proxy headers like `X-Forwarded-User`) cannot switch to Go without changing their auth topology.
+The host auth middleware (`internal/host/auth.go`) gains a new `SessionVerifier` optional interface and consults it after API-key fails. Validation chain: signature verify → expiry check → user identifier still exists (via `auth.Service.FindByIdentifier`), so a deleted user invalidates outstanding cookies.
 
-**Fix shape:**
-- **Forms:** add `/login` POST endpoint that issues a session cookie; middleware that accepts the cookie in lieu of API key. Cookie name and signing should match C# Identity defaults (or use a documented Go-port equivalent — but matching is cheaper for migration).
-- **External:** middleware that accepts `X-Forwarded-User` (or whatever header C# trusts) when configured. Document the trusted-proxy IP list to prevent header spoofing.
+**External** mode: new `AuthMethodResolver` optional interface; when `AuthenticationMethod == "External"`, the middleware bypasses auth entirely. Mirrors C# behaviour at `AuthenticationBuilderExtensions.AddExternal -> NoAuthenticationHandler` — the C# tree explicitly delegates all auth to the upstream reverse proxy. The audit's "trusted-proxy IP list + X-Forwarded-User" recommendation would be tighter than C# but diverges from existing C# behaviour; deferred so existing External-mode users see the same behaviour they're used to. A future hardening slice could optionally add the trusted-proxy gate as a Go-port improvement.
 
-**Verification:** end-to-end test for each mode against the existing React login flow. Plus security test: spoofed `X-Forwarded-User` from an untrusted IP is rejected in External mode.
+New files:
+- `internal/auth/session.go` + test — HMAC-signed cookie + Session struct + secret derivation + `DefaultSessionAttributes` cookie-attribute bundle.
+- `internal/auth/handlers.go` + test — `LoginHandler` (form + JSON) and `LogoutHandler`. `Authenticate` reuses the existing PBKDF2 path.
+- `cmd/sonarr/auth_adapter.go` — `authAdapter` embedding `*configfile.Provider` + the `*auth.Service`; satisfies `host.APIKeyResolver` / `AuthPolicy` / `AuthMethodResolver` / `SessionVerifier` / `auth.CookieSetter` in one type so `host.New` and the login handler share a single adapter value.
+
+Test coverage: `internal/host/auth_test.go` extended with `TestRequireAPIKeyFormsCookie` (valid/invalid/missing branches) and `TestRequireAPIKeyExternalModeBypasses` / `TestRequireAPIKeyExternalModeOnlyOnExternal`; `internal/auth/handlers_test.go` covers form + JSON success, wrong password, missing-fields, and logout cookie-clearing.
+
+The /login route currently requires a user row pre-created via `authSvc.Add` — the bootstrap-on-first-use flow (auto-create user on first login attempt when no users exist) is a separate behaviour the C# tree exposes via its first-run wizard. Tracked as a follow-up if the React UI flow surfaces it.
 
 ---
 

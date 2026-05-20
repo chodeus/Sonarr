@@ -38,6 +38,47 @@ type AuthPolicy interface {
 	TrustCgnatIpAddresses(ctx context.Context) (bool, error)
 }
 
+// SessionVerifier is the optional interface the auth middleware
+// consults for Forms-mode cookie validation. The resolver bundle
+// (typically `*configfile.Provider` with a small adapter) returns
+// the cookie name + secret material so the middleware can verify a
+// session cookie WITHOUT pulling the `auth` package's full Service
+// surface into the host import graph.
+//
+// Audit fix B.9.
+type SessionVerifier interface {
+	// SessionCookieName returns the cookie key the Forms-auth login
+	// handler used. Derived from the InstanceName per C#
+	// `AuthenticationBuilderExtensions.AddAppAuthentication` at
+	// `:33-44`.
+	SessionCookieName(ctx context.Context) (string, error)
+	// SessionSecret returns the HMAC secret for the cookie signer.
+	// Production derives this from the API key.
+	SessionSecret(ctx context.Context) ([]byte, error)
+	// VerifySession parses + validates a cookie value, returning a
+	// non-empty identifier on success. An empty string + nil
+	// indicates "no valid session in the cookie."
+	VerifySession(ctx context.Context, cookieValue string) (string, error)
+}
+
+// AuthMethodResolver is the optional interface that exposes the
+// configured `AuthenticationMethod`. When set to "External", the
+// middleware bypasses auth entirely — mirroring the C# behaviour
+// where External mode binds the NoAuthenticationHandler at
+// `Sonarr.Http/Authentication/AuthenticationBuilderExtensions.cs:28-31`.
+//
+// Operators running External mode are expected to run a reverse
+// proxy in front of Sonarr that enforces authentication before
+// forwarding requests. The Go port matches the C# trust model:
+// External = trust the network boundary entirely. The peer-IP /
+// trusted-proxy CIDR list is configured at the reverse proxy, not
+// in Sonarr itself.
+//
+// Audit fix B.9.
+type AuthMethodResolver interface {
+	AuthenticationMethod(ctx context.Context) (string, error)
+}
+
 // requireAPIKey returns middleware that enforces a valid API key.
 // Lookup order mirrors `ApiKeyAuthenticationHandler.ParseApiKey`:
 //
@@ -57,6 +98,16 @@ type AuthPolicy interface {
 // uninitialised config file accidentally accepting an empty header.
 func (s *Server) requireAPIKey(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 1. External mode — bypass auth entirely. Mirrors C#
+		// `AddExternal -> NoAuthenticationHandler` at
+		// `AuthenticationBuilderExtensions.cs:28-31`. Operators are
+		// expected to terminate auth at the reverse proxy.
+		if method, ok := s.apiKey.(AuthMethodResolver); ok && externalMode(r, method) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 2. API key (header / query).
 		stored, err := s.apiKey.APIKey(r.Context())
 		presented := parseAPIKey(r)
 		if err == nil && presented != "" && auth.EqualAPIKey(stored, presented) {
@@ -66,12 +117,55 @@ func (s *Server) requireAPIKey(next http.Handler) http.Handler {
 		if err != nil {
 			s.logger.Warn("apikey resolve failed", "err", err)
 		}
+
+		// 3. Forms-mode session cookie. When the resolver
+		// implements SessionVerifier and the request carries the
+		// configured cookie, validate it.
+		if verifier, ok := s.apiKey.(SessionVerifier); ok && acceptSessionCookie(r, verifier) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 4. DisabledForLocalAddresses bypass (A.4).
 		if policy, ok := s.apiKey.(AuthPolicy); ok && allowLocalBypass(r, policy) {
 			next.ServeHTTP(w, r)
 			return
 		}
+
 		w.WriteHeader(http.StatusUnauthorized)
 	})
+}
+
+// externalMode returns true when AuthenticationMethod is "External".
+func externalMode(r *http.Request, m AuthMethodResolver) bool {
+	method, err := m.AuthenticationMethod(r.Context())
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(method), "External")
+}
+
+// acceptSessionCookie returns true when the request carries the
+// configured Forms-auth cookie + the cookie's signature verifies
+// against the server secret. Mirrors the C# Cookie scheme handler
+// at `AuthenticationBuilderExtensions.cs:33-51`.
+//
+// Audit fix B.9.
+func acceptSessionCookie(r *http.Request, verifier SessionVerifier) bool {
+	ctx := r.Context()
+	cookieName, err := verifier.SessionCookieName(ctx)
+	if err != nil || cookieName == "" {
+		return false
+	}
+	c, err := r.Cookie(cookieName)
+	if err != nil || c == nil || c.Value == "" {
+		return false
+	}
+	identifier, err := verifier.VerifySession(ctx, c.Value)
+	if err != nil || identifier == "" {
+		return false
+	}
+	return true
 }
 
 // parseAPIKey reads the key from the request per C# lookup order.

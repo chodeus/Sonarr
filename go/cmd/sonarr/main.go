@@ -110,6 +110,7 @@ import (
 	"sonarr.tv/sonarr/internal/tags"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 	"sonarr.tv/sonarr/internal/upgrademediafiles"
+	"sonarr.tv/sonarr/internal/users"
 	"sonarr.tv/sonarr/internal/videofileinforeader"
 
 	// Slice 4.BK (sub-arc W6c of queue [W6]): blank-import the 4
@@ -539,6 +540,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// structural typing on AutoUnmonitorPreviouslyDownloadedEpisodes()
 	// bool.
 	episodesSvc.SetAutoUnmonitorMissingProvider(configProv)
+
+	// Audit fix B.9: auth.Service for Forms-mode login. Backs the
+	// Users table (read by login + cookie-validate paths). Wired
+	// here so the buildHostServer call below can route /login + the
+	// session-cookie middleware against it.
+	usersRepo, err := users.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("users repo: %w", err)
+	}
+	authSvc := auth.NewService(usersRepo)
 
 	// CustomFilters service (slice 4.DO — first wiring; the package
 	// existed but nothing consumed it until the /api/v3/customfilter
@@ -2682,7 +2693,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if backupTempPath == "" {
 		backupTempPath = os.TempDir()
 	}
-	hostSrv, err := buildHostServer(ctx, cfg, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
+	hostSrv, err := buildHostServer(ctx, cfg, authSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
 	if err != nil {
 		return err
 	}

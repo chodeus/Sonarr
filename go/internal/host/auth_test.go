@@ -183,6 +183,116 @@ func TestRequireAPIKeyLocalBypass(t *testing.T) {
 	}
 }
 
+// formsResolver satisfies APIKeyResolver + SessionVerifier so the
+// Forms-cookie branch of requireAPIKey can be exercised. The fake
+// cookie name + secret + validity flag drive each test arm.
+type formsResolver struct {
+	key        string
+	cookieName string
+	validIDs   map[string]struct{}
+}
+
+func (f formsResolver) APIKey(context.Context) (string, error) { return f.key, nil }
+func (f formsResolver) SessionCookieName(context.Context) (string, error) {
+	return f.cookieName, nil
+}
+func (f formsResolver) SessionSecret(context.Context) ([]byte, error) {
+	return []byte("test-secret"), nil
+}
+func (f formsResolver) VerifySession(_ context.Context, cookieValue string) (string, error) {
+	if _, ok := f.validIDs[cookieValue]; ok {
+		return cookieValue, nil
+	}
+	return "", errors.New("invalid")
+}
+
+// externalResolver satisfies APIKeyResolver + AuthMethodResolver so
+// the External-mode bypass branch can be exercised.
+type externalResolver struct {
+	key    string
+	method string
+}
+
+func (e externalResolver) APIKey(context.Context) (string, error) { return e.key, nil }
+func (e externalResolver) AuthenticationMethod(context.Context) (string, error) {
+	return e.method, nil
+}
+
+func TestRequireAPIKeyFormsCookie(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	resolver := formsResolver{
+		key:        "secret-key",
+		cookieName: "TestAuth",
+		validIDs:   map[string]struct{}{"valid-session": {}},
+	}
+	srv := New(Config{}, logger, probeFn(func(context.Context) error { return nil }), resolver)
+	authed := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	t.Run("valid_cookie_passes", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v3/series", nil)
+		req.AddCookie(&http.Cookie{Name: "TestAuth", Value: "valid-session"})
+		rr := httptest.NewRecorder()
+		srv.requireAPIKey(authed).ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Errorf("valid cookie should pass; got %d", rr.Code)
+		}
+	})
+
+	t.Run("invalid_cookie_rejects", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v3/series", nil)
+		req.AddCookie(&http.Cookie{Name: "TestAuth", Value: "forged-session"})
+		rr := httptest.NewRecorder()
+		srv.requireAPIKey(authed).ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("invalid cookie should 401; got %d", rr.Code)
+		}
+	})
+
+	t.Run("missing_cookie_rejects", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v3/series", nil)
+		rr := httptest.NewRecorder()
+		srv.requireAPIKey(authed).ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("no cookie should 401; got %d", rr.Code)
+		}
+	})
+}
+
+func TestRequireAPIKeyExternalModeBypasses(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(Config{}, logger, probeFn(func(context.Context) error { return nil }),
+		externalResolver{key: "secret", method: "External"})
+	authed := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/series", nil)
+	rr := httptest.NewRecorder()
+	srv.requireAPIKey(authed).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("External mode should bypass; got %d", rr.Code)
+	}
+}
+
+func TestRequireAPIKeyExternalModeOnlyOnExternal(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(Config{}, logger, probeFn(func(context.Context) error { return nil }),
+		externalResolver{key: "secret", method: "Forms"})
+	authed := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/series", nil)
+	rr := httptest.NewRecorder()
+	srv.requireAPIKey(authed).ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("non-External method should require auth; got %d", rr.Code)
+	}
+}
+
 func TestRequireAPIKeyValidKeyOverridesBypass(t *testing.T) {
 	t.Parallel()
 	// A valid API key takes the fast path; the bypass branch is not
