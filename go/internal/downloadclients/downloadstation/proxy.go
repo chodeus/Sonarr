@@ -409,6 +409,181 @@ func (p *Proxy) execute(req *http.Request, operation, apiName string) ([]byte, e
 	return env.Data, nil
 }
 
+// TaskStatus ports C# `DownloadStationTaskStatus` at
+// `DownloadStationTask.cs:46-60`. The Synology API wire shape sends
+// the status as a snake-case string (e.g. `"hash_checking"`); the
+// Go-port `Task.Status` field is the typed enum exposed via a
+// custom UnmarshalJSON.
+type TaskStatus int
+
+// TaskStatus values mirror the C# enum order.
+const (
+	TaskStatusUnknown            TaskStatus = 0
+	TaskStatusWaiting            TaskStatus = 1
+	TaskStatusDownloading        TaskStatus = 2
+	TaskStatusPaused             TaskStatus = 3
+	TaskStatusFinishing          TaskStatus = 4
+	TaskStatusFinished           TaskStatus = 5
+	TaskStatusHashChecking       TaskStatus = 6
+	TaskStatusSeeding            TaskStatus = 7
+	TaskStatusFilehostingWaiting TaskStatus = 8
+	TaskStatusExtracting         TaskStatus = 9
+	TaskStatusError              TaskStatus = 10
+	TaskStatusCaptchaNeeded      TaskStatus = 11
+)
+
+// taskStatusByName is the snake_case wire-name lookup table. The
+// C# code uses `UnderscoreStringEnumConverter` at
+// `DownloadStationTask.cs:25` to map snake-case to PascalCase enum
+// names; the Go port mirrors with an explicit table.
+var taskStatusByName = map[string]TaskStatus{
+	"unknown":             TaskStatusUnknown,
+	"waiting":             TaskStatusWaiting,
+	"downloading":         TaskStatusDownloading,
+	"paused":              TaskStatusPaused,
+	"finishing":           TaskStatusFinishing,
+	"finished":            TaskStatusFinished,
+	"hash_checking":       TaskStatusHashChecking,
+	"seeding":             TaskStatusSeeding,
+	"filehosting_waiting": TaskStatusFilehostingWaiting,
+	"extracting":          TaskStatusExtracting,
+	"error":               TaskStatusError,
+	"captcha_needed":      TaskStatusCaptchaNeeded,
+}
+
+// UnmarshalJSON decodes the snake-case status string into the
+// typed enum. Unknown strings map to TaskStatusUnknown (matches
+// C# `UnderscoreStringEnumConverter` with the default fallback at
+// `DownloadStationTask.cs:25`).
+func (s *TaskStatus) UnmarshalJSON(data []byte) error {
+	var raw string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		// Fall back to numeric if the wire shape is unexpectedly an int.
+		var n int
+		if err2 := json.Unmarshal(data, &n); err2 == nil {
+			*s = TaskStatus(n)
+			return nil
+		}
+		return err
+	}
+	if v, ok := taskStatusByName[strings.ToLower(raw)]; ok {
+		*s = v
+		return nil
+	}
+	*s = TaskStatusUnknown
+	return nil
+}
+
+// TaskAdditional ports C# `DownloadStationTaskAdditional` at
+// `DownloadStationTaskAdditional.cs:6-14`. Detail + Transfer are
+// `map[string]string` slots — Synology emits everything as strings.
+type TaskAdditional struct {
+	Detail   map[string]string `json:"detail"`
+	Transfer map[string]string `json:"transfer"`
+}
+
+// Task ports C# `DownloadStationTask` at `DownloadStationTask.cs:7-34`.
+// Only the fields Sonarr reads are surfaced.
+type Task struct {
+	ID          string            `json:"id"`
+	Title       string            `json:"title"`
+	Size        int64             `json:"size"`
+	Type        string            `json:"type"`
+	Username    string            `json:"username"`
+	Status      TaskStatus        `json:"status"`
+	StatusExtra map[string]string `json:"status_extra"`
+	Additional  TaskAdditional    `json:"additional"`
+}
+
+// AddTaskFromURL fires `SYNO.DownloadStation.Task` create method
+// (version 3) with the URL as a query param. Mirrors C#
+// `DownloadStationTaskProxyV1.AddTaskFromUrl` at `:38-49`. Used by
+// the Download magnet arm.
+func (p *Proxy) AddTaskFromURL(ctx context.Context, s Settings, taskURL, destination string) error {
+	q := url.Values{}
+	q.Set("uri", taskURL)
+	if strings.TrimSpace(destination) != "" {
+		q.Set("destination", destination)
+	}
+	_, err := p.callTask(ctx, s, "create", 3, q)
+	return err
+}
+
+// GetTasks fires `SYNO.DownloadStation.Task` list method (version
+// 1) with `additional=detail,transfer`. Returns the parsed task
+// list. Mirrors C# `DownloadStationTaskProxyV1.GetTasks` at
+// `:51-67`. The C# catch-all-and-empty arm at `:62-65` is preserved
+// — auth/transport errors return nil + the wrapped error; an
+// API-level error returns an empty slice with no error.
+func (p *Proxy) GetTasks(ctx context.Context, s Settings) ([]*Task, error) {
+	q := url.Values{}
+	q.Set("additional", "detail,transfer")
+	body, err := p.callTask(ctx, s, "list", 1, q)
+	if err != nil {
+		// Mirror C#'s catch-and-swallow: only swallow API/RPC errors
+		// (the C# DownloadClientException catch); auth + transport
+		// errors propagate so Test can surface them.
+		if errors.Is(err, ErrRPC) {
+			p.log.Debug("downloadstation: GetTasks list failed", "err", err)
+			return []*Task{}, nil
+		}
+		return nil, err
+	}
+	var resp struct {
+		Tasks []*Task `json:"tasks"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("downloadstation: unmarshal task list: %w", err)
+	}
+	return resp.Tasks, nil
+}
+
+// RemoveTask fires `SYNO.DownloadStation.Task` delete method
+// (version 1) with `id=<id>&force_complete=false`. Mirrors C#
+// `DownloadStationTaskProxyV1.RemoveTask` at `:69-76`.
+func (p *Proxy) RemoveTask(ctx context.Context, s Settings, taskID string) error {
+	q := url.Values{}
+	q.Set("id", taskID)
+	q.Set("force_complete", "false")
+	_, err := p.callTask(ctx, s, "delete", 1, q)
+	return err
+}
+
+// callTask is the shared per-call helper for SYNO.DownloadStation.Task
+// endpoints. Resolves the API path + appends the standard
+// `api=...&version=...&method=...&_sid=...` params, fires GET,
+// returns the raw `data` envelope.
+func (p *Proxy) callTask(ctx context.Context, s Settings, method string, version int, extra url.Values) ([]byte, error) {
+	api, err := p.GetAPIInfo(ctx, s, apiDownloadStationName)
+	if err != nil {
+		return nil, fmt.Errorf("downloadstation: discover %s: %w", apiDownloadStationName, err)
+	}
+	if version < api.MinVersion || version > api.MaxVersion {
+		return nil, fmt.Errorf("%w: %s version %d not supported (server: %d..%d)",
+			ErrUnavailable, apiDownloadStationName, version, api.MinVersion, api.MaxVersion)
+	}
+	sid, err := p.Authenticate(ctx, s, false)
+	if err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	for k, vs := range extra {
+		for _, v := range vs {
+			q.Add(k, v)
+		}
+	}
+	q.Set("api", api.Name)
+	q.Set("version", fmt.Sprintf("%d", version))
+	q.Set("method", method)
+	q.Set("_sid", sid)
+	full := fmt.Sprintf("%s/%s?%s", baseURL(s), api.Path, q.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, full, nil)
+	if err != nil {
+		return nil, fmt.Errorf("downloadstation: build %s %s: %w", apiDownloadStationName, method, err)
+	}
+	return p.execute(req, fmt.Sprintf("%s %s", apiDownloadStationName, method), apiDownloadStationName)
+}
+
 // ErrUnavailable wraps every transport-level failure (network
 // errors + non-2xx). Mirrors C#
 // `DownloadClientUnavailableException` raised at `:91,94`.

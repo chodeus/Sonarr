@@ -301,6 +301,10 @@ func TestProvider_Test_HappyPath(t *testing.T) {
 	doer := newScripted()
 	queueAPIDiscovery(doer, 3)
 	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	// Test now drives ValidateVersion (which re-resolves API info
+	// — cache hit, no extra round-trip) + TestGetTorrents (which
+	// fires the task-list call).
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[]}}`)
 	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
 	failures, err := p.Test(context.Background())
 	if err != nil {
@@ -369,20 +373,204 @@ func TestProvider_GetStatus_LocalhostFlag(t *testing.T) {
 	}
 }
 
-func TestProvider_StubReturns(t *testing.T) {
+func TestProvider_Download_TorrentBodyDeferred(t *testing.T) {
+	// J76 ships magnet-only; the torrent-body multipart upload arm
+	// is deferred and returns the ErrNotImplemented sentinel.
 	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(newScripted(), nil, nil), nil)
-	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{ReleaseTitle: "X"}); !errors.Is(err, downloadstation.ErrNotImplemented) {
-		t.Errorf("Download err = %v, want ErrNotImplemented", err)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{TorrentBody: []byte("x")})
+	if !errors.Is(err, downloadstation.ErrNotImplemented) {
+		t.Errorf("Download err = %v, want ErrNotImplemented (torrent-body arm deferred)", err)
 	}
-	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); !errors.Is(err, downloadstation.ErrNotImplemented) {
-		t.Errorf("RemoveItem err = %v, want ErrNotImplemented", err)
+}
+
+// queueAuthAndDiscovery stages the prerequisite calls for any
+// auth-required Provider call: API discovery + login.
+func queueAuthAndDiscovery(doer *scriptedDoer) {
+	queueAPIDiscovery(doer, 3)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"SID"}}`)
+}
+
+func TestProvider_Download_MagnetHappyPath(t *testing.T) {
+	doer := newScripted()
+	queueAuthAndDiscovery(doer)
+	// create call returns success.
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{}}`)
+	// post-add list lookup returns the new task.
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[
+		{"id":"dbid_42","title":"Show.S01E01","size":100,"type":"BT","status":"downloading","additional":{"detail":{"uri":"magnet:?xt=urn:btih:dead"}}}
+	]}}`)
+
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	id, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show.S01E01",
+		MagnetURL:    "magnet:?xt=urn:btih:dead",
+		InfoHash:     "dead",
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
 	}
+	if id != "dbid_42" {
+		t.Errorf("id = %q, want dbid_42", id)
+	}
+}
+
+func TestProvider_Download_MagnetNoMatchSurfacesError(t *testing.T) {
+	doer := newScripted()
+	queueAuthAndDiscovery(doer)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{}}`)
+	// post-add list returns an unrelated task.
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[
+		{"id":"x","title":"Other","type":"BT","status":"downloading","additional":{"detail":{"uri":"magnet:?xt=urn:btih:other"}}}
+	]}}`)
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{MagnetURL: "magnet:?xt=urn:btih:dead"})
+	if err == nil {
+		t.Fatal("err = nil, want no-matching-task error")
+	}
+}
+
+func TestProvider_Download_NeitherBodyNorMagnet(t *testing.T) {
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(newScripted(), nil, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{ReleaseTitle: "X"})
+	if err == nil {
+		t.Fatal("err = nil, want neither-body-nor-magnet error")
+	}
+}
+
+func TestProvider_GetItems_BasicStatusTable(t *testing.T) {
+	doer := newScripted()
+	queueAuthAndDiscovery(doer)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[
+		{"id":"a","title":"A","type":"BT","status":"downloading","size":100,"additional":{"detail":{"destination":"downloads"},"transfer":{"size_downloaded":"50","size_uploaded":"10","speed_download":"10"}}},
+		{"id":"b","title":"B","type":"BT","status":"paused","size":100,"additional":{"detail":{"destination":"downloads"},"transfer":{"size_downloaded":"50","size_uploaded":"0","speed_download":"0"}}},
+		{"id":"c","title":"C","type":"BT","status":"finished","size":100,"additional":{"detail":{"destination":"downloads"},"transfer":{"size_downloaded":"100","size_uploaded":"200","speed_download":"0"}}},
+		{"id":"d","title":"D","type":"BT","status":"error","size":100,"status_extra":{"error_detail":"corrupt"},"additional":{"detail":{"destination":"downloads"},"transfer":{}}},
+		{"id":"e","title":"E","type":"BT","status":"waiting","size":100,"additional":{"detail":{"destination":"downloads"},"transfer":{"size_downloaded":"100","size_uploaded":"0","speed_download":"0"}}},
+		{"id":"skip","title":"NotBT","type":"http","status":"downloading","additional":{"detail":{"destination":"downloads"},"transfer":{}}}
+	]}}`)
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
 	items, err := p.GetItems(context.Background())
 	if err != nil {
-		t.Fatalf("GetItems err = %v", err)
+		t.Fatalf("err = %v", err)
 	}
-	if len(items) != 0 {
-		t.Errorf("GetItems len = %d, want 0", len(items))
+	if len(items) != 5 {
+		t.Fatalf("len = %d, want 5 (skip non-BT)", len(items))
+	}
+	byID := map[string]*downloadclients.Item{}
+	for _, it := range items {
+		byID[it.DownloadID] = it
+	}
+	want := map[string]downloadclients.DownloadItemStatus{
+		"a": downloadclients.DownloadItemStatusDownloading,
+		"b": downloadclients.DownloadItemStatusPaused,
+		"c": downloadclients.DownloadItemStatusCompleted,
+		"d": downloadclients.DownloadItemStatusFailed,
+		"e": downloadclients.DownloadItemStatusCompleted, // waiting + size==100 + remaining==0 → Completed
+	}
+	for id, st := range want {
+		got, ok := byID[id]
+		if !ok {
+			t.Errorf("missing %s", id)
+			continue
+		}
+		if got.Status != st {
+			t.Errorf("%s Status = %v, want %v", id, got.Status, st)
+		}
+	}
+	if byID["d"].Message != "corrupt" {
+		t.Errorf("error-arm Message = %q, want 'corrupt'", byID["d"].Message)
+	}
+	// Verify ETA + ratio on 'a'.
+	if byID["a"].RemainingTime == nil || *byID["a"].RemainingTime != 5*time.Second {
+		t.Errorf("a.RemainingTime = %v, want 5s (remaining=50, speed=10)", byID["a"].RemainingTime)
+	}
+	if byID["a"].SeedRatio == nil || *byID["a"].SeedRatio != 0.2 {
+		t.Errorf("a.SeedRatio = %v, want 0.2 (uploaded=10/downloaded=50)", byID["a"].SeedRatio)
+	}
+	// Verify completed 'c' has OutputPath = destination + title.
+	if byID["c"].OutputPath.FullPath() != "/downloads/C" {
+		t.Errorf("c.OutputPath = %q, want /downloads/C", byID["c"].OutputPath.FullPath())
+	}
+}
+
+func TestProvider_GetItems_TvDirectoryGate(t *testing.T) {
+	doer := newScripted()
+	queueAuthAndDiscovery(doer)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[
+		{"id":"a","title":"InDir","type":"BT","status":"downloading","additional":{"detail":{"destination":"downloads/tv/show"},"transfer":{}}},
+		{"id":"b","title":"OutOfDir","type":"BT","status":"downloading","additional":{"detail":{"destination":"downloads/movies/x"},"transfer":{}}}
+	]}}`)
+	s := newSettings()
+	s.TvDirectory = "downloads/tv"
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, s, downloadstation.NewProxy(doer, nil, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 || items[0].DownloadID != "a" {
+		t.Errorf("items = %+v, want only a (TvDirectory gate filters b)", items)
+	}
+}
+
+func TestProvider_GetItems_TvCategoryGate(t *testing.T) {
+	doer := newScripted()
+	queueAuthAndDiscovery(doer)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[
+		{"id":"a","title":"InCat","type":"BT","status":"downloading","additional":{"detail":{"destination":"downloads/sonarr/show"},"transfer":{}}},
+		{"id":"b","title":"OutOfCat","type":"BT","status":"downloading","additional":{"detail":{"destination":"downloads/radarr/x"},"transfer":{}}}
+	]}}`)
+	s := newSettings()
+	s.TvCategory = "sonarr"
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, s, downloadstation.NewProxy(doer, nil, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 || items[0].DownloadID != "a" {
+		t.Errorf("items = %+v, want only a (TvCategory gate filters b)", items)
+	}
+}
+
+func TestProvider_GetItems_RemoveCompletedFlagsFinished(t *testing.T) {
+	doer := newScripted()
+	queueAuthAndDiscovery(doer)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[
+		{"id":"a","title":"A","type":"BT","status":"finished","size":100,"additional":{"detail":{"destination":"downloads"},"transfer":{"size_downloaded":"100"}}}
+	]}}`)
+	def := &downloadclients.DownloadClient{Name: "DS", RemoveCompletedDownloads: true}
+	p := downloadstation.New(def, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 || !items[0].CanBeRemoved || !items[0].CanMoveFiles {
+		t.Errorf("items = %+v, want both cleanup flags true on finished+RCD", items)
+	}
+}
+
+func TestProvider_RemoveItem_HappyPath(t *testing.T) {
+	doer := newScripted()
+	queueAuthAndDiscovery(doer)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{}}`)
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "dbid_42"}, false); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	// Verify the delete query included id + force_complete.
+	for _, c := range doer.calls {
+		if c.path == "/webapi/DownloadStation/task.cgi" && c.query.Get("method") == "delete" {
+			if c.query.Get("id") != "dbid_42" {
+				t.Errorf("id = %q, want dbid_42", c.query.Get("id"))
+			}
+			if c.query.Get("force_complete") != "false" {
+				t.Errorf("force_complete = %q, want false", c.query.Get("force_complete"))
+			}
+		}
+	}
+}
+
+func TestProvider_RemoveItem_NilItem(t *testing.T) {
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(newScripted(), nil, nil), nil)
+	if err := p.RemoveItem(context.Background(), nil, false); err == nil {
+		t.Fatal("err = nil, want nil-item error")
+	}
+}
+
+func TestProvider_RemoveItem_EmptyID(t *testing.T) {
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(newScripted(), nil, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, false); err == nil {
+		t.Fatal("err = nil, want empty-ID error")
 	}
 }
 
