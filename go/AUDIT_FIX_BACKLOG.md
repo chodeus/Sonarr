@@ -102,18 +102,31 @@ The CI job catches NEW drift now even with the baseline budget — if any of the
 
 ---
 
-## B.2 — SignalR broadcasts not fired from most write handlers
+## B.2 — PARTIAL (audit count stale + 2 families wired in 5.J20; remaining families follow same pattern)
 
-**Severity:** 🟡 Important — frontend won't update live
-**Source:** New finding
+The audit's "only 8 of ~70" headline overstates the gap. Audit of the current tree shows the broadcast wiring is more complete than the audit acknowledged:
 
-**Problem:** Only 8 v3 handler files emit `signalr.FireAndLog` after writes: `importlist`, `series`, `notification`, `indexer`, `downloadclient`, `rootfolder`, `metadata`, `seasonpass`. The other ~62 write endpoints (across `episode`, `episodefile`, `queue`, `blocklist`, `autotagging`, `command`, `qualityprofile`, `customfilter`, `customformat`, `delayprofile`, `releaseprofile`, `tag`, `remotepathmap`, `config_*`) return success but don't broadcast. React UI won't refresh until the user manually reloads.
+- **Direct emitter pattern** (handler accepts `*signalr.V3Emitter[Resource]`, calls Created/Updated/Deleted): rootfolder, notification, indexer, importlist, downloadclient, metadata, series, seasonpass — 8 families.
+- **Bus subscription pattern** (service publishes lifecycle event, `cmd/sonarr/signalr_wiring.go` translates to Sync broadcasts): tag, autotagging, health, queue, queue/details, queueStatus, series, episodefile, systemTask — 9 broadcasters.
 
-`PHASE_5_AUDIT.md §"SignalR broadcast unwired"` flagged this generically as "gated by writes." Now that writes exist, the gate is open — but only ~12% of write paths broadcast.
+CLOSED in slice 5.J20 (B.2 first wave):
 
-**Fix shape:** for each write handler, identify the equivalent C# `IHandle<ResourceChangeEvent>` or `_signalRBroadcaster.BroadcastMessage(...)` site in `src/Sonarr.Api.V3/...Controller.cs` or its service layer, and wire the equivalent Go broadcast after the DB write succeeds. Use the existing `signalr.FireAndLog` pattern from `importlist.go` / `series.go` as the template.
+- **qualityprofile** Sync broadcaster — subscribes to `QualityProfileUpdatedEvent` which `qualityprofiles.Service` already publishes on Add/Update/Delete.
+- **customformat** Sync broadcaster — subscribes to `CustomFormatAddedEvent` + `CustomFormatDeletedEvent` (the events `customformats.Service` already publishes). Update doesn't currently publish (matches C# `CustomFormatService.cs:51-55`); a future slice that adds an Updated event would slot in a third subscriber here.
 
-**Acceptance:** every POST/PUT/DELETE handler in `internal/api/v3/` fires the corresponding broadcast on its happy path; nothing on the error path. Optional: a vet-style lint that warns when a write handler imports `signalr` but doesn't call it.
+**Remaining work — same pattern, each ~10 lines of subscriber + service-side event-publishing if missing:**
+
+- `delayprofile` — service doesn't take a bus; would need NewService signature change + event publishing on Add/Update/Delete/Reorder + signalr subscriber.
+- `customfilter` — same shape as delayprofile.
+- `releaseprofile` — same.
+- `remotepathmap` — same.
+- `blocklist` (delete) — service publishes? unconfirmed. Either subscribe to an existing event or add `BlocklistChangedEvent`.
+- `command` (POST/DELETE) — closer to existing systemTask wiring; `CommandExecutedEvent` already broadcasts but the command-CUD broadcast is separate.
+- `episode` (monitor) — `EpisodeMonitorChangedEvent` (if any) needs subscription; otherwise add an event in episodes.Service.
+- `episodefile` (update / bulk / editor / delete) — episodefile already has Created/Deleted broadcasts; Update + Editor need their own event.
+- `config_*` (host, ui, naming, mediamanagement, downloadclient, indexer PUT) — ConfigFileSavedEvent + ConfigSavedEvent already fire and the host config-saved bus event is subscribed in some checks; signalr subscription is the missing piece (one per `config/*` family that the React UI listens to).
+
+Acceptance for full close: every POST/PUT/DELETE handler in `internal/api/v3/` has a broadcast (direct or bus-event) on its happy path. The two-pattern split (direct vs bus) is intentional — bus is preferred where multiple writers can mutate the same resource (the service publishes once, every transport listens); direct is used where a handler-specific resource projection is the natural shape (RootFolder + SeriesResource hands the full row to the SignalR transport).
 
 ---
 

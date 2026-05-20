@@ -26,10 +26,12 @@ import (
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/commands"
+	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/pendingreleases"
+	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/signalr"
@@ -351,6 +353,50 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 		func(ctx context.Context, _ commands.CommandExecutedEvent) error {
 			if err := systemTaskBroadcaster.Sync(ctx); err != nil {
 				logger.Warn("signalr: system/task sync broadcast failed", "err", err)
+			}
+			return nil
+		})
+
+	// Audit fix B.2 (first wave). `qualityprofile` family —
+	// QualityProfileUpdatedEvent fires from qualityprofiles.Service
+	// on Add / Update / Delete (the service publishes a single
+	// Updated event regardless of CUD kind). C# emits Sync without a
+	// resource body for QualityProfile changes; the Go-port matches.
+	qualityProfileBroadcaster := &signalr.ResourceBroadcaster[emptySyncPayload]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "qualityprofile",
+		Version:     signalr.V3Version,
+	}
+	messaging.Subscribe(bus, "signalr.qualityprofile.Updated",
+		func(ctx context.Context, _ qualityprofiles.QualityProfileUpdatedEvent) error {
+			if err := qualityProfileBroadcaster.Sync(ctx); err != nil {
+				logger.Warn("signalr: qualityprofile sync broadcast failed", "err", err)
+			}
+			return nil
+		})
+
+	// Audit fix B.2 (first wave). `customformat` family —
+	// customformats.Service publishes CustomFormatAddedEvent on
+	// Insert + CustomFormatDeletedEvent on Delete. Update doesn't
+	// currently publish (matches C# behaviour at
+	// `CustomFormatService.cs:51-55`); a future slice that adds an
+	// Updated event would add a third subscriber here.
+	customFormatBroadcaster := &signalr.ResourceBroadcaster[emptySyncPayload]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "customformat",
+		Version:     signalr.V3Version,
+	}
+	messaging.Subscribe(bus, "signalr.customformat.Added",
+		func(ctx context.Context, _ customformats.CustomFormatAddedEvent) error {
+			if err := customFormatBroadcaster.Sync(ctx); err != nil {
+				logger.Warn("signalr: customformat add sync broadcast failed", "err", err)
+			}
+			return nil
+		})
+	messaging.Subscribe(bus, "signalr.customformat.Deleted",
+		func(ctx context.Context, _ customformats.CustomFormatDeletedEvent) error {
+			if err := customFormatBroadcaster.Sync(ctx); err != nil {
+				logger.Warn("signalr: customformat delete sync broadcast failed", "err", err)
 			}
 			return nil
 		})
