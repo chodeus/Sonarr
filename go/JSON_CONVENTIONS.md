@@ -9,70 +9,114 @@ Authoritative for every Go type that:
 - Is consumed by an external client that already exists against the .NET API
   (React UI, mobile apps, Radarr/Prowlarr/*-arr ecosystem scripts).
 
-This policy intentionally diverges from idiomatic Go's `omitempty` posture.
-Compatibility with the existing Sonarr v3 contract supersedes idiomatic taste.
+## What the C# tree actually emits
 
-## Rationale
+The Sonarr API uses **`System.Text.Json` configured with
+`DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull`**
+([`src/NzbDrone.Common/Serializer/System.Text.Json/STJson.cs:27`](../src/NzbDrone.Common/Serializer/System.Text.Json/STJson.cs), wired into MVC at
+[`src/NzbDrone.Host/Startup.cs:107,113`](../src/NzbDrone.Host/Startup.cs)). The legacy Newtonsoft path used in non-API
+serialization sets `NullValueHandling = NullValueHandling.Ignore`
+([`src/NzbDrone.Common/Serializer/Newtonsoft.Json/Json.cs:26`](../src/NzbDrone.Common/Serializer/Newtonsoft.Json/Json.cs)). Both
+omit `null` from the wire output.
 
-The .NET `System.Text.Json` serializer with default options emits:
+Concretely:
 - Non-nullable properties → always emitted (including their zero values).
-- Nullable properties (`int?` / `DateTime?` / nullable reference types) → emitted
-  as `null` when null.
-- `List<T>` initialized to empty → emitted as `[]`.
+- Nullable properties (`int?` / `DateTime?` / nullable reference types) that
+  are null at serialization time → **field omitted from the JSON entirely**,
+  NOT emitted as `"field": null`.
+- `List<T>` initialised to empty → emitted as `[]`. `List<T>` left null →
+  field omitted.
 
-Go's `encoding/json` with `omitempty` would:
-- Omit zero values entirely (`0`, `""`, `false`, nil pointer/slice).
-- Treat nil pointer identically to "field absent" — no way to emit explicit `null`.
+> **Recorded goldens confirm.** Sample C# recordings under
+> `test/contract/golden/v3-empty-state/` have zero `: null` emissions; nullable
+> fields that are null at serialization time simply do not appear in the body.
 
-These two postures produce **different JSON shapes** for the same logical data.
-Existing consumers of the Sonarr v3 API parse against the .NET shape; the Go port
-MUST match.
+## What Go's `encoding/json` does by default
+
+Go's defaults differ in two key ways:
+- `*T` nil → `"field": null` (the field IS emitted, just as JSON null).
+- Slice/map nil → `"field": null` (same).
+- The `omitempty` tag suppresses zero values entirely — including `0`, `""`,
+  `false`, nil pointer, AND nil slice/map.
+
+## Current Go-port shape — known divergence
+
+The codebase's nullable-field shape currently follows the **prior policy**
+(`*T` without `omitempty`), which emits `"field": null` where C# omits the key.
+This is a known wire-shape divergence — the doc previously asserted that C#
+emitted null and prescribed "no omitempty" to match; in fact C# omits, so
+"no omitempty" produces the opposite of byte-equality.
+
+**Why it has not been swept yet:** the cleanup is a 200+-field migration across
+40+ resource types — sequencing under a dedicated audit-B.7-class sweep with a
+contract-replay baseline rebuild. Until that sweep lands, expect Go responses
+to carry `"field": null` for nullable nil pointers where C# would omit. Most
+JSON consumers (React UI, scripted tools, mobile apps) tolerate the divergence
+because `undefined` and `null` both flunk truthiness checks the same way, but
+strict byte-equal contract tests will catch it.
+
+**Forward guidance for newly added types** (see the audit checklist below):
+nullable C# properties → `*T` with `omitempty` in the Go shape so new code does
+not enlarge the deferred sweep. Non-nullable C# properties → value type, no
+`omitempty` (the zero value is what C# emits).
 
 ## Field-by-field rules
 
-| .NET shape                              | Go shape                       | JSON emission                |
-|-----------------------------------------|--------------------------------|------------------------------|
-| `int` (non-nullable)                    | `int`                          | always; `0` for default      |
-| `int?` (nullable)                       | `*int`, NO `omitempty`         | `null` when nil; `<int>` otherwise |
-| `string` (non-nullable)                 | `string`, NO `omitempty`       | always; `""` for default     |
-| `string?` (nullable ref, C# 8+)         | `*string`, NO `omitempty`      | `null` when nil; `"<v>"` otherwise |
-| `bool` (non-nullable)                   | `bool`                         | always; `false` for default  |
-| `bool?` (nullable)                      | `*bool`, NO `omitempty`        | `null` when nil; otherwise   |
-| `DateTime` (non-nullable)               | `time.Time`                    | always; zero-time for default|
-| `DateTime?` (nullable)                  | `*time.Time`, NO `omitempty`   | `null` when nil; RFC3339     |
-| `List<T>` initialised empty             | `[]T` pre-initialised to `[]T{}` | `[]`                       |
-| `List<T>` nullable / left null          | `[]T`, NO `omitempty`          | `null` when nil; `[]` when initialised empty |
-| `Dictionary<K,V>` initialised empty     | `map[K]V` pre-initialised      | `{}`                         |
-| C# enum (int-backed)                    | typed `int` const block         | integer value                |
-| C# enum with `[JsonConverter(StringEnum)]` | typed string const block     | string value                 |
+The "C# wire emission" column reflects what `System.Text.Json` actually emits
+with `WhenWritingNull` in force. The "Forward-guidance Go shape" column is what
+new types added to the Go port should adopt to match it byte-for-byte; the
+existing codebase frequently does NOT match this and is tracked as the
+deferred sweep above.
+
+| .NET shape                                  | Forward-guidance Go shape          | C# wire emission                                  |
+|---------------------------------------------|------------------------------------|---------------------------------------------------|
+| `int` (non-nullable)                        | `int`                              | always; `0` for default                           |
+| `int?` (nullable)                           | `*int`, `omitempty`                | **omitted when nil**; `<int>` otherwise           |
+| `string` (non-nullable)                     | `string`                           | always; `""` for default                          |
+| `string?` (nullable ref, C# 8+)             | `*string`, `omitempty`             | **omitted when null**; `"<v>"` otherwise          |
+| `bool` (non-nullable)                       | `bool`                             | always; `false` for default                       |
+| `bool?` (nullable)                          | `*bool`, `omitempty`               | **omitted when nil**; otherwise                   |
+| `DateTime` (non-nullable)                   | `time.Time`                        | always; zero-time for default                     |
+| `DateTime?` (nullable)                      | `*time.Time`, `omitempty`          | **omitted when nil**; RFC3339 otherwise           |
+| `List<T>` initialised empty                 | `[]T` pre-initialised to `[]T{}`   | `[]`                                              |
+| `List<T>` nullable / left null              | `[]T`, `omitempty`                 | **omitted when nil**; `[]` when initialised empty |
+| `Dictionary<K,V>` initialised empty         | `map[K]V` pre-initialised          | `{}`                                              |
+| `Dictionary<K,V>` nullable / left null      | `map[K]V`, `omitempty`             | **omitted when nil**                              |
+| C# enum (int-backed)                        | typed `int` const block            | integer value                                     |
+| C# enum with `[JsonConverter(StringEnum)]`  | typed string const block           | string value                                      |
 
 ## When Go's `encoding/json` doesn't match by default
 
-### Nil slices marshal to `null`, not `[]`
+### Initialised-empty slices vs nil slices
+
+Go's `json.Marshal` emits nil slices as `null` and empty-initialised slices as
+`[]`. C# emits initialised-empty `List<T>` as `[]` and omits nullable-null
+`List<T>` (under `WhenWritingNull`). To match both shapes from Go, pair the
+field design with explicit initialisation at the relevant constructors:
 
 ```go
-// WRONG — emits "tags":null
+// MATCHES C# initialised-empty List<T>:
 type Series struct {
-    Tags []int `json:"tags"`
+    Tags []int `json:"tags"` // pre-initialise to []int{} at every construction site
 }
-s := Series{} // Tags is nil
+s := Series{Tags: []int{}} // emits "tags":[]
 
-// RIGHT — emits "tags":[]
+// MATCHES C# nullable-null List<T>:
 type Series struct {
-    Tags []int `json:"tags"`
+    OptionalTags []int `json:"optionalTags,omitempty"` // nil → omitted, empty → "[]"
 }
-s := Series{Tags: []int{}} // explicitly empty
 ```
 
 If you cannot guarantee initialisation everywhere (DB load paths, partial
 construction), implement `MarshalJSON` on the parent struct that coerces nil
-slices to `[]` for the relevant fields. Document the coercion in the
-struct doc.
+slices to `[]` for fields that should never appear as `null`. Document the
+coercion in the struct doc.
 
 ### `time.Time` zero value emits the year-0001 string
 
 That's fine for non-nullable `DateTime` — .NET emits the same value. For
-`*time.Time` with nil, the stdlib emits `null` correctly out of the box.
+nullable `DateTime?`, C# omits when null. Go's `*time.Time` with `omitempty`
+matches.
 
 ### Custom enum values
 
@@ -100,58 +144,64 @@ Before merging a slice that adds or modifies a JSON-emitting type:
 1. **Locate the C# original.** Find the matching property on the C# class.
 2. **Note nullability.** Is the C# property `T`, `T?`, or a nullable reference?
 3. **Apply the table.** Match the Go shape mechanically.
-4. **Drop `omitempty`** unless the field is genuinely net-new in the Go port
-   with no .NET counterpart (rare; document in a comment when you do).
+4. **Add `omitempty` when the C# property is nullable.** New types contribute
+   to the deferred sweep only when they break this rule — keep the door from
+   widening.
 5. **Reject `*T` for non-nullable .NET properties.** If the C# is `int`, Go
    must be `int`, even if the DB column is NULL-able. The Scan path coerces.
-6. **Pre-initialise slices and maps** before any marshal path. Or override
-   `MarshalJSON`.
+6. **Pre-initialise slices and maps when C# initialises them as empty**
+   (before any marshal path) — `[]T{}` for `List<T>` that should render as
+   `[]`. Or override `MarshalJSON`.
 7. **Snapshot test** when feasible: capture a .NET response for the same data
    and assert byte-equality against the Go output.
 
 ## Conversion-note guidance
 
-Future contributors familiar with idiomatic Go will flag fields lacking
-`omitempty` as "un-idiomatic." They are right that it's un-idiomatic. The
-wire-compat requirement supersedes — add a brief comment to the struct's
-docstring when the un-idiomatic pattern is load-bearing:
+Future contributors will see the existing codebase using `*T` without
+`omitempty` and may assume that's the intended pattern. It is not — that's the
+deferred-divergence area. New types should adopt the forward-guidance shape in
+the table above. Add a brief comment to the struct's docstring when the
+nullable-field pattern is non-obvious:
 
 ```go
-// Series is the persisted series row + v3 API response shape.
-//
-// JSON tags intentionally omit `omitempty` on nullable fields per
-// go/JSON_CONVENTIONS.md — the Sonarr v3 API contract emits explicit
-// `null` for null fields; idiomatic Go would omit them.
-type Series struct {
-    ...
+// MyResource mirrors the C# MyResource. Nullable C# properties use
+// `*T,omitempty` to match the WhenWritingNull omission posture; the older
+// resources around this package use `*T` without omitempty and are queued
+// under the JSON_CONVENTIONS.md "known divergence" sweep.
+type MyResource struct {
+    Foo *int `json:"foo,omitempty"` // mirrors C# `public int? Foo`
 }
 ```
 
-## Known non-compliant fields
+## Known divergence
 
-**None — full sweep landed 2026-05-12.** All violations from the
-5-agent audit + omitempty inventory were resolved in a single cleanup
-pass:
+**Deferred B.7-class sweep — not blocking releases.** The Go-port emits
+`"field": null` for nullable nil pointers where C# omits the key. Surfaces:
 
-- `omitempty` dropped from 242 occurrences across 40 production files.
-- `*T → T` migrations for non-nullable C# properties:
-  - `series.Series.Year` (`*int → int`; Scan coerces NULL→0)
-  - `series.Series.QualityProfileID` (`*int → int`; schema NOT NULL)
-  - `downloadhistory.Entry.Protocol` / `.IndexerID` / `.DownloadClientID`
-    (`*int → int`; Scan coerces NULL→0)
-- `scenemappings.Mapping` JSON tag renames: `searchTerm → searchTitle` +
-  `seasonNumber → season` matching C# `[JsonProperty]` attributes at
-  `SceneMapping.cs:12-18`.
-- 25+ downstream call sites updated: `nil`-checks replaced with `== 0`
-  sentinel; pointer dereferences removed.
-- Test fixtures across 10+ files updated to construct value-types in
-  `series.Series{Year: 2015, QualityProfileID: 7}` form.
+- Resources in `internal/series`, `internal/episodes`, `internal/episodefiles`,
+  `internal/customformats`, `internal/qualityprofiles`, `internal/indexers`,
+  `internal/downloadclients`, `internal/notifications`, `internal/importlists`,
+  and the related v3 handler types — `*T` fields lack `omitempty`.
+- Contract-replay tests have an established baseline of known-failing goldens
+  per slice 5.J7/J8 — the null-vs-missing divergence is one cause of the gap.
 
-The audit checklist (above) is the load-bearing prevention for future
-regressions. Every new JSON-emitting type added to the Go port MUST
-pass that checklist before merge.
+**Why deferred:** the cleanup is a 200+-field migration with a contract-replay
+baseline rebuild — needs its own sequenced slice (or audit B.7 sweep), not a
+piecemeal addition to a feature slice.
+
+**What changed from the prior policy.** The prior version of this doc claimed
+C# emitted nullable nulls as `null` and prescribed "no omitempty" to match.
+That assertion was empirically wrong (confirmed by `STJson.cs:27` + recorded
+goldens). The codebase was written against the wrong premise. J161
+(2026-05-21) rewrote the rationale + field-by-field table to reflect C#
+reality, recorded the existing codebase shape as a known divergence, and
+flipped the forward-guidance prescription to `omitempty` on nullable C#
+properties. The bulk migration of existing types stays deferred under the
+B.7-class sweep.
 
 ## Related
 
 - [CONVERSION.md](CONVERSION.md) — broader C#→Go conversion rules.
 - [STATUS.md](STATUS.md) — current slice state and rolling pointer.
+- [AUDIT_FIX_BACKLOG.md](AUDIT_FIX_BACKLOG.md) — the deferred B.7-class
+  divergence sweep is tracked here under "Notable follow-ups".
