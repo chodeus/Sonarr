@@ -57,10 +57,42 @@ func (n *NzbVortex) Definition() *downloadclients.DownloadClient { return n.def 
 // Settings returns the bound Settings.
 func (n *NzbVortex) Settings() Settings { return n.settings }
 
-// Download is a STUB at 5.J66. Follow-up: AddFromNzbFile →
-// `Proxy.DownloadNzb` (multipart upload to `nzb/add`).
-func (n *NzbVortex) Download(_ context.Context, _ *downloadclients.GrabRequest) (string, error) {
-	return "", fmt.Errorf("%w: Download", ErrNotImplemented)
+// Download ports `NzbVortex.AddFromNzbFile` at C# `:35-47`. Fires
+// a multipart POST to `nzb/add` with the fetched NzbBody, the
+// per-grab priority (Recent vs Older, selected by req.IsRecent),
+// and the configured TvCategory as the groupname query param.
+// Returns the add_uuid the server assigns. The C# code throws
+// `DownloadClientException` on a null response; the Go port
+// surfaces [ErrRPC] (already wrapped by [Proxy.DownloadNzb] when
+// the server returns an empty add_uuid).
+//
+// Filename composition matches the C# pattern at AddFromNzbFile —
+// `<ReleaseTitle>.nzb` (the orchestrator's pre-fetch step doesn't
+// give the Provider a separate `filename` arg the way C#
+// UsenetClientBase does, so the Go port derives from ReleaseTitle).
+func (n *NzbVortex) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
+	if req == nil {
+		return "", errors.New("nzbvortex: nil GrabRequest")
+	}
+	if n.proxy == nil {
+		return "", errors.New("nzbvortex: nil Proxy")
+	}
+	if strings.TrimSpace(req.ReleaseTitle) == "" {
+		return "", errors.New("nzbvortex: GrabRequest.ReleaseTitle is empty")
+	}
+	if len(req.NzbBody) == 0 {
+		return "", errors.New("nzbvortex: GrabRequest.NzbBody is empty")
+	}
+	priority := n.settings.OlderTvPriority
+	if req.IsRecent {
+		priority = n.settings.RecentTvPriority
+	}
+	filename := req.ReleaseTitle + ".nzb"
+	id, err := n.proxy.DownloadNzb(ctx, n.settings, req.NzbBody, filename, priority)
+	if err != nil {
+		return "", fmt.Errorf("nzbvortex: DownloadNzb(%q): %w", req.ReleaseTitle, err)
+	}
+	return id, nil
 }
 
 // GetItems is a STUB at 5.J66. Follow-up: Proxy.GetQueue + state

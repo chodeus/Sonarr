@@ -1,6 +1,7 @@
 package nzbvortex
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,7 +13,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"sync"
@@ -388,6 +391,151 @@ type groupResponse struct {
 type queueResponse struct {
 	responseBase
 	Items []*QueueItem `json:"nzbs"`
+}
+
+// AddResponse mirrors C# `NzbVortexAddResponse` at
+// `Responses/NzbVortexAddResponse.cs`. The C# `JsonProperty("add_uuid")`
+// at `:6` renames Id to `add_uuid` on the wire — the Go tag matches.
+type AddResponse struct {
+	responseBase
+	ID string `json:"add_uuid"`
+}
+
+// DownloadNzb fires a multipart POST to `nzb/add` with the .nzb
+// bytes attached as the `name` form-file (filename + body +
+// `application/x-nzb` content-type). Mirrors C#
+// `NzbVortexProxy.DownloadNzb` at `:40-56`.
+//
+// Query params:
+//
+//   - `priority=<int>` — always emitted (C# `:44`).
+//   - `groupname=<TvCategory>` — emitted only when Settings.TvCategory
+//     is non-empty (C# `:46-49`).
+//   - `sessionid=<sid>` — appended by the auth path inside [Proxy.postMultipart].
+//
+// Returns the add_uuid string the server assigns to the new
+// download. Errors propagate the proxy's sentinel errors.
+func (p *Proxy) DownloadNzb(ctx context.Context, s Settings, contents []byte, filename string, priority int) (string, error) {
+	q := url.Values{}
+	q.Set("priority", fmt.Sprintf("%d", priority))
+	if cat := strings.TrimSpace(s.TvCategory); cat != "" {
+		q.Set("groupname", cat)
+	}
+
+	body, contentType, err := buildMultipart("name", filename, "application/x-nzb", contents)
+	if err != nil {
+		return "", fmt.Errorf("nzbvortex: build multipart: %w", err)
+	}
+
+	var out AddResponse
+	if err := p.postMultipart(ctx, s, "nzb/add", q, body, contentType, &out); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(out.ID) == "" {
+		return "", fmt.Errorf("%w: nzb/add returned empty add_uuid", ErrRPC)
+	}
+	return out.ID, nil
+}
+
+// buildMultipart constructs a multipart/form-data body with a
+// single file part: `name="<fieldName>"; filename="<filename>"`,
+// Content-Type=contentType, payload=contents. Returns the encoded
+// body + the boundary-bearing Content-Type header value.
+//
+// Mirrors C# `HttpRequestBuilder.AddFormUpload(name, filename,
+// fileData, contentType)` at NzbVortexProxy.cs:51. The C# code
+// emits identical field shape; the Go port uses
+// [mime/multipart.Writer] for the well-formed encoding.
+func buildMultipart(fieldName, filename, contentType string, contents []byte) (*bytes.Buffer, string, error) {
+	buf := &bytes.Buffer{}
+	mw := multipart.NewWriter(buf)
+	hdr := textproto.MIMEHeader{}
+	hdr.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, fieldName, filename))
+	hdr.Set("Content-Type", contentType)
+	part, err := mw.CreatePart(hdr)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := part.Write(contents); err != nil {
+		return nil, "", err
+	}
+	if err := mw.Close(); err != nil {
+		return nil, "", err
+	}
+	return buf, mw.FormDataContentType(), nil
+}
+
+// postMultipart fires one HTTP POST with a multipart/form-data
+// body. Auth is required (the sessionid query param is appended
+// by the auth path); the NotLoggedIn-retry branch is NOT exercised
+// here because the C# code calls ProcessRequest with the standard
+// auth-retry path. The Go port mirrors that — re-fires the same
+// multipart body on NotLoggedIn.
+//
+// The retry needs a fresh body each time since the first POST
+// consumed the buffer. We hold the bytes (post-encode) and rebuild
+// the bytes.Reader per attempt.
+func (p *Proxy) postMultipart(ctx context.Context, s Settings, resource string, query url.Values, body *bytes.Buffer, contentType string, out *AddResponse) error {
+	payload := body.Bytes()
+	if err := p.doPostMultipart(ctx, s, resource, query, payload, contentType, out); err != nil {
+		return err
+	}
+	if out.resultField() == resultNotLoggedIn {
+		p.log.Debug("nzbvortex: nzb/add NotLoggedIn → reauth + retry")
+		p.invalidateSession(s)
+		if err := p.doPostMultipart(ctx, s, resource, query, payload, contentType, out); err != nil {
+			return err
+		}
+		if out.resultField() == resultNotLoggedIn {
+			return fmt.Errorf("%w: %s", ErrSessionLost, resource)
+		}
+	}
+	if out.resultField() == resultUnknown {
+		return fmt.Errorf("%w: %s", ErrRPC, resource)
+	}
+	return nil
+}
+
+// doPostMultipart builds + fires one POST — no retry. The auth
+// flow runs first so sessionid is appended to the query string.
+func (p *Proxy) doPostMultipart(ctx context.Context, s Settings, resource string, query url.Values, payload []byte, contentType string, out *AddResponse) error {
+	sid, err := p.ensureSession(ctx, s, false)
+	if err != nil {
+		return err
+	}
+	q := url.Values{}
+	for k, vs := range query {
+		for _, v := range vs {
+			q.Add(k, v)
+		}
+	}
+	q.Set("sessionid", sid)
+
+	u := baseURL(s) + "/" + strings.TrimLeft(resource, "/") + "?" + q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("nzbvortex: build %s request: %w", resource, err)
+	}
+	req.Header.Set("Content-Type", contentType)
+
+	resp, err := p.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrUnavailable, resource, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+	if err != nil {
+		return fmt.Errorf("nzbvortex: %s read body: %w", resource, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("%w: %s status %d: %s", ErrUnavailable, resource, resp.StatusCode,
+			strings.TrimSpace(truncate(string(respBody), 256)))
+	}
+	if err := json.Unmarshal(respBody, out); err != nil {
+		return fmt.Errorf("nzbvortex: %s unmarshal: %w", resource, err)
+	}
+	return nil
 }
 
 // GetGroups fires `group`. Auth required. Mirrors C#

@@ -496,11 +496,8 @@ func TestProvider_GetStatus_LocalhostFlag(t *testing.T) {
 	}
 }
 
-func TestProvider_StubReturns(t *testing.T) {
+func TestProvider_RemainingStubs(t *testing.T) {
 	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(newScripted(), nil), nil)
-	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{ReleaseTitle: "X"}); !errors.Is(err, nzbvortex.ErrNotImplemented) {
-		t.Errorf("Download err = %v, want ErrNotImplemented", err)
-	}
 	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); !errors.Is(err, nzbvortex.ErrNotImplemented) {
 		t.Errorf("RemoveItem err = %v, want ErrNotImplemented", err)
 	}
@@ -511,6 +508,220 @@ func TestProvider_StubReturns(t *testing.T) {
 	if len(items) != 0 {
 		t.Errorf("GetItems len = %d, want 0", len(items))
 	}
+}
+
+func TestProvider_Download_NilRequest(t *testing.T) {
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(newScripted(), nil), nil)
+	if _, err := p.Download(context.Background(), nil); err == nil {
+		t.Fatal("err = nil, want nil-request error")
+	}
+}
+
+func TestProvider_Download_EmptyTitle(t *testing.T) {
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(newScripted(), nil), nil)
+	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{NzbBody: []byte("x")}); err == nil {
+		t.Fatal("err = nil, want empty-title error")
+	}
+}
+
+func TestProvider_Download_EmptyBody(t *testing.T) {
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(newScripted(), nil), nil)
+	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{ReleaseTitle: "X"}); err == nil {
+		t.Fatal("err = nil, want empty-body error")
+	}
+}
+
+func TestProvider_Download_HappyPath_RequestShape(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Successful","sessionId":"SID"}`)
+	doer.queue("/api/nzb/add", `{"result":"Ok","add_uuid":"NEW-UUID-1"}`)
+
+	settings := newSettings()
+	settings.RecentTvPriority = nzbvortex.PriorityHigh
+	settings.OlderTvPriority = nzbvortex.PriorityLow
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, settings, nzbvortex.NewProxy(doer, nil), nil)
+
+	id, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Some.Show.S01E01",
+		NzbBody:      []byte("<nzb>...</nzb>"),
+		IsRecent:     true,
+	})
+	if err != nil {
+		t.Fatalf("Download err = %v", err)
+	}
+	if id != "NEW-UUID-1" {
+		t.Errorf("id = %q, want NEW-UUID-1", id)
+	}
+
+	// Find the /api/nzb/add call.
+	var addCall scriptedCall
+	for _, c := range doer.calls {
+		if c.path == "/api/nzb/add" {
+			addCall = c
+			break
+		}
+	}
+	if addCall.method != "POST" {
+		t.Errorf("method = %q, want POST", addCall.method)
+	}
+	if addCall.query.Get("priority") != "1" {
+		t.Errorf("priority = %q, want 1 (PriorityHigh because IsRecent)", addCall.query.Get("priority"))
+	}
+	if addCall.query.Get("groupname") != "TV Shows" {
+		t.Errorf("groupname = %q, want 'TV Shows'", addCall.query.Get("groupname"))
+	}
+	if addCall.query.Get("sessionid") != "SID" {
+		t.Errorf("sessionid = %q, want SID (replayed)", addCall.query.Get("sessionid"))
+	}
+}
+
+func TestProvider_Download_NonRecentUsesOlderPriority(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Successful","sessionId":"SID"}`)
+	doer.queue("/api/nzb/add", `{"result":"Ok","add_uuid":"X"}`)
+	settings := newSettings()
+	settings.RecentTvPriority = nzbvortex.PriorityHigh
+	settings.OlderTvPriority = nzbvortex.PriorityLow
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, settings, nzbvortex.NewProxy(doer, nil), nil)
+	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		NzbBody:      []byte("x"),
+		IsRecent:     false,
+	}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	var addCall scriptedCall
+	for _, c := range doer.calls {
+		if c.path == "/api/nzb/add" {
+			addCall = c
+		}
+	}
+	if addCall.query.Get("priority") != "-1" {
+		t.Errorf("priority = %q, want -1 (PriorityLow because !IsRecent)", addCall.query.Get("priority"))
+	}
+}
+
+func TestProvider_Download_BlankCategoryDropsGroupnameQuery(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Successful","sessionId":"SID"}`)
+	doer.queue("/api/nzb/add", `{"result":"Ok","add_uuid":"X"}`)
+	settings := newSettings()
+	settings.TvCategory = ""
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, settings, nzbvortex.NewProxy(doer, nil), nil)
+	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		NzbBody:      []byte("x"),
+	}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	for _, c := range doer.calls {
+		if c.path == "/api/nzb/add" {
+			if c.query.Get("groupname") != "" {
+				t.Errorf("groupname = %q, want unset when TvCategory is blank", c.query.Get("groupname"))
+			}
+		}
+	}
+}
+
+func TestProvider_Download_EmptyAddUuidSurfacesRPCError(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Successful","sessionId":"SID"}`)
+	doer.queue("/api/nzb/add", `{"result":"Ok","add_uuid":""}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		NzbBody:      []byte("x"),
+	})
+	if !errors.Is(err, nzbvortex.ErrRPC) {
+		t.Errorf("err = %v, want ErrRPC (empty add_uuid)", err)
+	}
+}
+
+func TestProvider_Download_AuthFailurePropagates(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Failed","sessionId":""}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		NzbBody:      []byte("x"),
+	})
+	if !errors.Is(err, nzbvortex.ErrAuth) {
+		t.Errorf("err = %v, want ErrAuth", err)
+	}
+}
+
+// TestProxy_DownloadNzb_MultipartBodyShape inspects the multipart
+// body emitted by Proxy.DownloadNzb directly — locks the field
+// name + filename + content-type the C# AddFormUpload at
+// NzbVortexProxy.cs:51 emits.
+func TestProxy_DownloadNzb_MultipartBodyShape(t *testing.T) {
+	bodyDoer := &bodyCapturingDoer{
+		responses: []scriptedResp{
+			{status: 200, body: `{"authNonce":"N"}`},
+			{status: 200, body: `{"result":"Ok","loginResult":"Successful","sessionId":"SID"}`},
+			{status: 200, body: `{"result":"Ok","add_uuid":"X"}`},
+		},
+	}
+	proxy := nzbvortex.NewProxy(bodyDoer, nil)
+	settings := newSettings()
+	_, err := proxy.DownloadNzb(context.Background(), settings, []byte("NZB-BYTES"), "Show.S01E01.nzb", nzbvortex.PriorityNormal)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	// The third request (post-auth) is the multipart POST.
+	if len(bodyDoer.bodies) < 3 {
+		t.Fatalf("captured %d bodies, want at least 3", len(bodyDoer.bodies))
+	}
+	mpBody := string(bodyDoer.bodies[2])
+	mpContentType := bodyDoer.contentTypes[2]
+	if !strings.HasPrefix(mpContentType, "multipart/form-data;") {
+		t.Errorf("Content-Type = %q, want multipart/form-data;...", mpContentType)
+	}
+	if !strings.Contains(mpBody, `name="name"`) {
+		t.Errorf("body missing form field name=\"name\": %q", mpBody)
+	}
+	if !strings.Contains(mpBody, `filename="Show.S01E01.nzb"`) {
+		t.Errorf("body missing filename=\"Show.S01E01.nzb\": %q", mpBody)
+	}
+	if !strings.Contains(mpBody, "application/x-nzb") {
+		t.Errorf("body missing Content-Type: application/x-nzb: %q", mpBody)
+	}
+	if !strings.Contains(mpBody, "NZB-BYTES") {
+		t.Errorf("body missing the nzb payload bytes: %q", mpBody)
+	}
+}
+
+// bodyCapturingDoer records every request body + Content-Type so
+// the multipart-shape test can inspect them after the call chain.
+type bodyCapturingDoer struct {
+	responses    []scriptedResp
+	bodies       [][]byte
+	contentTypes []string
+	idx          int
+}
+
+func (b *bodyCapturingDoer) Do(req *http.Request) (*http.Response, error) {
+	var body []byte
+	if req.Body != nil {
+		body, _ = io.ReadAll(req.Body)
+	}
+	b.bodies = append(b.bodies, body)
+	b.contentTypes = append(b.contentTypes, req.Header.Get("Content-Type"))
+	if b.idx >= len(b.responses) {
+		return nil, errors.New("bodyCapturingDoer: no more responses")
+	}
+	resp := b.responses[b.idx]
+	b.idx++
+	return &http.Response{
+		StatusCode: resp.status,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(resp.body)),
+	}, nil
 }
 
 func TestProvider_MarkItemAsImported(t *testing.T) {
