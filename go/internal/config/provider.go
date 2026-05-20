@@ -465,6 +465,25 @@ func (p *Provider) SetRescanAfterRefresh(ctx context.Context, v string) error {
 	return err
 }
 
+// CleanupMetadataImages mirrors `ConfigService.cs:377-384`. Default
+// true at `:381` — C# `GetValueBoolean("CleanupMetadataImages", true)`.
+// One-shot flag the DeleteBadMediaCovers housekeeper consumes: it
+// reads the flag, performs the disk-side image scan if set, and
+// writes the flag back to false so the next housekeeping pass
+// short-circuits. New installs see the flag default to true on the
+// first read so the upgrade-time corrupt-image sweep fires once.
+func (p *Provider) CleanupMetadataImages() bool {
+	return p.getBool("CleanupMetadataImages", true)
+}
+
+// SetCleanupMetadataImages writes the new value, publishing
+// ConfigSavedEvent on change. Mirrors the property setter at
+// `ConfigService.cs:383`.
+func (p *Provider) SetCleanupMetadataImages(ctx context.Context, v bool) error {
+	_, err := p.setBool(ctx, "CleanupMetadataImages", v)
+	return err
+}
+
 // FirstDayOfWeek mirrors `ConfigService.cs:FirstDayOfWeek`. C# reads
 // `CultureInfo.CurrentCulture.DateTimeFormat.FirstDayOfWeek`, so the
 // effective default depends on the host's locale. The Go port hard-

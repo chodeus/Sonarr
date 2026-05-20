@@ -390,38 +390,14 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("housekeeping cleanupQPFormat: %w", err)
 	}
-	houseSvc, err := housekeeping.NewService([]housekeeping.Task{
-		fixFuture,
-		orphanEpisodes,
-		orphanFiles,
-		orphanHistory,
-		orphanBlocklist,
-		orphanIndexerStatus,
-		orphanDownloadClientStatus,
-		orphanImportListStatus,
-		orphanNotificationStatus,
-		orphanPending,
-		orphanExtra,
-		orphanSubtitle,
-		orphanMetadata,
-		absPathMetadata,
-		dcuPending,
-		duplicateMetadata,
-		tempUpdate,
-		extraFilesExcluded,
-		addlNaming,
-		addlUsers,
-		updateClean,
-		fixIndexerStatus,
-		fixDownloadClientStatus,
-		fixImportListStatus,
-		fixNotificationStatus,
-		cleanupTags,
-		cleanupQPFormat,
-	}, logger)
-	if err != nil {
-		return fmt.Errorf("housekeeping service: %w", err)
-	}
+	// houseSvc construction is deferred to after configProv +
+	// metadataFilesRepo are built (slice 5.J134) — the new
+	// DeleteBadMediaCovers task needs both, and housekeeping.Service
+	// takes an immutable task slice at construction. The individual
+	// Task variables declared above remain in scope through the rest
+	// of serve() and get folded into the final NewService([]) call
+	// below.
+	var houseSvc *housekeeping.Service
 
 	// Health-check service constructed AFTER seriesSvc / diskProv /
 	// rootFoldersRepo so checks that need them (RemovedSeries,
@@ -2611,6 +2587,48 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	metadataFilesRepo, err := metadatafiles.NewRepo(db)
 	if err != nil {
 		return fmt.Errorf("metadatafiles repo: %w", err)
+	}
+	// Slice 5.J134: build DeleteBadMediaCovers + the now-fully-known
+	// houseSvc Task slice here. configProv + metadataFilesRepo were
+	// not yet available at the earlier housekeeping-construction
+	// block, so the NewService call deferred to this point.
+	badMediaCovers, err := housekeeping.NewDeleteBadMediaCovers(
+		configProv, metadataFilesRepo, seriesRepo, nil, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping badMediaCovers: %w", err)
+	}
+	houseSvc, err = housekeeping.NewService([]housekeeping.Task{
+		fixFuture,
+		orphanEpisodes,
+		orphanFiles,
+		orphanHistory,
+		orphanBlocklist,
+		orphanIndexerStatus,
+		orphanDownloadClientStatus,
+		orphanImportListStatus,
+		orphanNotificationStatus,
+		orphanPending,
+		orphanExtra,
+		orphanSubtitle,
+		orphanMetadata,
+		absPathMetadata,
+		dcuPending,
+		duplicateMetadata,
+		tempUpdate,
+		extraFilesExcluded,
+		badMediaCovers,
+		addlNaming,
+		addlUsers,
+		updateClean,
+		fixIndexerStatus,
+		fixDownloadClientStatus,
+		fixImportListStatus,
+		fixNotificationStatus,
+		cleanupTags,
+		cleanupQPFormat,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping service: %w", err)
 	}
 	metadataWriterDeps := metadata.Dependencies{
 		HTTPClient:   httpClient,
