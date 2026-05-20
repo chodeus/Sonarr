@@ -314,6 +314,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("housekeeping dcuPending: %w", err)
 	}
+	duplicateMetadata, err := housekeeping.NewCleanupDuplicateMetadataFiles(db, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping duplicateMetadata: %w", err)
+	}
 	addlNaming, err := housekeeping.NewCleanupAdditionalNamingSpecs(db, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping addlNaming: %w", err)
@@ -382,6 +386,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		orphanMetadata,
 		absPathMetadata,
 		dcuPending,
+		duplicateMetadata,
 		addlNaming,
 		addlUsers,
 		updateClean,
