@@ -38,6 +38,7 @@ import (
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/indexers/fanzub"
 	"sonarr.tv/sonarr/internal/indexers/filelist"
+	"sonarr.tv/sonarr/internal/indexers/hdbits"
 	"sonarr.tv/sonarr/internal/indexers/iptorrents"
 	"sonarr.tv/sonarr/internal/indexers/newznab"
 	"sonarr.tv/sonarr/internal/indexers/nyaa"
@@ -231,6 +232,22 @@ func (s *dbIndexerSource) buildAdapter(row *indexers.Indexer, def *provider.Defi
 		// torrentleech — leave FetchSearchFunc nil.
 		return common, nil
 
+	case "HDBits":
+		idx := hdbits.NewIndexer(s.httpClient)
+		idx.SetDefinition(def)
+		common.FetchRecentFunc = func(ctx context.Context) ([]any, error) {
+			rs, err := idx.FetchRecent(ctx)
+			return upcastTorrentInfos(rs), err
+		}
+		// Slice 5.J154 (first slice of the HDBits arc): only the
+		// JSON POST `latest` FetchRecent path lands. The per-criteria
+		// search routing (HDBitsRequestGenerator.cs:24-137 — Tvdb-id
+		// per-episode/season fan-out with Clone-and-mutate query
+		// pattern) ships as a follow-up slice. Leave FetchSearchFunc
+		// nil so the adapter surfaces the "does not support search"
+		// error instead of silently returning empty.
+		return common, nil
+
 	case "FileList":
 		idx := filelist.NewIndexer(s.httpClient)
 		idx.SetDefinition(def)
@@ -403,6 +420,8 @@ func (a minimumSeedersAdapter) MinimumSeeders(ctx context.Context, id int) (int,
 	case *nyaa.Settings:
 		return s.MinimumSeeders, true, nil
 	case *filelist.Settings:
+		return s.MinimumSeeders, true, nil
+	case *hdbits.Settings:
 		return s.MinimumSeeders, true, nil
 	default:
 		// Newznab + any non-torrent provider class.
