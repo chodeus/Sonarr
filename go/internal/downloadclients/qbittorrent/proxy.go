@@ -591,6 +591,38 @@ func (p *Proxy) MoveTorrentToTopInQueue(ctx context.Context, hash string, settin
 	return nil
 }
 
+// AddTags fires POST /api/v2/torrents/addTags. Mirrors C#
+// `QBittorrentProxyV2.AddTags` at `QBittorrentProxyV2.cs:341-348`.
+// The C# signature accepts an IEnumerable<string> of tag labels and
+// comma-joins them; the Go port narrows to a single tag string
+// because slice 6.I's caller (`QBittorrent.Download` AddSeriesTags
+// arm) feeds in only `req.SeriesTitle` rather than the resolved
+// per-series Tag labels (see [downloadclients.GrabRequest.SeriesTitle]
+// for the divergence note).
+//
+// Best-effort: a non-200 response is surfaced as an error so the
+// caller can log + continue. The C# tree's ProcessRequest helper
+// throws on non-200, and the Download call site at C# `:135-142`
+// wraps the call in try/catch + warn — the Go port mirrors that
+// posture by warning at the call site rather than failing the grab.
+//
+// Slice 6.I (qBittorrent hygiene long-tail — closes the
+// AddSeriesTags deferral noted at qbittorrent.go:144-147).
+func (p *Proxy) AddTags(ctx context.Context, hash, tag string, settings Settings) error {
+	form := url.Values{}
+	form.Set("hashes", strings.ToLower(hash))
+	form.Set("tags", tag)
+	status, body, err := p.DoRequest(ctx, http.MethodPost, "/api/v2/torrents/addTags",
+		strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", settings)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("%w: addTags status=%d body=%s", ErrUnexpected, status, truncate(body, 128))
+	}
+	return nil
+}
+
 // SetTorrentSeedingConfiguration fires POST
 // /api/v2/torrents/setShareLimits. Mirrors C#
 // `QBittorrentProxyV2.SetTorrentSeedingConfiguration` at

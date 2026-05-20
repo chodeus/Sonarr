@@ -141,9 +141,6 @@ func (q *QBittorrent) Proxy() *Proxy { return q.proxy }
 //
 // Per-slice scope deferrals:
 //
-//   - AddSeriesTags at C# `:133-143,202-212` is deferred — the tag
-//     repository port lands at a later sub-arc, and AddTags is best-
-//     effort in the C# tree anyway (warn + continue on failure).
 //   - WaitForTorrent at C# `:218-242` (poll-until-visible for the
 //     post-add RPC chain) is replaced by an "apply best-effort"
 //     posture — the post-add RPCs log + continue on failure, which
@@ -221,6 +218,20 @@ func (q *QBittorrent) Download(ctx context.Context, req *downloadclients.GrabReq
 		if prioErr := q.proxy.MoveTorrentToTopInQueue(ctx, hash, q.settings); prioErr != nil {
 			q.log.Warn("qbittorrent: MoveTorrentToTopInQueue failed",
 				"hash", hash, "err", prioErr)
+		}
+	}
+	// Slice 6.I (closes the AddSeriesTags deferral): when the
+	// AddSeriesTags setting is on and the orchestrator threaded a
+	// SeriesTitle through, tag the just-added torrent with the
+	// series title. Mirrors C# `:133-143,202-212`. Best-effort:
+	// failures warn + continue. The C# tree tags with the resolved
+	// per-series Tag labels — the Go port simplifies to
+	// SeriesTitle as the single tag (see GrabRequest.SeriesTitle
+	// doc-comment for the divergence note).
+	if q.settings.AddSeriesTags && req.SeriesTitle != "" {
+		if tagErr := q.proxy.AddTags(ctx, hash, req.SeriesTitle, q.settings); tagErr != nil {
+			q.log.Warn("qbittorrent: AddTags failed",
+				"hash", hash, "series", req.SeriesTitle, "err", tagErr)
 		}
 	}
 

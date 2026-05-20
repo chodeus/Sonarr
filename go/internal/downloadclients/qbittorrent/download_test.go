@@ -665,3 +665,163 @@ func sha1Sum(b []byte) string {
 	sum := sha1.Sum(b) //nolint:gosec // BEP-3 info-hash spec.
 	return hex.EncodeToString(sum[:])
 }
+
+// ============================================================================
+// Slice 6.I: AddSeriesTags post-add wiring. Applies when
+// Settings.AddSeriesTags is true AND GrabRequest.SeriesTitle is set.
+// ============================================================================
+
+// addServerWithTags extends addServer with an /api/v2/torrents/addTags
+// handler so slice 6.I's post-add RPC is observable. Returns 200 by
+// default; tests override addTagsStatus to exercise the error arm.
+type addServerWithTags struct {
+	addServer
+	addTagsCalls  atomic.Int32
+	addTagsStatus atomic.Int32 // 0 → 200, set to override
+	addTagsForm   atomic.Value // url.Values
+}
+
+func newAddServerWithTags(t *testing.T) (*addServerWithTags, *httptest.Server) {
+	h := &addServerWithTags{
+		addServer: addServer{
+			versionBody:     "v4.5.0",
+			addedFormFields: map[string]string{},
+			addResponseBody: "Ok.",
+			addStatus:       http.StatusOK,
+		},
+	}
+	h.shareLimitStatus.Store(http.StatusOK)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/torrents/addTags" {
+			h.addTagsCalls.Add(1)
+			_ = r.ParseForm()
+			h.addTagsForm.Store(r.PostForm)
+			s := int(h.addTagsStatus.Load())
+			if s == 0 {
+				s = http.StatusOK
+			}
+			w.WriteHeader(s)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			http.SetCookie(w, &http.Cookie{Name: "SID", Value: "sid"})
+			_, _ = io.WriteString(w, "Ok.")
+		case "/api/v2/app/version":
+			_, _ = io.WriteString(w, h.versionBody)
+		case "/api/v2/torrents/add":
+			h.addCalls.Add(1)
+			w.WriteHeader(h.addStatus)
+			_, _ = io.WriteString(w, h.addResponseBody)
+		case "/api/v2/torrents/setForceStart":
+			h.forceStartCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case "/api/v2/torrents/setShareLimits":
+			h.shareLimitCalls.Add(1)
+			w.WriteHeader(int(h.shareLimitStatus.Load()))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return h, srv
+}
+
+func TestDownload_AddSeriesTagsFiresWhenEnabledAndTitleSet(t *testing.T) {
+	t.Parallel()
+	h, srv := newAddServerWithTags(t)
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+		s.AddSeriesTags = true
+	})
+	hash, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show.S01E01",
+		MagnetURL:    "magnet:?xt=urn:btih:DEADBEEF",
+		SeriesTitle:  "Some Show",
+	})
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if hash != "DEADBEEF" {
+		t.Errorf("hash = %q, want DEADBEEF", hash)
+	}
+	if h.addTagsCalls.Load() != 1 {
+		t.Errorf("addTags fired %d times, want 1", h.addTagsCalls.Load())
+	}
+	form, _ := h.addTagsForm.Load().(url.Values)
+	if got := form.Get("hashes"); got != "deadbeef" {
+		t.Errorf("addTags hashes = %q, want lowercase deadbeef", got)
+	}
+	if got := form.Get("tags"); got != "Some Show" {
+		t.Errorf("addTags tags = %q, want %q", got, "Some Show")
+	}
+}
+
+func TestDownload_AddSeriesTagsSkippedWhenDisabled(t *testing.T) {
+	t.Parallel()
+	h, srv := newAddServerWithTags(t)
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+		// AddSeriesTags defaults to false.
+	})
+	if _, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show.S01E01",
+		MagnetURL:    "magnet:?xt=urn:btih:DEADBEEF",
+		SeriesTitle:  "Some Show",
+	}); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if h.addTagsCalls.Load() != 0 {
+		t.Errorf("addTags fired %d times, want 0 (AddSeriesTags=false)", h.addTagsCalls.Load())
+	}
+}
+
+func TestDownload_AddSeriesTagsSkippedWhenTitleEmpty(t *testing.T) {
+	t.Parallel()
+	h, srv := newAddServerWithTags(t)
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+		s.AddSeriesTags = true
+	})
+	if _, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show.S01E01",
+		MagnetURL:    "magnet:?xt=urn:btih:DEADBEEF",
+		// SeriesTitle empty — orchestrator hasn't threaded a series
+		// row (e.g. parser-only flow).
+	}); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if h.addTagsCalls.Load() != 0 {
+		t.Errorf("addTags fired %d times, want 0 (empty SeriesTitle)", h.addTagsCalls.Load())
+	}
+}
+
+func TestDownload_AddSeriesTagsErrorIsBestEffort(t *testing.T) {
+	t.Parallel()
+	h, srv := newAddServerWithTags(t)
+	h.addTagsStatus.Store(http.StatusInternalServerError)
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.Username = "u"
+		s.Password = "p"
+		s.AddSeriesTags = true
+	})
+	// 500 from qBittorrent's addTags is best-effort — the proxy
+	// surfaces the error and the Download caller warn+continues.
+	hash, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show.S01E01",
+		MagnetURL:    "magnet:?xt=urn:btih:DEADBEEF",
+		SeriesTitle:  "Some Show",
+	})
+	if err != nil {
+		t.Errorf("Download must not fail on addTags 500 (best-effort): got %v", err)
+	}
+	if hash != "DEADBEEF" {
+		t.Errorf("hash = %q, want DEADBEEF (returned even after best-effort failure)", hash)
+	}
+	if h.addTagsCalls.Load() != 1 {
+		t.Errorf("addTags still fires once on 500 (proxy must attempt + caller swallows); got %d", h.addTagsCalls.Load())
+	}
+}

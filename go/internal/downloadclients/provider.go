@@ -295,6 +295,22 @@ type GrabRequest struct {
 	// OlderTvPriority settings. Mirrors C# `remoteEpisode.IsRecentEpisode()`
 	// at `Sabnzbd.cs:43`.
 	IsRecent bool
+
+	// SeriesTitle is Subject.Series.Title — the matched series's
+	// human-readable name. Set by the orchestrator at
+	// [internal/download.buildGrabRequest] when Subject.Series is
+	// non-nil; empty otherwise.
+	//
+	// Consumed by qBittorrent's AddSeriesTags arm (C#
+	// `QBittorrent.cs:133-143,202-212`). The C# tree resolves the
+	// per-series Tag labels via `_tagRepository.GetTags(Series.Tags)`
+	// and tags the torrent with each label. The Go port takes a
+	// simpler MVP shape here — tag the torrent with the series
+	// title — because the tag-repository lookup adds plumbing
+	// (tags.Service ↪ qbittorrent.Provider) for marginal hygiene
+	// gain. Documented divergence; can be tightened when a downstream
+	// user reports the gap.
+	SeriesTitle string
 }
 
 // ClientInfo is the runtime status snapshot a Provider's GetStatus

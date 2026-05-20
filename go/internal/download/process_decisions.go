@@ -502,6 +502,13 @@ func buildGrabRequest(decision *decisionengine.Decision, release *parser.Release
 	if sub, ok := decision.Subject.(*decisionengine.Subject); ok && sub != nil {
 		req.SeedConfiguration = sub.SeedConfiguration
 		req.Subject = sub
+		if sub.Series != nil {
+			// SeriesTitle threads through for qBittorrent's
+			// AddSeriesTags arm (slice 6.I). Concrete clients are
+			// free to ignore the field; only qBittorrent currently
+			// reads it.
+			req.SeriesTitle = sub.Series.Title
+		}
 		// IsRecent reads the matched episodes via the Subject's
 		// IsRecentEpisode helper — but that helper takes a `time.Time`
 		// for the clock-pin. The orchestrator hasn't a clock dep at
