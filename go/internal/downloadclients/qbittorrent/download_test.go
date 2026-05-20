@@ -102,6 +102,14 @@ func newAddServer(t *testing.T) (*addServer, *httptest.Server) {
 			h.shareLimitForm.Store(r.PostForm)
 			w.WriteHeader(int(h.shareLimitStatus.Load()))
 
+		case "/api/v2/app/preferences":
+			// J114 magnet-DHT guard fires GetConfig only when the
+			// magnet lacks a `&tr=` tracker. Default emits DHT
+			// enabled so the typical magnet-without-tracker grab
+			// proceeds; the dedicated J114 tests stand up their own
+			// handlers that flip dht to false.
+			_, _ = io.WriteString(w, `{"dht":true}`)
+
 		default:
 			http.NotFound(w, r)
 		}
@@ -823,5 +831,144 @@ func TestDownload_AddSeriesTagsErrorIsBestEffort(t *testing.T) {
 	}
 	if h.addTagsCalls.Load() != 1 {
 		t.Errorf("addTags still fires once on 500 (proxy must attempt + caller swallows); got %d", h.addTagsCalls.Load())
+	}
+}
+
+// --- J114 magnet-without-trackers + DHT-disabled guard ------------
+
+// dhtAddServer is a custom http.Handler that lets per-test wire
+// the `dht` preference response (matches addServer's protocol for
+// version + add but emits a configurable prefs body).
+func dhtAddServer(t *testing.T, dhtEnabled bool) (*addServer, *httptest.Server) {
+	t.Helper()
+	h, srv := newAddServer(t)
+	prev := srv.Config.Handler
+	body := `{"dht":false}`
+	if dhtEnabled {
+		body = `{"dht":true}`
+	}
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/app/preferences" {
+			_, _ = io.WriteString(w, body)
+			return
+		}
+		prev.ServeHTTP(w, r)
+	})
+	return h, srv
+}
+
+func TestDownload_J114_MagnetWithoutTrackers_DHTDisabledFails(t *testing.T) {
+	t.Parallel()
+	h, srv := dhtAddServer(t, false)
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.ApiKey = "k"
+	})
+	_, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show",
+		MagnetURL:    "magnet:?xt=urn:btih:DEADBEEFCAFEBABEDEADBEEFCAFEBABEDEADBEEF",
+	})
+	if !errors.Is(err, qbittorrent.ErrMagnetWithoutTrackersDHTDisabled) {
+		t.Errorf("err = %v, want ErrMagnetWithoutTrackersDHTDisabled", err)
+	}
+	if h.addCalls.Load() != 0 {
+		t.Errorf("add fired despite guard; calls=%d", h.addCalls.Load())
+	}
+}
+
+func TestDownload_J114_MagnetWithTrackers_DHTDisabledAllows(t *testing.T) {
+	t.Parallel()
+	// DHT disabled BUT magnet has &tr= → guard passes; the grab
+	// proceeds normally.
+	h, srv := dhtAddServer(t, false)
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.ApiKey = "k"
+	})
+	_, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show",
+		MagnetURL:    "magnet:?xt=urn:btih:DEADBEEFCAFEBABEDEADBEEFCAFEBABEDEADBEEF&tr=udp://tracker.example",
+	})
+	if err != nil {
+		t.Fatalf("Download err = %v", err)
+	}
+	if h.addCalls.Load() != 1 {
+		t.Errorf("add did not fire; calls=%d", h.addCalls.Load())
+	}
+}
+
+func TestDownload_J114_MagnetWithoutTrackers_DHTEnabledAllows(t *testing.T) {
+	t.Parallel()
+	h, srv := dhtAddServer(t, true)
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.ApiKey = "k"
+	})
+	_, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show",
+		MagnetURL:    "magnet:?xt=urn:btih:DEADBEEFCAFEBABEDEADBEEFCAFEBABEDEADBEEF",
+	})
+	if err != nil {
+		t.Fatalf("Download err = %v", err)
+	}
+	if h.addCalls.Load() != 1 {
+		t.Errorf("add did not fire; calls=%d", h.addCalls.Load())
+	}
+}
+
+func TestDownload_J114_PrefsFailureDegradesToAllow(t *testing.T) {
+	t.Parallel()
+	// /api/v2/app/preferences returns 500 → guard logs debug + allows
+	// the grab (the guard is a best-effort upstream safety check,
+	// not load-bearing).
+	h, srv := newAddServer(t)
+	prev := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/app/preferences" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		prev.ServeHTTP(w, r)
+	})
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.ApiKey = "k"
+	})
+	_, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show",
+		MagnetURL:    "magnet:?xt=urn:btih:DEADBEEFCAFEBABEDEADBEEFCAFEBABEDEADBEEF",
+	})
+	if err != nil {
+		t.Errorf("Download must not fail on prefs 500: got %v", err)
+	}
+	if h.addCalls.Load() != 1 {
+		t.Errorf("add did not fire despite degraded guard; calls=%d", h.addCalls.Load())
+	}
+}
+
+func TestDownload_J114_TorrentBodyGrabSkipsGuard(t *testing.T) {
+	t.Parallel()
+	// Body grab (not magnet) — the J114 guard doesn't apply, and
+	// the prefs RPC should NOT fire.
+	prefsCalls := atomic.Int32{}
+	h, srv := newAddServer(t)
+	prev := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/app/preferences" {
+			prefsCalls.Add(1)
+		}
+		prev.ServeHTTP(w, r)
+	})
+	q := newQBitForDownload(t, srv, func(s *qbittorrent.Settings) {
+		s.ApiKey = "k"
+	})
+	if _, err := q.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show",
+		TorrentBody:  []byte("d4:infod6:lengthi1ee4:name3:abcee"),
+		InfoHash:     "DEADBEEF",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if h.addCalls.Load() != 1 {
+		t.Errorf("add did not fire; calls=%d", h.addCalls.Load())
+	}
+	if prefsCalls.Load() != 0 {
+		t.Errorf("prefs fired on body-grab path; calls=%d (guard should not run)", prefsCalls.Load())
 	}
 }

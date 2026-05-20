@@ -83,6 +83,15 @@ var (
 	// sentinel. Mirrors the C# `DownloadClientException` thrown at
 	// `QBittorrentProxyV2.cs:153,176`.
 	ErrAddFailed = errors.New("qbittorrent: torrent add failed")
+
+	// ErrMagnetWithoutTrackersDHTDisabled is the sentinel returned
+	// by [QBittorrent.Download] when a magnet grab has no `tr=` tracker
+	// query parameter AND the qBittorrent server has DHT disabled.
+	// Without either, qBittorrent has no way to discover peers and
+	// the torrent will stall at metaDL forever. Mirrors C# `:79`
+	// `NotSupportedException("Magnet Links without trackers not
+	// supported if DHT is disabled")`. Slice 5.J114 wire-up.
+	ErrMagnetWithoutTrackersDHTDisabled = errors.New("qbittorrent: magnet link without trackers is unsupported when qBittorrent's DHT is disabled")
 )
 
 // NewProxy binds the deps. doer is REQUIRED; log defaults to

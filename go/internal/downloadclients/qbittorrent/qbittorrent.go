@@ -145,10 +145,12 @@ func (q *QBittorrent) Proxy() *Proxy { return q.proxy }
 //     post-add RPC chain) is replaced by an "apply best-effort"
 //     posture — the post-add RPCs log + continue on failure, which
 //     matches the C# catch arms at `:104-106,116-118,127-129`.
-//   - The "magnet without trackers when DHT disabled" guard at C#
-//     `:77-80` is deferred until GetStatus / preferences land
-//     (5.G1g). Sonarr-grabbed magnets virtually always include a
-//     tracker, so the regression cost is low.
+//
+// The "magnet without trackers when DHT disabled" guard at C#
+// `:77-80` is wired at slice 5.J114 — see [magnetWithoutTrackersErr]
+// for the per-grab probe. The probe fires GetConfig ONLY when the
+// grab is a magnet without a tracker query parameter, so the
+// typical magnet-with-tracker case skips the extra prefs RPC.
 //
 // InfoHash sourcing:
 //
@@ -184,6 +186,9 @@ func (q *QBittorrent) Download(ctx context.Context, req *downloadclients.GrabReq
 		filename := fallbackFilename(req)
 		err = q.proxy.AddTorrentFromFile(ctx, filename, req.TorrentBody, nil, q.settings, stoppedField)
 	case strings.TrimSpace(req.MagnetURL) != "":
+		if guardErr := q.magnetWithoutTrackersGuard(ctx, req.MagnetURL); guardErr != nil {
+			return "", guardErr
+		}
 		err = q.proxy.AddTorrentFromURL(ctx, req.MagnetURL, nil, q.settings, stoppedField)
 	case strings.TrimSpace(req.DownloadURL) != "":
 		err = q.proxy.AddTorrentFromURL(ctx, req.DownloadURL, nil, q.settings, stoppedField)
@@ -245,6 +250,43 @@ func recencyPriority(isRecent bool, settings Settings) int {
 		return settings.RecentTvPriority
 	}
 	return settings.OlderTvPriority
+}
+
+// magnetWithoutTrackersGuard ports C# `:77-80` — when a magnet link
+// carries no `tr=` tracker parameter AND the qBittorrent server's
+// DHT global is disabled, qBittorrent has no way to discover peers
+// and the grab would stall at metaDL forever. The guard surfaces
+// [ErrMagnetWithoutTrackersDHTDisabled] so the orchestrator can
+// route the failure into the Pending bucket rather than the
+// download-client retry-loop (matches the C# `NotSupportedException`
+// posture at `:79`).
+//
+// Cost-management: the C# tree fires GetConfig unconditionally on
+// every magnet grab; the Go port only fires when the magnet
+// actually lacks a tracker, so the typical magnet-with-tracker
+// case skips the extra prefs RPC entirely. GetConfig errors degrade
+// to "allow the grab" with a debug log — the guard is a best-effort
+// upstream safety check, not load-bearing for the grab itself.
+func (q *QBittorrent) magnetWithoutTrackersGuard(ctx context.Context, magnetURL string) error {
+	// Match the C# `:77` `!magnetLink.Contains("&tr=")` literal —
+	// magnet RFC encodes trackers as `&tr=` (not `?tr=`, which only
+	// appears as the first arg and Sonarr-grabbed magnets always
+	// place infoHash first). Mirroring the C# check exactly avoids
+	// surfacing the guard for valid magnets that happen to use a
+	// different parameter ordering.
+	if strings.Contains(magnetURL, "&tr=") {
+		return nil
+	}
+	prefs, err := q.proxy.GetConfig(ctx, q.settings)
+	if err != nil {
+		q.log.Debug("qbittorrent: GetConfig failed during magnet-DHT guard; allowing the grab",
+			slog.Any("err", err))
+		return nil
+	}
+	if prefs == nil || prefs.DhtEnabled {
+		return nil
+	}
+	return ErrMagnetWithoutTrackersDHTDisabled
 }
 
 // resolveStoppedFieldName probes /api/v2/app/version to decide
