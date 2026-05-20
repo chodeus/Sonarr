@@ -319,11 +319,12 @@ func fallbackFilename(req *downloadclients.GrabRequest) string {
 // Differences from the C# port:
 //
 //   - The DhtEnabled branch at C# `:316-325` (warn-on-metaDL-when-DHT-disabled)
-//     reads the /api/v2/app/preferences config which the Go port
-//     defers to 5.G1g (GetStatus). 5.G1d treats every metaDL /
-//     forcedMetaDL state as Queued unconditionally — the worst case
-//     is a metadata stall that takes longer to surface as a
-//     warning, which matches qBittorrent's own UI behaviour pre-2.6.
+//     is wired via the slice 6.E lazy GetConfig probe inside
+//     [torrentToItem] — the prefs RPC fires once per GetItems call
+//     ONLY when a metaDL / forcedMetaDL state appears, so the
+//     typical no-metaDL case skips the extra round-trip entirely.
+//     A GetConfig failure degrades the warning to silent (warn-log
+//   - treat as Queued).
 //   - The remote-path-mapping translation at C# `:346` is wired via
 //     [QBittorrent.SetRemotePathMapper] (Phase 6.B) — slice 6.B
 //     plumbs `*remotepathmappings.Service` through
