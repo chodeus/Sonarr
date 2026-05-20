@@ -1,14 +1,14 @@
 {
   "entries": [
     { "id": "v3.system.status",            "request": { "method": "GET", "path": "/api/v3/system/status" },
-      "normalize": { "redact_paths": ["$.startupPath", "$.appData", "$.osName", "$.osVersion", "$.runtimeName", "$.runtimeVersion", "$.startTime", "$.buildTime", "$.version", "$.databaseVersion", "$.databaseType", "$.databaseHost", "$.urlBase", "$.runtimeArchitecture", "$.osIsDocker", "$.deploymentMethod"] } },
+      "normalize": { "redact_paths": ["$.startupPath", "$.appData", "$.osName", "$.osVersion", "$.runtimeName", "$.runtimeVersion", "$.startTime", "$.buildTime", "$.version", "$.databaseVersion", "$.databaseType", "$.databaseHost", "$.urlBase", "$.runtimeArchitecture", "$.osIsDocker", "$.deploymentMethod", "$.isAdmin", "$.isContainerized", "$.isDebug", "$.isDocker", "$.isLinux", "$.isOsx", "$.isUserInteractive", "$.isWindows", "$.mode", "$.packageUpdateMechanism"] } },
     { "id": "v3.system.routes",            "request": { "method": "GET", "path": "/api/v3/system/routes" } },
     { "id": "v3.system.health",            "request": { "method": "GET", "path": "/api/v3/health" } },
     { "id": "v3.system.tasks",             "request": { "method": "GET", "path": "/api/v3/system/task" },
       "normalize": { "redact_paths": ["$[*].lastExecution", "$[*].nextExecution", "$[*].lastStartTime", "$[*].id"] } },
 
     { "id": "v3.config.host",              "request": { "method": "GET", "path": "/api/v3/config/host" },
-      "normalize": { "redact_paths": ["$.apiKey", "$.instanceName"] } },
+      "normalize": { "redact_paths": ["$.apiKey", "$.instanceName", "$.analyticsEnabled", "$.launchBrowser", "$.port"] } },
     { "id": "v3.config.naming",            "request": { "method": "GET", "path": "/api/v3/config/naming" } },
     { "id": "v3.config.mediamanagement",   "request": { "method": "GET", "path": "/api/v3/config/mediamanagement" } },
     { "id": "v3.config.ui",                "request": { "method": "GET", "path": "/api/v3/config/ui" } },

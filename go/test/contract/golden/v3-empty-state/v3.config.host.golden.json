@@ -31,7 +31,7 @@
     ]
   },
   "body_json": {
-    "analyticsEnabled": false,
+    "analyticsEnabled": "<redacted>",
     "apiKey": "<redacted>",
     "applicationUrl": "",
     "authenticationMethod": "none",
@@ -46,12 +46,12 @@
     "enableSsl": false,
     "id": 1,
     "instanceName": "<redacted>",
-    "launchBrowser": false,
+    "launchBrowser": "<redacted>",
     "logLevel": "debug",
     "logSizeLimit": 1,
     "password": "",
     "passwordConfirmation": "",
-    "port": 9898,
+    "port": "<redacted>",
     "proxyBypassFilter": "",
     "proxyBypassLocalAddresses": true,
     "proxyEnabled": false,
