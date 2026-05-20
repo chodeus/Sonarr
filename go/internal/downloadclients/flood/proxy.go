@@ -291,6 +291,26 @@ func (p *Proxy) AuthVerify(ctx context.Context, s Settings) error {
 	return p.callAuth(ctx, s, http.MethodGet, "auth/verify", nil, nil)
 }
 
+// ClientSettings is the subset of `/api/client/settings` Sonarr
+// consumes. Mirrors C# `Types/FloodClientSettings.cs:1-6` —
+// DirectoryDefault is the only field the C# tree reads (used by
+// GetStatus.OutputRootFolders default).
+type ClientSettings struct {
+	DirectoryDefault string `json:"directoryDefault"`
+}
+
+// GetClientSettings fires GET `/api/client/settings`. Mirrors C#
+// `FloodProxy.GetClientSettings` at `:215-222`. Used by the J118
+// GetStatus arm to surface the default download directory in
+// OutputRootFolders.
+func (p *Proxy) GetClientSettings(ctx context.Context, s Settings) (*ClientSettings, error) {
+	var out ClientSettings
+	if err := p.callAuth(ctx, s, http.MethodGet, "client/settings", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // callAuth runs an authenticated request: ensures cookies (cached
 // when available, fresh authenticate otherwise), attaches them, and
 // fires the resource call. When the cookies came from the cache AND

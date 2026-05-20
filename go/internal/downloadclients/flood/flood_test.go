@@ -51,6 +51,12 @@ func (s *scriptedDoer) queue(path string) {
 	s.responses[path] = append(s.responses[path], scriptedResp{status: http.StatusOK, body: "{}"})
 }
 
+// queueBody is a body-aware variant for tests that need the SAB
+// response shape (e.g. J118 GetClientSettings tests).
+func (s *scriptedDoer) queueBody(path, body string) {
+	s.responses[path] = append(s.responses[path], scriptedResp{status: http.StatusOK, body: body})
+}
+
 func (s *scriptedDoer) queueWithCookies(path string, cookies ...*http.Cookie) {
 	s.responses[path] = append(s.responses[path], scriptedResp{status: http.StatusOK, body: "{}", setCookies: cookies})
 }
@@ -404,6 +410,87 @@ func TestProvider_GetStatus_LocalhostFlag(t *testing.T) {
 				t.Errorf("host=%q IsLocalhost = %v, want %v", host, info.IsLocalhost, want)
 			}
 		})
+	}
+}
+
+// --- J118 GetStatus OutputRootFolders projection ----------------
+
+func TestProvider_GetStatus_J118_DestinationSettingShortCircuits(t *testing.T) {
+	// Settings.Destination non-empty → no proxy call, OutputRootFolders
+	// uses the setting verbatim.
+	doer := newScripted()
+	s := newSettings()
+	s.Destination = "/data/from-setting"
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, s, flood.NewProxy(doer, nil), nil)
+	info, err := p.GetStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.OutputRootFolders) != 1 || info.OutputRootFolders[0].FullPath() != "/data/from-setting" {
+		t.Errorf("OutputRootFolders=%v, want [/data/from-setting]", info.OutputRootFolders)
+	}
+	// No proxy traffic — the auth + client/settings calls did NOT fire.
+	if len(doer.calls) != 0 {
+		t.Errorf("doer fired %d calls; want 0 (Destination short-circuits)", len(doer.calls))
+	}
+}
+
+func TestProvider_GetStatus_J118_FetchesDirectoryDefaultFromProxy(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queueBody("/api/client/settings", `{"directoryDefault":"/data/flood-default"}`)
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	info, err := p.GetStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.OutputRootFolders) != 1 || info.OutputRootFolders[0].FullPath() != "/data/flood-default" {
+		t.Errorf("OutputRootFolders=%v, want [/data/flood-default]", info.OutputRootFolders)
+	}
+}
+
+func TestProvider_GetStatus_J118_ClientSettingsFailureDegradesToIsLocalhostOnly(t *testing.T) {
+	// No /client/settings handler queued → call fails. Non-fatal:
+	// GetStatus returns just IsLocalhost.
+	doer := newScripted()
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	info, err := p.GetStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.OutputRootFolders) != 0 {
+		t.Errorf("OutputRootFolders=%v, want empty on GetClientSettings failure", info.OutputRootFolders)
+	}
+}
+
+func TestProvider_GetStatus_J118_RemotePathMapperApplied(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queueBody("/api/client/settings", `{"directoryDefault":"/remote/flood"}`)
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	p.SetRemotePathMapper(stubRemapper{from: "/remote/flood", to: "/local/flood"})
+	info, err := p.GetStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.OutputRootFolders) != 1 || info.OutputRootFolders[0].FullPath() != "/local/flood" {
+		t.Errorf("OutputRootFolders=%v, want [/local/flood] (remapped)", info.OutputRootFolders)
+	}
+}
+
+func TestProvider_GetStatus_J118_EmptyDirectoryDefault(t *testing.T) {
+	// Server responds but DirectoryDefault is empty → no
+	// OutputRootFolders. IsLocalhost still surfaces.
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queueBody("/api/client/settings", `{"directoryDefault":""}`)
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	info, err := p.GetStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.OutputRootFolders) != 0 {
+		t.Errorf("OutputRootFolders=%v, want empty on blank DirectoryDefault", info.OutputRootFolders)
 	}
 }
 

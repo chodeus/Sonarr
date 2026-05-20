@@ -614,12 +614,51 @@ func mergeTags(existing, additional []string) []string {
 	return out
 }
 
-// GetStatus ports the IsLocalhost arm of C# `Flood.cs:244-258`.
-// The OutputRootFolders arm (which reads `client/settings.directoryDefault`
-// + applies RemotePathMapper) lands with the GetClientSettings
-// follow-up. For now IsLocalhost is enough for the healthcheck path.
-func (f *Flood) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return &downloadclients.ClientInfo{IsLocalhost: isLocalHost(f.settings.Host)}, nil
+// GetStatus ports C# `Flood.cs:244-258` end-to-end (slice 5.J118).
+//
+// Algorithm tracks C# verbatim:
+//   - destDir = Settings.Destination when non-empty; otherwise the
+//     server-side default from GetClientSettings.DirectoryDefault.
+//     The C# at `:246-251` reverses this order (config-first, then
+//     override-if-Destination-set) but the result is identical -
+//     the Go port short-circuits on the explicit setting to skip
+//     the proxy round-trip when not needed.
+//   - IsLocalhost matches C# `:255` — 127.0.0.1 / ::1 / localhost.
+//   - OutputRootFolders routes destDir through the bound
+//     RemotePathMapper (when wired) to surface a Sonarr-side path
+//     for off-host Flood instances; nil mapper / no match / empty
+//     destDir → degrade gracefully (empty OutputRootFolders or raw
+//     path).
+//
+// GetClientSettings failures are NON-fatal — the IsLocalhost arm
+// still surfaces so the healthcheck stays useful when the config
+// endpoint is transiently down. Same posture as the Tribler /
+// Hadouken / DownloadStation GetStatus implementations.
+func (f *Flood) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
+	info := &downloadclients.ClientInfo{IsLocalhost: isLocalHost(f.settings.Host)}
+
+	destDir := strings.TrimSpace(f.settings.Destination)
+	if destDir == "" && f.proxy != nil {
+		cfg, err := f.proxy.GetClientSettings(ctx, f.settings)
+		if err != nil {
+			f.log.Debug("flood: GetStatus GetClientSettings failed", "err", err)
+			return info, nil
+		}
+		destDir = strings.TrimSpace(cfg.DirectoryDefault)
+	}
+	if destDir == "" {
+		return info, nil
+	}
+	remote := ospath.New(destDir)
+	if f.rpm != nil {
+		if mapped, err := f.rpm.RemapRemoteToLocal(ctx, f.settings.Host, remote); err == nil {
+			remote = mapped
+		} else {
+			f.log.Debug("flood: GetStatus RemapRemoteToLocal failed", "directory", destDir, "err", err)
+		}
+	}
+	info.OutputRootFolders = append(info.OutputRootFolders, remote)
+	return info, nil
 }
 
 // RequestAction is the C# base no-op.
