@@ -31,9 +31,9 @@
 //     [downloadclients.Provider] method against the Freebox V1 API.
 //   - Registry registration via init().
 //
-// Documented deferred piece: the GetStatus OutputRootFolders arm
-// (the C# version composes the OutputRootFolders entry from the
-// GetDownloadConfiguration result + RemotePathMapper translation).
+// No deferred pieces remain in the Freebox arc — GetStatus
+// populates OutputRootFolders via GetDownloadConfiguration since
+// 5.J88.
 package freebox
 
 import (

@@ -19,17 +19,16 @@ import (
 // implementation for the C# `TorrentFreeboxDownload` class at
 // `src/NzbDrone.Core/Download/Clients/FreeboxDownload/TorrentFreeboxDownload.cs:1-232`.
 //
-// Functionally complete after the 5.J79 → 5.J87 arc: Test runs
+// Functionally complete after the 5.J79 → 5.J88 arc: Test runs
 // the HMAC-SHA1 session-token probe; Download dispatches via POST
 // /downloads/add (URL form-encoded for magnets, multipart for
 // .torrent bytes) + SetTorrentSettings PUT for AddPaused/queue
 // position/seed ratio; GetItems walks /downloads/ with the BT type
 // filter + DestinationDirectory/Category path gates + 6-arm status
 // table + ETA + SeedRatio composition; RemoveItem fires DELETE
-// /downloads/<id> with the optional /erase suffix; GetStatus is
-// IsLocalhost-only. Only deferred piece: the GetStatus
-// OutputRootFolders arm (composes the configured destination
-// directory via the GetDownloadConfiguration probe).
+// /downloads/<id> with the optional /erase suffix; GetStatus
+// populates OutputRootFolders via GetDownloadConfiguration +
+// RemotePathMapper translation.
 type TorrentFreeboxDownload struct {
 	settings Settings
 	def      *downloadclients.DownloadClient
@@ -370,12 +369,40 @@ func (f *TorrentFreeboxDownload) RemoveItem(ctx context.Context, item *downloadc
 	return nil
 }
 
-// GetStatus is IsLocalhost-only at 5.J79. The C# version reads
-// /downloads/config/ for the OutputRootFolders arm; the
-// GetDownloadConfiguration follow-up lands with the Provider
-// wiring slice.
-func (f *TorrentFreeboxDownload) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return &downloadclients.ClientInfo{IsLocalhost: isLocalHost(f.settings.Host)}, nil
+// GetStatus ports `TorrentFreeboxDownload.GetStatus` at C#
+// `:156-165` end-to-end. Resolves the configured destination
+// directory via [resolveDownloadDirectory] (Settings.DestinationDirectory
+// wins; else GetDownloadConfiguration.DecodedDownloadDirectory +
+// optional `/<Category>`) and populates OutputRootFolders with the
+// RemotePathMapper-translated result.
+//
+// Config-probe failures are NON-fatal: GetStatus swallows the error
+// and returns the IsLocalhost-only ClientInfo so the queue
+// healthcheck still surfaces the configured host. Same posture as
+// the Hadouken / DownloadStation GetStatus implementations.
+func (f *TorrentFreeboxDownload) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
+	info := &downloadclients.ClientInfo{IsLocalhost: isLocalHost(f.settings.Host)}
+	if f.proxy == nil {
+		return info, nil
+	}
+	dir, err := f.resolveDownloadDirectory(ctx)
+	if err != nil {
+		f.log.Debug("freebox: GetStatus resolveDownloadDirectory failed", "err", err)
+		return info, nil
+	}
+	if strings.TrimSpace(dir) == "" {
+		return info, nil
+	}
+	remote := ospath.New(dir)
+	if f.rpm != nil {
+		if mapped, mapErr := f.rpm.RemapRemoteToLocal(ctx, f.settings.Host, remote); mapErr == nil {
+			remote = mapped
+		} else {
+			f.log.Debug("freebox: GetStatus RemapRemoteToLocal failed", "directory", dir, "err", mapErr)
+		}
+	}
+	info.OutputRootFolders = append(info.OutputRootFolders, remote)
+	return info, nil
 }
 
 // MarkItemAsImported is the C# base default.

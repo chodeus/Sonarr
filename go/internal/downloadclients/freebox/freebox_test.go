@@ -51,8 +51,12 @@ func (s *scriptedDoer) queueStatus(path string, status int, body string) {
 	s.responses[path] = append(s.responses[path], scriptedResp{status: status, body: body})
 }
 
-func (s *scriptedDoer) queueErr(path string, err error) {
-	s.responses[path] = append(s.responses[path], scriptedResp{err: err})
+func (s *scriptedDoer) queueErr(err error) {
+	// All current test callers target /api/v1/login (the auth-flow
+	// entry path) — keeping the helper specialised silences the
+	// unparam linter; the type can take a path arg again when a
+	// later test needs to fail a different endpoint.
+	s.responses["/api/v1/login"] = append(s.responses["/api/v1/login"], scriptedResp{err: err})
 }
 
 func (s *scriptedDoer) Do(req *http.Request) (*http.Response, error) {
@@ -270,7 +274,7 @@ func TestProxy_GetSessionToken_RPCErrorSurfaces(t *testing.T) {
 
 func TestProxy_GetSessionToken_TransportErrorPropagates(t *testing.T) {
 	doer := newScripted()
-	doer.queueErr("/api/v1/login", errors.New("dial"))
+	doer.queueErr(errors.New("dial"))
 	proxy := freebox.NewProxy(doer, nil)
 	_, err := proxy.GetSessionToken(context.Background(), newSettings(), false)
 	if !errors.Is(err, freebox.ErrUnavailable) {
@@ -329,7 +333,7 @@ func TestProvider_Test_APIErrorSurfacesApiUrl(t *testing.T) {
 
 func TestProvider_Test_TransportErrorSurfacesHost(t *testing.T) {
 	doer := newScripted()
-	doer.queueErr("/api/v1/login", errors.New("dial"))
+	doer.queueErr(errors.New("dial"))
 	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(doer, nil), nil)
 	failures, _ := p.Test(context.Background())
 	if len(failures) != 1 || failures[0].PropertyName != "Host" {
@@ -783,7 +787,7 @@ func TestProvider_GetItems_CleanupFlagsOnDoneWithRCD(t *testing.T) {
 
 func TestProvider_GetItems_PropagatesProxyError(t *testing.T) {
 	doer := newScripted()
-	doer.queueErr("/api/v1/login", errors.New("dial"))
+	doer.queueErr(errors.New("dial"))
 	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(doer, nil), nil)
 	_, err := p.GetItems(context.Background())
 	if !errors.Is(err, freebox.ErrUnavailable) {
@@ -861,6 +865,80 @@ func TestProvider_RemoveItem_PropagatesProxyError(t *testing.T) {
 	err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "abc"}, false)
 	if !errors.Is(err, freebox.ErrUnavailable) {
 		t.Errorf("err = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestProvider_GetStatus_PopulatesOutputRootFoldersFromConfig(t *testing.T) {
+	// No DestinationDirectory + Category=sonarr → GetConfig is
+	// fetched and base+category becomes the OutputRootFolders entry.
+	doer := newScripted()
+	queueAuthFlow(doer)
+	doer.queue("/api/v1/downloads/config/", `{"success":true,"result":{"download_dir":"`+base64.StdEncoding.EncodeToString([]byte("/freebox/dl"))+`"}}`)
+	s := newSettings()
+	s.Category = "sonarr"
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, s, freebox.NewProxy(doer, nil), nil)
+	info, err := p.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(info.OutputRootFolders) != 1 {
+		t.Fatalf("OutputRootFolders = %v, want one entry", info.OutputRootFolders)
+	}
+	if info.OutputRootFolders[0].FullPath() != "/freebox/dl/sonarr" {
+		t.Errorf("OutputRootFolders[0] = %v, want /freebox/dl/sonarr", info.OutputRootFolders[0])
+	}
+}
+
+func TestProvider_GetStatus_UsesDestinationDirectoryWhenSet(t *testing.T) {
+	// DestinationDirectory set → no GetConfig call, the
+	// DestinationDirectory value is the OutputRootFolders entry.
+	doer := newScripted()
+	// Do NOT queue a /api/v1/downloads/config/ response — the test
+	// fails if the proxy actually calls it.
+	s := newSettings()
+	s.DestinationDirectory = "/freebox/tv"
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, s, freebox.NewProxy(doer, nil), nil)
+	info, _ := p.GetStatus(context.Background())
+	if len(info.OutputRootFolders) != 1 || info.OutputRootFolders[0].FullPath() != "/freebox/tv" {
+		t.Errorf("OutputRootFolders = %v, want [/freebox/tv]", info.OutputRootFolders)
+	}
+	for _, c := range doer.calls {
+		if c.path == "/api/v1/downloads/config/" {
+			t.Errorf("/downloads/config/ was called despite DestinationDirectory being set")
+		}
+	}
+}
+
+func TestProvider_GetStatus_AppliesRemotePathMapper(t *testing.T) {
+	s := newSettings()
+	s.DestinationDirectory = "/remote/dl"
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, s, freebox.NewProxy(newScripted(), nil), nil)
+	p.SetRemotePathMapper(freeboxStubRemapper{from: "/remote/dl", to: "/local/dl"})
+	info, _ := p.GetStatus(context.Background())
+	if len(info.OutputRootFolders) != 1 || info.OutputRootFolders[0].FullPath() != "/local/dl" {
+		t.Errorf("OutputRootFolders = %v, want [/local/dl] (remapped)", info.OutputRootFolders)
+	}
+}
+
+func TestProvider_GetStatus_ConfigFailureSwallowedKeepsLocalhostFlag(t *testing.T) {
+	// Auth flow fails → GetDownloadConfiguration errors →
+	// GetStatus swallows and returns the IsLocalhost-only info.
+	// Use Host=localhost so the IsLocalhost flag exercises the
+	// localhost-true branch.
+	doer := newScripted()
+	doer.queueErr(errors.New("dial"))
+	s := newSettings()
+	s.Host = "localhost"
+	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, s, freebox.NewProxy(doer, nil), nil)
+	info, err := p.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v, want nil (probe failure should be swallowed)", err)
+	}
+	if !info.IsLocalhost {
+		t.Errorf("IsLocalhost = false, want true (Host=localhost)")
+	}
+	if len(info.OutputRootFolders) != 0 {
+		t.Errorf("OutputRootFolders = %v, want empty after config-probe failure", info.OutputRootFolders)
 	}
 }
 
