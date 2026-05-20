@@ -379,6 +379,34 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 			return nil
 		})
 
+	// Slice 5.J25 (audit B.2 second wave): `command` family —
+	// distinct from system/task. CommandUpdatedEvent fires from
+	// commands.Service on every lifecycle transition (Push /
+	// PushMany / Start / Complete / Fail / Cancel). C# emits
+	// `Updated` ResourceChange per command via a 100ms debouncer
+	// (`CommandController.cs:98-128`); the Go port broadcasts
+	// directly without debounce — see CommandUpdatedEvent
+	// doc-comment for the divergence note. The
+	// SendUpdatesToClient filter from C# `CommandController.cs:100`
+	// is also deferred until the command Body schema lands typed
+	// access; until then every command broadcasts.
+	commandBroadcaster := &signalr.ResourceBroadcaster[apiv3.CommandResource]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "command",
+		Version:     signalr.V3Version,
+	}
+	messaging.Subscribe(bus, "signalr.command.Updated",
+		func(ctx context.Context, ev commands.CommandUpdatedEvent) error {
+			if ev.Command == nil {
+				return nil
+			}
+			res := apiv3.ToCommandResource(*ev.Command)
+			if err := commandBroadcaster.Updated(ctx, res); err != nil {
+				logger.Warn("signalr: command updated broadcast failed", "err", err)
+			}
+			return nil
+		})
+
 	// Audit fix B.2 (first wave). `qualityprofile` family —
 	// QualityProfileUpdatedEvent fires from qualityprofiles.Service
 	// on Add / Update / Delete (the service publishes a single

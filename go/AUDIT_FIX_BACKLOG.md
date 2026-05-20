@@ -22,7 +22,7 @@ For closure narrative, see commit history `5.J1` … `5.J22` on `go-port`. The t
 | `releaseprofile` | Same. | Same. |
 | `remotepathmap` | Same. | Same. |
 | `blocklist` (delete) | Publish `BlocklistChangedEvent` on Delete + Bulk. | Sync broadcaster |
-| `command` (POST/DELETE) | `commands.Service` already publishes; needs distinct broadcaster channel from systemTask. | Sync broadcaster |
+| ~~`command` (POST/DELETE)~~ | ~~`commands.Service` already publishes; needs distinct broadcaster channel from systemTask.~~ — **CLOSED 5.J25** via new `CommandUpdatedEvent` fired by `Service.Push`/`PushMany`/`Start`/`Complete`/`Fail`/`Cancel` + distinct `command` channel broadcaster. C# `SendUpdatesToClient` body-filter + 100ms debounce remain deferred (every command broadcast, no debounce). | Distinct `command` `ResourceBroadcaster[CommandResource]` |
 | `episode` (monitor) | Publish `EpisodeMonitoredChangedEvent` from `episodes.Service.SetMonitored`. | Sync broadcaster |
 | ~~`episodefile` (update/bulk/editor)~~ | ~~Already has Created/Deleted broadcasts; Update + Editor need their own event.~~ — **CLOSED 5.J24** via `EpisodeFileUpdatedEvent` published from `Service.Update` + `Service.UpdateMany`. The api/v3 EditorHandler + BulkUpdateHandler funnel through UpdateMany, so they're implicitly covered. | Third subscriber on existing `episodefile` broadcaster |
 | `config/*` (host, ui, naming, mediamanagement, downloadclient, indexer) | `ConfigFileSavedEvent` / `ConfigSavedEvent` already fire — wire the subscriptions per `config/*` channel the React UI listens to. | Sync broadcaster per channel |

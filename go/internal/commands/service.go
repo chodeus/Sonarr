@@ -121,6 +121,7 @@ func (s *Service) Push(ctx context.Context, name, body string, priority Priority
 	if s.queue != nil {
 		s.queue.Add(row)
 	}
+	s.publishUpdated(ctx, row)
 	return row, nil
 }
 
@@ -173,6 +174,7 @@ func (s *Service) PushMany(ctx context.Context, items []PushItem) ([]*Command, e
 		if s.queue != nil {
 			s.queue.Add(row)
 		}
+		s.publishUpdated(ctx, row)
 		out = append(out, row)
 	}
 	return out, nil
@@ -206,7 +208,11 @@ func (s *Service) Start(ctx context.Context, c *Command) error {
 		return errors.New("commands: Start: nil command")
 	}
 	c.Status = int(StatusStarted)
-	return s.repo.Start(ctx, c, s.now())
+	if err := s.repo.Start(ctx, c, s.now()); err != nil {
+		return err
+	}
+	s.publishUpdated(ctx, c)
+	return nil
 }
 
 // Complete ports `:197-208`. Default-sets the Result if Unknown,
@@ -232,6 +238,7 @@ func (s *Service) Complete(ctx context.Context, c *Command, _ string) error {
 	if s.bus != nil {
 		_ = messaging.Publish(ctx, s.bus, CommandExecutedEvent{Command: c})
 	}
+	s.publishUpdated(ctx, c)
 	return nil
 }
 
@@ -255,6 +262,7 @@ func (s *Service) Fail(ctx context.Context, c *Command, _ string, exceptionDetai
 	if s.bus != nil {
 		_ = messaging.Publish(ctx, s.bus, CommandExecutedEvent{Command: c})
 	}
+	s.publishUpdated(ctx, c)
 	return nil
 }
 
@@ -292,6 +300,7 @@ func (s *Service) Cancel(ctx context.Context, id int) error {
 		// running handler is a Phase 3.12 follow-up).
 		s.queue.RemoveIfQueued(id)
 	}
+	s.publishUpdated(ctx, row)
 	return nil
 }
 
@@ -299,6 +308,19 @@ func (s *Service) Cancel(ctx context.Context, id int) error {
 // Queued state. Matches the C# `NzbDroneClientException(Conflict)`
 // semantic.
 var ErrCannotCancel = errors.New("commands: cannot cancel — command is not queued")
+
+// publishUpdated emits [CommandUpdatedEvent] best-effort. No-op when
+// bus is nil (matches the established skip-publish pattern). See the
+// CommandUpdatedEvent doc-comment for the rationale (the Go-port
+// Service publishes at every transition until the dispatcher splits
+// out and a separate executor takes ownership of the Start/Finally
+// emissions).
+func (s *Service) publishUpdated(ctx context.Context, c *Command) {
+	if s.bus == nil || c == nil {
+		return
+	}
+	_ = messaging.Publish(ctx, s.bus, CommandUpdatedEvent{Command: c})
+}
 
 // CleanCommands ports `:235-246`. The C# version hard-codes a
 // `now - 5 minutes` cutoff for the in-memory queue and uses

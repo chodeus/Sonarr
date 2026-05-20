@@ -360,3 +360,99 @@ func TestService_NilBusSkipsPublish(t *testing.T) {
 		t.Logf("Fail (defensive double-end): %v", err)
 	}
 }
+
+// Slice 5.J25 (audit B.2 second wave). CommandUpdatedEvent fires at
+// every lifecycle transition — Push, Start, Complete, Fail, Cancel.
+// One row's full lifecycle should drive 4 events (Push → Start →
+// Complete; Cancel exits early before Start in a separate run).
+func TestService_PublishesCommandUpdatedAtEveryTransition(t *testing.T) {
+	t.Parallel()
+	svc, _, bus := newSvcWithBus(t)
+
+	var statuses []commands.Status
+	messaging.Subscribe(bus, "test.cmd.updated",
+		func(_ context.Context, ev commands.CommandUpdatedEvent) error {
+			if ev.Command != nil {
+				statuses = append(statuses, commands.Status(ev.Command.Status))
+			}
+			return nil
+		})
+
+	row, err := svc.Push(t.Context(), "Backup", `{}`, commands.PriorityNormal, commands.TriggerManual)
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if err := svc.Start(t.Context(), row); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := svc.Complete(t.Context(), row, ""); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	want := []commands.Status{
+		commands.StatusQueued,
+		commands.StatusStarted,
+		commands.StatusCompleted,
+	}
+	if len(statuses) != len(want) {
+		t.Fatalf("CommandUpdatedEvent count: got %d, want %d (statuses=%v)", len(statuses), len(want), statuses)
+	}
+	for i, s := range statuses {
+		if s != want[i] {
+			t.Errorf("event %d status: got %v, want %v", i, s, want[i])
+		}
+	}
+}
+
+func TestService_CancelPublishesCommandUpdated(t *testing.T) {
+	t.Parallel()
+	svc, _, bus := newSvcWithBus(t)
+	row, err := svc.Push(t.Context(), "Backup", `{}`, commands.PriorityNormal, commands.TriggerManual)
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	// Skip the Push-triggered event by attaching after Push.
+	var got atomic.Int32
+	var lastStatus atomic.Int32
+	messaging.Subscribe(bus, "test.cmd.cancelled",
+		func(_ context.Context, ev commands.CommandUpdatedEvent) error {
+			got.Add(1)
+			if ev.Command != nil {
+				lastStatus.Store(int32(ev.Command.Status))
+			}
+			return nil
+		})
+	if err := svc.Cancel(t.Context(), row.ID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if got.Load() != 1 {
+		t.Errorf("CommandUpdatedEvent on Cancel: fired=%d, want 1", got.Load())
+	}
+	if commands.Status(lastStatus.Load()) != commands.StatusCancelled {
+		t.Errorf("event Status on Cancel: got %v, want Cancelled", commands.Status(lastStatus.Load()))
+	}
+}
+
+func TestService_FailPublishesCommandUpdated(t *testing.T) {
+	t.Parallel()
+	svc, _, bus := newSvcWithBus(t)
+	row, _ := svc.Push(t.Context(), "Backup", `{}`, commands.PriorityNormal, commands.TriggerManual)
+	if err := svc.Start(t.Context(), row); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var got atomic.Int32
+	messaging.Subscribe(bus, "test.cmd.fail.updated",
+		func(_ context.Context, ev commands.CommandUpdatedEvent) error {
+			if ev.Command != nil && commands.Status(ev.Command.Status) == commands.StatusFailed {
+				got.Add(1)
+			}
+			return nil
+		})
+	if err := svc.Fail(t.Context(), row, "boom", "stack"); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+	if got.Load() != 1 {
+		t.Errorf("CommandUpdatedEvent on Fail with Failed status: fired=%d, want 1", got.Load())
+	}
+}

@@ -159,7 +159,7 @@ func CommandCreateHandler(svc CommandService, names CommandNameResolver) http.Ha
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusCreated)
-		buf, _ := json.Marshal(commandToResource(*cmd))
+		buf, _ := json.Marshal(ToCommandResource(*cmd))
 		_, _ = w.Write(buf)
 	})
 }
@@ -185,7 +185,7 @@ func CommandListHandler(svc CommandService) http.Handler {
 		})
 		out := make([]CommandResource, len(all))
 		for i := range all {
-			out[i] = commandToResource(all[i])
+			out[i] = ToCommandResource(all[i])
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -213,7 +213,7 @@ func CommandByIDHandler(svc CommandService) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		buf, _ := json.Marshal(commandToResource(*cmd))
+		buf, _ := json.Marshal(ToCommandResource(*cmd))
 		_, _ = w.Write(buf)
 	})
 }
@@ -261,12 +261,16 @@ func statusSortRank(s commands.Status) int {
 	return 2
 }
 
-// commandToResource maps a persisted commands.Command into the wire
-// shape. Duration is rendered as the C# TimeSpan format
+// ToCommandResource maps a persisted commands.Command into the wire
+// shape. Exported so the SignalR `command` channel subscriber in
+// cmd/sonarr/signalr_wiring.go can project CommandUpdatedEvent
+// payloads without duplicating the conversion.
+//
+// Duration is rendered as the C# TimeSpan format
 // (hh:mm:ss[.fffffff]) via datastore.FormatDuration; nil duration
 // stays nil. Body is rendered as json.RawMessage from the persisted
 // Body string (which is canonical JSON the API produced on Push).
-func commandToResource(c commands.Command) CommandResource {
+func ToCommandResource(c commands.Command) CommandResource {
 	res := CommandResource{
 		ID:          c.ID,
 		Name:        c.Name,
