@@ -111,3 +111,25 @@ type EpisodeFileRenamedEvent struct {
 	EpisodeFile  *File
 	OriginalPath string
 }
+
+// EpisodeFileUpdatedEvent is a Go-port additive event fired by
+// [Service.Update] / [Service.UpdateMany] after a successful repo
+// update. C# Sonarr emits the equivalent signal via Dapper's
+// `ModelEvent<EpisodeFile>` (a generic event the persistence layer
+// fires implicitly on every Repository.Update — see
+// `src/NzbDrone.Core/Datastore/Events/ModelEvent.cs` +
+// `BasicRepository<T>.UpdateFields`). The Go port doesn't have a
+// generic ModelEvent analogue, so each Service that needs the
+// "row mutated" signal publishes its own typed event.
+//
+// Consumers: the SignalR `episodefile` channel's Sync broadcast
+// (cmd/sonarr/signalr_wiring.go subscriber) — the React UI listens
+// on Sync to refresh the episode-file list after a SetQuality / Editor
+// edit. `Series` is populated when a SeriesProvider is wired so the
+// broadcaster can materialise the C# `Path.Combine(Series.Path,
+// RelativePath)` wire shape (mirrors the EpisodeFileDeletedEvent
+// path-materialisation pattern).
+type EpisodeFileUpdatedEvent struct {
+	EpisodeFile *File
+	Series      *series.Series
+}

@@ -298,10 +298,15 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 	//     event captures Series as of delete-time; falls through to
 	//     the lookup when Series is nil so producers that don't
 	//     populate it still get the joined path)
-	// EpisodeFileRenamedEvent + the ModelEvent<EpisodeFile> Updated
-	// path DEFERRED — Renamed needs an "updated path" envelope
-	// shape the C# wire-spec doesn't pin precisely; Updated
-	// happens via the ModelEvent which the Go port doesn't fire.
+	// Slice 5.J24 closes the Updated path (audit B.2 second wave):
+	// episodefiles.Service.Update / UpdateMany now publish
+	// EpisodeFileUpdatedEvent (the Go-port stand-in for C#'s
+	// ModelEvent<EpisodeFile>). Subscribed below as `Updated`.
+	//
+	// EpisodeFileRenamedEvent path remains DEFERRED — Renamed needs
+	// an "updated path" envelope shape the C# wire-spec doesn't pin
+	// precisely; the api/v3/rename path doesn't currently emit it
+	// in either tree.
 	episodeFileBroadcaster := &signalr.ResourceBroadcaster[apiv3.EpisodeFileResource]{
 		Broadcaster: signalr.HubBroadcaster{Hub: hub},
 		Name:        "episodefile",
@@ -332,6 +337,23 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 			res := apiv3.ToEpisodeFileResource(*ev.EpisodeFile, seriesPath)
 			if err := episodeFileBroadcaster.Deleted(ctx, res); err != nil {
 				logger.Warn("signalr: episodefile deleted broadcast failed", "err", err)
+			}
+			return nil
+		})
+	messaging.Subscribe(bus, "signalr.episodefile.Updated",
+		func(ctx context.Context, ev episodefiles.EpisodeFileUpdatedEvent) error {
+			if ev.EpisodeFile == nil {
+				return nil
+			}
+			seriesPath := ""
+			if ev.Series != nil {
+				seriesPath = ev.Series.Path
+			} else {
+				seriesPath = seriesPathFor(ctx, ev.EpisodeFile.SeriesID)
+			}
+			res := apiv3.ToEpisodeFileResource(*ev.EpisodeFile, seriesPath)
+			if err := episodeFileBroadcaster.Updated(ctx, res); err != nil {
+				logger.Warn("signalr: episodefile updated broadcast failed", "err", err)
 			}
 			return nil
 		})

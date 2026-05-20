@@ -205,6 +205,100 @@ func TestService_NilBusSkipsPublish(t *testing.T) {
 	}
 }
 
+func TestService_Update_PublishesUpdatedEvent(t *testing.T) {
+	t.Parallel()
+	svc, _, bus := newSvcWithBus(t)
+	parent := &series.Series{ID: 1, Title: "Show A", Path: "/data/a"}
+	svc.SetSeriesProvider(fakeSeriesProvider{out: parent})
+
+	added, err := svc.Add(t.Context(), sampleFile(1, 1, "ep1.mkv"))
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	var got atomic.Int32
+	var lastEv atomic.Pointer[episodefiles.EpisodeFileUpdatedEvent]
+	messaging.Subscribe(bus, "test.episodefiles.updated",
+		func(_ context.Context, ev episodefiles.EpisodeFileUpdatedEvent) error {
+			got.Add(1)
+			cp := ev
+			lastEv.Store(&cp)
+			return nil
+		})
+
+	added.SceneName = "Show.A.S01E01.WEBDL"
+	if err := svc.Update(t.Context(), added); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got.Load() != 1 {
+		t.Fatalf("expected 1 EpisodeFileUpdatedEvent, got %d", got.Load())
+	}
+	ev := lastEv.Load()
+	if ev == nil || ev.EpisodeFile == nil {
+		t.Fatalf("nil event payload: %+v", ev)
+	}
+	if ev.EpisodeFile.ID != added.ID {
+		t.Errorf("event file ID mismatch: ev=%d added=%d", ev.EpisodeFile.ID, added.ID)
+	}
+	if ev.EpisodeFile.SceneName != "Show.A.S01E01.WEBDL" {
+		t.Errorf("event scene name: %q", ev.EpisodeFile.SceneName)
+	}
+	if ev.Series == nil || ev.Series.Path != "/data/a" {
+		t.Errorf("series resolution: %+v (want Path=/data/a)", ev.Series)
+	}
+}
+
+func TestService_UpdateMany_PublishesPerRow(t *testing.T) {
+	t.Parallel()
+	svc, _, bus := newSvcWithBus(t)
+
+	a, err := svc.Add(t.Context(), sampleFile(1, 1, "a.mkv"))
+	if err != nil {
+		t.Fatalf("Add a: %v", err)
+	}
+	b, err := svc.Add(t.Context(), sampleFile(1, 1, "b.mkv"))
+	if err != nil {
+		t.Fatalf("Add b: %v", err)
+	}
+
+	var count atomic.Int32
+	messaging.Subscribe(bus, "test.episodefiles.updated.bulk",
+		func(_ context.Context, _ episodefiles.EpisodeFileUpdatedEvent) error {
+			count.Add(1)
+			return nil
+		})
+
+	a.SceneName = "A"
+	b.SceneName = "B"
+	if err := svc.UpdateMany(t.Context(), []*episodefiles.File{a, b}); err != nil {
+		t.Fatalf("UpdateMany: %v", err)
+	}
+	if count.Load() != 2 {
+		t.Errorf("UpdateMany publishes per row: got %d, want 2", count.Load())
+	}
+}
+
+func TestService_Update_NilBusSkipsPublish(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	r, err := episodefiles.NewRepo(db)
+	if err != nil {
+		t.Fatalf("NewRepo: %v", err)
+	}
+	svc, err := episodefiles.NewService(r, nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	added, err := svc.Add(t.Context(), sampleFile(1, 1, "x.mkv"))
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	added.SceneName = "Y"
+	if err := svc.Update(t.Context(), added); err != nil {
+		t.Fatalf("Update with nil bus must not error: %v", err)
+	}
+}
+
 func TestService_FilterExistingFiles(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := newSvcWithBus(t)

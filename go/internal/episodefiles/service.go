@@ -125,19 +125,30 @@ func (s *Service) Add(ctx context.Context, f *File) (*File, error) {
 }
 
 // Update ports `MediaFileService.Update(EpisodeFile)` at `:50-53`.
-// No event published — matches C#.
+// Publishes [EpisodeFileUpdatedEvent] after a successful repo update
+// (Go-port additive — see the event's doc-comment for the C#
+// `ModelEvent<EpisodeFile>` divergence note). The publish is fire-
+// and-forget; subscribers (SignalR broadcaster) warn-and-continue
+// on their own.
 func (s *Service) Update(ctx context.Context, f *File) error {
 	if f == nil {
 		return errors.New("episodefiles: cannot update nil")
 	}
-	return s.repo.Update(ctx, f)
+	if err := s.repo.Update(ctx, f); err != nil {
+		return err
+	}
+	s.publishUpdated(ctx, f)
+	return nil
 }
 
 // UpdateMany ports `MediaFileService.Update(List<EpisodeFile>)` at
 // `:55-58`. Per-row update (the C# version uses `UpdateMany`, a
 // single-batch helper; the Go port issues per-row updates because
 // the generic Repository[T] doesn't yet expose a transactional bulk
-// helper — same approximation as series.UpdateMany).
+// helper — same approximation as series.UpdateMany). One
+// [EpisodeFileUpdatedEvent] is published per successfully-updated
+// row; a mid-loop failure aborts and the events for already-updated
+// rows are emitted (rolling-back the bus emissions isn't possible).
 func (s *Service) UpdateMany(ctx context.Context, list []*File) error {
 	for i, f := range list {
 		if f == nil {
@@ -146,8 +157,27 @@ func (s *Service) UpdateMany(ctx context.Context, list []*File) error {
 		if err := s.repo.Update(ctx, f); err != nil {
 			return fmt.Errorf("episodefiles: UpdateMany(idx=%d,id=%d): %w", i, f.ID, err)
 		}
+		s.publishUpdated(ctx, f)
 	}
 	return nil
+}
+
+// publishUpdated emits [EpisodeFileUpdatedEvent] with the
+// Series materialised (when a SeriesProvider is wired) so SignalR
+// subscribers can project `Path.Combine(Series.Path, RelativePath)`
+// without a per-broadcast lookup. Best-effort: when bus is nil
+// (matches the established skip-publish pattern), or when the
+// SeriesProvider lookup fails, the field stays nil and consumers
+// fall back to their own resolution.
+func (s *Service) publishUpdated(ctx context.Context, f *File) {
+	if s.bus == nil {
+		return
+	}
+	parent := s.resolveSeries(ctx, f.SeriesID)
+	_ = messaging.Publish(ctx, s.bus, EpisodeFileUpdatedEvent{
+		EpisodeFile: f,
+		Series:      parent,
+	})
 }
 
 // Delete ports `MediaFileService.Delete(EpisodeFile, DeleteMediaFileReason)`
