@@ -211,6 +211,49 @@ func TestProvider_TestRejectsBelowMinVersion(t *testing.T) {
 	}
 }
 
+func TestProvider_TestJ110_FloorAlignedTo134(t *testing.T) {
+	t.Parallel()
+	// J110 — version floor bumped from 1.18 to 1.34 to match C#
+	// Aria2.cs:237. 1.30.0 sits between the old and new floors,
+	// so it was previously accepted but is now rejected.
+	resp := `<?xml version="1.0"?>
+<methodResponse><params><param><value><struct>
+<member><name>version</name><value><string>1.30.0</string></value></member>
+</struct></value></param></params></methodResponse>`
+	h := newAria2Server(t, resp)
+	p := aria2.NewProxy(h.srv.Client(), nil)
+	a := aria2.New(nil, h.settings(), p, nil)
+	failures, err := a.Test(context.Background())
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if len(failures) == 0 || failures[0].PropertyName != "Host" {
+		t.Errorf("Test on 1.30.0: %+v, want Host failure (new floor=1.34)", failures)
+	}
+	if !strings.Contains(failures[0].ErrorMessage, "1.34.0") {
+		t.Errorf("error message = %q, want it to reference 1.34.0", failures[0].ErrorMessage)
+	}
+}
+
+func TestProvider_TestJ110_AcceptsAtNewFloor(t *testing.T) {
+	t.Parallel()
+	// Exact-floor version (1.34.0) passes.
+	resp := `<?xml version="1.0"?>
+<methodResponse><params><param><value><struct>
+<member><name>version</name><value><string>1.34.0</string></value></member>
+</struct></value></param></params></methodResponse>`
+	h := newAria2Server(t, resp)
+	p := aria2.NewProxy(h.srv.Client(), nil)
+	a := aria2.New(nil, h.settings(), p, nil)
+	failures, err := a.Test(context.Background())
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if len(failures) != 0 {
+		t.Errorf("Test on 1.34.0: %+v, want no failures (at-floor)", failures)
+	}
+}
+
 func TestProvider_TestNetworkFailureSurfacesHostFailure(t *testing.T) {
 	t.Parallel()
 	h := newAria2Server(t, sampleGetVersionResponse)

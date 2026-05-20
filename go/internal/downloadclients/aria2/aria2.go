@@ -39,10 +39,13 @@ type Aria2 struct {
 	log      *slog.Logger
 }
 
-// minVersion is the aria2c version floor [Test] enforces. aria2c
-// 1.18 was the first release with the XML-RPC + JSON-RPC surface
-// stable enough for Sonarr's add+monitor flows.
-var minVersion = versionPair{major: 1, minor: 18}
+// minVersion is the aria2c version floor [Test] enforces. Mirrors
+// C# `Aria2.cs:237` (`new Version("1.34.0")`) — the floor was bumped
+// to 1.34 in the C# tree because some BitTorrent-specific RPCs the
+// orchestrator's GetItems leans on (aria2.tellActive's full
+// bittorrent struct, files[].path canonicalisation) only stabilise
+// at that release.
+var minVersion = versionPair{major: 1, minor: 34}
 
 // New constructs an Aria2 Provider against the resolved settings
 // + an optional Proxy. nil proxy → Test surfaces Settings.Validate
@@ -357,7 +360,7 @@ func (a *Aria2) Test(ctx context.Context) ([]downloadclients.TestFailure, error)
 	if !versionAtLeast(version, minVersion) {
 		return []downloadclients.TestFailure{{
 			PropertyName: "Host",
-			ErrorMessage: fmt.Sprintf("Aria2 version %s is too old; minimum supported is %d.%d", version, minVersion.major, minVersion.minor),
+			ErrorMessage: fmt.Sprintf("Aria2 version %s is too old; minimum supported is %d.%d.0", version, minVersion.major, minVersion.minor),
 		}}, nil
 	}
 	return nil, nil
