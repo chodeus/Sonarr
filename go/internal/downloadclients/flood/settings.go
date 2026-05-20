@@ -16,31 +16,26 @@
 //   - `torrents/{hash}/contents` — GET (GetImportItem path resolution).
 //   - `client/settings` — GET (GetStatus default-directory probe).
 //
-// Slice 5.J71 (this slice) ships the SKELETON:
+// The package ships:
 //
-//   - [Settings] + [NewSettings] + Validate.
+//   - [Settings] + [NewSettings] + Validate (slice 5.J71 baseline).
 //   - [Proxy] with the cookie-cached auth flow (per-(URL,Username)
 //     session) + [Proxy.AuthVerify] for the Test arm. Authenticate
 //     vs verify split mirrors C# `FloodProxy.AuthAuthenticate` +
 //     `AuthVerify`.
-//   - [Flood] Provider with Name + Protocol + Definition + Settings
-//   - Test (AuthVerify) + GetStatus (IsLocalhost-only, OutputRoot-
-//     Folders deferred to the GetStatus follow-up).
-//   - Stubs for Download / GetItems / RemoveItem / MarkItemAsImported
-//     / GetImportItem returning [ErrNotImplemented].
+//   - Full Provider surface (Name / Protocol / Definition / Test /
+//     Download / GetItems / RemoveItem / MarkItemAsImported /
+//     GetImportItem / RequestAction) functionally complete vs C#
+//     Flood.cs. Seed-config cleanup gate wired at slice J95;
+//     AdditionalTags per-Subject expansion (TitleSlug / Quality /
+//     Languages / ReleaseGroup / Year / Indexer / Network) wired at
+//     slice J99.
 //   - Registry registration via init().
 //
-// Follow-up slices fill in: Download (J72: add-files + add-urls
-// dispatch), GetItems (J73: torrents list + 4-arm status table +
-// seed-config cleanup gate), RemoveItem + MarkItemAsImported +
-// GetImportItem (J74: torrents/delete + torrents/tags + content-
-// paths). GetStatus.OutputRootFolders requires client/settings,
-// also deferred.
-//
-// AdditionalTags enum (TitleSlug/Quality/Languages/...) is ported
-// here as named constants but the per-tag composition logic at C#
-// `Flood.cs:42-85` lands with Download (needs Subject + parsed-
-// episode-info access).
+// GetStatus.OutputRootFolders remains IsLocalhost-only — the C#
+// `GetClientSettings` arm that populates from
+// `client/settings.directoryDefault` is the only outstanding
+// deferral (low priority: post-import nicety, not load-bearing).
 package flood
 
 import (

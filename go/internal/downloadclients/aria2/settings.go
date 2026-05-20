@@ -4,27 +4,20 @@
 // (typically `/rpc`); methods are namespaced `aria2.<verb>` (e.g.
 // `aria2.addUri`, `aria2.tellActive`).
 //
-// Slice 5.J50 ships the package skeleton:
+// The package ships:
 //
-//   - [Settings] + [NewSettings] + Validate.
-//   - Provider stub: Name / Protocol / Definition / RequestAction
-//     live; Download / Test / GetItems / RemoveItem / GetStatus /
-//     MarkItemAsImported / GetImportItem return
-//     [downloadclients.ErrNotImplementedYet] (Test surfaces
-//     Settings.Validate failures + the deferred-network-probe
-//     posture).
+//   - [Settings] + [NewSettings] + Validate (slice 5.J50 baseline).
+//   - XML-RPC [Proxy] + secret-token auth.
+//   - Full Provider surface (Test / Download / GetItems / RemoveItem /
+//     GetStatus / MarkItemAsImported / GetImportItem / RequestAction)
+//     functionally complete vs C# Aria2.cs. Test gates on minVersion
+//     1.34.0 (slice J110 alignment with C# :237); RemoveItem
+//     dispatches to forceRemove (active) or removeDownloadResult
+//     (complete/error/removed) and wires the deleteData arm via
+//     [downloadclients.DiskProvider] (slice J112 — aria2's own API
+//     can't delete files per upstream issue #728).
 //   - init() registers `(Aria2, Aria2Settings)` in
 //     [downloadclients.Default].
-//
-// Follow-up slices (mirror the rTorrent arc shape):
-//
-//   - XML-RPC Proxy + Test (real getVersion probe + secret-token
-//     auth).
-//   - Download (aria2.addUri for magnet/URL, aria2.addTorrent for
-//     bytes).
-//   - GetItems (aria2.tellActive + tellWaiting + tellStopped).
-//   - RemoveItem (aria2.remove + aria2.removeDownloadResult).
-//   - GetStatus (IsLocalhost only).
 //
 // C# cites lead each type with file:line references.
 package aria2

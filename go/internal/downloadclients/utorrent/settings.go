@@ -5,35 +5,21 @@
 // and replayed on every subsequent request alongside the
 // `GUID`/`__cfduid` session cookies.
 //
-// Slice 5.J46 ships the package skeleton:
+// The package ships:
 //
-//   - [Settings] + [NewSettings] + Validate.
+//   - [Settings] + [NewSettings] + Validate (slice 5.J46 baseline).
 //   - [Priority] enum (Last=0, First=1) per UTorrentPriority.cs.
 //   - [State] enum (Start, ForceStart, Pause, Stop) per UtorrentState.cs.
-//   - Provider stub: Name / Protocol / Definition / RequestAction
-//     live; Download / Test / GetItems / RemoveItem / GetStatus /
-//     MarkItemAsImported / GetImportItem return
-//     [downloadclients.ErrNotImplementedYet]. Test() returns
-//     Settings.Validate failures only — the network probe lands in
-//     a follow-up slice with the token-cookie Proxy.
+//   - Token + cookie auth [Proxy]: token-cache + GUID-cookie replay
+//     with auto re-auth on stale-session 400s.
+//   - Full Provider surface (Name / Protocol / Definition / Test /
+//     Download / GetItems / RemoveItem / GetStatus / MarkItemAsImported
+//     / RequestAction) functionally complete vs C# UTorrent.cs at
+//     `src/NzbDrone.Core/Download/Clients/UTorrent/`. Test runs the
+//     full C# arm (version probe + minBuild gate + TestGetTorrents at
+//     J109).
 //   - init() registers `(UTorrent, UTorrentSettings)` in
 //     [downloadclients.Default].
-//
-// Follow-up slices (mirror the rTorrent arc 5.J41-J45 shape):
-//
-//   - Token + cookie auth Proxy + Test (real version probe).
-//   - Download (action=add-url or action=add-file).
-//   - GetItems (list=1).
-//   - RemoveItem (action=remove / action=removedata).
-//   - GetStatus (build.settings probe + IsLocalhost).
-//   - MarkItemAsImported (action=setprops, s=label).
-//
-// Reference templates:
-//
-//   - rtorrent (same protocol-class — auth + per-method actions on a
-//     single endpoint): closest peer-shape.
-//   - qbittorrent (REST + cookie auth + categories): closer for the
-//     query-param-per-action wire shape.
 //
 // C# cites lead each type with file:line references.
 package utorrent
