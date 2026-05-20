@@ -138,6 +138,65 @@ func (p *Proxy) authenticate(ctx context.Context, s Settings, force bool) ([]*ht
 	return cookies, nil
 }
 
+// AddTorrentByFile fires POST `/api/torrents/add-files` with the
+// base64-encoded .torrent body. Mirrors C# `FloodProxy.AddTorrentByFile`
+// at `:117-140`. Body shape:
+//
+//	{
+//	  "files":       ["<base64-torrent>"],
+//	  "tags":        ["<tag>", ...],
+//	  "destination": "<settings.Destination>",   // omitted when blank
+//	  "start":       true                          // omitted when StartOnAdd=false
+//	}
+//
+// Returns no value (the wire response is opaque per C# void return).
+func (p *Proxy) AddTorrentByFile(ctx context.Context, s Settings, fileBase64 string, tags []string) error {
+	body := addBody(s, "files", []string{fileBase64}, tags)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("flood: marshal add-files body: %w", err)
+	}
+	return p.callAuth(ctx, s, http.MethodPost, "torrents/add-files", raw, nil)
+}
+
+// AddTorrentByUrl fires POST `/api/torrents/add-urls` with the
+// magnet link or HTTP URL. Mirrors C# `FloodProxy.AddTorrentByUrl`
+// at `:142-165`. Symmetric to [AddTorrentByFile] — the only wire
+// difference is the `urls` key.
+func (p *Proxy) AddTorrentByUrl(ctx context.Context, s Settings, url string, tags []string) error {
+	body := addBody(s, "urls", []string{url}, tags)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("flood: marshal add-urls body: %w", err)
+	}
+	return p.callAuth(ctx, s, http.MethodPost, "torrents/add-urls", raw, nil)
+}
+
+// addBody composes the shared body for add-files / add-urls. The
+// payload-key arg ("files" vs "urls") picks the array slot. Tags is
+// always emitted (even when empty); destination + start are
+// conditional per the C# `Add(...)` guards at `:127-135,152-160`.
+//
+// We use a [map[string]any] (rather than a typed struct) so the
+// optional fields can be omitted without resorting to omitempty
+// gymnastics — matches the C# `Dictionary<string, object>` shape.
+func addBody(s Settings, payloadKey string, payload, tags []string) map[string]any {
+	if tags == nil {
+		tags = []string{}
+	}
+	body := map[string]any{
+		payloadKey: payload,
+		"tags":     tags,
+	}
+	if strings.TrimSpace(s.Destination) != "" {
+		body["destination"] = s.Destination
+	}
+	if s.StartOnAdd {
+		body["start"] = true
+	}
+	return body
+}
+
 // AuthVerify fires GET `/api/auth/verify`. Mirrors C# `:108-115`.
 // Used by the Test arm; succeeds (returns nil) when the auth cookie
 // flow lands a 2xx, errors with [ErrAuth] on 401/403 or

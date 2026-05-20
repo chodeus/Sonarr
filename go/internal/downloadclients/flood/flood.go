@@ -2,6 +2,7 @@ package flood
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,12 +55,67 @@ func (f *Flood) Definition() *downloadclients.DownloadClient { return f.def }
 // Settings returns the bound Settings.
 func (f *Flood) Settings() Settings { return f.settings }
 
-// Download is a STUB at 5.J71. Follow-up J72: AddFromTorrentFile →
-// `torrents/add-files` (base64-encoded body + Tags + Destination +
-// StartOnAdd), AddFromMagnetLink → `torrents/add-urls` (URL list +
-// Tags + Destination + StartOnAdd).
-func (f *Flood) Download(_ context.Context, _ *downloadclients.GrabRequest) (string, error) {
-	return "", fmt.Errorf("%w: Download", ErrNotImplemented)
+// Download ports C# `Flood.cs:90-102` end-to-end. Dispatches:
+//
+//   - TorrentBody non-empty → [Proxy.AddTorrentByFile] with the
+//     base64-encoded body + composed tags.
+//   - MagnetURL non-empty → [Proxy.AddTorrentByUrl] with the magnet
+//     URL + composed tags.
+//
+// Returns req.InfoHash uppercased (matches C# `:94,101` `return hash`
+// — the orchestrator pre-computes the hash; C# uses lower-case-as-
+// passed but Sonarr's other torrent clients consistently uppercase
+// the queue join key — same convention applied here).
+//
+// Tag composition for 5.J72 covers `Settings.Tags` directly. The
+// `Settings.AdditionalTags` arm (which expands TitleSlug / Quality /
+// Languages / ReleaseGroup / Year / Indexer / Network from the
+// Subject + ParsedEpisodeInfo) is deferred — requires either a new
+// GrabRequest field surface or a decisionengine type-assertion that
+// would pull heavy transitive imports for one tag-list expansion.
+// Documented as a follow-up; for now `Settings.Tags` alone matches
+// the most common "tag with 'sonarr'" deploy.
+func (f *Flood) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
+	if req == nil {
+		return "", errors.New("flood: nil GrabRequest")
+	}
+	if f.proxy == nil {
+		return "", errors.New("flood: nil Proxy")
+	}
+	if strings.TrimSpace(req.InfoHash) == "" {
+		return "", errors.New("flood: GrabRequest.InfoHash is empty (orchestrator must pre-compute)")
+	}
+	tags := composeTags(f.settings)
+
+	switch {
+	case len(req.TorrentBody) > 0:
+		body := base64.StdEncoding.EncodeToString(req.TorrentBody)
+		if err := f.proxy.AddTorrentByFile(ctx, f.settings, body, tags); err != nil {
+			return "", fmt.Errorf("flood: AddTorrentByFile(%q): %w", req.ReleaseTitle, err)
+		}
+	case strings.TrimSpace(req.MagnetURL) != "":
+		if err := f.proxy.AddTorrentByUrl(ctx, f.settings, req.MagnetURL, tags); err != nil {
+			return "", fmt.Errorf("flood: AddTorrentByUrl(%q): %w", req.ReleaseTitle, err)
+		}
+	default:
+		return "", errors.New("flood: GrabRequest has neither TorrentBody nor MagnetURL")
+	}
+	return strings.ToUpper(req.InfoHash), nil
+}
+
+// composeTags returns the tag list applied to every add-torrent
+// call. Skeleton coverage: returns `Settings.Tags` verbatim (filters
+// blank entries). The full AdditionalTags arm at C# `Flood.cs:42-85`
+// — which composes per-Subject tags — lands in a follow-up; see the
+// divergence note on [Flood.Download].
+func composeTags(s Settings) []string {
+	out := make([]string, 0, len(s.Tags))
+	for _, t := range s.Tags {
+		if strings.TrimSpace(t) != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // GetItems is a STUB at 5.J71. Follow-up J73: `torrents` GET +

@@ -2,6 +2,7 @@ package flood_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -399,11 +400,10 @@ func TestProvider_GetStatus_LocalhostFlag(t *testing.T) {
 	}
 }
 
-func TestProvider_StubReturns(t *testing.T) {
+func TestProvider_RemainingStubs(t *testing.T) {
+	// Download is now wired (5.J72); GetItems + RemoveItem are
+	// still stubs.
 	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(newScripted(), nil), nil)
-	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{ReleaseTitle: "X"}); !errors.Is(err, flood.ErrNotImplemented) {
-		t.Errorf("Download err = %v, want ErrNotImplemented", err)
-	}
 	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); !errors.Is(err, flood.ErrNotImplemented) {
 		t.Errorf("RemoveItem err = %v, want ErrNotImplemented", err)
 	}
@@ -413,6 +413,221 @@ func TestProvider_StubReturns(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Errorf("GetItems len = %d, want 0", len(items))
+	}
+}
+
+// queueAuthOnce queues the authenticate response + a cookie so
+// subsequent authenticated calls find a fresh cookie in the cache.
+func queueAuthOnce(doer *scriptedDoer) {
+	doer.queueWithCookies("/api/auth/authenticate", &http.Cookie{Name: "jwt", Value: "x"})
+}
+
+func TestProvider_Download_NilRequest(t *testing.T) {
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(newScripted(), nil), nil)
+	if _, err := p.Download(context.Background(), nil); err == nil {
+		t.Fatal("err = nil, want nil-request error")
+	}
+}
+
+func TestProvider_Download_MissingInfoHash(t *testing.T) {
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(newScripted(), nil), nil)
+	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{TorrentBody: []byte("x")}); err == nil {
+		t.Fatal("err = nil, want missing-InfoHash error")
+	}
+}
+
+func TestProvider_Download_NoBodyOrMagnet(t *testing.T) {
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(newScripted(), nil), nil)
+	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{InfoHash: "abc"}); err == nil {
+		t.Fatal("err = nil, want neither-body-nor-magnet error")
+	}
+}
+
+func TestProvider_Download_TorrentBody_RequestShape(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queue("/api/torrents/add-files")
+
+	settings := newSettings()
+	settings.Tags = []string{"sonarr", "tv"}
+	settings.Destination = "/downloads/tv"
+	settings.StartOnAdd = true
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, settings, flood.NewProxy(doer, nil), nil)
+
+	id, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X.S01E01",
+		TorrentBody:  []byte("RAW-TORRENT-BYTES"),
+		InfoHash:     "deadbeef",
+	})
+	if err != nil {
+		t.Fatalf("Download err = %v", err)
+	}
+	if id != "DEADBEEF" {
+		t.Errorf("id = %q, want DEADBEEF (uppercased InfoHash)", id)
+	}
+
+	var addCall *scriptedCall
+	for i := range doer.calls {
+		if doer.calls[i].path == "/api/torrents/add-files" {
+			addCall = &doer.calls[i]
+			break
+		}
+	}
+	if addCall == nil {
+		t.Fatal("no /api/torrents/add-files call recorded")
+	}
+	if addCall.method != http.MethodPost {
+		t.Errorf("method = %q, want POST", addCall.method)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(addCall.body, &body); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	files, _ := body["files"].([]any)
+	if len(files) != 1 {
+		t.Fatalf("files = %v, want 1-element slice", body["files"])
+	}
+	encoded, _ := files[0].(string)
+	decoded, _ := base64.StdEncoding.DecodeString(encoded)
+	if string(decoded) != "RAW-TORRENT-BYTES" {
+		t.Errorf("base64-decoded files[0] = %q, want RAW-TORRENT-BYTES", decoded)
+	}
+	tags, _ := body["tags"].([]any)
+	if len(tags) != 2 || tags[0] != "sonarr" || tags[1] != "tv" {
+		t.Errorf("tags = %v, want [sonarr, tv]", body["tags"])
+	}
+	if body["destination"] != "/downloads/tv" {
+		t.Errorf("destination = %v, want /downloads/tv", body["destination"])
+	}
+	if body["start"] != true {
+		t.Errorf("start = %v, want true", body["start"])
+	}
+}
+
+func TestProvider_Download_Magnet_RequestShape(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queue("/api/torrents/add-urls")
+
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	id, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		MagnetURL:    "magnet:?xt=urn:btih:cafebabe",
+		InfoHash:     "cafebabe",
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if id != "CAFEBABE" {
+		t.Errorf("id = %q, want CAFEBABE", id)
+	}
+	var addCall *scriptedCall
+	for i := range doer.calls {
+		if doer.calls[i].path == "/api/torrents/add-urls" {
+			addCall = &doer.calls[i]
+		}
+	}
+	if addCall == nil {
+		t.Fatal("no /api/torrents/add-urls call recorded")
+	}
+	var body map[string]any
+	_ = json.Unmarshal(addCall.body, &body)
+	urls, _ := body["urls"].([]any)
+	if len(urls) != 1 || urls[0] != "magnet:?xt=urn:btih:cafebabe" {
+		t.Errorf("urls = %v, want single magnet URL", body["urls"])
+	}
+}
+
+func TestProvider_Download_BlankDestinationOmitsKey(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queue("/api/torrents/add-files")
+
+	settings := newSettings()
+	settings.Destination = "" // blank
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, settings, flood.NewProxy(doer, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		TorrentBody: []byte("x"),
+		InfoHash:    "abc",
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	for _, c := range doer.calls {
+		if c.path == "/api/torrents/add-files" {
+			var body map[string]any
+			_ = json.Unmarshal(c.body, &body)
+			if _, present := body["destination"]; present {
+				t.Errorf("destination key emitted with blank value: %v", body)
+			}
+		}
+	}
+}
+
+func TestProvider_Download_StartOnAddFalseOmitsKey(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queue("/api/torrents/add-files")
+
+	settings := newSettings()
+	settings.StartOnAdd = false
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, settings, flood.NewProxy(doer, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		TorrentBody: []byte("x"),
+		InfoHash:    "abc",
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	for _, c := range doer.calls {
+		if c.path == "/api/torrents/add-files" {
+			var body map[string]any
+			_ = json.Unmarshal(c.body, &body)
+			if _, present := body["start"]; present {
+				t.Errorf("start key emitted with StartOnAdd=false: %v", body)
+			}
+		}
+	}
+}
+
+func TestProvider_Download_TagsBlanksStripped(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queue("/api/torrents/add-files")
+
+	settings := newSettings()
+	settings.Tags = []string{"sonarr", "", "  ", "tv"}
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, settings, flood.NewProxy(doer, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		TorrentBody: []byte("x"),
+		InfoHash:    "abc",
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	for _, c := range doer.calls {
+		if c.path == "/api/torrents/add-files" {
+			var body map[string]any
+			_ = json.Unmarshal(c.body, &body)
+			tags, _ := body["tags"].([]any)
+			if len(tags) != 2 {
+				t.Errorf("tags = %v, want 2 entries after blank-strip", body["tags"])
+			}
+		}
+	}
+}
+
+func TestProvider_Download_PropagatesProxyError(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queueErr("/api/torrents/add-files", errors.New("dial"))
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		TorrentBody: []byte("x"),
+		InfoHash:    "abc",
+	})
+	if !errors.Is(err, flood.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable", err)
 	}
 }
 
