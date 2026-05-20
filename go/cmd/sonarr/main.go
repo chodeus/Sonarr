@@ -110,6 +110,7 @@ import (
 	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
+	"sonarr.tv/sonarr/internal/update"
 	"sonarr.tv/sonarr/internal/upgrademediafiles"
 	"sonarr.tv/sonarr/internal/users"
 	"sonarr.tv/sonarr/internal/videofileinforeader"
@@ -2568,6 +2569,26 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// as the C# bulk missing-search default).
 	episodeSearchAdapter := handlerEpisodeSearchAdapter{svc: indexerSearchSvc}
 
+	// Slice 5.J40 (audit B.3 close-out + closes 5.J35
+	// UpdateCheck-banner partial): construct the update.Service +
+	// adapter satisfying handlers.UpdateChecker. The Service hits
+	// services.sonarr.tv/v1/update/{branch} with the build's version
+	// + OS + arch + runtime=netcore params; returns the latest
+	// available UpdatePackage when newer than the running build, or
+	// nil. The adapter narrows to the version-string-only shape the
+	// ApplicationCheckUpdate handler consumes.
+	updateSvc, err := update.NewService(
+		&http.Client{Timeout: 30 * time.Second},
+		updateBranchAdapter{cfg: cfg},
+		buildinfo.Version,
+		update.DefaultServicesBaseURL,
+		10*time.Second,
+	)
+	if err != nil {
+		return fmt.Errorf("update service: %w", err)
+	}
+	updateChecker := updateCheckerAdapter{svc: updateSvc}
+
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:                   cmdSvc,
 		Housekeeping:               houseSvc,
@@ -2575,6 +2596,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		RescanSeries:               mediafilesSvc,
 		Backup:                     backupSvc,
 		Lifecycle:                  lifecycleSvc,
+		ApplicationCheckUpdate:     updateChecker,
 		MissingEpisodeLister:       episodesSvc,
 		MissingEpisodeSearcher:     episodeSearchAdapter,
 		MonitoredDownloadRefresher: downloadMonitoringSvc,
@@ -2845,4 +2867,41 @@ func (a handlerEpisodeSearchAdapter) EpisodeSearch(ctx context.Context, episodeI
 		return 0, err
 	}
 	return len(decisions), nil
+}
+
+// updateBranchAdapter narrows *configfile.Provider for the
+// update.BranchProvider interface (slice 5.J40). The configfile
+// accessor returns (string, error); the adapter discards the error
+// and falls back to "main" — matches the C# `_configFileProvider.
+// Branch` getter shape which can't fail.
+type updateBranchAdapter struct {
+	cfg *configfile.Provider
+}
+
+func (a updateBranchAdapter) Branch(ctx context.Context) string {
+	v, err := a.cfg.Branch(ctx)
+	if err != nil || v == "" {
+		return "main"
+	}
+	return v
+}
+
+// updateCheckerAdapter narrows *update.Service for the
+// handlers.UpdateChecker interface (slice 5.J40). The handler only
+// wants the version string; the adapter discards the rest of the
+// UpdatePackage projection (URL / Hash / ReleaseDate — consumed by
+// the future install-side wiring).
+type updateCheckerAdapter struct {
+	svc *update.Service
+}
+
+func (a updateCheckerAdapter) AvailableVersion(ctx context.Context) (string, error) {
+	pkg, err := a.svc.AvailableUpdate(ctx)
+	if err != nil {
+		return "", err
+	}
+	if pkg == nil {
+		return "", nil
+	}
+	return pkg.Version, nil
 }

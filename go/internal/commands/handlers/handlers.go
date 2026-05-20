@@ -128,6 +128,15 @@ type Deps struct {
 	// `*download.ProcessDownloadDecisions` via Go's structural typing.
 	RssSyncGrabber GrabProcessor
 
+	// ApplicationCheckUpdate wires the
+	// IExecute<ApplicationUpdateCheckCommand> handler into the
+	// dispatcher. Slice 5.J40 (audit B.3 close-out). Optional — nil
+	// falls back to the stub-log behaviour so hosts without a wired
+	// update.Service still register the slot (the 6-hour
+	// scheduled-task entry depends on the registry key existing).
+	// Production binds an adapter around `*update.Service.AvailableUpdate`.
+	ApplicationCheckUpdate UpdateChecker
+
 	// MissingEpisodeLister + MissingEpisodeSearcher wire the
 	// IExecute<MissingEpisodeSearchCommand> handler into the
 	// dispatcher. Slice 5.J39 (audit B.3 close-out). Both optional —
@@ -229,6 +238,9 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	})
 	registry.Register(MissingEpisodeSearchName, commands.CommandSpec{
 		Handler: NewMissingEpisodeSearch(deps.MissingEpisodeLister, deps.MissingEpisodeSearcher, deps.Log),
+	})
+	registry.Register(ApplicationCheckUpdateName, commands.CommandSpec{
+		Handler: NewApplicationCheckUpdate(deps.ApplicationCheckUpdate, deps.Log),
 	})
 	if deps.Backup != nil {
 		backupHandler, err := NewBackup(deps.Backup, deps.Log)
@@ -395,6 +407,14 @@ func DefaultScheduledTasks() []*scheduledtasks.Task {
 		{
 			TypeName: UpdateSceneMappingName,
 			Interval: UpdateSceneMappingIntervalMinutes,
+		},
+		// Slice 5.J40 (audit B.3 close-out): ApplicationCheckUpdate
+		// default schedule. Matches C# `TaskManager.cs:127` — `Interval
+		// = 6 * 60` (6 hours in minutes). The seed task fires against
+		// services.sonarr.tv/v1/update/{branch} at boot + every 6h.
+		{
+			TypeName: ApplicationCheckUpdateName,
+			Interval: ApplicationCheckUpdateIntervalDefault,
 		},
 	}
 }
