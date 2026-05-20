@@ -138,6 +138,40 @@ func (p *Proxy) authenticate(ctx context.Context, s Settings, force bool) ([]*ht
 	return cookies, nil
 }
 
+// Torrent ports C# `Types/Torrent.cs:6-29`. Only the columns
+// Sonarr reads are surfaced. JSON tags match the C# `[JsonProperty]`
+// attributes (camelCase wire names).
+type Torrent struct {
+	BytesDone    int64    `json:"bytesDone"`
+	Directory    string   `json:"directory"`
+	Eta          int64    `json:"eta"`
+	Message      string   `json:"message"`
+	Name         string   `json:"name"`
+	Ratio        float64  `json:"ratio"`
+	SizeBytes    int64    `json:"sizeBytes"`
+	Status       []string `json:"status"`
+	Tags         []string `json:"tags"`
+	DateFinished *int64   `json:"dateFinished,omitempty"`
+}
+
+// GetTorrents fires GET `/api/torrents` and returns the
+// hash-keyed map of torrents. Mirrors C# `FloodProxy.GetTorrents`
+// at `:181-188`. The wire payload is a top-level object that wraps
+// the actual map under a `torrents` key — matching the C#
+// `TorrentListSummary.Torrents` projection at `Types/TorrentListSummary.cs`.
+func (p *Proxy) GetTorrents(ctx context.Context, s Settings) (map[string]*Torrent, error) {
+	var out struct {
+		Torrents map[string]*Torrent `json:"torrents"`
+	}
+	if err := p.callAuth(ctx, s, http.MethodGet, "torrents", nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Torrents == nil {
+		out.Torrents = map[string]*Torrent{}
+	}
+	return out.Torrents, nil
+}
+
 // AddTorrentByFile fires POST `/api/torrents/add-files` with the
 // base64-encoded .torrent body. Mirrors C# `FloodProxy.AddTorrentByFile`
 // at `:117-140`. Body shape:

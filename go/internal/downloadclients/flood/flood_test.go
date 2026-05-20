@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/flood"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // scriptedDoer queues responses per-path so the cookie auth flow +
@@ -401,18 +403,11 @@ func TestProvider_GetStatus_LocalhostFlag(t *testing.T) {
 }
 
 func TestProvider_RemainingStubs(t *testing.T) {
-	// Download is now wired (5.J72); GetItems + RemoveItem are
-	// still stubs.
+	// Download + GetItems are now wired (J72 + J73); RemoveItem
+	// is the last remaining stub before the J74 closure.
 	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(newScripted(), nil), nil)
 	if err := p.RemoveItem(context.Background(), &downloadclients.Item{}, true); !errors.Is(err, flood.ErrNotImplemented) {
 		t.Errorf("RemoveItem err = %v, want ErrNotImplemented", err)
-	}
-	items, err := p.GetItems(context.Background())
-	if err != nil {
-		t.Fatalf("GetItems err = %v", err)
-	}
-	if len(items) != 0 {
-		t.Errorf("GetItems len = %d, want 0", len(items))
 	}
 }
 
@@ -636,6 +631,233 @@ func TestProvider_MarkItemAsImported_ReturnsUnsupported(t *testing.T) {
 	if err := p.MarkItemAsImported(context.Background(), &downloadclients.Item{}); !errors.Is(err, downloadclients.ErrMarkAsImportedUnsupported) {
 		t.Errorf("err = %v, want ErrMarkAsImportedUnsupported", err)
 	}
+}
+
+// queueGetTorrents stages the auth flow + a torrents response.
+func queueGetTorrents(doer *scriptedDoer, body string) {
+	queueAuthOnce(doer)
+	doer.responses["/api/torrents"] = append(doer.responses["/api/torrents"], scriptedResp{status: http.StatusOK, body: body})
+}
+
+func TestProvider_GetItems_EmptyMap(t *testing.T) {
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{}}`)
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	items, err := p.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("len = %d, want 0", len(items))
+	}
+}
+
+func TestProvider_GetItems_StatusTable(t *testing.T) {
+	doer := newScripted()
+	// One entry per status arm. Each torrent has [sonarr] tag to
+	// pass the Tags gate.
+	queueGetTorrents(doer, `{"torrents":{
+		"hashA":{"name":"A","status":["seeding"],"tags":["sonarr"],"sizeBytes":100,"bytesDone":100},
+		"hashB":{"name":"B","status":["complete"],"tags":["sonarr"],"sizeBytes":100,"bytesDone":100},
+		"hashC":{"name":"C","status":["stopped"],"tags":["sonarr"],"sizeBytes":100,"bytesDone":50},
+		"hashD":{"name":"D","status":["error"],"tags":["sonarr"],"sizeBytes":100,"bytesDone":50,"message":"corrupt"},
+		"hashE":{"name":"E","status":["downloading"],"tags":["sonarr"],"sizeBytes":100,"bytesDone":50}
+	}}`)
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	items, err := p.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(items) != 5 {
+		t.Fatalf("len = %d, want 5", len(items))
+	}
+	byID := map[string]*downloadclients.Item{}
+	for _, it := range items {
+		byID[it.DownloadID] = it
+	}
+	want := map[string]downloadclients.DownloadItemStatus{
+		"hashA": downloadclients.DownloadItemStatusCompleted,
+		"hashB": downloadclients.DownloadItemStatusCompleted,
+		"hashC": downloadclients.DownloadItemStatusPaused,
+		"hashD": downloadclients.DownloadItemStatusWarning,
+		"hashE": downloadclients.DownloadItemStatusDownloading,
+	}
+	for hash, st := range want {
+		got, ok := byID[hash]
+		if !ok {
+			t.Errorf("missing item %s", hash)
+			continue
+		}
+		if got.Status != st {
+			t.Errorf("%s Status = %v, want %v", hash, got.Status, st)
+		}
+	}
+	if byID["hashD"].Message != "corrupt" {
+		t.Errorf("error-arm Message = %q, want 'corrupt'", byID["hashD"].Message)
+	}
+}
+
+func TestProvider_GetItems_TagsGateFiltersMissingRequired(t *testing.T) {
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"hashA":{"name":"A","status":["downloading"],"tags":["sonarr","tv"]},
+		"hashB":{"name":"B","status":["downloading"],"tags":["radarr"]}
+	}}`)
+	s := newSettings()
+	s.Tags = []string{"sonarr"} // hashB missing the required tag
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, s, flood.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 {
+		t.Fatalf("len = %d, want 1 (Tags gate filtered hashB)", len(items))
+	}
+	if items[0].DownloadID != "hashA" {
+		t.Errorf("DownloadID = %q, want hashA", items[0].DownloadID)
+	}
+}
+
+func TestProvider_GetItems_PostImportTagsSkipAlreadyImported(t *testing.T) {
+	doer := newScripted()
+	// Both have [sonarr] (passes Tags gate). hashA also has
+	// [imported], so the PostImportTags skip applies.
+	queueGetTorrents(doer, `{"torrents":{
+		"hashA":{"name":"A","status":["complete"],"tags":["sonarr","imported"]},
+		"hashB":{"name":"B","status":["complete"],"tags":["sonarr"]}
+	}}`)
+	s := newSettings()
+	s.PostImportTags = []string{"imported"}
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, s, flood.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 {
+		t.Fatalf("len = %d, want 1 (PostImportTags skip filtered hashA)", len(items))
+	}
+	if items[0].DownloadID != "hashB" {
+		t.Errorf("DownloadID = %q, want hashB", items[0].DownloadID)
+	}
+}
+
+func TestProvider_GetItems_HasPostImportCategoryFlag(t *testing.T) {
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"hashA":{"name":"A","status":["downloading"],"tags":["sonarr"]}
+	}}`)
+	s := newSettings()
+	s.PostImportTags = []string{"imported"}
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, s, flood.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 || items[0].DownloadClientInfo == nil {
+		t.Fatal("expected one item with DownloadClientInfo bound")
+	}
+	if !items[0].DownloadClientInfo.HasPostImportCategory {
+		t.Errorf("HasPostImportCategory = false, want true with PostImportTags non-empty")
+	}
+}
+
+func TestProvider_GetItems_CategoryFromFirstTag(t *testing.T) {
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"hashA":{"name":"A","status":["downloading"],"tags":["myCat","other"]},
+		"hashB":{"name":"B","status":["downloading"],"tags":[]}
+	}}`)
+	s := newSettings()
+	s.Tags = []string{} // disable Tags gate so both pass
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, s, flood.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	byID := map[string]*downloadclients.Item{}
+	for _, it := range items {
+		byID[it.DownloadID] = it
+	}
+	if byID["hashA"].Category != "myCat" {
+		t.Errorf("hashA Category = %q, want myCat", byID["hashA"].Category)
+	}
+	if byID["hashB"].Category != "" {
+		t.Errorf("hashB Category = %q, want empty (no tags)", byID["hashB"].Category)
+	}
+}
+
+func TestProvider_GetItems_EtaAndRemainingSize(t *testing.T) {
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"h":{"name":"X","status":["downloading"],"tags":["sonarr"],"sizeBytes":1000,"bytesDone":300,"eta":42,"ratio":0.5}
+	}}`)
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 {
+		t.Fatalf("len = %d", len(items))
+	}
+	it := items[0]
+	if it.RemainingSize != 700 {
+		t.Errorf("RemainingSize = %d, want 700", it.RemainingSize)
+	}
+	if it.TotalSize != 1000 {
+		t.Errorf("TotalSize = %d", it.TotalSize)
+	}
+	if it.RemainingTime == nil || *it.RemainingTime != 42*time.Second {
+		t.Errorf("RemainingTime = %v, want 42s", it.RemainingTime)
+	}
+	if it.SeedRatio == nil || *it.SeedRatio != 0.5 {
+		t.Errorf("SeedRatio = %v, want 0.5", it.SeedRatio)
+	}
+}
+
+func TestProvider_GetItems_ZeroEtaOmitsRemainingTime(t *testing.T) {
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"h":{"name":"X","status":["complete"],"tags":["sonarr"],"sizeBytes":100,"bytesDone":100,"eta":0}
+	}}`)
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].RemainingTime != nil {
+		t.Errorf("RemainingTime = %v, want nil when eta=0", items[0].RemainingTime)
+	}
+}
+
+func TestProvider_GetItems_OutputPathRemapped(t *testing.T) {
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"h":{"name":"X","status":["complete"],"tags":["sonarr"],"directory":"/remote/dl"}
+	}}`)
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	p.SetRemotePathMapper(stubRemapper{from: "/remote/dl", to: "/local/dl"})
+	items, _ := p.GetItems(context.Background())
+	if items[0].OutputPath.FullPath() != "/local/dl" {
+		t.Errorf("OutputPath = %q, want /local/dl (remapped)", items[0].OutputPath.FullPath())
+	}
+}
+
+func TestProvider_GetItems_CleanupFlagsDefaultFalse(t *testing.T) {
+	// The seed-config cleanup gate is deferred (no Go-port
+	// IDownloadSeedConfigProvider yet) — CanMoveFiles + CanBeRemoved
+	// should default false even for Completed items.
+	doer := newScripted()
+	queueGetTorrents(doer, `{"torrents":{
+		"h":{"name":"X","status":["complete"],"tags":["sonarr"]}
+	}}`)
+	def := &downloadclients.DownloadClient{Name: "FL", RemoveCompletedDownloads: true}
+	p := flood.New(def, newSettings(), flood.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanMoveFiles || items[0].CanBeRemoved {
+		t.Errorf("cleanup flags = move=%v removed=%v, want both false (gate deferred)", items[0].CanMoveFiles, items[0].CanBeRemoved)
+	}
+}
+
+func TestProvider_GetItems_PropagatesGetTorrentsError(t *testing.T) {
+	doer := newScripted()
+	queueAuthOnce(doer)
+	doer.queueErr("/api/torrents", errors.New("dial"))
+	p := flood.New(&downloadclients.DownloadClient{Name: "FL"}, newSettings(), flood.NewProxy(doer, nil), nil)
+	_, err := p.GetItems(context.Background())
+	if !errors.Is(err, flood.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable", err)
+	}
+}
+
+type stubRemapper struct{ from, to string }
+
+func (s stubRemapper) RemapRemoteToLocal(_ context.Context, _ string, p ospath.OsPath) (ospath.OsPath, error) {
+	if p.FullPath() == s.from {
+		return ospath.New(s.to), nil
+	}
+	return p, nil
 }
 
 func TestRegistry_RegistersFlood(t *testing.T) {

@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // Flood is the [downloadclients.Provider] implementation for the
@@ -27,6 +29,11 @@ type Flood struct {
 	def      *downloadclients.DownloadClient
 	log      *slog.Logger
 	proxy    *Proxy
+
+	// rpm is the optional remote-path mapper consulted by GetItems
+	// to translate Flood-side `directory` into Sonarr-side paths.
+	// Nil → pass-through.
+	rpm downloadclients.RemotePathMapper
 }
 
 // New constructs a Flood Provider. proxy=nil binds a default
@@ -118,12 +125,158 @@ func composeTags(s Settings) []string {
 	return out
 }
 
-// GetItems is a STUB at 5.J71. Follow-up J73: `torrents` GET +
-// 4-arm status table from C# `Flood.cs:144-159` (seeding/complete
-// → Completed, stopped → Paused, error → Warning, downloading →
-// Downloading) + seed-config cleanup gate.
-func (f *Flood) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return []*downloadclients.Item{}, nil
+// GetItems ports `Flood.GetItems` at C# `Flood.cs:104-188`. Walks
+// the hash-keyed torrent map from [Proxy.GetTorrents], applies the
+// Tags + PostImportTags gates, projects each entry into a
+// [downloadclients.Item] via the 4-arm status table.
+//
+// Gates (priority order — first miss skips the row):
+//
+//   - Tags gate: skip when Settings.Tags has any tag NOT present
+//     on the torrent (`!Tags.All(present)` at C# `:114`).
+//   - PostImportTags skip: skip when EVERY PostImportTag IS present
+//     on the torrent (the torrent has already been imported and
+//     marked — C# `:119-122`).
+//
+// Status table (priority order — first match wins, C# `:144-159`):
+//
+//   - Status contains "seeding" OR "complete" → Completed
+//   - Status contains "stopped" → Paused
+//   - Status contains "error" → Warning
+//   - Status contains "downloading" → Downloading
+//   - default → status field left at zero (the C# code does the same
+//     — no fall-through arm).
+//
+// CanMoveFiles + CanBeRemoved both default to false. The C#
+// cleanup-gate at `:161-182` (which reads `IDownloadSeedConfigProvider`
+// and flips both flags when the ratio OR seed-time threshold is
+// reached) is deferred — the Go port doesn't yet have a
+// seed-config-provider surface, and the gate is a "post-import
+// cleanup nicety" rather than load-bearing for the import path.
+// Documented; follow-up: port the seed-config-provider service +
+// wire the cleanup arm.
+func (f *Flood) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
+	if f.proxy == nil {
+		return []*downloadclients.Item{}, nil
+	}
+	torrents, err := f.proxy.GetTorrents(ctx, f.settings)
+	if err != nil {
+		return nil, fmt.Errorf("flood: GetTorrents: %w", err)
+	}
+	hasPostImport := len(f.settings.PostImportTags) > 0
+	info := f.itemClientInfo(hasPostImport)
+	out := make([]*downloadclients.Item, 0, len(torrents))
+	for hash, t := range torrents {
+		if !containsAll(t.Tags, f.settings.Tags) {
+			continue
+		}
+		if hasPostImport && containsAll(t.Tags, f.settings.PostImportTags) {
+			continue
+		}
+		out = append(out, f.toItem(ctx, info, hash, t))
+	}
+	return out, nil
+}
+
+// toItem projects one [Torrent] into a [downloadclients.Item].
+func (f *Flood) toItem(ctx context.Context, info *downloadclients.ItemClientInfo, hash string, t *Torrent) *downloadclients.Item {
+	dir := ospath.New(t.Directory)
+	if f.rpm != nil && strings.TrimSpace(t.Directory) != "" {
+		if mapped, err := f.rpm.RemapRemoteToLocal(ctx, f.settings.Host, dir); err == nil {
+			dir = mapped
+		} else {
+			f.log.Debug("flood: RemapRemoteToLocal failed", "directory", t.Directory, "err", err)
+		}
+	}
+
+	var category string
+	if len(t.Tags) > 0 {
+		category = t.Tags[0]
+	}
+
+	item := &downloadclients.Item{
+		DownloadClientInfo: info,
+		DownloadID:         hash,
+		Title:              t.Name,
+		OutputPath:         dir,
+		Category:           category,
+		RemainingSize:      t.SizeBytes - t.BytesDone,
+		TotalSize:          t.SizeBytes,
+		Message:            t.Message,
+	}
+	ratio := t.Ratio
+	item.SeedRatio = &ratio
+	if t.Eta > 0 {
+		d := time.Duration(t.Eta) * time.Second
+		item.RemainingTime = &d
+	}
+	switch {
+	case statusContains(t.Status, "seeding") || statusContains(t.Status, "complete"):
+		item.Status = downloadclients.DownloadItemStatusCompleted
+	case statusContains(t.Status, "stopped"):
+		item.Status = downloadclients.DownloadItemStatusPaused
+	case statusContains(t.Status, "error"):
+		item.Status = downloadclients.DownloadItemStatusWarning
+	case statusContains(t.Status, "downloading"):
+		item.Status = downloadclients.DownloadItemStatusDownloading
+	}
+	return item
+}
+
+// itemClientInfo mirrors C# `DownloadClientItemClientInfo.FromDownloadClient(this, hasPostImportCategory)`
+// at `Flood.cs:126`. hasPostImportCategory is true when
+// Settings.PostImportTags is non-empty.
+func (f *Flood) itemClientInfo(hasPostImportCategory bool) *downloadclients.ItemClientInfo {
+	info := &downloadclients.ItemClientInfo{
+		Protocol:              f.Protocol(),
+		Type:                  Implementation,
+		Name:                  f.Name(),
+		HasPostImportCategory: hasPostImportCategory,
+	}
+	if f.def != nil {
+		info.ID = f.def.ID
+		info.Name = f.def.Name
+		info.RemoveCompletedDownloads = f.def.RemoveCompletedDownloads
+	}
+	return info
+}
+
+// SetRemotePathMapper binds the optional remote-path mapper used
+// by GetItems for the `directory` translation. Same Phase 6.B
+// pattern as Transmission/qBittorrent/Hadouken/NzbVortex.
+func (f *Flood) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) {
+	f.rpm = rpm
+}
+
+// containsAll returns true when every entry in `wanted` is present
+// in `set`. Empty `wanted` returns true (matches C# `Tags.All`'s
+// behaviour on the empty enumerable). nil-safe on both sides.
+func containsAll(set, wanted []string) bool {
+	if len(wanted) == 0 {
+		return true
+	}
+	have := make(map[string]bool, len(set))
+	for _, s := range set {
+		have[s] = true
+	}
+	for _, w := range wanted {
+		if !have[w] {
+			return false
+		}
+	}
+	return true
+}
+
+// statusContains reports whether the status slice has any entry
+// equal to needle (case-sensitive, matching C# `Status.Contains`
+// which is a List<string>.Contains call).
+func statusContains(status []string, needle string) bool {
+	for _, s := range status {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // GetImportItem is a STUB at 5.J71. Follow-up J74 ports C#
@@ -213,7 +366,11 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	if l, ok := deps.Logger.(*slog.Logger); ok {
 		log = l
 	}
-	return New(def, settings, nil, log), nil
+	f := New(def, settings, nil, log)
+	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
+		f.SetRemotePathMapper(rpm)
+	}
+	return f, nil
 }
 
 func init() {
