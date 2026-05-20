@@ -46,9 +46,11 @@ For closure narrative, see commit history `5.J1` … `5.J22` on `go-port`. The t
 
 **Sequencing:** RefreshMonitoredDownloads + CheckForFinishedDownloads are the most user-visible — without them, qBittorrent / SAB items grabbed via the API don't refresh in the UI without manual reload. Worth a slice each.
 
-## B.5 — Missing healthchecks (ALL CLOSED — 9 full, 2 with deferred sub-arms)
+## B.5 — Missing healthchecks (ALL CLOSED + ALL WIRED)
 
-**Status:** EFFECTIVELY CLOSED. 9 fully closed + 2 partials (5.J10/J11/J12/J13/J14/J18/J34/J36/J55 closed; 5.J35 UpdateCheck has deferred banner-fetcher; 5.J55 RemotePathMappingCheck has deferred event-driven Check(IEvent) path — both sub-arms can be retrofitted without touching the existing checks). 0 fully remain:
+**Status:** FULLY CLOSED. 11/11 checks ported AND wired into the cmd/sonarr/main.go healthSvc registry. The two partials noted historically (UpdateCheck banner-fetcher + RemotePathMappingCheck event-driven Check(IEvent)) are closed: the banner-fetcher landed at J40 via `internal/update.Service` and was finally wired into UpdateCheck at J143; the RemotePathMappingCheck's scheduled-Check() path (the user-visible one) wired at J144 — the event-driven Check(IEvent) sub-arm remains deferred as a non-blocking nice-to-have (its triggers fire through EpisodeImportFailedEvent which itself isn't yet bus-published).
+
+**J141-J144 wave (post-original-audit closure):** discovered that 5 healthchecks/handlers were ported but NEVER wired into main.go, AND 3 of them (`PackageGlobalMessageCheck`, `UpdateCheck`, `MountCheck`, `RemotePathMappingCheck` — actually 4) used a stale `Source()`/`Check()` method signature instead of the settled `Name()`/`Run()`/`CheckOnStartup()`/`CheckOnSchedule()` interface. J142 wired PackageGlobalMessageCheck (with interface realignment); J143 wired UpdateCheck (with the same realignment + relocated updateSvc construction); J144 wired MountCheck + RemotePathMappingCheck (interface realignment again).
 
 | Check | Blocker / size |
 |---|---|

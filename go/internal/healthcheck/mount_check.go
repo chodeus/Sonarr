@@ -49,14 +49,20 @@ func NewMountCheck(series SeriesPathLookup, resolver MountResolver) (*MountCheck
 	return &MountCheck{series: series, resolver: resolver}, nil
 }
 
-// Source returns the canonical identifier.
-func (c *MountCheck) Source() string { return MountCheckName }
+// Name returns the canonical identifier.
+func (*MountCheck) Name() string { return MountCheckName }
 
-// Check enumerates every persisted series path, resolves each to its
+// CheckOnStartup defaults true (HealthCheckBase default).
+func (*MountCheck) CheckOnStartup() bool { return true }
+
+// CheckOnSchedule defaults true (HealthCheckBase default).
+func (*MountCheck) CheckOnSchedule() bool { return true }
+
+// Run enumerates every persisted series path, resolves each to its
 // backing mount, and produces an Error when at least one mount is
 // read-only. Mounts are de-duplicated by RootDirectory so a multi-
 // series mount shows up exactly once in the message.
-func (c *MountCheck) Check(ctx context.Context) HealthCheck {
+func (c *MountCheck) Run(ctx context.Context) HealthCheck {
 	if c == nil {
 		return OK(MountCheckName)
 	}

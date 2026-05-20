@@ -115,15 +115,21 @@ func NewRemotePathMappingCheck(
 	}, nil
 }
 
-// Source returns the canonical identifier.
-func (c *RemotePathMappingCheck) Source() string { return RemotePathMappingCheckName }
+// Name returns the canonical identifier.
+func (*RemotePathMappingCheck) Name() string { return RemotePathMappingCheckName }
 
-// Check returns the healthcheck result. Short-circuits to OK when
+// CheckOnStartup defaults true (HealthCheckBase default).
+func (*RemotePathMappingCheck) CheckOnStartup() bool { return true }
+
+// CheckOnSchedule defaults true (HealthCheckBase default).
+func (*RemotePathMappingCheck) CheckOnSchedule() bool { return true }
+
+// Run returns the healthcheck result. Short-circuits to OK when
 // EnableCompletedDownloadHandling is disabled — matches C# `:51-54`.
 // Walks each enabled DC's OutputRootFolders; the FIRST failure
 // short-circuits the loop and surfaces (matches C# `:48-182` which
 // returns the first failing HealthCheck).
-func (c *RemotePathMappingCheck) Check(ctx context.Context) HealthCheck {
+func (c *RemotePathMappingCheck) Run(ctx context.Context) HealthCheck {
 	if c == nil {
 		return OK(RemotePathMappingCheckName)
 	}

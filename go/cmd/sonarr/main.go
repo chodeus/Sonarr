@@ -37,6 +37,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -1865,6 +1866,31 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("healthcheck updateCheck: %w", err)
 	}
 
+	// Slice 5.J144: MountCheck wire-up. Walks every persisted series
+	// path and surfaces an Error when any backing mount reports
+	// IsReadOnly. Uses *series.Repo for AllSeriesPaths + *disk.Provider
+	// for GetMount (the cross-platform port shipped at J36).
+	mountCheck, err := healthcheck.NewMountCheck(seriesRepo, diskProv)
+	if err != nil {
+		return fmt.Errorf("healthcheck mountCheck: %w", err)
+	}
+
+	// Slice 5.J144: RemotePathMappingCheck wire-up. The 387-LOC C#
+	// check ported at J55 (scheduled-Check() path) finally reaches
+	// the healthSvc registry. The OsInfoAdapter from J143 satisfies
+	// the IsDocker-only subset interface via structural typing.
+	remotePathMappingCheck, err := healthcheck.NewRemotePathMappingCheck(
+		configProv,
+		dcStatusEnumerator,
+		diskProv,
+		updateCheckOsInfoAdapter{info: appenv.DetectOs()},
+		runtime.GOOS,
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("healthcheck remotePathMappingCheck: %w", err)
+	}
+
 	healthSvc, err := healthcheck.NewService([]healthcheck.Check{
 		healthcheck.NewAppDataLocationCheck(folder),
 		apiKeyCheck,
@@ -1890,6 +1916,8 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		importMechanismCheck,
 		packageGlobalMessageCheck,
 		updateCheck,
+		mountCheck,
+		remotePathMappingCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)

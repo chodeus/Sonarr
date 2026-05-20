@@ -64,7 +64,7 @@ func TestRPMC_PassesWhenCDHDisabled(t *testing.T) {
 		"linux",
 		nil,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("CDH disabled: got %v, want OK (early-exit)", got.Type)
 	}
@@ -79,7 +79,7 @@ func TestRPMC_PassesWhenNoClients(t *testing.T) {
 		stubRPMOsInfo{},
 		"linux", nil,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("no clients: got %v, want OK", got.Type)
 	}
@@ -96,7 +96,7 @@ func TestRPMC_PassesWhenAllFoldersValid(t *testing.T) {
 		stubRPMOsInfo{},
 		"linux", nil,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("valid local folder: got %v, want OK", got.Type)
 	}
@@ -114,7 +114,7 @@ func TestRPMC_RemoteWrongOSPath(t *testing.T) {
 		stubRPMOsInfo{},
 		"linux", nil,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Reason != healthcheck.ReasonRemotePathMappingWrongOSPath {
 		t.Errorf("Reason: %v, want WrongOSPath", got.Reason)
 	}
@@ -135,7 +135,7 @@ func TestRPMC_DockerBadPath(t *testing.T) {
 		stubRPMOsInfo{docker: true},
 		"linux", nil,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Reason != healthcheck.ReasonRemotePathMappingBadDockerPath {
 		t.Errorf("Reason: %v, want BadDockerPath", got.Reason)
 	}
@@ -156,7 +156,7 @@ func TestRPMC_LocalWrongOSPath(t *testing.T) {
 		stubRPMOsInfo{docker: false},
 		"linux", nil,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Reason != healthcheck.ReasonRemotePathMappingLocalWrongOSPath {
 		t.Errorf("Reason: %v, want LocalWrongOSPath", got.Reason)
 	}
@@ -174,7 +174,7 @@ func TestRPMC_DockerFolderMissing(t *testing.T) {
 		stubRPMOsInfo{docker: true},
 		"linux", nil,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Reason != healthcheck.ReasonRemotePathMappingDockerFolderMissing {
 		t.Errorf("Reason: %v, want DockerFolderMissing", got.Reason)
 	}
@@ -192,7 +192,7 @@ func TestRPMC_RemoteLocalFolderMissing(t *testing.T) {
 		stubRPMOsInfo{},
 		"linux", nil,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Reason != healthcheck.ReasonRemotePathMappingLocalFolderMissing {
 		t.Errorf("Reason: %v, want LocalFolderMissing", got.Reason)
 	}
@@ -210,7 +210,7 @@ func TestRPMC_LocalGenericPermissions(t *testing.T) {
 		stubRPMOsInfo{},
 		"linux", nil,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Reason != healthcheck.ReasonRemotePathMappingGenericPermissions {
 		t.Errorf("Reason: %v, want GenericPermissions", got.Reason)
 	}
@@ -230,7 +230,7 @@ func TestRPMC_SkipsFailedClients(t *testing.T) {
 		stubRPMOsInfo{},
 		"linux", nil,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Reason != healthcheck.ReasonRemotePathMappingGenericPermissions {
 		t.Errorf("expected GenericPermissions from the second client; got %v", got.Reason)
 	}
@@ -250,7 +250,7 @@ func TestRPMC_FirstFailureShortCircuits(t *testing.T) {
 		stubRPMOsInfo{},
 		"linux", nil,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Reason != healthcheck.ReasonRemotePathMappingWrongOSPath {
 		t.Errorf("Reason: %v, want WrongOSPath (first failure short-circuits)", got.Reason)
 	}
@@ -265,7 +265,7 @@ func TestRPMC_ClientEnumerateErrorPasses(t *testing.T) {
 		stubRPMOsInfo{},
 		"linux", nil,
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("client-enumerate failure: %v, want silent OK", got.Type)
 	}

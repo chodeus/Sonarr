@@ -42,7 +42,7 @@ func TestMountCheck_AllWritablePasses(t *testing.T) {
 			"/data/show-b": {Name: "/data", RootDirectory: "/data", IsReadOnly: false},
 		}},
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("Type: got %v, want OK", got.Type)
 	}
@@ -56,7 +56,7 @@ func TestMountCheck_ReadOnlyMountFiresError(t *testing.T) {
 			"/ro/show-x": {Name: "/ro", RootDirectory: "/ro", IsReadOnly: true},
 		}},
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultError {
 		t.Fatalf("Type: got %v, want Error", got.Type)
 	}
@@ -80,7 +80,7 @@ func TestMountCheck_DeduplicatesByRoot(t *testing.T) {
 			"/ro/c": {Name: "/ro", RootDirectory: "/ro", IsReadOnly: true},
 		}},
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultError {
 		t.Fatalf("Type: got %v, want Error", got.Type)
 	}
@@ -107,7 +107,7 @@ func TestMountCheck_MixedReadOnlyAndWritable(t *testing.T) {
 			"/rw/show-b": {Name: "/rw", RootDirectory: "/rw", IsReadOnly: false},
 		}},
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultError {
 		t.Fatalf("Type: got %v, want Error", got.Type)
 	}
@@ -130,7 +130,7 @@ func TestMountCheck_LookupErrorSkipsPath(t *testing.T) {
 			errFor: map[string]error{"/missing/b": errors.New("ENOENT")},
 		},
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("Type: got %v, want OK (lookup-failed paths are skipped silently)", got.Type)
 	}
@@ -142,7 +142,7 @@ func TestMountCheck_EmptySeriesPathSkipped(t *testing.T) {
 		stubMountSeriesPaths{out: map[int]string{1: ""}},
 		stubMountResolver{},
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("Type: got %v, want OK (empty paths are skipped)", got.Type)
 	}
@@ -154,7 +154,7 @@ func TestMountCheck_SeriesLookupErrorPasses(t *testing.T) {
 		stubMountSeriesPaths{err: errors.New("DB unavailable")},
 		stubMountResolver{},
 	)
-	got := c.Check(context.Background())
+	got := c.Run(context.Background())
 	if got.Type != healthcheck.ResultOK {
 		t.Errorf("Type: got %v, want OK (series lookup failure → silent pass)", got.Type)
 	}
