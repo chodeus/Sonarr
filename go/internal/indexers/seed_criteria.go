@@ -103,12 +103,10 @@ type CachedIndexerSettings struct {
 // fall back to the global default", which mirrors the C# null-
 // tolerance at `Indexers/SeedConfigProvider.cs:44-50`.
 //
-// The production binding for this slice is deferred — the full
-// CachedIndexerSettingsProvider port needs the IndexerFactory +
-// settings deserialiser, which are scoped to a separate later
-// slice. Tests inject a stub returning a canned
-// CachedIndexerSettings; the wiring slice will swap that for the
-// real factory-backed cache.
+// Production binding: [*CachedSettingsProvider] (slice 5.J93) which
+// wraps [RepoIndexerFinder] + [DefaultSettingsDecoder]; wired into
+// the composition root at cmd/sonarr/main.go (slice 5.J98). Tests
+// inject a stub returning a canned CachedIndexerSettings.
 type IndexerSettingsLookup interface {
 	GetSettings(ctx context.Context, indexerID int) (*CachedIndexerSettings, error)
 }

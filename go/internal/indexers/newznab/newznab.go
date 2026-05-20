@@ -375,16 +375,10 @@ func init() {
 	//
 	// The (Impl, Contract) key was already registered with a nil
 	// constructor in Phase 1.0 (see internal/provider/ids.go); we
-	// re-register with the real constructor here. The provider package's
-	// Register helper rejects duplicate keys — to allow this swap we
-	// call SetConstructor below if it exists, otherwise we accept the
-	// duplicate-registration error and document the workaround in the
-	// commit body.
-	//
-	// TODO follow-up: the Registry.Register helper currently returns
-	// ErrAlreadyRegistered for the second register. Sub-arc 4d swaps in
-	// the real constructor by replacing the catalog with a Set semantic
-	// — see the Replace helper below.
+	// re-register with the real constructor here. The provider
+	// package's Replace helper accepts the swap (the original TODO
+	// about Register-returning-ErrAlreadyRegistered shipped in
+	// sub-arc 4d which added the Replace helper used below).
 	if err := provider.Default().Replace(provider.FamilyIndexer,
 		provider.Key{Impl: "Newznab", Contract: "NewznabSettings"},
 		Constructor); err != nil {
