@@ -37,6 +37,7 @@ import (
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/indexers/fanzub"
+	"sonarr.tv/sonarr/internal/indexers/filelist"
 	"sonarr.tv/sonarr/internal/indexers/iptorrents"
 	"sonarr.tv/sonarr/internal/indexers/newznab"
 	"sonarr.tv/sonarr/internal/indexers/nyaa"
@@ -230,6 +231,22 @@ func (s *dbIndexerSource) buildAdapter(row *indexers.Indexer, def *provider.Defi
 		// torrentleech — leave FetchSearchFunc nil.
 		return common, nil
 
+	case "FileList":
+		idx := filelist.NewIndexer(s.httpClient)
+		idx.SetDefinition(def)
+		common.FetchRecentFunc = func(ctx context.Context) ([]any, error) {
+			rs, err := idx.FetchRecent(ctx)
+			return upcastTorrentInfos(rs), err
+		}
+		// Slice 5.J152 (first slice of the FileList arc): only the
+		// JSON `latest-torrents` FetchRecent path lands. The
+		// per-criteria search routing (FileListRequestGenerator.cs:24-120
+		// — IMDB-search + Name-search dual-flow with anime-episode
+		// fan-out) ships as a follow-up slice. Leave FetchSearchFunc
+		// nil so the adapter surfaces the "does not support search"
+		// error instead of silently returning empty.
+		return common, nil
+
 	case "Fanzub":
 		idx := fanzub.NewIndexer(s.httpClient)
 		idx.SetDefinition(def)
@@ -384,6 +401,8 @@ func (a minimumSeedersAdapter) MinimumSeeders(ctx context.Context, id int) (int,
 	case *iptorrents.Settings:
 		return s.MinimumSeeders, true, nil
 	case *nyaa.Settings:
+		return s.MinimumSeeders, true, nil
+	case *filelist.Settings:
 		return s.MinimumSeeders, true, nil
 	default:
 		// Newznab + any non-torrent provider class.
