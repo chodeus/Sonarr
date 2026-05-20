@@ -9,11 +9,13 @@ For closure narrative, see commit history `5.J1` … `5.J22` on `go-port`. The t
 
 # Open
 
-## B.2 — SignalR broadcast fan-out (~10 families remaining)
+## B.2 — SignalR broadcast fan-out
 
-**Status:** PARTIAL. 5.J20 wired `qualityprofile` + `customformat` Sync broadcasters. The audit's "8 of 70 broadcast" headline overstated the gap — current tree has 8 direct-emitter families (rootfolder/notification/indexer/importlist/downloadclient/metadata/series/seasonpass) PLUS 11 bus-event Sync broadcasters (tag/autotagging/health/queue/queue-details/queueStatus/series/episodefile/systemTask/qualityprofile/customformat) wired today.
+**Status:** CLOSED 2026-05-20 across 10 second-wave slices (5.J24–5.J32 wired, 5.J33 rejected). First wave (5.J20) wired `qualityprofile` + `customformat`. Second wave shipped 9 additional channels: `episodefile`-Update (5.J24), `command` distinct from system/task (5.J25), `episode` monitor (5.J26), `customformat`-Update third subscriber (5.J27), `blocklist` (5.J28), `delayprofile` (5.J29), `customfilter` (5.J30), `releaseprofile` (5.J31), `remotepathmapping` (5.J32). The `config/*` row was rejected (5.J33) — audit misread the UI surface; no SignalR `config/*` channels exist in either C# or Go.
 
-**Remaining families — same bus-event-sync pattern as 5.J20:**
+**Wire-shape audit note:** the React UI's `SignalRListener.tsx` doesn't subscribe to several of the second-wave channels (customformat, blocklist, delayprofile, customfilter, releaseprofile, remotepathmapping, customfilter). The Go-port broadcasts on those channels anyway to match C#'s wire shape (C# broadcasts via the inherited `ModelEvent<T>` pipeline). Third-party SignalR clients (Sonarr Mobile, *-arr-suite tooling) can still consume them; the React UI's missing listeners are a UI surface gap rather than a wire-contract design.
+
+**Closed families table (commit history is authoritative):**
 
 | Family | Service-side work | Subscriber site |
 |---|---|---|
@@ -25,7 +27,7 @@ For closure narrative, see commit history `5.J1` … `5.J22` on `go-port`. The t
 | ~~`command` (POST/DELETE)~~ | ~~`commands.Service` already publishes; needs distinct broadcaster channel from systemTask.~~ — **CLOSED 5.J25** via new `CommandUpdatedEvent` fired by `Service.Push`/`PushMany`/`Start`/`Complete`/`Fail`/`Cancel` + distinct `command` channel broadcaster. C# `SendUpdatesToClient` body-filter + 100ms debounce remain deferred (every command broadcast, no debounce). | Distinct `command` `ResourceBroadcaster[CommandResource]` |
 | ~~`episode` (monitor)~~ | ~~Publish `EpisodeMonitoredChangedEvent` from `episodes.Service.SetMonitored`.~~ — **CLOSED 5.J26** via new `EpisodeMonitoredChangedEvent` fired by `SetEpisodeMonitored` / `SetMonitored` / `SetEpisodeMonitoredBySeason`. | `episode` Sync broadcaster |
 | ~~`episodefile` (update/bulk/editor)~~ | ~~Already has Created/Deleted broadcasts; Update + Editor need their own event.~~ — **CLOSED 5.J24** via `EpisodeFileUpdatedEvent` published from `Service.Update` + `Service.UpdateMany`. The api/v3 EditorHandler + BulkUpdateHandler funnel through UpdateMany, so they're implicitly covered. | Third subscriber on existing `episodefile` broadcaster |
-| `config/*` (host, ui, naming, mediamanagement, downloadclient, indexer) | `ConfigFileSavedEvent` / `ConfigSavedEvent` already fire — wire the subscriptions per `config/*` channel the React UI listens to. | Sync broadcaster per channel |
+| ~~`config/*` (host, ui, naming, mediamanagement, downloadclient, indexer)~~ | ~~`ConfigFileSavedEvent` / `ConfigSavedEvent` already fire — wire the subscriptions per `config/*` channel the React UI listens to.~~ — **REJECTED 5.J33 (audit was mistaken).** Confirmed both ends: (1) C# `src/Sonarr.Api.V3/Config/*Controller.cs` controllers extend `RestController<>` (NOT `RestControllerWithSignalR`) and have no manual `BroadcastResourceChange` calls; (2) C# has zero `IHandle<ConfigSavedEvent>` SignalR subscribers (only consumer is `UiAuthorizationHandler` which doesn't broadcast); (3) the React UI's `frontend/src/Components/SignalRListener.tsx` channel-name switch has no `config/*` case (lists: calendar, command, downloadclient, episode, episodefile, health, importlist, indexer, metadata, connection, qualitydefinition, queue, queue/details, queue/status, rootfolder, series, system/task, tag, version, wanted/cutoff, wanted/missing). The audit row was based on a misreading of the UI listener surface — no config/* SignalR channels exist in either tree. | (none — no broadcaster wired) |
 | ~~`customformat` (update)~~ | ~~Publish `CustomFormatUpdatedEvent` on Update (C# `:51-55` doesn't emit; Go-port additive).~~ — **CLOSED 5.J27** via new `CustomFormatUpdatedEvent` published from `Service.Update`. | Third subscriber on existing `customformat` channel |
 
 **Acceptance:** every POST/PUT/DELETE handler in `internal/api/v3/` has either a direct-emitter call on its happy path OR a service-side bus event that signalr_wiring subscribes to.
