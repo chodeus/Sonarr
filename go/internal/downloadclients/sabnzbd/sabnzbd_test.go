@@ -1411,3 +1411,84 @@ func newSabnzbdForURLMutate(t *testing.T, srv *httptest.Server, mutate func(*sab
 	}
 	return sabnzbd.New(nil, s, p, slog.Default())
 }
+
+// --- J117 parent-walk OutputPath resolution -----------------------
+
+// queryHistoryFor stages a history reply containing one slot whose
+// Storage path is the deeply-nested SAB job-folder + TVSorting
+// post-import path, and runs GetItems to capture the resulting
+// item.
+func queryHistoryFor(t *testing.T, title, storage string) *downloadclients.Item {
+	t.Helper()
+	fake := &fakeSAB{
+		queueJSON: `{"queue":{"paused":false,"slots":[]}}`,
+		historyJSON: `{"history":{"paused":false,"slots":[
+			{"nzo_id":"abc","status":"Completed","name":"` + title + `","storage":"` + storage + `","size":"100 MB","bytes":104857600,"category":"tv","fail_message":""}
+		]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fake.serve(w, r) }))
+	t.Cleanup(srv.Close)
+	sab := newSabnzbdForURL(t, srv)
+	items, err := sab.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("GetItems: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1; items=%+v", len(items), items)
+	}
+	return items[0]
+}
+
+func TestSabnzbd_HistoryParentWalk_J117_MatchingAncestorWins(t *testing.T) {
+	t.Parallel()
+	// Title-named directory sits two levels above the deepest path.
+	// The walk should anchor OutputPath at the matching ancestor.
+	// (ospath.Directory() preserves the trailing separator on the
+	// resolved directory — kept in expected values so the assertion
+	// stays exact.)
+	item := queryHistoryFor(t,
+		"Show.S01E02",
+		"/data/done/Show.S01E02/rar-output/sub",
+	)
+	if got, want := item.OutputPath.FullPath(), "/data/done/Show.S01E02/"; got != want {
+		t.Errorf("OutputPath = %q, want %q (walked up to Title-named ancestor)", got, want)
+	}
+}
+
+func TestSabnzbd_HistoryParentWalk_J117_HighestMatchWins(t *testing.T) {
+	t.Parallel()
+	// Two ancestors share the Title basename; the highest must win
+	// (matches C# loop's lack of a break — keeps walking past
+	// matches).
+	item := queryHistoryFor(t,
+		"Show.S01E02",
+		"/data/Show.S01E02/nested/Show.S01E02/file",
+	)
+	if got, want := item.OutputPath.FullPath(), "/data/Show.S01E02/"; got != want {
+		t.Errorf("OutputPath = %q, want %q (highest matching ancestor)", got, want)
+	}
+}
+
+func TestSabnzbd_HistoryParentWalk_J117_NoMatchLeavesPathUnchanged(t *testing.T) {
+	t.Parallel()
+	// No ancestor name matches Title → outputPath stays at Storage.
+	item := queryHistoryFor(t,
+		"Show.S01E02",
+		"/data/done/other-folder/file.mkv",
+	)
+	if got, want := item.OutputPath.FullPath(), "/data/done/other-folder/file.mkv"; got != want {
+		t.Errorf("OutputPath = %q, want %q (no match → unchanged)", got, want)
+	}
+}
+
+func TestSabnzbd_HistoryParentWalk_J117_EmptyTitleSkipsWalk(t *testing.T) {
+	t.Parallel()
+	// Empty Title → walk skipped; Storage propagates verbatim.
+	item := queryHistoryFor(t,
+		"",
+		"/data/done/Show.S01E02/file.mkv",
+	)
+	if got, want := item.OutputPath.FullPath(), "/data/done/Show.S01E02/file.mkv"; got != want {
+		t.Errorf("OutputPath = %q, want %q (empty Title → no walk)", got, want)
+	}
+}

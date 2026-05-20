@@ -290,17 +290,39 @@ func (s *Sabnzbd) historyItemToItem(ctx context.Context, h SabnzbdHistoryItem, i
 		// Verifying / Moving / Extracting etc.
 		item.Status = downloadclients.DownloadItemStatusDownloading
 	}
-	// Slice 6.B3: route the SAB Storage path through remapOutput so
-	// off-host SAB instances surface the Sonarr-side path. The C#
-	// parent-walk step at `:163-176` (when the remap returns the same
-	// path, walk parents until one resolves) is NOT yet ported — a
-	// follow-up slice once the C# behavioural fixture is captured;
-	// most deployments hit a configured RemotePathMappings row directly
-	// without needing the parent walk.
+	// Slice 6.B3 routes the SAB Storage path through remapOutput so
+	// off-host SAB instances surface the Sonarr-side path. Slice
+	// 5.J117 ports the C# parent-walk at `:163-176`: SAB job-folder +
+	// TVSorting deployments store the per-job file under several
+	// nested directories (e.g. `/data/done/sonarr/Show/Show.S01E02/
+	// rar-output/file.mkv`) where the Title-named directory may sit
+	// several levels above the Storage path. The walk finds the
+	// HIGHEST ancestor whose basename matches Title and substitutes
+	// that as OutputPath — keeping the import handoff anchored to
+	// the per-job folder rather than the deepest unpack-output dir.
 	if h.Storage != "" {
 		item.OutputPath = s.remapOutput(ctx, h.Storage)
+		if !item.OutputPath.IsEmpty() && strings.TrimSpace(h.Title) != "" {
+			item.OutputPath = parentMatchingTitle(item.OutputPath, h.Title)
+		}
 	}
 	return item
+}
+
+// parentMatchingTitle ports C# `Sabnzbd.cs:166-175`. Walks the
+// parent chain from outputPath.Directory upward; when an ancestor's
+// basename matches Title, substitutes it. The walk continues past
+// matches so the HIGHEST matching ancestor wins (matches the C#
+// loop's lack of a break statement). Returns outputPath unchanged
+// when no ancestor matches.
+func parentMatchingTitle(outputPath ospath.OsPath, title string) ospath.OsPath {
+	result := outputPath
+	for parent := outputPath.Directory(); !parent.IsEmpty(); parent = parent.Directory() {
+		if parent.FileName() == title {
+			result = parent
+		}
+	}
+	return result
 }
 
 // itemClientInfo builds the ItemClientInfo stamp that every emitted
