@@ -137,6 +137,7 @@ import (
 	_ "sonarr.tv/sonarr/internal/downloadclients/deluge"
 	_ "sonarr.tv/sonarr/internal/downloadclients/nzbget"
 	_ "sonarr.tv/sonarr/internal/downloadclients/qbittorrent"
+	_ "sonarr.tv/sonarr/internal/downloadclients/rtorrent"
 	_ "sonarr.tv/sonarr/internal/downloadclients/sabnzbd"
 	_ "sonarr.tv/sonarr/internal/downloadclients/transmission"
 )
