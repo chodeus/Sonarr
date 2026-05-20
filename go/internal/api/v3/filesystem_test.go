@@ -54,6 +54,31 @@ func TestFileSystemHandler_IncludeFiles(t *testing.T) {
 	}
 }
 
+// TestFileSystemHandler_DirectoryEmitsSizeZero pins the J164 fix —
+// directory entries (which never set Size and previously omitted the
+// "size" key under `omitempty`) must now emit `"size":0` to match C#'s
+// `long Size` non-nullable shape under STJson's WhenWritingNull
+// configuration. Catches regressions if a future edit re-adds the
+// `omitempty` tag.
+func TestFileSystemHandler_DirectoryEmitsSizeZero(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, "Series"))
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/filesystem?path="+root+"/&allowFoldersWithoutTrailingSlashes=true", nil)
+	FileSystemHandler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	// Raw body check — must contain "size":0 for the directory entry,
+	// NOT an omitted "size" key. Decoding into FileSystemModel hides
+	// the omitempty vs always-emit distinction (both deserialize back
+	// to int64(0)), so assert on the bytes.
+	if !contains(rr.Body.String(), `"size":0`) {
+		t.Errorf("directory body should contain \"size\":0; got %s", rr.Body.String())
+	}
+}
+
 func TestFileSystemHandler_SpecialFoldersFiltered(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
