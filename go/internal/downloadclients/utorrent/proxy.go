@@ -1,12 +1,14 @@
 package utorrent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -258,6 +260,171 @@ func (p *Proxy) GetVersion(ctx context.Context, settings Settings) (int, error) 
 		return 0, fmt.Errorf("utorrent: decode getsettings: %w", err)
 	}
 	return parsed.Build, nil
+}
+
+// AddTorrentFromURL fires action=add-url with the torrent URL /
+// magnet link. Mirrors C# `AddTorrentFromUrl` at `:90-97`.
+func (p *Proxy) AddTorrentFromURL(ctx context.Context, torrentURL string, settings Settings) error {
+	_, err := p.call(ctx, settings, url.Values{
+		"action": []string{"add-url"},
+		"s":      []string{torrentURL},
+	})
+	return err
+}
+
+// AddTorrentFromFile fires POST action=add-file with the .torrent
+// bytes as a multipart/form-data upload. Mirrors C#
+// `AddTorrentFromFile` at `:99-108`.
+func (p *Proxy) AddTorrentFromFile(ctx context.Context, fileName string, content []byte, settings Settings) error {
+	q := url.Values{
+		"action": []string{"add-file"},
+		"path":   []string{""},
+	}
+	_, err := p.callMultipart(ctx, settings, q, fileName, content)
+	return err
+}
+
+// SetTorrentLabel fires action=setprops&hash=<hash>&s=label&v=<label>.
+// Mirrors C# `SetTorrentLabel` at `:141-150`.
+func (p *Proxy) SetTorrentLabel(ctx context.Context, hash, label string, settings Settings) error {
+	_, err := p.call(ctx, settings, url.Values{
+		"action": []string{"setprops"},
+		"hash":   []string{strings.ToLower(hash)},
+		"s":      []string{"label"},
+		"v":      []string{label},
+	})
+	return err
+}
+
+// MoveTorrentToTopInQueue fires action=queuetop&hash=. Mirrors C#
+// `MoveTorrentToTopInQueue` at `:166-172`.
+func (p *Proxy) MoveTorrentToTopInQueue(ctx context.Context, hash string, settings Settings) error {
+	_, err := p.call(ctx, settings, url.Values{
+		"action": []string{"queuetop"},
+		"hash":   []string{strings.ToLower(hash)},
+	})
+	return err
+}
+
+// SetState fires action=<state>&hash= where <state> is the
+// lower-cased State name. Mirrors C# `SetState` at `:174-180`.
+func (p *Proxy) SetState(ctx context.Context, hash string, state State, settings Settings) error {
+	_, err := p.call(ctx, settings, url.Values{
+		"action": []string{strings.ToLower(state.String())},
+		"hash":   []string{strings.ToLower(hash)},
+	})
+	return err
+}
+
+// RemoveTorrent fires action=remove (or action=removedata when
+// removeData) with the hash. Mirrors C# `RemoveTorrent` at
+// `:130-139`.
+func (p *Proxy) RemoveTorrent(ctx context.Context, hash string, removeData bool, settings Settings) error {
+	action := "remove"
+	if removeData {
+		action = "removedata"
+	}
+	_, err := p.call(ctx, settings, url.Values{
+		"action": []string{action},
+		"hash":   []string{strings.ToLower(hash)},
+	})
+	return err
+}
+
+// callMultipart submits a token-authenticated POST with a
+// multipart/form-data body containing a single torrent_file part.
+// Used by AddTorrentFromFile. The token replay + cookie attach
+// match the GET path; on stale-session 400/401 a single re-auth +
+// retry happens like the GET arm.
+func (p *Proxy) callMultipart(ctx context.Context, settings Settings, query url.Values, fileName string, content []byte) ([]byte, error) {
+	return p.callMultipartInner(ctx, settings, query, fileName, content, true)
+}
+
+func (p *Proxy) callMultipartInner(ctx context.Context, settings Settings, query url.Values, fileName string, content []byte, allowReauth bool) ([]byte, error) {
+	if err := p.authenticate(ctx, settings, false); err != nil {
+		return nil, err
+	}
+	token, cookies, ok := p.snapshot(settings)
+	if !ok {
+		return nil, errors.New("utorrent: no session after authenticate")
+	}
+
+	q := url.Values{}
+	q.Set("token", token)
+	for k, vv := range query {
+		for _, v := range vv {
+			q.Add(k, v)
+		}
+	}
+	endpoint := baseURL(settings) + "?" + q.Encode()
+
+	body, contentType, err := buildTorrentFileMultipart(fileName, content)
+	if err != nil {
+		return nil, fmt.Errorf("utorrent: build multipart: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, body)
+	if err != nil {
+		return nil, fmt.Errorf("utorrent: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	if settings.Username != "" {
+		req.SetBasicAuth(settings.Username, settings.Password)
+	}
+
+	resp, err := p.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("utorrent: %s: %w", query.Get("action"), err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized) && allowReauth {
+		p.mu.Lock()
+		p.authKey = ""
+		p.token = ""
+		p.cookies = nil
+		p.mu.Unlock()
+		if err := p.authenticate(ctx, settings, true); err != nil {
+			return nil, err
+		}
+		return p.callMultipartInner(ctx, settings, query, fileName, content, false)
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, ErrAuthFailed
+	}
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("utorrent: read body: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("utorrent: status %d: %s", resp.StatusCode, strings.TrimSpace(truncate(string(respBody), 256)))
+	}
+	return respBody, nil
+}
+
+// buildTorrentFileMultipart constructs a multipart/form-data body
+// with a single torrent_file part containing the .torrent bytes.
+// Returns the reader, the Content-Type header value (including the
+// boundary), or an error.
+func buildTorrentFileMultipart(fileName string, content []byte) (*bytes.Buffer, string, error) {
+	if strings.TrimSpace(fileName) == "" {
+		fileName = "upload.torrent"
+	}
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, err := w.CreateFormFile("torrent_file", fileName)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := part.Write(content); err != nil {
+		return nil, "", err
+	}
+	if err := w.Close(); err != nil {
+		return nil, "", err
+	}
+	return &buf, w.FormDataContentType(), nil
 }
 
 func truncate(s string, max int) string {

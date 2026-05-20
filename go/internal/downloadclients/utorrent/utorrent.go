@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
@@ -74,10 +75,110 @@ func (u *UTorrent) Definition() *downloadclients.DownloadClient { return u.def }
 // to assert against the round-tripped JSON without re-decoding.
 func (u *UTorrent) Settings() Settings { return u.settings }
 
-// Download is a stub. See the package doc-comment for the deferred-
-// impl rationale.
-func (u *UTorrent) Download(_ context.Context, _ *downloadclients.GrabRequest) (string, error) {
-	return "", downloadclients.ErrNotImplementedYet
+// Download ports `UTorrent.AddFromMagnetLink` + `AddFromTorrentFile`
+// at `UTorrent.cs:62-102`. Picks the add path based on the
+// GrabRequest shape:
+//
+//   - TorrentBody bytes set → AddTorrentFromFile (multipart upload).
+//   - MagnetURL set → AddTorrentFromURL.
+//   - DownloadURL set → AddTorrentFromURL (uTorrent fetches the
+//     .torrent itself over HTTP).
+//
+// After add, applies the post-add chain:
+//
+//  1. SetTorrentLabel(hash, TvCategory) when TvCategory is non-empty.
+//  2. MoveTorrentToTopInQueue(hash) when the per-recency priority
+//     setting resolves to PriorityFirst.
+//  3. SetState(hash, IntialState) when IntialState != Start.
+//
+// Returns the upper-cased info-hash. Hash sourcing:
+//
+//   - req.InfoHash trusted when set.
+//   - Otherwise extracted from MagnetURL's xt=urn:btih:HASH query
+//     parameter.
+//   - Otherwise errors — uTorrent's add-url RPC doesn't echo the
+//     hash and the post-add arms need a known hash to target the
+//     just-added row.
+//
+// Best-effort posture on the post-add arms: SetTorrentLabel /
+// MoveTorrentToTopInQueue / SetState failures warn + continue.
+func (u *UTorrent) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
+	if req == nil {
+		return "", errors.New("utorrent: nil GrabRequest")
+	}
+	if u.proxy == nil {
+		return "", errors.New("utorrent: Download requires a wired Proxy")
+	}
+	hash, err := resolveInfoHash(req)
+	if err != nil {
+		return "", err
+	}
+
+	switch {
+	case len(req.TorrentBody) > 0:
+		if err := u.proxy.AddTorrentFromFile(ctx, req.ReleaseTitle, req.TorrentBody, u.settings); err != nil {
+			return "", err
+		}
+	case req.MagnetURL != "":
+		if err := u.proxy.AddTorrentFromURL(ctx, req.MagnetURL, u.settings); err != nil {
+			return "", err
+		}
+	case req.DownloadURL != "":
+		if err := u.proxy.AddTorrentFromURL(ctx, req.DownloadURL, u.settings); err != nil {
+			return "", err
+		}
+	default:
+		return "", errors.New("utorrent: Download: no TorrentBody / MagnetURL / DownloadURL on GrabRequest")
+	}
+
+	if strings.TrimSpace(u.settings.TvCategory) != "" {
+		if err := u.proxy.SetTorrentLabel(ctx, hash, u.settings.TvCategory, u.settings); err != nil {
+			u.log.Warn("utorrent: SetTorrentLabel failed", slog.String("hash", hash), slog.Any("err", err))
+		}
+	}
+	if u.recencyPriority(req.IsRecent) == PriorityFirst {
+		if err := u.proxy.MoveTorrentToTopInQueue(ctx, hash, u.settings); err != nil {
+			u.log.Warn("utorrent: MoveTorrentToTopInQueue failed", slog.String("hash", hash), slog.Any("err", err))
+		}
+	}
+	if State(u.settings.IntialState) != StateStart {
+		if err := u.proxy.SetState(ctx, hash, State(u.settings.IntialState), u.settings); err != nil {
+			u.log.Warn("utorrent: SetState failed",
+				slog.String("hash", hash),
+				slog.String("state", State(u.settings.IntialState).String()),
+				slog.Any("err", err))
+		}
+	}
+
+	return strings.ToUpper(hash), nil
+}
+
+// recencyPriority resolves req.IsRecent to the configured Priority.
+// Mirrors C# `UTorrent.cs:74-80,99-105`.
+func (u *UTorrent) recencyPriority(isRecent bool) Priority {
+	if isRecent {
+		return Priority(u.settings.RecentTvPriority)
+	}
+	return Priority(u.settings.OlderTvPriority)
+}
+
+// resolveInfoHash returns the hex info-hash for a GrabRequest.
+// Trust order: req.InfoHash → magnet xt=urn:btih: → error.
+func resolveInfoHash(req *downloadclients.GrabRequest) (string, error) {
+	if h := strings.TrimSpace(req.InfoHash); h != "" {
+		return strings.ToLower(h), nil
+	}
+	if req.MagnetURL == "" {
+		return "", errors.New("utorrent: cannot extract info-hash: neither InfoHash nor MagnetURL set")
+	}
+	const xtPrefix = "xt=urn:btih:"
+	for _, segment := range strings.Split(req.MagnetURL, "&") {
+		segment = strings.TrimPrefix(segment, "magnet:?")
+		if strings.HasPrefix(strings.ToLower(segment), xtPrefix) {
+			return strings.ToLower(strings.TrimSpace(segment[len(xtPrefix):])), nil
+		}
+	}
+	return "", fmt.Errorf("utorrent: magnet URL missing xt=urn:btih: parameter: %s", req.MagnetURL)
 }
 
 // GetItems is a stub.
