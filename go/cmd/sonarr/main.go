@@ -140,6 +140,7 @@ import (
 	_ "sonarr.tv/sonarr/internal/downloadclients/rtorrent"
 	_ "sonarr.tv/sonarr/internal/downloadclients/sabnzbd"
 	_ "sonarr.tv/sonarr/internal/downloadclients/transmission"
+	_ "sonarr.tv/sonarr/internal/downloadclients/utorrent"
 )
 
 func main() {
