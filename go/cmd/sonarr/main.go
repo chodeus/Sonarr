@@ -1521,6 +1521,25 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("healthcheck downloadClientSorting: %w", err)
 	}
+	// Audit fix B.5e: warn when an enabled DC has the "remove
+	// completed" feature on (Sonarr can't import what the client has
+	// deleted). Same enumerator as B.5d.
+	downloadClientRemovesCompletedCheck, err := healthcheck.NewDownloadClientRemovesCompletedDownloadsCheck(dcStatusEnumerator, logger)
+	if err != nil {
+		return fmt.Errorf("healthcheck downloadClientRemovesCompleted: %w", err)
+	}
+	// Audit fix B.5f: warn when an enabled DC's output folder
+	// overlaps any configured root folder. Reuses the same
+	// enumerator + the existing root-folder-path adapter from the
+	// import-list root-folder check.
+	downloadClientRootFolderCheck, err := healthcheck.NewDownloadClientRootFolderCheck(
+		dcStatusEnumerator,
+		newRootFolderPathListerAdapter(rootFoldersRepo),
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("healthcheck downloadClientRootFolder: %w", err)
+	}
 
 	// Slice 4.AI (queue [N5]): NotificationStatusCheck wires
 	// EnabledNotificationLister (over notifications.Repo via the
@@ -1709,6 +1728,8 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		indexerDCCheck,
 		indexerLongTermStatusCheck,
 		downloadClientSortingCheck,
+		downloadClientRemovesCompletedCheck,
+		downloadClientRootFolderCheck,
 	}, bus, logger)
 	if err != nil {
 		return fmt.Errorf("healthcheck service: %w", err)

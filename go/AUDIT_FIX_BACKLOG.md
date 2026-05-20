@@ -159,14 +159,14 @@ The CI job catches NEW drift now even with the baseline budget — if any of the
 
 ## B.5 — REAL (verified 2026-05-20 in slice 5.J9; partial progress slice 5.J10+)
 
-**Missing healthchecks (7 remaining; IndexerJackettAll, IndexerDownloadClient, IndexerLongTermStatus all closed in 5.J10-J12):**
+**Missing healthchecks (4 remaining; 6 closed in 5.J10–J14):**
 
 - ~~IndexerJackettAllCheck~~ — CLOSED in slice 5.J10. `internal/healthcheck/indexer_jackett_all.go` + test ship a warning when an enabled Torznab indexer's `BaseUrl` or `ApiPath` contains `/torznab/all` or `/api/v2.0/indexers/all/results/torznab`. Wired in `cmd/sonarr/main.go` alongside the other indexer checks.
 - ~~IndexerDownloadClientCheck~~ — CLOSED in slice 5.J11. `internal/healthcheck/indexer_downloadclient.go` + test warn when an enabled indexer pins a `DownloadClientId > 0` that doesn't match any enabled download client. Wired in `cmd/sonarr/main.go`. Uses a new narrow `DownloadClientRowLister` interface (the pre-existing `DownloadClientLister` is the count-only surface for DownloadClientCheck — kept distinct).
 - ~~IndexerLongTermStatusCheck~~ — CLOSED in slice 5.J12. `internal/healthcheck/indexer_long_term_status.go` + test mirror IndexerStatusCheck but flip the InitialFailure time predicate — flags indexers blocked LONGER than `IndexerRecentFailureWindow` (6h). Reuses the same `EnabledIndexerLister` + `IndexerStatusBlockedLister` interfaces. Wired in `cmd/sonarr/main.go`.
-- DownloadClientRootFolderCheck — DC folder writable
-- DownloadClientRemovesCompletedCheck — DC's "remove completed" setting matches Sonarr's expectation
-- DownloadClientSortingCheck — DC sorting conflicts with Sonarr
+- ~~DownloadClientSortingCheck~~ — CLOSED in slice 5.J13. `internal/healthcheck/downloadclient_sorting.go` + test warn on the first enabled DC reporting a non-empty SortingMode. Also introduced the reusable `DownloadClientStatusEnumerator` interface + `downloadClientStatusEnumeratorAdapter` (late-bound deps via SetDeps so the adapter can register at healthSvc-wire time before httpClient + downloadclients.Dependencies are in scope).
+- ~~DownloadClientRemovesCompletedCheck~~ — CLOSED in slice 5.J14. `internal/healthcheck/downloadclient_removes_completed.go` + test warn when an enabled DC has the self-remove-completed feature on. Reuses the B.5d enumerator.
+- ~~DownloadClientRootFolderCheck~~ — CLOSED in slice 5.J14. `internal/healthcheck/downloadclient_root_folder.go` + test warn when an enabled DC's output folder equals or is a child of any configured root folder. Reuses the B.5d enumerator + the existing root-folder-path adapter; uses `ospath.IsParent` for the platform-aware ancestry check.
 - ImportMechanismCheck — folder watching vs completed handling
 - MountCheck — mount point exists and is writable (NEEDS `disk.GetMount` port — IsReadOnly mount detection is platform-specific syscall work; this is genuinely larger than a single slice)
 - PackageGlobalMessageCheck — package maintainer messaging hook (NEEDS `DeploymentInfoProvider` port — reads `<bin>/../package_info` key/value file shipped by package maintainers)
@@ -293,44 +293,25 @@ Tests: `internal/configfile/envvars_test.go` covers Server/Auth/App+Update/LogLe
 
 # Tier C — Hygiene
 
-## C.1 — Cache-Control / Pragma / Expires / Vary headers not emitted
+## C.1 — CLOSED in slice 5.J15 (cache-disable middleware on every API route)
 
-**Severity:** 🟢 Hygiene — body still byte-equal; only header drift
-**Source:** New finding
+New `disableCacheHeaders` middleware in `internal/host/cache_headers.go` wraps a `cacheHeaderWriter` around the response so the four "do not cache" headers (`Cache-Control: no-cache, no-store`, `Pragma: no-cache`, `Expires: -1`, `Vary: Accept-Encoding`) fire exactly once when the response is committed, plus `Last-Modified` is stripped. Wrapping the ResponseWriter mirrors the C# `CacheHeaderMiddleware` posture where the headers are applied AFTER the inner action so downstream `Set("Last-Modified", ...)` is overridden.
 
-C# emits per `test/contract/golden/v3-empty-state/v3.blocklist.golden.json:5-25`:
-```
-Cache-Control: no-cache, no-store
-Pragma: no-cache
-Expires: -1
-Vary: Accept-Encoding
-```
-
-Go emits none. Caching proxies in front of either binary will behave differently.
-
-**Fix shape:** a small middleware applied to the v3 router that sets these headers on every response. `PHASE_6_SCOPE.md` treats this as a Phase 6 finding rather than port-blocking, which is reasonable.
+Applied to every API route (`/api`, `/ping`, all `WithRoutes` entries) in `internal/host/server.go:buildMux`, except `/api/v3/mediacover/*` which skips the middleware (matches C# `CacheableSpecification` EnableCache behaviour on that prefix — the React UI long-caches series posters). The static-frontend mount also bypasses cache headers so React bundle filename-hash cache busting still works.
 
 ---
 
-## C.2 — DateTime sub-second precision risk
+## C.2 — CLOSED in slice 5.J15 (ISO8601 wrapper in new internal/timefmt package)
 
-**Severity:** 🟢 Hygiene — invisible today, fragile to future changes
-**Source:** New finding
+New `internal/timefmt` package ships `ISO8601` — a `time.Time` wrapper whose `MarshalJSON` always emits second-precision UTC (`"YYYY-MM-DDTHH:MM:SSZ"`). `UnmarshalJSON` accepts both RFC3339Nano and the second form, truncating on read. `timefmt.Now()` returns a second-truncated UTC timestamp for sites that previously called `time.Now()` directly.
 
-C# emits `DateTime` at second precision (`"2026-05-02T06:56:55Z"`). Go's `time.Time.MarshalJSON` uses RFC3339Nano — if any code path constructs a `time.Time` with non-zero sub-second component and serializes it (e.g., `time.Now()` instead of a DB-loaded timestamp), the wire shape will include nanoseconds and break byte-equality.
-
-**Today's reality:** all timestamps observed in the contract goldens have zero sub-second component (DB-sourced), so this is dormant.
-
-**Fix shape:** either (a) a wrapper `type ISO8601Time time.Time` with a custom `MarshalJSON` that truncates to seconds, applied to all wire-emission paths, or (b) a `go vet`-style check that flags `time.Now()` flowing into a JSON-emitting struct. Option (a) is more robust.
+Existing call sites haven't been migrated yet (the audit acknowledged this is dormant today — every observed golden timestamp has zero subseconds because the values are DB-sourced). The wrapper is in place so that whoever next adds a `time.Now()`-sourced wire-emission path can reach for it without re-discovering the issue.
 
 ---
 
-## C.3 — `backup.go:119` time-based unstable sort
+## C.3 — CLOSED in slice 5.J15 (`backup.go:368` switched to sort.SliceStable)
 
-**Severity:** 🟢 Hygiene — see A.2 for context
-**Source:** New finding
-
-`internal/backup/backup.go:119` sorts backups by `Time.Before(...)` using `sort.Slice`. If two backups share an identical timestamp (rare at second precision but possible), the order is non-deterministic. Verify C# equivalent — if `OrderBy(x => x.Time)`, switch to `sort.SliceStable`.
+`internal/backup/backup.go:368` (line moved since the audit was written) now uses `sort.SliceStable` so same-timestamp backups preserve insertion order. C# `OrderBy(x => x.Time)` is stable, so the Go-port now matches.
 
 ---
 
