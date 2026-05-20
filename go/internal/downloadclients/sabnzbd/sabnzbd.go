@@ -514,12 +514,26 @@ func anyActiveSorterCovers(sorters []SabnzbdSorter, category string) bool {
 	return false
 }
 
-// Test runs the SAB connection + version self-check. Ports the
-// minimum-viable portion of C# `Sabnzbd.Test` at `:286-538` — the
-// connection-and-version check at `:368-414`. The full Test method
-// in C# also checks authentication / global config / category
-// existence; those reach into the GetConfig endpoint and are
-// sub-arc 14b territory.
+// Test runs the SAB connection + version self-check plus (slice
+// 5.J103) the TestAuthentication + TestGlobalConfig + TestCategory
+// follow-ups from C# `Sabnzbd.Test` at `:286-538`.
+//
+// Algorithm tracks C# `:286-292` literally:
+//   - TestConnectionAndVersion at `:368-414` — Go-port wires this
+//     via GetVersion + version-parse + version-floor (>= 0.7.0).
+//   - TestAuthentication at `:416-438` — fires GetConfig and pins
+//     "API Key Incorrect" / "API Key Required" errors to the
+//     APIKey field rather than surfacing them as Host failures.
+//   - TestGlobalConfig at `:440-453` — fails when SAB's
+//     `misc.pre_check` is on AND the server is older than 1.1
+//     (the pre-check job uploads stage was added in 1.1).
+//   - TestCategory at `:455-489` — fails when the configured
+//     TvCategory is missing OR has a Dir ending in '*' (job-folders
+//     disabled).
+//
+// The C# tree shares ONE GetConfig call across TestAuthentication +
+// TestGlobalConfig + TestCategory; the Go port follows by fetching
+// once and threading the result through each validator.
 //
 // Returns the FluentValidation-style failure list (empty = healthy).
 // A non-nil error is reserved for "test was aborted due to
@@ -566,9 +580,119 @@ func (s *Sabnzbd) Test(ctx context.Context) ([]downloadclients.TestFailure, erro
 			PropertyName: "Version",
 			ErrorMessage: fmt.Sprintf("SABnzbd %s is too old; required version is 0.7.0 or newer", rawVersion),
 		})
+		return failures, nil
+	}
+
+	// J103 — TestAuthentication + TestGlobalConfig + TestCategory.
+	// All three share a single GetConfig call. Authentication
+	// errors get pinned to APIKey; other errors get the connection-
+	// shape failure (matches C# rethrow at :434).
+	cfg, err := s.proxy.GetConfig(ctx, s.settings)
+	if err != nil {
+		if f := classifyAuthError(err); f != nil {
+			failures = append(failures, *f)
+			return failures, nil
+		}
+		failures = append(failures, downloadclients.TestFailure{
+			PropertyName:        "Host",
+			ErrorMessage:        fmt.Sprintf("Unable to fetch SABnzbd config: %v", err),
+			DetailedDescription: err.Error(),
+		})
+		return failures, nil
+	}
+	if f := testGlobalConfig(cfg, version); f != nil {
+		failures = append(failures, *f)
+	}
+	if f := testCategory(cfg, s.settings.TvCategory); f != nil {
+		failures = append(failures, *f)
 	}
 
 	return failures, nil
+}
+
+// classifyAuthError ports the C# `TestAuthentication` arm at
+// `Sabnzbd.cs:416-438`. Returns an APIKey-pinned failure when the
+// error message matches the SAB-server-emitted strings; nil for
+// other errors so the caller surfaces them as Host failures.
+func classifyAuthError(err error) *downloadclients.TestFailure {
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "api key incorrect"):
+		return &downloadclients.TestFailure{
+			PropertyName: "APIKey",
+			ErrorMessage: "API Key Incorrect",
+		}
+	case strings.Contains(msg, "api key required"):
+		return &downloadclients.TestFailure{
+			PropertyName: "APIKey",
+			ErrorMessage: "API Key Required",
+		}
+	}
+	return nil
+}
+
+// testGlobalConfig ports C# `TestGlobalConfig` at
+// `Sabnzbd.cs:440-453`. Fires a whole-form failure when SAB's
+// `misc.pre_check` global is on AND the server is older than 1.1
+// — pre-check requires the per-job staging that landed in 1.1.
+func testGlobalConfig(cfg *SabnzbdConfig, version *versionTriple) *downloadclients.TestFailure {
+	if cfg == nil || version == nil {
+		return nil
+	}
+	if !cfg.Misc.PreCheck {
+		return nil
+	}
+	// HasVersion(1, 1) at C# :294-332 — Major>=1 + Minor>=1.
+	if version.major > 1 || (version.major == 1 && version.minor >= 1) {
+		return nil
+	}
+	return &downloadclients.TestFailure{
+		PropertyName:        "",
+		ErrorMessage:        "SABnzbd's 'Check before download' setting requires SABnzbd 1.1.0 or newer; disable it or upgrade SABnzbd",
+		DetailedDescription: "Open SABnzbd > Config > Switches and disable 'Check before download'.",
+	}
+}
+
+// testCategory ports C# `TestCategory` at `Sabnzbd.cs:455-489`.
+// Two-arm check:
+//   - Configured TvCategory exists on the server: fail when its
+//     Dir ends in '*' (SAB's "Use Job Folders" convention — Sonarr
+//     requires job folders for the rename-on-import flow).
+//   - Configured TvCategory is missing AND non-empty: fail with
+//     "category missing".
+//
+// Empty TvCategory passes (the validator skips the probe; Sonarr
+// is free to grab into the SAB default category).
+func testCategory(cfg *SabnzbdConfig, tvCategory string) *downloadclients.TestFailure {
+	tv := strings.TrimSpace(tvCategory)
+	if tv == "" {
+		return nil
+	}
+	if cfg == nil {
+		return nil
+	}
+	var match *SabnzbdCategory
+	for i := range cfg.Categories {
+		if cfg.Categories[i].Name == tv {
+			match = &cfg.Categories[i]
+			break
+		}
+	}
+	if match != nil {
+		if strings.HasSuffix(strings.TrimSpace(match.Dir), "*") {
+			return &downloadclients.TestFailure{
+				PropertyName:        "TvCategory",
+				ErrorMessage:        fmt.Sprintf("Enable Job Folders for the %q category in SABnzbd", tv),
+				DetailedDescription: "SABnzbd's per-category folder ends in '*' which disables per-job folders; Sonarr requires job folders for the import handoff.",
+			}
+		}
+		return nil
+	}
+	return &downloadclients.TestFailure{
+		PropertyName:        "TvCategory",
+		ErrorMessage:        fmt.Sprintf("Category %q does not exist on the SABnzbd server", tv),
+		DetailedDescription: fmt.Sprintf("Open SABnzbd > Config > Categories and add a category named %q, or update Sonarr to use one that exists.", tv),
+	}
 }
 
 // versionTriple holds a parsed SAB version. Mirrors C# `Version` use

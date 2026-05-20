@@ -319,10 +319,7 @@ func TestProxy_GetVersionLegacyAuth(t *testing.T) {
 
 func TestSabnzbd_TestSuccess(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"version":"3.7.2"}`))
-	}))
+	srv := httptest.NewServer(testSuccessHandler(testHandlerCfg{}))
 	defer srv.Close()
 
 	prov := newSabnzbdForURL(t, srv)
@@ -1041,3 +1038,227 @@ func TestSabnzbd_RemapErrorFallsBackToRawPath(t *testing.T) {
 
 // Compile-time guard: *stubMapper satisfies the narrow interface.
 var _ downloadclients.RemotePathMapper = (*stubMapper)(nil)
+
+// --- J103 SAB Test-arm helper + tests -----------------------------
+
+type testHandlerCfg struct {
+	version       string // version string returned by ?mode=version (default "3.7.2")
+	preCheck      bool   // misc.pre_check in get_config response
+	categories    string // raw JSON for the config.categories slice; default `[{"name":"tv","dir":"/data/tv"}]`
+	apiError      string // when non-empty, ?mode=get_config returns this error string
+	versionAPIErr string // when non-empty, ?mode=version returns this error string
+}
+
+func testSuccessHandler(c testHandlerCfg) http.HandlerFunc {
+	if c.version == "" {
+		c.version = "3.7.2"
+	}
+	if c.categories == "" {
+		c.categories = `[{"name":"tv","dir":"/data/tv"}]`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		mode := r.URL.Query().Get("mode")
+		switch mode {
+		case "version":
+			if c.versionAPIErr != "" {
+				_, _ = w.Write([]byte(`{"status":"false","error":"` + c.versionAPIErr + `"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"version":"` + c.version + `"}`))
+		case "get_config":
+			if c.apiError != "" {
+				_, _ = w.Write([]byte(`{"status":"false","error":"` + c.apiError + `"}`))
+				return
+			}
+			preCheck := "false"
+			if c.preCheck {
+				preCheck = "true"
+			}
+			_, _ = w.Write([]byte(`{"config":{"misc":{"complete_dir":"/data/done","tv_categories":["tv"],"pre_check":` + preCheck + `},"categories":` + c.categories + `}}`))
+		default:
+			_, _ = w.Write([]byte(`{"version":"` + c.version + `"}`))
+		}
+	}
+}
+
+func TestSabnzbd_TestJ103_APIKeyIncorrectPinsToAPIKey(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(testSuccessHandler(testHandlerCfg{apiError: "API Key Incorrect"}))
+	defer srv.Close()
+	prov := newSabnzbdForURL(t, srv)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "APIKey" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("failures = %+v, want APIKey failure", failures)
+	}
+}
+
+func TestSabnzbd_TestJ103_APIKeyRequiredPinsToAPIKey(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(testSuccessHandler(testHandlerCfg{apiError: "API Key Required"}))
+	defer srv.Close()
+	prov := newSabnzbdForURL(t, srv)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "APIKey" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("failures = %+v, want APIKey failure", failures)
+	}
+}
+
+func TestSabnzbd_TestJ103_GlobalConfigPreCheckOldVersionFails(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(testSuccessHandler(testHandlerCfg{
+		version:  "1.0.0", // < 1.1
+		preCheck: true,
+	}))
+	defer srv.Close()
+	prov := newSabnzbdForURL(t, srv)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "" && strings.Contains(f.ErrorMessage, "Check before download") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("failures = %+v, want pre-check whole-form failure", failures)
+	}
+}
+
+func TestSabnzbd_TestJ103_GlobalConfigPreCheckNewVersionPasses(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(testSuccessHandler(testHandlerCfg{
+		version:  "1.2.0", // >= 1.1
+		preCheck: true,
+	}))
+	defer srv.Close()
+	prov := newSabnzbdForURL(t, srv)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range failures {
+		if f.PropertyName == "" && strings.Contains(f.ErrorMessage, "Check before download") {
+			t.Errorf("failures = %+v, want no pre-check failure on >=1.1", failures)
+		}
+	}
+}
+
+func TestSabnzbd_TestJ103_GlobalConfigPreCheckOff(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(testSuccessHandler(testHandlerCfg{
+		version:  "1.0.0",
+		preCheck: false, // no failure regardless of version
+	}))
+	defer srv.Close()
+	prov := newSabnzbdForURL(t, srv)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range failures {
+		if f.PropertyName == "" && strings.Contains(f.ErrorMessage, "Check before download") {
+			t.Errorf("failures = %+v, want no pre-check failure when off", failures)
+		}
+	}
+}
+
+func TestSabnzbd_TestJ103_CategoryMissingFails(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(testSuccessHandler(testHandlerCfg{
+		categories: `[{"name":"other","dir":"/data/other"}]`,
+	}))
+	defer srv.Close()
+	prov := newSabnzbdForURL(t, srv)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "TvCategory" && strings.Contains(f.ErrorMessage, "does not exist") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("failures = %+v, want TvCategory-missing failure", failures)
+	}
+}
+
+func TestSabnzbd_TestJ103_CategoryJobFoldersDisabledFails(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(testSuccessHandler(testHandlerCfg{
+		categories: `[{"name":"tv","dir":"/data/tv/*"}]`, // dir ends in '*'
+	}))
+	defer srv.Close()
+	prov := newSabnzbdForURL(t, srv)
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "TvCategory" && strings.Contains(f.ErrorMessage, "Job Folders") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("failures = %+v, want JobFolders-disabled failure", failures)
+	}
+}
+
+func TestSabnzbd_TestJ103_EmptyTvCategorySkipsProbe(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(testSuccessHandler(testHandlerCfg{
+		categories: `[{"name":"other","dir":"/data/other"}]`, // no "tv"
+	}))
+	defer srv.Close()
+	// Override TvCategory to empty via the settings injection.
+	prov := newSabnzbdForURLMutate(t, srv, func(s *sabnzbd.Settings) {
+		s.TvCategory = ""
+	})
+	failures, err := prov.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range failures {
+		if f.PropertyName == "TvCategory" && strings.Contains(f.ErrorMessage, "does not exist") {
+			t.Errorf("failures = %+v, want no missing-category failure when TvCategory empty", failures)
+		}
+	}
+}
+
+// newSabnzbdForURLMutate is a variant of newSabnzbdForURL that
+// applies a per-test settings mutator (TvCategory override etc).
+func newSabnzbdForURLMutate(t *testing.T, srv *httptest.Server, mutate func(*sabnzbd.Settings)) *sabnzbd.Sabnzbd {
+	t.Helper()
+	s := buildSettings(srv.URL, "k3y")
+	if mutate != nil {
+		mutate(&s)
+	}
+	p, err := sabnzbd.NewProxy(srv.Client(), slog.Default())
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+	return sabnzbd.New(nil, s, p, slog.Default())
+}
