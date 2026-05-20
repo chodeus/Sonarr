@@ -38,6 +38,7 @@ import (
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/indexers/iptorrents"
 	"sonarr.tv/sonarr/internal/indexers/newznab"
+	"sonarr.tv/sonarr/internal/indexers/nyaa"
 	"sonarr.tv/sonarr/internal/indexers/torrentleech"
 	"sonarr.tv/sonarr/internal/indexers/torrentrss"
 	"sonarr.tv/sonarr/internal/indexers/torznab"
@@ -228,6 +229,22 @@ func (s *dbIndexerSource) buildAdapter(row *indexers.Indexer, def *provider.Defi
 		// torrentleech — leave FetchSearchFunc nil.
 		return common, nil
 
+	case "Nyaa":
+		idx := nyaa.NewIndexer(s.httpClient)
+		idx.SetDefinition(def)
+		common.FetchRecentFunc = func(ctx context.Context) ([]any, error) {
+			rs, err := idx.FetchRecent(ctx)
+			return upcastTorrentInfos(rs), err
+		}
+		// Slice 5.J148 (first slice of the Nyaa arc): only the RSS
+		// FetchRecent path lands. The per-criteria search-URL
+		// routing (NyaaRequestGenerator.cs:21-111) ships as a
+		// follow-up slice once a real consumer drives the
+		// criteria-typed dispatch. Leave FetchSearchFunc nil so
+		// the adapter surfaces the "does not support search" error
+		// instead of silently returning empty.
+		return common, nil
+
 	default:
 		return nil, fmt.Errorf("unknown Implementation %q", row.Implementation)
 	}
@@ -345,6 +362,8 @@ func (a minimumSeedersAdapter) MinimumSeeders(ctx context.Context, id int) (int,
 	case *torrentleech.Settings:
 		return s.MinimumSeeders, true, nil
 	case *iptorrents.Settings:
+		return s.MinimumSeeders, true, nil
+	case *nyaa.Settings:
 		return s.MinimumSeeders, true, nil
 	default:
 		// Newznab + any non-torrent provider class.
