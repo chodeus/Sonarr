@@ -201,6 +201,48 @@ func (r *Repo) EpisodesWithFiles(ctx context.Context, seriesID int) ([]Episode, 
 	return r.runQuery(ctx, q, "EpisodesWithFiles", seriesID)
 }
 
+// EpisodesWithoutFiles ports the C# `EpisodeService.EpisodesWithoutFiles`
+// at `:200-216`. Returns every episode whose `EpisodeFileId` is NULL
+// (or 0) AND has aired before `now` AND whose monitored state matches
+// `monitored`. When `monitored == true` the Series must also be
+// monitored (matches C# `:130-138` filter clause `v.Monitored == true
+// && v.Series.Monitored == true`). When `monitored == false`, the
+// filter inverts to `v.Monitored == false || v.Series.Monitored ==
+// false` (the C# expression at `:140-143`).
+//
+// Used by the `MissingEpisodeSearch` command handler (slice 5.J39 —
+// audit B.3 close-out). Specials (SeasonNumber == 0) are excluded
+// — the C# missing-search wraps PagingSpec with the
+// `IncludeSpecialEpisodes = false` default; missing-search never
+// considers specials.
+func (r *Repo) EpisodesWithoutFiles(ctx context.Context, monitored bool, now time.Time) ([]Episode, error) {
+	db := r.DB()
+	clauses := []string{
+		`("EpisodeFileId" IS NULL OR "EpisodeFileId" = 0)`,
+		`"AirDateUtc" IS NOT NULL`,
+		`"AirDateUtc" < ` + datastore.Placeholder(db.Engine, 1),
+		`"SeasonNumber" != 0`,
+	}
+	args := []any{now.UTC()}
+
+	if monitored {
+		clauses = append(clauses,
+			`"Monitored" = `+sqlBoolTrue(db.Engine),
+			`EXISTS (SELECT 1 FROM "Series" WHERE "Series"."Id" = "Episodes"."SeriesId" AND "Series"."Monitored" = `+sqlBoolTrue(db.Engine)+`)`,
+		)
+	} else {
+		clauses = append(clauses,
+			`("Monitored" = `+sqlBoolFalse(db.Engine)+
+				` OR EXISTS (SELECT 1 FROM "Series" WHERE "Series"."Id" = "Episodes"."SeriesId" AND "Series"."Monitored" = `+sqlBoolFalse(db.Engine)+`))`,
+		)
+	}
+	q := fmt.Sprintf(
+		`SELECT %s FROM "Episodes" WHERE %s ORDER BY "Id"`,
+		selectColumnList(), strings.Join(clauses, " AND "),
+	)
+	return r.runQuery(ctx, q, "EpisodesWithoutFiles", args...)
+}
+
 // GetMany ports `BasicRepository<Episode>.Get(IEnumerable<int>)` —
 // the multi-id read used by `EpisodeService.GetEpisodes(IEnumerable<int>)`
 // at `EpisodeService.cs:68-71`. Empty input returns an empty slice.
@@ -284,4 +326,12 @@ func sqlBoolTrue(engine datastore.Engine) string {
 		return "TRUE"
 	}
 	return "1"
+}
+
+// sqlBoolFalse is the false counterpart to [sqlBoolTrue].
+func sqlBoolFalse(engine datastore.Engine) string {
+	if engine == datastore.EnginePostgres {
+		return "FALSE"
+	}
+	return "0"
 }

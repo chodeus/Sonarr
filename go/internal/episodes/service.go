@@ -313,6 +313,14 @@ func (s *Service) UpdateEpisode(ctx context.Context, e *Episode) error {
 	return s.repo.Update(ctx, e)
 }
 
+// EpisodesWithoutFiles ports `EpisodeService.EpisodesWithoutFiles`
+// at `:200-216`. Returns aired episodes (AirDateUtc < now) that have
+// no associated EpisodeFile, with the monitored filter applied per
+// the repo doc-comment. Used by [handlers.MissingEpisodeSearch].
+func (s *Service) EpisodesWithoutFiles(ctx context.Context, monitored bool, now time.Time) ([]Episode, error) {
+	return s.repo.EpisodesWithoutFiles(ctx, monitored, now)
+}
+
 // SetEpisodeMonitored ports `:176-182`. Loads the row first (so the
 // in-place mutation has somewhere to land), flips the flag, and
 // persists. Publishes [EpisodeMonitoredChangedEvent] on success.

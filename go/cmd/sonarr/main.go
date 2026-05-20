@@ -2561,6 +2561,13 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("downloadmonitoring service: %w", err)
 	}
 
+	// Slice 5.J39 (audit B.3 close-out): adapter around
+	// indexerSearchSvc.EpisodeSearch that returns the decision count
+	// only — narrows the surface the MissingEpisodeSearch handler
+	// consumes. SearchSettings zero value (no Manual override; same
+	// as the C# bulk missing-search default).
+	episodeSearchAdapter := handlerEpisodeSearchAdapter{svc: indexerSearchSvc}
+
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:                   cmdSvc,
 		Housekeeping:               houseSvc,
@@ -2568,6 +2575,8 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		RescanSeries:               mediafilesSvc,
 		Backup:                     backupSvc,
 		Lifecycle:                  lifecycleSvc,
+		MissingEpisodeLister:       episodesSvc,
+		MissingEpisodeSearcher:     episodeSearchAdapter,
 		MonitoredDownloadRefresher: downloadMonitoringSvc,
 		RssSync:                    indexerSearchSvc,
 		RssSyncBus:                 bus,
@@ -2816,4 +2825,24 @@ func buildDatastoreConfig(ctx context.Context, cfg *configfile.Provider, folder 
 		Password: password,
 		Database: pgMain,
 	}, fmt.Sprintf("postgres://%s@%s:%d/%s", user, host, port, pgMain), nil
+}
+
+// handlerEpisodeSearchAdapter narrows the indexersearch.Service
+// EpisodeSearch signature for the MissingEpisodeSearch command
+// handler (slice 5.J39). The handler only wants the decision count;
+// the full Decision slice is consumed by the upstream grab pipeline
+// inside indexersearch — not by the missing-search dispatcher.
+type handlerEpisodeSearchAdapter struct {
+	svc *indexersearch.Service
+}
+
+// EpisodeSearch satisfies the handlers.EpisodeSearcher interface.
+// SearchSettings zero value matches the C# `MissingEpisodeSearch`
+// path which uses bulk defaults (no UserInvokedSearch override).
+func (a handlerEpisodeSearchAdapter) EpisodeSearch(ctx context.Context, episodeID int) (int, error) {
+	decisions, err := a.svc.EpisodeSearch(ctx, episodeID, indexersearch.SearchSettings{})
+	if err != nil {
+		return 0, err
+	}
+	return len(decisions), nil
 }

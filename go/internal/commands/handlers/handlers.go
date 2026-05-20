@@ -128,6 +128,17 @@ type Deps struct {
 	// `*download.ProcessDownloadDecisions` via Go's structural typing.
 	RssSyncGrabber GrabProcessor
 
+	// MissingEpisodeLister + MissingEpisodeSearcher wire the
+	// IExecute<MissingEpisodeSearchCommand> handler into the
+	// dispatcher. Slice 5.J39 (audit B.3 close-out). Both optional —
+	// either nil falls back to the stub-log behaviour so hosts
+	// without a wired Service still register the slot. Production
+	// binds `*episodes.Service` + an adapter around
+	// `*indexersearch.Service.EpisodeSearch` (the count-returning
+	// shape — see handlers.EpisodeSearcher doc).
+	MissingEpisodeLister   EpisodeMissingLister
+	MissingEpisodeSearcher EpisodeSearcher
+
 	// MonitoredDownloadRefresher wires the
 	// IExecute<RefreshMonitoredDownloadsCommand> handler into the
 	// dispatcher with a real refresher. Slice 5.J37 (audit B.3).
@@ -215,6 +226,9 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	})
 	registry.Register(CheckForFinishedDownloadsName, commands.CommandSpec{
 		Handler: NewCheckForFinishedDownloads(deps.MonitoredDownloadRefresher, deps.Log),
+	})
+	registry.Register(MissingEpisodeSearchName, commands.CommandSpec{
+		Handler: NewMissingEpisodeSearch(deps.MissingEpisodeLister, deps.MissingEpisodeSearcher, deps.Log),
 	})
 	if deps.Backup != nil {
 		backupHandler, err := NewBackup(deps.Backup, deps.Log)
