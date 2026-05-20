@@ -1004,6 +1004,17 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			return historyhandlers.HandleDownloadIgnored(ctx, historySvc, &ev)
 		})
 
+	// Slice 5.J139: downloadhistory IHandle<DownloadIgnoredEvent>
+	// subscriber. Single DownloadIgnored row per event. Protocol +
+	// DownloadClientID sourced from ev.DownloadClientInfo (not from
+	// TrackedDownload, unlike the Failed handler). Closes the
+	// DownloadHistoryService event-bus arc at 5/6 — only the
+	// DownloadCompletedEvent-blocked handler remains.
+	messaging.Subscribe(bus, "downloadhistory.HandleDownloadIgnored",
+		func(ctx context.Context, ev trackeddownloads.DownloadIgnoredEvent) error {
+			return downloadhistoryhandlers.HandleDownloadIgnored(ctx, dlHistorySvc, &ev)
+		})
+
 	// Per-augmenter wiring (Phase 3.88 + 3.AF). Slice 3.AF lights up
 	// the previously-empty AggregateLanguage + AggregateQuality
 	// augmenter lists with every available augmenter. Both
