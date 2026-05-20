@@ -13,6 +13,7 @@ import (
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/hadouken"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // base64Decode is a thin alias for [base64.StdEncoding.DecodeString]
@@ -441,14 +442,15 @@ func TestProvider_RemoveItemStub_ReturnsNotImplemented(t *testing.T) {
 	}
 }
 
-func TestProvider_GetItemsStub_ReturnsEmpty(t *testing.T) {
-	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(&stubDoer{}, nil), nil)
+func TestProvider_GetItems_EmptyResponseReturnsEmpty(t *testing.T) {
+	doer := &stubDoer{respBody: `{"result":{"torrents":[]}}`}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
 	items, err := p.GetItems(context.Background())
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	if len(items) != 0 {
-		t.Errorf("len(items) = %d, want 0 (skeleton stub)", len(items))
+		t.Errorf("len(items) = %d, want 0", len(items))
 	}
 }
 
@@ -457,6 +459,233 @@ func TestProvider_MarkItemAsImported_ReturnsUnsupported(t *testing.T) {
 	if err := p.MarkItemAsImported(context.Background(), &downloadclients.Item{}); !errors.Is(err, downloadclients.ErrMarkAsImportedUnsupported) {
 		t.Errorf("err = %v, want ErrMarkAsImportedUnsupported", err)
 	}
+}
+
+// makeRow builds a 27-column tuple-row in the webui.list shape so
+// the JSON-encoded response feeds back through json.Unmarshal as
+// the same `[]any` shape the proxy maps. Pads non-content cells
+// with nil — only the index reads in mapTorrent at proxy.go are
+// load-bearing.
+func makeRow(infoHash string, stateBitmask int, name string, totalSize int64, progressPerMille float64, downloaded, uploaded, downRate int64, label, errorMsg, savePath string) []any {
+	row := make([]any, 27)
+	row[0] = infoHash
+	row[1] = stateBitmask
+	row[2] = name
+	row[3] = totalSize
+	row[4] = progressPerMille
+	row[5] = downloaded
+	row[6] = uploaded
+	row[9] = downRate
+	row[11] = label
+	row[21] = errorMsg
+	row[26] = savePath
+	return row
+}
+
+// respWithTorrents builds the JSON-RPC response body wrapping the
+// supplied tuple rows.
+func respWithTorrents(t *testing.T, rows ...[]any) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"result": map[string]any{"torrents": rows},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+func TestProvider_GetItems_StatusTable(t *testing.T) {
+	// One row per status-table arm. Progress 1000 = finished.
+	rows := [][]any{
+		// (A) Error non-empty → Warning
+		makeRow("aaaa", 4 /*Downloading*/, "ShowA", 100, 500, 50, 0, 10, "sonarr-tv", "disk full", "/save"),
+		// (B) IsFinished + State != CheckingFiles → Completed
+		makeRow("bbbb", 0 /*Unknown*/, "ShowB", 100, 1000, 100, 0, 0, "sonarr-tv", "", "/save"),
+		// (C) QueuedForChecking (bit 64) → Queued
+		makeRow("cccc", 64, "ShowC", 100, 500, 50, 0, 0, "sonarr-tv", "", "/save"),
+		// (D) Paused (bit 32) → Paused
+		makeRow("dddd", 32, "ShowD", 100, 500, 50, 0, 0, "sonarr-tv", "", "/save"),
+		// (E) default → Downloading (bit 1 = Downloading)
+		makeRow("eeee", 1, "ShowE", 100, 500, 50, 0, 10, "sonarr-tv", "", "/save"),
+		// (F) IsFinished + CheckingFiles (bit 2) → Downloading (NOT
+		// Completed, because the C# explicitly excludes CheckingFiles
+		// from the IsFinished→Completed arm).
+		makeRow("ffff", 2, "ShowF", 100, 1000, 100, 0, 0, "sonarr-tv", "", "/save"),
+	}
+	doer := &stubDoer{respBody: respWithTorrents(t, rows...)}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	items, err := p.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(items) != 6 {
+		t.Fatalf("len(items) = %d, want 6", len(items))
+	}
+
+	want := map[string]struct {
+		status  downloadclients.DownloadItemStatus
+		message string
+	}{
+		"AAAA": {downloadclients.DownloadItemStatusWarning, "disk full"},
+		"BBBB": {downloadclients.DownloadItemStatusCompleted, ""},
+		"CCCC": {downloadclients.DownloadItemStatusQueued, ""},
+		"DDDD": {downloadclients.DownloadItemStatusPaused, ""},
+		"EEEE": {downloadclients.DownloadItemStatusDownloading, ""},
+		"FFFF": {downloadclients.DownloadItemStatusDownloading, ""}, // CheckingFiles excludes Completed
+	}
+	for _, it := range items {
+		expect, ok := want[it.DownloadID]
+		if !ok {
+			t.Errorf("unexpected DownloadID %q", it.DownloadID)
+			continue
+		}
+		if it.Status != expect.status {
+			t.Errorf("%s Status = %v, want %v", it.DownloadID, it.Status, expect.status)
+		}
+		if it.Message != expect.message {
+			t.Errorf("%s Message = %q, want %q", it.DownloadID, it.Message, expect.message)
+		}
+	}
+}
+
+func TestProvider_GetItems_CategoryGate(t *testing.T) {
+	rows := [][]any{
+		makeRow("a", 0, "InCat", 1, 1000, 1, 0, 0, "sonarr-tv", "", "/save"),
+		makeRow("b", 0, "WrongCat", 1, 1000, 1, 0, 0, "radarr", "", "/save"),
+		makeRow("c", 0, "BlankCat", 1, 1000, 1, 0, 0, "", "", "/save"),
+	}
+	doer := &stubDoer{respBody: respWithTorrents(t, rows...)}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 {
+		t.Fatalf("len = %d, want 1 (Category=sonarr-tv gates 2 of 3)", len(items))
+	}
+	if items[0].Title != "InCat" {
+		t.Errorf("Title = %q, want InCat", items[0].Title)
+	}
+}
+
+func TestProvider_GetItems_BlankCategoryAcceptsAll(t *testing.T) {
+	rows := [][]any{
+		makeRow("a", 0, "X", 1, 1000, 1, 0, 0, "label-a", "", "/save"),
+		makeRow("b", 0, "Y", 1, 1000, 1, 0, 0, "label-b", "", "/save"),
+	}
+	doer := &stubDoer{respBody: respWithTorrents(t, rows...)}
+	s := newSettings()
+	s.Category = "" // gate disabled
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, s, hadouken.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 2 {
+		t.Errorf("len = %d, want 2 (no category gate)", len(items))
+	}
+}
+
+func TestProvider_GetItems_OutputPathRemapAndAppend(t *testing.T) {
+	rows := [][]any{makeRow("hash", 0, "Show.Folder", 1, 1000, 1, 0, 0, "sonarr-tv", "", "/remote/downloads")}
+	doer := &stubDoer{respBody: respWithTorrents(t, rows...)}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	p.SetRemotePathMapper(stubRemapper{from: "/remote/downloads", to: "/local/dl"})
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 {
+		t.Fatalf("len = %d", len(items))
+	}
+	want := "/local/dl/Show.Folder"
+	if items[0].OutputPath.FullPath() != want {
+		t.Errorf("OutputPath = %q, want %q (remapped + name appended)", items[0].OutputPath.FullPath(), want)
+	}
+}
+
+func TestProvider_GetItems_EtaAndRatioComputations(t *testing.T) {
+	// totalSize=200, downloaded=100, uploaded=50, downRate=10 → eta=20s, ratio=0.5
+	rows := [][]any{makeRow("hash", 1, "X", 200, 500, 100, 50, 10, "sonarr-tv", "", "/save")}
+	doer := &stubDoer{respBody: respWithTorrents(t, rows...)}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 {
+		t.Fatalf("len = %d", len(items))
+	}
+	it := items[0]
+	if it.RemainingTime == nil || *it.RemainingTime <= 0 {
+		t.Errorf("RemainingTime = %v, want positive", it.RemainingTime)
+	}
+	if it.SeedRatio == nil || *it.SeedRatio < 0.49 || *it.SeedRatio > 0.51 {
+		t.Errorf("SeedRatio = %v, want ~0.5", it.SeedRatio)
+	}
+	if it.RemainingSize != 100 {
+		t.Errorf("RemainingSize = %d, want 100", it.RemainingSize)
+	}
+}
+
+func TestProvider_GetItems_ZeroDownloadedYieldsZeroRatio(t *testing.T) {
+	rows := [][]any{makeRow("hash", 1, "X", 100, 500, 0, 0, 10, "sonarr-tv", "", "/save")}
+	doer := &stubDoer{respBody: respWithTorrents(t, rows...)}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].SeedRatio == nil || *items[0].SeedRatio != 0 {
+		t.Errorf("SeedRatio = %v, want pointer to 0", items[0].SeedRatio)
+	}
+}
+
+func TestProvider_GetItems_CleanupGate(t *testing.T) {
+	// Only IsFinished + Paused + RemoveCompletedDownloads=true →
+	// CanMoveFiles=CanBeRemoved=true.
+	rows := [][]any{
+		// (A) finished+paused with RCD=true → cleanup=true
+		makeRow("a", 32, "Done", 100, 1000, 100, 0, 0, "sonarr-tv", "", "/save"),
+		// (B) finished but not paused → cleanup=false
+		makeRow("b", 0, "FinishedNotPaused", 100, 1000, 100, 0, 0, "sonarr-tv", "", "/save"),
+		// (C) paused but not finished → cleanup=false
+		makeRow("c", 32, "PausedNotDone", 100, 500, 50, 0, 0, "sonarr-tv", "", "/save"),
+	}
+	doer := &stubDoer{respBody: respWithTorrents(t, rows...)}
+	def := &downloadclients.DownloadClient{Name: "HD", RemoveCompletedDownloads: true}
+	p := hadouken.New(def, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	gotByID := map[string]*downloadclients.Item{}
+	for _, it := range items {
+		gotByID[strings.ToLower(it.DownloadID)] = it
+	}
+	if !gotByID["a"].CanBeRemoved || !gotByID["a"].CanMoveFiles {
+		t.Errorf("(A) cleanup flags = %+v, want both true", gotByID["a"])
+	}
+	if gotByID["b"].CanBeRemoved || gotByID["b"].CanMoveFiles {
+		t.Errorf("(B) cleanup flags = %+v, want both false", gotByID["b"])
+	}
+	if gotByID["c"].CanBeRemoved || gotByID["c"].CanMoveFiles {
+		t.Errorf("(C) cleanup flags = %+v, want both false", gotByID["c"])
+	}
+}
+
+func TestProvider_GetItems_RemoveCompletedFalseKeepsCleanupOff(t *testing.T) {
+	rows := [][]any{makeRow("a", 32, "Done", 100, 1000, 100, 0, 0, "sonarr-tv", "", "/save")}
+	doer := &stubDoer{respBody: respWithTorrents(t, rows...)}
+	def := &downloadclients.DownloadClient{Name: "HD", RemoveCompletedDownloads: false}
+	p := hadouken.New(def, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if items[0].CanBeRemoved || items[0].CanMoveFiles {
+		t.Errorf("cleanup flags should be false when RemoveCompletedDownloads=false; got %+v", items[0])
+	}
+}
+
+func TestProvider_GetItems_PropagatesProxyError(t *testing.T) {
+	doer := &stubDoer{respStatus: http.StatusInternalServerError, respBody: "boom"}
+	p := hadouken.New(&downloadclients.DownloadClient{Name: "HD"}, newSettings(), hadouken.NewProxy(doer, nil), nil)
+	_, err := p.GetItems(context.Background())
+	if !errors.Is(err, hadouken.ErrUnavailable) {
+		t.Errorf("err = %v, want ErrUnavailable propagated", err)
+	}
+}
+
+// stubRemapper is a minimal [downloadclients.RemotePathMapper] for
+// the GetItems output-path tests.
+type stubRemapper struct{ from, to string }
+
+func (s stubRemapper) RemapRemoteToLocal(_ context.Context, _ string, p ospath.OsPath) (ospath.OsPath, error) {
+	if p.FullPath() == s.from {
+		return ospath.New(s.to), nil
+	}
+	return p, nil
 }
 
 func TestRegistry_RegistersHadouken(t *testing.T) {

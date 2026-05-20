@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // Hadouken is the [downloadclients.Provider] implementation for the
@@ -25,6 +28,12 @@ type Hadouken struct {
 	def      *downloadclients.DownloadClient
 	log      *slog.Logger
 	proxy    *Proxy
+
+	// rpm is the optional remote-path mapper. Production binds the
+	// shared service via [downloadclients.RemotePathMapper]; nil →
+	// the GetItems output uses the Hadouken-side SavePath verbatim
+	// (preserves pre-Phase-6.B behaviour for unmapped setups).
+	rpm downloadclients.RemotePathMapper
 }
 
 // New constructs a Hadouken Provider. proxy=nil binds a default
@@ -108,10 +117,130 @@ func (h *Hadouken) Download(ctx context.Context, req *downloadclients.GrabReques
 	}
 }
 
-// GetItems is a STUB at 5.J62. Follow-up slice ports
-// [Proxy.GetTorrents] + state-table conversion + Category filter.
-func (h *Hadouken) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return []*downloadclients.Item{}, nil
+// GetItems ports `Hadouken.GetItems` at C# `Hadouken.cs:39-104`.
+// Walks every torrent the Hadouken endpoint reports via
+// [Proxy.GetTorrents], applies the Settings.Category label gate,
+// composes the output path (RemotePathMapper-translated SavePath +
+// torrent.Name), and projects each torrent into a
+// [downloadclients.Item] with the status table at C# `:73-93`.
+//
+// Status table (priority order, first match wins):
+//
+//   - Error non-empty → Warning + Message=Error
+//   - IsFinished AND State != CheckingFiles → Completed
+//   - State == QueuedForChecking → Queued
+//   - State == Paused → Paused
+//   - default → Downloading
+//
+// CanMoveFiles + CanBeRemoved are both true ONLY when
+// `RemoveCompletedDownloads AND IsFinished AND State == Paused`
+// (matches C# `:95-98` — Hadouken treats Paused-after-finish as the
+// "safe to clean up" signal).
+func (h *Hadouken) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
+	if h.proxy == nil {
+		return []*downloadclients.Item{}, nil
+	}
+	torrents, err := h.proxy.GetTorrents(ctx, h.settings)
+	if err != nil {
+		return nil, fmt.Errorf("hadouken: GetTorrents: %w", err)
+	}
+	info := h.itemClientInfo()
+	out := make([]*downloadclients.Item, 0, len(torrents))
+	category := strings.TrimSpace(h.settings.Category)
+	for _, t := range torrents {
+		if category != "" && t.Label != category {
+			continue
+		}
+		out = append(out, h.toItem(ctx, info, t))
+	}
+	return out, nil
+}
+
+// toItem projects one [Torrent] into a [downloadclients.Item].
+// Extracted so the GetItems loop stays terse + tests can drive
+// individual rows.
+func (h *Hadouken) toItem(ctx context.Context, info *downloadclients.ItemClientInfo, t *Torrent) *downloadclients.Item {
+	outputPath := ospath.New(t.SavePath)
+	if h.rpm != nil && strings.TrimSpace(t.SavePath) != "" {
+		if mapped, err := h.rpm.RemapRemoteToLocal(ctx, h.settings.Host, outputPath); err == nil {
+			outputPath = mapped
+		} else {
+			h.log.Debug("hadouken: RemapRemoteToLocal failed", "savePath", t.SavePath, "err", err)
+		}
+	}
+	if strings.TrimSpace(t.Name) != "" {
+		outputPath = ospath.New(filepath.Join(outputPath.FullPath(), t.Name))
+	}
+
+	var eta time.Duration
+	if t.DownloadRate > 0 && t.TotalSize > 0 {
+		eta = time.Duration(float64(t.TotalSize)/float64(t.DownloadRate)) * time.Second
+	}
+	remaining := eta // RemainingTime in C# is TimeSpan; eta defaults to zero already.
+
+	var seedRatio *float64
+	if t.DownloadedBytes > 0 {
+		ratio := float64(t.UploadedBytes) / float64(t.DownloadedBytes)
+		seedRatio = &ratio
+	} else {
+		zero := 0.0
+		seedRatio = &zero
+	}
+
+	item := &downloadclients.Item{
+		DownloadClientInfo: info,
+		DownloadID:         strings.ToUpper(t.InfoHash),
+		OutputPath:         outputPath,
+		RemainingSize:      t.TotalSize - t.DownloadedBytes,
+		RemainingTime:      &remaining,
+		Title:              t.Name,
+		TotalSize:          t.TotalSize,
+		SeedRatio:          seedRatio,
+	}
+
+	switch {
+	case strings.TrimSpace(t.Error) != "":
+		item.Status = downloadclients.DownloadItemStatusWarning
+		item.Message = t.Error
+	case t.IsFinished && t.State != TorrentStateCheckingFiles:
+		item.Status = downloadclients.DownloadItemStatusCompleted
+	case t.State == TorrentStateQueuedForChecking:
+		item.Status = downloadclients.DownloadItemStatusQueued
+	case t.State == TorrentStatePaused:
+		item.Status = downloadclients.DownloadItemStatusPaused
+	default:
+		item.Status = downloadclients.DownloadItemStatusDownloading
+	}
+
+	canCleanup := info != nil && info.RemoveCompletedDownloads &&
+		t.IsFinished && t.State == TorrentStatePaused
+	item.CanMoveFiles = canCleanup
+	item.CanBeRemoved = canCleanup
+	return item
+}
+
+// itemClientInfo mirrors C# `DownloadClientItemClientInfo.FromDownloadClient(this, false)`.
+func (h *Hadouken) itemClientInfo() *downloadclients.ItemClientInfo {
+	info := &downloadclients.ItemClientInfo{
+		Protocol: h.Protocol(),
+		Type:     Implementation,
+		Name:     h.Name(),
+	}
+	if h.def != nil {
+		info.ID = h.def.ID
+		info.Name = h.def.Name
+		info.RemoveCompletedDownloads = h.def.RemoveCompletedDownloads
+	}
+	return info
+}
+
+// SetRemotePathMapper binds the optional [downloadclients.RemotePathMapper]
+// that GetItems consults to translate Hadouken-side SavePath into
+// Sonarr-side paths. Mirrors the Transmission/qBittorrent
+// SetRemotePathMapper hook the registry constructor uses at
+// Phase 6.B wiring time.
+func (h *Hadouken) SetRemotePathMapper(rpm downloadclients.RemotePathMapper) {
+	h.rpm = rpm
 }
 
 // GetImportItem is the C# base passthrough.
@@ -273,7 +402,11 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	if l, ok := deps.Logger.(*slog.Logger); ok {
 		log = l
 	}
-	return New(def, settings, nil, log), nil
+	h := New(def, settings, nil, log)
+	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
+		h.SetRemotePathMapper(rpm)
+	}
+	return h, nil
 }
 
 func init() {

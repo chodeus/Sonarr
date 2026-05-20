@@ -208,6 +208,195 @@ func (p *Proxy) AddTorrentFile(ctx context.Context, s Settings, contents []byte)
 	return result, nil
 }
 
+// TorrentState ports C# `HadoukenTorrentState` at
+// `Models/HadoukenTorrentState.cs`. The Hadouken server sends the
+// state as an integer bitmask; [parseState] derives the discrete
+// value below. Numeric values match the C# enum for wire-stable
+// debugging — though the Go port never serialises them.
+type TorrentState int
+
+// TorrentState values mirror the C# enum order.
+const (
+	TorrentStateUnknown             TorrentState = 0
+	TorrentStateQueuedForChecking   TorrentState = 1
+	TorrentStateCheckingFiles       TorrentState = 2
+	TorrentStateDownloadingMetadata TorrentState = 3
+	TorrentStateDownloading         TorrentState = 4
+	TorrentStateFinished            TorrentState = 5
+	TorrentStateSeeding             TorrentState = 6
+	TorrentStateAllocating          TorrentState = 7
+	TorrentStateCheckingResumeData  TorrentState = 8
+	TorrentStatePaused              TorrentState = 9
+)
+
+// Torrent is one entry from the `webui.list` tuple-row payload.
+// Mirrors C# `HadoukenTorrent` at `Models/HadoukenTorrent.cs:3-19`.
+// IsFinished is computed by [mapTorrent] post-parse (Progress >=
+// 1000 — Hadouken reports per-mille).
+type Torrent struct {
+	InfoHash        string
+	Progress        float64
+	Name            string
+	Label           string
+	SavePath        string
+	State           TorrentState
+	IsFinished      bool
+	TotalSize       int64
+	DownloadedBytes int64
+	UploadedBytes   int64
+	DownloadRate    int64
+	Error           string
+}
+
+// GetTorrents fires `webui.list` and returns the parsed Torrent
+// slice. Mirrors C# `HadoukenProxy.GetTorrents` at
+// `HadoukenProxy.cs:38-43` + the tuple-row mapper at `:111-160`.
+// Per-row mapping errors are logged and the row is skipped — same
+// behaviour as the C# `try/catch` at `:154-156`.
+func (p *Proxy) GetTorrents(ctx context.Context, s Settings) ([]*Torrent, error) {
+	var resp struct {
+		Torrents [][]any `json:"torrents"`
+	}
+	if err := p.call(ctx, s, "webui.list", []any{}, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]*Torrent, 0, len(resp.Torrents))
+	for i, row := range resp.Torrents {
+		t, err := mapTorrent(row)
+		if err != nil {
+			p.log.Debug("hadouken: failed to map torrent row", "index", i, "err", err)
+			continue
+		}
+		t.IsFinished = t.Progress >= 1000
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+// mapTorrent projects one webui.list tuple row into a [Torrent].
+// Mirrors C# `MapTorrent` at `HadoukenProxy.cs:133-160`. Column
+// indices match the C# bracket reads verbatim:
+//
+//	[0]=InfoHash [1]=StateBitmask [2]=Name [3]=TotalSize [4]=Progress
+//	[5]=DownloadedBytes [6]=UploadedBytes [9]=DownloadRate
+//	[11]=Label [21]=Error [26]=SavePath
+//
+// Indices unused by Sonarr (7, 8, 10, 12-20, 22-25, 27+) are
+// skipped — matches C# `MapTorrent` which only reads the columns
+// above. A row shorter than the highest required index (26) is a
+// hard failure (returns error → caller skips the row).
+func mapTorrent(row []any) (*Torrent, error) {
+	if len(row) < 27 {
+		return nil, fmt.Errorf("row has %d columns, need at least 27", len(row))
+	}
+	stateBitmask, err := readInt(row[1])
+	if err != nil {
+		return nil, fmt.Errorf("state column: %w", err)
+	}
+	totalSize, err := readInt64(row[3])
+	if err != nil {
+		return nil, fmt.Errorf("totalSize column: %w", err)
+	}
+	progress, err := readFloat64(row[4])
+	if err != nil {
+		return nil, fmt.Errorf("progress column: %w", err)
+	}
+	downloaded, err := readInt64(row[5])
+	if err != nil {
+		return nil, fmt.Errorf("downloadedBytes column: %w", err)
+	}
+	uploaded, err := readInt64(row[6])
+	if err != nil {
+		return nil, fmt.Errorf("uploadedBytes column: %w", err)
+	}
+	downRate, err := readInt64(row[9])
+	if err != nil {
+		return nil, fmt.Errorf("downloadRate column: %w", err)
+	}
+	return &Torrent{
+		InfoHash:        readString(row[0]),
+		State:           parseState(stateBitmask),
+		Name:            readString(row[2]),
+		TotalSize:       totalSize,
+		Progress:        progress,
+		DownloadedBytes: downloaded,
+		UploadedBytes:   uploaded,
+		DownloadRate:    downRate,
+		Label:           readString(row[11]),
+		Error:           readString(row[21]),
+		SavePath:        readString(row[26]),
+	}, nil
+}
+
+// parseState ports the C# bitmask→enum table at
+// `HadoukenProxy.cs:162-182`. The bits are tested in priority
+// order: Downloading > CheckingFiles > Paused > QueuedForChecking
+// > Unknown — matching the C# if/else-if chain.
+func parseState(state int) TorrentState {
+	switch {
+	case state&1 == 1:
+		return TorrentStateDownloading
+	case state&2 == 2:
+		return TorrentStateCheckingFiles
+	case state&32 == 32:
+		return TorrentStatePaused
+	case state&64 == 64:
+		return TorrentStateQueuedForChecking
+	default:
+		return TorrentStateUnknown
+	}
+}
+
+// readString coerces a JSON value into a string. Maps nil → ""
+// (matches C# `Convert.ToString(null) == string.Empty`).
+func readString(v any) string {
+	if v == nil {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
+}
+
+// readInt coerces a JSON-numeric value into int. Empty / non-
+// numeric → 0 (matches C# `Convert.ToInt32(null/string) == 0` for
+// the wire shapes Hadouken actually emits — integers come through
+// as JSON numbers, never strings).
+func readInt(v any) (int, error) {
+	f, err := readFloat64(v)
+	if err != nil {
+		return 0, err
+	}
+	return int(f), nil
+}
+
+// readInt64 coerces a JSON-numeric value into int64.
+func readInt64(v any) (int64, error) {
+	f, err := readFloat64(v)
+	if err != nil {
+		return 0, err
+	}
+	return int64(f), nil
+}
+
+// readFloat64 coerces a JSON-numeric value into float64. nil → 0;
+// anything else that isn't a float64 (Go json.Unmarshal's only
+// numeric target for `any`) is an error.
+func readFloat64(v any) (float64, error) {
+	if v == nil {
+		return 0, nil
+	}
+	switch x := v.(type) {
+	case float64:
+		return x, nil
+	case int:
+		return float64(x), nil
+	case int64:
+		return float64(x), nil
+	default:
+		return 0, fmt.Errorf("expected number, got %T", v)
+	}
+}
+
 // AddTorrentUri fires `webui.addTorrent` with a URL (magnet link
 // or HTTP(S) DownloadURL). Mirrors C# `HadoukenProxy.AddTorrentUri`
 // at `HadoukenProxy.cs:55-58`. C# discards the result string and
