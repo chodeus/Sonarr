@@ -870,9 +870,19 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// so this subscriber actively writes audit rows for new-download
 	// imports. The handler gates on NewDownload to skip rescans /
 	// manual imports (matches C# `HistoryService.cs:198-201`).
+	//
+	// Slice 5.J128: the J127 FindDownloadId backfill is wired here via
+	// WithDownloadIDLookup(historySvc). When an EpisodeImportedEvent
+	// carries a whitespace-empty DownloadID — manual / library-rescan
+	// imports of files Sonarr originally grabbed — the handler
+	// consults historySvc.FindDownloadID to recover a still-downloading
+	// grab from prior Grabbed history rows, preserving the grab→import
+	// audit-log link that the C# tree maintains at
+	// `HistoryService.cs:203-208`.
 	messaging.Subscribe(bus, "history.HandleEpisodeImported",
 		func(ctx context.Context, ev episodeimport.EpisodeImportedEvent) error {
-			return historyhandlers.HandleEpisodeImported(ctx, historySvc, &ev)
+			return historyhandlers.HandleEpisodeImported(ctx, historySvc, &ev,
+				historyhandlers.WithDownloadIDLookup(historySvc))
 		})
 
 	// Slice 3.AV: history IHandle<DownloadFailedEvent> subscriber.
