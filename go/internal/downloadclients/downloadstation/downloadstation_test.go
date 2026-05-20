@@ -587,3 +587,158 @@ func TestRegistry_RegistersTorrentDownloadStation(t *testing.T) {
 		t.Errorf("registry missing (%s, %s)", downloadstation.TorrentImplementation, downloadstation.ConfigContract)
 	}
 }
+
+// ---- UsenetDownloadStation half (5.J77) -------------------------
+
+func TestUsenetIdentity(t *testing.T) {
+	p := downloadstation.NewUsenet(&downloadclients.DownloadClient{Name: "UDS"}, newSettings(), nil, nil)
+	if p.Name() != "Download Station" {
+		t.Errorf("Name = %q", p.Name())
+	}
+	if p.Protocol() != indexers.DownloadProtocolUsenet {
+		t.Errorf("Protocol = %v, want Usenet", p.Protocol())
+	}
+}
+
+func TestUsenet_Download_HappyPath_MultipartShape(t *testing.T) {
+	doer := newMultipartCapture()
+	queueAPIDiscovery(doer.scripted, 3)
+	doer.scripted.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"SID"}}`)
+	// create POST response.
+	doer.scripted.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{}}`)
+	// post-add list.
+	doer.scripted.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[
+		{"id":"dbid_99","title":"Show.S01E01","type":"NZB","status":"downloading","additional":{"detail":{"uri":"Show.S01E01.nzb"}}}
+	]}}`)
+
+	p := downloadstation.NewUsenet(&downloadclients.DownloadClient{Name: "UDS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	id, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "Show.S01E01",
+		NzbBody:      []byte("FAKE-NZB-PAYLOAD"),
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if id != "dbid_99" {
+		t.Errorf("id = %q, want dbid_99", id)
+	}
+	// Verify the create call was a multipart POST.
+	if doer.lastCreateContentType == "" || !strings.HasPrefix(doer.lastCreateContentType, "multipart/form-data;") {
+		t.Errorf("create Content-Type = %q, want multipart/form-data;...", doer.lastCreateContentType)
+	}
+	if !strings.Contains(string(doer.lastCreateBody), "FAKE-NZB-PAYLOAD") {
+		t.Errorf("multipart body missing NZB payload bytes")
+	}
+	if !strings.Contains(string(doer.lastCreateBody), `name="file"`) {
+		t.Errorf("multipart body missing file form-field")
+	}
+	if !strings.Contains(string(doer.lastCreateBody), `filename="Show.S01E01.nzb"`) {
+		t.Errorf("multipart body missing filename")
+	}
+	if !strings.Contains(string(doer.lastCreateBody), `name="_sid"`) {
+		t.Errorf("multipart body missing _sid form-field")
+	}
+}
+
+func TestUsenet_Download_EmptyBody(t *testing.T) {
+	p := downloadstation.NewUsenet(&downloadclients.DownloadClient{Name: "UDS"}, newSettings(), downloadstation.NewProxy(newScripted(), nil, nil), nil)
+	if _, err := p.Download(context.Background(), &downloadclients.GrabRequest{ReleaseTitle: "X"}); err == nil {
+		t.Fatal("err = nil, want empty-body error")
+	}
+}
+
+func TestUsenet_Download_NoMatchSurfacesError(t *testing.T) {
+	doer := newMultipartCapture()
+	queueAPIDiscovery(doer.scripted, 3)
+	doer.scripted.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"SID"}}`)
+	doer.scripted.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{}}`)
+	doer.scripted.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[]}}`)
+	p := downloadstation.NewUsenet(&downloadclients.DownloadClient{Name: "UDS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	_, err := p.Download(context.Background(), &downloadclients.GrabRequest{ReleaseTitle: "X", NzbBody: []byte("x")})
+	if err == nil {
+		t.Fatal("err = nil, want no-matching-task error")
+	}
+}
+
+func TestUsenet_GetItems_FiltersToNZB(t *testing.T) {
+	doer := newScripted()
+	queueAuthAndDiscovery(doer)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[
+		{"id":"n","title":"NzbItem","type":"NZB","status":"downloading","size":100,"additional":{"detail":{"destination":"downloads"},"transfer":{"size_downloaded":"50","speed_download":"10"}}},
+		{"id":"b","title":"BtItem","type":"BT","status":"downloading","additional":{"detail":{"destination":"downloads"},"transfer":{}}}
+	]}}`)
+	p := downloadstation.NewUsenet(&downloadclients.DownloadClient{Name: "UDS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 || items[0].DownloadID != "n" {
+		t.Errorf("items = %+v, want only NZB", items)
+	}
+	if items[0].SeedRatio != nil {
+		t.Errorf("SeedRatio = %v, want nil for usenet", items[0].SeedRatio)
+	}
+}
+
+func TestUsenet_GetItems_CleanupFlagsAlwaysTrue(t *testing.T) {
+	doer := newScripted()
+	queueAuthAndDiscovery(doer)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[
+		{"id":"x","title":"X","type":"NZB","status":"downloading","additional":{"detail":{"destination":"downloads"},"transfer":{}}}
+	]}}`)
+	// Use RemoveCompletedDownloads=false to confirm the Usenet
+	// half ignores it (always sets the flags true, unlike the
+	// torrent half).
+	def := &downloadclients.DownloadClient{Name: "UDS", RemoveCompletedDownloads: false}
+	p := downloadstation.NewUsenet(def, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	items, _ := p.GetItems(context.Background())
+	if len(items) != 1 || !items[0].CanBeRemoved || !items[0].CanMoveFiles {
+		t.Errorf("items = %+v, want cleanup flags true regardless of RCD", items)
+	}
+}
+
+func TestUsenet_RemoveItem_HappyPath(t *testing.T) {
+	doer := newScripted()
+	queueAuthAndDiscovery(doer)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{}}`)
+	p := downloadstation.NewUsenet(&downloadclients.DownloadClient{Name: "UDS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "dbid_42"}, false); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestUsenet_MarkItemAsImported_ReturnsUnsupported(t *testing.T) {
+	p := downloadstation.NewUsenet(&downloadclients.DownloadClient{Name: "UDS"}, newSettings(), downloadstation.NewProxy(newScripted(), nil, nil), nil)
+	if err := p.MarkItemAsImported(context.Background(), &downloadclients.Item{}); !errors.Is(err, downloadclients.ErrMarkAsImportedUnsupported) {
+		t.Errorf("err = %v, want ErrMarkAsImportedUnsupported", err)
+	}
+}
+
+func TestRegistry_RegistersUsenetDownloadStation(t *testing.T) {
+	reg := downloadclients.Default()
+	if !reg.Has(downloadstation.UsenetImplementation, downloadstation.ConfigContract) {
+		t.Errorf("registry missing (%s, %s)", downloadstation.UsenetImplementation, downloadstation.ConfigContract)
+	}
+}
+
+// multipartCaptureDoer is a thin scriptedDoer wrapper that grabs
+// the body + Content-Type of the multipart create POST so the
+// shape can be asserted.
+type multipartCaptureDoer struct {
+	scripted              *scriptedDoer
+	lastCreateBody        []byte
+	lastCreateContentType string
+}
+
+func newMultipartCapture() *multipartCaptureDoer {
+	return &multipartCaptureDoer{scripted: newScripted()}
+}
+
+func (m *multipartCaptureDoer) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPost && req.URL.Path == "/webapi/DownloadStation/task.cgi" {
+		body, _ := io.ReadAll(req.Body)
+		m.lastCreateBody = body
+		m.lastCreateContentType = req.Header.Get("Content-Type")
+		// Reset body for downstream pseudo-handling — scriptedDoer
+		// doesn't read the body, but if it did this would be needed.
+		req.Body = io.NopCloser(strings.NewReader(""))
+	}
+	return m.scripted.Do(req)
+}

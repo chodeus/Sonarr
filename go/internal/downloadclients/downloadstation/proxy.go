@@ -1,13 +1,16 @@
 package downloadstation
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"sync"
@@ -493,6 +496,91 @@ type Task struct {
 	Status      TaskStatus        `json:"status"`
 	StatusExtra map[string]string `json:"status_extra"`
 	Additional  TaskAdditional    `json:"additional"`
+}
+
+// AddTaskFromData fires `SYNO.DownloadStation.Task` create method
+// v2 with a multipart POST carrying the .torrent / .nzb bytes as a
+// form-file. Mirrors C# `DownloadStationTaskProxyV1.AddTaskFromData`
+// at `:24-36`.
+//
+// Body shape (multipart form-data, all parameters as form fields):
+//
+//	api=SYNO.DownloadStation.Task
+//	version=2
+//	method=create
+//	_sid=<SID>
+//	destination=<path>       (only when non-empty)
+//	file=@<filename> (file part with body bytes)
+//
+// Used by both the Torrent half's torrent-file arm (5.J78 follow-up)
+// and the Usenet half's nzb-file arm.
+func (p *Proxy) AddTaskFromData(ctx context.Context, s Settings, contents []byte, filename, destination string) error {
+	api, err := p.GetAPIInfo(ctx, s, apiDownloadStationName)
+	if err != nil {
+		return fmt.Errorf("downloadstation: discover %s: %w", apiDownloadStationName, err)
+	}
+	version := 2
+	if version < api.MinVersion || version > api.MaxVersion {
+		return fmt.Errorf("%w: %s version %d not supported (server: %d..%d)",
+			ErrUnavailable, apiDownloadStationName, version, api.MinVersion, api.MaxVersion)
+	}
+	sid, err := p.Authenticate(ctx, s, false)
+	if err != nil {
+		return err
+	}
+
+	body := &bytes.Buffer{}
+	mw := multipart.NewWriter(body)
+	addField := func(name, value string) error {
+		hdr := textproto.MIMEHeader{}
+		hdr.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q`, name))
+		part, err := mw.CreatePart(hdr)
+		if err != nil {
+			return err
+		}
+		_, err = part.Write([]byte(value))
+		return err
+	}
+	if err := addField("api", api.Name); err != nil {
+		return fmt.Errorf("downloadstation: multipart api field: %w", err)
+	}
+	if err := addField("version", fmt.Sprintf("%d", version)); err != nil {
+		return fmt.Errorf("downloadstation: multipart version field: %w", err)
+	}
+	if err := addField("method", "create"); err != nil {
+		return fmt.Errorf("downloadstation: multipart method field: %w", err)
+	}
+	if err := addField("_sid", sid); err != nil {
+		return fmt.Errorf("downloadstation: multipart _sid field: %w", err)
+	}
+	if strings.TrimSpace(destination) != "" {
+		if err := addField("destination", destination); err != nil {
+			return fmt.Errorf("downloadstation: multipart destination field: %w", err)
+		}
+	}
+	fileHdr := textproto.MIMEHeader{}
+	fileHdr.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, "file", filename))
+	fileHdr.Set("Content-Type", "application/octet-stream")
+	part, err := mw.CreatePart(fileHdr)
+	if err != nil {
+		return fmt.Errorf("downloadstation: multipart file part: %w", err)
+	}
+	if _, err := part.Write(contents); err != nil {
+		return fmt.Errorf("downloadstation: write multipart file bytes: %w", err)
+	}
+	if err := mw.Close(); err != nil {
+		return fmt.Errorf("downloadstation: close multipart writer: %w", err)
+	}
+
+	full := fmt.Sprintf("%s/%s", baseURL(s), api.Path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, full, body)
+	if err != nil {
+		return fmt.Errorf("downloadstation: build %s create POST: %w", apiDownloadStationName, err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	_, err = p.execute(req, fmt.Sprintf("%s create", apiDownloadStationName), apiDownloadStationName)
+	return err
 }
 
 // AddTaskFromURL fires `SYNO.DownloadStation.Task` create method
