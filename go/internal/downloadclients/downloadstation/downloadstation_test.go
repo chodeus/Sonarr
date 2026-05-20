@@ -965,3 +965,127 @@ func (m *multipartCaptureDoer) Do(req *http.Request) (*http.Response, error) {
 	}
 	return m.scripted.Do(req)
 }
+
+// --- J120 FileStation proxy tests --------------------------------
+
+// queueAPIDiscoveryWithFileStation queues a SYNO.API.Info response
+// advertising auth + DownloadStation.Task + SYNO.FileStation.List
+// so callers exercising the J120 GetFileInfo / GetSharedFolderMapping
+// paths can authenticate + discover the FileStation API in one
+// round-trip.
+func queueAPIDiscoveryWithFileStation(doer *scriptedDoer) {
+	body := `{"success":true,"data":{
+		"SYNO.API.Auth":{"path":"auth.cgi","maxVersion":3,"minVersion":1},
+		"SYNO.DownloadStation.Task":{"path":"DownloadStation/task.cgi","maxVersion":3,"minVersion":1},
+		"SYNO.FileStation.List":{"path":"FileStation/file_share.cgi","maxVersion":2,"minVersion":1}
+	}}`
+	doer.queue("/webapi/query.cgi", body)
+}
+
+func TestProxy_GetFileInfo_HappyPath(t *testing.T) {
+	doer := newScripted()
+	queueAPIDiscoveryWithFileStation(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"SID"}}`)
+	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":true,"data":{"files":[
+		{"isdir":true,"name":"data","path":"/data","additional":{"real_path":"/volume1/data"}}
+	]}}`)
+
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	info, err := proxy.GetFileInfo(context.Background(), newSettings(), "/data")
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if info.Name != "data" || info.Path != "/data" || !info.IsDir {
+		t.Errorf("info = %+v, want name=data path=/data isdir=true", info)
+	}
+	if _, ok := info.Additional["real_path"]; !ok {
+		t.Errorf("Additional missing real_path: %+v", info.Additional)
+	}
+}
+
+func TestProxy_GetFileInfo_RequestShape(t *testing.T) {
+	doer := newScripted()
+	queueAPIDiscoveryWithFileStation(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":true,"data":{"files":[{"name":"x","path":"/x"}]}}`)
+
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	if _, err := proxy.GetFileInfo(context.Background(), newSettings(), "/data"); err != nil {
+		t.Fatal(err)
+	}
+	var fs *scriptedCall
+	for i := range doer.calls {
+		if doer.calls[i].path == "/webapi/FileStation/file_share.cgi" {
+			fs = &doer.calls[i]
+		}
+	}
+	if fs == nil {
+		t.Fatal("no FileStation call recorded")
+	}
+	// Match C# request shape: api=SYNO.FileStation.List, version=2,
+	// method=getinfo, path=["/data"], additional=["real_path"].
+	if fs.query.Get("api") != "SYNO.FileStation.List" {
+		t.Errorf("api = %q, want SYNO.FileStation.List", fs.query.Get("api"))
+	}
+	if fs.query.Get("version") != "2" {
+		t.Errorf("version = %q, want 2", fs.query.Get("version"))
+	}
+	if fs.query.Get("method") != "getinfo" {
+		t.Errorf("method = %q, want getinfo", fs.query.Get("method"))
+	}
+	if got := fs.query.Get("path"); got != `["/data"]` {
+		t.Errorf("path = %q, want [\"/data\"]", got)
+	}
+	if got := fs.query.Get("additional"); got != `["real_path"]` {
+		t.Errorf("additional = %q, want [\"real_path\"]", got)
+	}
+}
+
+func TestProxy_GetFileInfo_EmptyFilesArrayErrors(t *testing.T) {
+	doer := newScripted()
+	queueAPIDiscoveryWithFileStation(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":true,"data":{"files":[]}}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	_, err := proxy.GetFileInfo(context.Background(), newSettings(), "/data")
+	if err == nil {
+		t.Fatal("err = nil, want non-empty-files error")
+	}
+}
+
+func TestProxy_GetSharedFolderMapping_HappyPath(t *testing.T) {
+	doer := newScripted()
+	queueAPIDiscoveryWithFileStation(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":true,"data":{"files":[
+		{"isdir":true,"name":"data","path":"/data","additional":{"real_path":"/volume1/data"}}
+	]}}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	mapping, err := proxy.GetSharedFolderMapping(context.Background(), newSettings(), "/data")
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if mapping.SharedFolder != "/data" {
+		t.Errorf("SharedFolder = %q, want /data", mapping.SharedFolder)
+	}
+	if mapping.PhysicalPath != "/volume1/data" {
+		t.Errorf("PhysicalPath = %q, want /volume1/data", mapping.PhysicalPath)
+	}
+	if got, want := mapping.String(), "/data -> /volume1/data"; got != want {
+		t.Errorf("String() = %q, want %q", got, want)
+	}
+}
+
+func TestProxy_GetSharedFolderMapping_MissingRealPathErrors(t *testing.T) {
+	doer := newScripted()
+	queueAPIDiscoveryWithFileStation(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":true,"data":{"files":[
+		{"isdir":true,"name":"data","path":"/data","additional":{}}
+	]}}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	_, err := proxy.GetSharedFolderMapping(context.Background(), newSettings(), "/data")
+	if err == nil {
+		t.Fatal("err = nil, want missing-real_path error")
+	}
+}

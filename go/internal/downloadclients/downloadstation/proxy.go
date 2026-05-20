@@ -42,6 +42,12 @@ const (
 	apiAuthName             = "SYNO.API.Auth"
 	apiDownloadStationName  = "SYNO.DownloadStation.Task"
 	apiDownloadStation2Name = "SYNO.DownloadStation2.Task"
+	// apiFileStationListName surfaces the SYNO.FileStation.List API
+	// that GetInfoFileOrDirectory + GetSharedFolderMapping (J120
+	// onward) drive. Used by the J121 SharedFolderResolver +
+	// J122 DownloadStation.TestOutputPath + deleteData disk arm
+	// — translating SharedFolder names to physical-path mounts.
+	apiFileStationListName = "SYNO.FileStation.List"
 )
 
 // APIInfo ports C# `DiskStationApiInfo` at `:5-32`. The Path setter
@@ -970,6 +976,109 @@ func (p *Proxy) callTaskAPI(ctx context.Context, s Settings, apiName, method str
 		return nil, fmt.Errorf("downloadstation: build %s %s: %w", apiName, method, err)
 	}
 	return p.execute(req, fmt.Sprintf("%s %s", apiName, method), apiName)
+}
+
+// FileInfo ports C# `FileStationListFileInfoResponse` at
+// `Responses/FileStationListFileInfoResponse.cs:5-11`. The
+// Additional map carries arbitrary per-request fields the caller
+// requested via the `additional=[...]` query param; for the J120
+// GetSharedFolderMapping use case, only `real_path` is read.
+type FileInfo struct {
+	IsDir      bool                       `json:"isdir"`
+	Name       string                     `json:"name"`
+	Path       string                     `json:"path"`
+	Additional map[string]json.RawMessage `json:"additional"`
+}
+
+// fileStationListResponse wraps the SYNO.FileStation.List `getinfo`
+// payload at C# `Responses/FileStationListResponse.cs:5-9`.
+type fileStationListResponse struct {
+	Files []FileInfo `json:"files"`
+}
+
+// SharedFolderMapping ports C# `SharedFolderMapping` at
+// `DownloadStation/SharedFolderMapping.cs:5-21`. Carries a
+// SharedFolder name (e.g. `/data` or `data`) and the physical path
+// the Synology box maps it to (e.g. `/volume1/data`). The J121
+// SharedFolderResolver port uses this to translate the SharedFolder
+// component of a DownloadStation download-directory back to the
+// physical Sonarr-visible mount point.
+type SharedFolderMapping struct {
+	SharedFolder string
+	PhysicalPath string
+}
+
+// String renders the mapping in the same format as the C# tree's
+// `SharedFolderMapping.ToString` at `:16-19` — useful for log lines.
+func (m SharedFolderMapping) String() string {
+	return fmt.Sprintf("%s -> %s", m.SharedFolder, m.PhysicalPath)
+}
+
+// GetFileInfo fires SYNO.FileStation.List `getinfo` for the supplied
+// path. Mirrors C# `FileStationProxy.GetInfoFileOrDirectory` at
+// `Proxies/FileStationProxy.cs:33-42`.
+//
+// The `additional=["real_path"]` query param asks the Synology API
+// to populate FileInfo.Additional with the physical-path entry —
+// the J120 GetSharedFolderMapping caller pulls it out for the
+// SharedFolderMapping projection. Other Additional keys aren't
+// consumed by Sonarr today.
+//
+// Returns the FIRST entry from the response (matches C# `:41`
+// `response.Data.Files.First()`); a missing or empty list surfaces
+// an error so callers can distinguish "API reachable but no files"
+// from a transport failure.
+func (p *Proxy) GetFileInfo(ctx context.Context, s Settings, path string) (*FileInfo, error) {
+	paths, err := json.Marshal([]string{path})
+	if err != nil {
+		return nil, fmt.Errorf("downloadstation: marshal FileStation path: %w", err)
+	}
+	q := url.Values{}
+	q.Set("path", string(paths))
+	q.Set("additional", `["real_path"]`)
+	body, err := p.callTaskAPI(ctx, s, apiFileStationListName, "getinfo", 2, q)
+	if err != nil {
+		return nil, err
+	}
+	var resp fileStationListResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("downloadstation: unmarshal SYNO.FileStation.List getinfo: %w", err)
+	}
+	if len(resp.Files) == 0 {
+		return nil, fmt.Errorf("%w: SYNO.FileStation.List getinfo returned no entries for %q", ErrRPC, path)
+	}
+	info := resp.Files[0]
+	return &info, nil
+}
+
+// GetSharedFolderMapping fires SYNO.FileStation.List `getinfo` for
+// the supplied SharedFolder and extracts the `real_path` Additional
+// field to produce a SharedFolderMapping. Mirrors C#
+// `FileStationProxy.GetSharedFolderMapping` at
+// `Proxies/FileStationProxy.cs:24-31`.
+//
+// Returns an error when GetFileInfo fails OR when the response has
+// no `real_path` entry in Additional — the J121 SharedFolderResolver
+// caller propagates these as "couldn't resolve" so the GetStatus /
+// TestOutputPath arms surface a useful failure rather than a silent
+// missing-mapping.
+func (p *Proxy) GetSharedFolderMapping(ctx context.Context, s Settings, sharedFolder string) (*SharedFolderMapping, error) {
+	info, err := p.GetFileInfo(ctx, s, sharedFolder)
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := info.Additional["real_path"]
+	if !ok {
+		return nil, fmt.Errorf("%w: SYNO.FileStation.List getinfo for %q returned no real_path", ErrRPC, sharedFolder)
+	}
+	var physicalPath string
+	if err := json.Unmarshal(raw, &physicalPath); err != nil {
+		return nil, fmt.Errorf("downloadstation: unmarshal real_path for %q: %w", sharedFolder, err)
+	}
+	return &SharedFolderMapping{
+		SharedFolder: sharedFolder,
+		PhysicalPath: physicalPath,
+	}, nil
 }
 
 // ErrUnavailable wraps every transport-level failure (network
