@@ -45,6 +45,13 @@ type TorrentDownloadStation struct {
 	// available; tests may override via [SetSharedFolderResolver].
 	// Slice 5.J122 wire-up.
 	resolver *SharedFolderResolver
+
+	// disk is the optional [downloadclients.DiskProvider] consumed
+	// by RemoveItem's deleteData arm. Used to call DeleteFolder
+	// against the resolved physical path before the SYNO.DownloadStation.Task
+	// remove RPC. Slice 5.J124 wire-up — same pattern as J111
+	// rTorrent + J112 Aria2 + J116 SAB.
+	disk downloadclients.DiskProvider
 }
 
 // New constructs a TorrentDownloadStation Provider. proxy=nil
@@ -396,12 +403,22 @@ func (t *TorrentDownloadStation) SetRemotePathMapper(rpm downloadclients.RemoteP
 }
 
 // SetSharedFolderResolver overrides the SharedFolderResolver that
-// GetStatus (+ future TestOutputPath + deleteData disk arm) consult
+// GetStatus + TestOutputPath + the RemoveItem deleteData arm consult
 // to translate DSM SharedFolder-prefixed paths to physical paths.
 // nil disables the resolver — GetStatus falls back to IsLocalhost-only.
-// Slice 5.J122.
+// Slice 5.J122 (extended by J123 + J124).
 func (t *TorrentDownloadStation) SetSharedFolderResolver(r *SharedFolderResolver) {
 	t.resolver = r
+}
+
+// SetDiskProvider binds the optional [downloadclients.DiskProvider]
+// the RemoveItem deleteData arm consults. Nil-binding leaves the
+// arm in its pre-J124 warn-log state (the DSM task removal still
+// runs, files just stay on disk). Slice 5.J124 — mirrors the
+// established NZBGet/rTorrent/Aria2/SAB DiskProvider wire-up.
+func (t *TorrentDownloadStation) SetDiskProvider(d downloadclients.DiskProvider) *TorrentDownloadStation {
+	t.disk = d
+	return t
 }
 
 // GetImportItem is the C# base passthrough.
@@ -413,12 +430,19 @@ func (t *TorrentDownloadStation) GetImportItem(_ context.Context, item *download
 // `:144-153`. Calls [Proxy.RemoveTask] (the C# `force_complete=false`
 // flavour) with the task ID.
 //
-// The C# `deleteData=true` branch at `:146-149` calls
-// `DeleteItemData(item)` which removes the on-disk file via the
-// shared DownloadClientBase machinery. The Go-port disk-cleanup
-// arm hasn't ported yet (Phase 6.B follow-up); for now deleteData
-// is logged but not acted on at the Provider level — the
-// orchestrator's downstream cleanup path takes over.
+// deleteData=true branch ports the C# `:146-149` DeleteItemData
+// call via the J121 SharedFolderResolver + the
+// [downloadclients.DiskProvider] (slice 5.J124). The Sonarr-side
+// DeleteFolder fires BEFORE the DSM remove RPC (matches the C#
+// ordering at `:146-152`); item.OutputPath is resolved via the
+// SharedFolder mapping so the disk arm targets the Sonarr-visible
+// physical path rather than the DSM-side SharedFolder path.
+//
+// 3-arm switch identical to the J111/J112/J116 pattern: nil-disk
+// warn-log + skip; empty/unresolvable OutputPath debug + skip;
+// populated disk DeleteFolder with err-non-fatal (the DSM
+// RemoveTask still fires even when the disk arm errors). The DSM
+// task removal stays load-bearing.
 func (t *TorrentDownloadStation) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
 	if t.proxy == nil {
 		return errors.New("downloadstation: nil Proxy")
@@ -431,12 +455,50 @@ func (t *TorrentDownloadStation) RemoveItem(ctx context.Context, item *downloadc
 		return errors.New("downloadstation: item has empty DownloadID")
 	}
 	if deleteData {
-		t.log.Debug("downloadstation: deleteData=true (disk cleanup deferred to Phase 6.B)", "downloadID", id)
+		t.runDeleteData(ctx, item)
 	}
 	if err := t.proxy.RemoveTask(ctx, t.settings, id); err != nil {
 		return fmt.Errorf("downloadstation: RemoveTask(%s): %w", id, err)
 	}
 	return nil
+}
+
+// runDeleteData ports the C# `DeleteItemData(item)` call at
+// `:146-149`. Resolves item.OutputPath via the SharedFolderResolver
+// to a Sonarr-visible physical path, then calls
+// DiskProvider.DeleteFolder against it. All failure modes log at
+// Warn/Debug and return without error so the surrounding
+// RemoveTask call always fires (the DSM-side cleanup is the
+// load-bearing arm; on-disk cleanup is best-effort).
+func (t *TorrentDownloadStation) runDeleteData(ctx context.Context, item *downloadclients.Item) {
+	if t.disk == nil {
+		t.log.Warn("downloadstation: RemoveItem: deleteData=true requested but no DiskProvider is wired; DSM task will be removed but files remain on disk",
+			slog.String("downloadID", item.DownloadID))
+		return
+	}
+	if item.OutputPath.IsEmpty() {
+		t.log.Debug("downloadstation: RemoveItem: deleteData=true but item.OutputPath is empty; skipping on-disk delete",
+			slog.String("downloadID", item.DownloadID))
+		return
+	}
+	target := item.OutputPath
+	if t.resolver != nil {
+		resolved, err := t.resolver.Resolve(ctx, t.settings, item.OutputPath.FullPath())
+		if err != nil {
+			t.log.Warn("downloadstation: RemoveItem: SharedFolderResolver failed; skipping on-disk delete",
+				slog.String("downloadID", item.DownloadID),
+				slog.String("path", item.OutputPath.FullPath()),
+				slog.Any("err", err))
+			return
+		}
+		target = resolved
+	}
+	if err := t.disk.DeleteFolder(target.FullPath(), true); err != nil {
+		t.log.Warn("downloadstation: RemoveItem: DiskProvider.DeleteFolder failed; DSM task will still be removed",
+			slog.String("downloadID", item.DownloadID),
+			slog.String("path", target.FullPath()),
+			slog.Any("err", err))
+	}
 }
 
 // GetStatus ports C# `TorrentDownloadStation.GetStatus` at `:118-142`.
@@ -661,6 +723,9 @@ func constructor(def *downloadclients.DownloadClient, deps downloadclients.Depen
 	t := New(def, settings, nil, log)
 	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
 		t.SetRemotePathMapper(rpm)
+	}
+	if disk, ok := deps.DiskProvider.(downloadclients.DiskProvider); ok {
+		t.SetDiskProvider(disk)
 	}
 	return t, nil
 }

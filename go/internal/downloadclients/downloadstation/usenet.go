@@ -40,6 +40,11 @@ type UsenetDownloadStation struct {
 	// to populate OutputRootFolders from the resolved download
 	// directory.
 	resolver *SharedFolderResolver
+
+	// disk is the optional [downloadclients.DiskProvider] consumed
+	// by RemoveItem's deleteData arm — mirrors the Torrent half's
+	// slice 5.J124 wire-up.
+	disk downloadclients.DiskProvider
 }
 
 // NewUsenet constructs a UsenetDownloadStation Provider. proxy=nil
@@ -62,6 +67,14 @@ func NewUsenet(def *downloadclients.DownloadClient, settings Settings, proxy *Pr
 // (matches the Torrent half's pattern). Slice 5.J122.
 func (u *UsenetDownloadStation) SetSharedFolderResolver(r *SharedFolderResolver) {
 	u.resolver = r
+}
+
+// SetDiskProvider binds the optional [downloadclients.DiskProvider]
+// the RemoveItem deleteData arm consults. Mirrors the Torrent half's
+// J124 wire-up.
+func (u *UsenetDownloadStation) SetDiskProvider(d downloadclients.DiskProvider) *UsenetDownloadStation {
+	u.disk = d
+	return u
 }
 
 // Name returns the user-facing label. Same as the torrent half —
@@ -228,9 +241,9 @@ func (u *UsenetDownloadStation) GetImportItem(_ context.Context, item *downloadc
 
 // RemoveItem ports `UsenetDownloadStation.RemoveItem` at C#
 // `:166-175`. Delegates to [Proxy.RemoveTask] (same delete v1 +
-// force_complete=false as the torrent half). The C#
-// deleteData=true branch's DeleteItemData arm is deferred to
-// Phase 6.B's disk-cleanup wiring.
+// force_complete=false as the torrent half). Slice 5.J124 wires
+// the deleteData arm via [SharedFolderResolver] + DiskProvider —
+// see [TorrentDownloadStation.RemoveItem] for the algorithm.
 func (u *UsenetDownloadStation) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
 	if u.proxy == nil {
 		return errors.New("downloadstation: nil Proxy")
@@ -243,12 +256,47 @@ func (u *UsenetDownloadStation) RemoveItem(ctx context.Context, item *downloadcl
 		return errors.New("downloadstation: item has empty DownloadID")
 	}
 	if deleteData {
-		u.log.Debug("downloadstation: deleteData=true (disk cleanup deferred to Phase 6.B)", "downloadID", id)
+		u.runDeleteData(ctx, item)
 	}
 	if err := u.proxy.RemoveTask(ctx, u.settings, id); err != nil {
 		return fmt.Errorf("downloadstation: RemoveTask(%s): %w", id, err)
 	}
 	return nil
+}
+
+// runDeleteData is the Usenet half's disk-cleanup arm. Identical
+// algorithm to [TorrentDownloadStation.runDeleteData] — duplicated
+// because Go lacks struct inheritance and the two halves don't
+// share a base type. Slice 5.J124.
+func (u *UsenetDownloadStation) runDeleteData(ctx context.Context, item *downloadclients.Item) {
+	if u.disk == nil {
+		u.log.Warn("downloadstation: RemoveItem: deleteData=true requested but no DiskProvider is wired; DSM task will be removed but files remain on disk",
+			slog.String("downloadID", item.DownloadID))
+		return
+	}
+	if item.OutputPath.IsEmpty() {
+		u.log.Debug("downloadstation: RemoveItem: deleteData=true but item.OutputPath is empty; skipping on-disk delete",
+			slog.String("downloadID", item.DownloadID))
+		return
+	}
+	target := item.OutputPath
+	if u.resolver != nil {
+		resolved, err := u.resolver.Resolve(ctx, u.settings, item.OutputPath.FullPath())
+		if err != nil {
+			u.log.Warn("downloadstation: RemoveItem: SharedFolderResolver failed; skipping on-disk delete",
+				slog.String("downloadID", item.DownloadID),
+				slog.String("path", item.OutputPath.FullPath()),
+				slog.Any("err", err))
+			return
+		}
+		target = resolved
+	}
+	if err := u.disk.DeleteFolder(target.FullPath(), true); err != nil {
+		u.log.Warn("downloadstation: RemoveItem: DiskProvider.DeleteFolder failed; DSM task will still be removed",
+			slog.String("downloadID", item.DownloadID),
+			slog.String("path", target.FullPath()),
+			slog.Any("err", err))
+	}
 }
 
 // GetStatus mirrors the torrent half — slice 5.J122 wires the J121
@@ -408,6 +456,9 @@ func usenetConstructor(def *downloadclients.DownloadClient, deps downloadclients
 	u := NewUsenet(def, settings, nil, log)
 	if rpm, ok := deps.RemotePathMappingService.(downloadclients.RemotePathMapper); ok {
 		u.SetRemotePathMapper(rpm)
+	}
+	if disk, ok := deps.DiskProvider.(downloadclients.DiskProvider); ok {
+		u.SetDiskProvider(disk)
 	}
 	return u, nil
 }

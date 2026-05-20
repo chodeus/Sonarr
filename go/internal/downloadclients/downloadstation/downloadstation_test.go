@@ -13,6 +13,7 @@ import (
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclients/downloadstation"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // scriptedDoer queues responses per-path so the
@@ -1297,5 +1298,155 @@ func TestProvider_TestOutputPath_J123_FileStationFailureDegradesSilent(t *testin
 	}
 	if len(failures) != 0 {
 		t.Errorf("failures = %+v, want none (silent degradation on FileStation error)", failures)
+	}
+}
+
+// --- J124 RemoveItem deleteData disk arm wire-up -----------------
+
+// stubDSDisk is a hand-rolled [downloadclients.DiskProvider] used by
+// the J124 RemoveItem-deleteData tests.
+type stubDSDisk struct {
+	called bool
+	path   string
+	err    error
+}
+
+func (s *stubDSDisk) DeleteFolder(path string, _ bool) error {
+	s.called = true
+	s.path = path
+	return s.err
+}
+
+func TestProvider_RemoveItem_J124_DeleteDataResolvesAndCallsDisk(t *testing.T) {
+	doer := newScripted()
+	queueAPIDiscoveryWithFileStation(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":true,"data":{"files":[
+		{"isdir":true,"name":"data","path":"/data","additional":{"real_path":"/volume1/data"}}
+	]}}`)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), proxy, nil)
+	disk := &stubDSDisk{}
+	prov.SetDiskProvider(disk)
+	item := &downloadclients.Item{
+		DownloadID: "task1",
+		OutputPath: ospath.New("/data/tv/Show"),
+	}
+	if err := prov.RemoveItem(context.Background(), item, true); err != nil {
+		t.Fatal(err)
+	}
+	if !disk.called {
+		t.Errorf("DiskProvider.DeleteFolder not called")
+	}
+	if disk.path != "/volume1/data/tv/Show" {
+		t.Errorf("disk path = %q, want /volume1/data/tv/Show (resolved via SharedFolder)", disk.path)
+	}
+	// Confirm RemoveTask still fired.
+	saw := 0
+	for _, c := range doer.calls {
+		if c.path == "/webapi/DownloadStation/task.cgi" {
+			saw++
+		}
+	}
+	if saw != 1 {
+		t.Errorf("DownloadStation/task.cgi fired %d times, want 1", saw)
+	}
+}
+
+func TestProvider_RemoveItem_J124_DeleteDataFalseSkipsDisk(t *testing.T) {
+	doer := newScripted()
+	queueAPIDiscovery(doer, 3)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), proxy, nil)
+	disk := &stubDSDisk{}
+	prov.SetDiskProvider(disk)
+	item := &downloadclients.Item{
+		DownloadID: "task1",
+		OutputPath: ospath.New("/data/tv/Show"),
+	}
+	if err := prov.RemoveItem(context.Background(), item, false); err != nil {
+		t.Fatal(err)
+	}
+	if disk.called {
+		t.Errorf("DiskProvider fired despite deleteData=false")
+	}
+}
+
+func TestProvider_RemoveItem_J124_DeleteDataNoDiskProviderWarns(t *testing.T) {
+	doer := newScripted()
+	queueAPIDiscovery(doer, 3)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), proxy, nil)
+	// no SetDiskProvider — degraded warn path.
+	item := &downloadclients.Item{
+		DownloadID: "task1",
+		OutputPath: ospath.New("/data/tv/Show"),
+	}
+	if err := prov.RemoveItem(context.Background(), item, true); err != nil {
+		t.Errorf("nil DiskProvider must not error: %v", err)
+	}
+	saw := 0
+	for _, c := range doer.calls {
+		if c.path == "/webapi/DownloadStation/task.cgi" {
+			saw++
+		}
+	}
+	if saw != 1 {
+		t.Errorf("task.cgi removal fired %d times, want 1 (nil-disk arm still removes from DSM)", saw)
+	}
+}
+
+func TestProvider_RemoveItem_J124_DeleteDataEmptyOutputPathSkipsDisk(t *testing.T) {
+	doer := newScripted()
+	queueAPIDiscovery(doer, 3)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), proxy, nil)
+	disk := &stubDSDisk{}
+	prov.SetDiskProvider(disk)
+	if err := prov.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "task1"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if disk.called {
+		t.Errorf("DiskProvider fired on empty OutputPath")
+	}
+}
+
+func TestProvider_RemoveItem_J124_DiskErrorDoesNotAbortRemoveTask(t *testing.T) {
+	doer := newScripted()
+	queueAPIDiscoveryWithFileStation(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/FileStation/file_share.cgi", `{"success":true,"data":{"files":[
+		{"isdir":true,"name":"data","path":"/data","additional":{"real_path":"/volume1/data"}}
+	]}}`)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true}`)
+	proxy := downloadstation.NewProxy(doer, nil, func() time.Time { return time.Unix(0, 0) })
+	prov := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), proxy, nil)
+	disk := &stubDSDisk{err: errors.New("permission denied")}
+	prov.SetDiskProvider(disk)
+	item := &downloadclients.Item{
+		DownloadID: "task1",
+		OutputPath: ospath.New("/data/tv/Show"),
+	}
+	if err := prov.RemoveItem(context.Background(), item, true); err != nil {
+		t.Errorf("disk-arm failure must not abort RemoveTask: %v", err)
+	}
+	if !disk.called {
+		t.Errorf("disk arm not called")
+	}
+	saw := 0
+	for _, c := range doer.calls {
+		if c.path == "/webapi/DownloadStation/task.cgi" {
+			saw++
+		}
+	}
+	if saw != 1 {
+		t.Errorf("DSM remove fired %d times, want 1 (disk failure non-fatal)", saw)
 	}
 }
