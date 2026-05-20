@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/ospath"
 )
 
 // Implementation + ConfigContract are the persisted-row identifiers
@@ -181,9 +183,90 @@ func resolveInfoHash(req *downloadclients.GrabRequest) (string, error) {
 	return "", fmt.Errorf("utorrent: magnet URL missing xt=urn:btih: parameter: %s", req.MagnetURL)
 }
 
-// GetItems is a stub.
-func (u *UTorrent) GetItems(_ context.Context) ([]*downloadclients.Item, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+// GetItems ports `UTorrent.GetItems` at `UTorrent.cs:109-180`.
+// Polls action=list, filters by Label == TvCategory, projects each
+// torrent row into a downloadclients.Item with the Status bitflag
+// mapped per C# `:147-170`:
+//
+//   - Error flag → Warning (with message).
+//   - Loaded+Checked+Remaining==0+Progress==1.0 → Completed.
+//   - Paused flag → Paused.
+//   - Started flag → Downloading.
+//   - otherwise → Queued.
+//
+// CanMoveFiles + CanBeRemoved are true when the torrent is neither
+// Queued nor Started — same gate as C# `:174-178`.
+func (u *UTorrent) GetItems(ctx context.Context) ([]*downloadclients.Item, error) {
+	if u.proxy == nil {
+		return nil, errors.New("utorrent: GetItems requires a wired Proxy")
+	}
+	torrents, err := u.proxy.GetTorrents(ctx, u.settings)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*downloadclients.Item, 0, len(torrents))
+	for _, t := range torrents {
+		if u.settings.TvCategory != "" && t.Label != u.settings.TvCategory {
+			continue
+		}
+		item := &downloadclients.Item{
+			DownloadID:    strings.ToUpper(t.Hash),
+			Title:         t.Name,
+			TotalSize:     t.Size,
+			Category:      t.Label,
+			RemainingSize: t.Remaining,
+		}
+		// Per-row Status mapping. Mirrors C# `:147-170`.
+		switch {
+		case t.Status.Has(StatusError):
+			item.Status = downloadclients.DownloadItemStatusWarning
+			item.Message = "uTorrent reports torrent in error state"
+		case t.Status.Has(StatusLoaded) && t.Status.Has(StatusChecked) && t.Remaining == 0 && t.Progress == 1.0:
+			item.Status = downloadclients.DownloadItemStatusCompleted
+		case t.Status.Has(StatusPaused):
+			item.Status = downloadclients.DownloadItemStatusPaused
+		case t.Status.Has(StatusStarted):
+			item.Status = downloadclients.DownloadItemStatusDownloading
+		default:
+			item.Status = downloadclients.DownloadItemStatusQueued
+		}
+
+		// SeedRatio + RemainingTime — uTorrent reports ratio as
+		// per-mille int (already converted to float by the proxy);
+		// Eta=-1 means no ETA available.
+		if t.Status.Has(StatusLoaded) && t.Status.Has(StatusChecked) && t.Remaining == 0 {
+			ratio := t.Ratio
+			item.SeedRatio = &ratio
+		}
+		if t.Eta > 0 {
+			rt := time.Duration(t.Eta) * time.Second
+			item.RemainingTime = &rt
+		}
+
+		// OutputPath — uTorrent's RootDownloadPath is the directory
+		// the torrent's files land in; the C# code joins the Name
+		// when the path's basename doesn't already match the
+		// torrent name (matches `:138-145`). The Go port preserves
+		// that quirk verbatim.
+		if t.RootDownloadPath != "" {
+			rdp := ospath.New(t.RootDownloadPath)
+			if rdp.FileName() == t.Name {
+				item.OutputPath = rdp
+			} else {
+				item.OutputPath = rdp.Add(ospath.New(t.Name))
+			}
+		}
+
+		// 'Started' without 'Queued' is the 'forced seeding' state
+		// — C# `:174-178` gates CanMoveFiles/CanBeRemoved on
+		// !Queued && !Started.
+		canHandle := !t.Status.Has(StatusQueued) && !t.Status.Has(StatusStarted)
+		item.CanMoveFiles = canHandle
+		item.CanBeRemoved = canHandle
+
+		out = append(out, item)
+	}
+	return out, nil
 }
 
 // GetImportItem passes through unchanged. Mirrors C#
@@ -192,21 +275,63 @@ func (u *UTorrent) GetImportItem(_ context.Context, item *downloadclients.Item, 
 	return item, nil
 }
 
-// RemoveItem is a stub.
-func (u *UTorrent) RemoveItem(_ context.Context, _ *downloadclients.Item, _ bool) error {
-	return downloadclients.ErrNotImplementedYet
+// RemoveItem ports `UTorrent.RemoveItem` (the base
+// DownloadClientBase.RemoveItem wraps Proxy.RemoveTorrent at C#
+// `UTorrentProxy.cs:130-139`). The optional deleteData arm hits
+// action=removedata (delete data + remove); deleteData=false hits
+// action=remove (queue removal only).
+func (u *UTorrent) RemoveItem(ctx context.Context, item *downloadclients.Item, deleteData bool) error {
+	if u.proxy == nil {
+		return errors.New("utorrent: RemoveItem requires a wired Proxy")
+	}
+	if item == nil {
+		return errors.New("utorrent: RemoveItem: nil Item")
+	}
+	if strings.TrimSpace(item.DownloadID) == "" {
+		return errors.New("utorrent: RemoveItem: empty DownloadID")
+	}
+	return u.proxy.RemoveTorrent(ctx, item.DownloadID, deleteData, u.settings)
 }
 
-// GetStatus is a stub.
+// GetStatus ports `UTorrent.GetStatus`. Returns a minimal
+// ClientInfo with IsLocalhost set when the host resolves to
+// 127.0.0.1 / localhost / ::1. Matches the rTorrent posture (C#
+// `UTorrent` doesn't override GetStatus, so the base class's
+// minimal shape is what surfaces).
 func (u *UTorrent) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return nil, downloadclients.ErrNotImplementedYet
+	host := strings.TrimSpace(u.settings.Host)
+	isLocal := host == "127.0.0.1" || host == "localhost" || host == "::1"
+	return &downloadclients.ClientInfo{IsLocalhost: isLocal}, nil
 }
 
-// MarkItemAsImported is a stub. The real impl will fire
-// `action=setprops&hash=<hash>&s=label&v=<TvImportedCategory>` via
-// the proxy.
-func (u *UTorrent) MarkItemAsImported(_ context.Context, _ *downloadclients.Item) error {
-	return downloadclients.ErrNotImplementedYet
+// MarkItemAsImported ports `UTorrent.MarkItemAsImported` at
+// `UTorrent.cs:46-60`. Applies the post-import label when
+// TvImportedCategory is set + differs from TvCategory; then
+// (C# `:54-59`) removes the original TvCategory label so the
+// torrent ends up tagged only with the imported category.
+//
+// Best-effort: failures warn + return nil so the import pipeline
+// doesn't abort on a label-set hiccup.
+func (u *UTorrent) MarkItemAsImported(ctx context.Context, item *downloadclients.Item) error {
+	if u.proxy == nil {
+		return errors.New("utorrent: MarkItemAsImported requires a wired Proxy")
+	}
+	if item == nil {
+		return errors.New("utorrent: MarkItemAsImported: nil Item")
+	}
+	if strings.TrimSpace(u.settings.TvImportedCategory) == "" {
+		return nil
+	}
+	if u.settings.TvImportedCategory == u.settings.TvCategory {
+		return nil
+	}
+	if err := u.proxy.SetTorrentLabel(ctx, item.DownloadID, u.settings.TvImportedCategory, u.settings); err != nil {
+		u.log.Warn("utorrent: SetTorrentLabel (post-import) failed",
+			slog.String("hash", item.DownloadID),
+			slog.String("label", u.settings.TvImportedCategory),
+			slog.Any("err", err))
+	}
+	return nil
 }
 
 // Test runs the per-client connection self-check. Validates the

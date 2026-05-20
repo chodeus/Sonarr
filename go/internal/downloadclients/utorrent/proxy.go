@@ -248,6 +248,159 @@ type Response struct {
 	Settings        [][]any    `json:"settings"`
 }
 
+// Status is the uTorrent per-torrent status bitflag. Ports C#
+// `UTorrentTorrentStatus` at `UTorrentTorrentStatus.cs:5-15`. The
+// flag values are stable across the wire — uTorrent's list=1
+// response stores the status as a single int with these bits OR'd
+// together.
+type Status int
+
+// Status bitflag values. Mirrors C# `UTorrentTorrentStatus`
+// enum members.
+const (
+	StatusStarted         Status = 1
+	StatusChecking        Status = 2
+	StatusStartAfterCheck Status = 4
+	StatusChecked         Status = 8
+	StatusError           Status = 16
+	StatusPaused          Status = 32
+	StatusQueued          Status = 64
+	StatusLoaded          Status = 128
+)
+
+// Has reports whether the status int has the given flag set.
+func (s Status) Has(flag Status) bool { return s&flag != 0 }
+
+// Torrent is the post-decoded uTorrent row shape. Mirrors C#
+// `UTorrentTorrent` at `UTorrentTorrent.cs:7-32` (subset — the
+// fields the Go-port GetItems consumes; the speculative
+// AppUpdateUrl / Unknown27/28 trailing slots are skipped).
+type Torrent struct {
+	Hash             string
+	Status           Status
+	Name             string
+	Size             int64
+	Progress         float64 // 0.0 .. 1.0 (uTorrent emits per-mille int; converted at decode)
+	Downloaded       int64
+	Uploaded         int64
+	Ratio            float64 // ratio in float (uTorrent emits per-mille int; converted at decode)
+	UploadSpeed      int64
+	DownloadSpeed    int64
+	Eta              int // seconds; -1 → no ETA
+	Label            string
+	PeersConnected   int
+	PeersInSwarm     int
+	SeedsConnected   int
+	SeedsInSwarm     int
+	Availability     float64 // uTorrent emits int / 65536.0
+	QueueOrder       int
+	Remaining        int64
+	DownloadURL      string
+	RootDownloadPath string
+}
+
+// GetTorrents fires action=list with list=1 and decodes the
+// per-row Torrents array. Mirrors C# `GetTorrents` at
+// `UTorrentProxy.cs:69-87` (without the cacheID delta — the Go-port
+// always full-refreshes for now; the cache-delta optimization is a
+// follow-up).
+func (p *Proxy) GetTorrents(ctx context.Context, settings Settings) ([]Torrent, error) {
+	body, err := p.call(ctx, settings, url.Values{"list": []string{"1"}})
+	if err != nil {
+		return nil, err
+	}
+	var parsed Response
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("utorrent: decode list: %w", err)
+	}
+	out := make([]Torrent, 0, len(parsed.Torrents))
+	for _, row := range parsed.Torrents {
+		if t, ok := decodeTorrentRow(row); ok {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// decodeTorrentRow projects one untyped array row into [Torrent].
+// Mirrors C# `UTorrentTorrentJsonConverter.ReadJson` at `:43-110`.
+// Returns ok=false when the row has fewer than 19 columns
+// (uTorrent's minimum stable shape from build 25406 — see
+// UTorrentTorrentJsonConverter comment at `:80`).
+//
+// Build-variation tolerance: the trailing columns (DownloadURL,
+// RssFeedUrl, ..., RootDownloadPath) are populated only when the
+// row has them; missing-trailing columns leave the Torrent fields
+// at their zero values (matches C# `:80-102` "Builds before 25406
+// don't return the remaining items" guard).
+func decodeTorrentRow(row []any) (Torrent, bool) {
+	if len(row) < 19 {
+		return Torrent{}, false
+	}
+	t := Torrent{
+		Hash:           asString(row[0]),
+		Status:         Status(asInt(row[1])),
+		Name:           asString(row[2]),
+		Size:           asInt64(row[3]),
+		Progress:       float64(asInt(row[4])) / 1000.0,
+		Downloaded:     asInt64(row[5]),
+		Uploaded:       asInt64(row[6]),
+		Ratio:          float64(asInt(row[7])) / 1000.0,
+		UploadSpeed:    asInt64(row[8]),
+		DownloadSpeed:  asInt64(row[9]),
+		Eta:            asInt(row[10]),
+		Label:          asString(row[11]),
+		PeersConnected: asInt(row[12]),
+		PeersInSwarm:   asInt(row[13]),
+		SeedsConnected: asInt(row[14]),
+		SeedsInSwarm:   asInt(row[15]),
+		Availability:   float64(asInt(row[16])) / 65536.0,
+		QueueOrder:     asInt(row[17]),
+		Remaining:      asInt64(row[18]),
+	}
+	if len(row) > 19 {
+		t.DownloadURL = asString(row[19])
+	}
+	if len(row) > 26 {
+		t.RootDownloadPath = asString(row[26])
+	}
+	return t, true
+}
+
+func asString(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func asInt(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	}
+	return 0
+}
+
+func asInt64(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	}
+	return 0
+}
+
 // GetVersion fires action=getsettings and returns the `build`
 // integer from the response. Mirrors C# `GetVersion` at `:48-55`.
 func (p *Proxy) GetVersion(ctx context.Context, settings Settings) (int, error) {

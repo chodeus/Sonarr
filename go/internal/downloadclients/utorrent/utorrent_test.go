@@ -2,7 +2,6 @@ package utorrent_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
@@ -144,17 +143,20 @@ func TestProvider_StubsReturnNotImplementedYet(t *testing.T) {
 	if _, err := u.Download(ctx, &downloadclients.GrabRequest{}); err == nil {
 		t.Errorf("Download: want error (nil proxy)")
 	}
-	if _, err := u.GetItems(ctx); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("GetItems: %v, want ErrNotImplementedYet", err)
+	// GetItems / RemoveItem / MarkItemAsImported are wired in 5.J49
+	// — nil-proxy surfaces a generic error. GetStatus returns a
+	// minimal ClientInfo without error (matches base posture).
+	if _, err := u.GetItems(ctx); err == nil {
+		t.Errorf("GetItems: want error (nil proxy)")
 	}
-	if err := u.RemoveItem(ctx, &downloadclients.Item{}, false); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("RemoveItem: %v, want ErrNotImplementedYet", err)
+	if err := u.RemoveItem(ctx, &downloadclients.Item{DownloadID: "x"}, false); err == nil {
+		t.Errorf("RemoveItem: want error (nil proxy)")
 	}
-	if _, err := u.GetStatus(ctx); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("GetStatus: %v, want ErrNotImplementedYet", err)
+	if info, err := u.GetStatus(ctx); err != nil || info == nil {
+		t.Errorf("GetStatus: got (%v, %v), want (non-nil, nil)", info, err)
 	}
-	if err := u.MarkItemAsImported(ctx, &downloadclients.Item{}); !errors.Is(err, downloadclients.ErrNotImplementedYet) {
-		t.Errorf("MarkItemAsImported: %v, want ErrNotImplementedYet", err)
+	if err := u.MarkItemAsImported(ctx, &downloadclients.Item{}); err == nil {
+		t.Errorf("MarkItemAsImported: want error (nil proxy)")
 	}
 }
 
