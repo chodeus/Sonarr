@@ -53,12 +53,71 @@ func (t *TriblerDownloadClient) Definition() *downloadclients.DownloadClient { r
 // Settings returns the bound Settings.
 func (t *TriblerDownloadClient) Settings() Settings { return t.settings }
 
-// Download is a STUB at 5.J81. Follow-up ports
-// `Proxy.AddFromMagnetLink` (PUT `/api/downloads` with the magnet
-// URL + anonymity_hops + safe_seeding + destination payload) per
-// C# `TriblerDownloadClientProxy.cs:108-117`.
-func (t *TriblerDownloadClient) Download(_ context.Context, _ *downloadclients.GrabRequest) (string, error) {
-	return "", fmt.Errorf("%w: Download", ErrNotImplemented)
+// Download ports C# `TriblerDownloadClient.AddFromMagnetLink` at
+// `:221-232`. PUTs `/api/downloads` with the magnet URL, the
+// configured anonymity-hops + safe-seeding flags, and a resolved
+// destination. Tribler 8.x does not support adding via a .torrent
+// file (the C# `AddFromTorrentFile` at `:234-238` throws
+// NotSupportedException) — the Go port mirrors that: TorrentBody
+// requests return [ErrTorrentFileUnsupported].
+//
+// Destination resolution mirrors C# `GetDownloadDirectory` at
+// `:250-266`: TvDirectory wins when non-empty; else when
+// TvCategory is set, [Proxy.GetConfig].Settings.LibTorrent.DownloadDefaults.SaveAs
+// + "/" + TvCategory; else empty (Tribler uses its own default).
+func (t *TriblerDownloadClient) Download(ctx context.Context, req *downloadclients.GrabRequest) (string, error) {
+	if req == nil {
+		return "", errors.New("tribler: nil GrabRequest")
+	}
+	if t.proxy == nil {
+		return "", errors.New("tribler: nil Proxy")
+	}
+	if len(req.TorrentBody) > 0 {
+		return "", ErrTorrentFileUnsupported
+	}
+	magnet := strings.TrimSpace(req.MagnetURL)
+	if magnet == "" {
+		return "", errors.New("tribler: GrabRequest has neither MagnetURL nor InfoHash (Tribler is magnet-only)")
+	}
+
+	dest, err := t.resolveDownloadDirectory(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	hops := int64(t.settings.AnonymityLevel)
+	safe := t.settings.SafeSeeding
+	hash, err := t.proxy.AddFromMagnetLink(ctx, t.settings, AddDownloadRequest{
+		AnonymityHops: &hops,
+		SafeSeeding:   &safe,
+		Destination:   dest,
+		URI:           magnet,
+	})
+	if err != nil {
+		return "", fmt.Errorf("tribler: AddFromMagnetLink: %w", err)
+	}
+	return hash, nil
+}
+
+// resolveDownloadDirectory ports C# `GetDownloadDirectory` at
+// `:250-266`. Returns empty when neither TvDirectory nor
+// TvCategory is set (Tribler falls back to its own default).
+func (t *TriblerDownloadClient) resolveDownloadDirectory(ctx context.Context) (string, error) {
+	if dir := strings.TrimSpace(t.settings.TvDirectory); dir != "" {
+		return dir, nil
+	}
+	if strings.TrimSpace(t.settings.TvCategory) == "" {
+		return "", nil
+	}
+	cfg, err := t.proxy.GetConfig(ctx, t.settings)
+	if err != nil {
+		return "", fmt.Errorf("tribler: resolve download directory: %w", err)
+	}
+	base := strings.TrimRight(cfg.Settings.LibTorrent.DownloadDefaults.SaveAs, "/")
+	if base == "" {
+		return "", nil
+	}
+	return base + "/" + t.settings.TvCategory, nil
 }
 
 // GetItems is a STUB at 5.J81. Follow-up ports `Proxy.GetDownloads`
@@ -134,8 +193,14 @@ func isLocalHost(host string) bool {
 	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
-// ErrNotImplemented signals a 5.J81 skeleton stub.
+// ErrNotImplemented signals a 5.J81 skeleton stub (GetItems +
+// RemoveItem). Removed once those arms wire up.
 var ErrNotImplemented = errors.New("tribler: not yet implemented in this build")
+
+// ErrTorrentFileUnsupported mirrors C# `:237`'s NotSupportedException
+// — Tribler 8.x does not support adding via a .torrent file
+// (only magnet links).
+var ErrTorrentFileUnsupported = errors.New("tribler: torrent files are not supported; only magnet links")
 
 // Compile-time guard.
 var _ downloadclients.Provider = (*TriblerDownloadClient)(nil)

@@ -70,6 +70,54 @@ type Config struct {
 	} `json:"settings"`
 }
 
+// AddDownloadRequest is the wire body for `PUT /api/downloads`.
+// Mirrors C# `Models/TriblerDownloadClientApi.cs:93-105` with the
+// same JSON tags (snake_case via [JsonProperty]).
+type AddDownloadRequest struct {
+	AnonymityHops *int64 `json:"anon_hops,omitempty"`
+	SafeSeeding   *bool  `json:"safe_seeding,omitempty"`
+	Destination   string `json:"destination,omitempty"`
+	URI           string `json:"uri"`
+}
+
+// addDownloadResponse mirrors C# `AddDownloadResponse` at `:107-111`.
+type addDownloadResponse struct {
+	Infohash string `json:"infohash"`
+}
+
+// AddFromMagnetLink fires PUT `/api/downloads` with the supplied
+// request body. Returns the resulting torrent's infohash. Mirrors
+// C# `TriblerDownloadClientProxy.AddFromMagnetLink` at `:108-117`.
+//
+// The C# request requires `uri`; the Go port enforces non-empty
+// URI before posting.
+func (p *Proxy) AddFromMagnetLink(ctx context.Context, s Settings, req AddDownloadRequest) (string, error) {
+	if strings.TrimSpace(req.URI) == "" {
+		return "", fmt.Errorf("tribler: AddFromMagnetLink: empty URI")
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return "", fmt.Errorf("tribler: marshal add body: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, baseURL(s)+"/api/downloads", strings.NewReader(string(body)))
+	if err != nil {
+		return "", fmt.Errorf("tribler: build add request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	respBody, err := p.execute(httpReq, s, "AddFromMagnetLink")
+	if err != nil {
+		return "", err
+	}
+	var resp addDownloadResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return "", fmt.Errorf("tribler: unmarshal add response: %w", err)
+	}
+	if strings.TrimSpace(resp.Infohash) == "" {
+		return "", fmt.Errorf("tribler: AddFromMagnetLink returned empty infohash")
+	}
+	return resp.Infohash, nil
+}
+
 // GetConfig fires GET `/api/settings`. Auth-required. Mirrors C#
 // `TriblerDownloadClientProxy.GetConfig` at `:73-77`.
 //
