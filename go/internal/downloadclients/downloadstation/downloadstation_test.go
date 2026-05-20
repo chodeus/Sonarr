@@ -130,12 +130,25 @@ func TestIdentity(t *testing.T) {
 
 // queueAPIDiscovery queues a SYNO.API.Info response advertising
 // the auth + downloadstation paths so a subsequent Authenticate
-// call can find them.
+// call can find them. The V2 (DownloadStation2) task API is
+// intentionally absent — taskAPIVersion falls back to V1.
 func queueAPIDiscovery(doer *scriptedDoer, authMax int) {
 	body := `{"success":true,"data":{
 		"SYNO.API.Auth":{"path":"auth.cgi","maxVersion":` +
 		intToStr(authMax) + `,"minVersion":1},
 		"SYNO.DownloadStation.Task":{"path":"DownloadStation/task.cgi","maxVersion":3,"minVersion":1}
+	}}`
+	doer.queue("/webapi/query.cgi", body)
+}
+
+// queueAPIDiscoveryV2 queues a SYNO.API.Info response that
+// advertises BOTH task APIs — DSM 7+ shape. taskAPIVersion picks
+// V2 in this scenario.
+func queueAPIDiscoveryV2(doer *scriptedDoer) {
+	body := `{"success":true,"data":{
+		"SYNO.API.Auth":{"path":"auth.cgi","maxVersion":7,"minVersion":1},
+		"SYNO.DownloadStation.Task":{"path":"DownloadStation/task.cgi","maxVersion":3,"minVersion":1},
+		"SYNO.DownloadStation2.Task":{"path":"DownloadStation2/task.cgi","maxVersion":2,"minVersion":1}
 	}}`
 	doer.queue("/webapi/query.cgi", body)
 }
@@ -662,6 +675,139 @@ func TestRegistry_RegistersTorrentDownloadStation(t *testing.T) {
 	reg := downloadclients.Default()
 	if !reg.Has(downloadstation.TorrentImplementation, downloadstation.ConfigContract) {
 		t.Errorf("registry missing (%s, %s)", downloadstation.TorrentImplementation, downloadstation.ConfigContract)
+	}
+}
+
+// ---- DSM 7+ V1/V2 selector (5.J90) -------------------------------
+
+func TestProxy_TaskAPIVersion_V1Default(t *testing.T) {
+	// Discovery advertises only V1 → selector picks V1.
+	doer := newScripted()
+	queueAPIDiscovery(doer, 3)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/DownloadStation/task.cgi", `{"success":true,"data":{"tasks":[]}}`)
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	if _, err := p.GetItems(context.Background()); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	for _, c := range doer.calls {
+		if c.path == "/webapi/DownloadStation2/task.cgi" {
+			t.Errorf("V2 path called despite discovery only advertising V1: %v", c)
+		}
+	}
+}
+
+func TestProxy_TaskAPIVersion_V2WhenAdvertised_GetItemsTwoCallMerge(t *testing.T) {
+	// DSM 7+ shape: V2 advertised → GetItems makes TWO V2 list
+	// calls (detail + transfer) and merges by ID.
+	doer := newScripted()
+	queueAPIDiscoveryV2(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	// detail call:
+	doer.queue("/webapi/DownloadStation2/task.cgi", `{"success":true,"data":{"total":1,"task":[
+		{"id":"42","title":"X","type":"BT","status":4,"size":100,"additional":{"detail":{"destination":"downloads"}}}
+	]}}`)
+	// transfer call:
+	doer.queue("/webapi/DownloadStation2/task.cgi", `{"success":true,"data":{"total":1,"task":[
+		{"id":"42","title":"X","type":"BT","status":4,"size":100,"additional":{"transfer":{"size_downloaded":"50","size_uploaded":"10","speed_download":"5"}}}
+	]}}`)
+
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	items, err := p.GetItems(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len = %d, want 1", len(items))
+	}
+	// Verify the V2 path was used + the transfer values merged in.
+	v2Calls := 0
+	for _, c := range doer.calls {
+		if c.path == "/webapi/DownloadStation2/task.cgi" {
+			v2Calls++
+		}
+	}
+	if v2Calls != 2 {
+		t.Errorf("V2 path calls = %d, want 2 (detail + transfer)", v2Calls)
+	}
+	if items[0].DownloadID != "42" {
+		t.Errorf("DownloadID = %q, want 42", items[0].DownloadID)
+	}
+	// Status=4 is Downloading in the int-shape V2 numeric enum,
+	// which lands at TaskStatusDownloading in the merged Task.
+	if items[0].Status != downloadclients.DownloadItemStatusDownloading {
+		t.Errorf("Status = %v, want Downloading", items[0].Status)
+	}
+}
+
+func TestProxy_TaskAPIVersion_V2_RemoveTaskUsesV2Path(t *testing.T) {
+	doer := newScripted()
+	queueAPIDiscoveryV2(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	doer.queue("/webapi/DownloadStation2/task.cgi", `{"success":true,"data":{}}`)
+
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	if err := p.RemoveItem(context.Background(), &downloadclients.Item{DownloadID: "x"}, false); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	// V2 delete uses query method=delete + version=2; V1 uses version=1.
+	v2Calls := 0
+	v1Calls := 0
+	for _, c := range doer.calls {
+		switch c.path {
+		case "/webapi/DownloadStation2/task.cgi":
+			v2Calls++
+			if c.query.Get("version") != "2" {
+				t.Errorf("V2 delete version = %q, want 2", c.query.Get("version"))
+			}
+		case "/webapi/DownloadStation/task.cgi":
+			v1Calls++
+		}
+	}
+	if v2Calls != 1 || v1Calls != 0 {
+		t.Errorf("calls v2=%d v1=%d, want 1/0 (V2 dispatch)", v2Calls, v1Calls)
+	}
+}
+
+func TestProxy_TaskAPIVersion_V2_AddURLUsesV2PathAndParams(t *testing.T) {
+	doer := newScripted()
+	queueAPIDiscoveryV2(doer)
+	doer.queue("/webapi/auth.cgi", `{"success":true,"data":{"sid":"S"}}`)
+	// 1. V2 create.
+	doer.queue("/webapi/DownloadStation2/task.cgi", `{"success":true,"data":{}}`)
+	// 2-3. V2 post-add list (detail + transfer).
+	doer.queue("/webapi/DownloadStation2/task.cgi", `{"success":true,"data":{"total":1,"task":[
+		{"id":"new","title":"X","type":"BT","status":4,"additional":{"detail":{"uri":"magnet:?abc"}}}
+	]}}`)
+	doer.queue("/webapi/DownloadStation2/task.cgi", `{"success":true,"data":{"total":1,"task":[
+		{"id":"new","title":"X","type":"BT","status":4,"additional":{"transfer":{"size_downloaded":"0"}}}
+	]}}`)
+
+	p := downloadstation.New(&downloadclients.DownloadClient{Name: "DS"}, newSettings(), downloadstation.NewProxy(doer, nil, nil), nil)
+	id, err := p.Download(context.Background(), &downloadclients.GrabRequest{
+		ReleaseTitle: "X",
+		MagnetURL:    "magnet:?abc",
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if id != "new" {
+		t.Errorf("id = %q, want new", id)
+	}
+	// Verify the create call used the V2 path AND included the
+	// V2-specific query params (type=url, create_list=false).
+	for _, c := range doer.calls {
+		if c.path == "/webapi/DownloadStation2/task.cgi" && c.query.Get("method") == "create" {
+			if c.query.Get("type") != "url" {
+				t.Errorf("V2 create type = %q, want url", c.query.Get("type"))
+			}
+			if c.query.Get("create_list") != "false" {
+				t.Errorf("V2 create create_list = %q, want false", c.query.Get("create_list"))
+			}
+			if c.query.Get("url") != "magnet:?abc" {
+				t.Errorf("V2 create url = %q, want magnet:?abc", c.query.Get("url"))
+			}
+		}
 	}
 }
 

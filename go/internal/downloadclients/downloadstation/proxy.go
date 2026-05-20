@@ -33,11 +33,15 @@ const apiInfoTTL = time.Hour
 
 // API names ported from the C# enum at
 // `DiskStationApi.cs:3-12` paired with the per-API SYNO.API.<X>
-// string the C# `UpdateApiInfo` query uses.
+// string the C# `UpdateApiInfo` query uses. The V2 task API
+// (`SYNO.DownloadStation2.Task`) is the DSM 7+ surface; the
+// V1/V2 selector in [Proxy.taskAPIVersion] prefers V2 when
+// advertised, falls back to V1 otherwise.
 const (
-	apiInfoName            = "SYNO.API.Info"
-	apiAuthName            = "SYNO.API.Auth"
-	apiDownloadStationName = "SYNO.DownloadStation.Task"
+	apiInfoName             = "SYNO.API.Info"
+	apiAuthName             = "SYNO.API.Auth"
+	apiDownloadStationName  = "SYNO.DownloadStation.Task"
+	apiDownloadStation2Name = "SYNO.DownloadStation2.Task"
 )
 
 // APIInfo ports C# `DiskStationApiInfo` at `:5-32`. The Path setter
@@ -274,15 +278,30 @@ func (p *Proxy) GetAPIInfo(ctx context.Context, s Settings, apiName string) (*AP
 }
 
 // refreshAPIInfo fires the SYNO.API.Info query for the given
-// apiName + SYNO.API.Auth (the auth endpoint discovery is folded
-// in so the login flow doesn't need a separate round-trip).
-// Mirrors C# `UpdateApiInfo` at `:209-233`.
+// apiName + SYNO.API.Auth + the V2 task API (so the V1/V2 selector
+// always has both task-API entries cached after the first
+// discovery round-trip). Mirrors C# `UpdateApiInfo` at `:209-233`
+// with the Go-port extension to fold the V2 task API into the
+// initial query.
 func (p *Proxy) refreshAPIInfo(ctx context.Context, s Settings, apiName string) error {
 	q := url.Values{}
 	q.Set("api", infoAPI.Name)
 	q.Set("version", fmt.Sprintf("%d", infoAPI.MinVersion))
 	q.Set("method", "query")
-	q.Set("query", apiAuthName+","+apiName)
+	// Ask for the V1 + V2 task API entries every time so the V1/V2
+	// selector at [Proxy.taskAPIVersion] can dispatch without an
+	// extra round-trip.
+	queries := []string{apiAuthName}
+	if apiName != apiAuthName {
+		queries = append(queries, apiName)
+	}
+	if apiName != apiDownloadStation2Name {
+		queries = append(queries, apiDownloadStation2Name)
+	}
+	if apiName != apiDownloadStationName {
+		queries = append(queries, apiDownloadStationName)
+	}
+	q.Set("query", strings.Join(queries, ","))
 
 	full := fmt.Sprintf("%s/%s?%s", baseURL(s), infoAPI.Path, q.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, full, nil)
@@ -498,10 +517,22 @@ type Task struct {
 	Additional  TaskAdditional    `json:"additional"`
 }
 
-// AddTaskFromData fires `SYNO.DownloadStation.Task` create method
-// v2 with a multipart POST carrying the .torrent / .nzb bytes as a
-// form-file. Mirrors C# `DownloadStationTaskProxyV1.AddTaskFromData`
-// at `:24-36`.
+// AddTaskFromData adds a task from raw .torrent/.nzb bytes via a
+// multipart POST. Dispatches V1 or V2.
+func (p *Proxy) AddTaskFromData(ctx context.Context, s Settings, contents []byte, filename, destination string) error {
+	v, err := p.taskAPIVersion(ctx, s)
+	if err != nil {
+		return err
+	}
+	if v == 2 {
+		return p.addTaskFromDataV2(ctx, s, contents, filename, destination)
+	}
+	return p.addTaskFromDataV1(ctx, s, contents, filename, destination)
+}
+
+// addTaskFromDataV1 fires `SYNO.DownloadStation.Task` create
+// method v2 with a multipart POST. Mirrors C#
+// `DownloadStationTaskProxyV1.AddTaskFromData` at `:24-36`.
 //
 // Body shape (multipart form-data, all parameters as form fields):
 //
@@ -511,10 +542,7 @@ type Task struct {
 //	_sid=<SID>
 //	destination=<path>       (only when non-empty)
 //	file=@<filename> (file part with body bytes)
-//
-// Used by both the Torrent half's torrent-file arm (5.J78 follow-up)
-// and the Usenet half's nzb-file arm.
-func (p *Proxy) AddTaskFromData(ctx context.Context, s Settings, contents []byte, filename, destination string) error {
+func (p *Proxy) addTaskFromDataV1(ctx context.Context, s Settings, contents []byte, filename, destination string) error {
 	api, err := p.GetAPIInfo(ctx, s, apiDownloadStationName)
 	if err != nil {
 		return fmt.Errorf("downloadstation: discover %s: %w", apiDownloadStationName, err)
@@ -523,6 +551,103 @@ func (p *Proxy) AddTaskFromData(ctx context.Context, s Settings, contents []byte
 	if version < api.MinVersion || version > api.MaxVersion {
 		return fmt.Errorf("%w: %s version %d not supported (server: %d..%d)",
 			ErrUnavailable, apiDownloadStationName, version, api.MinVersion, api.MaxVersion)
+	}
+	sid, err := p.Authenticate(ctx, s, false)
+	if err != nil {
+		return err
+	}
+
+	body, contentType, err := buildV1AddMultipart(api.Name, version, "create", sid, destination, filename, contents)
+	if err != nil {
+		return err
+	}
+	full := fmt.Sprintf("%s/%s", baseURL(s), api.Path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, full, body)
+	if err != nil {
+		return fmt.Errorf("downloadstation: build %s create POST: %w", apiDownloadStationName, err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	_, err = p.execute(req, fmt.Sprintf("%s create", apiDownloadStationName), apiDownloadStationName)
+	return err
+}
+
+// buildV1AddMultipart composes the V1 add-multipart body —
+// extracted so the V1 implementation stays readable + so V2 can
+// share the same writer scaffold without sharing the field-shape
+// (V2 uses JSON-quoted values; see [buildV2AddMultipart]).
+func buildV1AddMultipart(apiName string, version int, method, sid, destination, filename string, contents []byte) (*bytes.Buffer, string, error) {
+	body := &bytes.Buffer{}
+	mw := multipart.NewWriter(body)
+	addField := func(name, value string) error {
+		hdr := textproto.MIMEHeader{}
+		hdr.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q`, name))
+		part, err := mw.CreatePart(hdr)
+		if err != nil {
+			return err
+		}
+		_, err = part.Write([]byte(value))
+		return err
+	}
+	if err := addField("api", apiName); err != nil {
+		return nil, "", fmt.Errorf("downloadstation: multipart api field: %w", err)
+	}
+	if err := addField("version", fmt.Sprintf("%d", version)); err != nil {
+		return nil, "", fmt.Errorf("downloadstation: multipart version field: %w", err)
+	}
+	if err := addField("method", method); err != nil {
+		return nil, "", fmt.Errorf("downloadstation: multipart method field: %w", err)
+	}
+	if err := addField("_sid", sid); err != nil {
+		return nil, "", fmt.Errorf("downloadstation: multipart _sid field: %w", err)
+	}
+	if strings.TrimSpace(destination) != "" {
+		if err := addField("destination", destination); err != nil {
+			return nil, "", fmt.Errorf("downloadstation: multipart destination field: %w", err)
+		}
+	}
+	fileHdr := textproto.MIMEHeader{}
+	fileHdr.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, "file", filename))
+	fileHdr.Set("Content-Type", "application/octet-stream")
+	part, err := mw.CreatePart(fileHdr)
+	if err != nil {
+		return nil, "", fmt.Errorf("downloadstation: multipart file part: %w", err)
+	}
+	if _, err := part.Write(contents); err != nil {
+		return nil, "", fmt.Errorf("downloadstation: write multipart file bytes: %w", err)
+	}
+	if err := mw.Close(); err != nil {
+		return nil, "", fmt.Errorf("downloadstation: close multipart writer: %w", err)
+	}
+	return body, mw.FormDataContentType(), nil
+}
+
+// addTaskFromDataV2 fires `SYNO.DownloadStation2.Task` create
+// method v2 with the DSM-7-specific multipart shape. Mirrors C#
+// `DownloadStationTaskProxyV2.AddTaskFromData` at `:25-41`.
+//
+// V2-specific oddities (verbatim from the C# wire):
+//
+//   - `type` form-parameter value is the JSON-quoted string `"file"`
+//     — literal double-quotes around the word file.
+//   - `file` form-parameter value is the JSON array `["fileData"]`.
+//   - `create_list` form-parameter value is the unquoted string
+//     `false`.
+//   - `destination` form-parameter value is the JSON-quoted
+//     directory `"<dir>"`.
+//   - The actual file bytes go as a form-file part with field name
+//     `fileData` (matching the `file` array element).
+//
+// The Synology DSM 7 surface serialises params as JSON-quoted
+// values even within a multipart form — preserved verbatim.
+func (p *Proxy) addTaskFromDataV2(ctx context.Context, s Settings, contents []byte, filename, destination string) error {
+	api, err := p.GetAPIInfo(ctx, s, apiDownloadStation2Name)
+	if err != nil {
+		return fmt.Errorf("downloadstation: discover %s: %w", apiDownloadStation2Name, err)
+	}
+	version := 2
+	if version < api.MinVersion || version > api.MaxVersion {
+		return fmt.Errorf("%w: %s version %d not supported (server: %d..%d)",
+			ErrUnavailable, apiDownloadStation2Name, version, api.MinVersion, api.MaxVersion)
 	}
 	sid, err := p.Authenticate(ctx, s, false)
 	if err != nil {
@@ -541,78 +666,126 @@ func (p *Proxy) AddTaskFromData(ctx context.Context, s Settings, contents []byte
 		_, err = part.Write([]byte(value))
 		return err
 	}
-	if err := addField("api", api.Name); err != nil {
-		return fmt.Errorf("downloadstation: multipart api field: %w", err)
-	}
-	if err := addField("version", fmt.Sprintf("%d", version)); err != nil {
-		return fmt.Errorf("downloadstation: multipart version field: %w", err)
-	}
-	if err := addField("method", "create"); err != nil {
-		return fmt.Errorf("downloadstation: multipart method field: %w", err)
-	}
-	if err := addField("_sid", sid); err != nil {
-		return fmt.Errorf("downloadstation: multipart _sid field: %w", err)
+	for _, kv := range []struct{ k, v string }{
+		{"api", api.Name},
+		{"version", fmt.Sprintf("%d", version)},
+		{"method", "create"},
+		{"_sid", sid},
+		// V2 JSON-quoted oddities:
+		{"type", `"file"`},
+		{"file", `["fileData"]`},
+		{"create_list", "false"},
+	} {
+		if err := addField(kv.k, kv.v); err != nil {
+			return fmt.Errorf("downloadstation: v2 multipart %s field: %w", kv.k, err)
+		}
 	}
 	if strings.TrimSpace(destination) != "" {
-		if err := addField("destination", destination); err != nil {
-			return fmt.Errorf("downloadstation: multipart destination field: %w", err)
+		if err := addField("destination", fmt.Sprintf(`%q`, destination)); err != nil {
+			return fmt.Errorf("downloadstation: v2 multipart destination field: %w", err)
 		}
 	}
 	fileHdr := textproto.MIMEHeader{}
-	fileHdr.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, "file", filename))
+	fileHdr.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, "fileData", filename))
 	fileHdr.Set("Content-Type", "application/octet-stream")
 	part, err := mw.CreatePart(fileHdr)
 	if err != nil {
-		return fmt.Errorf("downloadstation: multipart file part: %w", err)
+		return fmt.Errorf("downloadstation: v2 multipart fileData part: %w", err)
 	}
 	if _, err := part.Write(contents); err != nil {
-		return fmt.Errorf("downloadstation: write multipart file bytes: %w", err)
+		return fmt.Errorf("downloadstation: v2 write multipart fileData bytes: %w", err)
 	}
 	if err := mw.Close(); err != nil {
-		return fmt.Errorf("downloadstation: close multipart writer: %w", err)
+		return fmt.Errorf("downloadstation: v2 close multipart writer: %w", err)
 	}
 
 	full := fmt.Sprintf("%s/%s", baseURL(s), api.Path)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, full, body)
 	if err != nil {
-		return fmt.Errorf("downloadstation: build %s create POST: %w", apiDownloadStationName, err)
+		return fmt.Errorf("downloadstation: build %s create POST: %w", apiDownloadStation2Name, err)
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
-
-	_, err = p.execute(req, fmt.Sprintf("%s create", apiDownloadStationName), apiDownloadStationName)
+	_, err = p.execute(req, fmt.Sprintf("%s create", apiDownloadStation2Name), apiDownloadStation2Name)
 	return err
 }
 
-// AddTaskFromURL fires `SYNO.DownloadStation.Task` create method
-// (version 3) with the URL as a query param. Mirrors C#
-// `DownloadStationTaskProxyV1.AddTaskFromUrl` at `:38-49`. Used by
-// the Download magnet arm.
+// AddTaskFromURL adds a task by URL/magnet. Dispatches to the V1
+// or V2 implementation based on the DSM-advertised task API.
+// Mirrors the C# `IDownloadStationTaskProxy.AddTaskFromUrl`
+// interface contract at `Proxies/DownloadStationTaskProxySelector.cs:13`.
 func (p *Proxy) AddTaskFromURL(ctx context.Context, s Settings, taskURL, destination string) error {
+	v, err := p.taskAPIVersion(ctx, s)
+	if err != nil {
+		return err
+	}
+	if v == 2 {
+		return p.addTaskFromURLV2(ctx, s, taskURL, destination)
+	}
+	return p.addTaskFromURLV1(ctx, s, taskURL, destination)
+}
+
+// addTaskFromURLV1 fires `SYNO.DownloadStation.Task` create method
+// (version 3) with the URL as a query param. Mirrors C#
+// `DownloadStationTaskProxyV1.AddTaskFromUrl` at `:38-49`.
+func (p *Proxy) addTaskFromURLV1(ctx context.Context, s Settings, taskURL, destination string) error {
 	q := url.Values{}
 	q.Set("uri", taskURL)
 	if strings.TrimSpace(destination) != "" {
 		q.Set("destination", destination)
 	}
-	_, err := p.callTask(ctx, s, "create", 3, q)
+	_, err := p.callTaskAPI(ctx, s, apiDownloadStationName, "create", 3, q)
 	return err
 }
 
-// GetTasks fires `SYNO.DownloadStation.Task` list method (version
-// 1) with `additional=detail,transfer`. Returns the parsed task
-// list. Mirrors C# `DownloadStationTaskProxyV1.GetTasks` at
-// `:51-67`. The C# catch-all-and-empty arm at `:62-65` is preserved
-// — auth/transport errors return nil + the wrapped error; an
-// API-level error returns an empty slice with no error.
+// addTaskFromURLV2 fires `SYNO.DownloadStation2.Task` create
+// method (version 2) with `type=url&url=<url>&create_list=false`
+// + optional `destination=<dir>` query params. Mirrors C#
+// `DownloadStationTaskProxyV2.AddTaskFromUrl` at `:43-57`.
+//
+// Note: the V2 add-URL path uses plain query params (NOT the
+// JSON-quoted string oddity the V2 file-upload uses).
+func (p *Proxy) addTaskFromURLV2(ctx context.Context, s Settings, taskURL, destination string) error {
+	q := url.Values{}
+	q.Set("type", "url")
+	q.Set("url", taskURL)
+	q.Set("create_list", "false")
+	if strings.TrimSpace(destination) != "" {
+		q.Set("destination", destination)
+	}
+	_, err := p.callTaskAPI(ctx, s, apiDownloadStation2Name, "create", 2, q)
+	return err
+}
+
+// GetTasks lists tasks. Dispatches V1 or V2 based on the advertised
+// task API. Both paths return the same [Task] shape so the Provider
+// code stays unchanged.
 func (p *Proxy) GetTasks(ctx context.Context, s Settings) ([]*Task, error) {
+	v, err := p.taskAPIVersion(ctx, s)
+	if err != nil {
+		// Mirror the V1 catch-and-empty arm: only swallow API/RPC errors.
+		if errors.Is(err, ErrRPC) {
+			p.log.Debug("downloadstation: taskAPIVersion failed", "err", err)
+			return []*Task{}, nil
+		}
+		return nil, err
+	}
+	if v == 2 {
+		return p.getTasksV2(ctx, s)
+	}
+	return p.getTasksV1(ctx, s)
+}
+
+// getTasksV1 fires `SYNO.DownloadStation.Task` list method
+// (version 1) with `additional=detail,transfer`. Mirrors C#
+// `DownloadStationTaskProxyV1.GetTasks` at `:51-67`. The C#
+// catch-all-and-empty arm at `:62-65` is preserved.
+func (p *Proxy) getTasksV1(ctx context.Context, s Settings) ([]*Task, error) {
 	q := url.Values{}
 	q.Set("additional", "detail,transfer")
-	body, err := p.callTask(ctx, s, "list", 1, q)
+	body, err := p.callTaskAPI(ctx, s, apiDownloadStationName, "list", 1, q)
 	if err != nil {
-		// Mirror C#'s catch-and-swallow: only swallow API/RPC errors
-		// (the C# DownloadClientException catch); auth + transport
-		// errors propagate so Test can surface them.
 		if errors.Is(err, ErrRPC) {
-			p.log.Debug("downloadstation: GetTasks list failed", "err", err)
+			p.log.Debug("downloadstation: GetTasks (v1) list failed", "err", err)
 			return []*Task{}, nil
 		}
 		return nil, err
@@ -626,29 +799,156 @@ func (p *Proxy) GetTasks(ctx context.Context, s Settings) ([]*Task, error) {
 	return resp.Tasks, nil
 }
 
-// RemoveTask fires `SYNO.DownloadStation.Task` delete method
-// (version 1) with `id=<id>&force_complete=false`. Mirrors C#
-// `DownloadStationTaskProxyV1.RemoveTask` at `:69-76`.
+// getTasksV2 fires TWO `SYNO.DownloadStation2.Task` list calls
+// (`additional=detail` then `additional=transfer`) and merges the
+// results by ID. Mirrors C# `DownloadStationTaskProxyV2.GetTasks`
+// at `:59-108`. The dual-call pattern is a DSM 7 quirk — V2 list
+// doesn't accept comma-separated additional values; each
+// `additional=...` request returns only that arm's data.
+//
+// V2 also returns Status as an int (vs the snake-case string V1
+// uses). The Task wire shape is the same struct (TaskStatus has a
+// custom UnmarshalJSON that tolerates numeric input — see
+// proxy.go's `:50-58` numeric fallback).
+func (p *Proxy) getTasksV2(ctx context.Context, s Settings) ([]*Task, error) {
+	detail, err := p.fetchTasksV2(ctx, s, "detail")
+	if err != nil {
+		if errors.Is(err, ErrRPC) {
+			p.log.Debug("downloadstation: GetTasks (v2) detail failed", "err", err)
+			return []*Task{}, nil
+		}
+		return nil, err
+	}
+	if len(detail.Task) == 0 {
+		return []*Task{}, nil
+	}
+	transfer, err := p.fetchTasksV2(ctx, s, "transfer")
+	if err != nil {
+		if errors.Is(err, ErrRPC) {
+			// Detail-only is incomplete but better than nothing — the
+			// C# code returns empty on this branch via the same
+			// catch-and-swallow arm. The Go port surfaces what it has
+			// so RemoveCompletedDownloads can still process tasks even
+			// if the second call hiccups.
+			p.log.Debug("downloadstation: GetTasks (v2) transfer failed; returning detail-only", "err", err)
+			return detail.Task, nil
+		}
+		return nil, err
+	}
+	// Merge by ID — transfer entry's Additional.Transfer map
+	// fills in alongside the detail entry's Additional.Detail.
+	transferByID := make(map[string]*Task, len(transfer.Task))
+	for _, t := range transfer.Task {
+		if t != nil {
+			transferByID[t.ID] = t
+		}
+	}
+	for _, t := range detail.Task {
+		if t == nil {
+			continue
+		}
+		if tx := transferByID[t.ID]; tx != nil {
+			if t.Additional.Transfer == nil {
+				t.Additional.Transfer = tx.Additional.Transfer
+			}
+		}
+	}
+	return detail.Task, nil
+}
+
+// fetchTasksV2 runs ONE V2 list call against the requested
+// additional-field set.
+func (p *Proxy) fetchTasksV2(ctx context.Context, s Settings, additional string) (*v2TaskList, error) {
+	q := url.Values{}
+	q.Set("additional", additional)
+	body, err := p.callTaskAPI(ctx, s, apiDownloadStation2Name, "list", 1, q)
+	if err != nil {
+		return nil, err
+	}
+	var resp v2TaskList
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("downloadstation: unmarshal v2 task list (additional=%s): %w", additional, err)
+	}
+	return &resp, nil
+}
+
+// v2TaskList ports C# `DownloadStation2TaskInfoResponse` at
+// `Responses/DownloadStation2TaskInfoResponse.cs`.
+type v2TaskList struct {
+	Offset int     `json:"offset"`
+	Task   []*Task `json:"task"`
+	Total  int     `json:"total"`
+}
+
+// RemoveTask removes a task. Dispatches V1 or V2.
 func (p *Proxy) RemoveTask(ctx context.Context, s Settings, taskID string) error {
+	v, err := p.taskAPIVersion(ctx, s)
+	if err != nil {
+		return err
+	}
+	if v == 2 {
+		return p.removeTaskV2(ctx, s, taskID)
+	}
+	return p.removeTaskV1(ctx, s, taskID)
+}
+
+// removeTaskV1 fires `SYNO.DownloadStation.Task` delete method
+// (version 1). Mirrors C# `DownloadStationTaskProxyV1.RemoveTask`
+// at `:69-76`.
+func (p *Proxy) removeTaskV1(ctx context.Context, s Settings, taskID string) error {
 	q := url.Values{}
 	q.Set("id", taskID)
 	q.Set("force_complete", "false")
-	_, err := p.callTask(ctx, s, "delete", 1, q)
+	_, err := p.callTaskAPI(ctx, s, apiDownloadStationName, "delete", 1, q)
 	return err
 }
 
-// callTask is the shared per-call helper for SYNO.DownloadStation.Task
-// endpoints. Resolves the API path + appends the standard
-// `api=...&version=...&method=...&_sid=...` params, fires GET,
-// returns the raw `data` envelope.
-func (p *Proxy) callTask(ctx context.Context, s Settings, method string, version int, extra url.Values) ([]byte, error) {
-	api, err := p.GetAPIInfo(ctx, s, apiDownloadStationName)
+// removeTaskV2 fires `SYNO.DownloadStation2.Task` delete method
+// (version 2). Mirrors C# `DownloadStationTaskProxyV2.RemoveTask`
+// at `:110-117` — same query-param shape as V1 but a different
+// method version.
+func (p *Proxy) removeTaskV2(ctx context.Context, s Settings, taskID string) error {
+	q := url.Values{}
+	q.Set("id", taskID)
+	q.Set("force_complete", "false")
+	_, err := p.callTaskAPI(ctx, s, apiDownloadStation2Name, "delete", 2, q)
+	return err
+}
+
+// taskAPIVersion picks V2 when SYNO.DownloadStation2.Task is
+// advertised by the DSM, else V1. Returns 0+error when neither API
+// is reachable. Mirrors C# `DownloadStationTaskProxySelector.FetchProxy`
+// at `:51-66`'s "V2-or-V1" preference order with the C# `IsApiSupported`
+// = "info present in the cache" predicate. Sonarr DSM 7+ deployments
+// almost universally land in the V2 arm.
+func (p *Proxy) taskAPIVersion(ctx context.Context, s Settings) (int, error) {
+	// Triggering V1 discovery refreshes the cache with both task
+	// APIs (refreshAPIInfo always queries both); V1 has shipped on
+	// every DSM that runs Download Station so it's a safe entry.
+	if _, err := p.GetAPIInfo(ctx, s, apiDownloadStationName); err != nil {
+		return 0, err
+	}
+	p.mu.Lock()
+	_, hasV2 := p.apis[apiKey(s, apiDownloadStation2Name)]
+	p.mu.Unlock()
+	if hasV2 {
+		return 2, nil
+	}
+	return 1, nil
+}
+
+// callTaskAPI is the shared per-call helper for the SYNO.DownloadStation.Task
+// (V1) and SYNO.DownloadStation2.Task (V2) endpoints. Resolves the
+// API path + appends the standard `api=...&version=...&method=...&_sid=...`
+// params, fires GET, returns the raw `data` envelope.
+func (p *Proxy) callTaskAPI(ctx context.Context, s Settings, apiName, method string, version int, extra url.Values) ([]byte, error) {
+	api, err := p.GetAPIInfo(ctx, s, apiName)
 	if err != nil {
-		return nil, fmt.Errorf("downloadstation: discover %s: %w", apiDownloadStationName, err)
+		return nil, fmt.Errorf("downloadstation: discover %s: %w", apiName, err)
 	}
 	if version < api.MinVersion || version > api.MaxVersion {
 		return nil, fmt.Errorf("%w: %s version %d not supported (server: %d..%d)",
-			ErrUnavailable, apiDownloadStationName, version, api.MinVersion, api.MaxVersion)
+			ErrUnavailable, apiName, version, api.MinVersion, api.MaxVersion)
 	}
 	sid, err := p.Authenticate(ctx, s, false)
 	if err != nil {
@@ -667,9 +967,9 @@ func (p *Proxy) callTask(ctx context.Context, s Settings, method string, version
 	full := fmt.Sprintf("%s/%s?%s", baseURL(s), api.Path, q.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, full, nil)
 	if err != nil {
-		return nil, fmt.Errorf("downloadstation: build %s %s: %w", apiDownloadStationName, method, err)
+		return nil, fmt.Errorf("downloadstation: build %s %s: %w", apiName, method, err)
 	}
-	return p.execute(req, fmt.Sprintf("%s %s", apiDownloadStationName, method), apiDownloadStationName)
+	return p.execute(req, fmt.Sprintf("%s %s", apiName, method), apiName)
 }
 
 // ErrUnavailable wraps every transport-level failure (network
