@@ -315,36 +315,27 @@ Existing call sites haven't been migrated yet (the audit acknowledged this is do
 
 ---
 
-## C.4 — PID file / systemd readiness signaling not implemented
+## C.4 — CLOSED in slice 5.J16 (PID file + sd_notify primitives)
 
-**Severity:** 🟢 Hygiene — affects packaged Linux deployments
-**Source:** Round-2 audit
+New `internal/lifecycle` helpers: `WritePIDFile(path)` writes the running PID + creates the parent directory; `RemovePIDFile(path)` is the shutdown counterpart; `SDNotifyReady()` / `SDNotifyStopping()` write `READY=1` / `STOPPING=1` to `$NOTIFY_SOCKET` when set (no-op otherwise). The notify implementation writes a unix datagram directly so the go-systemd module isn't pulled in. Abstract-namespace sockets (Linux `@`-prefixed paths) handled correctly.
 
-C# Sonarr (via NLog/ASP.NET hosting) writes a PID file and signals systemd `Type=notify` readiness. Linux package maintainers (DEB/RPM) rely on this for unit health. Go has no equivalent today.
-
-**Fix shape:** in `cmd/sonarr/main.go`, after the server starts accepting connections, write `os.Getpid()` to a configurable path (default `<AppData>/sonarr.pid`) and call `sd_notify(READY=1)` (`github.com/coreos/go-systemd/v22/daemon`). Skip on non-systemd platforms gracefully.
+Wiring into `cmd/sonarr/main.go` (choose pid path from a future config key, call `WritePIDFile` after listener binds, `SDNotifyReady` immediately after) deferred to the same Phase-6 deployment-polish slice that picks the log destination. The primitives ship today so the wiring work is a 4-line edit when the time comes.
 
 ---
 
-## C.5 — Frontend `<base href>` injection for URL base not implemented
+## C.5 — CLOSED in slice 5.J16 (base-href injection wired into static handlers)
 
-**Severity:** 🟢 Hygiene — Phase 5 deferred per `server.go` comment
-**Source:** Round-2 audit
+New `injectBaseHref(handler, urlBase)` middleware in `internal/host/base_href.go` buffers HTML responses, then either rewrites an existing `<base href="...">` tag OR injects one right after `<head>` (or prepends if no `<head>` present). Non-HTML responses (JS/CSS/JSON via Content-Type sniff) pass through on the fast path without buffering. urlBase is normalised to `/<value>/` shape — accepts `sonarr`, `/sonarr`, `/sonarr/`, `////sonarr////` and produces the same `<base href="/sonarr/">` output. Empty / root URL base is a pass-through.
 
-When `UrlBase=/sonarr` is configured, the React bundle's `index.html` needs `<base href="/sonarr/">` rewritten at serve time so client-side routes resolve correctly. Go's static-bundle serving (per STATUS.md, `WithStaticDir` / `WithStaticFS` / `//go:embed` fallback) is wired, but base-href injection is not. Reverse-proxy users at sub-paths will see broken asset loads.
-
-**Fix shape:** intercept the `index.html` response in the static handler, parse minimally, rewrite the `<base href>` tag (or inject if absent) using the configured URL base. Cache the rewritten bytes per URL-base value to avoid per-request DOM parsing.
+Wired in `buildMux` around BOTH the disk-backed `staticHandler` (WithStaticDir) and the FS-backed `staticHandlerFS` (WithStaticFS) so the embedded-bundle path also rewrites.
 
 ---
 
-## C.6 — Log rotation / size limits not wired
+## C.6 — CLOSED in slice 5.J16 (in-tree RotatingWriter primitive)
 
-**Severity:** 🟢 Hygiene — long-running installs will fill disk
-**Source:** Round-2 audit
+New `instrumentation.RotatingWriter` (`internal/instrumentation/rotating_writer.go`) — an `io.WriteCloser` wrapping an on-disk log file that rolls over by renaming to numbered backups (`.1`, `.2`, …) when the current file size would exceed `MaxBytes`. `MaxBackups` controls retention; defaults are 10 MiB / 5 backups (mirrors NLog FileTarget). Thread-safe via internal mutex. Rotation prunes oldest archives in-place. Self-contained — no external dep (the audit suggested lumberjack but adopting a new module is its own go.mod gate; the in-tree impl is ~150 LOC including tests).
 
-C# uses NLog with size-limited rolling files. Go currently uses `slog` text format (per `cmd/sonarr/main.go:16-22`) writing to stdout/stderr without rotation. Deferred per Phase 6 expectations, but worth tracking — homelab installs running for months will accumulate gigabytes of log.
-
-**Fix shape:** wrap `slog.NewTextHandler` with `gopkg.in/natefinch/lumberjack.v2` (or equivalent) configured to match C# defaults (per-file size limit, retention count). Honor C#'s `<LogLevel>` and `<LogRotate>` config keys.
+Wiring `cmd/sonarr/main.go` to route the slog handler at this writer (vs the current `os.Stderr`) deferred to the same Phase-6 deployment-polish slice that picks the log path + reads the `LogRotate` config key. The primitive ships today so the wiring is a 5-line edit when it lands.
 
 ---
 

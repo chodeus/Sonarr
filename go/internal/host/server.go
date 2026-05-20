@@ -383,10 +383,14 @@ func (s *Server) buildMux() *http.ServeMux {
 		if err != nil {
 			s.logger.Error("static handler init failed", "err", err, "dir", s.staticDir)
 		} else {
-			mux.Handle("/", static)
+			// Audit fix C.5: when URL base is set (e.g. "/sonarr"),
+			// rewrite the React bundle's `<base href>` so client-side
+			// routing resolves under the prefix. No-op when urlBase
+			// is empty.
+			mux.Handle("/", injectBaseHref(static, s.urlBase))
 		}
 	case s.staticFS != nil:
-		mux.Handle("/", staticHandlerFS(s.staticFS))
+		mux.Handle("/", injectBaseHref(staticHandlerFS(s.staticFS), s.urlBase))
 	}
 	return mux
 }
