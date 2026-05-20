@@ -7,11 +7,15 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/indexers/hdbits"
+	"sonarr.tv/sonarr/internal/indexersearch"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/provider"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 type stubClient struct {
@@ -297,7 +301,7 @@ func TestIndexer_FetchRecentInvalidJSONErrors(t *testing.T) {
 	}
 }
 
-func TestIndexer_FetchSearchAlwaysEmpty(t *testing.T) {
+func TestIndexer_FetchSearch_UnknownCriteriaEmpty(t *testing.T) {
 	t.Parallel()
 	i := hdbits.NewIndexer(nil)
 	d := i.DefaultDefinitions()[0]
@@ -310,7 +314,268 @@ func TestIndexer_FetchSearchAlwaysEmpty(t *testing.T) {
 		t.Fatalf("FetchSearch: %v", err)
 	}
 	if len(rels) != 0 {
-		t.Errorf("FetchSearch (J154) always returns empty; got %d", len(rels))
+		t.Errorf("Unknown criteria should yield empty; got %d", len(rels))
+	}
+}
+
+func TestIndexer_FetchSearch_NoTvdbIDSkipsHTTP(t *testing.T) {
+	t.Parallel()
+	stub := &stubClient{
+		postFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			t.Errorf("HTTP should not be called without TvdbID; got %s", req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := hdbits.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	s := d.Settings.(*hdbits.Settings)
+	s.Username = "u"
+	s.ApiKey = "p"
+	i.SetDefinition(d)
+
+	c := &indexersearch.SingleEpisodeCriteria{
+		SeasonNumber:  1,
+		EpisodeNumber: 5,
+	}
+	c.Episodes = []episodes.Episode{{SeasonNumber: 1, EpisodeNumber: 5}}
+	c.Series = &series.Series{} // TvdbID=0
+	rels, err := i.FetchSearch(context.Background(), c)
+	if err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(rels) != 0 {
+		t.Errorf("expected empty; got %d", len(rels))
+	}
+}
+
+func TestIndexer_FetchSearch_SingleEpisodeFanout(t *testing.T) {
+	t.Parallel()
+	bodies := []map[string]any{}
+	stub := &stubClient{
+		postFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			var body map[string]any
+			_ = json.Unmarshal(req.ContentData, &body)
+			bodies = append(bodies, body)
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := hdbits.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	s := d.Settings.(*hdbits.Settings)
+	s.Username = "u"
+	s.ApiKey = "p"
+	i.SetDefinition(d)
+
+	c := &indexersearch.SingleEpisodeCriteria{
+		SeasonNumber:  1,
+		EpisodeNumber: 5,
+	}
+	c.Episodes = []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 5},
+		{SeasonNumber: 1, EpisodeNumber: 6},
+	}
+	c.Series = &series.Series{TvdbID: 12345}
+	rels, err := i.FetchSearch(context.Background(), c)
+	if err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected 2 POSTs (1 per episode); got %d", len(bodies))
+	}
+	if len(rels) != 1 {
+		t.Errorf("expected 1 deduped release; got %d", len(rels))
+	}
+	for i, want := range []float64{5, 6} {
+		tvdb, _ := bodies[i]["tvdb"].(map[string]any)
+		if tvdb["id"].(float64) != 12345 {
+			t.Errorf("body[%d].tvdb.id = %v", i, tvdb["id"])
+		}
+		if tvdb["episode"].(float64) != want {
+			t.Errorf("body[%d].tvdb.episode = %v, want %v", i, tvdb["episode"], want)
+		}
+	}
+}
+
+func TestIndexer_FetchSearch_SeasonFanoutDistinct(t *testing.T) {
+	t.Parallel()
+	bodies := []map[string]any{}
+	stub := &stubClient{
+		postFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			var body map[string]any
+			_ = json.Unmarshal(req.ContentData, &body)
+			bodies = append(bodies, body)
+			return mkResponse(req, []byte(`{"status":0,"data":[]}`)), nil
+		},
+	}
+	i := hdbits.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	s := d.Settings.(*hdbits.Settings)
+	s.Username = "u"
+	s.ApiKey = "p"
+	i.SetDefinition(d)
+
+	c := &indexersearch.SeasonCriteria{SeasonNumber: 1}
+	c.Series = &series.Series{TvdbID: 42}
+	c.Episodes = []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1},
+		{SeasonNumber: 1, EpisodeNumber: 2},
+		{SeasonNumber: 2, EpisodeNumber: 1},
+	}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected 2 POSTs (1 per distinct season); got %d", len(bodies))
+	}
+	seasons := []float64{
+		bodies[0]["tvdb"].(map[string]any)["season"].(float64),
+		bodies[1]["tvdb"].(map[string]any)["season"].(float64),
+	}
+	if seasons[0] != 1 || seasons[1] != 2 {
+		t.Errorf("seasons = %v, want [1 2]", seasons)
+	}
+}
+
+func TestIndexer_FetchSearch_DailyEpisodeUsesAirdateSearch(t *testing.T) {
+	t.Parallel()
+	var body map[string]any
+	stub := &stubClient{
+		postFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			_ = json.Unmarshal(req.ContentData, &body)
+			return mkResponse(req, []byte(`{"status":0,"data":[]}`)), nil
+		},
+	}
+	i := hdbits.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	s := d.Settings.(*hdbits.Settings)
+	s.Username = "u"
+	s.ApiKey = "p"
+	i.SetDefinition(d)
+
+	c := &indexersearch.DailyEpisodeCriteria{
+		AirDate: time.Date(2025, 5, 19, 0, 0, 0, 0, time.UTC),
+	}
+	c.Series = &series.Series{TvdbID: 42}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if body["search"] != "2025-05-19" {
+		t.Errorf("body.search = %v, want 2025-05-19", body["search"])
+	}
+}
+
+func TestIndexer_FetchSearch_DailySeasonUsesYearSearch(t *testing.T) {
+	t.Parallel()
+	var body map[string]any
+	stub := &stubClient{
+		postFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			_ = json.Unmarshal(req.ContentData, &body)
+			return mkResponse(req, []byte(`{"status":0,"data":[]}`)), nil
+		},
+	}
+	i := hdbits.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	s := d.Settings.(*hdbits.Settings)
+	s.Username = "u"
+	s.ApiKey = "p"
+	i.SetDefinition(d)
+
+	c := &indexersearch.DailySeasonCriteria{Year: 2025}
+	c.Series = &series.Series{TvdbID: 42}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if body["search"] != "2025-" {
+		t.Errorf("body.search = %v, want \"2025-\"", body["search"])
+	}
+}
+
+func TestIndexer_FetchSearch_AnimeEpisodePreservesCSharpBug(t *testing.T) {
+	t.Parallel()
+	stub := &stubClient{
+		postFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			t.Errorf("HTTP should not fire for AnimeEpisode (C# bug preserved); got %s", req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := hdbits.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	s := d.Settings.(*hdbits.Settings)
+	s.Username = "u"
+	s.ApiKey = "p"
+	i.SetDefinition(d)
+
+	c := &indexersearch.AnimeEpisodeCriteria{
+		AbsoluteEpisodeNumber: 7,
+		SeasonNumber:          1,
+		EpisodeNumber:         5,
+	}
+	c.Series = &series.Series{TvdbID: 42}
+	c.Episodes = []episodes.Episode{{SeasonNumber: 1, EpisodeNumber: 5}}
+	rels, err := i.FetchSearch(context.Background(), c)
+	if err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(rels) != 0 {
+		t.Errorf("expected empty (C# bug); got %d", len(rels))
+	}
+}
+
+func TestIndexer_FetchSearch_AnimeSeasonFanout(t *testing.T) {
+	t.Parallel()
+	bodies := []map[string]any{}
+	stub := &stubClient{
+		postFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			var body map[string]any
+			_ = json.Unmarshal(req.ContentData, &body)
+			bodies = append(bodies, body)
+			return mkResponse(req, []byte(`{"status":0,"data":[]}`)), nil
+		},
+	}
+	i := hdbits.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	s := d.Settings.(*hdbits.Settings)
+	s.Username = "u"
+	s.ApiKey = "p"
+	i.SetDefinition(d)
+
+	c := &indexersearch.AnimeSeasonCriteria{SeasonNumber: 1}
+	c.Series = &series.Series{TvdbID: 42}
+	c.Episodes = []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1},
+		{SeasonNumber: 1, EpisodeNumber: 2},
+	}
+	if _, err := i.FetchSearch(context.Background(), c); err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(bodies) != 1 {
+		t.Errorf("expected 1 POST (1 distinct season); got %d", len(bodies))
+	}
+}
+
+func TestIndexer_FetchSearch_SpecialEpisodeEmpty(t *testing.T) {
+	t.Parallel()
+	stub := &stubClient{
+		postFn: func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+			t.Errorf("HTTP should not fire for SpecialEpisode; got %s", req.URL.String())
+			return mkResponse(req, []byte(minimalFeed)), nil
+		},
+	}
+	i := hdbits.NewIndexer(stub)
+	d := i.DefaultDefinitions()[0]
+	s := d.Settings.(*hdbits.Settings)
+	s.Username = "u"
+	s.ApiKey = "p"
+	i.SetDefinition(d)
+
+	c := &indexersearch.SpecialEpisodeCriteria{EpisodeQueryTitles: []string{"Show OVA"}}
+	c.Series = &series.Series{TvdbID: 42}
+	rels, err := i.FetchSearch(context.Background(), c)
+	if err != nil {
+		t.Fatalf("FetchSearch: %v", err)
+	}
+	if len(rels) != 0 {
+		t.Errorf("expected empty; got %d", len(rels))
 	}
 }
 

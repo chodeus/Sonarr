@@ -239,13 +239,14 @@ func (s *dbIndexerSource) buildAdapter(row *indexers.Indexer, def *provider.Defi
 			rs, err := idx.FetchRecent(ctx)
 			return upcastTorrentInfos(rs), err
 		}
-		// Slice 5.J154 (first slice of the HDBits arc): only the
-		// JSON POST `latest` FetchRecent path lands. The per-criteria
-		// search routing (HDBitsRequestGenerator.cs:24-137 — Tvdb-id
-		// per-episode/season fan-out with Clone-and-mutate query
-		// pattern) ships as a follow-up slice. Leave FetchSearchFunc
-		// nil so the adapter surfaces the "does not support search"
-		// error instead of silently returning empty.
+		// Slice 5.J155 closes the J154 FetchSearch deferral with
+		// the Tvdb-keyed dispatch (SingleEpisode + Season + Daily
+		// + DailySeason + AnimeSeason fan-out; AnimeEpisode
+		// preserves a documented C# bug; Special returns empty).
+		common.FetchSearchFunc = func(ctx context.Context, c indexersearch.Criteria) ([]any, error) {
+			rs, err := idx.FetchSearch(ctx, c)
+			return upcastTorrentInfos(rs), err
+		}
 		return common, nil
 
 	case "FileList":
