@@ -712,6 +712,78 @@ func TestProvider_RemoveItem_PropagatesProxyError(t *testing.T) {
 	}
 }
 
+func TestProvider_GetStatus_PopulatesOutputRootFoldersFromConfig(t *testing.T) {
+	// TvCategory blank → just the SaveAs base lands in OutputRootFolders.
+	doer := newScripted()
+	doer.queue("/api/settings", `{"settings":{"libtorrent":{"download_defaults":{"saveas":"/tribler/dl"}}}}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	info, err := p.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(info.OutputRootFolders) != 1 {
+		t.Fatalf("OutputRootFolders = %v, want one entry", info.OutputRootFolders)
+	}
+	if info.OutputRootFolders[0].FullPath() != "/tribler/dl" {
+		t.Errorf("OutputRootFolders[0] = %v, want /tribler/dl", info.OutputRootFolders[0])
+	}
+}
+
+func TestProvider_GetStatus_TvCategoryAppendedWithLeadingDot(t *testing.T) {
+	// TvCategory=sonarr → `<base>/.<category>` (note the LEADING DOT
+	// — Tribler-specific quirk per C# :170's string.Format).
+	doer := newScripted()
+	doer.queue("/api/settings", `{"settings":{"libtorrent":{"download_defaults":{"saveas":"/tribler/dl"}}}}`)
+	s := newSettings()
+	s.TvCategory = "sonarr"
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, s, tribler.NewProxy(doer, nil), nil)
+	info, _ := p.GetStatus(context.Background())
+	if len(info.OutputRootFolders) != 1 || info.OutputRootFolders[0].FullPath() != "/tribler/dl/.sonarr" {
+		t.Errorf("OutputRootFolders = %v, want [/tribler/dl/.sonarr] (leading dot before category)", info.OutputRootFolders)
+	}
+}
+
+func TestProvider_GetStatus_AppliesRemotePathMapper(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/settings", `{"settings":{"libtorrent":{"download_defaults":{"saveas":"/remote/dl"}}}}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	p.SetRemotePathMapper(triblerStubRemapper{from: "/remote/dl", to: "/local/dl"})
+	info, _ := p.GetStatus(context.Background())
+	if len(info.OutputRootFolders) != 1 || info.OutputRootFolders[0].FullPath() != "/local/dl" {
+		t.Errorf("OutputRootFolders = %v, want [/local/dl] (remapped)", info.OutputRootFolders)
+	}
+}
+
+func TestProvider_GetStatus_EmptySaveAsProducesNoRoots(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/settings", `{"settings":{"libtorrent":{"download_defaults":{"saveas":""}}}}`)
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, newSettings(), tribler.NewProxy(doer, nil), nil)
+	info, _ := p.GetStatus(context.Background())
+	if len(info.OutputRootFolders) != 0 {
+		t.Errorf("OutputRootFolders = %v, want empty when SaveAs blank", info.OutputRootFolders)
+	}
+}
+
+func TestProvider_GetStatus_ConfigFailureSwallowed(t *testing.T) {
+	// Use Host=localhost so the IsLocalhost flag confirms GetStatus
+	// returned a sensible result even after the config probe failed.
+	doer := newScripted()
+	doer.queueStatus(http.StatusInternalServerError)
+	s := newSettings()
+	s.Host = "localhost"
+	p := tribler.New(&downloadclients.DownloadClient{Name: "TR"}, s, tribler.NewProxy(doer, nil), nil)
+	info, err := p.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v, want nil (probe failure swallowed)", err)
+	}
+	if !info.IsLocalhost {
+		t.Errorf("IsLocalhost = false, want true (Host=localhost)")
+	}
+	if len(info.OutputRootFolders) != 0 {
+		t.Errorf("OutputRootFolders = %v, want empty after probe failure", info.OutputRootFolders)
+	}
+}
+
 type triblerStubRemapper struct{ from, to string }
 
 func (s triblerStubRemapper) RemapRemoteToLocal(_ context.Context, _ string, p ospath.OsPath) (ospath.OsPath, error) {

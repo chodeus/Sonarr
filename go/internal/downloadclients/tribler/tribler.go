@@ -18,16 +18,18 @@ import (
 // implementation for the C# `TriblerDownloadClient` class at
 // `src/NzbDrone.Core/Download/Clients/Tribler/TriblerDownloadClient.cs:1-298`.
 //
-// Functionally complete after the 5.J81 → 5.J84 arc: Test runs
+// Functionally complete after the 5.J81 → 5.J89 arc: Test runs
 // against /api/settings (auth probe); Download dispatches via PUT
 // /api/downloads (magnet-only — torrent files surface
 // ErrTorrentFileUnsupported); GetItems walks /api/downloads with
 // the 6-arm status table + ETA clamp + OutputPath resolution
 // (single-file suffix from /api/downloads/<hash>/files); RemoveItem
-// fires DELETE /api/downloads/<hash>; GetStatus is IsLocalhost-only.
-// Documented deferred pieces: the HasReachedSeedLimit cleanup-gate
-// (needs SeedingMode/SeedingRatio/SeedingTime in Config) + the
-// GetStatus OutputRootFolders arm (the SaveAs+category composition).
+// fires DELETE /api/downloads/<hash>; GetStatus reads SaveAs from
+// /api/settings + appends `/.<TvCategory>` (note leading dot — see
+// the GetStatus doc comment) + RemotePathMapper translation.
+// Documented deferred piece: the HasReachedSeedLimit cleanup-gate
+// (needs SeedingMode/SeedingRatio/SeedingTime in Config) — surfaces
+// in GetItems as CanBeRemoved/CanMoveFiles defaulting to false.
 type TriblerDownloadClient struct {
 	settings Settings
 	def      *downloadclients.DownloadClient
@@ -341,11 +343,47 @@ func (t *TriblerDownloadClient) RemoveItem(ctx context.Context, item *downloadcl
 	return nil
 }
 
-// GetStatus ports the IsLocalhost arm of C# `:163`. The
-// OutputRootFolders arm (which reads `settings.libtorrent.download_defaults.saveas`)
-// is deferred to the GetDownloadDirectory follow-up.
-func (t *TriblerDownloadClient) GetStatus(_ context.Context) (*downloadclients.ClientInfo, error) {
-	return &downloadclients.ClientInfo{IsLocalhost: isLocalHost(t.settings.Host)}, nil
+// GetStatus ports `TriblerDownloadClient.GetStatus` at C#
+// `:163-178`. Resolves the configured save directory via
+// [Proxy.GetConfig] (reads `settings.libtorrent.download_defaults.saveas`),
+// then optionally appends `/.<TvCategory>` — note the LEADING DOT
+// before TvCategory (matches C# `:170`'s
+// `string.Format("{0}/.{1}", destDir, Settings.TvCategory)`).
+// This is a Tribler-specific quirk; the Download arm's
+// resolveDownloadDirectory joins with `<base>/<category>` (no dot).
+// Finally, the RemotePathMapper (when bound) translates the path.
+//
+// Config-probe failures are NON-fatal — GetStatus swallows the
+// error and returns the IsLocalhost-only ClientInfo so the queue
+// healthcheck still surfaces the configured host. Same posture as
+// the Hadouken / DownloadStation / Freebox GetStatus implementations.
+func (t *TriblerDownloadClient) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, error) {
+	info := &downloadclients.ClientInfo{IsLocalhost: isLocalHost(t.settings.Host)}
+	if t.proxy == nil {
+		return info, nil
+	}
+	cfg, err := t.proxy.GetConfig(ctx, t.settings)
+	if err != nil {
+		t.log.Debug("tribler: GetStatus GetConfig failed", "err", err)
+		return info, nil
+	}
+	dir := strings.TrimSpace(cfg.Settings.LibTorrent.DownloadDefaults.SaveAs)
+	if dir == "" {
+		return info, nil
+	}
+	if cat := strings.TrimSpace(t.settings.TvCategory); cat != "" {
+		dir = strings.TrimRight(dir, "/") + "/." + cat
+	}
+	remote := ospath.New(dir)
+	if t.rpm != nil {
+		if mapped, mapErr := t.rpm.RemapRemoteToLocal(ctx, t.settings.Host, remote); mapErr == nil {
+			remote = mapped
+		} else {
+			t.log.Debug("tribler: GetStatus RemapRemoteToLocal failed", "directory", dir, "err", mapErr)
+		}
+	}
+	info.OutputRootFolders = append(info.OutputRootFolders, remote)
+	return info, nil
 }
 
 // MarkItemAsImported is the C# base default.
