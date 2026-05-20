@@ -712,6 +712,157 @@ func TestIndexer_FetchRecentNilClientErrors(t *testing.T) {
 	}
 }
 
+// --- LastRecentTorrentID tier-walk (J158) ---
+
+func TestIndexer_LastRecentTorrentID_RoundtripsThroughSetter(t *testing.T) {
+	t.Parallel()
+	i := broadcasthenet.NewIndexer(nil)
+	if got := i.LastRecentTorrentID(); got != 0 {
+		t.Errorf("default LastRecentTorrentID = %d, want 0", got)
+	}
+	i.SetLastRecentTorrentID(12345)
+	if got := i.LastRecentTorrentID(); got != 12345 {
+		t.Errorf("after Set(12345) = %d", got)
+	}
+	i.SetLastRecentTorrentID(-1)
+	if got := i.LastRecentTorrentID(); got != -1 {
+		t.Errorf("after Set(-1) = %d", got)
+	}
+}
+
+// idAgeQuery captures the (id, age) tuple from a JSON-RPC `getTorrents`
+// body — the two BTN-specific filter fields the recent-fetch tier walk
+// sets.
+type idAgeQuery struct {
+	ID, Age string
+}
+
+func decodeIDAgeQuery(t *testing.T, body []byte) idAgeQuery {
+	t.Helper()
+	var rpc map[string]any
+	if err := json.Unmarshal(body, &rpc); err != nil {
+		t.Fatalf("decodeIDAgeQuery: %v (raw=%q)", err, body)
+	}
+	params := rpc["params"].([]any)
+	q := params[1].(map[string]any)
+	out := idAgeQuery{}
+	if v, ok := q["id"].(string); ok {
+		out.ID = v
+	}
+	if v, ok := q["age"].(string); ok {
+		out.Age = v
+	}
+	return out
+}
+
+func TestIndexer_FetchRecent_LastRecentTorrentIDEmitsIDTierThenAgeTier(t *testing.T) {
+	t.Parallel()
+	// All feeds empty → tier 1 (id) yields no results → tier 2 (age)
+	// fires. Both query shapes captured.
+	stub := &stubClient{}
+	bodies := make([][]byte, 0, 2)
+	stub.postFn = func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+		bodies = append(bodies, append([]byte(nil), req.ContentData...))
+		return mkResponse(req, []byte(emptyFeed), 200), nil
+	}
+	i := newBoundIndexer(t, stub)
+	i.SetLastRecentTorrentID(12345)
+
+	rels, err := i.FetchRecent(context.Background())
+	if err != nil {
+		t.Fatalf("FetchRecent: %v", err)
+	}
+	if len(rels) != 0 {
+		t.Errorf("expected 0 releases; got %d", len(rels))
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected 2 bodies (id tier + age tier); got %d", len(bodies))
+	}
+	if got, want := decodeIDAgeQuery(t, bodies[0]), (idAgeQuery{ID: ">=12245"}); got != want {
+		t.Errorf("tier1 = %+v, want %+v (the -100 is C#'s overlap window)", got, want)
+	}
+	if got, want := decodeIDAgeQuery(t, bodies[1]), (idAgeQuery{Age: "<=86400"}); got != want {
+		t.Errorf("tier2 = %+v, want %+v", got, want)
+	}
+}
+
+func TestIndexer_FetchRecent_Tier1WithResultsSkipsTier2(t *testing.T) {
+	t.Parallel()
+	// Tier 1 returns successFeed (page 1) then emptyFeed (page 2 →
+	// stop). Tier 2 (age) must NOT fire because tier 1 produced
+	// releases.
+	calls := 0
+	stub := &stubClient{}
+	stub.postFn = func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+		calls++
+		if calls == 1 {
+			return mkResponse(req, []byte(successFeed), 200), nil
+		}
+		return mkResponse(req, []byte(emptyFeed), 200), nil
+	}
+	i := newBoundIndexer(t, stub)
+	i.SetLastRecentTorrentID(12345)
+
+	rels, err := i.FetchRecent(context.Background())
+	if err != nil {
+		t.Fatalf("FetchRecent: %v", err)
+	}
+	if len(rels) != 2 {
+		t.Errorf("expected 2 releases from tier 1; got %d", len(rels))
+	}
+	// 2 calls = page 1 (success) + page 2 (empty) of tier 1; no tier
+	// 2 because tier 1 short-circuited the tier walk.
+	if calls != 2 {
+		t.Errorf("calls = %d, want 2 (tier 1 only); tier 2 should be skipped", calls)
+	}
+}
+
+func TestIndexer_FetchRecent_LastRecentTorrentIDZeroSkipsIDTier(t *testing.T) {
+	t.Parallel()
+	stub := &stubClient{}
+	bodies := make([][]byte, 0, 1)
+	stub.postFn = func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+		bodies = append(bodies, append([]byte(nil), req.ContentData...))
+		return mkResponse(req, []byte(emptyFeed), 200), nil
+	}
+	i := newBoundIndexer(t, stub)
+	// Do NOT call SetLastRecentTorrentID — default 0.
+
+	if _, err := i.FetchRecent(context.Background()); err != nil {
+		t.Fatalf("FetchRecent: %v", err)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("expected 1 query (age tier only); got %d", len(bodies))
+	}
+	if got, want := decodeIDAgeQuery(t, bodies[0]), (idAgeQuery{Age: "<=86400"}); got != want {
+		t.Errorf("query = %+v, want %+v", got, want)
+	}
+}
+
+func TestIndexer_FetchRecent_LastRecentTorrentIDNegativeSkipsIDTier(t *testing.T) {
+	t.Parallel()
+	// Defensive: negative watermarks should not produce a malformed
+	// `>=−100` id tier — they should be treated the same as zero.
+	stub := &stubClient{}
+	bodies := make([][]byte, 0, 1)
+	stub.postFn = func(_ context.Context, req *httpclient.Request) (*httpclient.Response, error) {
+		bodies = append(bodies, append([]byte(nil), req.ContentData...))
+		return mkResponse(req, []byte(emptyFeed), 200), nil
+	}
+	i := newBoundIndexer(t, stub)
+	i.SetLastRecentTorrentID(-1)
+
+	if _, err := i.FetchRecent(context.Background()); err != nil {
+		t.Fatalf("FetchRecent: %v", err)
+	}
+	if len(bodies) != 1 {
+		t.Errorf("expected 1 query (negative watermark ignored); got %d", len(bodies))
+	}
+	if got := decodeIDAgeQuery(t, bodies[0]); got.ID != "" {
+		t.Errorf("query carried id %q; should be empty for negative watermark", got.ID)
+	}
+}
+
 func TestRegistry_ConstructorRegistered(t *testing.T) {
 	t.Parallel()
 	ctor, ok := provider.Default().Lookup(provider.FamilyIndexer,

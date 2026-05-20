@@ -22,6 +22,20 @@ type Indexer struct {
 	HTTPClient httpclient.Client
 
 	definition *provider.Definition
+
+	// lastRecentTorrentID mirrors the BTN-specific property at
+	// `BroadcastheNetRequestGenerator.cs:14` — when > 0, FetchRecent's
+	// tier 1 narrows the recent-fetch query to `id >= lastID-100`
+	// (the -100 is C#'s overlap window guarding against deletions or
+	// reordering since the last sync). The composition root is meant
+	// to populate it from the indexerstatus persistence — see C#
+	// `BroadcastheNet.cs:29-34` for the GetLastRssSyncReleaseInfo +
+	// "BTN-<id>" parse. That wiring (capturing the max TorrentID
+	// after each fetch + persisting it back as a Guid-shaped
+	// ReleaseInfo) is still deferred; until it lands, this field
+	// stays zero and FetchRecent falls through to the age-only path
+	// — behaviour-equivalent to pre-J158.
+	lastRecentTorrentID int
 }
 
 // NewIndexer constructs a BroadcastheNet indexer.
@@ -57,6 +71,20 @@ func (i *Indexer) Definition() *provider.Definition { return i.definition }
 // SetDefinition binds the Definition.
 func (i *Indexer) SetDefinition(d *provider.Definition) { i.definition = d }
 
+// LastRecentTorrentID returns the most recently seen BTN TorrentID
+// the indexer is using as a fast-path watermark for recent fetches.
+// Zero means no watermark known and FetchRecent will only walk the
+// 24-hour age tier.
+func (i *Indexer) LastRecentTorrentID() int { return i.lastRecentTorrentID }
+
+// SetLastRecentTorrentID seeds the fast-path watermark used by
+// FetchRecent's tier 1. Mirrors the C# property setter at
+// `BroadcastheNetRequestGenerator.cs:14` — the composition root or a
+// follow-up indexerstatus-populator slice will call this before
+// invoking FetchRecent. Negative or zero values are tolerated (treated
+// as "no watermark").
+func (i *Indexer) SetLastRecentTorrentID(id int) { i.lastRecentTorrentID = id }
+
 // Test runs Settings.Validate. Same validate-only posture as the
 // sibling indexers.
 func (i *Indexer) Test(_ context.Context) provider.ValidationResult {
@@ -74,15 +102,27 @@ func (i *Indexer) RequestAction(_ string, _ map[string]string) (any, error) {
 	return nil, nil
 }
 
-// FetchRecent issues paginated `getTorrents` JSON-RPC calls with
-// `Age=<=86400` (24-hour window). C# cite:
-// `BroadcastheNetRequestGenerator.cs:22-40` (the second tier; the
-// LastRecentTorrentId optimization at `:26-32` is deferred to a
-// follow-up slice once IIndexerStatusService is wired into the
-// search-time deps).
+// FetchRecent issues paginated `getTorrents` JSON-RPC calls. C# cite:
+// `BroadcastheNetRequestGenerator.cs:22-40`.
 //
-// Walks up to [maxPages] pages, Guid-dedupes across pages, and
-// short-circuits as soon as a page returns zero new torrents.
+// Two tiers, walked in order with short-circuit on the first tier that
+// produces any results — mirrors C# `IndexerPageableRequestChain.Add`
+// (tier 1) + `.AddTier` (tier 2) semantics:
+//
+//   - TIER 1 (only when LastRecentTorrentID > 0): `{Id: ">=<lastID-100>"}`.
+//     The -100 is C#'s overlap window — guards against deletions or
+//     reordering since the last sync.
+//   - TIER 2 (always present): `{Age: "<=86400"}` 24-hour fallback.
+//
+// Within a tier, fetchPaged walks up to [maxPages] pages, Guid-dedupes
+// across pages, and short-circuits as soon as a page returns zero new
+// torrents.
+//
+// The populate-from-indexerstatus side of the C# wiring at
+// `BroadcastheNet.cs:29-34` (read GetLastRssSyncReleaseInfo, parse
+// "BTN-<id>" out of its Guid) is still deferred — the field defaults
+// to zero so callers that don't set it get the age-only behaviour
+// identical to pre-J158.
 func (i *Indexer) FetchRecent(ctx context.Context) ([]*parser.TorrentInfo, error) {
 	settings, err := i.settings()
 	if err != nil {
@@ -91,7 +131,24 @@ func (i *Indexer) FetchRecent(ctx context.Context) ([]*parser.TorrentInfo, error
 	if i.HTTPClient == nil {
 		return nil, errors.New("broadcasthenet: no HTTPClient configured")
 	}
-	return i.fetchPaged(ctx, settings, &torrentQuery{Age: "<=86400"})
+	for _, q := range buildRecentTiers(i.lastRecentTorrentID) {
+		if rels := i.fetchPaged(ctx, settings, q); len(rels) > 0 {
+			return rels, nil
+		}
+	}
+	return []*parser.TorrentInfo{}, nil
+}
+
+// buildRecentTiers returns the per-tier query slice (each tier is a
+// single query, paginated internally by fetchPaged). When lastID > 0
+// the id-watermark tier prepends the age tier.
+func buildRecentTiers(lastID int) []*torrentQuery {
+	tiers := make([]*torrentQuery, 0, 2)
+	if lastID > 0 {
+		tiers = append(tiers, &torrentQuery{ID: fmt.Sprintf(">=%d", lastID-100)})
+	}
+	tiers = append(tiers, &torrentQuery{Age: "<=86400"})
+	return tiers
 }
 
 // FetchSearch dispatches the typed criteria through the per-type
@@ -147,11 +204,7 @@ func (i *Indexer) FetchSearch(ctx context.Context, criteria any) ([]*parser.Torr
 		dedup := make(map[string]struct{}, len(queries)*pageSize)
 		var acc []*parser.TorrentInfo
 		for _, q := range queries {
-			rels, err := i.fetchPaged(ctx, settings, q)
-			if err != nil {
-				continue
-			}
-			for _, r := range rels {
+			for _, r := range i.fetchPaged(ctx, settings, q) {
 				if _, dup := dedup[r.Guid]; dup {
 					continue
 				}
@@ -346,7 +399,12 @@ func distinctSeasonNumbers(eps []episodes.Episode) []int {
 // fetchPaged walks the pagination loop. Mirrors C#
 // `GetPagedRequests` at `:245-257` — increments `params[3]` (offset)
 // by PageSize across MaxPages iterations.
-func (i *Indexer) fetchPaged(ctx context.Context, settings *Settings, q *torrentQuery) ([]*parser.TorrentInfo, error) {
+//
+// Per-page failures are swallowed (matches the C# tree's per-page
+// try/catch). Accumulated results from prior pages still surface as
+// the returned slice — there is no error path out, so the signature
+// returns only the result slice (always non-nil).
+func (i *Indexer) fetchPaged(ctx context.Context, settings *Settings, q *torrentQuery) []*parser.TorrentInfo {
 	dedup := make(map[string]struct{}, maxPages*pageSize)
 	var all []*parser.TorrentInfo
 	for page := 0; page < maxPages; page++ {
@@ -375,7 +433,7 @@ func (i *Indexer) fetchPaged(ctx context.Context, settings *Settings, q *torrent
 	if all == nil {
 		all = []*parser.TorrentInfo{}
 	}
-	return all, nil
+	return all
 }
 
 // callRPC issues one JSON-RPC POST and parses the response.
