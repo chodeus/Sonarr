@@ -37,6 +37,7 @@ import (
 	"sonarr.tv/sonarr/internal/pendingreleases"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
+	"sonarr.tv/sonarr/internal/releaseprofiles"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
@@ -540,6 +541,22 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 		func(ctx context.Context, _ customfilters.CustomFilterUpdatedEvent) error {
 			if err := customFilterBroadcaster.Sync(ctx); err != nil {
 				logger.Warn("signalr: customfilter sync broadcast failed", "err", err)
+			}
+			return nil
+		})
+
+	// Slice 5.J31 (audit B.2 second wave): `releaseprofile` channel.
+	// ReleaseProfileUpdatedEvent fires from releaseprofiles.Service on
+	// Add / Update / Delete. Go-port additive.
+	releaseProfileBroadcaster := &signalr.ResourceBroadcaster[emptySyncPayload]{
+		Broadcaster: signalr.HubBroadcaster{Hub: hub},
+		Name:        "releaseprofile",
+		Version:     signalr.V3Version,
+	}
+	messaging.Subscribe(bus, "signalr.releaseprofile.Updated",
+		func(ctx context.Context, _ releaseprofiles.ReleaseProfileUpdatedEvent) error {
+			if err := releaseProfileBroadcaster.Sync(ctx); err != nil {
+				logger.Warn("signalr: releaseprofile sync broadcast failed", "err", err)
 			}
 			return nil
 		})

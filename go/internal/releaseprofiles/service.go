@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"sonarr.tv/sonarr/internal/messaging"
 )
 
 // Service ports `ReleaseProfileService.cs:1-79`. CRUD passthroughs +
@@ -30,13 +32,22 @@ import (
 //   - The TermMatcher cache (shipped in 2.21 as `term_matcher.go`'s
 //     TermMatcher type) is a separate concern; consumers that need
 //     compiled-regex caching wire the matcher alongside this service.
+//
+// SignalR posture: C# emits no IEvent on CUD — its sync rides the
+// inherited ModelEvent<ReleaseProfile>. The Go port publishes a
+// Go-port additive [ReleaseProfileUpdatedEvent] from Add/Update/Delete
+// so the SignalR `releaseprofile` channel can subscribe.
 type Service struct {
 	repo *Repo
+	bus  *messaging.Bus
 }
 
-// NewService binds a Repo into a ReleaseProfile Service.
-func NewService(r *Repo) *Service {
-	return &Service{repo: r}
+// NewService binds a Repo and an optional *messaging.Bus into a
+// ReleaseProfile Service. nil bus is supported — the Service skips
+// event publishing (matches the established Phase 2/3 skip-publish
+// convention across other services).
+func NewService(r *Repo, bus *messaging.Bus) *Service {
+	return &Service{repo: r, bus: bus}
 }
 
 // All ports `ReleaseProfileService.All()` at `:30-35`.
@@ -57,6 +68,7 @@ func (s *Service) Add(ctx context.Context, profile *Profile) (*Profile, error) {
 	if _, err := s.repo.Insert(ctx, profile); err != nil {
 		return nil, fmt.Errorf("releaseprofiles: add: %w", err)
 	}
+	s.publishUpdated(ctx)
 	return profile, nil
 }
 
@@ -68,6 +80,7 @@ func (s *Service) Update(ctx context.Context, profile *Profile) error {
 	if err := s.repo.Update(ctx, profile); err != nil {
 		return fmt.Errorf("releaseprofiles: update: %w", err)
 	}
+	s.publishUpdated(ctx)
 	return nil
 }
 
@@ -76,7 +89,15 @@ func (s *Service) Delete(ctx context.Context, id int) error {
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("releaseprofiles: delete: %w", err)
 	}
+	s.publishUpdated(ctx)
 	return nil
+}
+
+func (s *Service) publishUpdated(ctx context.Context) {
+	if s.bus == nil {
+		return
+	}
+	_ = messaging.Publish(ctx, s.bus, ReleaseProfileUpdatedEvent{})
 }
 
 // AllForTag ports `ReleaseProfileService.AllForTag(tagId)` at `:42-45`.

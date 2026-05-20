@@ -2139,7 +2139,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("releaseprofiles repo: %w", err)
 	}
-	releaseProfilesSvc := releaseprofiles.NewService(releaseProfilesRepo)
+	releaseProfilesSvc := releaseprofiles.NewService(releaseProfilesRepo, bus)
 	if releaseProfilesSvc == nil {
 		return fmt.Errorf("releaseprofiles service: nil — required dep regressed")
 	}

@@ -1,10 +1,14 @@
 package releaseprofiles_test
 
 import (
+	"context"
 	"errors"
+	"log/slog"
+	"sync/atomic"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
+	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
 )
 
@@ -15,7 +19,7 @@ func newService(t *testing.T) *releaseprofiles.Service {
 	if err != nil {
 		t.Fatalf("NewRepo: %v", err)
 	}
-	return releaseprofiles.NewService(r)
+	return releaseprofiles.NewService(r, nil)
 }
 
 func TestService_AddRoundTrip(t *testing.T) {
@@ -239,5 +243,43 @@ func TestService_NilInputErrors(t *testing.T) {
 	}
 	if err := svc.Update(t.Context(), nil); err == nil {
 		t.Error("Update(nil) should error")
+	}
+}
+
+// Slice 5.J31 (audit B.2 second wave). All three CUD paths publish
+// ReleaseProfileUpdatedEvent for the SignalR `releaseprofile` channel.
+// Go-port additive (C# class doesn't emit).
+func TestService_PublishesUpdatedEventOnCUD(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	r, err := releaseprofiles.NewRepo(db)
+	if err != nil {
+		t.Fatalf("NewRepo: %v", err)
+	}
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+	svc := releaseprofiles.NewService(r, bus)
+
+	var got atomic.Int32
+	messaging.Subscribe(bus, "test.releaseprofile.updated",
+		func(_ context.Context, _ releaseprofiles.ReleaseProfileUpdatedEvent) error {
+			got.Add(1)
+			return nil
+		})
+
+	p := &releaseprofiles.Profile{Name: "x", Enabled: true, Required: []string{"WEBDL"}}
+	added, err := svc.Add(context.Background(), p)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	added.Name = "y"
+	if err := svc.Update(context.Background(), added); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if err := svc.Delete(context.Background(), added.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if got.Load() != 3 {
+		t.Errorf("ReleaseProfileUpdatedEvent count: got %d, want 3 (Add+Update+Delete)", got.Load())
 	}
 }
