@@ -43,6 +43,21 @@ func (a AppFolderInfo) LogDBPath(instanceName string) string {
 	return filepath.Join(a.AppData, instanceName+"-log.db")
 }
 
+// UpdateSandboxFolder returns the directory where the in-place
+// updater stages its working tree. Mirrors the C# extension method
+// `PathExtensions.GetUpdateSandboxFolder` at
+// `src/NzbDrone.Common/Extensions/PathExtensions.cs:343-346`:
+// `Path.Combine(TempFolder, "sonarr_update")`.
+//
+// The C# constant adds a trailing path separator
+// (`UPDATE_SANDBOX_FOLDER_NAME = "sonarr_update" + DirectorySeparatorChar`).
+// The Go port omits the trailing separator because filepath.Join /
+// os.RemoveAll behave the same with or without it; callers that
+// concatenate further paths should keep using filepath.Join.
+func (a AppFolderInfo) UpdateSandboxFolder() string {
+	return filepath.Join(a.Temp, "sonarr_update")
+}
+
 // DetectAppFolder builds an AppFolderInfo for the current process.
 // startupCtx may be nil; if it carries a `data` arg, that path
 // becomes AppData verbatim. Otherwise the OS-conventional location

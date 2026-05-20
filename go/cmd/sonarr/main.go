@@ -318,6 +318,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("housekeeping duplicateMetadata: %w", err)
 	}
+	tempUpdate, err := housekeeping.NewCleanupTemporaryUpdateFiles(folder, nil, logger)
+	if err != nil {
+		return fmt.Errorf("housekeeping tempUpdate: %w", err)
+	}
 	addlNaming, err := housekeeping.NewCleanupAdditionalNamingSpecs(db, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping addlNaming: %w", err)
@@ -387,6 +391,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		absPathMetadata,
 		dcuPending,
 		duplicateMetadata,
+		tempUpdate,
 		addlNaming,
 		addlUsers,
 		updateClean,
