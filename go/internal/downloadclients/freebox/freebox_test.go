@@ -310,14 +310,23 @@ func TestProvider_Test_SettingsGate(t *testing.T) {
 	}
 }
 
-func TestProvider_Test_AuthFailureSurfacesAppToken(t *testing.T) {
+func TestProvider_Test_AuthFailureSurfacesAppIdAndAppToken(t *testing.T) {
+	// J107 alignment with C# `:179-181` — auth failures pin BOTH
+	// AppId AND AppToken so the user sees both fields highlighted.
 	doer := newScripted()
 	doer.queue("/api/v1/login", `{"success":true,"result":{"challenge":"CH"}}`)
 	doer.queueStatus("/api/v1/login/session", http.StatusForbidden, `{"success":false,"error_code":"invalid_token"}`)
 	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(doer, nil), nil)
 	failures, _ := p.Test(context.Background())
-	if len(failures) != 1 || failures[0].PropertyName != "AppToken" {
-		t.Errorf("failures = %+v, want AppToken failure", failures)
+	if len(failures) != 2 {
+		t.Fatalf("failures = %+v, want 2 entries (AppId + AppToken)", failures)
+	}
+	props := map[string]bool{}
+	for _, f := range failures {
+		props[f.PropertyName] = true
+	}
+	if !props["AppId"] || !props["AppToken"] {
+		t.Errorf("failures = %+v, want AppId AND AppToken", failures)
 	}
 }
 
@@ -331,13 +340,23 @@ func TestProvider_Test_APIErrorSurfacesApiUrl(t *testing.T) {
 	}
 }
 
-func TestProvider_Test_TransportErrorSurfacesHost(t *testing.T) {
+func TestProvider_Test_TransportErrorSurfacesHostAndPort(t *testing.T) {
+	// J107 alignment with C# `:175-176` — transport failures pin
+	// BOTH Host AND Port so both connection-config fields light up
+	// in the v3 UI.
 	doer := newScripted()
 	doer.queueErr(errors.New("dial"))
 	p := freebox.New(&downloadclients.DownloadClient{Name: "FB"}, newSettings(), freebox.NewProxy(doer, nil), nil)
 	failures, _ := p.Test(context.Background())
-	if len(failures) != 1 || failures[0].PropertyName != "Host" {
-		t.Errorf("failures = %+v, want Host failure", failures)
+	if len(failures) != 2 {
+		t.Fatalf("failures = %+v, want 2 entries (Host + Port)", failures)
+	}
+	props := map[string]bool{}
+	for _, f := range failures {
+		props[f.PropertyName] = true
+	}
+	if !props["Host"] || !props["Port"] {
+		t.Errorf("failures = %+v, want Host AND Port", failures)
 	}
 }
 

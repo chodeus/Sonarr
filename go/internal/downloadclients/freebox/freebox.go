@@ -421,34 +421,44 @@ func (f *TorrentFreeboxDownload) RequestAction(_ context.Context, _ string, _ ma
 // /login (challenge fetch) AND /login/session (HMAC-SHA1
 // exchange), proving the AppId + AppToken combo works end-to-end.
 //
-// ErrAuth surfaces as a Password-property failure on AppToken;
-// ErrAPI (404) as ApiUrl; ErrUnavailable as Host; ErrRPC as a
-// generic field-empty failure carrying the decoded error message.
+// J107 alignment with C# `Test` at `TorrentFreeboxDownload.cs:167-187`:
+//   - ErrUnavailable surfaces as BOTH Host AND Port failures (C# :175-176)
+//     — the user sees both fields highlighted in the v3 UI.
+//   - ErrAuth surfaces as BOTH AppId AND AppToken failures (C# :179-181)
+//     — the credentials may be malformed at either field, so both
+//     light up.
+//   - ErrAPI (404) surfaces as ApiUrl (C# :184-186).
+//   - ErrRPC + default surface as ApiUrl-pinned generic-error so
+//     the user knows it's the configured-URL family rather than a
+//     transport issue (the C# `FreeboxDownloadException` catch is
+//     for the application-level error envelope decoded by the
+//     proxy).
 func (f *TorrentFreeboxDownload) Test(ctx context.Context) ([]downloadclients.TestFailure, error) {
 	failures := f.settings.Validate()
 	if len(failures) > 0 {
 		return failures, nil
 	}
 	if _, err := f.proxy.GetSessionToken(ctx, f.settings, true); err != nil {
+		msg := err.Error()
 		switch {
 		case errors.Is(err, ErrAuth):
-			return []downloadclients.TestFailure{{
-				PropertyName: "AppToken",
-				ErrorMessage: fmt.Sprintf("Freebox authentication failed: %v", err),
-			}}, nil
+			return []downloadclients.TestFailure{
+				{PropertyName: "AppId", ErrorMessage: msg},
+				{PropertyName: "AppToken", ErrorMessage: msg},
+			}, nil
 		case errors.Is(err, ErrAPI):
 			return []downloadclients.TestFailure{{
 				PropertyName: "ApiUrl",
 				ErrorMessage: fmt.Sprintf("Freebox API not found at the configured URL: %v", err),
 			}}, nil
 		case errors.Is(err, ErrUnavailable):
-			return []downloadclients.TestFailure{{
-				PropertyName: "Host",
-				ErrorMessage: fmt.Sprintf("Unable to reach Freebox: %v", err),
-			}}, nil
+			return []downloadclients.TestFailure{
+				{PropertyName: "Host", ErrorMessage: msg},
+				{PropertyName: "Port", ErrorMessage: msg},
+			}, nil
 		default:
 			return []downloadclients.TestFailure{{
-				PropertyName: "Host",
+				PropertyName: "ApiUrl",
 				ErrorMessage: fmt.Sprintf("Freebox API error: %v", err),
 			}}, nil
 		}
