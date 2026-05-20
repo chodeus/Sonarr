@@ -101,13 +101,10 @@ func (n *NzbVortex) RequestAction(_ context.Context, _ string, _ map[string]stri
 	return nil, nil
 }
 
-// Test ports `NzbVortex.Test(failures)` at C# `:149-155`. The C#
-// version runs four arms (TestConnection + TestApiVersion +
-// TestAuthentication + TestCategory); the 5.J66 skeleton runs only
-// TestConnection + TestApiVersion. TestAuthentication and
-// TestCategory land in the GetQueue + GetGroups follow-up slices
-// (they need the authenticated request path the proxy already
-// supports but the per-endpoint mappers don't yet exist).
+// Test ports `NzbVortex.Test(failures)` at C# `:149-155`. Runs the
+// full four-arm C# probe chain — TestConnection + TestApiVersion +
+// TestAuthentication + TestCategory. Each arm short-circuits the
+// next on failure so a dead host doesn't quadruple-fail.
 func (n *NzbVortex) Test(ctx context.Context) ([]downloadclients.TestFailure, error) {
 	failures := n.settings.Validate()
 	if len(failures) > 0 {
@@ -118,7 +115,65 @@ func (n *NzbVortex) Test(ctx context.Context) ([]downloadclients.TestFailure, er
 		return failures, nil
 	}
 	failures = append(failures, n.testAPIVersion(ctx)...)
+	if len(failures) > 0 {
+		return failures, nil
+	}
+	failures = append(failures, n.testAuthentication(ctx)...)
+	if len(failures) > 0 {
+		return failures, nil
+	}
+	failures = append(failures, n.testCategory(ctx)...)
 	return failures, nil
+}
+
+// testAuthentication ports `TestAuthentication` at C# `:200-212`.
+// Fires `GetQueue(limit=1)` — the call requires auth, so a bad
+// ApiKey surfaces as [ErrAuth]. The ApiKey-property failure
+// matches C# `:208`; any other transport failure surfaces as
+// Host (delegated to the [Proxy.get] error chain — those will
+// already have been caught by TestConnection so reaching this
+// point implies auth-only failure).
+func (n *NzbVortex) testAuthentication(ctx context.Context) []downloadclients.TestFailure {
+	if _, err := n.proxy.GetQueue(ctx, n.settings, 1); err != nil {
+		if errors.Is(err, ErrAuth) {
+			return []downloadclients.TestFailure{{
+				PropertyName: "ApiKey",
+				ErrorMessage: "API Key is incorrect",
+			}}
+		}
+		return []downloadclients.TestFailure{{
+			PropertyName: "Host",
+			ErrorMessage: fmt.Sprintf("Unable to authenticate against NZBVortex: %v", err),
+		}}
+	}
+	return nil
+}
+
+// testCategory ports `TestCategory` at C# `:214-230`. Calls
+// `Proxy.GetGroups`, looks up by name, fails when the configured
+// TvCategory is non-empty AND no matching group exists. A blank
+// TvCategory disables the check (matches C# `:220`).
+func (n *NzbVortex) testCategory(ctx context.Context) []downloadclients.TestFailure {
+	want := strings.TrimSpace(n.settings.TvCategory)
+	if want == "" {
+		return nil
+	}
+	groups, err := n.proxy.GetGroups(ctx, n.settings)
+	if err != nil {
+		return []downloadclients.TestFailure{{
+			PropertyName: "Host",
+			ErrorMessage: fmt.Sprintf("Unable to read NZBVortex groups: %v", err),
+		}}
+	}
+	for _, g := range groups {
+		if g != nil && g.GroupName == want {
+			return nil
+		}
+	}
+	return []downloadclients.TestFailure{{
+		PropertyName: "TvCategory",
+		ErrorMessage: fmt.Sprintf("Group %q does not exist on the NZBVortex server", want),
+	}}
 }
 
 // testConnection ports `TestConnection` at C# `:157-174`. Calls

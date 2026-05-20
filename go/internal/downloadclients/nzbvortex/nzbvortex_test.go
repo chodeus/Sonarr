@@ -189,10 +189,23 @@ func TestExpectedHashShape(t *testing.T) {
 	}
 }
 
-func TestProvider_Test_HappyPath(t *testing.T) {
-	doer := newScripted()
+// queueFourArmHappyPath queues all four Test-arm responses + the
+// auth precursor so a happy-path TestApiVersion + TestAuthentication
+// + TestCategory call chain runs through without a missing-response
+// surprise.
+func queueFourArmHappyPath(t *testing.T, doer *scriptedDoer, settings nzbvortex.Settings) {
+	t.Helper()
 	doer.queue("/api/app/appversion", `{"result":"Ok","version":"3.1"}`)
 	doer.queue("/api/app/apilevel", `{"result":"Ok","apiLevel":"2.5"}`)
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Successful","sessionId":"SID"}`)
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[]}`)
+	doer.queue("/api/group", `{"result":"Ok","groups":[{"groupName":"`+settings.TvCategory+`"}]}`)
+}
+
+func TestProvider_Test_HappyPath(t *testing.T) {
+	doer := newScripted()
+	queueFourArmHappyPath(t, doer, newSettings())
 	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
 	failures, err := p.Test(context.Background())
 	if err != nil {
@@ -254,6 +267,10 @@ func TestProvider_Test_VersionAtMinPasses(t *testing.T) {
 	doer := newScripted()
 	doer.queue("/api/app/appversion", `{"result":"Ok"}`)
 	doer.queue("/api/app/apilevel", `{"result":"Ok","apiLevel":"2.3"}`)
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Successful","sessionId":"SID"}`)
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[]}`)
+	doer.queue("/api/group", `{"result":"Ok","groups":[{"groupName":"TV Shows"}]}`)
 	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
 	failures, _ := p.Test(context.Background())
 	if len(failures) != 0 {
@@ -269,6 +286,190 @@ func TestProvider_Test_VersionEmptyReportsHost(t *testing.T) {
 	failures, _ := p.Test(context.Background())
 	if len(failures) != 1 {
 		t.Fatalf("failures = %+v", failures)
+	}
+}
+
+func TestProvider_Test_AuthFailureSurfacesApiKeyPropertyFailure(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/app/appversion", `{"result":"Ok"}`)
+	doer.queue("/api/app/apilevel", `{"result":"Ok","apiLevel":"2.5"}`)
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	// LoginResult=Failed → ErrAuth → TestAuthentication maps to
+	// the ApiKey property failure.
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Failed","sessionId":""}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	failures, _ := p.Test(context.Background())
+	if len(failures) != 1 {
+		t.Fatalf("failures = %+v, want one ApiKey failure", failures)
+	}
+	if failures[0].PropertyName != "ApiKey" {
+		t.Errorf("PropertyName = %q, want ApiKey", failures[0].PropertyName)
+	}
+}
+
+func TestProvider_Test_CategoryMissingFails(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/app/appversion", `{"result":"Ok"}`)
+	doer.queue("/api/app/apilevel", `{"result":"Ok","apiLevel":"2.5"}`)
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Successful","sessionId":"SID"}`)
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[]}`)
+	// Groups response missing the configured TvCategory.
+	doer.queue("/api/group", `{"result":"Ok","groups":[{"groupName":"Movies"}]}`)
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, newSettings(), nzbvortex.NewProxy(doer, nil), nil)
+	failures, _ := p.Test(context.Background())
+	if len(failures) != 1 {
+		t.Fatalf("failures = %+v, want one TvCategory failure", failures)
+	}
+	if failures[0].PropertyName != "TvCategory" {
+		t.Errorf("PropertyName = %q, want TvCategory", failures[0].PropertyName)
+	}
+}
+
+func TestProvider_Test_BlankCategorySkipsCategoryProbe(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/app/appversion", `{"result":"Ok"}`)
+	doer.queue("/api/app/apilevel", `{"result":"Ok","apiLevel":"2.5"}`)
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Successful","sessionId":"SID"}`)
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[]}`)
+	// No /api/group response queued — the test would fail if the
+	// blank-category arm called it anyway.
+	s := newSettings()
+	s.TvCategory = ""
+	p := nzbvortex.New(&downloadclients.DownloadClient{Name: "NV"}, s, nzbvortex.NewProxy(doer, nil), nil)
+	failures, _ := p.Test(context.Background())
+	if len(failures) != 0 {
+		t.Errorf("failures = %+v, want empty with blank category", failures)
+	}
+	for _, c := range doer.calls {
+		if c.path == "/api/group" {
+			t.Errorf("category probe ran despite blank TvCategory")
+		}
+	}
+}
+
+func TestProxy_AuthFlow_HashShape(t *testing.T) {
+	// Verify the proxy's auth flow emits the exact base64(sha256(
+	// "<nonce>:<cnonce>:<apikey>" )) shape via a fixed-cnonce
+	// override. Drives the auth flow via GetGroups (auth-required).
+	doer := newScripted()
+	doer.queue("/api/auth/nonce", `{"authNonce":"NONCE-1"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Successful","sessionId":"SID-X"}`)
+	doer.queue("/api/group", `{"result":"Ok","groups":[]}`)
+
+	proxy := nzbvortex.NewProxy(doer, nil)
+	proxy.SetCnonceGenerator(func() string { return "FIXED-CNONCE" })
+	settings := newSettings()
+	settings.ApiKey = "the-key"
+	_, err := proxy.GetGroups(context.Background(), settings)
+	if err != nil {
+		t.Fatalf("GetGroups err = %v", err)
+	}
+
+	// Find the login call's query params.
+	var login scriptedCall
+	for _, c := range doer.calls {
+		if c.path == "/api/auth/login" {
+			login = c
+			break
+		}
+	}
+	if login.path == "" {
+		t.Fatal("no /api/auth/login call recorded")
+	}
+	sum := sha256.Sum256([]byte("NONCE-1:FIXED-CNONCE:the-key"))
+	want := base64.StdEncoding.EncodeToString(sum[:])
+	if login.query.Get("hash") != want {
+		t.Errorf("hash = %q, want %q", login.query.Get("hash"), want)
+	}
+	if login.query.Get("nonce") != "NONCE-1" {
+		t.Errorf("nonce = %q", login.query.Get("nonce"))
+	}
+	if login.query.Get("cnonce") != "FIXED-CNONCE" {
+		t.Errorf("cnonce = %q", login.query.Get("cnonce"))
+	}
+}
+
+func TestProxy_AuthFlow_SessionReuse(t *testing.T) {
+	// Two consecutive GetGroups calls share one cached sessionId
+	// — only ONE auth/nonce + auth/login pair should be issued.
+	doer := newScripted()
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Successful","sessionId":"SID"}`)
+	doer.queue("/api/group", `{"result":"Ok","groups":[]}`)
+	doer.queue("/api/group", `{"result":"Ok","groups":[]}`)
+
+	proxy := nzbvortex.NewProxy(doer, nil)
+	if _, err := proxy.GetGroups(context.Background(), newSettings()); err != nil {
+		t.Fatalf("first GetGroups err = %v", err)
+	}
+	if _, err := proxy.GetGroups(context.Background(), newSettings()); err != nil {
+		t.Fatalf("second GetGroups err = %v", err)
+	}
+	noncePosts := 0
+	loginPosts := 0
+	for _, c := range doer.calls {
+		if c.path == "/api/auth/nonce" {
+			noncePosts++
+		}
+		if c.path == "/api/auth/login" {
+			loginPosts++
+		}
+	}
+	if noncePosts != 1 || loginPosts != 1 {
+		t.Errorf("auth-call counts: nonce=%d login=%d, want both 1 (cache hit on second call)", noncePosts, loginPosts)
+	}
+}
+
+func TestProxy_GetQueue_AppliesGroupAndLimit(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Successful","sessionId":"SID"}`)
+	doer.queue("/api/nzb", `{"result":"Ok","nzbs":[{"id":1,"uiTitle":"Show","totalDownloadSize":100}]}`)
+
+	proxy := nzbvortex.NewProxy(doer, nil)
+	items, err := proxy.GetQueue(context.Background(), newSettings(), 30)
+	if err != nil {
+		t.Fatalf("GetQueue err = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d", len(items))
+	}
+	if items[0].ID != 1 || items[0].UiTitle != "Show" || items[0].TotalDownloadSize != 100 {
+		t.Errorf("item = %+v", items[0])
+	}
+	// Find the /api/nzb query string.
+	var nzbCall scriptedCall
+	for _, c := range doer.calls {
+		if c.path == "/api/nzb" {
+			nzbCall = c
+			break
+		}
+	}
+	if nzbCall.query.Get("groupName") != "TV Shows" {
+		t.Errorf("groupName = %q, want 'TV Shows'", nzbCall.query.Get("groupName"))
+	}
+	if nzbCall.query.Get("limitDone") != "30" {
+		t.Errorf("limitDone = %q, want 30", nzbCall.query.Get("limitDone"))
+	}
+	if nzbCall.query.Get("sessionid") != "SID" {
+		t.Errorf("sessionid = %q, want SID (replayed)", nzbCall.query.Get("sessionid"))
+	}
+}
+
+func TestProxy_GetGroups_Auth(t *testing.T) {
+	doer := newScripted()
+	doer.queue("/api/auth/nonce", `{"authNonce":"N"}`)
+	doer.queue("/api/auth/login", `{"result":"Ok","loginResult":"Successful","sessionId":"SID"}`)
+	doer.queue("/api/group", `{"result":"Ok","groups":[{"groupName":"TV Shows"},{"groupName":"Movies"}]}`)
+	proxy := nzbvortex.NewProxy(doer, nil)
+	groups, err := proxy.GetGroups(context.Background(), newSettings())
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(groups) != 2 {
+		t.Errorf("len = %d, want 2", len(groups))
 	}
 }
 

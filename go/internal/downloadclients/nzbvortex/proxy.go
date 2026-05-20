@@ -307,6 +307,117 @@ func (p *Proxy) invalidateSession(s Settings) {
 // the embedded `result` string. Implemented as method-value below.
 func (r *responseBase) resultField() string { return r.Result }
 
+// StateType ports C# `NzbVortexStateType` at
+// `NzbVortexStateType.cs:3-30`. Numeric values match the C# enum
+// for wire-stable JSON deserialisation. The Hadouken-style state
+// table in [NzbVortex.GetItems] (5.J69 follow-up) reads these.
+type StateType int
+
+// StateType values mirror the C# enum order. The names match the
+// (slightly typo'd) C# spellings where applicable so the cross-
+// reference at `:6` (QuaedForProcessing) stays one-to-one with
+// the wire protocol.
+const (
+	StateWaiting                  StateType = 0
+	StateDownloading              StateType = 1
+	StateWaitingForSave           StateType = 2
+	StateSaving                   StateType = 3
+	StateSaved                    StateType = 4
+	StatePasswordRequest          StateType = 5
+	StateQuaedForProcessing       StateType = 6
+	StateUserWaitForProcessing    StateType = 7
+	StateChecking                 StateType = 8
+	StateRepairing                StateType = 9
+	StateJoining                  StateType = 10
+	StateWaitForFurtherProcessing StateType = 11
+	StateJoining2                 StateType = 12
+	StateWaitForUncompress        StateType = 13
+	StateUncompressing            StateType = 14
+	StateWaitForCleanup           StateType = 15
+	StateCleaningUp               StateType = 16
+	StateCleanedUp                StateType = 17
+	StateMovingToCompleted        StateType = 18
+	StateMoveCompleted            StateType = 19
+	StateDone                     StateType = 20
+	StateUncompressFailed         StateType = 21
+	StateCheckFailedDataCorrupt   StateType = 22
+	StateMoveFailed               StateType = 23
+	StateBadlyEncoded             StateType = 24
+)
+
+// Group ports C# `NzbVortexGroup` at `NzbVortexGroup.cs:3-6`.
+type Group struct {
+	GroupName string `json:"groupName"`
+}
+
+// QueueItem ports C# `NzbVortexQueueItem` at
+// `NzbVortexQueueItem.cs:3-22`. Field names match the wire JSON
+// (which the Go port maps via struct tags). Hadouken-style numeric
+// fields use int64 where the C# code uses `long`.
+type QueueItem struct {
+	ID                 int       `json:"id"`
+	UiTitle            string    `json:"uiTitle"`
+	DestinationPath    string    `json:"destinationPath"`
+	NzbFilename        string    `json:"nzbFilename"`
+	IsPaused           bool      `json:"isPaused"`
+	State              StateType `json:"state"`
+	StatusText         string    `json:"statusText"`
+	TransferedSpeed    int       `json:"transferedSpeed"`
+	Progress           float64   `json:"progress"`
+	DownloadedSize     int64     `json:"downloadedSize"`
+	TotalDownloadSize  int64     `json:"totalDownloadSize"`
+	PostDate           int64     `json:"postDate"`
+	TotalArticleCount  int       `json:"totalArticleCount"`
+	FailedArticleCount int       `json:"failedArticleCount"`
+	GroupUUID          string    `json:"groupUUID"`
+	AddUUID            string    `json:"addUUID"`
+	GroupName          string    `json:"groupName"`
+}
+
+// groupResponse mirrors C# `NzbVortexGroupResponse` at
+// `Responses/NzbVortexGroupResponse.cs`.
+type groupResponse struct {
+	responseBase
+	Groups []*Group `json:"groups"`
+}
+
+// queueResponse mirrors C# `NzbVortexQueueResponse` at
+// `Responses/NzbVortexQueueResponse.cs`. Note the C# `JsonProperty`
+// at `:8` renames the field to `nzbs` on the wire — the Go tag
+// matches.
+type queueResponse struct {
+	responseBase
+	Items []*QueueItem `json:"nzbs"`
+}
+
+// GetGroups fires `group`. Auth required. Mirrors C#
+// `NzbVortexProxy.GetGroups` at `:83-89`.
+func (p *Proxy) GetGroups(ctx context.Context, s Settings) ([]*Group, error) {
+	var out groupResponse
+	if err := p.get(ctx, s, "group", nil, true, &out); err != nil {
+		return nil, err
+	}
+	return out.Groups, nil
+}
+
+// GetQueue fires `nzb` with the optional `groupName` filter +
+// the `limitDone` cap. Auth required. Mirrors C#
+// `NzbVortexProxy.GetQueue` at `:91-105`. doneLimit caps how
+// many completed items the server returns — Sonarr's GetItems
+// path uses 30, Test uses 1.
+func (p *Proxy) GetQueue(ctx context.Context, s Settings, doneLimit int) ([]*QueueItem, error) {
+	q := url.Values{}
+	if cat := strings.TrimSpace(s.TvCategory); cat != "" {
+		q.Set("groupName", cat)
+	}
+	q.Set("limitDone", fmt.Sprintf("%d", doneLimit))
+	var out queueResponse
+	if err := p.get(ctx, s, "nzb", q, true, &out); err != nil {
+		return nil, err
+	}
+	return out.Items, nil
+}
+
 // GetVersion fires `app/appversion`. No auth required. Mirrors C#
 // `NzbVortexProxy.GetVersion` at `:65-72`.
 func (p *Proxy) GetVersion(ctx context.Context, s Settings) (*VersionResponse, error) {
