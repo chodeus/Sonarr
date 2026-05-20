@@ -753,9 +753,20 @@ func (n *Nzbget) MarkItemAsImported(_ context.Context, item *downloadclients.Ite
 //     [minMajorVersion] surfaces a "Version" failure mirroring
 //     C# :281-285.
 //
-// TestCategory + TestSettings at C# :303-352 are deferred — they
-// probe `config` and category-list endpoints which land alongside
-// the GetItems + GetStatus slices.
+// TestCategory + TestSettings at C# :303-343 wired at slice 5.J100
+// — both layer on top of the version probe by issuing a single
+// `config` call (now that GetConfig + getCategories from the
+// GetStatus arm are available). TestCategory fails when TvCategory
+// is set but isn't found in the resolved category list (C#
+// :303-318). TestSettings fails when NZBGet's `KeepHistory` config
+// is 0 or > 25000 (C# :320-343 — KeepHistory=0 turns off history
+// retention which breaks Sonarr's import-detection; >25000 is the
+// NZBGet upper bound the config UI enforces).
+//
+// The two probes share a single GetConfig call so a healthy NZBGet
+// only sees one extra round-trip during Test. Config-fetch failures
+// short-circuit subsequent validators with an "unable to fetch
+// settings" failure rather than letting them silently NRE.
 func (n *Nzbget) Test(ctx context.Context) ([]downloadclients.TestFailure, error) {
 	failures := n.settings.Validate()
 	if n.proxy == nil {
@@ -800,7 +811,79 @@ func (n *Nzbget) Test(ctx context.Context) ([]downloadclients.TestFailure, error
 		return failures, nil
 	}
 
+	cfg, err := n.proxy.GetConfig(ctx, n.settings)
+	if err != nil {
+		failures = append(failures, downloadclients.TestFailure{
+			PropertyName: "",
+			ErrorMessage: fmt.Sprintf("Unable to fetch NZBGet config: %v", err),
+		})
+		return failures, nil
+	}
+	if f := testCategory(cfg, n.settings.TvCategory); f != nil {
+		failures = append(failures, *f)
+	}
+	if f := testKeepHistory(cfg); f != nil {
+		failures = append(failures, *f)
+	}
+
 	return failures, nil
+}
+
+// testCategory ports C# `TestCategory` at `Nzbget.cs:303-318`. Empty
+// TvCategory passes (no category requirement); set-but-missing fails
+// with "category missing" on the TvCategory field. Match is by
+// exact Name string.
+func testCategory(cfg map[string]string, tvCategory string) *downloadclients.TestFailure {
+	tv := strings.TrimSpace(tvCategory)
+	if tv == "" {
+		return nil
+	}
+	for _, cat := range getCategories(cfg) {
+		if cat.Name == tv {
+			return nil
+		}
+	}
+	return &downloadclients.TestFailure{
+		PropertyName: "TvCategory",
+		ErrorMessage: fmt.Sprintf("Category %q does not exist on the NZBGet server", tv),
+		DetailedDescription: fmt.Sprintf(
+			"Add a category named %q to NZBGet under Settings > Categories, or update Sonarr to use one that exists.",
+			tv,
+		),
+	}
+}
+
+// testKeepHistory ports C# `TestSettings` at `Nzbget.cs:320-343`.
+// Parses `KeepHistory` from the config map (default "7" matches C#
+// `:324` `GetValueOrDefault("KeepHistory", "7")`). Returns the
+// whole-form failure NZBGet's UI shows when the user has disabled
+// history (=0) or set it above the documented limit (>25000).
+func testKeepHistory(cfg map[string]string) *downloadclients.TestFailure {
+	raw := strings.TrimSpace(cfg["KeepHistory"])
+	if raw == "" {
+		raw = "7"
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		// C# `:325-326` `int.TryParse` returning false falls through
+		// to the value==0 arm (the failure message is the same).
+		value = 0
+	}
+	switch {
+	case value == 0:
+		return &downloadclients.TestFailure{
+			PropertyName:        "",
+			ErrorMessage:        "NZBGet's KeepHistory setting is set to 0; Sonarr requires history retention to detect failed downloads",
+			DetailedDescription: "Open NZBGet > Settings > DOWNLOAD QUEUE > KeepHistory and set a non-zero value.",
+		}
+	case value > 25000:
+		return &downloadclients.TestFailure{
+			PropertyName:        "",
+			ErrorMessage:        fmt.Sprintf("NZBGet's KeepHistory setting is %d; the maximum supported value is 25000", value),
+			DetailedDescription: "Open NZBGet > Settings > DOWNLOAD QUEUE > KeepHistory and lower the value.",
+		}
+	}
+	return nil
 }
 
 // hasError reports whether any failure carries a non-empty

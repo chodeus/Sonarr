@@ -2,9 +2,11 @@ package nzbget_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -19,12 +21,18 @@ import (
 type versionHandler struct {
 	versionBody  string // raw JSON for the version result (e.g. `"24.2"`)
 	versionError string
+	configBody   string       // raw JSON for the config result. Defaults to a "Test" category + KeepHistory=7 (J100 valid config).
 	status       atomic.Int32 // 0 = 200
-	calls        atomic.Int32
+	calls        atomic.Int32 // total RPC calls
+	versionCalls atomic.Int32 // version RPC calls
+	configCalls  atomic.Int32 // config RPC calls
 }
 
 func newVersionHandler() *versionHandler {
-	return &versionHandler{versionBody: `"24.2"`}
+	return &versionHandler{
+		versionBody: `"24.2"`,
+		configBody:  `[{"Name":"Category1.Name","Value":"tv"},{"Name":"KeepHistory","Value":"7"},{"Name":"MainDir","Value":"/data"},{"Name":"DestDir","Value":"${MainDir}/done"}]`,
+	}
 }
 
 func (h *versionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -37,11 +45,39 @@ func (h *versionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if code != http.StatusOK {
 		return
 	}
-	if h.versionError != "" {
-		_, _ = io.WriteString(w, `{"version":"1.1","error":{"name":"E","code":1,"message":"`+h.versionError+`"}}`)
-		return
+	method := decodeMethod(r)
+	switch method {
+	case "config":
+		h.configCalls.Add(1)
+		_, _ = io.WriteString(w, `{"version":"1.1","result":`+h.configBody+`}`)
+	default:
+		h.versionCalls.Add(1)
+		if h.versionError != "" {
+			_, _ = io.WriteString(w, `{"version":"1.1","error":{"name":"E","code":1,"message":"`+h.versionError+`"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"version":"1.1","result":`+h.versionBody+`}`)
 	}
-	_, _ = io.WriteString(w, `{"version":"1.1","result":`+h.versionBody+`}`)
+}
+
+// decodeMethod peeks at the JSON-RPC method from a request body —
+// the handler uses this to route version vs config responses.
+func decodeMethod(r *http.Request) string {
+	if r.Body == nil {
+		return ""
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return ""
+	}
+	r.Body = io.NopCloser(strings.NewReader(string(body)))
+	var rpc struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(body, &rpc); err != nil {
+		return ""
+	}
+	return rpc.Method
 }
 
 func newNzbgetForTest(t *testing.T, srv *httptest.Server, mutate func(*nzbget.Settings)) *nzbget.Nzbget {
@@ -71,8 +107,11 @@ func TestTest_HappyPath(t *testing.T) {
 	if len(failures) != 0 {
 		t.Errorf("Test() = %+v, want no failures", failures)
 	}
-	if h.calls.Load() != 1 {
-		t.Errorf("version fired %d times, want 1", h.calls.Load())
+	if h.versionCalls.Load() != 1 {
+		t.Errorf("version fired %d times, want 1", h.versionCalls.Load())
+	}
+	if h.configCalls.Load() != 1 {
+		t.Errorf("config fired %d times, want 1 (J100 TestCategory + TestSettings)", h.configCalls.Load())
 	}
 }
 
@@ -238,8 +277,8 @@ func TestTest_EmptyTvCategoryWarningSurfaces(t *testing.T) {
 		t.Errorf("Test() = %+v, want TvCategory warning surfaced via Validate", failures)
 	}
 	// The network probe still fired despite the warning.
-	if h.calls.Load() != 1 {
-		t.Errorf("network probe fired %d times, want 1 (warning shouldn't block)", h.calls.Load())
+	if h.versionCalls.Load() != 1 {
+		t.Errorf("version probe fired %d times, want 1 (warning shouldn't block)", h.versionCalls.Load())
 	}
 }
 
@@ -249,5 +288,167 @@ func TestTest_NilProxyReturnsError(t *testing.T) {
 	_, err := n.Test(context.Background())
 	if err == nil {
 		t.Fatal("Test(nil proxy) err = nil, want error")
+	}
+}
+
+// --- J100 TestCategory + TestSettings -----------------------------
+
+func TestTest_J100_CategoryMissingFails(t *testing.T) {
+	t.Parallel()
+	h := newVersionHandler()
+	h.configBody = `[{"Name":"Category1.Name","Value":"OtherCat"},{"Name":"KeepHistory","Value":"7"}]`
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	n := newNzbgetForTest(t, srv, func(s *nzbget.Settings) {
+		s.TvCategory = "Sonarr"
+	})
+	failures, err := n.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFailure(failures, "TvCategory") {
+		t.Errorf("Test() = %+v, want TvCategory failure when category missing on server", failures)
+	}
+}
+
+func TestTest_J100_CategoryPresentPasses(t *testing.T) {
+	t.Parallel()
+	h := newVersionHandler()
+	h.configBody = `[{"Name":"Category1.Name","Value":"Sonarr"},{"Name":"KeepHistory","Value":"7"}]`
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	n := newNzbgetForTest(t, srv, func(s *nzbget.Settings) {
+		s.TvCategory = "Sonarr"
+	})
+	failures, err := n.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range failures {
+		if f.PropertyName == "TvCategory" {
+			t.Errorf("Test() = %+v, want no TvCategory failure when category present", failures)
+		}
+	}
+}
+
+func TestTest_J100_EmptyTvCategorySkipsCategoryProbe(t *testing.T) {
+	t.Parallel()
+	h := newVersionHandler()
+	// Config doesn't even need to expose the category since empty
+	// TvCategory short-circuits the validator.
+	h.configBody = `[{"Name":"KeepHistory","Value":"7"}]`
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	n := newNzbgetForTest(t, srv, func(s *nzbget.Settings) {
+		s.TvCategory = ""
+	})
+	failures, err := n.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The TvCategory empty WARNING (from Validate) is fine; the
+	// J100 category-existence probe is what we're checking is
+	// NOT firing a new failure.
+	tvFailures := 0
+	for _, f := range failures {
+		if f.PropertyName == "TvCategory" {
+			tvFailures++
+		}
+	}
+	if tvFailures > 1 {
+		t.Errorf("Test() = %+v, want at most 1 TvCategory failure (the validate warning)", failures)
+	}
+}
+
+func TestTest_J100_KeepHistoryZeroFails(t *testing.T) {
+	t.Parallel()
+	h := newVersionHandler()
+	h.configBody = `[{"Name":"Category1.Name","Value":"Test"},{"Name":"KeepHistory","Value":"0"}]`
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	n := newNzbgetForTest(t, srv, nil)
+	failures, err := n.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "" && strings.Contains(f.ErrorMessage, "KeepHistory") && strings.Contains(f.ErrorMessage, "0") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Test() = %+v, want whole-form KeepHistory=0 failure", failures)
+	}
+}
+
+func TestTest_J100_KeepHistoryOverMaxFails(t *testing.T) {
+	t.Parallel()
+	h := newVersionHandler()
+	h.configBody = `[{"Name":"Category1.Name","Value":"Test"},{"Name":"KeepHistory","Value":"50000"}]`
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	n := newNzbgetForTest(t, srv, nil)
+	failures, err := n.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "" && strings.Contains(f.ErrorMessage, "25000") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Test() = %+v, want whole-form KeepHistory>25000 failure", failures)
+	}
+}
+
+func TestTest_J100_KeepHistoryDefaultsToSeven(t *testing.T) {
+	t.Parallel()
+	// KeepHistory missing from config → defaults to "7" → passes.
+	h := newVersionHandler()
+	h.configBody = `[{"Name":"Category1.Name","Value":"Test"}]`
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	n := newNzbgetForTest(t, srv, nil)
+	failures, err := n.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range failures {
+		if f.PropertyName == "" && strings.Contains(f.ErrorMessage, "KeepHistory") {
+			t.Errorf("Test() = %+v, want no KeepHistory failure when key absent (defaults to 7)", failures)
+		}
+	}
+}
+
+func TestTest_J100_ConfigFetchFailureSurfacesWholeForm(t *testing.T) {
+	t.Parallel()
+	// Return a malformed config response so the parser fails.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method := decodeMethod(r)
+		w.WriteHeader(http.StatusOK)
+		if method == "config" {
+			// Wrong shape → JSON unmarshal error.
+			_, _ = io.WriteString(w, `{"version":"1.1","result":"not-an-array"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"version":"1.1","result":"24.2"}`)
+	}))
+	defer srv.Close()
+	n := newNzbgetForTest(t, srv, nil)
+	failures, err := n.Test(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range failures {
+		if f.PropertyName == "" && strings.Contains(f.ErrorMessage, "fetch NZBGet config") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Test() = %+v, want whole-form config-fetch failure", failures)
 	}
 }
