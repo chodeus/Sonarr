@@ -173,12 +173,30 @@ type SeriesDeletePayload struct {
 // field carries the C# `HealthCheckResult` enum as a string
 // (Ok/Notice/Warning/Error — see C# enum at
 // `HealthCheck/HealthCheckResult.cs`).
+//
+// Unlike the other per-event payloads HealthPayload does NOT embed
+// [BasePayload] — it inlines EventType + InstanceName but omits
+// ApplicationURL. C# `BuildHealthPayload` at `WebhookBase.cs:159-170`
+// + `BuildHealthRestoredPayload` at `:172-183` explicitly do NOT set
+// `WebhookPayload.ApplicationUrl`, leaving it as the C# `string`
+// reference-type default (null). The webhook proxy serializes via
+// `payload.ToJson()` at `WebhookProxy.cs:39`, routed through
+// Newtonsoft's `ToJson` extension at
+// `src/NzbDrone.Common/Serializer/Newtonsoft.Json/Json.cs:119` using
+// the shared `SerializerSettings` with `NullValueHandling = Ignore`
+// at `Json.cs:26`, so the null `applicationUrl` property is OMITTED
+// from the wire body. Embedding [BasePayload] would emit
+// `"applicationUrl":""` (Go strings default to "", not null), which
+// would diverge from the C# omit. Listing the two shared base fields
+// inline preserves field order (eventType / instanceName then
+// per-event fields) byte-for-byte with C#.
 type HealthPayload struct {
-	BasePayload
-	Level   string `json:"level"`
-	Message string `json:"message"`
-	Type    string `json:"type"`
-	WikiURL string `json:"wikiUrl"`
+	EventType    EventType `json:"eventType"`
+	InstanceName string    `json:"instanceName"`
+	Level        string    `json:"level"`
+	Message      string    `json:"message"`
+	Type         string    `json:"type"`
+	WikiURL      string    `json:"wikiUrl"`
 }
 
 // ApplicationUpdatePayload is the OnApplicationUpdate event body.

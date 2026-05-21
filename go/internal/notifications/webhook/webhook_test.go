@@ -267,6 +267,17 @@ func TestWebhook_OnHealthIssue(t *testing.T) {
 	if payload["wikiUrl"] != "https://wiki.servarr.com/sonarr/system#api-key" {
 		t.Errorf("wikiUrl: got %v", payload["wikiUrl"])
 	}
+	// J171 byte-shape guard: Health payloads must NOT carry an
+	// `applicationUrl` key. C# `BuildHealthPayload` at
+	// `WebhookBase.cs:159-170` does not assign WebhookPayload.
+	// ApplicationUrl, leaving the C# `string` property null —
+	// Newtonsoft's `NullValueHandling.Ignore` (Json.cs:26 via
+	// payload.ToJson() at WebhookProxy.cs:39) drops the key. The
+	// Go port preserves parity by inlining EventType + InstanceName
+	// directly on HealthPayload instead of embedding BasePayload.
+	if _, present := payload["applicationUrl"]; present {
+		t.Errorf("Health payload must omit applicationUrl: %s", string(gotBody))
+	}
 }
 
 // TestWebhook_OnHealthRestored emits the HealthRestored event type.
@@ -295,6 +306,11 @@ func TestWebhook_OnHealthRestored(t *testing.T) {
 	_ = json.Unmarshal(gotBody, &payload)
 	if payload["eventType"] != "HealthRestored" {
 		t.Errorf("eventType: got %v want HealthRestored", payload["eventType"])
+	}
+	// J171 byte-shape guard: HealthRestored shares HealthPayload with
+	// OnHealthIssue and must likewise omit `applicationUrl`.
+	if _, present := payload["applicationUrl"]; present {
+		t.Errorf("HealthRestored payload must omit applicationUrl: %s", string(gotBody))
 	}
 }
 

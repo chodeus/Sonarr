@@ -97,14 +97,18 @@ func BuildSeriesDeletePayload(msg notifications.SeriesDeleteMessage) SeriesDelet
 }
 
 // BuildHealthPayload mirrors C# `BuildHealthPayload` at
-// `WebhookBase.cs:159-170`.
+// `WebhookBase.cs:159-170`. The C# builder explicitly omits
+// `ApplicationUrl`; [HealthPayload] correspondingly does not embed
+// [BasePayload] so the `applicationUrl` key is absent from the wire
+// body (see the HealthPayload doc-comment for the
+// `NullValueHandling.Ignore` rationale).
 func BuildHealthPayload(msg notifications.HealthCheckMessage) HealthPayload {
 	return HealthPayload{
-		BasePayload: BasePayload{EventType: EventTypeHealth},
-		Level:       msg.Check.Type.String(),
-		Message:     msg.Check.Message,
-		Type:        msg.Check.Source,
-		WikiURL:     msg.Check.WikiURL,
+		EventType: EventTypeHealth,
+		Level:     msg.Check.Type.String(),
+		Message:   msg.Check.Message,
+		Type:      msg.Check.Source,
+		WikiURL:   msg.Check.WikiURL,
 	}
 }
 
@@ -113,11 +117,11 @@ func BuildHealthPayload(msg notifications.HealthCheckMessage) HealthPayload {
 // with a distinct EventType.
 func BuildHealthRestoredPayload(msg notifications.HealthCheckMessage) HealthPayload {
 	return HealthPayload{
-		BasePayload: BasePayload{EventType: EventTypeHealthRestored},
-		Level:       msg.Check.Type.String(),
-		Message:     msg.Check.Message,
-		Type:        msg.Check.Source,
-		WikiURL:     msg.Check.WikiURL,
+		EventType: EventTypeHealthRestored,
+		Level:     msg.Check.Type.String(),
+		Message:   msg.Check.Message,
+		Type:      msg.Check.Source,
+		WikiURL:   msg.Check.WikiURL,
 	}
 }
 
