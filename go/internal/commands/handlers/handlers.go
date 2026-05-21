@@ -239,6 +239,9 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	registry.Register(MissingEpisodeSearchName, commands.CommandSpec{
 		Handler: NewMissingEpisodeSearch(deps.MissingEpisodeLister, deps.MissingEpisodeSearcher, deps.Log),
 	})
+	registry.Register(ImportListSyncName, commands.CommandSpec{
+		Handler: NewImportListSync(deps.Log),
+	})
 	registry.Register(ApplicationCheckUpdateName, commands.CommandSpec{
 		Handler: NewApplicationCheckUpdate(deps.ApplicationCheckUpdate, deps.Log),
 	})
@@ -393,12 +396,32 @@ func DefaultScheduledTasks() []*scheduledtasks.Task {
 		// clamp. The Go port hardcodes the default until the
 		// RssSyncInterval config getter ports.
 		rssSyncDefaultTask(),
-		// Slice 4.Z (queue [15]): CheckForFinishedDownloads default
-		// schedule. Mirrors `TaskManager.cs:74` — `Interval = 1`
-		// (every minute). The C# entry also sets Priority =
-		// CommandPriority.High; per-task priority override is
-		// deferred (same divergence as RefreshMonitoredDownloads).
-		checkForFinishedDownloadsDefaultTask(),
+		// Slice 5.J181 (audit B.1 contract-replay drift —
+		// system.tasks task-set) drops the `CheckForFinishedDownload`
+		// scheduled-task entry that slice 4.Z added in good faith but
+		// against a misread C# cite. The 4.Z comment claimed it
+		// mirrored `TaskManager.cs:74 — Interval = 1`, but `:74` is
+		// the `Priority = CommandPriority.High` field of the
+		// `RefreshMonitoredDownloads` ScheduledTask (lines 69-75 of
+		// the C# defaults block), NOT a separate task entry. The C#
+		// tree explicitly does NOT schedule
+		// `CheckForFinishedDownloadCommand` — it stays registered as
+		// a deprecated alias only third-party API callers reach. The
+		// Go-port command handler stays registered (so the API
+		// surface accepts it), but the scheduler no longer auto-
+		// fires it every minute (RefreshMonitoredDownloads, which
+		// IS scheduled, does the same work via the same Refresher).
+		// Slice 5.J181 (audit B.1, system.tasks task-set) adds the
+		// ImportListSync entry that C# `TaskManager.cs:118-122`
+		// registers at a 5-minute cadence; the Go-port previously
+		// lacked this slot (the I4c sub-arc the slice 4.AQ closure
+		// flagged as deferred — the handler ships as a stub here,
+		// the real port lands when importlists.SyncService boot
+		// wiring plumbs).
+		{
+			TypeName: ImportListSyncName,
+			Interval: ImportListSyncIntervalDefault,
+		},
 		// Slice 4.AZ (sub-arc M6b-ii of queue [M6]):
 		// UpdateSceneMapping default schedule. Mirrors
 		// `TaskManager.cs:90` — `Interval = 3 * 60` (3 hours in

@@ -10,29 +10,34 @@
 //
 // When no Refresher is wired the handler falls back to the original
 // stub-shaped log so hosts that haven't yet wired a refresher still
-// satisfy the registry slot — the 1-minute scheduled-task entry
-// depends on the registry key existing.
+// satisfy the registry slot — API callers that push the deprecated
+// command name still get a registered handler instead of an "Unknown
+// command" rejection.
+//
+// Slice 5.J181 (audit B.1 contract-replay v3 drift — system.tasks
+// task-set) removed the scheduled-task entry for this command. The
+// 4.Z slice mistranscribed `TaskManager.cs:74` (which is the
+// `Priority = CommandPriority.High` field of the
+// `RefreshMonitoredDownloads` ScheduledTask, not a separate task);
+// the C# tree explicitly does NOT schedule
+// `CheckForFinishedDownloadCommand`. The handler stays registered
+// so the API surface still accepts it, but the scheduler no longer
+// auto-fires it — `RefreshMonitoredDownloads` does the same work
+// every minute and IS scheduled.
 
 package handlers
 
 import (
 	"context"
 	"log/slog"
-
-	"sonarr.tv/sonarr/internal/scheduledtasks"
 )
 
-// CheckForFinishedDownloadsName is the registry key + Commands.Name +
-// ScheduledTasks.TypeName. Mirrors the C# short form
-// `CheckForFinishedDownloadCommand` → `CheckForFinishedDownload` (the
-// scheduled-task name uses the singular form per
-// `TaskManager.cs:74`).
+// CheckForFinishedDownloadsName is the registry key + Commands.Name.
+// Mirrors the C# short form `CheckForFinishedDownloadCommand` →
+// `CheckForFinishedDownload`. NOT a scheduled-task TypeName since
+// slice 5.J181 — see the file-level doc-comment for the C# parity
+// note.
 const CheckForFinishedDownloadsName = "CheckForFinishedDownload"
-
-// CheckForFinishedDownloadsIntervalDefault is the 1-minute scheduler
-// cadence. Matches C# `TaskManager.cs:74`. Hardcoded here pending the
-// config getter port (same idiom as RssSync slice 4.Q).
-const CheckForFinishedDownloadsIntervalDefault = 1
 
 // CheckForFinishedDownloads is the IExecute<CheckForFinishedDownloadCommand>
 // port. Delegates to the configured [Refresher] (same instance as
@@ -86,15 +91,4 @@ func (h *CheckForFinishedDownloads) Execute(ctx context.Context, _ string) error
 		slog.String("command", CheckForFinishedDownloadsName),
 		slog.Int("items", items))
 	return nil
-}
-
-// checkForFinishedDownloadsDefaultTask returns the
-// DefaultScheduledTasks entry for CheckForFinishedDownloads. Hoisted
-// into a function so the constants stay co-located with the rest of
-// this file.
-func checkForFinishedDownloadsDefaultTask() *scheduledtasks.Task {
-	return &scheduledtasks.Task{
-		TypeName: CheckForFinishedDownloadsName,
-		Interval: CheckForFinishedDownloadsIntervalDefault,
-	}
 }
