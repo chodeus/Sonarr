@@ -29,16 +29,27 @@ func BuildGrabPayload(msg notifications.GrabMessage) GrabPayload {
 
 // BuildDownloadPayload mirrors C# `BuildOnDownloadPayload` at
 // `WebhookBase.cs:52-85`.
+//
+// `DeletedFiles` is conditionally assigned to mirror the C# `if
+// (message.OldFiles.Any())` guard at `:75-82`. Leaving the field
+// as the zero `any` value (nil interface) when OldFiles is empty
+// or nil allows the struct's `omitempty` tag to drop the key
+// entirely — matching C#'s null-then-NullValueHandling.Ignore omit
+// rather than emitting `"deletedFiles":null` (typed-nil slice
+// inside `any`) or `"deletedFiles":[]` (empty non-nil slice).
 func BuildDownloadPayload(msg notifications.DownloadMessage) ImportPayload {
-	return ImportPayload{
-		BasePayload:  BasePayload{EventType: EventTypeDownload},
-		Series:       msg.Series,
-		EpisodeFile:  msg.EpisodeFile,
-		IsUpgrade:    len(msg.OldFiles) > 0,
-		DeletedFiles: msg.OldFiles,
-		DownloadID:   msg.DownloadID,
-		Release:      msg.Release,
+	p := ImportPayload{
+		BasePayload: BasePayload{EventType: EventTypeDownload},
+		Series:      msg.Series,
+		EpisodeFile: msg.EpisodeFile,
+		IsUpgrade:   len(msg.OldFiles) > 0,
+		DownloadID:  msg.DownloadID,
+		Release:     msg.Release,
 	}
+	if len(msg.OldFiles) > 0 {
+		p.DeletedFiles = msg.OldFiles
+	}
+	return p
 }
 
 // BuildImportCompletePayload mirrors C# `BuildOnImportCompletePayload`

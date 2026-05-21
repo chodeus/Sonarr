@@ -120,6 +120,19 @@ type GrabPayload struct {
 // `?.Type` / `message.DownloadId` at `WebhookBase.cs:69-71` —
 // nullable strings dropped by `NullValueHandling.Ignore` when the
 // download-client info is absent.
+//
+// DeletedFiles carries `omitempty` AND is conditionally assigned by
+// [BuildDownloadPayload]: C# `WebhookBase.cs:75-82` only sets the
+// property inside an `if (message.OldFiles.Any())` guard, so empty
+// OldFiles leaves the property at its `List<>` reference-type
+// default (null) → `NullValueHandling.Ignore` drops the key. The
+// tag alone is insufficient because Go's `encoding/json` treats a
+// typed-nil slice inside an `any` field as non-nil at the interface
+// level (`reflect.Interface.IsNil()` returns false when the
+// interface carries a type); the empty/nil OldFiles slice would
+// otherwise marshal to `"deletedFiles":null` or `"deletedFiles":[]`.
+// The builder leaves DeletedFiles as the nil interface value when
+// `len(msg.OldFiles) == 0`, at which point omitempty drops the key.
 type ImportPayload struct {
 	BasePayload
 	Series             any    `json:"series"`
@@ -129,7 +142,7 @@ type ImportPayload struct {
 	DownloadClient     string `json:"downloadClient,omitempty"`
 	DownloadClientType string `json:"downloadClientType,omitempty"`
 	DownloadID         string `json:"downloadId,omitempty"`
-	DeletedFiles       any    `json:"deletedFiles"`
+	DeletedFiles       any    `json:"deletedFiles,omitempty"`
 	CustomFormatInfo   any    `json:"customFormatInfo"`
 	Release            any    `json:"release"`
 }

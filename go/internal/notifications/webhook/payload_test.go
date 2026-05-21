@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/notifications"
 )
 
 // TestPayload_DownloadFieldsOmitWhenEmpty is the J172 byte-shape
@@ -48,6 +51,65 @@ func TestPayload_DownloadFieldsOmitWhenEmpty(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBuildDownloadPayload_DeletedFilesOmitWhenEmpty is the J173
+// byte-shape guard for the OldFiles.Any() conditional. C#
+// `WebhookBase.cs:75-82` wraps the DeletedFiles assignment in
+// `if (message.OldFiles.Any())`, so an empty OldFiles leaves the
+// property at its `List<>` reference-type default (null) which
+// `NullValueHandling.Ignore` drops. The Go-port's
+// [BuildDownloadPayload] now mirrors that conditional: when
+// `len(msg.OldFiles) == 0` it leaves DeletedFiles as the zero
+// `any` value (nil interface), at which point the `omitempty` tag
+// drops the key.
+//
+// The tag alone is insufficient: an `any` field holding a typed-nil
+// slice marshals to `"deletedFiles":null` (because the interface
+// carries a type so `reflect.Interface.IsNil()` reports false),
+// and an empty non-nil slice marshals to `"deletedFiles":[]`. Only
+// a true nil-interface assignment plus omitempty produces the
+// C# parity omit.
+func TestBuildDownloadPayload_DeletedFilesOmitWhenEmpty(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		oldFiles []*episodefiles.DeletedFile
+	}{
+		{name: "nil OldFiles slice", oldFiles: nil},
+		{name: "empty non-nil OldFiles slice", oldFiles: []*episodefiles.DeletedFile{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := BuildDownloadPayload(notifications.DownloadMessage{OldFiles: tc.oldFiles})
+			b, err := json.Marshal(p)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := string(b)
+			if strings.Contains(got, `"deletedFiles"`) {
+				t.Errorf("Download body with empty OldFiles must omit deletedFiles; got %s", got)
+			}
+		})
+	}
+}
+
+// TestBuildDownloadPayload_DeletedFilesEmitWhenPopulated confirms
+// the opposite branch: when OldFiles has entries, the key appears
+// with a populated array — the C# `OldFiles.Any()` true branch.
+func TestBuildDownloadPayload_DeletedFilesEmitWhenPopulated(t *testing.T) {
+	msg := notifications.DownloadMessage{
+		OldFiles: []*episodefiles.DeletedFile{{}},
+	}
+	p := BuildDownloadPayload(msg)
+	if p.DeletedFiles == nil {
+		t.Fatalf("DeletedFiles must be populated when OldFiles is non-empty; got nil")
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"deletedFiles"`) {
+		t.Errorf("Download body with non-empty OldFiles must include deletedFiles; got %s", b)
 	}
 }
 
