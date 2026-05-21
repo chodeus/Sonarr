@@ -94,6 +94,121 @@ func TestService_PublishesEvent(t *testing.T) {
 	}
 }
 
+// GetLastRssSyncReleaseInfo on a fresh service (no rows) returns
+// "" + nil — mirrors C# `GetLastRssSyncReleaseInfo` collapsing the
+// "no row" case to a null ReleaseInfo (which the Go port collapses
+// further to an empty string sentinel).
+func TestService_GetLastRssSyncReleaseInfo_AbsentReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	svc := newService(t)
+	got, err := svc.GetLastRssSyncReleaseInfo(t.Context(), 7)
+	if err != nil {
+		t.Fatalf("GetLastRssSyncReleaseInfo: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+// UpdateRssSyncStatus on a provider with no prior row creates the
+// row and sets the column. Mirrors C# `GetProviderStatus(id)`
+// fabricating a fresh `IndexerStatus { LastRssSyncReleaseInfo =
+// releaseInfo }` then upserting.
+func TestService_UpdateRssSyncStatus_InsertsWhenAbsent(t *testing.T) {
+	t.Parallel()
+	svc := newService(t)
+	payload := `{"guid":"BTN-12245","publishDate":"2026-05-01T00:00:00Z"}`
+	if err := svc.UpdateRssSyncStatus(t.Context(), 11, payload); err != nil {
+		t.Fatalf("UpdateRssSyncStatus: %v", err)
+	}
+	got, err := svc.GetLastRssSyncReleaseInfo(t.Context(), 11)
+	if err != nil {
+		t.Fatalf("GetLastRssSyncReleaseInfo: %v", err)
+	}
+	if got != payload {
+		t.Errorf("LastRssSyncReleaseInfo round-trip:\n got: %q\nwant: %q", got, payload)
+	}
+}
+
+// UpdateRssSyncStatus on a row with existing back-off state must
+// preserve InitialFailure / MostRecentFailure / EscalationLevel /
+// DisabledTill — RSS-sync writes are side-data and never touch the
+// escalation columns. Mirrors C# `IndexerStatusService.
+// UpdateRssSyncStatus` which sets only the one column.
+func TestService_UpdateRssSyncStatus_PreservesEscalation(t *testing.T) {
+	t.Parallel()
+	svc := newService(t)
+	if err := svc.RecordFailure(t.Context(), 13, 0); err != nil {
+		t.Fatalf("RecordFailure: %v", err)
+	}
+	blocked, _ := svc.GetBlockedProviders(t.Context())
+	if len(blocked) != 1 {
+		t.Fatalf("len(blocked) = %d, want 1", len(blocked))
+	}
+	wantLevel := blocked[0].EscalationLevel
+	wantInitial := blocked[0].InitialFailure
+	wantDisabled := blocked[0].DisabledTill
+
+	if err := svc.UpdateRssSyncStatus(t.Context(), 13, `{"guid":"BTN-9"}`); err != nil {
+		t.Fatalf("UpdateRssSyncStatus: %v", err)
+	}
+
+	post, _ := svc.GetBlockedProviders(t.Context())
+	if len(post) != 1 {
+		t.Fatalf("len(post-blocked) = %d, want 1", len(post))
+	}
+	if post[0].EscalationLevel != wantLevel {
+		t.Errorf("EscalationLevel: got %d, want %d", post[0].EscalationLevel, wantLevel)
+	}
+	if post[0].InitialFailure == nil || wantInitial == nil || !post[0].InitialFailure.Equal(*wantInitial) {
+		t.Errorf("InitialFailure: got %v, want %v", post[0].InitialFailure, wantInitial)
+	}
+	if post[0].DisabledTill == nil || wantDisabled == nil || !post[0].DisabledTill.Equal(*wantDisabled) {
+		t.Errorf("DisabledTill: got %v, want %v", post[0].DisabledTill, wantDisabled)
+	}
+	if post[0].LastRssSyncReleaseInfo != `{"guid":"BTN-9"}` {
+		t.Errorf("LastRssSyncReleaseInfo: got %q", post[0].LastRssSyncReleaseInfo)
+	}
+}
+
+// Empty payload clears the column back to NULL — round-trips as "".
+// Confirms the `nullableString` mapper semantics survive the
+// Service-level update path.
+func TestService_UpdateRssSyncStatus_EmptyClearsColumn(t *testing.T) {
+	t.Parallel()
+	svc := newService(t)
+	if err := svc.UpdateRssSyncStatus(t.Context(), 5, `{"guid":"BTN-1"}`); err != nil {
+		t.Fatalf("UpdateRssSyncStatus seed: %v", err)
+	}
+	if err := svc.UpdateRssSyncStatus(t.Context(), 5, ""); err != nil {
+		t.Fatalf("UpdateRssSyncStatus clear: %v", err)
+	}
+	got, _ := svc.GetLastRssSyncReleaseInfo(t.Context(), 5)
+	if got != "" {
+		t.Errorf("after-clear: got %q, want empty", got)
+	}
+}
+
+// Invalid providerID (0 or negative) is a no-op on both read and
+// write — matches the existing ProviderID <= 0 guards on
+// RecordSuccess / RecordFailure / RecordConnectionFailure.
+func TestService_RssSyncStatus_NonPositiveProviderIDIsNoOp(t *testing.T) {
+	t.Parallel()
+	svc := newService(t)
+	if err := svc.UpdateRssSyncStatus(t.Context(), 0, `{"guid":"BTN-1"}`); err != nil {
+		t.Errorf("UpdateRssSyncStatus(0): %v", err)
+	}
+	if err := svc.UpdateRssSyncStatus(t.Context(), -1, `{"guid":"BTN-1"}`); err != nil {
+		t.Errorf("UpdateRssSyncStatus(-1): %v", err)
+	}
+	if got, err := svc.GetLastRssSyncReleaseInfo(t.Context(), 0); err != nil || got != "" {
+		t.Errorf("GetLastRssSyncReleaseInfo(0): got=%q err=%v", got, err)
+	}
+	if got, err := svc.GetLastRssSyncReleaseInfo(t.Context(), -1); err != nil || got != "" {
+		t.Errorf("GetLastRssSyncReleaseInfo(-1): got=%q err=%v", got, err)
+	}
+}
+
 // Pre-existing rows with LastRssSyncReleaseInfo set should
 // round-trip through the Service path untouched — the column
 // doesn't participate in the back-off logic.

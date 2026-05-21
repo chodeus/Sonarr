@@ -113,6 +113,72 @@ func (s *Service) RecordConnectionFailure(ctx context.Context, providerID int) e
 	})
 }
 
+// GetLastRssSyncReleaseInfo returns the embedded JSON for the
+// provider's most recent RSS-sync release snapshot, or "" when the
+// row is absent or the column is NULL. Mirrors C# `IndexerStatusService.
+// GetLastRssSyncReleaseInfo` at `src/NzbDrone.Core/Indexers/
+// IndexerStatusService.cs:23-26` — the C# method returns null for the
+// no-row case via `GetProviderStatus(id)` (which fabricates a fresh
+// `IndexerStatus { LastRssSyncReleaseInfo = null }` when the repo
+// has no row). The Go port collapses both no-row and SQL-NULL into
+// the same empty-string sentinel since callers (BTN's "BTN-<id>"
+// parser, the gap-detection warning logic) treat both identically.
+//
+// Errors propagate only on transport-layer repo failures; no-row
+// is not an error.
+func (s *Service) GetLastRssSyncReleaseInfo(ctx context.Context, providerID int) (string, error) {
+	if providerID <= 0 {
+		return "", nil
+	}
+	row, err := s.repo.GetByProviderID(ctx, providerID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("indexerstatus: get-last-rss-sync(%d): %w", providerID, err)
+	}
+	return row.LastRssSyncReleaseInfo, nil
+}
+
+// UpdateRssSyncStatus sets the provider's LastRssSyncReleaseInfo
+// column to the supplied embedded JSON. Mirrors C# `IndexerStatusService.
+// UpdateRssSyncStatus` at `IndexerStatusService.cs:28-38` — under the
+// `_syncRoot` lock, fetch (or fabricate) the row, set the field,
+// upsert. The C# implementation does NOT publish a
+// ProviderStatusChangedEvent on this path; the field is "side data"
+// outside the back-off escalation flow that drives the event. The
+// Go port matches: this method bypasses Service.publish so subscribers
+// that key off back-off transitions don't see spurious change ticks
+// on RSS-sync writes.
+//
+// Empty releaseInfoJSON clears the column back to SQL NULL (matches
+// the `nullableString` mapper logic). Callers that want to leave the
+// column untouched should skip the call rather than pass "".
+//
+// The shared `s.mu` lock — already serializing back-off recorders —
+// is reused here so a concurrent RecordFailure cannot clobber the
+// row mid-update (read-modify-write across the same row), matching
+// the C# `_syncRoot` lock's whole-row coverage.
+func (s *Service) UpdateRssSyncStatus(ctx context.Context, providerID int, releaseInfoJSON string) error {
+	if providerID <= 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, err := s.repo.GetByProviderID(ctx, providerID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		row = &Status{ProviderID: providerID}
+	case err != nil:
+		return fmt.Errorf("indexerstatus: update-rss-sync-load(%d): %w", providerID, err)
+	}
+	row.LastRssSyncReleaseInfo = releaseInfoJSON
+	if err := s.repo.Upsert(ctx, row); err != nil {
+		return fmt.Errorf("indexerstatus: update-rss-sync-upsert(%d): %w", providerID, err)
+	}
+	return nil
+}
+
 // OnProviderDeleted removes the status row for the given provider.
 func (s *Service) OnProviderDeleted(ctx context.Context, providerID int) error {
 	if err := s.repo.DeleteByProviderID(ctx, providerID); err != nil {
