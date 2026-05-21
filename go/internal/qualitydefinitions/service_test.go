@@ -2,6 +2,7 @@ package qualitydefinitions_test
 
 import (
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -75,6 +76,51 @@ func TestService_EnsureDefaults_DeletesOrphans(t *testing.T) {
 
 	if _, err := repo.Get(t.Context(), orphan.ID); !errors.Is(err, qualitydefinitions.ErrNotFound) {
 		t.Errorf("orphan should be deleted, Get = %v", err)
+	}
+}
+
+// J179 codifies the C# `:73` `OrderBy(d => d.Weight)` insertion
+// order. The Go-port quality.DefaultDefinitions is already laid out
+// Weight-ASC so the production sort is a no-op in practice — but this
+// test verifies the contract via the resulting auto-incremented IDs.
+// Rows fetched by ID ASC must have non-decreasing Weight; that holds
+// iff inserts happen in Weight-ASC order. A future reorder of the
+// DefaultDefinitions literal that broke the sort would fail here.
+func TestService_EnsureDefaults_InsertsInWeightAscOrder(t *testing.T) {
+	t.Parallel()
+	svc, repo := newService(t)
+	if err := svc.EnsureDefaults(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := repo.All(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) == 0 {
+		t.Fatal("no rows seeded")
+	}
+	// repo.All sorts by Quality (the mapper OrderBy) — sort the
+	// returned slice by ID ASC to recover insert order, since IDs
+	// are auto-incremented in insert order by SQLite + Postgres.
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	// Look up each row's Weight via quality.DefaultDefinitions and
+	// assert monotonic non-decreasing.
+	weightByQuality := make(map[int]int, len(quality.DefaultDefinitions()))
+	for _, d := range quality.DefaultDefinitions() {
+		weightByQuality[d.Quality.ID] = d.Weight
+	}
+	prev := -1
+	for i, row := range rows {
+		w, ok := weightByQuality[row.Quality]
+		if !ok {
+			t.Errorf("row[%d] quality=%d has no DefaultDefinitions entry", i, row.Quality)
+			continue
+		}
+		if w < prev {
+			t.Errorf("insert order not Weight-ASC: row[%d] id=%d quality=%d weight=%d follows weight=%d",
+				i, row.ID, row.Quality, w, prev)
+		}
+		prev = w
 	}
 }
 

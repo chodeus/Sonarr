@@ -166,6 +166,17 @@ func (s *Service) Update(ctx context.Context, def *Definition) error {
 //
 // The C# call site is `Handle(ApplicationStartedEvent)`; the Go host
 // invokes EnsureDefaults at startup to mirror that semantic.
+//
+// Insert order: Weight ASC (stable). Mirrors C# `:73` which sorts
+// via `Quality.DefaultQualityDefinitions.OrderBy(d => d.Weight)`
+// before iterating. The Go-port slice
+// [quality.DefaultDefinitions] is already laid out Weight-ASC at
+// HEAD, so the sort is a no-op against the current literal table —
+// but codifying it here means a future reorder of the literal
+// (e.g. grouping by category for readability) can't silently shift
+// the auto-incremented IDs out of Weight-ASC sync with the C# wire,
+// which the contract goldens (recorded against C#'s OrderBy-sorted
+// seed) depend on. Slice 5.J179 defensive-parity fix.
 func (s *Service) EnsureDefaults(ctx context.Context) error {
 	existing, err := s.repo.All(ctx)
 	if err != nil {
@@ -177,6 +188,7 @@ func (s *Service) EnsureDefaults(ctx context.Context) error {
 	}
 
 	defaults := quality.DefaultDefinitions()
+	sort.SliceStable(defaults, func(i, j int) bool { return defaults[i].Weight < defaults[j].Weight })
 	for _, d := range defaults {
 		if _, ok := byQuality[d.Quality.ID]; ok {
 			delete(byQuality, d.Quality.ID) // mark as paired
