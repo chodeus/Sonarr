@@ -118,6 +118,15 @@ type Payload struct {
 // Field order matches the C# class; JSON tag names match the
 // Discord webhook API (lowerCamelCase except Discord-prescribed
 // snake_case which doesn't apply at this level).
+//
+// Author / Thumbnail / Image are pointers with `omitempty`. The
+// payload is serialized via Newtonsoft's `ToJson` extension which
+// applies `NullValueHandling.Ignore`
+// (`src/NzbDrone.Common/Serializer/Newtonsoft.Json/Json.cs:26`,
+// invoked at `DiscordProxy.cs:35`): null reference-type properties
+// are OMITTED from the wire body, not emitted as `"...":null`. Go
+// matches via `omitempty` so a default Embed (no author / no
+// poster / no fanart) produces byte-equal JSON.
 type Embed struct {
 	// Description is the embed body text.
 	Description string `json:"description"`
@@ -131,11 +140,14 @@ type Embed struct {
 	// URL is the click-through URL the title links to.
 	URL string `json:"url"`
 	// Author is the (optional) embed-author bar (name + icon).
-	Author *Author `json:"author"`
+	// Nil → key omitted (Newtonsoft `NullValueHandling.Ignore`).
+	Author *Author `json:"author,omitempty"`
 	// Thumbnail is the small image rendered in the embed corner.
-	Thumbnail *Image `json:"thumbnail"`
-	// Image is the wide image rendered below the body.
-	Image *Image `json:"image"`
+	// Nil → key omitted.
+	Thumbnail *Image `json:"thumbnail,omitempty"`
+	// Image is the wide image rendered below the body. Nil → key
+	// omitted.
+	Image *Image `json:"image,omitempty"`
 	// Timestamp is the ISO-8601 "O"-format string the C# emitter
 	// produces via `DateTime.UtcNow.ToString("O")`.
 	Timestamp string `json:"timestamp"`
