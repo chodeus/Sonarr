@@ -628,10 +628,13 @@ func (q *QBittorrent) RemoveItem(ctx context.Context, item *downloadclients.Item
 // `Download/Clients/QBittorrent/QBittorrent.cs:400-438`. Fetches the
 // global preferences via /api/v2/app/preferences and projects:
 //
-//   - IsLocalhost — true when settings.Host is 127.0.0.1 or
-//     "localhost" (case-insensitive). The C# arm at `:434` checks
-//     literal equality against "localhost"; the Go port relaxes to
-//     case-insensitive since URL hostnames are case-folded anyway.
+//   - IsLocalhost — routes through
+//     [downloadclients.IsLocalhostHost]. The C# arm at `:434` checks
+//     literal equality `Host == "127.0.0.1" || Host == "localhost"`;
+//     the Go port (Phase 5.J175) widens to case-insensitive +
+//     whitespace-trim + IPv6 loopback (`::1`) via the shared helper,
+//     since URL hostnames are case-folded anyway and the wider check
+//     is strictly a superset.
 //   - OutputRootFolders — when settings.TvCategory is non-empty AND
 //     [Proxy.GetLabels] returns a matching label with a non-empty
 //     per-category SavePath, that category-specific path is used
@@ -650,7 +653,7 @@ func (q *QBittorrent) GetStatus(ctx context.Context) (*downloadclients.ClientInf
 		return nil, fmt.Errorf("qbittorrent: GetStatus: %w", err)
 	}
 	info := &downloadclients.ClientInfo{
-		IsLocalhost:               q.settings.Host == "127.0.0.1" || strings.EqualFold(q.settings.Host, "localhost"),
+		IsLocalhost:               downloadclients.IsLocalhostHost(q.settings.Host),
 		RemovesCompletedDownloads: removesCompletedDownloads(prefs),
 	}
 	savePath := strings.TrimSpace(prefs.SavePath)

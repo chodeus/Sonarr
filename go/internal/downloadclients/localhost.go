@@ -34,12 +34,14 @@ import "strings"
 //  3. Centralises the IPv6 + trim + lowercase semantics so future
 //     widenings (e.g. accepting `[::1]:6800`) happen in one spot.
 //
-// The 5 DCs that inline `Host == "127.0.0.1" || EqualFold(Host,
+// J175 (Phase 5) closed the second half of the sweep: the 5 DCs
+// that previously inlined `Host == "127.0.0.1" || EqualFold(Host,
 // "localhost")` without the IPv6 loopback (qbittorrent, deluge,
-// sabnzbd, transmission, nzbget) preserve the verbatim C# `==`
-// posture — migrating them would widen the check and falls under a
-// separate "unify localhost detection" sweep tracked in
-// [AUDIT_FIX_BACKLOG.md] under "Notable follow-ups".
+// sabnzbd, transmission, nzbget) now route through this helper too.
+// That widens each one to accept `::1`, trim leading/trailing
+// whitespace, and lowercase mixed-case input — strictly a superset
+// of the C# behaviour, taken with deliberate sign-off per
+// [AUDIT_FIX_BACKLOG.md] "Notable follow-ups".
 func IsLocalhostHost(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	return h == "localhost" || h == "127.0.0.1" || h == "::1"

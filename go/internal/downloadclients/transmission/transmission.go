@@ -404,7 +404,7 @@ func (t *Transmission) GetStatus(ctx context.Context) (*downloadclients.ClientIn
 		}
 	}
 	info := &downloadclients.ClientInfo{
-		IsLocalhost: t.settings.Host == "127.0.0.1" || strings.EqualFold(t.settings.Host, "localhost"),
+		IsLocalhost: downloadclients.IsLocalhostHost(t.settings.Host),
 	}
 	if destDir != "" {
 		info.OutputRootFolders = []ospath.OsPath{t.remapOutput(ctx, destDir)}

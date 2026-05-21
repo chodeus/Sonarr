@@ -621,7 +621,7 @@ func (n *Nzbget) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, er
 	}
 
 	info := &downloadclients.ClientInfo{
-		IsLocalhost: n.settings.Host == "127.0.0.1" || strings.EqualFold(n.settings.Host, "localhost"),
+		IsLocalhost: downloadclients.IsLocalhostHost(n.settings.Host),
 	}
 	if tv := strings.TrimSpace(n.settings.TvCategory); tv != "" {
 		for _, cat := range getCategories(cfg) {

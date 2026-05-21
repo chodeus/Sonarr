@@ -420,9 +420,11 @@ func (d *Deluge) RemoveItem(ctx context.Context, item *downloadclients.Item, del
 // `label is { ApplyMoveCompleted: true, MoveCompleted: true }` arm
 // at `:237-241` which evaluates to false on null label.
 //
-// IsLocalhost matches the C# arm at `:253` — Host == 127.0.0.1 OR
-// the literal string "localhost"; the Go port relaxes to
-// case-insensitive since URL hostnames are case-folded anyway.
+// IsLocalhost routes through [downloadclients.IsLocalhostHost].
+// The C# arm at `:253` is literal `Host == "127.0.0.1" || Host ==
+// "localhost"`; the Go port (Phase 5.J175) widens via the shared
+// helper to case-insensitive + whitespace-trim + IPv6 loopback
+// (`::1`), strictly a superset of the C# behaviour.
 //
 // RemovesCompletedDownloads is left false — the C# tree doesn't set
 // this field for Deluge, matching the absence of a global
@@ -443,7 +445,7 @@ func (d *Deluge) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, er
 	}
 
 	info := &downloadclients.ClientInfo{
-		IsLocalhost: d.settings.Host == "127.0.0.1" || strings.EqualFold(d.settings.Host, "localhost"),
+		IsLocalhost: downloadclients.IsLocalhostHost(d.settings.Host),
 	}
 	if strings.TrimSpace(destDir) != "" {
 		info.OutputRootFolders = []ospath.OsPath{d.remapOutput(ctx, destDir)}

@@ -435,7 +435,7 @@ func (s *Sabnzbd) GetStatus(ctx context.Context) (*downloadclients.ClientInfo, e
 	}
 
 	info := &downloadclients.ClientInfo{
-		IsLocalhost: s.settings.Host == "127.0.0.1" || strings.EqualFold(s.settings.Host, "localhost"),
+		IsLocalhost: downloadclients.IsLocalhostHost(s.settings.Host),
 	}
 
 	wantCat := s.settings.TvCategory
