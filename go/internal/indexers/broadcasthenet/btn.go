@@ -27,14 +27,14 @@ type Indexer struct {
 	// `BroadcastheNetRequestGenerator.cs:14` — when > 0, FetchRecent's
 	// tier 1 narrows the recent-fetch query to `id >= lastID-100`
 	// (the -100 is C#'s overlap window guarding against deletions or
-	// reordering since the last sync). The composition root is meant
-	// to populate it from the indexerstatus persistence — see C#
-	// `BroadcastheNet.cs:29-34` for the GetLastRssSyncReleaseInfo +
-	// "BTN-<id>" parse. That wiring (capturing the max TorrentID
-	// after each fetch + persisting it back as a Guid-shaped
-	// ReleaseInfo) is still deferred; until it lands, this field
-	// stays zero and FetchRecent falls through to the age-only path
-	// — behaviour-equivalent to pre-J158.
+	// reordering since the last sync). Seeded by the composition root
+	// via [SetLastRecentTorrentID] from the persisted
+	// LastRssSyncReleaseInfo column's `BTN-<id>` Guid — see
+	// [ParseLastRecentTorrentID] (J177) for the read-side parser and
+	// `cmd/sonarr/indexersearch_wiring.go` BroadcastheNet case (J178)
+	// for the per-fetch seed-and-capture wiring that mirrors C#
+	// `BroadcastheNet.cs:25-37` (read in GetRequestGenerator) +
+	// `HttpIndexerBase.cs:207-220` (write after successful FetchReleases).
 	lastRecentTorrentID int
 }
 
@@ -120,9 +120,14 @@ func (i *Indexer) RequestAction(_ string, _ map[string]string) (any, error) {
 //
 // The populate-from-indexerstatus side of the C# wiring at
 // `BroadcastheNet.cs:29-34` (read GetLastRssSyncReleaseInfo, parse
-// "BTN-<id>" out of its Guid) is still deferred — the field defaults
-// to zero so callers that don't set it get the age-only behaviour
-// identical to pre-J158.
+// `BTN-<id>` out of its Guid) is wired by the composition root via
+// [SetLastRecentTorrentID] — see [ParseLastRecentTorrentID] (J177)
+// and `cmd/sonarr/indexersearch_wiring.go` (J178). When the
+// composition root is wired without an indexerstatus.Service (test
+// configurations) or the persisted column is empty / malformed /
+// missing the `BTN-` prefix, the seeded id is 0 and FetchRecent
+// falls through to the age-only path — behaviour-equivalent to
+// pre-J158.
 func (i *Indexer) FetchRecent(ctx context.Context) ([]*parser.TorrentInfo, error) {
 	settings, err := i.settings()
 	if err != nil {

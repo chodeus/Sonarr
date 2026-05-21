@@ -51,6 +51,26 @@ import (
 	"sonarr.tv/sonarr/internal/provider"
 )
 
+// rssWatermarkStore is the narrow surface the wiring layer needs
+// from [indexerstatus.Service] to support BroadcastheNet's
+// LastRecentTorrentId optimization (audit B.6, closed across slices
+// 5.J176 / 5.J177 / 5.J178). Mirrors the RSS-sync-snapshot half of
+// the C# `IIndexerStatusService` interface at
+// `src/NzbDrone.Core/Indexers/IndexerStatusService.cs:11-13` —
+// `GetLastRssSyncReleaseInfo` + `UpdateRssSyncStatus`. The back-off
+// half of `IIndexerStatusService` is covered separately by
+// [providerstatus.Recorder].
+//
+// `*indexerstatus.Service` satisfies this interface structurally; the
+// narrow shape exists so the wiring tests can swap in a stub without
+// pulling in the full Service (which carries a Repo + bus + mutex
+// surface that's irrelevant to the watermark-seed-and-capture
+// closure).
+type rssWatermarkStore interface {
+	GetLastRssSyncReleaseInfo(ctx context.Context, providerID int) (string, error)
+	UpdateRssSyncStatus(ctx context.Context, providerID int, releaseInfoJSON string) error
+}
+
 // indexerRowAdapter wraps an indexers.Indexer row so it satisfies the
 // provider.Row interface without polluting the persistence package
 // with provider concerns. The wrapper is constructed per-call inside
@@ -104,6 +124,7 @@ type dbIndexerSource struct {
 	factory    provider.Factory
 	httpClient httpclient.Client
 	capsProv   *newznab.CapabilitiesProvider
+	rssStore   rssWatermarkStore
 	log        *slog.Logger
 }
 
@@ -113,12 +134,18 @@ type dbIndexerSource struct {
 //
 // capsProv is shared by the newznab and torznab wrappers since the
 // `?t=caps` probe is identical for both protocols.
-func newIndexerSource(repo *indexers.Repo, httpClient httpclient.Client, log *slog.Logger) *dbIndexerSource {
+//
+// rssStore (J178) is consumed by the BroadcastheNet case's FetchRecent
+// closure to seed + capture the LastRecentTorrentId watermark. nil is
+// tolerated (every per-implementation case guards on `s.rssStore !=
+// nil` so test wiring without an indexerstatus.Service still works).
+func newIndexerSource(repo *indexers.Repo, httpClient httpclient.Client, rssStore rssWatermarkStore, log *slog.Logger) *dbIndexerSource {
 	return &dbIndexerSource{
 		repo:       repo,
 		factory:    provider.NewFactory(provider.Default()),
 		httpClient: httpClient,
 		capsProv:   newznab.NewCapabilitiesProvider(httpClient),
+		rssStore:   rssStore,
 		log:        log,
 	}
 }
@@ -236,17 +263,72 @@ func (s *dbIndexerSource) buildAdapter(row *indexers.Indexer, def *provider.Defi
 	case "BroadcastheNet":
 		idx := broadcasthenet.NewIndexer(s.httpClient)
 		idx.SetDefinition(def)
+		indexerID := row.ID
+		// Slice 5.J178 activates the LastRecentTorrentId optimization
+		// end-to-end by wiring the persistence-side reads + writes
+		// around the existing in-indexer tier walk (J158). C#
+		// parallel:
+		//
+		//   - SEED (pre-fetch): `BroadcastheNet.cs:25-37` reads
+		//     `_indexerStatusService.GetLastRssSyncReleaseInfo(Definition.Id)`
+		//     in `GetRequestGenerator()` and seeds
+		//     `requestGenerator.LastRecentTorrentId` from the parsed
+		//     `BTN-<id>` guid. The Go-port mirrors this by reading
+		//     the persisted JSON via `s.rssStore.GetLastRssSyncReleaseInfo`,
+		//     parsing via [broadcasthenet.ParseLastRecentTorrentID],
+		//     and calling [broadcasthenet.Indexer.SetLastRecentTorrentID]
+		//     — runs BEFORE every FetchRecent rather than once at
+		//     boot, matching the C# per-fetch GetRequestGenerator
+		//     posture. Read errors degrade to a logged warning + no
+		//     seeding (matches the C# silently-tolerant
+		//     `int.TryParse`-after-`Replace` swallow path).
+		//
+		//   - CAPTURE (post-fetch): `HttpIndexerBase.cs:207-220` —
+		//     the `if (isRecent && !releases.Empty())` arm calls
+		//     `_indexerStatusService.UpdateRssSyncStatus(Definition.Id,
+		//     releases.OrderByDescending(PublishDate).First())`. The
+		//     Go-port runs the parallel write after every successful
+		//     non-empty FetchRecent, using
+		//     [broadcasthenet.EncodeLastRecentRelease] to project the
+		//     newest TorrentInfo's embedded ReleaseInfo to JSON.
+		//     Write errors degrade to a logged warning (best-effort,
+		//     matches the C# tree's lack of error propagation out of
+		//     this side-data write).
+		//
+		// Both arms are no-ops when `s.rssStore == nil` (test wiring)
+		// or `indexerID <= 0` (an unbound row — shouldn't occur in
+		// the production hydration path but the guard is cheap and
+		// keeps the closure safe under speculative construction).
 		common.FetchRecentFunc = func(ctx context.Context) ([]any, error) {
+			if s.rssStore != nil && indexerID > 0 {
+				persisted, gErr := s.rssStore.GetLastRssSyncReleaseInfo(ctx, indexerID)
+				if gErr != nil {
+					s.log.Warn("indexersearch wiring: BroadcastheNet GetLastRssSyncReleaseInfo failed; skipping watermark seed",
+						slog.Int("indexerId", indexerID),
+						slog.Any("err", gErr),
+					)
+				} else {
+					idx.SetLastRecentTorrentID(broadcasthenet.ParseLastRecentTorrentID(persisted))
+				}
+			}
 			rs, err := idx.FetchRecent(ctx)
+			if err == nil && len(rs) > 0 && s.rssStore != nil && indexerID > 0 {
+				if encoded := broadcasthenet.EncodeLastRecentRelease(rs); encoded != "" {
+					if uErr := s.rssStore.UpdateRssSyncStatus(ctx, indexerID, encoded); uErr != nil {
+						s.log.Warn("indexersearch wiring: BroadcastheNet UpdateRssSyncStatus failed; watermark not advanced",
+							slog.Int("indexerId", indexerID),
+							slog.Any("err", uErr),
+						)
+					}
+				}
+			}
 			return upcastTorrentInfos(rs), err
 		}
 		// Slice 5.J157 closes the J156 FetchSearch deferral with
 		// the per-criteria 7-overload dispatch (SingleEpisode /
 		// Season / Daily / DailySeason / AnimeEpisode / AnimeSeason
 		// / SpecialEpisode). Tvdb/Tvrage-keyed, Name-based with
-		// %-wildcards. Daily variants AddTier. The
-		// LastRecentTorrentId optimization (C# `:26-32`) is still
-		// deferred — requires IIndexerStatusService wiring.
+		// %-wildcards. Daily variants AddTier.
 		common.FetchSearchFunc = func(ctx context.Context, c indexersearch.Criteria) ([]any, error) {
 			rs, err := idx.FetchSearch(ctx, c)
 			return upcastTorrentInfos(rs), err

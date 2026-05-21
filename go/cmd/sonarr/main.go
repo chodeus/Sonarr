@@ -2483,7 +2483,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// already constructed above (slice 4.P moved their wiring earlier
 	// so the BlockedIndexerSpecification + TorrentSeedingSpecification
 	// at decisionEngineSpecs build can reach them).
-	indexerSource := newIndexerSource(indexersRepo, httpClient, logger)
+	indexerSource := newIndexerSource(indexersRepo, httpClient, indexerStatusSvc, logger)
 	indexerSearchSvc := indexersearch.NewService(
 		indexerSource,
 		indexerStatusSvc,
