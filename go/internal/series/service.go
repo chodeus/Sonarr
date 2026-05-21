@@ -70,6 +70,30 @@ func (s *Service) GetSeries(ctx context.Context, id int) (*Series, error) {
 	return s.repo.Get(ctx, id)
 }
 
+// SeriesExists reports whether a Series row with the given id is
+// persisted. Returns (false, nil) on a clean miss (no row),
+// (true, nil) on a hit, and propagates any other repo error
+// untouched. Mirrors the C# `BasicRepository.Find(id) != null`
+// idiom callers use when they only care about existence (the
+// C# tree itself uses `GetSeries` + try/catch on
+// `ModelNotFoundException`; the bool return is the Go-port
+// idiomatic translation).
+//
+// Added at 5.J180 for the [api/v3.EpisodeFileListHandler] 404-on-
+// missing-series path that mirrors C# `EpisodeFileController.cs:72`
+// (`_seriesService.GetSeries(seriesId.Value)` throws when the row
+// is gone, surfacing as a 404). Reusable from any handler that needs
+// the same precondition check without pulling the full Series row.
+func (s *Service) SeriesExists(ctx context.Context, id int) (bool, error) {
+	if _, err := s.repo.Get(ctx, id); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // GetMany ports `SeriesService.GetSeries(IEnumerable<int>)` at `:68-71`.
 // Returns the rows for the given Ids in arbitrary order; missing Ids
 // are silently dropped (matches `_seriesRepository.Get(ids)` semantics

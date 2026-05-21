@@ -65,13 +65,38 @@ type EpisodeFileReader interface {
 	GetFilesBySeries(ctx context.Context, seriesID int) ([]episodefiles.File, error)
 }
 
+// SeriesExistsChecker reports whether a Series with the given id is
+// persisted. Satisfied directly by *series.Service via
+// [series.Service.SeriesExists] (added at 5.J180 alongside this
+// interface). Defined here rather than in `internal/series` so the
+// v3 API package can avoid pulling a wider surface than the
+// existence check actually needs.
+type SeriesExistsChecker interface {
+	SeriesExists(ctx context.Context, id int) (bool, error)
+}
+
 // EpisodeFileListHandler returns GET /api/v3/episodefile. Mirrors
 // `EpisodeFileController.GetEpisodeFiles` at `:61-92`. Required:
 // `seriesId` OR `episodeFileIds` (repeated int). Returns the C#-
 // shaped resource list — minus the joined fields (quality,
 // languages, customFormats, mediaInfo) which the existing
 // EpisodeFileResource skeleton DEFERS.
-func EpisodeFileListHandler(svc EpisodeFileReader) http.Handler {
+//
+// Slice 5.J180 closes the contract-replay 404-vs-200 drift on the
+// `seriesId` arm: when the supplied series doesn't exist, the C#
+// controller's `_seriesService.GetSeries(seriesId.Value)` call at
+// `:72` throws `ModelNotFoundException`, surfacing as a 404 via the
+// global exception filter. The Go-port previously skipped the
+// series-existence check and returned 200 + `[]` for any seriesId,
+// drifting from the recorded golden (`v3.episodefile.list`'s 404
+// status). Behaviour now: when seriesId is supplied, check
+// existence first via [SeriesExistsChecker]; return 404 when the
+// row is absent. The 200 + `[]` shape stays for the
+// series-exists-but-no-files case (matches C# `files == null`
+// guard at `:75-78`). The `episodeFileIds`-only arm is unchanged —
+// C# `:85-90` doesn't precondition on series existence (it
+// per-row joins after the fact via `GetSeries(f.Key)`).
+func EpisodeFileListHandler(svc EpisodeFileReader, seriesCheck SeriesExistsChecker) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		seriesIDStr := q.Get("seriesId")
@@ -93,6 +118,15 @@ func EpisodeFileListHandler(svc EpisodeFileReader) http.Handler {
 			seriesID, err := strconv.Atoi(seriesIDStr)
 			if err != nil || seriesID <= 0 {
 				httperr.BadRequest(w, "episodefile: invalid seriesId")
+				return
+			}
+			exists, err := seriesCheck.SeriesExists(r.Context(), seriesID)
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile: series-exists %d: %w", seriesID, err), nil)
+				return
+			}
+			if !exists {
+				httperr.NotFound(w, fmt.Sprintf("Series with ID %d does not exist", seriesID))
 				return
 			}
 			rows, err := svc.GetFilesBySeries(r.Context(), seriesID)

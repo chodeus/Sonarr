@@ -1198,7 +1198,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v3/episode", Handler: apiv3.EpisodeListHandler(episodesSvc)},
 		{Method: "GET", Path: "/api/v3/episode/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvc)},
 		{Method: "PUT", Path: "/api/v3/episode/monitor", Handler: apiv3.EpisodeMonitorHandler(episodesSvc)},
-		{Method: "GET", Path: "/api/v3/episodefile", Handler: apiv3.EpisodeFileListHandler(episodeFilesSvc)},
+		{Method: "GET", Path: "/api/v3/episodefile", Handler: apiv3.EpisodeFileListHandler(episodeFilesSvc, seriesSvc)},
 		{Method: "GET", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileByIDHandler(episodeFilesSvc)},
 		{Method: "PUT", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileUpdateHandler(episodeFilesSvc)},
 		{Method: "PUT", Path: "/api/v3/episodefile/editor", Handler: apiv3.EpisodeFileEditorHandler(episodeFilesSvc)},

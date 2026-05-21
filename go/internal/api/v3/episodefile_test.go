@@ -206,10 +206,26 @@ func (f *fakeEpisodeFileReader) GetFilesBySeries(_ context.Context, seriesID int
 	return f.bySeries[seriesID], nil
 }
 
+// stubSeriesExistsChecker implements SeriesExistsChecker with a
+// fixed set of "known" series ids. Used by the EpisodeFileListHandler
+// tests below — the seriesId path requires this checker (5.J180) so
+// the handler can short-circuit to 404 when the series is missing.
+type stubSeriesExistsChecker struct {
+	known map[int]bool
+	err   error
+}
+
+func (s *stubSeriesExistsChecker) SeriesExists(_ context.Context, id int) (bool, error) {
+	if s.err != nil {
+		return false, s.err
+	}
+	return s.known[id], nil
+}
+
 func TestEpisodeFileListHandler_MissingParams_400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	EpisodeFileListHandler(&fakeEpisodeFileReader{}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile", nil))
+	EpisodeFileListHandler(&fakeEpisodeFileReader{}, &stubSeriesExistsChecker{}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile", nil))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
 	}
@@ -223,13 +239,52 @@ func TestEpisodeFileListHandler_SeriesIDBranch(t *testing.T) {
 			{ID: 2, SeriesID: 7, RelativePath: "b.mkv"},
 		},
 	}}
+	checker := &stubSeriesExistsChecker{known: map[int]bool{7: true}}
 	rr := httptest.NewRecorder()
-	EpisodeFileListHandler(svc).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?seriesId=7", nil))
+	EpisodeFileListHandler(svc, checker).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?seriesId=7", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
 	if !strings.Contains(rr.Body.String(), `"id":1`) || !strings.Contains(rr.Body.String(), `"id":2`) {
 		t.Errorf("body should contain both ids: %s", rr.Body.String())
+	}
+}
+
+// J180: when the supplied seriesId doesn't exist, the handler must
+// short-circuit to 404 with a descriptive body matching C#
+// EpisodeFileController.cs:72's ModelNotFoundException → 404
+// pipeline. Mirrors the v3.episodefile.list contract golden's 404
+// status — closing the 404-vs-200 drift.
+func TestEpisodeFileListHandler_MissingSeriesReturns404(t *testing.T) {
+	t.Parallel()
+	svc := &fakeEpisodeFileReader{}
+	checker := &stubSeriesExistsChecker{known: map[int]bool{} /* nothing known */}
+	rr := httptest.NewRecorder()
+	EpisodeFileListHandler(svc, checker).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?seriesId=1", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d, want 404", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "Series with ID 1 does not exist") {
+		t.Errorf("body should explain the missing series: %s", rr.Body.String())
+	}
+}
+
+// J180: existing series → 200 + []. The series-exists-but-no-files
+// case stays a 200, matching C# `:75-78` `if (files == null) return
+// new List<EpisodeFileResource>()` fallback. This guards against an
+// over-eager 404 path that would lump this case with the missing-
+// series 404.
+func TestEpisodeFileListHandler_ExistingSeriesEmptyFiles_200(t *testing.T) {
+	t.Parallel()
+	svc := &fakeEpisodeFileReader{bySeries: map[int][]episodefiles.File{}}
+	checker := &stubSeriesExistsChecker{known: map[int]bool{7: true}}
+	rr := httptest.NewRecorder()
+	EpisodeFileListHandler(svc, checker).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?seriesId=7", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rr.Code)
+	}
+	if strings.TrimSpace(rr.Body.String()) != "[]" {
+		t.Errorf("body: got %q, want []", rr.Body.String())
 	}
 }
 
@@ -239,7 +294,10 @@ func TestEpisodeFileListHandler_EpisodeFileIDsBranch(t *testing.T) {
 		{ID: 5, SeriesID: 7, RelativePath: "x.mkv"},
 	}}
 	rr := httptest.NewRecorder()
-	EpisodeFileListHandler(svc).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?episodeFileIds=5", nil))
+	// episodeFileIds path doesn't precondition on series existence
+	// (matches C# :85-90 per-row join after-the-fact) — checker can
+	// be empty.
+	EpisodeFileListHandler(svc, &stubSeriesExistsChecker{}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?episodeFileIds=5", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -251,7 +309,7 @@ func TestEpisodeFileListHandler_EpisodeFileIDsBranch(t *testing.T) {
 func TestEpisodeFileListHandler_InvalidEpisodeFileID_400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	EpisodeFileListHandler(&fakeEpisodeFileReader{}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?episodeFileIds=abc", nil))
+	EpisodeFileListHandler(&fakeEpisodeFileReader{}, &stubSeriesExistsChecker{}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?episodeFileIds=abc", nil))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
 	}
