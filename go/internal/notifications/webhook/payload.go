@@ -81,14 +81,27 @@ type BasePayload struct {
 // customformats which haven't ported. The Go port carries the
 // raw values through unchanged — concrete consumers can serialise
 // whatever shape the upstream porter emits.
+//
+// DownloadClient / DownloadClientType / DownloadID carry
+// `omitempty` so empty-string values drop the key. C# sources these
+// from `message.DownloadClientName` / `DownloadClientType` /
+// `DownloadId` at `WebhookBase.cs:45-47` — all `string` reference-
+// type properties that default to null when the grab pipeline has
+// no download client info (e.g. manual-import grabs); Newtonsoft's
+// `NullValueHandling.Ignore` at `Json.cs:26` (via
+// `WebhookProxy.SendWebhook` → `body.ToJson()` at
+// `WebhookProxy.cs:39`) drops the keys in those cases. Go strings
+// default to `""` rather than null, so without `omitempty` the
+// wire body would carry `"downloadClient":""` etc. when the Go
+// equivalent of the C# null is in play.
 type GrabPayload struct {
 	BasePayload
 	Series             any    `json:"series"`
 	Episodes           any    `json:"episodes"`
 	Release            any    `json:"release"`
-	DownloadClient     string `json:"downloadClient"`
-	DownloadClientType string `json:"downloadClientType"`
-	DownloadID         string `json:"downloadId"`
+	DownloadClient     string `json:"downloadClient,omitempty"`
+	DownloadClientType string `json:"downloadClientType,omitempty"`
+	DownloadID         string `json:"downloadId,omitempty"`
 	CustomFormatInfo   any    `json:"customFormatInfo"`
 }
 
@@ -100,15 +113,22 @@ type GrabPayload struct {
 // per-file, with the OnImportComplete path emitting a separate
 // [ImportCompletePayload] in the C# code at
 // `WebhookImportCompletePayload.cs`).
+//
+// DownloadClient / DownloadClientType / DownloadID carry
+// `omitempty` for the same reason documented on [GrabPayload]: C#
+// sources them from `message.DownloadClientInfo?.Name` /
+// `?.Type` / `message.DownloadId` at `WebhookBase.cs:69-71` —
+// nullable strings dropped by `NullValueHandling.Ignore` when the
+// download-client info is absent.
 type ImportPayload struct {
 	BasePayload
 	Series             any    `json:"series"`
 	Episodes           any    `json:"episodes"`
 	EpisodeFile        any    `json:"episodeFile"`
 	IsUpgrade          bool   `json:"isUpgrade"`
-	DownloadClient     string `json:"downloadClient"`
-	DownloadClientType string `json:"downloadClientType"`
-	DownloadID         string `json:"downloadId"`
+	DownloadClient     string `json:"downloadClient,omitempty"`
+	DownloadClientType string `json:"downloadClientType,omitempty"`
+	DownloadID         string `json:"downloadId,omitempty"`
 	DeletedFiles       any    `json:"deletedFiles"`
 	CustomFormatInfo   any    `json:"customFormatInfo"`
 	Release            any    `json:"release"`
@@ -117,14 +137,19 @@ type ImportPayload struct {
 // ImportCompletePayload is the OnImportComplete event body.
 // Mirrors C# `WebhookImportCompletePayload` at
 // `Notifications/Webhook/WebhookImportCompletePayload.cs:6-16`.
+//
+// DownloadClient / DownloadClientType / DownloadID carry
+// `omitempty` per the [GrabPayload] rationale; C# sources at
+// `WebhookBase.cs:100-102` (`message.DownloadClientInfo?.Name` /
+// `?.Type` / `message.DownloadId`).
 type ImportCompletePayload struct {
 	BasePayload
 	Series             any    `json:"series"`
 	Episodes           any    `json:"episodes"`
 	EpisodeFiles       any    `json:"episodeFiles"`
-	DownloadClient     string `json:"downloadClient"`
-	DownloadClientType string `json:"downloadClientType"`
-	DownloadID         string `json:"downloadId"`
+	DownloadClient     string `json:"downloadClient,omitempty"`
+	DownloadClientType string `json:"downloadClientType,omitempty"`
+	DownloadID         string `json:"downloadId,omitempty"`
 	SourcePath         string `json:"sourcePath"`
 	DestinationPath    string `json:"destinationPath"`
 	Release            any    `json:"release"`
@@ -212,14 +237,19 @@ type ApplicationUpdatePayload struct {
 // ManualInteractionPayload is the OnManualInteractionRequired
 // event body. Mirrors C# `WebhookManualInteractionPayload` at
 // `Notifications/Webhook/WebhookManualInteractionPayload.cs:6-16`.
+//
+// DownloadClient / DownloadClientType / DownloadID carry
+// `omitempty` per the [GrabPayload] rationale; C# sources at
+// `WebhookBase.cs:210-212` (`message.DownloadClientInfo?.Name` /
+// `?.Type` / `message.DownloadId`).
 type ManualInteractionPayload struct {
 	BasePayload
 	Series                 any    `json:"series"`
 	Episodes               any    `json:"episodes"`
 	DownloadInfo           any    `json:"downloadInfo"`
-	DownloadClient         string `json:"downloadClient"`
-	DownloadClientType     string `json:"downloadClientType"`
-	DownloadID             string `json:"downloadId"`
+	DownloadClient         string `json:"downloadClient,omitempty"`
+	DownloadClientType     string `json:"downloadClientType,omitempty"`
+	DownloadID             string `json:"downloadId,omitempty"`
 	DownloadStatus         string `json:"downloadStatus"`
 	DownloadStatusMessages any    `json:"downloadStatusMessages"`
 	CustomFormatInfo       any    `json:"customFormatInfo"`
