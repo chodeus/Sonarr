@@ -141,6 +141,28 @@ func TestSignalRMessage_VersionHandshake(t *testing.T) {
 	}
 }
 
+// TestSignalRMessage_NilBodyOmits is the J174 defensive forward-
+// guidance guard. The C# `SignalRMessage.Body` field is `object`
+// (reference type, defaults null) and the SignalR pipeline applies
+// STJson `WhenWritingNull` at `Startup.cs:219-223 + STJson.cs:27`,
+// which drops null properties from the wire body. No production
+// C# or Go-port broadcast path actually passes a nil Body — every
+// caller constructs Name+Body together — but the omitempty flag
+// codifies the parity posture so future Body-emitting paths can't
+// regress to `"body":null`. Note this only covers the true
+// nil-interface case (`var b any`); a typed-nil placed in an `any`
+// field still marshals as `null` per the documented
+// `reflect.Interface.IsNil()` semantics on the SignalRMessage doc.
+func TestSignalRMessage_NilBodyOmits(t *testing.T) {
+	t.Parallel()
+	env := signalr.SignalRMessage{Name: "diagnostic", Body: nil}
+	b, _ := signalr.MarshalEnvelope(env)
+	got := string(b)
+	if strings.Contains(got, `"body"`) {
+		t.Errorf("nil-Body envelope must omit body key: %s", got)
+	}
+}
+
 func TestNoopBroadcaster_NotConnected(t *testing.T) {
 	t.Parallel()
 	var b signalr.Broadcaster = signalr.NoopBroadcaster{}

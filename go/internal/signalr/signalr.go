@@ -110,9 +110,25 @@ func (a Action) MarshalJSON() ([]byte, error) {
 // key on the handshake. Go matches via `omitempty` on the pointer.
 // Resource events keep emitting `"version":3` (or `5`) because the
 // `*int` is non-nil (`signalr.V3Version` / `signalr.V5Version`).
+//
+// Body is `any` with `omitempty` — defensive forward-guidance match
+// for C# `object Body` at `SignalRMessage.cs:7`. STJson's
+// `WhenWritingNull` would drop the key if Body were null, but every
+// Go-port broadcast path (handshake at MessageHub.cs:48-55 sets a
+// fresh anonymous object; resource broadcasts via
+// [ResourceBroadcaster] always pass a non-nil ResourceChangeMessage)
+// + every C# broadcast call site set Body to a non-null object. The
+// flag is therefore a no-op in practice; it codifies the forward-
+// guidance posture so future Body-emitting paths can't accidentally
+// regress to `"body":null` and diverge from the C# omit. Note: the
+// flag's effective only when Body is the true nil interface
+// (`var b any; b == nil`) — a typed-nil value placed in an
+// `any` field (e.g. `var p *T; b = p` where `p == nil`) marshals
+// as `null` regardless because `reflect.Interface.IsNil` reports
+// false when the interface carries any concrete type.
 type SignalRMessage struct {
 	Name    string `json:"name"`
-	Body    any    `json:"body"`
+	Body    any    `json:"body,omitempty"`
 	Version *int   `json:"version,omitempty"`
 }
 
