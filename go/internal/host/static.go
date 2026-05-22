@@ -71,7 +71,19 @@ func staticHandler(root string) (http.Handler, error) {
 			}
 			serveIndex(w, r, absRoot)
 		default:
-			// Missing → SPA fallback.
+			// J206 — SPA fallback exclusions on the MISS path. Mirrors
+			// the parallel guard in staticHandlerFS. Without this,
+			// unimplemented API endpoints, missing MediaCover images,
+			// and asset paths that look like routes all return the SPA
+			// index.html with HTTP 200, masking route gaps and breaking
+			// clients that expect 404 on a missing asset. Uses the URL
+			// path (not the disk-resolved path) so the exclusion semantics
+			// match C# IndexHtmlMapper.CanHandle's request-URL check.
+			urlPath := r.URL.Path
+			if urlPath != "/" && urlPath != "" && shouldNotSPAFallback(filepath.ToSlash(urlPath)) {
+				http.NotFound(w, r)
+				return
+			}
 			serveIndex(w, r, absRoot)
 		}
 	}), nil

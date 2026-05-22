@@ -47,6 +47,9 @@ func staticHandlerFS(filesystem fs.FS) http.Handler {
 		info, err := fs.Stat(filesystem, relPath)
 		switch {
 		case err == nil && !info.IsDir():
+			// Existing file → serve it. Asset-extension exclusions
+			// only matter on the miss path; an actual /static/app.js
+			// or /favicon.ico on disk should serve normally.
 			http.ServeFileFS(w, r, filesystem, relPath)
 		case err == nil && info.IsDir():
 			dirIndex := relPath + "/index.html"
@@ -56,9 +59,78 @@ func staticHandlerFS(filesystem fs.FS) http.Handler {
 			}
 			serveIndexFS(w, r, filesystem)
 		default:
+			// J206 — SPA fallback exclusions on the MISS path. Ports C#
+			// `IndexHtmlMapper.CanHandle` at `:35-43`. Without this
+			// guard every unmatched route (unimplemented API endpoints,
+			// missing MediaCover images, asset paths the bundle hasn't
+			// built to expose) returns the SPA index.html with HTTP 200
+			// — masking route gaps as "the SPA renders something" and
+			// breaking any client that expects 404 on a missing
+			// image / asset. C# applies the same exclusions BEFORE
+			// trying any file; the Go-port applies them only after the
+			// disk-miss because an existing file with a `.` in its name
+			// (e.g. /static/app.js) is a legitimate asset.
+			if shouldNotSPAFallback(cleaned) {
+				http.NotFound(w, r)
+				return
+			}
 			serveIndexFS(w, r, filesystem)
 		}
 	})
+}
+
+// shouldNotSPAFallback returns true when a request path should 404
+// rather than fall through to the SPA index.html on a miss.
+//
+// Ports C# `IndexHtmlMapper.CanHandle` at `IndexHtmlMapper.cs:35-43`:
+//
+//	return !resourceUrl.StartsWith("/content") &&
+//	       !resourceUrl.StartsWith("/mediacover") &&
+//	       !resourceUrl.Contains('.') &&
+//	       !resourceUrl.StartsWith("/login");
+//
+// Adapted for the Go-port's mux model:
+//
+//   - `/api/...` and `/signalr/...` — these are mux-registered routes;
+//     the only way they reach staticHandlerFS is when the path doesn't
+//     match a registered route (route gap). C# rejects these via a
+//     separate Startup pipeline; the Go-port mux falls through to "/",
+//     so the exclusion is needed here. Adding /api + /signalr as
+//     additional exclusions over the C# list.
+//   - Containing "." — any path with a file extension (the regex's
+//     heuristic for "this is an asset, not a SPA route"). C# uses the
+//     same heuristic to skip e.g. /favicon.ico when the file is missing.
+//   - /content, /mediacover, /login — the C# exclusion list verbatim.
+//     /content and /mediacover have their own static handlers (deferred
+//     in the Go-port — for now serve 404 if not under the main bundle).
+//     /login is intentionally a static HTML file (login.html); a miss
+//     should 404 rather than show the SPA.
+//
+// J206.
+func shouldNotSPAFallback(cleaned string) bool {
+	switch {
+	case strings.HasPrefix(cleaned, "/api/"), cleaned == "/api":
+		return true
+	case strings.HasPrefix(cleaned, "/signalr/"), cleaned == "/signalr":
+		return true
+	case strings.HasPrefix(cleaned, "/content/"), cleaned == "/content":
+		return true
+	case strings.HasPrefix(cleaned, "/mediacover/"), cleaned == "/mediacover":
+		return true
+	case strings.HasPrefix(cleaned, "/login/"):
+		// Note: /login.html and bare /login are intentionally NOT
+		// excluded here — the React forms-auth flow serves login.html
+		// as a real static file. Only the /login/<sub> tree is
+		// excluded so e.g. /login/oauth-callback doesn't SPA-fallback.
+		return true
+	case strings.Contains(cleaned, "."):
+		// Asset extensions — missing .ico / .png / .json should 404
+		// rather than serve the SPA. The bundle's actual asset paths
+		// are reachable via the fs.Stat branch above; only the miss
+		// path falls into here.
+		return true
+	}
+	return false
 }
 
 // serveIndexFS serves the embedded index.html. 404 when missing
