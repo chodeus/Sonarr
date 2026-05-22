@@ -646,6 +646,22 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// platform-aware via build tags (chmod+chown on Linux, no-op on
 	// other GOOS). Drops the second mediafiles boot stub.
 	diskProv := disk.NewProvider(logger)
+
+	// Slice 5.J185 wires the SeriesAddedEvent folder-creation
+	// subscriber against the in-process bus. Mirrors the C# chain
+	// `SeriesAddedEvent` → `SeriesAddedHandler` → `RefreshSeriesCommand`
+	// → `DiskScanService.Scan` → `if (!seriesFolderExists &&
+	// CreateEmptySeriesFolders && !DeleteEmptyFolders) CreateFolder`
+	// at `DiskScanService.cs:102-117`. The Go-port short-circuits the
+	// chain (no RefreshSeries port — that's BLOCKED on SkyHook M3)
+	// so the folder-creation arm fires directly off the
+	// SeriesAddedEvent now published by `*series.Service.AddSeries`
+	// (the J185-upgraded seriesAdderAdapter calls it per-row from
+	// the ImportListSync flow). Gated by the same two config
+	// settings the C# arm uses; default-off, so existing user DBs
+	// see no behaviour change until they explicitly enable
+	// CreateEmptySeriesFolders.
+	subscribeSeriesAddedFolderCreate(bus, configProv, diskProv, logger)
 	// Slice 3.AD: rootFoldersRepo construction relocated up here so
 	// the mediafiles.NewService call below can take a real
 	// [rootFolderHealthResolverAdapter] (slice 3.A8 — same shape as
