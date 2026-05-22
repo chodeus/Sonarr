@@ -77,3 +77,32 @@ You are a senior engineer with deep expertise in both C# .NET and Go. Convert th
   - On-disk paths (`config.xml`, log dir, backup dir, MediaCover dir).
 - **Behavior preservation over cleanup.** Improvements are for Phase 7, not the port.
 - **No silent dependency upgrades.** If the C# uses a specific external API version (Skyhook, qBittorrent, etc.), the Go port targets the same version.
+
+## Per-execution metadata — use `ctx.Value`, not interface signature changes
+
+Decided in slice 5.J198 (CommandTrigger plumbing) and reinforced in 5.J199 (CommandResultReporter). When porting C# `AsyncLocal<T>`-style per-execution metadata — anything per-command-dispatch that only a small subset of handlers consume — **use a `context.Value` helper, not a `Handler.Execute` interface signature change.**
+
+Two precedents in tree before J198 followed this shape already (`internal/messaging/messaging.go` recursionKey, `internal/httperr/httperr.go` loggerCtxKey); J198/J199 added two more (`commands.WithTrigger` / `TriggerFromContext`, `commands.ReportResult` over the `resultSlot` mutable cell).
+
+**Pattern:**
+
+1. Add helpers to the owning package's `context.go`:
+   - Unexported `xxxKey struct{}` sentinel (zero-size struct).
+   - Public `WithXxx(ctx, val) ctx` setter.
+   - Public `XxxFromContext(ctx) val` reader returning the zero value on miss.
+2. Attach the value at the dispatcher boundary (one line in `commands/dispatcher.go:runHandler` for command-execution metadata).
+3. Consume from the handler that needs it; handlers that don't never reference it.
+4. If the metadata is **mutable** (output rather than input — e.g. a result a partial-success handler stamps), attach a pointer to a mutex-guarded slot; see the `resultSlot` pattern in J199. Last-write-wins matches C# `IManageCommandQueue.SetResult` semantics.
+
+**Why:**
+- Blast radius — 1-of-18 handlers consumes the metadata today; an interface change is 17:1 churn for negative value.
+- C# fidelity — C# uses `AsyncLocal<T>` via `ProgressMessageContext`; `ctx.Value` is the direct Go translation.
+- Reversibility — `ctx.Value` → interface signature is mechanical (grep the helper). The reverse means re-touching every handler.
+- Safe default — the zero value matches the pre-port behaviour for every handler that doesn't consume the metadata.
+
+**Escalate (don't apply this rule) when:**
+- The metadata is **required for correctness** (handler can't do its job without it) — make it a parameter.
+- **Most handlers** will eventually need it — then the interface change is cheaper than the church-of-ctx-readers it would otherwise become.
+- Neither applies today.
+
+**Don't mix the two patterns silently.** New per-execution metadata threads either follow this convention or escalate the divergence in the slice plan.
