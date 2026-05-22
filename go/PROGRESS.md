@@ -4,11 +4,12 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Current state
 
-**PAUSED after J197.** HEAD at `J197` — `DiskScanService.Rescan` integrated into `refreshseries.Service` via `Rescanner` + `RescanConfig` narrow interfaces (post-construction `SetRescanner` setter); per-id + skipped-row branches both call `rescanSeries` which ports the C# `:168-199` three-branch decision tree (Never → publish `mediafiles.SeriesScanSkippedEvent`, AfterManual+!isManual → publish skip with reason, else → call `Scan` with error-absorb). All three gates clean. **Stopped per the per-slice protocol**: the next-up candidate is `ManualTrigger from wire shape` which the protocol flags as requiring a design decision (Handler interface signature change vs `ctx.Value` for trigger metadata) — escalated to the user before starting.
+HEAD at `J198` — `ManualTrigger` plumbed through dispatcher → handler → refreshseries via `commands.WithTrigger` / `commands.TriggerFromContext` (ctx.Value pattern matching the two in-tree precedents). `RefreshAll` now bypasses `ShouldRefresh` on manual trigger (C# `:256`); `rescanSeries` finally honours the `AfterManual` config branch correctly. Closes the design-decision blocker the user picked in favour of `ctx.Value` over a cross-cutting `Handler.Execute` interface signature change. All three gates clean.
 
 ## Closed this loop-run
 
 - **J197** — `refreshseries.Rescanner` + `RescanConfig` interfaces, `SetRescanner` setter, `rescanSeries` helper wired into RefreshSeriesInfo + RefreshAll skipped branch; 6 tests.
+- **J198** — `commands.WithTrigger` / `TriggerFromContext` helpers, dispatcher attaches trigger to ctx, refreshseries handler+service thread `isManual` through; bypasses ShouldRefresh on manual + AfterManual config now fires correctly; 8 tests + ~25 mechanical call-site updates.
 
 ## Previous loop-run (J187-J196)
 
@@ -25,7 +26,7 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Next candidates (for next loop-run)
 
-1. **ManualTrigger from wire shape** (~80 LOC) — **DESIGN DECISION REQUIRED**: the C# `RefreshSeriesCommand.Trigger` field is metadata on the row (persisted via Commands.Trigger), not in the JSON body. Plumbing it to the handler requires either changing the `Handler.Execute(ctx, body)` interface signature (cross-cutting — all handlers update) OR using a `ctx.Value` key for trigger metadata. Both are reasonable; the user should pick. Also bypasses ShouldRefresh in the all-series sweep on manual trigger (C# `:256`); also lets refreshseries.rescanSeries honour the "AfterManual" config branch (today it always skips).
-2. **CommandResult.Indeterminate reporter integration** (~100 LOC) — port C# `ICommandResultReporter` so refreshseries can mark individual command-result-status (Successful / Indeterminate / Failed) on per-row outcomes. Requires growing the commands package surface — needs `ProgressMessageContext`-equivalent (Go's context.Value works) + `IManageCommandQueue.SetResult`.
-3. **RefreshEpisodeService episode-reconcile** (~250 LOC, MULTI-SLICE) — port C# `RefreshEpisodeService.RefreshEpisodeInfo` at `:53-135`. Reconciles SkyHook episode list against persisted rows: insert new, update changed, delete removed. The post-J190 episode-seeding path covers the cold-start case but subsequent refreshes don't reconcile the episode list yet.
-4. **Image-download subscriber off SeriesAddedEvent** (~200 LOC, needs design pass) — wire `mediacover.Service.EnsureCovers`. HTTP-gated arm previously deferred under FAIL-CLOSED #7.
+1. **CommandResult.Indeterminate reporter integration** (~100 LOC) — port C# `ICommandResultReporter` so refreshseries can mark individual command-result-status (Successful / Indeterminate / Failed) on per-row outcomes. Requires growing the commands package surface — needs `ProgressMessageContext`-equivalent (now have J198's `commands.WithTrigger` ctx pattern to reuse for command-id attachment) + `IManageCommandQueue.SetResult`. **Pairs well with J198's ctx.Value precedent** — same mechanism, same package.
+2. **RefreshEpisodeService episode-reconcile** (~250 LOC, MULTI-SLICE) — port C# `RefreshEpisodeService.RefreshEpisodeInfo` at `:53-135`. Reconciles SkyHook episode list against persisted rows: insert new, update changed, delete removed. The post-J190 episode-seeding path covers the cold-start case but subsequent refreshes don't reconcile the episode list yet.
+3. **Image-download subscriber off SeriesAddedEvent** (~200 LOC, needs design pass) — wire `mediacover.Service.EnsureCovers`. HTTP-gated arm previously deferred under FAIL-CLOSED #7.
+4. **Generalize gap-detection capture to all 10 indexers** — log-warning, not a correctness bug. Lower-value but unblocked.

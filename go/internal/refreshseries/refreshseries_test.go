@@ -132,7 +132,7 @@ func TestRefreshSeriesInfo_HappyPath_CopiesFields(t *testing.T) {
 	}
 	svc := mustNewService(t, info, store)
 
-	got, err := svc.RefreshSeriesInfo(t.Context(), 42)
+	got, err := svc.RefreshSeriesInfo(t.Context(), 42, false)
 	if err != nil {
 		t.Fatalf("RefreshSeriesInfo: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestRefreshSeriesInfo_NewSeason_MonitorNewItemsAll(t *testing.T) {
 		},
 	}
 	svc := mustNewService(t, info, store)
-	got, err := svc.RefreshSeriesInfo(t.Context(), 42)
+	got, err := svc.RefreshSeriesInfo(t.Context(), 42, false)
 	if err != nil {
 		t.Fatalf("RefreshSeriesInfo: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestRefreshSeriesInfo_NewSeason_MonitorNewItemsNone(t *testing.T) {
 		},
 	}
 	svc := mustNewService(t, info, store)
-	got, _ := svc.RefreshSeriesInfo(t.Context(), 42)
+	got, _ := svc.RefreshSeriesInfo(t.Context(), 42, false)
 
 	var seasons []map[string]any
 	_ = json.Unmarshal([]byte(got.Seasons), &seasons)
@@ -248,7 +248,7 @@ func TestRefreshSeriesInfo_NewSeasonZero_AlwaysUnmonitored(t *testing.T) {
 		},
 	}
 	svc := mustNewService(t, info, store)
-	got, _ := svc.RefreshSeriesInfo(t.Context(), 42)
+	got, _ := svc.RefreshSeriesInfo(t.Context(), 42, false)
 
 	var seasons []map[string]any
 	_ = json.Unmarshal([]byte(got.Seasons), &seasons)
@@ -275,7 +275,7 @@ func TestRefreshSeriesInfo_TvdbIdReplaced_WarnsAndTakesNew(t *testing.T) {
 		stored: &series.Series{TvdbID: 100, Title: "old-title", Seasons: "[]"},
 	}
 	svc := mustNewService(t, info, store)
-	got, err := svc.RefreshSeriesInfo(t.Context(), 42)
+	got, err := svc.RefreshSeriesInfo(t.Context(), 42, false)
 	if err != nil {
 		t.Fatalf("RefreshSeriesInfo: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestRefreshSeriesInfo_GetSeriesInfoError_Propagates(t *testing.T) {
 	info := &stubProvider{err: boom}
 	store := &stubStore{stored: &series.Series{TvdbID: 100}}
 	svc := mustNewService(t, info, store)
-	_, err := svc.RefreshSeriesInfo(t.Context(), 42)
+	_, err := svc.RefreshSeriesInfo(t.Context(), 42, false)
 	if !errors.Is(err, boom) {
 		t.Fatalf("err: got %v, want wrapped boom", err)
 	}
@@ -304,7 +304,7 @@ func TestRefreshSeriesInfo_NilMerged_Errors(t *testing.T) {
 	info := &stubProvider{merged: nil}
 	store := &stubStore{stored: &series.Series{TvdbID: 100}}
 	svc := mustNewService(t, info, store)
-	_, err := svc.RefreshSeriesInfo(t.Context(), 42)
+	_, err := svc.RefreshSeriesInfo(t.Context(), 42, false)
 	if err == nil {
 		t.Fatal("want error on nil merged")
 	}
@@ -315,7 +315,7 @@ func TestRefresh_AdaptsToErrorOnly(t *testing.T) {
 	info := &stubProvider{merged: &series.Series{TvdbID: 100, Seasons: "[]"}}
 	store := &stubStore{stored: &series.Series{TvdbID: 100, Seasons: "[]"}}
 	svc := mustNewService(t, info, store)
-	if err := svc.Refresh(t.Context(), 42); err != nil {
+	if err := svc.Refresh(t.Context(), 42, false); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 }
@@ -372,7 +372,7 @@ func TestRefreshSeriesInfo_SeriesNotFound_FlipsStatusToDeleted(t *testing.T) {
 	})
 
 	svc := mustNewServiceWithBus(t, info, store, bus)
-	_, err := svc.RefreshSeriesInfo(t.Context(), 42)
+	_, err := svc.RefreshSeriesInfo(t.Context(), 42, false)
 	if !errors.Is(err, metadatasource.ErrSeriesNotFound) {
 		t.Fatalf("err: want wrapped ErrSeriesNotFound, got %v", err)
 	}
@@ -410,7 +410,7 @@ func TestRefreshSeriesInfo_SeriesNotFound_AlreadyDeleted_NoOp(t *testing.T) {
 	}
 	svc := mustNewService(t, info, store)
 
-	_, err := svc.RefreshSeriesInfo(t.Context(), 42)
+	_, err := svc.RefreshSeriesInfo(t.Context(), 42, false)
 	if !errors.Is(err, metadatasource.ErrSeriesNotFound) {
 		t.Fatalf("err: want wrapped ErrSeriesNotFound, got %v", err)
 	}
@@ -427,7 +427,7 @@ func TestRefreshSeriesInfo_SeriesNotFound_NilBus_SkipsPublish(t *testing.T) {
 	}
 	// nil bus — should still persist the status flip silently.
 	svc := mustNewService(t, info, store)
-	_, err := svc.RefreshSeriesInfo(t.Context(), 42)
+	_, err := svc.RefreshSeriesInfo(t.Context(), 42, false)
 	if !errors.Is(err, metadatasource.ErrSeriesNotFound) {
 		t.Fatalf("err: want wrapped ErrSeriesNotFound, got %v", err)
 	}
@@ -456,7 +456,7 @@ func TestRefreshAll_IteratesInSortTitleOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	if err := svc.RefreshAll(t.Context()); err != nil {
+	if err := svc.RefreshAll(t.Context(), false); err != nil {
 		t.Fatalf("RefreshAll: %v", err)
 	}
 	want := []int{2, 3, 1} // alpha, mike, zulu
@@ -483,7 +483,7 @@ func TestRefreshAll_PerRowErrorAbsorbed(t *testing.T) {
 	}
 	now := func() time.Time { return time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC) }
 	svc, _ := refreshseries.NewService(info, store, nil, now, nil)
-	if err := svc.RefreshAll(t.Context()); err != nil {
+	if err := svc.RefreshAll(t.Context(), false); err != nil {
 		t.Errorf("RefreshAll: per-row error should be absorbed, got %v", err)
 	}
 	if info.callCount != 3 {
@@ -496,7 +496,7 @@ func TestRefreshAll_GetAllSeriesError_Propagates(t *testing.T) {
 	boom := errors.New("db down")
 	store := &stubStore{allErr: boom}
 	svc, _ := refreshseries.NewService(&stubProvider{}, store, nil, nil, nil)
-	err := svc.RefreshAll(t.Context())
+	err := svc.RefreshAll(t.Context(), false)
 	if !errors.Is(err, boom) {
 		t.Fatalf("RefreshAll: want wrapped boom, got %v", err)
 	}
@@ -514,7 +514,7 @@ func TestRefreshAll_CtxCancelMidSweep_PropagatesCancel(t *testing.T) {
 	svc, _ := refreshseries.NewService(info, store, nil, nil, nil)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // pre-cancel
-	if err := svc.RefreshAll(ctx); !errors.Is(err, context.Canceled) {
+	if err := svc.RefreshAll(ctx, false); !errors.Is(err, context.Canceled) {
 		t.Errorf("RefreshAll: want context.Canceled, got %v", err)
 	}
 }
@@ -527,7 +527,7 @@ func TestRefreshSeriesInfo_CallsUpdateTags(t *testing.T) {
 		stored: &series.Series{ID: 42, TvdbID: 100, Seasons: "[]"},
 	}
 	svc := mustNewService(t, info, store)
-	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42, false); err != nil {
 		t.Fatalf("RefreshSeriesInfo: %v", err)
 	}
 	if store.tagsCalled != 1 {
@@ -547,7 +547,7 @@ func TestRefreshSeriesInfo_UpdateTagsError_Absorbed(t *testing.T) {
 		tagsErr: errors.New("autotag down"),
 	}
 	svc := mustNewService(t, info, store)
-	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42, false); err != nil {
 		t.Errorf("RefreshSeriesInfo: UpdateTags error should be absorbed, got %v", err)
 	}
 }
@@ -571,7 +571,7 @@ func TestRefreshAll_CallsUpdateTagsOnSkippedRows(t *testing.T) {
 	}
 	svc, _ := refreshseries.NewService(info, store, nil, now, nil)
 	svc.SetEpisodeLookup(&stubEpisodeLookup{ /* no episodes — ended-no-recent skips */ })
-	if err := svc.RefreshAll(t.Context()); err != nil {
+	if err := svc.RefreshAll(t.Context(), false); err != nil {
 		t.Fatalf("RefreshAll: %v", err)
 	}
 	if store.tagsCalled != 1 {
@@ -615,7 +615,7 @@ func TestRefreshSeriesInfo_GenericError_NoSoftDelete(t *testing.T) {
 		stored: &series.Series{ID: 42, TvdbID: 100, Status: series.SeriesStatusContinuing},
 	}
 	svc := mustNewService(t, info, store)
-	_, err := svc.RefreshSeriesInfo(t.Context(), 42)
+	_, err := svc.RefreshSeriesInfo(t.Context(), 42, false)
 	if err == nil {
 		t.Fatal("expected error propagation")
 	}
@@ -690,7 +690,7 @@ func TestRescanSeries_AlwaysMode_CallsScan(t *testing.T) {
 	scanner := &stubRescanner{}
 	svc.SetRescanner(scanner, stubRescanCfg{mode: "Always"})
 
-	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42, false); err != nil {
 		t.Fatalf("RefreshSeriesInfo: %v", err)
 	}
 	if scanner.callCount() != 1 || scanner.calls[0] != 42 {
@@ -727,7 +727,7 @@ func TestRescanSeries_NeverMode_PublishesSkipEvent(t *testing.T) {
 	scanner := &stubRescanner{}
 	svc.SetRescanner(scanner, stubRescanCfg{mode: "Never"})
 
-	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42, false); err != nil {
 		t.Fatalf("RefreshSeriesInfo: %v", err)
 	}
 	if scanner.callCount() != 0 {
@@ -778,7 +778,7 @@ func TestRescanSeries_AfterManualMode_ScheduledTrigger_PublishesSkip(t *testing.
 
 	// RefreshSeriesInfo passes isManual=false today — AfterManual +
 	// !isManual → skip per the rescanSeries gate.
-	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42, false); err != nil {
 		t.Fatalf("RefreshSeriesInfo: %v", err)
 	}
 	if scanner.callCount() != 0 {
@@ -801,7 +801,7 @@ func TestRescanSeries_ScanError_Absorbed(t *testing.T) {
 	scanner := &stubRescanner{err: errors.New("scan blew up")}
 	svc.SetRescanner(scanner, stubRescanCfg{mode: "Always"})
 
-	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42, false); err != nil {
 		t.Errorf("scan error must not abort refresh; got %v", err)
 	}
 	if scanner.callCount() != 1 {
@@ -813,7 +813,7 @@ func TestRescanSeries_NilRescanner_NoPanicNoScan(t *testing.T) {
 	t.Parallel()
 	svc := j197Stubs(t)
 	// Deliberately do NOT call SetRescanner; refresh must still run.
-	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42, false); err != nil {
 		t.Fatalf("RefreshSeriesInfo: %v", err)
 	}
 }
@@ -855,7 +855,7 @@ func TestRefreshAll_SkippedRow_StillCallsRescan(t *testing.T) {
 	scanner := &stubRescanner{}
 	svc.SetRescanner(scanner, stubRescanCfg{mode: "Always"})
 
-	if err := svc.RefreshAll(t.Context()); err != nil {
+	if err := svc.RefreshAll(t.Context(), false); err != nil {
 		t.Fatalf("RefreshAll: %v", err)
 	}
 	if info.gotTvdbID != 0 {
@@ -863,5 +863,65 @@ func TestRefreshAll_SkippedRow_StillCallsRescan(t *testing.T) {
 	}
 	if scanner.callCount() != 1 || scanner.calls[0] != 42 {
 		t.Errorf("expected one Scan call for skipped row 42; got %+v", scanner.calls)
+	}
+}
+
+// ---- J198 — isManual gating tests ----
+
+func TestRefreshAll_Manual_BypassesShouldRefresh(t *testing.T) {
+	t.Parallel()
+	// Row classified as skip by ShouldRefresh (recent LastInfoSync,
+	// Ended status, no recent episodes — same shape as the J197 sweep
+	// test). Without isManual the row should skip; with isManual the
+	// predicate is bypassed and the row refreshes.
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	recent := now.Add(-30 * time.Minute)
+	row := series.Series{
+		ID:           42,
+		TvdbID:       100,
+		Title:        "fresh-row",
+		Status:       series.SeriesStatusEnded,
+		LastInfoSync: &recent,
+		Seasons:      `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	store := &stubStore{all: []series.Series{row}}
+	// SkyHook provider returns a valid merged row so the per-id refresh
+	// reaches the persist path.
+	info := &stubProvider{
+		merged: &series.Series{
+			TvdbID:  100,
+			Title:   "refreshed-row",
+			Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+			Status:  1,
+		},
+	}
+
+	svc, err := refreshseries.NewService(info, store, nil, func() time.Time { return now }, nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	svc.SetEpisodeLookup(emptyEpisodeLookup{})
+
+	// Manual trigger bypasses the gate; SkyHook GetSeriesInfo must fire.
+	if err := svc.RefreshAll(t.Context(), true /* isManual */); err != nil {
+		t.Fatalf("RefreshAll: %v", err)
+	}
+	if info.gotTvdbID != 100 {
+		t.Errorf("expected manual-trigger bypass; SkyHook GetSeriesInfo not called (gotTvdbID=%d)", info.gotTvdbID)
+	}
+}
+
+func TestRescanSeries_AfterManualMode_ManualTrigger_CallsScan(t *testing.T) {
+	t.Parallel()
+	// AfterManual + isManual=true → Scan should fire (not skip).
+	svc := j197Stubs(t)
+	scanner := &stubRescanner{}
+	svc.SetRescanner(scanner, stubRescanCfg{mode: "AfterManual"})
+
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42, true /* isManual */); err != nil {
+		t.Fatalf("RefreshSeriesInfo: %v", err)
+	}
+	if scanner.callCount() != 1 || scanner.calls[0] != 42 {
+		t.Errorf("AfterManual+manual must call Scan; got %+v", scanner.calls)
 	}
 }

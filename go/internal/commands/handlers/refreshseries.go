@@ -36,6 +36,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -49,9 +50,16 @@ const RefreshSeriesName = "RefreshSeries"
 // the handler reaches for. Refresh handles the per-id path; RefreshAll
 // (added 5.J193) handles the C# `Execute` all-series sweep that fires
 // when SeriesIds is empty.
+//
+// J198 grew both methods with an `isManual` bool — true when the
+// triggering command was user-initiated (Trigger=Manual on the row),
+// false for scheduled-task ticks. Refreshseries uses it to (a) bypass
+// the [ShouldRefresh] staleness gate in the all-series sweep (C#
+// `RefreshSeriesService.cs:256`) and (b) honour the "AfterManual"
+// RescanAfterRefresh config branch in the rescan tail (C# `:183-189`).
 type RefreshSeriesRunner interface {
-	Refresh(ctx context.Context, seriesID int) error
-	RefreshAll(ctx context.Context) error
+	Refresh(ctx context.Context, seriesID int, isManual bool) error
+	RefreshAll(ctx context.Context, isManual bool) error
 }
 
 // RefreshSeries is the IExecute<RefreshSeriesCommand> port.
@@ -123,20 +131,22 @@ func (h *RefreshSeries) Execute(ctx context.Context, body string) error {
 	}
 
 	// J194 — wrap the batch with the C# SeriesRefreshStarting /
-	// SeriesRefreshComplete event pair (C# :215, :284). ManualTrigger
-	// mirrors C# CommandTrigger.Manual — the Go-port doesn't yet
-	// distinguish manual-vs-scheduled at the handler tier (no Trigger
-	// field on the wire shape today), so we default to false. When
-	// the Trigger split lands, the body parsing above can populate it.
-	h.publishRefreshStart(ctx, false /* ManualTrigger */)
+	// SeriesRefreshComplete event pair (C# :215, :284).
+	//
+	// J198 — read the trigger from ctx (attached by the dispatcher's
+	// [commands.WithTrigger] call) and pass `isManual` through to the
+	// refreshseries runner. Mirrors C# `RefreshSeriesService.Execute`
+	// at `:213` (`var trigger = message.Trigger`).
+	isManual := commands.TriggerFromContext(ctx) == commands.TriggerManual
+	h.publishRefreshStart(ctx, isManual)
 	defer h.publishRefreshComplete(ctx)
 
 	if allSeriesSweep {
-		return h.runner.RefreshAll(ctx)
+		return h.runner.RefreshAll(ctx, isManual)
 	}
 
 	for _, id := range cmd.SeriesIDs {
-		if err := h.runner.Refresh(ctx, id); err != nil {
+		if err := h.runner.Refresh(ctx, id, isManual); err != nil {
 			// Matches C# `RefreshSeriesService.cs:228-246` catch-and-
 			// continue stance: log + keep going so one missing/dead
 			// series doesn't abort the whole batch.

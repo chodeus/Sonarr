@@ -20,20 +20,30 @@ var refreshSeriesFixedTime = time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 
 // stubRefreshRunner captures the per-id Refresh calls + RefreshAll
 // invocations so tests can assert the handler dispatches correctly.
+//
+// J198 grew the runner shape with an isManual bool — captured per
+// call so the tests can assert the handler propagates the dispatcher-
+// attached Trigger correctly.
 type stubRefreshRunner struct {
-	got        []int
-	err        error
-	refreshAll int // count of RefreshAll calls
-	allErr     error
+	got           []int
+	gotManual     []bool // per-call isManual at the Refresh path
+	err           error
+	refreshAll    int  // count of RefreshAll calls
+	allManual     bool // isManual on the last RefreshAll
+	allManualSeen bool // set when RefreshAll was invoked at least once
+	allErr        error
 }
 
-func (s *stubRefreshRunner) Refresh(_ context.Context, id int) error {
+func (s *stubRefreshRunner) Refresh(_ context.Context, id int, isManual bool) error {
 	s.got = append(s.got, id)
+	s.gotManual = append(s.gotManual, isManual)
 	return s.err
 }
 
-func (s *stubRefreshRunner) RefreshAll(_ context.Context) error {
+func (s *stubRefreshRunner) RefreshAll(_ context.Context, isManual bool) error {
 	s.refreshAll++
+	s.allManual = isManual
+	s.allManualSeen = true
 	return s.allErr
 }
 
@@ -250,4 +260,98 @@ func TestRefreshSeries_DefaultScheduledTasks_Has12HourInterval(t *testing.T) {
 		}
 	}
 	t.Errorf("RefreshSeries not in DefaultScheduledTasks")
+}
+
+// ---- J198 — ManualTrigger via ctx.Value ----
+
+func TestRefreshSeries_TriggerManual_PropagatesToRunner_PerID(t *testing.T) {
+	t.Parallel()
+	runner := &stubRefreshRunner{}
+	h := handlers.NewRefreshSeries(runner, nil, slog.Default())
+
+	ctx := commands.WithTrigger(t.Context(), commands.TriggerManual)
+	if err := h.Execute(ctx, `{"seriesIds":[1,2]}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.gotManual) != 2 || !runner.gotManual[0] || !runner.gotManual[1] {
+		t.Errorf("expected isManual=true for every dispatched id; got %+v", runner.gotManual)
+	}
+}
+
+func TestRefreshSeries_TriggerScheduled_PropagatesFalseToRunner_PerID(t *testing.T) {
+	t.Parallel()
+	runner := &stubRefreshRunner{}
+	h := handlers.NewRefreshSeries(runner, nil, slog.Default())
+
+	ctx := commands.WithTrigger(t.Context(), commands.TriggerScheduled)
+	if err := h.Execute(ctx, `{"seriesIds":[1]}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.gotManual) != 1 || runner.gotManual[0] {
+		t.Errorf("expected isManual=false for scheduled trigger; got %+v", runner.gotManual)
+	}
+}
+
+func TestRefreshSeries_TriggerUnspecified_DefaultsToScheduledSemantics(t *testing.T) {
+	t.Parallel()
+	runner := &stubRefreshRunner{}
+	h := handlers.NewRefreshSeries(runner, nil, slog.Default())
+
+	// No WithTrigger call — TriggerFromContext returns TriggerUnspecified,
+	// which the handler must treat as not-manual (== Scheduled equivalent).
+	if err := h.Execute(t.Context(), `{"seriesIds":[1]}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.gotManual) != 1 || runner.gotManual[0] {
+		t.Errorf("missing trigger should default isManual=false; got %+v", runner.gotManual)
+	}
+}
+
+func TestRefreshSeries_TriggerManual_PropagatesToRefreshAll(t *testing.T) {
+	t.Parallel()
+	runner := &stubRefreshRunner{}
+	h := handlers.NewRefreshSeries(runner, nil, slog.Default())
+
+	ctx := commands.WithTrigger(t.Context(), commands.TriggerManual)
+	// Empty body → all-series sweep path.
+	if err := h.Execute(ctx, ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !runner.allManualSeen {
+		t.Fatal("RefreshAll was never invoked")
+	}
+	if !runner.allManual {
+		t.Errorf("expected RefreshAll isManual=true for TriggerManual; got false")
+	}
+}
+
+func TestRefreshSeries_TriggerManual_PublishesManualStartEvent(t *testing.T) {
+	t.Parallel()
+	bus := messaging.New(slog.Default())
+	defer bus.BeginShutdown()
+
+	var mu sync.Mutex
+	var got []series.SeriesRefreshStartingEvent
+	messaging.Subscribe(bus, "test.J198Manual", func(_ context.Context, ev series.SeriesRefreshStartingEvent) error {
+		mu.Lock()
+		got = append(got, ev)
+		mu.Unlock()
+		return nil
+	})
+
+	runner := &stubRefreshRunner{}
+	h := handlers.NewRefreshSeries(runner, bus, slog.Default())
+	ctx := commands.WithTrigger(t.Context(), commands.TriggerManual)
+	if err := h.Execute(ctx, `{"seriesIds":[1]}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("expected one SeriesRefreshStartingEvent; got %d", len(got))
+	}
+	if !got[0].ManualTrigger {
+		t.Errorf("ManualTrigger payload: want true, got false")
+	}
 }

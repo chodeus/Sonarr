@@ -224,7 +224,15 @@ func (d *Dispatcher) dispatch(ctx context.Context, c *Command) {
 		return
 	}
 
-	execErr := runHandler(ctx, spec.Handler, c.Body)
+	// J198 — attach the row's Trigger to ctx so handlers that branch
+	// on manual-vs-scheduled execution can read it via
+	// [TriggerFromContext]. Mirrors C# `ProgressMessageContext.CommandModel`
+	// AsyncLocal<T> wiring at `CommandResultReporter.cs`. The vast
+	// majority of handlers never read the key — attaching it is cheap
+	// (one allocation per command dispatch) and the cost is paid once
+	// per command rather than per handler.
+	handlerCtx := WithTrigger(ctx, Trigger(c.Trigger))
+	execErr := runHandler(handlerCtx, spec.Handler, c.Body)
 
 	if execErr != nil {
 		d.log.LogAttrs(ctx, slog.LevelError, "commands: handler error",

@@ -165,8 +165,14 @@ func NewService(info SeriesInfoProvider, store SeriesStore, bus *messaging.Bus, 
 // commands/handlers RefreshSeriesRunner interface by discarding the
 // returned series. The full-return form is preserved as
 // [Service.RefreshSeriesInfo] for callers that need the updated row.
-func (s *Service) Refresh(ctx context.Context, seriesID int) error {
-	_, err := s.RefreshSeriesInfo(ctx, seriesID)
+//
+// J198 — isManual mirrors C# `RefreshSeriesService.Execute :213`
+// (`trigger == CommandTrigger.Manual`). True when the command was
+// user-triggered (UI button, REST call); false for the scheduled-task
+// tick. Threaded through to the rescan tail so the "AfterManual"
+// RescanAfterRefresh config branch fires correctly.
+func (s *Service) Refresh(ctx context.Context, seriesID int, isManual bool) error {
+	_, err := s.RefreshSeriesInfo(ctx, seriesID, isManual)
 	return err
 }
 
@@ -190,7 +196,7 @@ func (s *Service) Refresh(ctx context.Context, seriesID int) error {
 // `internal/commands/handlers/handlers.go` with `RefreshSeriesName`)
 // now does useful work: an empty-body RefreshSeriesCommand fires this
 // path instead of a stub-log no-op.
-func (s *Service) RefreshAll(ctx context.Context) error {
+func (s *Service) RefreshAll(ctx context.Context, isManual bool) error {
 	if s == nil {
 		return errors.New("refreshseries: nil Service")
 	}
@@ -210,7 +216,14 @@ func (s *Service) RefreshAll(ctx context.Context) error {
 		// EpisodeLookup is wired. When unset (or when the predicate
 		// returns true) the row is refreshed; the per-row Refresh
 		// path is otherwise unchanged.
-		if s.episodes != nil && !ShouldRefresh(ctx, &row, s.episodes, s.now(), s.log) {
+		//
+		// J198 — isManual bypasses the ShouldRefresh gate per C#
+		// `RefreshSeriesService.cs:256`
+		// (`trigger == CommandTrigger.Manual || ShouldRefresh(...)`).
+		// A user-triggered "Refresh All" intentionally refreshes every
+		// row regardless of staleness — the scheduled-task tick is the
+		// only path that should honour the predicate.
+		if !isManual && s.episodes != nil && !ShouldRefresh(ctx, &row, s.episodes, s.now(), s.log) {
 			s.log.LogAttrs(ctx, slog.LevelInfo,
 				"refreshseries: skipping row (ShouldRefresh=false)",
 				slog.Int("seriesId", row.ID),
@@ -225,12 +238,11 @@ func (s *Service) RefreshAll(ctx context.Context) error {
 			// `:279`: a rescan on the periodic tick catches disk-side
 			// changes (manual file edits, new episodes appearing on
 			// disk) even when the TheTVDB metadata is fresh enough to
-			// skip the upstream refresh. isManual deferred — see
-			// rescanSeries doc-comment.
-			s.rescanSeries(ctx, &row, false, false)
+			// skip the upstream refresh.
+			s.rescanSeries(ctx, &row, false, isManual)
 			continue
 		}
-		if _, err := s.RefreshSeriesInfo(ctx, row.ID); err != nil {
+		if _, err := s.RefreshSeriesInfo(ctx, row.ID, isManual); err != nil {
 			s.log.LogAttrs(ctx, slog.LevelWarn,
 				"refreshseries: per-row refresh failed (sweep continues)",
 				slog.Int("seriesId", row.ID),
@@ -248,7 +260,12 @@ func (s *Service) RefreshAll(ctx context.Context) error {
 
 // RefreshSeriesInfo is the full per-series refresh; see the package
 // doc-comment for the field-list semantics + deferred surface.
-func (s *Service) RefreshSeriesInfo(ctx context.Context, seriesID int) (*series.Series, error) {
+//
+// J198 — isManual mirrors C# `RefreshSeriesService.Execute :213`
+// (`trigger == CommandTrigger.Manual`). Threaded through to the rescan
+// tail; callers reading via [Refresh] forward the bool from their own
+// trigger context.
+func (s *Service) RefreshSeriesInfo(ctx context.Context, seriesID int, isManual bool) (*series.Series, error) {
 	if s == nil {
 		return nil, errors.New("refreshseries: nil Service")
 	}
@@ -317,10 +334,12 @@ func (s *Service) RefreshSeriesInfo(ctx context.Context, seriesID int) (*series.
 	// RefreshSeriesInfo success.
 	s.updateTags(ctx, updated)
 
-	// J197 — post-refresh disk rescan per C# Execute `:227`. isNew +
-	// isManual default to false from this call site until the
-	// IsNewSeries + Trigger fields land on the command wire shape.
-	s.rescanSeries(ctx, updated, false, false)
+	// J197 — post-refresh disk rescan per C# Execute `:227`. isNew
+	// stays false until the IsNewSeries field lands on the
+	// RefreshSeriesCommand wire shape; isManual is forwarded from the
+	// caller (J198 — populated from the dispatcher's ctx-attached
+	// Trigger).
+	s.rescanSeries(ctx, updated, false, isManual)
 
 	s.log.LogAttrs(ctx, slog.LevelInfo,
 		"refreshseries: refresh complete",
