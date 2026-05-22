@@ -4,7 +4,7 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Current state
 
-**Resumed after the J187-J196 pause.** HEAD at `J197` — `DiskScanService.Rescan` integrated into `refreshseries.Service` via `Rescanner` + `RescanConfig` narrow interfaces (post-construction `SetRescanner` setter); per-id + skipped-row branches both call `rescanSeries` which ports the C# `:168-199` three-branch decision tree (Never → publish `mediafiles.SeriesScanSkippedEvent`, AfterManual+!isManual → publish skip with reason, else → call `Scan` with error-absorb). All three gates clean.
+**PAUSED after J197.** HEAD at `J197` — `DiskScanService.Rescan` integrated into `refreshseries.Service` via `Rescanner` + `RescanConfig` narrow interfaces (post-construction `SetRescanner` setter); per-id + skipped-row branches both call `rescanSeries` which ports the C# `:168-199` three-branch decision tree (Never → publish `mediafiles.SeriesScanSkippedEvent`, AfterManual+!isManual → publish skip with reason, else → call `Scan` with error-absorb). All three gates clean. **Stopped per the per-slice protocol**: the next-up candidate is `ManualTrigger from wire shape` which the protocol flags as requiring a design decision (Handler interface signature change vs `ctx.Value` for trigger metadata) — escalated to the user before starting.
 
 ## Closed this loop-run
 
