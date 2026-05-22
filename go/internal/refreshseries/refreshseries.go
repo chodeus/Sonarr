@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/metadatasource"
 	"sonarr.tv/sonarr/internal/series"
@@ -47,7 +48,7 @@ type SeriesInfoProvider interface {
 // uses. Get + UpdateSeries cover the J191 single-id surface; J193
 // grew GetAllSeries for the all-series sweep; J196 grew UpdateTags
 // for the per-row auto-tagging refresh. Future slices that wire
-// RefreshEpisodeService + disk-rescan can grow the interface further.
+// RefreshEpisodeService can grow the interface further.
 type SeriesStore interface {
 	GetSeries(ctx context.Context, id int) (*series.Series, error)
 	GetAllSeries(ctx context.Context) ([]series.Series, error)
@@ -55,17 +56,37 @@ type SeriesStore interface {
 	UpdateTags(ctx context.Context, s *series.Series) (changed bool, err error)
 }
 
+// Rescanner is the narrow slice of [mediafiles.Service] the
+// disk-rescan-after-refresh arm consumes (C# `DiskScanService.Scan` at
+// `:138`). Satisfied by *mediafiles.Service. Defined as an interface
+// so the unit tests can stub the scan without spinning up the full
+// disk-scan stack.
+type Rescanner interface {
+	Scan(ctx context.Context, ser *series.Series) error
+}
+
+// RescanConfig is the narrow slice of [config.Provider] the rescan
+// gate consumes (C# `IConfigService.RescanAfterRefresh` at
+// `ConfigService.cs`). Returns the string token "Always" / "AfterManual"
+// / "Never". Defined as an interface so the unit tests can pin the
+// config branch without standing up a sqlite-backed provider.
+type RescanConfig interface {
+	RescanAfterRefresh() string
+}
+
 // Service is the RefreshSeriesService port. Per-id Refresh is the
 // only entry point; callers (the RefreshSeries command handler, the
 // scheduled-task tick) marshal `[]int` series IDs from their command
 // shape.
 type Service struct {
-	info     SeriesInfoProvider
-	store    SeriesStore
-	bus      *messaging.Bus
-	episodes EpisodeLookup // optional; gates the all-series sweep on ShouldRefresh
-	now      func() time.Time
-	log      *slog.Logger
+	info      SeriesInfoProvider
+	store     SeriesStore
+	bus       *messaging.Bus
+	episodes  EpisodeLookup // optional; gates the all-series sweep on ShouldRefresh
+	rescanner Rescanner     // optional; gates the disk-rescan-after-refresh arm (J197)
+	rescanCfg RescanConfig  // optional; sibling of rescanner — both must be set to scan
+	now       func() time.Time
+	log       *slog.Logger
 }
 
 // SetEpisodeLookup wires the [EpisodeLookup] dep used by the
@@ -76,6 +97,19 @@ type Service struct {
 // NewService.
 func (s *Service) SetEpisodeLookup(ep EpisodeLookup) {
 	s.episodes = ep
+}
+
+// SetRescanner wires the [Rescanner] + [RescanConfig] deps used by the
+// J197 disk-rescan-after-refresh arm (C# `RefreshSeriesService.RescanSeries`
+// at `:168-199`). Both must be non-nil for the rescan to fire; if either
+// is nil the per-row scan is skipped (matches the J191 baseline where
+// no rescan happened). Done as a post-construction setter so the J191
+// NewService signature stays stable across the J197 layering; main.go
+// calls this after NewService once *mediafiles.Service + *config.Provider
+// are both available.
+func (s *Service) SetRescanner(scanner Rescanner, cfg RescanConfig) {
+	s.rescanner = scanner
+	s.rescanCfg = cfg
 }
 
 // NewService binds the dependencies into a Service. `now` defaults to
@@ -187,6 +221,13 @@ func (s *Service) RefreshAll(ctx context.Context) error {
 			// of TheTVDB metadata, so the tick re-evaluates them
 			// regardless of refresh decision.
 			s.updateTags(ctx, &row)
+			// J197 — even skipped rows get rescanSeries per C# sweep
+			// `:279`: a rescan on the periodic tick catches disk-side
+			// changes (manual file edits, new episodes appearing on
+			// disk) even when the TheTVDB metadata is fresh enough to
+			// skip the upstream refresh. isManual deferred — see
+			// rescanSeries doc-comment.
+			s.rescanSeries(ctx, &row, false, false)
 			continue
 		}
 		if _, err := s.RefreshSeriesInfo(ctx, row.ID); err != nil {
@@ -276,12 +317,100 @@ func (s *Service) RefreshSeriesInfo(ctx context.Context, seriesID int) (*series.
 	// RefreshSeriesInfo success.
 	s.updateTags(ctx, updated)
 
+	// J197 — post-refresh disk rescan per C# Execute `:227`. isNew +
+	// isManual default to false from this call site until the
+	// IsNewSeries + Trigger fields land on the command wire shape.
+	s.rescanSeries(ctx, updated, false, false)
+
 	s.log.LogAttrs(ctx, slog.LevelInfo,
 		"refreshseries: refresh complete",
 		slog.Int("seriesId", seriesID),
 		slog.String("title", updated.Title),
 		slog.Int("tvdbId", updated.TvdbID))
 	return updated, nil
+}
+
+// rescanSeries ports C# `RefreshSeriesService.RescanSeries` at
+// `RefreshSeriesService.cs:168-199`. Gates the post-refresh disk-rescan
+// on the `RescanAfterRefresh` config enum:
+//
+//   - "Never" — publish [mediafiles.SeriesScanSkippedEvent] with
+//     reason [mediafiles.SeriesScanSkippedReasonNeverRescanAfterRefresh]
+//     and return (`:176-181`).
+//   - "AfterManual" + !isManual — publish the same event with reason
+//     [mediafiles.SeriesScanSkippedReasonRescanAfterManualRefreshOnly]
+//     and return (`:183-188`).
+//   - else (or `isNew`) — call [Rescanner.Scan] (`:191-198`). Errors
+//     are absorbed with an error log so a scan failure doesn't abort
+//     the refresh batch (matches C# `:195-198`).
+//
+// isNew forces the scan regardless of config (C# `:172-174`). Always
+// false from the Go-port refresh path today — the cold-start
+// SeriesAddedEvent handler that would set it is not yet ported.
+//
+// isManual ports the C# `trigger == CommandTrigger.Manual` check.
+// Always false from the Go-port refresh path today because the J197
+// wire shape doesn't yet carry a Trigger field — deferred to the
+// ManualTrigger slice (PROGRESS.md's top "Next candidates" item).
+// Behavioural divergence from C#: a manually-triggered refresh with
+// the "AfterManual" config will currently skip the scan; once
+// ManualTrigger lands the gate becomes accurate.
+//
+// No-op when either [Rescanner] or [RescanConfig] is nil (the J191
+// baseline behaviour) — main.go's SetRescanner call is the wiring
+// boundary.
+func (s *Service) rescanSeries(ctx context.Context, row *series.Series, isNew, isManual bool) {
+	if row == nil {
+		return
+	}
+	if s.rescanner == nil || s.rescanCfg == nil {
+		return
+	}
+
+	mode := s.rescanCfg.RescanAfterRefresh()
+	if !isNew {
+		switch mode {
+		case "Never":
+			s.log.LogAttrs(ctx, slog.LevelDebug,
+				"refreshseries: skipping rescan (RescanAfterRefresh=Never)",
+				slog.Int("seriesId", row.ID),
+				slog.String("title", row.Title))
+			if s.bus != nil {
+				_ = messaging.Publish(ctx, s.bus, mediafiles.SeriesScanSkippedEvent{
+					Series: row,
+					Reason: mediafiles.SeriesScanSkippedReasonNeverRescanAfterRefresh,
+				})
+			}
+			return
+		case "AfterManual":
+			if !isManual {
+				s.log.LogAttrs(ctx, slog.LevelDebug,
+					"refreshseries: skipping rescan (RescanAfterRefresh=AfterManual, trigger=scheduled)",
+					slog.Int("seriesId", row.ID),
+					slog.String("title", row.Title))
+				if s.bus != nil {
+					_ = messaging.Publish(ctx, s.bus, mediafiles.SeriesScanSkippedEvent{
+						Series: row,
+						Reason: mediafiles.SeriesScanSkippedReasonRescanAfterManualRefreshOnly,
+					})
+				}
+				return
+			}
+		}
+	} else {
+		s.log.LogAttrs(ctx, slog.LevelDebug,
+			"refreshseries: forcing rescan (new series)",
+			slog.Int("seriesId", row.ID),
+			slog.String("title", row.Title))
+	}
+
+	if err := s.rescanner.Scan(ctx, row); err != nil {
+		s.log.LogAttrs(ctx, slog.LevelError,
+			"refreshseries: rescan failed (refresh batch continues)",
+			slog.Int("seriesId", row.ID),
+			slog.String("title", row.Title),
+			slog.Any("err", err))
+	}
 }
 
 // updateTags ports C# `RefreshSeriesService.UpdateTags(series)` at

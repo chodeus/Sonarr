@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/metadatasource"
 	"sonarr.tv/sonarr/internal/refreshseries"
@@ -622,5 +623,245 @@ func TestRefreshSeriesInfo_GenericError_NoSoftDelete(t *testing.T) {
 	// soft-delete arm — only TheTVDB 404 marks the row deleted.
 	if store.updated != nil {
 		t.Errorf("UpdateSeries should not be called for generic errors; got %+v", store.updated)
+	}
+}
+
+// ---- J197 — DiskScanService.Rescan integration tests ----
+
+// stubRescanner captures Scan calls and lets a test pin a scan-side
+// error to assert the warn-and-absorb stance.
+type stubRescanner struct {
+	mu    sync.Mutex
+	calls []int
+	err   error
+}
+
+func (r *stubRescanner) Scan(_ context.Context, ser *series.Series) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ser != nil {
+		r.calls = append(r.calls, ser.ID)
+	}
+	return r.err
+}
+
+func (r *stubRescanner) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.calls)
+}
+
+// stubRescanCfg pins the RescanAfterRefresh enum string.
+type stubRescanCfg struct{ mode string }
+
+func (s stubRescanCfg) RescanAfterRefresh() string { return s.mode }
+
+// j197Stubs returns a service wired with happy-path provider+store
+// stubs. The rescan tests only need to observe the post-refresh tail
+// (scanner + bus subscribers), so the provider and store handles are
+// internal.
+func j197Stubs(t *testing.T) *refreshseries.Service {
+	t.Helper()
+	info := &stubProvider{
+		merged: &series.Series{
+			TvdbID:    100,
+			Title:     "skyhook-title",
+			TitleSlug: "skyhook-slug",
+			Status:    1,
+			Seasons:   `[{"seasonNumber":1,"monitored":true}]`,
+		},
+	}
+	store := &stubStore{
+		stored: &series.Series{
+			ID:      42,
+			TvdbID:  100,
+			Title:   "old-title",
+			Status:  series.SeriesStatusContinuing,
+			Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+		},
+	}
+	svc := mustNewService(t, info, store)
+	return svc
+}
+
+func TestRescanSeries_AlwaysMode_CallsScan(t *testing.T) {
+	t.Parallel()
+	svc := j197Stubs(t)
+	scanner := &stubRescanner{}
+	svc.SetRescanner(scanner, stubRescanCfg{mode: "Always"})
+
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+		t.Fatalf("RefreshSeriesInfo: %v", err)
+	}
+	if scanner.callCount() != 1 || scanner.calls[0] != 42 {
+		t.Errorf("expected one Scan call for series 42; got %+v", scanner.calls)
+	}
+}
+
+func TestRescanSeries_NeverMode_PublishesSkipEvent(t *testing.T) {
+	t.Parallel()
+	info := &stubProvider{
+		merged: &series.Series{
+			TvdbID: 100, Title: "skyhook-title", TitleSlug: "skyhook-slug", Status: 1,
+			Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+		},
+	}
+	store := &stubStore{
+		stored: &series.Series{
+			ID: 42, TvdbID: 100, Title: "old-title", Status: series.SeriesStatusContinuing,
+			Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+		},
+	}
+	bus := messaging.New(slog.Default())
+	defer bus.BeginShutdown()
+
+	var mu sync.Mutex
+	var got []mediafiles.SeriesScanSkippedEvent
+	messaging.Subscribe(bus, "test.J197Never", func(_ context.Context, ev mediafiles.SeriesScanSkippedEvent) error {
+		mu.Lock()
+		got = append(got, ev)
+		mu.Unlock()
+		return nil
+	})
+	svc := mustNewServiceWithBus(t, info, store, bus)
+	scanner := &stubRescanner{}
+	svc.SetRescanner(scanner, stubRescanCfg{mode: "Never"})
+
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+		t.Fatalf("RefreshSeriesInfo: %v", err)
+	}
+	if scanner.callCount() != 0 {
+		t.Errorf("Never mode must skip Scan; got calls=%+v", scanner.calls)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("expected one SeriesScanSkippedEvent; got %d", len(got))
+	}
+	if got[0].Reason != mediafiles.SeriesScanSkippedReasonNeverRescanAfterRefresh {
+		t.Errorf("Never reason mismatch; got %s", got[0].Reason)
+	}
+	if got[0].Series == nil || got[0].Series.ID != 42 {
+		t.Errorf("event series mismatch; got %+v", got[0].Series)
+	}
+}
+
+func TestRescanSeries_AfterManualMode_ScheduledTrigger_PublishesSkip(t *testing.T) {
+	t.Parallel()
+	info := &stubProvider{
+		merged: &series.Series{
+			TvdbID: 100, Title: "skyhook-title", TitleSlug: "skyhook-slug", Status: 1,
+			Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+		},
+	}
+	store := &stubStore{
+		stored: &series.Series{
+			ID: 42, TvdbID: 100, Title: "old-title", Status: series.SeriesStatusContinuing,
+			Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+		},
+	}
+	bus := messaging.New(slog.Default())
+	defer bus.BeginShutdown()
+
+	var mu sync.Mutex
+	var got []mediafiles.SeriesScanSkippedEvent
+	messaging.Subscribe(bus, "test.J197AfterManual", func(_ context.Context, ev mediafiles.SeriesScanSkippedEvent) error {
+		mu.Lock()
+		got = append(got, ev)
+		mu.Unlock()
+		return nil
+	})
+	svc := mustNewServiceWithBus(t, info, store, bus)
+	scanner := &stubRescanner{}
+	svc.SetRescanner(scanner, stubRescanCfg{mode: "AfterManual"})
+
+	// RefreshSeriesInfo passes isManual=false today — AfterManual +
+	// !isManual → skip per the rescanSeries gate.
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+		t.Fatalf("RefreshSeriesInfo: %v", err)
+	}
+	if scanner.callCount() != 0 {
+		t.Errorf("AfterManual+scheduled must skip Scan; got calls=%+v", scanner.calls)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("expected one SeriesScanSkippedEvent; got %d", len(got))
+	}
+	if got[0].Reason != mediafiles.SeriesScanSkippedReasonRescanAfterManualRefreshOnly {
+		t.Errorf("AfterManual reason mismatch; got %s", got[0].Reason)
+	}
+}
+
+func TestRescanSeries_ScanError_Absorbed(t *testing.T) {
+	t.Parallel()
+	svc := j197Stubs(t)
+	scanner := &stubRescanner{err: errors.New("scan blew up")}
+	svc.SetRescanner(scanner, stubRescanCfg{mode: "Always"})
+
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+		t.Errorf("scan error must not abort refresh; got %v", err)
+	}
+	if scanner.callCount() != 1 {
+		t.Errorf("expected one Scan call; got %+v", scanner.calls)
+	}
+}
+
+func TestRescanSeries_NilRescanner_NoPanicNoScan(t *testing.T) {
+	t.Parallel()
+	svc := j197Stubs(t)
+	// Deliberately do NOT call SetRescanner; refresh must still run.
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+		t.Fatalf("RefreshSeriesInfo: %v", err)
+	}
+}
+
+// emptyEpisodeLookup satisfies refreshseries.EpisodeLookup with an
+// empty episode list — used so ShouldRefresh runs against the
+// supplied predicate rather than short-circuiting on nil-lookup.
+type emptyEpisodeLookup struct{}
+
+func (emptyEpisodeLookup) AllBySeriesID(_ context.Context, _ int) ([]episodes.Episode, error) {
+	return nil, nil
+}
+
+func TestRefreshAll_SkippedRow_StillCallsRescan(t *testing.T) {
+	t.Parallel()
+	// Pin now and build a row that ShouldRefresh classifies as skip:
+	// LastInfoSync 30 min ago (>now-6h gate fails the <30d-stale arm)
+	// AND Status=Ended with no recent episodes — the
+	// "ended long ago → skip" branch fires.
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	recent := now.Add(-30 * time.Minute)
+	row := series.Series{
+		ID:           42,
+		TvdbID:       100,
+		Title:        "fresh-row",
+		Status:       series.SeriesStatusEnded,
+		LastInfoSync: &recent,
+		Seasons:      `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	store := &stubStore{all: []series.Series{row}}
+	info := &stubProvider{}
+
+	svc, err := refreshseries.NewService(info, store, nil, func() time.Time { return now }, nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	svc.SetEpisodeLookup(emptyEpisodeLookup{})
+
+	scanner := &stubRescanner{}
+	svc.SetRescanner(scanner, stubRescanCfg{mode: "Always"})
+
+	if err := svc.RefreshAll(t.Context()); err != nil {
+		t.Fatalf("RefreshAll: %v", err)
+	}
+	if info.gotTvdbID != 0 {
+		t.Errorf("expected ShouldRefresh skip; got SkyHook GetSeriesInfo call tvdbId=%d", info.gotTvdbID)
+	}
+	if scanner.callCount() != 1 || scanner.calls[0] != 42 {
+		t.Errorf("expected one Scan call for skipped row 42; got %+v", scanner.calls)
 	}
 }

@@ -2932,6 +2932,11 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// J195 — wire the ShouldRefresh predicate's episode-lookup dep
 	// so the all-series sweep gates per-row refresh on staleness.
 	refreshSeriesSvc.SetEpisodeLookup(episodesRepo)
+	// J197 — wire the disk-rescan-after-refresh arm. mediafilesSvc
+	// satisfies refreshseries.Rescanner via Scan(ctx, *series.Series);
+	// configProv exposes RescanAfterRefresh() returning the C# enum
+	// string ("Always" / "AfterManual" / "Never").
+	refreshSeriesSvc.SetRescanner(mediafilesSvc, configProv)
 
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:                   cmdSvc,
