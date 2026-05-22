@@ -40,3 +40,14 @@ func TestWithTrigger_NestedOverrides(t *testing.T) {
 		t.Errorf("nested override: got %v, want TriggerManual", got)
 	}
 }
+
+// ---- J199 — ReportResult helper ----
+
+func TestReportResult_NoSlot_NoOp(t *testing.T) {
+	t.Parallel()
+	// ReportResult on a context with no slot attached is a silent
+	// no-op — matches C# CommandResultReporter.cs:23
+	// (`if (command == null) return`). The function should not panic
+	// and should not raise an error.
+	commands.ReportResult(t.Context(), commands.ResultIndeterminate)
+}

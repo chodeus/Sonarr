@@ -232,7 +232,17 @@ func (d *Dispatcher) dispatch(ctx context.Context, c *Command) {
 	// (one allocation per command dispatch) and the cost is paid once
 	// per command rather than per handler.
 	handlerCtx := WithTrigger(ctx, Trigger(c.Trigger))
+	// J199 — attach a per-execution Result slot so handlers that
+	// partially-succeed can stamp [ResultIndeterminate] via [ReportResult].
+	// The slot is read after runHandler returns; if a handler stamped a
+	// result, it overrides the default Successful/Unsuccessful applied
+	// by Complete/Fail.
+	handlerCtx, slot := withResultSlot(handlerCtx)
 	execErr := runHandler(handlerCtx, spec.Handler, c.Body)
+
+	if reported, ok := readResultSlot(slot); ok {
+		c.Result = int(reported)
+	}
 
 	if execErr != nil {
 		d.log.LogAttrs(ctx, slog.LevelError, "commands: handler error",

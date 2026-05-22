@@ -123,15 +123,22 @@ func (r *Repo) End(ctx context.Context, c *Command, ended time.Time) error {
 	}
 	endUTC := ended.UTC()
 	db := r.DB()
+	// J199 — Result is now persisted on End so the per-execution stamp
+	// from [ReportResult] (Indeterminate / Unsuccessful) propagates to
+	// the row. Pre-J199 the column was only ever read; this UPDATE
+	// closes that gap. Service.Complete / Service.Fail already mutate
+	// c.Result in-memory before applyEnd, so callers that don't use
+	// ReportResult still see the right default behaviour.
 	q := fmt.Sprintf(
-		`UPDATE "Commands" SET "EndedAt" = %s, "Status" = %s, "Duration" = %s, "Exception" = %s WHERE "Id" = %s`,
+		`UPDATE "Commands" SET "EndedAt" = %s, "Status" = %s, "Duration" = %s, "Exception" = %s, "Result" = %s WHERE "Id" = %s`,
 		datastore.Placeholder(db.Engine, 1),
 		datastore.Placeholder(db.Engine, 2),
 		datastore.Placeholder(db.Engine, 3),
 		datastore.Placeholder(db.Engine, 4),
 		datastore.Placeholder(db.Engine, 5),
+		datastore.Placeholder(db.Engine, 6),
 	)
-	res, err := db.SQL.ExecContext(ctx, q, endUTC, c.Status, nullableDuration(c.Duration), nullableStringEmpty(c.Exception), c.ID)
+	res, err := db.SQL.ExecContext(ctx, q, endUTC, c.Status, nullableDuration(c.Duration), nullableStringEmpty(c.Exception), c.Result, c.ID)
 	if err != nil {
 		return fmt.Errorf("commands: End(%d): %w", c.ID, err)
 	}

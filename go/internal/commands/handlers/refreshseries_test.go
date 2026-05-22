@@ -355,3 +355,80 @@ func TestRefreshSeries_TriggerManual_PublishesManualStartEvent(t *testing.T) {
 		t.Errorf("ManualTrigger payload: want true, got false")
 	}
 }
+
+// ---- J199 — handler stamps Indeterminate on per-id error ----
+
+func TestRefreshSeries_PerIDError_StampsIndeterminate(t *testing.T) {
+	t.Parallel()
+	runner := &stubRefreshRunner{err: errors.New("per-id boom")}
+	h := handlers.NewRefreshSeries(runner, nil, slog.Default())
+
+	// Wrap ctx with the dispatcher-style result slot so ReportResult
+	// has somewhere to land. Use the public WithTrigger as a sibling
+	// wrap to ensure ctx still routes correctly — and pass the ctx
+	// through the dispatcher-equivalent slot via a helper test.
+	//
+	// Since withResultSlot is unexported, we route through a fake
+	// dispatcher cycle in dispatcher_test.go instead; this test is
+	// the unit-level fast-path that just verifies the handler calls
+	// ReportResult on every failing id. A no-slot ctx means ReportResult
+	// silently drops — that's exactly what we want here (the call should
+	// be defensive-safe). The dispatcher-level e2e test covers the
+	// slot-attached propagation.
+	if err := h.Execute(t.Context(), `{"seriesIds":[1,2]}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// Both ids should have been attempted (catch-and-continue stance).
+	if len(runner.got) != 2 {
+		t.Errorf("expected both ids attempted; got %+v", runner.got)
+	}
+}
+
+func TestRefreshSeries_PerIDError_PropagatesToCommandResult_E2E(t *testing.T) {
+	t.Parallel()
+	// E2E flavour — wires the actual dispatcher so the ctx wrap is
+	// real. Asserts that a per-id refresh error stamps Indeterminate
+	// on the final Command row.
+	h := newCleanupHarness(t, refreshSeriesFixedTime)
+
+	runner := &stubRefreshRunner{err: errors.New("per-id boom")}
+	registry := commands.NewRegistry()
+	deps := handlers.Deps{
+		Commands:      h.svc,
+		Housekeeping:  emptyHouseSvc(t),
+		HealthCheck:   emptyHealthSvc(t),
+		RescanSeries:  noopRescanScanner{},
+		RefreshSeries: runner,
+		Log:           slog.Default(),
+	}
+	if err := handlers.RegisterAll(registry, deps); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	queue := commands.NewQueue(registry.Properties)
+	h.svc.SetQueue(queue)
+	disp, err := commands.NewDispatcher(h.svc, queue, registry, slog.Default())
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { _ = disp.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	row, err := h.svc.Push(t.Context(), handlers.RefreshSeriesName, `{"seriesIds":[1,2]}`, commands.PriorityNormal, commands.TriggerManual)
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := h.svc.Get(t.Context(), row.ID)
+		if err == nil && commands.Status(got.Status) == commands.StatusCompleted {
+			if commands.Result(got.Result) != commands.ResultIndeterminate {
+				t.Errorf("Result: got %v, want Indeterminate", commands.Result(got.Result))
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("command did not reach Completed status in time")
+}

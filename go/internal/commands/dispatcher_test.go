@@ -120,8 +120,8 @@ func TestDispatcher_HappyPath(t *testing.T) {
 		t.Errorf("handler body: got %q, want %q", got, `{"id":42}`)
 	}
 
-	// Result is not persisted by repo.End (C# quirk preserved); assert
-	// via the in-memory event payload instead.
+	// Result is persisted by repo.End as of J199; the in-memory event
+	// payload carries the same value.
 	select {
 	case ev := <-eventCh:
 		if ev.ID != row.ID {
@@ -439,5 +439,92 @@ func TestNewDispatcher_NilGuards(t *testing.T) {
 	t.Parallel()
 	if _, err := commands.NewDispatcher(nil, nil, nil, nil); err == nil {
 		t.Errorf("NewDispatcher(nil...): want error")
+	}
+}
+
+// ---- J199 — ReportResult propagation tests ----
+
+func TestDispatcher_HandlerReportsIndeterminate_PersistsResult(t *testing.T) {
+	t.Parallel()
+	h := newDispatchHarness(t)
+	h.registry.Register("RefreshSeries", commands.CommandSpec{
+		Handler: commands.HandlerFunc(func(ctx context.Context, _ string) error {
+			// Handler partially succeeded (in this fake, no actual work);
+			// stamp the result so the row reflects "couldn't finish
+			// every row" rather than the default Successful.
+			commands.ReportResult(ctx, commands.ResultIndeterminate)
+			return nil
+		}),
+	})
+
+	eventCh := make(chan *commands.Command, 1)
+	messaging.Subscribe(h.bus, "test.J199Indeterminate", func(_ context.Context, e commands.CommandExecutedEvent) error {
+		select {
+		case eventCh <- e.Command:
+		default:
+		}
+		return nil
+	})
+
+	row, err := h.svc.Push(t.Context(), "RefreshSeries", `{}`, commands.PriorityNormal, commands.TriggerScheduled)
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	final := waitForStatus(t, h.svc, row.ID, commands.StatusCompleted)
+	if commands.Result(final.Result) != commands.ResultIndeterminate {
+		t.Errorf("persisted Result: got %v, want Indeterminate", commands.Result(final.Result))
+	}
+
+	select {
+	case ev := <-eventCh:
+		if commands.Result(ev.Result) != commands.ResultIndeterminate {
+			t.Errorf("event Result: got %v, want Indeterminate", commands.Result(ev.Result))
+		}
+	case <-time.After(time.Second):
+		t.Errorf("CommandExecutedEvent did not fire")
+	}
+}
+
+func TestDispatcher_HandlerDoesNotReport_DefaultsToSuccessful(t *testing.T) {
+	t.Parallel()
+	h := newDispatchHarness(t)
+	h.registry.Register("RefreshSeries", commands.CommandSpec{
+		Handler: commands.HandlerFunc(func(_ context.Context, _ string) error {
+			return nil
+		}),
+	})
+
+	row, err := h.svc.Push(t.Context(), "RefreshSeries", `{}`, commands.PriorityNormal, commands.TriggerScheduled)
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	final := waitForStatus(t, h.svc, row.ID, commands.StatusCompleted)
+	if commands.Result(final.Result) != commands.ResultSuccessful {
+		t.Errorf("default Result: got %v, want Successful", commands.Result(final.Result))
+	}
+}
+
+func TestDispatcher_HandlerReportsThenErrors_FailPreservesReportedResult(t *testing.T) {
+	t.Parallel()
+	h := newDispatchHarness(t)
+	h.registry.Register("Backup", commands.CommandSpec{
+		Handler: commands.HandlerFunc(func(ctx context.Context, _ string) error {
+			// Handler partially succeeded before hitting a fatal error.
+			// The reporter's Indeterminate stamp should override Fail's
+			// default-Unsuccessful arm (matches C# Complete/Fail's
+			// "preserve non-Unknown Result" guard).
+			commands.ReportResult(ctx, commands.ResultIndeterminate)
+			return errors.New("partial-then-fatal")
+		}),
+	})
+
+	row, err := h.svc.Push(t.Context(), "Backup", `{}`, commands.PriorityNormal, commands.TriggerScheduled)
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	final := waitForStatus(t, h.svc, row.ID, commands.StatusFailed)
+	if commands.Result(final.Result) != commands.ResultIndeterminate {
+		t.Errorf("preserved Result: got %v, want Indeterminate (reporter overrides Fail default)", commands.Result(final.Result))
 	}
 }

@@ -154,6 +154,14 @@ func (h *RefreshSeries) Execute(ctx context.Context, body string) error {
 				"refreshseries: per-id refresh failed (batch continues)",
 				slog.Int("seriesId", id),
 				slog.Any("err", err))
+			// J199 — stamp the command Result as Indeterminate so a
+			// partial batch (some ids succeed, some fail) shows up in
+			// the UI as "I tried but couldn't finish every row" rather
+			// than the default Successful. Mirrors C# `:235` + `:245`
+			// (`_commandResultReporter.Report(CommandResult.Indeterminate)`).
+			// last-write-wins — one bad row is enough to mark the whole
+			// batch Indeterminate.
+			commands.ReportResult(ctx, commands.ResultIndeterminate)
 		}
 	}
 	return nil
