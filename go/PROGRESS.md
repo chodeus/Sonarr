@@ -4,7 +4,7 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Current state
 
-HEAD at `J203` — AdjustMultiEpisodeAirTime + AdjustDirectToDvdAirDate ported (C# `:191-226`). Same-day multi-episode piles now spread by Runtime; direct-to-DVD ended series get FirstAired stamped across every episode. 2 RefreshEpisodeService sub-arms + 1 path-normalisation still deferred. All three gates clean.
+**PAUSED by user after J203.** HEAD at `J203` — AdjustMultiEpisodeAirTime + AdjustDirectToDvdAirDate ported (C# `:191-226`). Same-day multi-episode piles now spread by Runtime; direct-to-DVD ended series get FirstAired stamped across every episode. 2 RefreshEpisodeService sub-arms + 1 path-normalisation still deferred. All three gates clean. Resume with another `/loop` when ready.
 
 ## Closed this loop-run
 
