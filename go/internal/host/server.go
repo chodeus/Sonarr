@@ -106,6 +106,13 @@ type Server struct {
 	// both. Used for single-binary distribution via go:embed.
 	staticFS fs.FS
 
+	// theme is the configured UI theme value ("auto" / "light" /
+	// "dark") that the J205 HTML template substitution replaces the
+	// `_THEME_` token with. Empty defaults to "auto" at substitution
+	// time so the index.html's downstream prefers-color-scheme
+	// detection runs.
+	theme string
+
 	// listenerOverride lets tests inject a pre-bound listener so
 	// they can run against a randomly assigned port. nil means
 	// `net.Listen("tcp", cfg.Listen())` is called inside Run.
@@ -140,6 +147,15 @@ func WithShutdownTimeout(d time.Duration) Option {
 // itself so each per-controller package is fully decoupled.
 func WithRoutes(routes ...Route) Option {
 	return func(s *Server) { s.routes = append(s.routes, routes...) }
+}
+
+// WithTheme pins the UI theme value injected into the HTML bundle's
+// `_THEME_` placeholder by the J205 template-substitution middleware.
+// Empty defaults to "auto" at substitution time (the React bundle
+// then resolves to light/dark via the browser's prefers-color-scheme
+// at render). Set from configfile.Provider.Theme() at boot.
+func WithTheme(theme string) Option {
+	return func(s *Server) { s.theme = theme }
 }
 
 // WithURLBase pins the sub-path the host runs under. Mirrors
@@ -377,20 +393,32 @@ func (s *Server) buildMux() *http.ServeMux {
 	// are set (disk-backed mount is the development-iteration path
 	// and should take priority over the embedded production
 	// fallback).
+	// Theme default: empty stored value falls back to "auto" so the
+	// React bundle's downstream prefers-color-scheme detection runs.
+	// Matches C# `IConfigFileProvider.Theme` default (auto).
+	theme := s.theme
+	if theme == "" {
+		theme = "auto"
+	}
+	// Middleware chain (innermost first): staticHandler →
+	// injectHTMLTemplates → injectBaseHref. Order matters:
+	// injectHTMLTemplates replaces `__URL_BASE__` with the configured
+	// urlBase string and `_THEME_` with the theme value; injectBaseHref
+	// then rewrites the `<base href>` tag for client-side routing
+	// prefixes. Running templates first keeps the base-href rewrite
+	// operating on the post-substitution HTML.
 	switch {
 	case s.staticDir != "":
 		static, err := staticHandler(s.staticDir)
 		if err != nil {
 			s.logger.Error("static handler init failed", "err", err, "dir", s.staticDir)
 		} else {
-			// Audit fix C.5: when URL base is set (e.g. "/sonarr"),
-			// rewrite the React bundle's `<base href>` so client-side
-			// routing resolves under the prefix. No-op when urlBase
-			// is empty.
-			mux.Handle("/", injectBaseHref(static, s.urlBase))
+			// Audit fix C.5 + J205: chain template substitution before
+			// the base-href rewrite. No-op on non-text/html responses.
+			mux.Handle("/", injectBaseHref(injectHTMLTemplates(static, s.urlBase, theme), s.urlBase))
 		}
 	case s.staticFS != nil:
-		mux.Handle("/", injectBaseHref(staticHandlerFS(s.staticFS), s.urlBase))
+		mux.Handle("/", injectBaseHref(injectHTMLTemplates(staticHandlerFS(s.staticFS), s.urlBase, theme), s.urlBase))
 	}
 	return mux
 }

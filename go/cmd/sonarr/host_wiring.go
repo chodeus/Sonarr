@@ -112,6 +112,14 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, authSvc *aut
 		opts = append(opts, host.WithURLBase(urlBase))
 		logger.Info("host urlbase mount", "base", urlBase)
 	}
+	// J205 — wire the UI theme into the host so the HTML template
+	// middleware can substitute `_THEME_` in index.html / login.html.
+	// Lookup failures degrade silently to "auto" (the host's default
+	// when WithTheme is never called) — a transient config-store hiccup
+	// shouldn't block boot.
+	if theme, err := cfg.Theme(ctx); err == nil && theme != "" {
+		opts = append(opts, host.WithTheme(theme))
+	}
 	return host.New(
 		host.Config{BindAddress: bind, Port: port},
 		logger,
