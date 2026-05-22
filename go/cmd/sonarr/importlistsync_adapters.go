@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
+	"sonarr.tv/sonarr/internal/metadatasource"
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/organizer"
 	"sonarr.tv/sonarr/internal/series"
@@ -48,11 +52,71 @@ func (a seriesLookupAdapter) AllTvdbIDs(ctx context.Context) ([]int, error) {
 // cache, episode seeding) land — but the event plumbing is now
 // in place so each follow-up just adds its own subscriber.
 type seriesAdderAdapter struct {
-	svc       *series.Service
-	namingCfg *namingconfig.Service
-	validator *series.AddValidator // optional; nil skips pre-insert validation
-	log       *slog.Logger
-	now       func() time.Time // overridable for deterministic tests
+	svc        *series.Service
+	namingCfg  *namingconfig.Service
+	validator  *series.AddValidator              // optional; nil skips pre-insert validation
+	seriesInfo metadatasource.SeriesInfoProvider // optional; nil skips SkyHook TVDB-merge
+	log        *slog.Logger
+	now        func() time.Time // overridable for deterministic tests
+}
+
+// hasSeasons reports whether the JSON-encoded Seasons blob represents
+// a non-empty array. Mirrors the C# `newSeries.Seasons != null &&
+// newSeries.Seasons.Any()` guard at `AddSeriesService.cs:131`. Empty
+// string, "null", and "[]" all count as no-seasons; any successfully-
+// decoded non-empty array counts as has-seasons. Malformed JSON is
+// treated as no-seasons (the SkyHook payload takes over) — keeps the
+// merge resilient against junk inputs from custom import lists.
+func hasSeasons(seasons string) bool {
+	trimmed := strings.TrimSpace(seasons)
+	if trimmed == "" || trimmed == "null" || trimmed == "[]" {
+		return false
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &arr); err != nil {
+		return false
+	}
+	return len(arr) > 0
+}
+
+// addSkyHookData ports the C# `AddSeriesService.AddSkyhookData` flow
+// at `src/NzbDrone.Core/Tv/AddSeriesService.cs:111-138`. Resolves the
+// upstream TVDB id via [metadatasource.SeriesInfoProvider], preserves
+// caller-supplied Seasons when non-empty (otherwise lets SkyHook seed
+// them), and overlays the 11 user-supplied fields onto the SkyHook
+// shape via [series.Series.ApplyChanges]. Returns the merged row by
+// value so the caller can drop it straight into its loop variable.
+//
+// On [metadatasource.ErrSeriesNotFound]: C# throws a
+// ValidationException at `AddSeriesService.cs:120-124`; we propagate
+// the original error and let the batch loop's ignoreErrors=true
+// posture handle it (warn + skip row).
+//
+// On [metadatasource.ErrServiceUnavailable]: C# lets the exception
+// bubble (it wraps as a 503 at the API boundary, or aborts the
+// import-list batch). For the batch path we follow the same
+// per-row absorb-and-continue stance so one SkyHook hiccup doesn't
+// pollute the whole batch — the row is skipped with a warn log.
+//
+// ctx cancellation propagates verbatim.
+func addSkyHookData(ctx context.Context, provider metadatasource.SeriesInfoProvider, row series.Series) (series.Series, error) {
+	merged, _, err := provider.GetSeriesInfo(ctx, row.TvdbID)
+	if err != nil {
+		return series.Series{}, err
+	}
+	if merged == nil {
+		// Defensive: a provider that returns (nil, nil, nil) is buggy
+		// but we'd rather skip-with-warn than panic on the deref below.
+		return series.Series{}, errors.New("addSkyHookData: provider returned nil series")
+	}
+	// Preserve caller-supplied Seasons when non-empty; otherwise the
+	// freshly-mapped SkyHook shape (which seeds Seasons from the
+	// upstream response) wins.
+	if !hasSeasons(row.Seasons) {
+		row.Seasons = merged.Seasons
+	}
+	merged.ApplyChanges(&row)
+	return *merged, nil
 }
 
 // folderNameForSeries loads the SeriesFolderFormat from
@@ -112,6 +176,23 @@ func (a seriesAdderAdapter) AddSeries(ctx context.Context, batch []series.Series
 	}
 	for i := range batch {
 		row := batch[i]
+		if a.seriesInfo != nil {
+			merged, err := addSkyHookData(ctx, a.seriesInfo, row)
+			if err != nil {
+				// Matches the C# `AddSeriesService.AddSeries(List<Series>,
+				// ignoreErrors:true)` catch-and-continue arm at
+				// `AddSeriesService.cs:97-107` — a SeriesNotFoundException
+				// or SkyHookException turns into a per-row skip rather
+				// than aborting the whole batch.
+				a.log.LogAttrs(ctx, slog.LevelWarn,
+					"importlistsync: AddSeries: SkyHook merge failed (row skipped)",
+					slog.Int("tvdbId", row.TvdbID),
+					slog.String("title", row.Title),
+					slog.Any("err", err))
+				continue
+			}
+			row = merged
+		}
 		series.PrepareForAdd(&row, nowFn(), folderName)
 		if a.validator != nil {
 			if err := a.validator.Validate(ctx, &row); err != nil {

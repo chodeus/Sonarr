@@ -114,6 +114,39 @@ type Series struct {
 	RootFolderPath string `json:"rootFolderPath"`
 }
 
+// ApplyChanges ports `Series.ApplyChanges(Series otherSeries)` at
+// `src/NzbDrone.Core/Tv/Series.cs:70-86`. Copies the 11 caller-
+// supplied fields from `other` onto the receiver — used by
+// `AddSeriesService.AddSkyhookData` (C# `AddSeriesService.cs:130`)
+// to overlay the user-supplied add-shape onto the SkyHook-loaded
+// row, and by the future PUT /api/v3/series Update flow on
+// existing rows.
+//
+// The fields C# copies are exactly the 11 below. Notable omissions:
+// every column SkyHook itself owns (TvRageId, ImdbId, Title,
+// CleanTitle, SortTitle, Status, Overview, Network, AirTime, Runtime,
+// Year, FirstAired, NextAiring, LastAired, Images, Genres, Actors,
+// Ratings, TitleSlug, OriginalLanguage, OriginalCountry, MalIds,
+// AniListIds, TmdbId, TvMazeId, Certification, UseSceneNumbering,
+// LastInfoSync, LastDiskSync) — those are the SkyHook-authoritative
+// shape and stay untouched by the merge.
+func (s *Series) ApplyChanges(other *Series) {
+	if s == nil || other == nil {
+		return
+	}
+	s.TvdbID = other.TvdbID
+	s.Seasons = other.Seasons
+	s.Path = other.Path
+	s.QualityProfileID = other.QualityProfileID
+	s.SeasonFolder = other.SeasonFolder
+	s.Monitored = other.Monitored
+	s.MonitorNewItems = other.MonitorNewItems
+	s.SeriesType = other.SeriesType
+	s.RootFolderPath = other.RootFolderPath
+	s.Tags = other.Tags
+	s.AddOptions = other.AddOptions
+}
+
 // ErrNotFound is returned when no row matches.
 var ErrNotFound = errors.New("series: not found")
 

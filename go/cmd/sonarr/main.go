@@ -2906,10 +2906,11 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		importListExclusionsRepo,
 		seriesLookupAdapter{svc: seriesSvc},
 		seriesAdderAdapter{
-			svc:       seriesSvc,
-			namingCfg: namingConfigSvc,
-			validator: series.NewAddValidator(seriesRepo, seriesRepo),
-			log:       logger,
+			svc:        seriesSvc,
+			namingCfg:  namingConfigSvc,
+			validator:  series.NewAddValidator(seriesRepo, seriesRepo),
+			seriesInfo: metadataSourceProxy,
+			log:        logger,
 		},
 		nil, // IDTranslator wired once metadata-source M3b lands.
 		logger,
