@@ -59,11 +59,22 @@ type SeriesStore interface {
 // scheduled-task tick) marshal `[]int` series IDs from their command
 // shape.
 type Service struct {
-	info  SeriesInfoProvider
-	store SeriesStore
-	bus   *messaging.Bus
-	now   func() time.Time
-	log   *slog.Logger
+	info     SeriesInfoProvider
+	store    SeriesStore
+	bus      *messaging.Bus
+	episodes EpisodeLookup // optional; gates the all-series sweep on ShouldRefresh
+	now      func() time.Time
+	log      *slog.Logger
+}
+
+// SetEpisodeLookup wires the [EpisodeLookup] dep used by the
+// J195 ShouldRefresh predicate in [Service.RefreshAll]. Optional —
+// nil leaves the sweep refreshing every row (J193 baseline). Done
+// as a post-construction setter so the J191 NewService signature
+// stays stable across the J195 layering; main.go calls this after
+// NewService.
+func (s *Service) SetEpisodeLookup(ep EpisodeLookup) {
+	s.episodes = ep
 }
 
 // NewService binds the dependencies into a Service. `now` defaults to
@@ -154,11 +165,24 @@ func (s *Service) RefreshAll(ctx context.Context) error {
 	}
 	sort.SliceStable(all, func(i, j int) bool { return all[i].SortTitle < all[j].SortTitle })
 
+	skipped := 0
 	for i := range all {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		row := all[i]
+		// J195 — gate refresh on ShouldRefresh predicate when an
+		// EpisodeLookup is wired. When unset (or when the predicate
+		// returns true) the row is refreshed; the per-row Refresh
+		// path is otherwise unchanged.
+		if s.episodes != nil && !ShouldRefresh(ctx, &row, s.episodes, s.now(), s.log) {
+			s.log.LogAttrs(ctx, slog.LevelInfo,
+				"refreshseries: skipping row (ShouldRefresh=false)",
+				slog.Int("seriesId", row.ID),
+				slog.String("title", row.Title))
+			skipped++
+			continue
+		}
 		if _, err := s.RefreshSeriesInfo(ctx, row.ID); err != nil {
 			s.log.LogAttrs(ctx, slog.LevelWarn,
 				"refreshseries: per-row refresh failed (sweep continues)",
@@ -170,7 +194,8 @@ func (s *Service) RefreshAll(ctx context.Context) error {
 	}
 	s.log.LogAttrs(ctx, slog.LevelInfo,
 		"refreshseries: all-series sweep complete",
-		slog.Int("count", len(all)))
+		slog.Int("count", len(all)),
+		slog.Int("skipped", skipped))
 	return nil
 }
 

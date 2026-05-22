@@ -4,7 +4,7 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Current state
 
-HEAD at `J194` — SeriesRefreshStarting/Complete event types ported and emitted around every RefreshSeries batch. Recent commits: J194 refresh-events (this slice); J193 all-series sweep; J192 SeriesNotFound soft-delete. Audit B.3 remaining deferred sub-arcs: RefreshEpisodeService, DiskScanService rescan, UpdateTags, ShouldRefresh predicate, CommandResult.Indeterminate, path-normalisation, ManualTrigger-from-wire-shape. B.2/B.5/B.6 closed.
+HEAD at `J195` — ShouldRefresh predicate ported and wired; the 12h scheduled-task tick now refreshes only stale rows instead of every row. Recent commits: J195 ShouldRefresh predicate + sweep gating (this slice); J194 SeriesRefreshStarting/Complete events; J193 all-series sweep. Audit B.3 remaining deferred sub-arcs: RefreshEpisodeService, DiskScanService rescan, UpdateTags, CommandResult.Indeterminate, path-normalisation, ManualTrigger-from-wire-shape. B.2/B.5/B.6 closed.
 
 ## Closed this loop-run
 
@@ -14,11 +14,12 @@ HEAD at `J194` — SeriesRefreshStarting/Complete event types ported and emitted
 - **J190** — episode seeding via SkyHook payload + `episodes.Repo.InsertMany`; 2 tests.
 - **J191** — `internal/refreshseries.Service` real port; handler real per-id dispatcher; 17 tests; closes audit B.3.
 - **J192** — `series.SeriesUpdatedEvent` + `*messaging.Bus` dep + `handleSeriesNotFound` Status=Deleted; 4 tests.
-- **J193** — `Service.RefreshAll(ctx)` sweep + handler routes empty-body to RefreshAll; 4 tests + 2 renamed.
-- **J194** — `SeriesRefreshStartingEvent` + `SeriesRefreshCompleteEvent` types + handler publishes around every batch; 3 tests + 6 sig-updates.
+- **J193** — `Service.RefreshAll(ctx)` sweep + handler routes empty-body to RefreshAll; 4 tests.
+- **J194** — `SeriesRefreshStartingEvent` + `SeriesRefreshCompleteEvent` types + handler publishes around every batch; 3 tests.
+- **J195** — `refreshseries.ShouldRefresh` 6-branch predicate + `Service.SetEpisodeLookup` + RefreshAll per-row gating; 12 tests.
 
 ## Next candidates
 
-1. **RefreshSeries follow-up: ShouldRefresh predicate port** (~150 LOC) — port C# `CheckIfSeriesShouldBeRefreshed.cs`. Predicate gates per-row refresh on age + ended-status; cuts periodic-tick load from "refresh every row" to "refresh stale rows only".
-2. **RefreshSeries follow-up: ManualTrigger from wire shape** (~80 LOC) — port the `Trigger` field on `RefreshSeriesCommand` so the handler can pass the real trigger value into `SeriesRefreshStartingEvent.ManualTrigger`. Requires plumbing the trigger through the commands.Service push path.
+1. **RefreshSeries follow-up: ManualTrigger from wire shape** (~80 LOC) — port the `Trigger` field on `RefreshSeriesCommand` so the handler can pass the real trigger value into `SeriesRefreshStartingEvent.ManualTrigger`. C# also uses ManualTrigger to bypass ShouldRefresh in the all-series sweep (`:256`: trigger==Manual || ShouldRefresh).
+2. **RefreshSeries follow-up: UpdateTags integration** (~80 LOC) — port C# `:201-209`. After each RefreshSeriesInfo, call autotagging.Service.GetTagChanges and persist via series.Service.UpdateTags. Refresh has been computing changes; this writes them back.
 3. **Image-download subscriber off SeriesAddedEvent** (~200 LOC, needs design pass) — wire `mediacover.Service` to fetch poster/fanart on add via `EnsureCovers`/`DownloadCover`. Activates the HTTP-gated arm previously deferred under FAIL-CLOSED #7.

@@ -2929,6 +2929,9 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("refreshseries service: %w", err)
 	}
+	// J195 — wire the ShouldRefresh predicate's episode-lookup dep
+	// so the all-series sweep gates per-row refresh on staleness.
+	refreshSeriesSvc.SetEpisodeLookup(episodesRepo)
 
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:                   cmdSvc,
