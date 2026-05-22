@@ -39,3 +39,23 @@ type EpisodeMonitoredChangedEvent struct {
 	IDs       []int
 	Monitored bool
 }
+
+// EpisodeInfoRefreshedEvent ports C# `Tv/Events/EpisodeInfoRefreshedEvent.cs`.
+// Published by the refreshepisodes service (J200) at the tail of a
+// per-series episode reconcile pass. Carries the three slices the
+// reconcile loop produced: inserted episodes (newly-seeded rows),
+// updated episodes (existing rows whose metadata was refreshed), and
+// removed episodes (rows the upstream no longer returns — pending
+// DeleteMany).
+//
+// C# subscribers: ImportListSyncService (invalidates the import-list
+// cache when episodes change), EpisodeUpdated SignalR broadcaster.
+// Go-port subscribers will grow as those services land in
+// Phase 5/6 — the event is published unconditionally so the wire shape
+// is stable when consumers attach.
+type EpisodeInfoRefreshedEvent struct {
+	SeriesID int
+	Added    []Episode
+	Updated  []Episode
+	Removed  []Episode
+}

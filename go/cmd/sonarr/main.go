@@ -105,6 +105,7 @@ import (
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/recyclebin"
+	"sonarr.tv/sonarr/internal/refreshepisodes"
 	"sonarr.tv/sonarr/internal/refreshseries"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
 	"sonarr.tv/sonarr/internal/remotepathmappings"
@@ -2937,6 +2938,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// configProv exposes RescanAfterRefresh() returning the C# enum
 	// string ("Always" / "AfterManual" / "Never").
 	refreshSeriesSvc.SetRescanner(mediafilesSvc, configProv)
+	// J200 — wire the episode-reconcile arm. The refresher reads
+	// existing rows via episodesSvc and persists the diff via the
+	// same service's UpdateMany/InsertMany/DeleteMany surface; the
+	// bus carries the EpisodeInfoRefreshedEvent.
+	refreshEpisodesSvc, err := refreshepisodes.NewService(episodesSvc, bus, logger)
+	if err != nil {
+		return fmt.Errorf("refreshepisodes service: %w", err)
+	}
+	refreshSeriesSvc.SetEpisodeRefresher(refreshEpisodesSvc)
 
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:                   cmdSvc,

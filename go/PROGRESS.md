@@ -4,13 +4,14 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Current state
 
-HEAD at `J199` — `CommandResult.Indeterminate` reporter ported via the same ctx.Value pattern (`commands.ReportResult`). Dispatcher attaches a mutable `resultSlot`; handlers stamp via `ReportResult`; dispatcher reads back and sets `c.Result` before `Complete`/`Fail` fire. Also fixes a pre-existing bug — `repo.End` SQL UPDATE was missing the `Result` column, so reported results never landed. refreshseries per-id error path stamps `Indeterminate` matching C# `Execute :235, :245`. All three gates clean.
+HEAD at `J200` — `RefreshEpisodeService` reconcile baseline ported. New `internal/refreshepisodes` package: dedupe-by-(season,episode), match-update-or-insert, delete-unmatched, persist via `Service.UpdateMany`/`InsertMany`/`DeleteMany`. `episodes.EpisodeInfoRefreshedEvent` carries the Added/Updated/Removed slices for downstream subscribers. `refreshseries.Service` captures the previously-discarded SkyHook episodes payload and calls the new refresher after persist + updateTags. Five sub-arms still deferred (UnmonitorReaddedEpisodes, AdjustMultiEpisodeAirTime, AdjustDirectToDvdAirDate, anime absolute renumbering, finale heuristic). All three gates clean.
 
 ## Closed this loop-run
 
 - **J197** — `refreshseries.Rescanner` + `RescanConfig` interfaces, `SetRescanner` setter, `rescanSeries` helper wired into RefreshSeriesInfo + RefreshAll skipped branch; 6 tests.
 - **J198** — `commands.WithTrigger` / `TriggerFromContext` helpers, dispatcher attaches trigger to ctx, refreshseries handler+service thread `isManual` through; bypasses ShouldRefresh on manual + AfterManual config now fires correctly; 8 tests + ~25 mechanical call-site updates.
 - **J199** — `commands.ReportResult` helper + `resultSlot` ctx wiring + `repo.End` Result column UPDATE; refreshseries per-id error path stamps `Indeterminate`; 6 tests including E2E dispatcher harness.
+- **J200** — `internal/refreshepisodes` package + `episodes.EpisodeInfoRefreshedEvent` + `refreshseries.SetEpisodeRefresher`; SkyHook episodes payload now reconciles into persistence; 11 tests.
 
 ## Previous loop-run (J187-J196)
 
@@ -27,7 +28,9 @@ HEAD at `J199` — `CommandResult.Indeterminate` reporter ported via the same ct
 
 ## Next candidates (for next loop-run)
 
-1. **RefreshEpisodeService episode-reconcile** (~250 LOC, MULTI-SLICE) — port C# `RefreshEpisodeService.RefreshEpisodeInfo` at `:53-135`. Reconciles SkyHook episode list against persisted rows: insert new, update changed, delete removed. The post-J190 episode-seeding path covers the cold-start case but subsequent refreshes don't reconcile the episode list yet. Closing this drops B.3's open sub-arc list to just one (path-normalisation via GetActualCasing).
-2. **Image-download subscriber off SeriesAddedEvent** (~200 LOC, needs design pass) — wire `mediacover.Service.EnsureCovers`. HTTP-gated arm previously deferred under FAIL-CLOSED #7.
-3. **Generalize gap-detection capture to all 10 indexers** — log-warning, not a correctness bug. Lower-value but unblocked.
-4. **Phase 6 readiness** — lower the contract-replay diff CLI known-failing baseline by 3 (J179/J180/J181 closed those goldens). Audit `go/test/contract/` for any CI gates that hardcode the old count.
+1. **RefreshEpisodeService finale-detection heuristic** (~60 LOC) — port C# `RefreshEpisodeService.cs:95-107` (stamp FinaleType=series for the last episode of the last season of recently-ended shows when TheTVDB didn't flag one). Tightest scope of the deferred sub-arms; isolated mutation, no upstream dep change.
+2. **RefreshEpisodeService UnmonitorReaddedEpisodes** (~80 LOC) — port C# `:157-189`. Gates the unmonitor of old-aired-on-cold-add via `series.AddOptions`. Needs the AddOptions field on the series row to be read by the refresher.
+3. **RefreshEpisodeService AdjustMultiEpisodeAirTime + AdjustDirectToDvdAirDate** (~70 LOC combined) — ports C# `:191-226`. Same-day multi-episode air-time spread + ended-show air-date backfill from series.FirstAired.
+4. **RefreshEpisodeService anime absolute-episode-number renumbering** (~80 LOC) — port C# `:43-46, :228-236` + `AbsoluteEpisodeNumberAdded` flag. Smallest impact since anime is a minority of series.
+5. **Path-normalisation via GetActualCasing** (~100 LOC) — port C# `RefreshSeriesService.cs:118-119` (DirectoryInfo + GetActualCasing for case-resolution). Final B.3 sub-arc; needs the disk package to grow a portable case-resolver helper.
+6. **Image-download subscriber off SeriesAddedEvent** (~200 LOC, needs design pass) — wire `mediacover.Service.EnsureCovers`. HTTP-gated arm previously deferred under FAIL-CLOSED #7.

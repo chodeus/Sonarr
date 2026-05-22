@@ -74,19 +74,29 @@ type RescanConfig interface {
 	RescanAfterRefresh() string
 }
 
+// EpisodeRefresher is the narrow slice of [*refreshepisodes.Service]
+// the refresh path reaches for. Satisfied by *refreshepisodes.Service.
+// Defined here so the unit tests can stub without spinning up the
+// episodes stack. J200 wires this — pre-J200 the SkyHook episodes
+// payload was discarded after GetSeriesInfo.
+type EpisodeRefresher interface {
+	RefreshEpisodeInfo(ctx context.Context, ser *series.Series, remote []episodes.Episode) error
+}
+
 // Service is the RefreshSeriesService port. Per-id Refresh is the
 // only entry point; callers (the RefreshSeries command handler, the
 // scheduled-task tick) marshal `[]int` series IDs from their command
 // shape.
 type Service struct {
-	info      SeriesInfoProvider
-	store     SeriesStore
-	bus       *messaging.Bus
-	episodes  EpisodeLookup // optional; gates the all-series sweep on ShouldRefresh
-	rescanner Rescanner     // optional; gates the disk-rescan-after-refresh arm (J197)
-	rescanCfg RescanConfig  // optional; sibling of rescanner — both must be set to scan
-	now       func() time.Time
-	log       *slog.Logger
+	info        SeriesInfoProvider
+	store       SeriesStore
+	bus         *messaging.Bus
+	episodes    EpisodeLookup    // optional; gates the all-series sweep on ShouldRefresh
+	rescanner   Rescanner        // optional; gates the disk-rescan-after-refresh arm (J197)
+	rescanCfg   RescanConfig     // optional; sibling of rescanner — both must be set to scan
+	epRefresher EpisodeRefresher // optional; J200 — reconciles SkyHook episodes payload after persist
+	now         func() time.Time
+	log         *slog.Logger
 }
 
 // SetEpisodeLookup wires the [EpisodeLookup] dep used by the
@@ -97,6 +107,16 @@ type Service struct {
 // NewService.
 func (s *Service) SetEpisodeLookup(ep EpisodeLookup) {
 	s.episodes = ep
+}
+
+// SetEpisodeRefresher wires the [EpisodeRefresher] dep used by the
+// J200 episode-reconcile arm in [Service.RefreshSeriesInfo]. Optional —
+// nil leaves the SkyHook episodes payload discarded (the J191
+// baseline). Done as a post-construction setter so the J191
+// NewService signature stays stable across the J200 layering; main.go
+// calls this after NewService.
+func (s *Service) SetEpisodeRefresher(er EpisodeRefresher) {
+	s.epRefresher = er
 }
 
 // SetRescanner wires the [Rescanner] + [RescanConfig] deps used by the
@@ -275,7 +295,7 @@ func (s *Service) RefreshSeriesInfo(ctx context.Context, seriesID int, isManual 
 		return nil, fmt.Errorf("refreshseries: GetSeries(%d): %w", seriesID, err)
 	}
 
-	merged, _, err := s.info.GetSeriesInfo(ctx, row.TvdbID)
+	merged, remoteEpisodes, err := s.info.GetSeriesInfo(ctx, row.TvdbID)
 	if err != nil {
 		// J192 — SeriesNotFound soft-delete arm. Ports C#
 		// `RefreshSeriesService.cs:70-81`: when TheTVDB returns 404,
@@ -333,6 +353,23 @@ func (s *Service) RefreshSeriesInfo(ctx context.Context, seriesID int, isManual 
 	// at `:226` and `:272`: UpdateTags runs after every per-id
 	// RefreshSeriesInfo success.
 	s.updateTags(ctx, updated)
+
+	// J200 — episode reconcile per C# `RefreshSeriesService.cs:129`
+	// (`_refreshEpisodeService.RefreshEpisodeInfo(series, episodes)`).
+	// Optional: nil refresher leaves the J191 baseline behaviour
+	// (SkyHook episodes discarded). Errors are absorbed with a warn
+	// log so an episode-reconcile failure doesn't bubble past the
+	// per-series-refresh boundary; the series row itself is already
+	// persisted by this point.
+	if s.epRefresher != nil {
+		if err := s.epRefresher.RefreshEpisodeInfo(ctx, updated, remoteEpisodes); err != nil {
+			s.log.LogAttrs(ctx, slog.LevelWarn,
+				"refreshseries: episode reconcile failed (series row already persisted)",
+				slog.Int("seriesId", updated.ID),
+				slog.String("title", updated.Title),
+				slog.Any("err", err))
+		}
+	}
 
 	// J197 — post-refresh disk rescan per C# Execute `:227`. isNew
 	// stays false until the IsNewSeries field lands on the
