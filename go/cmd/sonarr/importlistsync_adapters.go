@@ -50,6 +50,7 @@ func (a seriesLookupAdapter) AllTvdbIDs(ctx context.Context) ([]int, error) {
 type seriesAdderAdapter struct {
 	svc       *series.Service
 	namingCfg *namingconfig.Service
+	validator *series.AddValidator // optional; nil skips pre-insert validation
 	log       *slog.Logger
 	now       func() time.Time // overridable for deterministic tests
 }
@@ -112,6 +113,22 @@ func (a seriesAdderAdapter) AddSeries(ctx context.Context, batch []series.Series
 	for i := range batch {
 		row := batch[i]
 		series.PrepareForAdd(&row, nowFn(), folderName)
+		if a.validator != nil {
+			if err := a.validator.Validate(ctx, &row); err != nil {
+				// Matches C# `AddSeriesService.AddSeries(List<Series>,
+				// ignoreErrors: true)` posture: log + skip rather than
+				// abort the batch. Mirrors the catch(ValidationException)
+				// arm at `AddSeriesService.cs:97-107`.
+				a.log.LogAttrs(ctx, slog.LevelWarn,
+					"importlistsync: AddSeries: pre-insert validation failed (row skipped)",
+					slog.Int("tvdbId", row.TvdbID),
+					slog.String("title", row.Title),
+					slog.String("path", row.Path),
+					slog.String("titleSlug", row.TitleSlug),
+					slog.Any("err", err))
+				continue
+			}
+		}
 		if _, err := a.svc.AddSeries(ctx, &row); err != nil {
 			a.log.LogAttrs(ctx, slog.LevelWarn,
 				"importlistsync: AddSeries: per-row AddSeries failed (batch continues)",

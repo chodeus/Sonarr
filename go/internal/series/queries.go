@@ -31,6 +31,23 @@ func (r *Repo) FindByPath(ctx context.Context, path string) (*Series, error) {
 	return r.firstWhere(ctx, `"Path" = `+datastore.Placeholder(r.DB().Engine, 1), path)
 }
 
+// FindByTitleSlug returns the first row whose TitleSlug matches.
+// The C# tree iterates `_seriesService.GetAllSeries().FirstOrDefault(...)`
+// at `SeriesTitleSlugValidator.cs:30-33` — i.e. scans every row in
+// memory. The Go port presses the lookup down to a single-row query
+// so the validator stays O(1) DB-side instead of pulling the whole
+// table.
+//
+// Empty slug returns ErrNotFound without a query (mirrors the
+// C# guard at `:21-24` returning IsValid=true when PropertyValue is
+// null).
+func (r *Repo) FindByTitleSlug(ctx context.Context, slug string) (*Series, error) {
+	if slug == "" {
+		return nil, ErrNotFound
+	}
+	return r.firstWhere(ctx, `"TitleSlug" = `+datastore.Placeholder(r.DB().Engine, 1), slug)
+}
+
 // FindByTitle ports `SeriesRepository.FindByTitle(string cleanTitle)` at
 // `:37-45`. Caller passes the cleaned title (the service layer applies
 // `parser.CleanSeriesTitle` first, mirroring `SeriesService.cs:106`).
