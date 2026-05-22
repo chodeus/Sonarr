@@ -78,6 +78,15 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, authSvc *aut
 	loginRoutes := []host.Route{
 		{Method: "POST", Path: "/login", Handler: auth.LoginHandler(authSvc, authAdp), Anonymous: true},
 		{Method: "GET", Path: "/logout", Handler: auth.LogoutHandler(authAdp), Anonymous: true},
+		// J204 — /initialize.json must be Anonymous because the React
+		// bundle hits it BEFORE knowing the API key. Any requireAPIKey
+		// wrap here hard-blocks the UI from booting. C# parallel:
+		// `InitializeJsonController` is `[Authorize(Policy = "UI")]`
+		// which only requires forms-auth session cookies (not API key);
+		// the Go-port defers the forms-auth gate until that middleware
+		// ports — current behaviour matches the C# AuthenticationMethod=None
+		// default path.
+		{Method: "GET", Path: "/initialize.json", Handler: host.InitializeJSONHandler(cfg), Anonymous: true},
 	}
 	v3 := v3Routes(configProv, cfg, indexerSearchSvc, logger, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, cmdRegistry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, backupTempPath, logFolderPath)
 	opts := []host.Option{

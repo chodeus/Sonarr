@@ -4,7 +4,7 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Current state
 
-**PAUSED by user after J203.** HEAD at `J203` — AdjustMultiEpisodeAirTime + AdjustDirectToDvdAirDate ported (C# `:191-226`). Same-day multi-episode piles now spread by Runtime; direct-to-DVD ended series get FirstAired stamped across every episode. 2 RefreshEpisodeService sub-arms + 1 path-normalisation still deferred. All three gates clean. Resume with another `/loop` when ready.
+HEAD at `J204` — `/initialize.json` endpoint ported. Surfaced by the frontend integration smoke as the critical blocker preventing the React UI from booting. New `internal/host/initialize_json.go` returns the JSON shape the React entrypoint expects; wired Anonymous in loginRoutes so the bundle can fetch it before knowing the API key. 3 unit tests + live-verified against rebuilt binary. Two frontend-serving blockers remain (J205 HTML template substitution, J206 SPA-fallback overreach). All three gates clean.
 
 ## Closed this loop-run
 
@@ -15,6 +15,8 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 - **J201** — `refreshepisodes` finale-detection heuristic (`maybeStampSeriesFinale` + 3 helpers + `now` clock); 6 tests.
 - **J202** — `refreshepisodes.unmonitorReaddedEpisodes` helper + AddOptions guard + 14d/1d asymmetric thresholds; 5 tests.
 - **J203** — `refreshepisodes.adjustMultiEpisodeAirTime` + `adjustDirectToDvdAirDate` + `sortByEpisodeNumber` helpers; 8 tests.
+- **Frontend smoke** — booted Go binary against fresh DB + real React bundle; full REST API + SignalR negotiate work; three frontend-layer blockers identified (`/initialize.json` missing, HTML template tokens unreplaced, SPA fallback too greedy).
+- **J204** — `/initialize.json` endpoint port (`host.InitializeJSONHandler`); React app can now fetch its bootstrap config; 3 tests.
 
 ## Previous loop-run (J187-J196)
 
@@ -31,7 +33,8 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Next candidates (for next loop-run)
 
-1. **RefreshEpisodeService anime absolute-episode-number renumbering** (~80 LOC) — port C# `:43-46, :228-236` + `AbsoluteEpisodeNumberAdded` flag. Smallest impact since anime is a minority of series.
-2. **Path-normalisation via GetActualCasing** (~100 LOC) — port C# `RefreshSeriesService.cs:118-119` (DirectoryInfo + GetActualCasing for case-resolution). Final B.3 sub-arc; needs the disk package to grow a portable case-resolver helper.
-3. **Image-download subscriber off SeriesAddedEvent** (~200 LOC, needs design pass) — wire `mediacover.Service.EnsureCovers`. HTTP-gated arm previously deferred under FAIL-CLOSED #7.
-4. **Generalize gap-detection capture to all 10 indexers** — log warning, not a correctness bug. Lower value but unblocked.
+1. **J205 — HTML template substitution** (~80 LOC) — port C# `Sonarr.Http/Frontend/Mappers/HtmlMapperBase.cs` + `IndexHtmlMapper.cs`. Replace `__URL_BASE__`, `_THEME_`, `__MINI_PROFILER__` tokens in index.html + login.html on the fly; regex-rewrite href/src attributes to prepend urlBase + cache-breaker hash (unless `data-no-hash`). UI will render but with broken styling/asset URLs until this lands.
+2. **J206 — SPA fallback exclusions** (~30 LOC) — port C# `IndexHtmlMapper.CanHandle` exclusions: requests containing `.` OR starting with `/content`, `/mediacover`, `/login`, `/api`, `/signalr` should NOT fall through to index.html. Currently `/initialize.json` works (J204 explicit route) but `/api/v3/seasonpass` (unimplemented) returns HTML instead of 404, masking route gaps.
+3. **RefreshEpisodeService anime absolute-episode-number renumbering** (~80 LOC) — port C# `:43-46, :228-236` + `AbsoluteEpisodeNumberAdded` flag. Smallest impact since anime is a minority of series.
+4. **Path-normalisation via GetActualCasing** (~100 LOC) — port C# `RefreshSeriesService.cs:118-119`. Final B.3 sub-arc.
+5. **Image-download subscriber off SeriesAddedEvent** (~200 LOC, needs design pass) — wire `mediacover.Service.EnsureCovers`.
