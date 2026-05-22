@@ -2,6 +2,8 @@ package handlers_test
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -9,19 +11,20 @@ import (
 
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/commands/handlers"
+	"sonarr.tv/sonarr/internal/importlists"
 )
 
 var importListSyncFixedTime = time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
 
-// J181: stub handler logs at info + returns nil. Mirrors the
-// RefreshSeries stub pattern. Replaces the "Unknown command" rejection
-// the dispatcher would otherwise give API callers pushing
-// `{"name":"ImportListSync"}`.
-func TestImportListSync_Execute_LogsAndReturnsNil(t *testing.T) {
+// J181 + J183: nil-runner falls back to the stub-log posture. Hosts
+// that haven't yet wired the SyncService boot path still get the
+// registry slot + scheduled-task entry; the per-tick Execute is a
+// benign no-op + info line.
+func TestImportListSync_NilRunner_LogsStub(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	h := handlers.NewImportListSync(logger)
+	h := handlers.NewImportListSync(nil, logger)
 
 	if err := h.Execute(t.Context(), `{}`); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -37,9 +40,85 @@ func TestImportListSync_Execute_LogsAndReturnsNil(t *testing.T) {
 
 func TestImportListSync_NewWithNilLogger_Defaults(t *testing.T) {
 	t.Parallel()
-	h := handlers.NewImportListSync(nil)
+	h := handlers.NewImportListSync(nil, nil)
 	if err := h.Execute(t.Context(), ""); err != nil {
 		t.Errorf("Execute with default logger: %v", err)
+	}
+}
+
+// fakeRunner stubs the ImportListSyncRunner interface so the
+// handler tests can drive the real-runner path without pulling the
+// full importlists.SyncService construction chain into the test
+// graph. The real *importlists.SyncService satisfies
+// ImportListSyncRunner structurally via its existing
+// Sync(ctx) (SyncResult, error) method.
+type fakeRunner struct {
+	result importlists.SyncResult
+	err    error
+	calls  int
+}
+
+func (f *fakeRunner) Sync(_ context.Context) (importlists.SyncResult, error) {
+	f.calls++
+	return f.result, f.err
+}
+
+// J183: when a runner is wired, Execute delegates to it and logs
+// the result summary. The handler still returns nil (the scheduler
+// must keep firing even on partial-failure ticks — matching the C#
+// scheduled-task try/catch posture).
+func TestImportListSync_RealRunner_DelegatesAndLogsResult(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	runner := &fakeRunner{result: importlists.SyncResult{
+		ItemsFetched:        15,
+		SeriesAdded:         3,
+		SkippedExcluded:     2,
+		SkippedExisting:     8,
+		SkippedUnresolvedID: 2,
+		AnyFailure:          false,
+	}}
+	h := handlers.NewImportListSync(runner, logger)
+
+	if err := h.Execute(t.Context(), `{}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if runner.calls != 1 {
+		t.Errorf("runner.Sync calls = %d, want 1", runner.calls)
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "importlistsync: Sync complete") {
+		t.Errorf("expected real-runner log line; got: %q", logged)
+	}
+	if !strings.Contains(logged, "itemsFetched=15") || !strings.Contains(logged, "seriesAdded=3") {
+		t.Errorf("expected result summary in log; got: %q", logged)
+	}
+}
+
+// J183: Sync error degrades to a warn log + nil return. The
+// scheduler must keep firing on subsequent intervals — matching the
+// C# scheduled-task try/catch posture which swallows per-tick
+// exceptions to keep the job pipeline alive.
+func TestImportListSync_RealRunner_ErrorDegradesToWarn(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	runner := &fakeRunner{err: errors.New("upstream borked")}
+	h := handlers.NewImportListSync(runner, logger)
+
+	if err := h.Execute(t.Context(), `{}`); err != nil {
+		t.Errorf("Execute should return nil on Sync error, got: %v", err)
+	}
+	if runner.calls != 1 {
+		t.Errorf("runner.Sync calls = %d, want 1", runner.calls)
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "importlistsync: Sync completed with errors") {
+		t.Errorf("expected warn log on error; got: %q", logged)
+	}
+	if !strings.Contains(logged, "upstream borked") {
+		t.Errorf("expected error in log; got: %q", logged)
 	}
 }
 

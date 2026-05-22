@@ -168,6 +168,16 @@ type Deps struct {
 	// structural typing.
 	UpdateSceneMapping SceneMappingUpdater
 
+	// ImportListSync wires the IExecute<ImportListSyncCommand>
+	// handler into the dispatcher with a real
+	// [importlists.SyncService]. Slice 5.J183 (closes the I4c stub
+	// from J181). Optional — nil falls back to the J181 stub-log
+	// posture so hosts that haven't yet wired the SyncService boot
+	// path still register the slot (the 5-minute scheduled-task
+	// entry depends on the registry key existing). Production binds
+	// `*importlists.SyncService` via structural typing.
+	ImportListSync ImportListSyncRunner
+
 	Log *slog.Logger
 }
 
@@ -240,7 +250,7 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 		Handler: NewMissingEpisodeSearch(deps.MissingEpisodeLister, deps.MissingEpisodeSearcher, deps.Log),
 	})
 	registry.Register(ImportListSyncName, commands.CommandSpec{
-		Handler: NewImportListSync(deps.Log),
+		Handler: NewImportListSync(deps.ImportListSync, deps.Log),
 	})
 	registry.Register(ApplicationCheckUpdateName, commands.CommandSpec{
 		Handler: NewApplicationCheckUpdate(deps.ApplicationCheckUpdate, deps.Log),

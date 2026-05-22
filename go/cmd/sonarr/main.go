@@ -1595,8 +1595,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 	// importListStatusSvc is consumed by the ImportListStatusCheck
 	// wired below (slice 4.AQ). The fan-out orchestrator
-	// (importlists.SyncService — slice 4.AP) also consumes it once
-	// optional sub-arc I4c wires the scheduled-task entry.
+	// (importlists.SyncService — slice 4.AP) consumes it via the
+	// I4c wiring (slice 5.J183) that constructs the Factory +
+	// SyncService below — see the importListSyncSvc block past the
+	// healthcheck setup.
 
 	// Slice 4.R (queue [10]): IndexerStatusCheck wires
 	// EnabledIndexerLister (over indexers.Repo via the
@@ -2837,6 +2839,64 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// healthcheck's UpdateAvailableLookup).
 	updateChecker := updateCheckerAdapter{svc: updateSvc}
 
+	// Slice 5.J183 closes the I4c sub-arc that slice 4.AQ flagged
+	// as deferred — wires the importlists.SyncService against the
+	// existing importLists* dependencies + small inline adapters
+	// for seriesLookup (over seriesSvc.AllSeriesTvdbIDs) and
+	// seriesAdder (a closure that loops series.Service.Insert
+	// per-row + absorbs per-row failures, matching the C# `:261`
+	// ignoreErrors=true contract). The Factory + SyncService now
+	// satisfy the ImportListSync command handler's runner dep so the
+	// J181 stub flips to a real Sync.
+	//
+	// Registry caveat: importlists.Default() returns the package-
+	// global Registry; concrete provider packages
+	// (anilist/myanimelist/plex/plexrss/sonarr/trakt/custom/simkl)
+	// self-register via their init() blocks BUT only when their
+	// packages are imported into the binary's link graph. The
+	// cmd/sonarr binary does NOT currently blank-import any of them
+	// (same pattern as the notifications family — also unimported at
+	// HEAD), so the registry is effectively empty at runtime.
+	// SyncService.Sync therefore falls through to the
+	// `no automatic-add lists enabled` debug log + clean exit on
+	// every scheduler tick. Once a follow-up slice adds the blank
+	// imports (separate concern that also activates the notifications
+	// registry), the scheduler-fired Sync starts processing real
+	// persisted ImportList rows.
+	//
+	// IDTranslator is intentionally nil — items whose TvdbID is zero
+	// get skipped with a debug log (matches the C# null-translator
+	// behaviour). Live translation against SkyHook lands when the
+	// metadata-source family port reaches M3b.
+	importListSyncFactory, err := importlists.NewFactory(
+		importListsRepo,
+		importlists.Default(),
+		importListStatusSvc,
+		importlists.Dependencies{
+			HTTPClient:      httpClient,
+			ConfigProvider:  configProv,
+			Logger:          logger,
+			StatusService:   importListStatusSvc,
+			ParsingService:  parsingSvc,
+			ImportListsRepo: importListsRepo,
+		},
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("importlists factory: %w", err)
+	}
+	importListSyncSvc, err := importlists.NewSyncService(
+		importListSyncFactory,
+		importListExclusionsRepo,
+		seriesLookupAdapter{svc: seriesSvc},
+		seriesAdderAdapter{svc: seriesSvc, log: logger},
+		nil, // IDTranslator wired once metadata-source M3b lands.
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("importlists sync service: %w", err)
+	}
+
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:                   cmdSvc,
 		Housekeeping:               houseSvc,
@@ -2862,6 +2922,14 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		// method. Scheduled-task entry fires every 3h matching
 		// C# TaskManager.cs:90.
 		UpdateSceneMapping: scenemappingsSvc,
+		// Slice 5.J183 closes the I4c stub (J181) by binding the
+		// scheduled ImportListSync ticks to the real
+		// importlists.SyncService. *importlists.SyncService satisfies
+		// handlers.ImportListSyncRunner structurally via Sync(ctx).
+		// See the importListSyncSvc construction above for the
+		// registry-empty-at-runtime caveat — Sync currently no-ops
+		// until concrete provider packages are blank-imported.
+		ImportListSync: importListSyncSvc,
 		DownloadedEpisodesScan: handlers.DownloadedEpisodesScanDeps{
 			// Processor REQUIRED — slice 3.80 contract: nil Processor
 			// → handler not registered. We always wire the real
