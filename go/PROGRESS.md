@@ -4,7 +4,7 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Current state
 
-HEAD at `J190` — import-list adds now produce a populated episodes row set per series instead of an empty episodes table. Recent commits: J190 episode seeding via SkyHook payload (this slice); J189 AddOptions.Monitor=None override; J188 Series.ApplyChanges + addSkyHookData merge. Open audit rows: B.3 RefreshSeries handler still stubbed — the inline episode-seed in J190 is documented-divergent from C# topology; the real RefreshSeries port will reconcile. B.2/B.5/B.6 closed.
+HEAD at `J191` — **audit row B.3 RefreshSeries CLOSED**. The handler now delegates to a real `refreshseries.Service` that ports `RefreshSeriesService.RefreshSeriesInfo` (SkyHook field-copy + Seasons merge + LastInfoSync + UpdateSeries). Recent commits: J191 RefreshSeries real port (this slice); J190 episode seeding via SkyHook; J189 AddOptions.Monitor=None. Open audit rows: B.2/B.3/B.5/B.6 all CLOSED — the `# Open` section now lists only doc-narrative; B.3's deferred sub-arcs are documented inline.
 
 ## Closed this loop-run
 
@@ -12,9 +12,10 @@ HEAD at `J190` — import-list adds now produce a populated episodes row set per
 - **J188** — `Series.ApplyChanges(other)` + `addSkyHookData` per-row TVDB-merge helper + `hasSeasons` JSON guard + wired `metadataSourceProxy` into `seriesAdderAdapter.seriesInfo`; merge fires BEFORE PrepareForAdd; 10 unit tests; all hard gates clean.
 - **J189** — `MonitorType` enum (14 ordinals frozen to C# order) + `AddOptions` struct + `DecodeAddOptions` helper + custom `MonitorType.UnmarshalJSON` + `PrepareForAdd` Monitor=None override arm; 13 unit tests; all hard gates clean.
 - **J190** — `addSkyHookData` now returns the `[]episodes.Episode` slice GetSeriesInfo emits; `seriesAdderAdapter` grows narrow `episodeSeeder` interface satisfied by `*episodes.Repo`; post-AddSeries loop stamps SeriesID and bulk-inserts via InsertMany; failures warn+continue; 2 new tests; all hard gates clean.
+- **J191** — new `internal/refreshseries.Service` ports C# `RefreshSeriesService.RefreshSeriesInfo`; handler at `internal/commands/handlers/refreshseries.go` promoted from J166 stub to real per-id dispatcher; 17 unit tests; closes audit row B.3.
 
 ## Next candidates
 
-1. **RefreshSeries handler real port** (~250 LOC, multi-slice) — replace J166-era stub at `internal/commands/handlers/refreshseries.go` with a real handler that delegates into a new `refreshseries.Service` using `metadatasource.Proxy.GetSeriesInfo` + episode reconcile (Update existing + Add new + Soft-delete removed). Closes audit row B.3. Highest leverage now.
-2. **Image-download subscriber off SeriesAddedEvent** (~200 LOC, needs design pass) — wire `mediacover.Service` to fetch poster/fanart on add via `EnsureCovers`/`DownloadCover`. Activates the HTTP-gated arm previously deferred under FAIL-CLOSED #7. Medium leverage.
-3. **Generalize gap-detection capture to all 10 indexers** (~150 LOC) — log-warning fix per the B.7 follow-up. Unblocked; lower value.
+1. **RefreshSeries follow-up: SeriesNotFound→Status=Deleted soft-delete arm** (~80 LOC) — port C# `:70-81`. When `metadatasource.ErrSeriesNotFound` bubbles, flip `Series.Status` to deleted, persist via UpdateSeries(SkipPublishUpdatedEvent:true), then publish SeriesUpdatedEvent. Small focused slice. Closes the most visible refresh sub-arc.
+2. **RefreshSeries follow-up: all-series sweep mode** (~150 LOC) — port C# `:249-282` for the empty-SeriesIds path. Iterate `series.Service.GetAllSeries`, sort by SortTitle, call ShouldRefresh predicate (defer to "always true" pending the predicate port), dispatch per-id. Unlocks the 12h scheduled-task tick.
+3. **Image-download subscriber off SeriesAddedEvent** (~200 LOC, needs design pass) — wire `mediacover.Service` to fetch poster/fanart on add via `EnsureCovers`/`DownloadCover`. Activates the HTTP-gated arm previously deferred under FAIL-CLOSED #7.

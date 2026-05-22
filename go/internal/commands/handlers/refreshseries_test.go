@@ -2,6 +2,8 @@ package handlers_test
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -13,29 +15,102 @@ import (
 
 var refreshSeriesFixedTime = time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 
-func TestRefreshSeries_Execute_LogsAndReturnsNil(t *testing.T) {
+// stubRefreshRunner captures the per-id Refresh calls so tests can
+// assert the handler dispatches correctly.
+type stubRefreshRunner struct {
+	got []int
+	err error
+}
+
+func (s *stubRefreshRunner) Refresh(_ context.Context, id int) error {
+	s.got = append(s.got, id)
+	return s.err
+}
+
+func TestRefreshSeries_NilRunner_FallsBackToStubLog(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	h := handlers.NewRefreshSeries(logger)
+	h := handlers.NewRefreshSeries(nil, logger)
 
 	if err := h.Execute(t.Context(), `{}`); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	logged := buf.String()
-	if !strings.Contains(logged, "refreshseries: stub Execute") {
-		t.Errorf("expected stub log line; got: %q", logged)
-	}
-	if !strings.Contains(logged, "command=RefreshSeries") {
-		t.Errorf("expected command=RefreshSeries attr; got: %q", logged)
+	if !strings.Contains(buf.String(), "stub Execute (RefreshSeriesRunner not wired)") {
+		t.Errorf("expected stub-fallback log; got: %q", buf.String())
 	}
 }
 
 func TestRefreshSeries_NewWithNilLogger_Defaults(t *testing.T) {
 	t.Parallel()
-	h := handlers.NewRefreshSeries(nil)
+	h := handlers.NewRefreshSeries(nil, nil)
 	if err := h.Execute(t.Context(), ""); err != nil {
 		t.Errorf("Execute with default logger: %v", err)
+	}
+}
+
+func TestRefreshSeries_DispatchesPerID(t *testing.T) {
+	t.Parallel()
+	runner := &stubRefreshRunner{}
+	h := handlers.NewRefreshSeries(runner, slog.Default())
+	if err := h.Execute(t.Context(), `{"seriesIds":[1,2,3]}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.got) != 3 || runner.got[0] != 1 || runner.got[1] != 2 || runner.got[2] != 3 {
+		t.Errorf("runner calls: got %v, want [1 2 3]", runner.got)
+	}
+}
+
+func TestRefreshSeries_PerIDErrorAbsorbed(t *testing.T) {
+	t.Parallel()
+	runner := &stubRefreshRunner{err: errors.New("not found")}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	h := handlers.NewRefreshSeries(runner, logger)
+	if err := h.Execute(t.Context(), `{"seriesIds":[1,2]}`); err != nil {
+		t.Fatalf("Execute should absorb per-id errors: %v", err)
+	}
+	if len(runner.got) != 2 {
+		t.Errorf("batch should continue after error: got %d calls", len(runner.got))
+	}
+	if !strings.Contains(buf.String(), "per-id refresh failed") {
+		t.Errorf("expected per-id failure warn log; got %q", buf.String())
+	}
+}
+
+func TestRefreshSeries_EmptyBody_NoOps(t *testing.T) {
+	t.Parallel()
+	runner := &stubRefreshRunner{}
+	h := handlers.NewRefreshSeries(runner, slog.Default())
+	if err := h.Execute(t.Context(), ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.got) != 0 {
+		t.Errorf("empty body should no-op; got %d calls", len(runner.got))
+	}
+}
+
+func TestRefreshSeries_EmptySeriesIDs_NoOps(t *testing.T) {
+	t.Parallel()
+	runner := &stubRefreshRunner{}
+	h := handlers.NewRefreshSeries(runner, slog.Default())
+	if err := h.Execute(t.Context(), `{"seriesIds":[]}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.got) != 0 {
+		t.Errorf("empty seriesIds should no-op; got %d calls", len(runner.got))
+	}
+}
+
+func TestRefreshSeries_MalformedBody_DegradesSilently(t *testing.T) {
+	t.Parallel()
+	runner := &stubRefreshRunner{}
+	h := handlers.NewRefreshSeries(runner, slog.Default())
+	if err := h.Execute(t.Context(), `{not json`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.got) != 0 {
+		t.Errorf("malformed body should not call runner; got %d calls", len(runner.got))
 	}
 }
 

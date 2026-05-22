@@ -105,6 +105,7 @@ import (
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/recyclebin"
+	"sonarr.tv/sonarr/internal/refreshseries"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
 	"sonarr.tv/sonarr/internal/remotepathmappings"
 	"sonarr.tv/sonarr/internal/rootfolders"
@@ -2920,6 +2921,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("importlists sync service: %w", err)
 	}
 
+	// Slice 5.J191 wires the RefreshSeries handler with a real
+	// refreshseries.Service. The service satisfies
+	// handlers.RefreshSeriesRunner structurally via Refresh(ctx, id)
+	// error.
+	refreshSeriesSvc, err := refreshseries.NewService(metadataSourceProxy, seriesSvc, nil, logger)
+	if err != nil {
+		return fmt.Errorf("refreshseries service: %w", err)
+	}
+
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:                   cmdSvc,
 		Housekeeping:               houseSvc,
@@ -2953,6 +2963,11 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		// registry-empty-at-runtime caveat — Sync currently no-ops
 		// until concrete provider packages are blank-imported.
 		ImportListSync: importListSyncSvc,
+		// Slice 5.J191 — promotes the J166 RefreshSeries stub to the
+		// real per-id refresh path. Closes audit row B.3.
+		// *refreshseries.Service satisfies handlers.RefreshSeriesRunner
+		// structurally via Refresh(ctx, seriesID) error.
+		RefreshSeries: refreshSeriesSvc,
 		DownloadedEpisodesScan: handlers.DownloadedEpisodesScanDeps{
 			// Processor REQUIRED — slice 3.80 contract: nil Processor
 			// → handler not registered. We always wire the real

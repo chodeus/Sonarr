@@ -178,6 +178,14 @@ type Deps struct {
 	// `*importlists.SyncService` via structural typing.
 	ImportListSync ImportListSyncRunner
 
+	// RefreshSeries wires the IExecute<RefreshSeriesCommand> handler
+	// into the dispatcher with a real [refreshseries.Service]. Slice
+	// 5.J191 (closes audit row B.3). Optional — nil falls back to the
+	// J166-era stub-log posture so hosts that haven't wired the runner
+	// still register the slot. Production binds
+	// `*refreshseries.Service` via structural typing.
+	RefreshSeries RefreshSeriesRunner
+
 	Log *slog.Logger
 }
 
@@ -238,7 +246,7 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 		Handler: checkHealth,
 	})
 	registry.Register(RefreshSeriesName, commands.CommandSpec{
-		Handler: NewRefreshSeries(deps.Log),
+		Handler: NewRefreshSeries(deps.RefreshSeries, deps.Log),
 	})
 	registry.Register(RefreshMonitoredDownloadsName, commands.CommandSpec{
 		Handler: NewRefreshMonitoredDownloads(deps.MonitoredDownloadRefresher, deps.Log),
