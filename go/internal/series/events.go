@@ -42,3 +42,17 @@ type SeriesDeletedEvent struct {
 	DeleteFiles            bool
 	AddImportListExclusion bool
 }
+
+// SeriesUpdatedEvent ports `Tv/Events/SeriesUpdatedEvent.cs`. Distinct
+// from [SeriesEditedEvent]: SeriesUpdatedEvent fires after a successful
+// RefreshSeries metadata sync (C# `RefreshSeriesService.cs:132` +
+// `:77` on the SeriesNotFound soft-delete arm), while SeriesEditedEvent
+// fires after `SeriesService.UpdateSeries(publishUpdatedEvent:true)`.
+// The two events have non-overlapping subscriber sets in C#
+// (MediaCoverService, PendingReleaseService, XemService, V3 SeriesController
+// listen on SeriesUpdated; the cascade + diff-aware consumers listen on
+// SeriesEdited). Slice 5.J192 adds the type so the refreshseries package
+// can publish a faithful equivalent.
+type SeriesUpdatedEvent struct {
+	Series *Series
+}

@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/metadatasource"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -57,13 +59,16 @@ type SeriesStore interface {
 type Service struct {
 	info  SeriesInfoProvider
 	store SeriesStore
+	bus   *messaging.Bus
 	now   func() time.Time
 	log   *slog.Logger
 }
 
 // NewService binds the dependencies into a Service. `now` defaults to
-// time.Now().UTC() when nil — pinning is for deterministic tests.
-func NewService(info SeriesInfoProvider, store SeriesStore, now func() time.Time, log *slog.Logger) (*Service, error) {
+// time.Now().UTC() when nil — pinning is for deterministic tests. `bus`
+// is optional — nil silently skips the SeriesUpdatedEvent publish on
+// the soft-delete arm.
+func NewService(info SeriesInfoProvider, store SeriesStore, bus *messaging.Bus, now func() time.Time, log *slog.Logger) (*Service, error) {
 	if info == nil {
 		return nil, errors.New("refreshseries: info provider is nil")
 	}
@@ -76,7 +81,7 @@ func NewService(info SeriesInfoProvider, store SeriesStore, now func() time.Time
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Service{info: info, store: store, now: now, log: log}, nil
+	return &Service{info: info, store: store, bus: bus, now: now, log: log}, nil
 }
 
 // Refresh ports C# `RefreshSeriesService.RefreshSeriesInfo` at
@@ -132,8 +137,16 @@ func (s *Service) RefreshSeriesInfo(ctx context.Context, seriesID int) (*series.
 
 	merged, _, err := s.info.GetSeriesInfo(ctx, row.TvdbID)
 	if err != nil {
-		// SeriesNotFound deletion-flip deferred — for now propagate so
-		// the handler can mark the command Indeterminate.
+		// J192 — SeriesNotFound soft-delete arm. Ports C#
+		// `RefreshSeriesService.cs:70-81`: when TheTVDB returns 404,
+		// flip Series.Status to Deleted (if not already), persist
+		// silently, publish a SeriesUpdatedEvent so MediaCover /
+		// PendingReleaseService / SignalR consumers can react.
+		// Original error still propagates so the handler logs +
+		// the command result reflects the failure.
+		if errors.Is(err, metadatasource.ErrSeriesNotFound) {
+			s.handleSeriesNotFound(ctx, row)
+		}
 		return nil, fmt.Errorf("refreshseries: GetSeriesInfo(tvdbId=%d): %w", row.TvdbID, err)
 	}
 	if merged == nil {
@@ -182,6 +195,42 @@ func (s *Service) RefreshSeriesInfo(ctx context.Context, seriesID int) (*series.
 		slog.String("title", updated.Title),
 		slog.Int("tvdbId", updated.TvdbID))
 	return updated, nil
+}
+
+// handleSeriesNotFound ports C# `RefreshSeriesService.cs:70-81` —
+// the SeriesNotFoundException catch arm. Idempotent: if `row.Status`
+// is already [series.SeriesStatusDeleted] the function is a no-op
+// (matches the C# `if (series.Status != SeriesStatusType.Deleted)`
+// guard at `:72`). On the first transition, the row is persisted
+// silently (UpdateSeries with SkipPublishUpdatedEvent=true) and a
+// [series.SeriesUpdatedEvent] is published so refresh-aware
+// subscribers (MediaCover image re-fetch, PendingReleaseService
+// invalidation, V3 SeriesController SignalR broadcast) react.
+//
+// Errors from UpdateSeries or messaging publish degrade to warn logs
+// — the caller is about to propagate the original SkyHook error so
+// the command result reflects the failure regardless.
+func (s *Service) handleSeriesNotFound(ctx context.Context, row *series.Series) {
+	if row.Status == series.SeriesStatusDeleted {
+		return
+	}
+	row.Status = series.SeriesStatusDeleted
+	if _, err := s.store.UpdateSeries(ctx, row, series.UpdateOptions{SkipPublishUpdatedEvent: true}); err != nil {
+		s.log.LogAttrs(ctx, slog.LevelWarn,
+			"refreshseries: soft-delete UpdateSeries failed",
+			slog.Int("seriesId", row.ID),
+			slog.String("title", row.Title),
+			slog.Any("err", err))
+		return
+	}
+	s.log.LogAttrs(ctx, slog.LevelDebug,
+		"refreshseries: series marked deleted on TheTVDB",
+		slog.Int("seriesId", row.ID),
+		slog.String("title", row.Title),
+		slog.Int("tvdbId", row.TvdbID))
+	if s.bus != nil {
+		_ = messaging.Publish(ctx, s.bus, series.SeriesUpdatedEvent{Series: row})
+	}
 }
 
 // copySkyhookFields copies the 24 SkyHook-authoritative fields from

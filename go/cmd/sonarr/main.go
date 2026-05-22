@@ -2925,7 +2925,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// refreshseries.Service. The service satisfies
 	// handlers.RefreshSeriesRunner structurally via Refresh(ctx, id)
 	// error.
-	refreshSeriesSvc, err := refreshseries.NewService(metadataSourceProxy, seriesSvc, nil, logger)
+	refreshSeriesSvc, err := refreshseries.NewService(metadataSourceProxy, seriesSvc, bus, nil, logger)
 	if err != nil {
 		return fmt.Errorf("refreshseries service: %w", err)
 	}

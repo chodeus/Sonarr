@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/metadatasource"
 	"sonarr.tv/sonarr/internal/refreshseries"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -53,7 +57,7 @@ func (s *stubStore) UpdateSeries(_ context.Context, ns *series.Series, _ series.
 func mustNewService(t *testing.T, info *stubProvider, store *stubStore) *refreshseries.Service {
 	t.Helper()
 	now := func() time.Time { return time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC) }
-	svc, err := refreshseries.NewService(info, store, now, nil)
+	svc, err := refreshseries.NewService(info, store, nil, now, nil)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -284,7 +288,7 @@ func TestRefresh_AdaptsToErrorOnly(t *testing.T) {
 
 func TestNewService_RejectsNilInfo(t *testing.T) {
 	t.Parallel()
-	_, err := refreshseries.NewService(nil, &stubStore{}, nil, nil)
+	_, err := refreshseries.NewService(nil, &stubStore{}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("want error for nil info")
 	}
@@ -292,8 +296,126 @@ func TestNewService_RejectsNilInfo(t *testing.T) {
 
 func TestNewService_RejectsNilStore(t *testing.T) {
 	t.Parallel()
-	_, err := refreshseries.NewService(&stubProvider{}, nil, nil, nil)
+	_, err := refreshseries.NewService(&stubProvider{}, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("want error for nil store")
+	}
+}
+
+// mustNewServiceWithBus is like mustNewService but takes an explicit
+// bus so the J192 soft-delete arm can be observed via subscription.
+func mustNewServiceWithBus(t *testing.T, info *stubProvider, store *stubStore, bus *messaging.Bus) *refreshseries.Service {
+	t.Helper()
+	now := func() time.Time { return time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC) }
+	svc, err := refreshseries.NewService(info, store, bus, now, nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
+func TestRefreshSeriesInfo_SeriesNotFound_FlipsStatusToDeleted(t *testing.T) {
+	t.Parallel()
+	info := &stubProvider{err: metadatasource.NewSeriesNotFoundError(100)}
+	store := &stubStore{
+		stored: &series.Series{
+			ID:     42,
+			TvdbID: 100,
+			Title:  "Cancelled Show",
+			Status: series.SeriesStatusContinuing, // not yet deleted
+		},
+	}
+	bus := messaging.New(slog.Default())
+	defer bus.BeginShutdown()
+
+	var mu sync.Mutex
+	var got []series.SeriesUpdatedEvent
+	messaging.Subscribe(bus, "test.SoftDelete", func(_ context.Context, ev series.SeriesUpdatedEvent) error {
+		mu.Lock()
+		got = append(got, ev)
+		mu.Unlock()
+		return nil
+	})
+
+	svc := mustNewServiceWithBus(t, info, store, bus)
+	_, err := svc.RefreshSeriesInfo(t.Context(), 42)
+	if !errors.Is(err, metadatasource.ErrSeriesNotFound) {
+		t.Fatalf("err: want wrapped ErrSeriesNotFound, got %v", err)
+	}
+
+	if store.updated == nil {
+		t.Fatal("UpdateSeries not called on soft-delete arm")
+	}
+	if store.updated.Status != series.SeriesStatusDeleted {
+		t.Errorf("Status: got %d, want SeriesStatusDeleted (%d)", store.updated.Status, series.SeriesStatusDeleted)
+	}
+
+	// Wait for the sync handler to complete; Publish runs sync
+	// subscribers inline so this is non-blocking by the time
+	// RefreshSeriesInfo returned. Keep the lock-pop pattern for
+	// the race detector.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("SeriesUpdatedEvent: got %d events, want 1", len(got))
+	}
+	if got[0].Series == nil || got[0].Series.Status != series.SeriesStatusDeleted {
+		t.Errorf("event series.Status: not flagged deleted: %+v", got[0].Series)
+	}
+}
+
+func TestRefreshSeriesInfo_SeriesNotFound_AlreadyDeleted_NoOp(t *testing.T) {
+	t.Parallel()
+	info := &stubProvider{err: metadatasource.NewSeriesNotFoundError(100)}
+	store := &stubStore{
+		stored: &series.Series{
+			ID:     42,
+			TvdbID: 100,
+			Status: series.SeriesStatusDeleted, // already deleted — no-op
+		},
+	}
+	svc := mustNewService(t, info, store)
+
+	_, err := svc.RefreshSeriesInfo(t.Context(), 42)
+	if !errors.Is(err, metadatasource.ErrSeriesNotFound) {
+		t.Fatalf("err: want wrapped ErrSeriesNotFound, got %v", err)
+	}
+	if store.updated != nil {
+		t.Errorf("UpdateSeries should not be called when already deleted; got %+v", store.updated)
+	}
+}
+
+func TestRefreshSeriesInfo_SeriesNotFound_NilBus_SkipsPublish(t *testing.T) {
+	t.Parallel()
+	info := &stubProvider{err: metadatasource.NewSeriesNotFoundError(100)}
+	store := &stubStore{
+		stored: &series.Series{ID: 42, TvdbID: 100, Status: series.SeriesStatusContinuing},
+	}
+	// nil bus — should still persist the status flip silently.
+	svc := mustNewService(t, info, store)
+	_, err := svc.RefreshSeriesInfo(t.Context(), 42)
+	if !errors.Is(err, metadatasource.ErrSeriesNotFound) {
+		t.Fatalf("err: want wrapped ErrSeriesNotFound, got %v", err)
+	}
+	if store.updated == nil || store.updated.Status != series.SeriesStatusDeleted {
+		t.Errorf("nil-bus path should still persist Deleted status; got %+v", store.updated)
+	}
+}
+
+func TestRefreshSeriesInfo_GenericError_NoSoftDelete(t *testing.T) {
+	t.Parallel()
+	info := &stubProvider{err: errors.New("not a not-found")}
+	store := &stubStore{
+		stored: &series.Series{ID: 42, TvdbID: 100, Status: series.SeriesStatusContinuing},
+	}
+	svc := mustNewService(t, info, store)
+	_, err := svc.RefreshSeriesInfo(t.Context(), 42)
+	if err == nil {
+		t.Fatal("expected error propagation")
+	}
+	// Generic error (not ErrSeriesNotFound) must NOT trigger the
+	// soft-delete arm — only TheTVDB 404 marks the row deleted.
+	if store.updated != nil {
+		t.Errorf("UpdateSeries should not be called for generic errors; got %+v", store.updated)
 	}
 }
