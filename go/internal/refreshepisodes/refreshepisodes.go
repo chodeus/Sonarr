@@ -179,6 +179,19 @@ func (s *Service) RefreshEpisodeInfo(ctx context.Context, ser *series.Series, re
 	// old episodes that aired before the user added the series.
 	s.unmonitorReaddedEpisodes(ctx, ser, newList, hasExisting, nowUTC)
 
+	// J203 — air-time adjustments per C# `:124-125`. Both run over the
+	// combined newList + updateList (allEpisodes), mutating AirDateUtc
+	// (and AirDate for the DVD backfill) in place before persistence.
+	// Order matters: multi-episode-air-time spread runs first because
+	// the DVD backfill only fires when every episode has a nil
+	// AirDateUtc — letting spread run after backfill would defeat that
+	// guard. C# uses the same order at :124-125.
+	allEpisodes := make([]*episodes.Episode, 0, len(newList)+len(updateList))
+	allEpisodes = append(allEpisodes, newList...)
+	allEpisodes = append(allEpisodes, updateList...)
+	adjustMultiEpisodeAirTime(ctx, ser, allEpisodes, s.log)
+	adjustDirectToDvdAirDate(ser, allEpisodes)
+
 	// What remains after the matcher is the to-delete set.
 	toDelete := make([]episodes.Episode, 0)
 	for i := range slots {
@@ -525,4 +538,116 @@ func (s *Service) unmonitorReaddedEpisodes(ctx context.Context, ser *series.Seri
 		slog.Int("tvdbId", ser.TvdbID),
 		slog.String("title", ser.Title),
 		slog.Int("oldCount", oldCount))
+}
+
+// adjustMultiEpisodeAirTime ports C# `RefreshEpisodeService.cs:191-214`.
+// When TheTVDB lists multiple episodes airing on the same date (the
+// AirDate string, not AirDateUtc — distinct days in a UTC-rendered
+// timeline still match when AirDate parses to the same yyyy-MM-dd),
+// the heuristic stretches them out by `series.Runtime` minutes each so
+// the UI sees an ordered sequence rather than a vertical pile at the
+// same hour.
+//
+// Decision tree (line-aligned with C#):
+//
+//   - `:193-196` filter to episodes with non-nil AirDateUtc, group by
+//     (SeasonNumber, AirDate), keep groups of size > 1.
+//   - `:200-204` skip the group when SeasonNumber != 0 AND size > 3 —
+//     TheTVDB's "all aired same day" is usually a placeholder shape for
+//     >3 episodes (block release, specials dump). Season 0 isn't
+//     skipped because special-episode dumps are common and the spread
+//     still helps UI ordering.
+//   - `:208-212` for each remaining group, order by (SeasonNumber,
+//     EpisodeNumber) then offset AirDateUtc by Runtime*index minutes.
+//
+// J203.
+func adjustMultiEpisodeAirTime(ctx context.Context, ser *series.Series, allEpisodes []*episodes.Episode, log *slog.Logger) {
+	if ser == nil {
+		return
+	}
+	// Group by (SeasonNumber, AirDate-string). C# uses the AirDate
+	// string explicitly, so episodes with the same AirDateUtc but
+	// different AirDate strings (rare) don't share a group.
+	type groupKey struct {
+		Season  int
+		AirDate string
+	}
+	groups := make(map[groupKey][]*episodes.Episode)
+	for _, ep := range allEpisodes {
+		if ep == nil || ep.AirDateUtc == nil {
+			continue
+		}
+		k := groupKey{Season: ep.SeasonNumber, AirDate: ep.AirDate}
+		groups[k] = append(groups[k], ep)
+	}
+
+	for k, group := range groups {
+		if len(group) <= 1 {
+			continue
+		}
+		if k.Season != 0 && len(group) > 3 {
+			log.LogAttrs(ctx, slog.LevelDebug,
+				"refreshepisodes: not adjusting multi-episode air times (>3 same-day in non-special season)",
+				slog.String("title", ser.Title),
+				slog.Int("seasonNumber", k.Season),
+				slog.Int("count", len(group)))
+			continue
+		}
+		// Order by (SeasonNumber, EpisodeNumber) — within a single group
+		// SeasonNumber is constant, so it's effectively EpisodeNumber.
+		// Stable bubble-sort over the slice for clarity; group sizes are
+		// tiny (2-3).
+		sortByEpisodeNumber(group)
+		for i, ep := range group {
+			offset := time.Duration(ser.Runtime) * time.Duration(i) * time.Minute
+			t := ep.AirDateUtc.Add(offset)
+			ep.AirDateUtc = &t
+		}
+	}
+}
+
+func sortByEpisodeNumber(group []*episodes.Episode) {
+	for i := 1; i < len(group); i++ {
+		for j := i; j > 0; j-- {
+			a, b := group[j-1], group[j]
+			if a.SeasonNumber < b.SeasonNumber {
+				break
+			}
+			if a.SeasonNumber == b.SeasonNumber && a.EpisodeNumber <= b.EpisodeNumber {
+				break
+			}
+			group[j-1], group[j] = b, a
+		}
+	}
+}
+
+// adjustDirectToDvdAirDate ports C# `RefreshEpisodeService.cs:216-226`.
+// When a series is Ended AND every episode has a nil AirDateUtc (the
+// "direct-to-DVD" signature — series shipped as a complete set, never
+// aired) AND series.FirstAired is set, stamp every episode's
+// AirDateUtc + AirDate to series.FirstAired. The UI then renders all
+// episodes against that single date rather than as undated rows.
+//
+// The all-nil guard is critical — partial-date shows (some aired,
+// some not) keep their partial dates rather than getting flattened.
+//
+// J203.
+func adjustDirectToDvdAirDate(ser *series.Series, allEpisodes []*episodes.Episode) {
+	if ser == nil || ser.Status != series.SeriesStatusEnded || ser.FirstAired == nil {
+		return
+	}
+	for _, ep := range allEpisodes {
+		if ep != nil && ep.AirDateUtc != nil {
+			return // not all-nil → no-op
+		}
+	}
+	stampedDate := *ser.FirstAired
+	stampedDateStr := stampedDate.Format("2006-01-02")
+	for _, ep := range allEpisodes {
+		if ep == nil {
+			continue
+		}
+		ep.AirDateUtc = &stampedDate
+		ep.AirDate = stampedDateStr
+	}
 }

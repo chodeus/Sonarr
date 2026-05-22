@@ -644,3 +644,235 @@ func TestUnmonitorReadded_ColdAdd_DetectionOnly_NoUnmonitor(t *testing.T) {
 		t.Errorf("5d-old AirDateUtc: Monitored=false, want true (detection threshold not reached)")
 	}
 }
+
+// ---- J203 — AdjustMultiEpisodeAirTime tests ----
+
+func TestAdjustMultiEpisodeAirTime_SpreadsByRuntime(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	aired := time.Date(2026, 5, 1, 20, 0, 0, 0, time.UTC)
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:      42,
+		Runtime: 45, // 45-min runtime → 45-min stagger between same-day episodes
+		Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AirDate: "2026-05-01", AirDateUtc: &aired},
+		{SeasonNumber: 1, EpisodeNumber: 2, AirDate: "2026-05-01", AirDateUtc: &aired},
+		{SeasonNumber: 1, EpisodeNumber: 3, AirDate: "2026-05-01", AirDateUtc: &aired},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	got := map[int]time.Time{}
+	for _, ep := range store.inserted {
+		got[ep.EpisodeNumber] = *ep.AirDateUtc
+	}
+	if !got[1].Equal(aired) {
+		t.Errorf("E1 should keep base AirDateUtc; got %v want %v", got[1], aired)
+	}
+	if !got[2].Equal(aired.Add(45 * time.Minute)) {
+		t.Errorf("E2 should be base+45min; got %v want %v", got[2], aired.Add(45*time.Minute))
+	}
+	if !got[3].Equal(aired.Add(90 * time.Minute)) {
+		t.Errorf("E3 should be base+90min; got %v want %v", got[3], aired.Add(90*time.Minute))
+	}
+}
+
+func TestAdjustMultiEpisodeAirTime_FourOrMoreInNormalSeason_Skips(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	aired := time.Date(2026, 5, 1, 20, 0, 0, 0, time.UTC)
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:      42,
+		Runtime: 45,
+		Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	// 4 episodes on same day in season 1 (non-special) → skip the spread
+	// (TheTVDB placeholder shape for block releases).
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AirDate: "2026-05-01", AirDateUtc: &aired},
+		{SeasonNumber: 1, EpisodeNumber: 2, AirDate: "2026-05-01", AirDateUtc: &aired},
+		{SeasonNumber: 1, EpisodeNumber: 3, AirDate: "2026-05-01", AirDateUtc: &aired},
+		{SeasonNumber: 1, EpisodeNumber: 4, AirDate: "2026-05-01", AirDateUtc: &aired},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	for _, ep := range store.inserted {
+		if !ep.AirDateUtc.Equal(aired) {
+			t.Errorf("E%d: AirDateUtc=%v, want unchanged (>3 in non-special season → skip)", ep.EpisodeNumber, *ep.AirDateUtc)
+		}
+	}
+}
+
+func TestAdjustMultiEpisodeAirTime_FourOrMoreInSpecialSeason_Spreads(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	aired := time.Date(2026, 5, 1, 20, 0, 0, 0, time.UTC)
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:      42,
+		Runtime: 30,
+		Seasons: `[{"seasonNumber":0,"monitored":false}]`,
+	}
+	// 4 specials on the same day — the >3 skip does NOT apply to season 0.
+	remote := []episodes.Episode{
+		{SeasonNumber: 0, EpisodeNumber: 1, AirDate: "2026-05-01", AirDateUtc: &aired},
+		{SeasonNumber: 0, EpisodeNumber: 2, AirDate: "2026-05-01", AirDateUtc: &aired},
+		{SeasonNumber: 0, EpisodeNumber: 3, AirDate: "2026-05-01", AirDateUtc: &aired},
+		{SeasonNumber: 0, EpisodeNumber: 4, AirDate: "2026-05-01", AirDateUtc: &aired},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	got := map[int]time.Time{}
+	for _, ep := range store.inserted {
+		got[ep.EpisodeNumber] = *ep.AirDateUtc
+	}
+	if !got[4].Equal(aired.Add(90 * time.Minute)) {
+		t.Errorf("E4 (specials season): AirDateUtc=%v, want base+90min %v", got[4], aired.Add(90*time.Minute))
+	}
+}
+
+func TestAdjustMultiEpisodeAirTime_DifferentDays_NoSpread(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	day1 := time.Date(2026, 5, 1, 20, 0, 0, 0, time.UTC)
+	day2 := time.Date(2026, 5, 2, 20, 0, 0, 0, time.UTC)
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:      42,
+		Runtime: 45,
+		Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AirDate: "2026-05-01", AirDateUtc: &day1},
+		{SeasonNumber: 1, EpisodeNumber: 2, AirDate: "2026-05-02", AirDateUtc: &day2},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	for _, ep := range store.inserted {
+		switch ep.EpisodeNumber {
+		case 1:
+			if !ep.AirDateUtc.Equal(day1) {
+				t.Errorf("E1: AirDateUtc=%v, want %v (different days, no spread)", *ep.AirDateUtc, day1)
+			}
+		case 2:
+			if !ep.AirDateUtc.Equal(day2) {
+				t.Errorf("E2: AirDateUtc=%v, want %v (different days, no spread)", *ep.AirDateUtc, day2)
+			}
+		}
+	}
+}
+
+// ---- J203 — AdjustDirectToDvdAirDate tests ----
+
+func TestAdjustDirectToDvd_EndedAllNil_StampsFirstAired(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	firstAired := time.Date(2018, 1, 15, 0, 0, 0, 0, time.UTC)
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:         42,
+		Status:     series.SeriesStatusEnded,
+		FirstAired: &firstAired,
+		Seasons:    `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1}, // no AirDateUtc
+		{SeasonNumber: 1, EpisodeNumber: 2}, // no AirDateUtc
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	for _, ep := range store.inserted {
+		if ep.AirDateUtc == nil || !ep.AirDateUtc.Equal(firstAired) {
+			t.Errorf("E%d: AirDateUtc=%v, want %v", ep.EpisodeNumber, ep.AirDateUtc, firstAired)
+		}
+		if ep.AirDate != "2018-01-15" {
+			t.Errorf("E%d: AirDate=%q, want 2018-01-15", ep.EpisodeNumber, ep.AirDate)
+		}
+	}
+}
+
+func TestAdjustDirectToDvd_PartialDates_NoStamp(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	firstAired := time.Date(2018, 1, 15, 0, 0, 0, 0, time.UTC)
+	someDate := time.Date(2019, 6, 1, 0, 0, 0, 0, time.UTC)
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:         42,
+		Status:     series.SeriesStatusEnded,
+		FirstAired: &firstAired,
+		Seasons:    `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	// One episode has a date, the other doesn't → partial → no stamp.
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AirDateUtc: &someDate, AirDate: "2019-06-01"},
+		{SeasonNumber: 1, EpisodeNumber: 2}, // nil
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	for _, ep := range store.inserted {
+		if ep.EpisodeNumber == 2 && ep.AirDateUtc != nil {
+			t.Errorf("E2: AirDateUtc=%v, want nil preserved (partial-dates → no stamp)", *ep.AirDateUtc)
+		}
+	}
+}
+
+func TestAdjustDirectToDvd_ContinuingSeries_NoStamp(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	firstAired := time.Date(2018, 1, 15, 0, 0, 0, 0, time.UTC)
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:         42,
+		Status:     series.SeriesStatusContinuing, // not ended → skip
+		FirstAired: &firstAired,
+		Seasons:    `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1}, // nil
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	if store.inserted[0].AirDateUtc != nil {
+		t.Errorf("Continuing series: AirDateUtc=%v, want nil (status guard)", *store.inserted[0].AirDateUtc)
+	}
+}
+
+func TestAdjustDirectToDvd_NilFirstAired_NoStamp(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:     42,
+		Status: series.SeriesStatusEnded,
+		// FirstAired nil → can't stamp.
+		Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	if store.inserted[0].AirDateUtc != nil {
+		t.Errorf("nil FirstAired: AirDateUtc=%v, want nil (FirstAired guard)", *store.inserted[0].AirDateUtc)
+	}
+}
