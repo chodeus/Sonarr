@@ -2942,7 +2942,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// existing rows via episodesSvc and persists the diff via the
 	// same service's UpdateMany/InsertMany/DeleteMany surface; the
 	// bus carries the EpisodeInfoRefreshedEvent.
-	refreshEpisodesSvc, err := refreshepisodes.NewService(episodesSvc, bus, logger)
+	refreshEpisodesSvc, err := refreshepisodes.NewService(episodesSvc, bus, nil, logger)
 	if err != nil {
 		return fmt.Errorf("refreshepisodes service: %w", err)
 	}

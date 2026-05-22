@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/messaging"
@@ -58,20 +59,26 @@ type EpisodeStore interface {
 type Service struct {
 	store EpisodeStore
 	bus   *messaging.Bus // optional; nil silently skips the publish
+	now   func() time.Time
 	log   *slog.Logger
 }
 
 // NewService binds the dependencies. `bus` is optional — nil silently
 // skips the [episodes.EpisodeInfoRefreshedEvent] publish (the
-// reconcile itself still runs and persists).
-func NewService(store EpisodeStore, bus *messaging.Bus, log *slog.Logger) (*Service, error) {
+// reconcile itself still runs and persists). `now` is optional —
+// nil defaults to time.Now().UTC(); pinning is for deterministic
+// tests of the J201 finale-detection 14-day cutoff.
+func NewService(store EpisodeStore, bus *messaging.Bus, now func() time.Time, log *slog.Logger) (*Service, error) {
 	if store == nil {
 		return nil, errors.New("refreshepisodes: episode store is nil")
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Service{store: store, bus: bus, log: log}, nil
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	return &Service{store: store, bus: bus, now: now, log: log}, nil
 }
 
 // RefreshEpisodeInfo reconciles the persisted episode rows for
@@ -126,6 +133,22 @@ func (s *Service) RefreshEpisodeInfo(ctx context.Context, ser *series.Series, re
 
 	monitoredSeasons := monitoredSeasonsLookup(ser)
 
+	// J201 — finale-detection heuristic prep (C# :49-50, :104).
+	// latestSeason mirrors C# `seasons.MaxBy(s => s.SeasonNumber)` —
+	// the latest-known season for the series.
+	// episodesPerSeason counts episodes per season from the
+	// dupeFreeRemote list (C# `:49 episodesPerSeason`); used in the
+	// last-episode-of-season check.
+	// hasExistingFinaleInLatestSeason mirrors C# `:104` — when ANY
+	// episode in the latest season already carries a FinaleType
+	// (either from TheTVDB upstream or a prior reconcile that
+	// stamped it), the heuristic skips. Pre-scanned across the batch
+	// so the decision is consistent regardless of iteration order.
+	latestSeason := latestSeasonNumber(ser)
+	episodesPerSeason := countEpisodesPerSeason(dupeFreeRemote)
+	hasExistingFinaleInLatestSeason := anyFinaleInSeason(dupeFreeRemote, latestSeason)
+	nowUTC := s.now().UTC()
+
 	updateList := make([]*episodes.Episode, 0, len(dupeFreeRemote))
 	newList := make([]*episodes.Episode, 0, len(dupeFreeRemote))
 
@@ -136,6 +159,7 @@ func (s *Service) RefreshEpisodeInfo(ctx context.Context, ser *series.Series, re
 			matched.matched = true
 			row := matched.ep
 			applyRemoteFields(&row, rem)
+			maybeStampSeriesFinale(&row, ser, latestSeason, episodesPerSeason, hasExistingFinaleInLatestSeason, nowUTC)
 			updateList = append(updateList, &row)
 			continue
 		}
@@ -145,6 +169,7 @@ func (s *Service) RefreshEpisodeInfo(ctx context.Context, ser *series.Series, re
 			Monitored: getMonitoredStatus(rem, monitoredSeasons),
 		}
 		applyRemoteFields(&fresh, rem)
+		maybeStampSeriesFinale(&fresh, ser, latestSeason, episodesPerSeason, hasExistingFinaleInLatestSeason, nowUTC)
 		newList = append(newList, &fresh)
 	}
 
@@ -297,4 +322,128 @@ func getMonitoredStatus(ep *episodes.Episode, monitoredSeasons map[int]bool) boo
 		return monitored
 	}
 	return true
+}
+
+// latestSeasonNumber returns the highest SeasonNumber from the series
+// Seasons JSON blob, or -1 if the blob is missing/unparseable/empty.
+// Mirrors C# `:50` `seasons.MaxBy(s => s.SeasonNumber)` with a safe
+// sentinel for the empty case (the C# `latestSeason` is then
+// dereferenced at :99 — but only inside the gated finale block, so an
+// empty series can't reach that path; we still need a sentinel).
+//
+// J201 helper. Skipped season 0 is NOT excluded from the max — C#
+// `latestSeason.SeasonNumber == 0` will also fail the `SeasonNumber > 0`
+// gate at `:98`, so the early-return paths are equivalent.
+func latestSeasonNumber(ser *series.Series) int {
+	if ser == nil || ser.Seasons == "" {
+		return -1
+	}
+	var parsed []seasonMonitor
+	if err := json.Unmarshal([]byte(ser.Seasons), &parsed); err != nil {
+		return -1
+	}
+	if len(parsed) == 0 {
+		return -1
+	}
+	max := parsed[0].SeasonNumber
+	for _, s := range parsed[1:] {
+		if s.SeasonNumber > max {
+			max = s.SeasonNumber
+		}
+	}
+	return max
+}
+
+// countEpisodesPerSeason returns a map of seasonNumber → episode count
+// from the supplied (already deduped) list. Mirrors C# `:49`
+// `episodesPerSeason = orderedEpisodes.GroupBy(s => s.SeasonNumber)
+//
+//	.ToDictionary(g => g.Key, g => g.Count())`.
+//
+// J201 helper. Used in the finale heuristic to identify the last
+// episode of the latest season.
+func countEpisodesPerSeason(eps []episodes.Episode) map[int]int {
+	out := make(map[int]int)
+	for _, e := range eps {
+		out[e.SeasonNumber]++
+	}
+	return out
+}
+
+// anyFinaleInSeason returns true when any episode in the supplied list
+// matches the given season AND already carries a non-empty FinaleType.
+// Mirrors C# `:104` `orderedEpisodes.None(e => e.SeasonNumber ==
+// latestSeason.SeasonNumber && e.FinaleType != null)` (we return the
+// inverse — "any" — for the maybeStampSeriesFinale guard).
+//
+// J201 helper. Pre-scanned once across the batch so the stamp decision
+// is consistent regardless of iteration order.
+func anyFinaleInSeason(eps []episodes.Episode, season int) bool {
+	for _, e := range eps {
+		if e.SeasonNumber == season && e.FinaleType != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// maybeStampSeriesFinale ports the C# finale heuristic at
+// `RefreshEpisodeService.cs:95-107`. TheTVDB has historically been
+// inconsistent about flagging series finales; this back-stop stamps
+// FinaleType="series" on the last episode of the last season of a
+// recently-ended show when:
+//
+//   - Series.Status == SeriesStatusEnded (:96)
+//   - episode.FinaleType is empty (:97)
+//   - SeasonNumber > 0 — skip season 0/specials (:98)
+//   - SeasonNumber == latest season (:99)
+//   - EpisodeNumber > 1 — skip pilot-only-episode cases (:100)
+//   - EpisodeNumber == episodesPerSeason[season] — last episode (:101)
+//   - AirDateUtc within the last 14 days (:102-103)
+//   - No other episode in the latest season already carries a FinaleType (:104)
+//
+// When all conditions hold, stamps FinaleType="series" on `ep`.
+// Operates in-place — caller already has the episode pointer in
+// updateList/newList.
+//
+// J201.
+func maybeStampSeriesFinale(
+	ep *episodes.Episode,
+	ser *series.Series,
+	latestSeason int,
+	episodesPerSeason map[int]int,
+	hasExistingFinaleInLatestSeason bool,
+	now time.Time,
+) {
+	if ser == nil || ep == nil {
+		return
+	}
+	if ser.Status != series.SeriesStatusEnded {
+		return
+	}
+	if ep.FinaleType != "" {
+		return
+	}
+	if ep.SeasonNumber <= 0 {
+		return
+	}
+	if ep.SeasonNumber != latestSeason {
+		return
+	}
+	if ep.EpisodeNumber <= 1 {
+		return
+	}
+	if ep.EpisodeNumber != episodesPerSeason[ep.SeasonNumber] {
+		return
+	}
+	if ep.AirDateUtc == nil {
+		return
+	}
+	if !ep.AirDateUtc.After(now.AddDate(0, 0, -14)) {
+		return
+	}
+	if hasExistingFinaleInLatestSeason {
+		return
+	}
+	ep.FinaleType = "series"
 }

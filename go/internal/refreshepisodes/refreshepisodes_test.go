@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/messaging"
@@ -65,7 +66,7 @@ func (s *stubStore) DeleteMany(_ context.Context, list []episodes.Episode) error
 
 func mustNewSvc(t *testing.T, store *stubStore) *refreshepisodes.Service {
 	t.Helper()
-	svc, err := refreshepisodes.NewService(store, nil, nil)
+	svc, err := refreshepisodes.NewService(store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -259,7 +260,7 @@ func TestRefreshEpisodeInfo_PublishesEvent(t *testing.T) {
 			{ID: 2, SeasonNumber: 1, EpisodeNumber: 99, Title: "removed upstream"},
 		},
 	}
-	svc, err := refreshepisodes.NewService(store, bus, nil)
+	svc, err := refreshepisodes.NewService(store, bus, nil, nil)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -319,7 +320,187 @@ func TestRefreshEpisodeInfo_PropagatesGetError(t *testing.T) {
 
 func TestNewService_NilStore(t *testing.T) {
 	t.Parallel()
-	if _, err := refreshepisodes.NewService(nil, nil, nil); err == nil {
+	if _, err := refreshepisodes.NewService(nil, nil, nil, nil); err == nil {
 		t.Errorf("nil-store: want error")
+	}
+}
+
+// ---- J201 — finale-detection heuristic tests ----
+
+func j201Service(t *testing.T, store *stubStore, now time.Time) *refreshepisodes.Service {
+	t.Helper()
+	svc, err := refreshepisodes.NewService(store, nil, func() time.Time { return now }, nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
+func TestFinaleDetection_EndedSeriesLastEpisodeRecent_StampsSeriesFinale(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	aired := now.AddDate(0, 0, -3) // 3 days ago — within the 14-day cutoff
+
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:      42,
+		Status:  series.SeriesStatusEnded,
+		Seasons: `[{"seasonNumber":1,"monitored":true},{"seasonNumber":2,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 2, EpisodeNumber: 1, Title: "S2E1", AirDateUtc: &aired},
+		{SeasonNumber: 2, EpisodeNumber: 2, Title: "S2E2 — last episode of last season", AirDateUtc: &aired},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	var s2e2 *episodes.Episode
+	for i := range store.inserted {
+		if store.inserted[i].SeasonNumber == 2 && store.inserted[i].EpisodeNumber == 2 {
+			s2e2 = &store.inserted[i]
+		}
+	}
+	if s2e2 == nil {
+		t.Fatal("S2E2 not inserted")
+	}
+	if s2e2.FinaleType != "series" {
+		t.Errorf("FinaleType: got %q, want %q", s2e2.FinaleType, "series")
+	}
+}
+
+func TestFinaleDetection_ContinuingSeries_NoStamp(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	aired := now.AddDate(0, 0, -3)
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:      42,
+		Status:  series.SeriesStatusContinuing, // not ended → skip
+		Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AirDateUtc: &aired},
+		{SeasonNumber: 1, EpisodeNumber: 2, AirDateUtc: &aired},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	for _, e := range store.inserted {
+		if e.FinaleType != "" {
+			t.Errorf("S%dE%d: FinaleType=%q, want empty (series Continuing)", e.SeasonNumber, e.EpisodeNumber, e.FinaleType)
+		}
+	}
+}
+
+func TestFinaleDetection_OldAirDate_NoStamp(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	old := now.AddDate(0, 0, -20) // 20 days ago — outside the 14-day cutoff
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:      42,
+		Status:  series.SeriesStatusEnded,
+		Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AirDateUtc: &old},
+		{SeasonNumber: 1, EpisodeNumber: 2, AirDateUtc: &old},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	for _, e := range store.inserted {
+		if e.FinaleType != "" {
+			t.Errorf("S%dE%d: FinaleType=%q, want empty (old air date)", e.SeasonNumber, e.EpisodeNumber, e.FinaleType)
+		}
+	}
+}
+
+func TestFinaleDetection_ExistingFinaleInSeason_NoStamp(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	aired := now.AddDate(0, 0, -3)
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:      42,
+		Status:  series.SeriesStatusEnded,
+		Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	// Remote already flags S1E1 as a season finale — the heuristic
+	// must NOT also stamp S1E3 as a series finale (one finale per
+	// season is the contract).
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AirDateUtc: &aired, FinaleType: "season"},
+		{SeasonNumber: 1, EpisodeNumber: 2, AirDateUtc: &aired},
+		{SeasonNumber: 1, EpisodeNumber: 3, AirDateUtc: &aired},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	for _, e := range store.inserted {
+		if e.EpisodeNumber == 1 && e.FinaleType != "season" {
+			t.Errorf("S1E1: FinaleType=%q, want season (from remote)", e.FinaleType)
+		}
+		if e.EpisodeNumber != 1 && e.FinaleType != "" {
+			t.Errorf("S%dE%d: FinaleType=%q, want empty (existing finale guards the season)", e.SeasonNumber, e.EpisodeNumber, e.FinaleType)
+		}
+	}
+}
+
+func TestFinaleDetection_NotLastSeason_NoStamp(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	aired := now.AddDate(0, 0, -3)
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:     42,
+		Status: series.SeriesStatusEnded,
+		// Latest season is 2; S1E2 must NOT be stamped even though
+		// it's the last episode of season 1.
+		Seasons: `[{"seasonNumber":1,"monitored":true},{"seasonNumber":2,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AirDateUtc: &aired},
+		{SeasonNumber: 1, EpisodeNumber: 2, AirDateUtc: &aired}, // last of S1 but not last season
+		{SeasonNumber: 2, EpisodeNumber: 1, AirDateUtc: &aired},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	for _, e := range store.inserted {
+		// Only check S1E2 — S2E1 has EpisodeNumber=1 which also fails
+		// the heuristic's >1 guard.
+		if e.SeasonNumber == 1 && e.EpisodeNumber == 2 && e.FinaleType != "" {
+			t.Errorf("S1E2: FinaleType=%q, want empty (S2 is the last season)", e.FinaleType)
+		}
+	}
+}
+
+func TestFinaleDetection_FirstEpisodeOfLastSeason_NoStamp(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	aired := now.AddDate(0, 0, -3)
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:      42,
+		Status:  series.SeriesStatusEnded,
+		Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	// Single-episode last season → EpisodeNumber=1=count, but the >1
+	// guard means a pilot-only-episode is NOT auto-stamped.
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AirDateUtc: &aired},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	if store.inserted[0].FinaleType != "" {
+		t.Errorf("S1E1 alone: FinaleType=%q, want empty (>1 guard)", store.inserted[0].FinaleType)
 	}
 }
