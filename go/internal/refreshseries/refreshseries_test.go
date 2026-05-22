@@ -30,19 +30,40 @@ func (s *stubProvider) GetSeriesInfo(_ context.Context, tvdbID int) (*series.Ser
 
 type stubStore struct {
 	stored    *series.Series
+	all       []series.Series // optional — feeds GetAllSeries when set
+	allErr    error
 	getErr    error
 	updated   *series.Series // captures the row passed to UpdateSeries
 	updateErr error
 }
 
-func (s *stubStore) GetSeries(_ context.Context, _ int) (*series.Series, error) {
+func (s *stubStore) GetSeries(_ context.Context, id int) (*series.Series, error) {
 	if s.getErr != nil {
 		return nil, s.getErr
 	}
-	// Return a deep-ish copy so the service can mutate without
-	// corrupting the test fixture.
-	cp := *s.stored
-	return &cp, nil
+	// When `all` is populated (sweep tests) — return the matching row
+	// by ID so RefreshSeriesInfo's per-id GetSeries call inside
+	// RefreshAll finds the seed shape. Otherwise default to `stored`.
+	if len(s.all) > 0 {
+		for i := range s.all {
+			if s.all[i].ID == id {
+				cp := s.all[i]
+				return &cp, nil
+			}
+		}
+	}
+	if s.stored != nil {
+		cp := *s.stored
+		return &cp, nil
+	}
+	return nil, errors.New("stubStore: no series configured")
+}
+
+func (s *stubStore) GetAllSeries(_ context.Context) ([]series.Series, error) {
+	if s.allErr != nil {
+		return nil, s.allErr
+	}
+	return s.all, nil
 }
 
 func (s *stubStore) UpdateSeries(_ context.Context, ns *series.Series, _ series.UpdateOptions) (*series.Series, error) {
@@ -400,6 +421,118 @@ func TestRefreshSeriesInfo_SeriesNotFound_NilBus_SkipsPublish(t *testing.T) {
 	if store.updated == nil || store.updated.Status != series.SeriesStatusDeleted {
 		t.Errorf("nil-bus path should still persist Deleted status; got %+v", store.updated)
 	}
+}
+
+func TestRefreshAll_IteratesInSortTitleOrder(t *testing.T) {
+	t.Parallel()
+	// Provider returns the same merged shape for every TVDB id so we
+	// just need to observe the order GetSeries is called.
+	var seenIDs []int
+	info := &stubProvider{
+		merged: &series.Series{Seasons: "[]"},
+	}
+	store := &stubStore{
+		all: []series.Series{
+			{ID: 1, TvdbID: 100, SortTitle: "zulu show"},
+			{ID: 2, TvdbID: 200, SortTitle: "alpha show"},
+			{ID: 3, TvdbID: 300, SortTitle: "mike show"},
+		},
+	}
+	now := func() time.Time { return time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC) }
+	svc, err := refreshseries.NewService(info, &orderCapturingStore{stubStore: store, ids: &seenIDs}, nil, now, nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if err := svc.RefreshAll(t.Context()); err != nil {
+		t.Fatalf("RefreshAll: %v", err)
+	}
+	want := []int{2, 3, 1} // alpha, mike, zulu
+	if len(seenIDs) != len(want) {
+		t.Fatalf("seen IDs: got %v, want %v", seenIDs, want)
+	}
+	for i, id := range want {
+		if seenIDs[i] != id {
+			t.Errorf("call[%d]: got id=%d, want %d", i, seenIDs[i], id)
+		}
+	}
+}
+
+func TestRefreshAll_PerRowErrorAbsorbed(t *testing.T) {
+	t.Parallel()
+	// Force GetSeriesInfo to fail mid-sweep — sweep must continue.
+	info := &errorOnTvdbProvider{badTvdb: 200}
+	store := &stubStore{
+		all: []series.Series{
+			{ID: 1, TvdbID: 100, SortTitle: "a"},
+			{ID: 2, TvdbID: 200, SortTitle: "b"},
+			{ID: 3, TvdbID: 300, SortTitle: "c"},
+		},
+	}
+	now := func() time.Time { return time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC) }
+	svc, _ := refreshseries.NewService(info, store, nil, now, nil)
+	if err := svc.RefreshAll(t.Context()); err != nil {
+		t.Errorf("RefreshAll: per-row error should be absorbed, got %v", err)
+	}
+	if info.callCount != 3 {
+		t.Errorf("provider call count: got %d, want 3 (sweep should continue past failed row)", info.callCount)
+	}
+}
+
+func TestRefreshAll_GetAllSeriesError_Propagates(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("db down")
+	store := &stubStore{allErr: boom}
+	svc, _ := refreshseries.NewService(&stubProvider{}, store, nil, nil, nil)
+	err := svc.RefreshAll(t.Context())
+	if !errors.Is(err, boom) {
+		t.Fatalf("RefreshAll: want wrapped boom, got %v", err)
+	}
+}
+
+func TestRefreshAll_CtxCancelMidSweep_PropagatesCancel(t *testing.T) {
+	t.Parallel()
+	info := &stubProvider{merged: &series.Series{Seasons: "[]"}}
+	store := &stubStore{
+		all: []series.Series{
+			{ID: 1, TvdbID: 100, SortTitle: "a"},
+			{ID: 2, TvdbID: 200, SortTitle: "b"},
+		},
+	}
+	svc, _ := refreshseries.NewService(info, store, nil, nil, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // pre-cancel
+	if err := svc.RefreshAll(ctx); !errors.Is(err, context.Canceled) {
+		t.Errorf("RefreshAll: want context.Canceled, got %v", err)
+	}
+}
+
+// orderCapturingStore wraps stubStore to record the IDs that pass
+// through GetSeries — used by TestRefreshAll_IteratesInSortTitleOrder.
+type orderCapturingStore struct {
+	*stubStore
+	ids *[]int
+}
+
+func (o *orderCapturingStore) GetSeries(ctx context.Context, id int) (*series.Series, error) {
+	*o.ids = append(*o.ids, id)
+	return o.stubStore.GetSeries(ctx, id)
+}
+
+// errorOnTvdbProvider is a stub provider that returns an error for
+// one specific TvdbID and the default merged shape for everything
+// else. Tracks total invocations so the sweep can be observed to
+// continue past failed rows.
+type errorOnTvdbProvider struct {
+	badTvdb   int
+	callCount int
+}
+
+func (e *errorOnTvdbProvider) GetSeriesInfo(_ context.Context, tvdbID int) (*series.Series, []episodes.Episode, error) {
+	e.callCount++
+	if tvdbID == e.badTvdb {
+		return nil, nil, errors.New("upstream blew up")
+	}
+	return &series.Series{TvdbID: tvdbID, Seasons: "[]"}, nil, nil
 }
 
 func TestRefreshSeriesInfo_GenericError_NoSoftDelete(t *testing.T) {

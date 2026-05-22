@@ -40,11 +40,12 @@ import (
 const RefreshSeriesName = "RefreshSeries"
 
 // RefreshSeriesRunner is the narrow slice of refreshseries.Service
-// the handler reaches for. Defined here as a one-method interface so
-// the handler tests can stub without importing the refreshseries
-// package.
+// the handler reaches for. Refresh handles the per-id path; RefreshAll
+// (added 5.J193) handles the C# `Execute` all-series sweep that fires
+// when SeriesIds is empty.
 type RefreshSeriesRunner interface {
 	Refresh(ctx context.Context, seriesID int) error
+	RefreshAll(ctx context.Context) error
 }
 
 // RefreshSeries is the IExecute<RefreshSeriesCommand> port.
@@ -92,11 +93,11 @@ func (h *RefreshSeries) Execute(ctx context.Context, body string) error {
 
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" || trimmed == "{}" || trimmed == "null" {
-		// All-series sweep is deferred — log and bail.
-		h.log.LogAttrs(ctx, slog.LevelInfo,
-			"refreshseries: empty body, all-series sweep deferred (no-op)",
-			slog.String("command", RefreshSeriesName))
-		return nil
+		// J193 — empty body now fires the all-series sweep (was a
+		// stub-log no-op pre-J193). The 12h scheduled-task tick
+		// pushes RefreshSeries with no body, so this is the path
+		// the periodic refresh actually exercises.
+		return h.runner.RefreshAll(ctx)
 	}
 
 	var cmd refreshSeriesCommandBody
@@ -108,10 +109,11 @@ func (h *RefreshSeries) Execute(ctx context.Context, body string) error {
 		return nil
 	}
 	if len(cmd.SeriesIDs) == 0 {
-		h.log.LogAttrs(ctx, slog.LevelInfo,
-			"refreshseries: body had no seriesIds, all-series sweep deferred",
-			slog.String("command", RefreshSeriesName))
-		return nil
+		// J193 — empty seriesIds list also fires the all-series
+		// sweep, matching C# `Execute` :249-282 where
+		// `message.SeriesIds.Any()` returning false jumps to the
+		// all-series branch.
+		return h.runner.RefreshAll(ctx)
 	}
 
 	for _, id := range cmd.SeriesIDs {

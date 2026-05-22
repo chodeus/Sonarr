@@ -44,11 +44,13 @@ type SeriesInfoProvider interface {
 }
 
 // SeriesStore is the narrow slice of *series.Service the refresh path
-// uses. Get + UpdateSeries are enough for the J191 surface; future
-// slices that wire RefreshEpisodeService + tags + disk-rescan can
-// grow the interface.
+// uses. Get + UpdateSeries are enough for the J191 single-id surface;
+// J193 grew GetAllSeries for the all-series sweep. Future slices that
+// wire RefreshEpisodeService + tags + disk-rescan can grow the
+// interface further.
 type SeriesStore interface {
 	GetSeries(ctx context.Context, id int) (*series.Series, error)
+	GetAllSeries(ctx context.Context) ([]series.Series, error)
 	UpdateSeries(ctx context.Context, ns *series.Series, opts series.UpdateOptions) (*series.Series, error)
 }
 
@@ -116,11 +118,60 @@ func NewService(info SeriesInfoProvider, store SeriesStore, bus *messaging.Bus, 
 // Refresh adapts [Service.RefreshSeriesInfo] to the
 // commands/handlers RefreshSeriesRunner interface by discarding the
 // returned series. The full-return form is preserved as
-// [Service.RefreshSeriesInfo] for callers that need the updated row
-// (the future all-series sweep + tests).
+// [Service.RefreshSeriesInfo] for callers that need the updated row.
 func (s *Service) Refresh(ctx context.Context, seriesID int) error {
 	_, err := s.RefreshSeriesInfo(ctx, seriesID)
 	return err
+}
+
+// RefreshAll ports the all-series sweep arm of C#
+// `RefreshSeriesService.Execute` at `:249-282`. Iterates every series
+// in SortTitle order and calls [Service.Refresh] per row. Per-row
+// failures are absorbed with a warn log — matches the C# `catch
+// (SeriesNotFoundException)` + `catch (Exception)` arms at
+// `:262-270`. The C# `ICheckIfSeriesShouldBeRefreshed.ShouldRefresh`
+// predicate (`:256`) that gates per-row refresh on scheduled triggers
+// is deferred: J193 treats every row as needs-refresh, equivalent to
+// `trigger == CommandTrigger.Manual` always-fire. The predicate port
+// is a follow-up slice.
+//
+// Returns the first ctx.Err() encountered (cancellation propagates)
+// but per-row errors are logged-and-swallowed so a partially-refreshed
+// catalogue is acceptable. The C# version's `CommandResult.Indeterminate`
+// reporter integration is deferred.
+//
+// The 12-hour scheduled-task tick (registered at
+// `internal/commands/handlers/handlers.go` with `RefreshSeriesName`)
+// now does useful work: an empty-body RefreshSeriesCommand fires this
+// path instead of a stub-log no-op.
+func (s *Service) RefreshAll(ctx context.Context) error {
+	if s == nil {
+		return errors.New("refreshseries: nil Service")
+	}
+	all, err := s.store.GetAllSeries(ctx)
+	if err != nil {
+		return fmt.Errorf("refreshseries: GetAllSeries: %w", err)
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].SortTitle < all[j].SortTitle })
+
+	for i := range all {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		row := all[i]
+		if _, err := s.RefreshSeriesInfo(ctx, row.ID); err != nil {
+			s.log.LogAttrs(ctx, slog.LevelWarn,
+				"refreshseries: per-row refresh failed (sweep continues)",
+				slog.Int("seriesId", row.ID),
+				slog.String("title", row.Title),
+				slog.Int("tvdbId", row.TvdbID),
+				slog.Any("err", err))
+		}
+	}
+	s.log.LogAttrs(ctx, slog.LevelInfo,
+		"refreshseries: all-series sweep complete",
+		slog.Int("count", len(all)))
+	return nil
 }
 
 // RefreshSeriesInfo is the full per-series refresh; see the package

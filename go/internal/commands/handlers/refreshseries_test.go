@@ -15,16 +15,23 @@ import (
 
 var refreshSeriesFixedTime = time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 
-// stubRefreshRunner captures the per-id Refresh calls so tests can
-// assert the handler dispatches correctly.
+// stubRefreshRunner captures the per-id Refresh calls + RefreshAll
+// invocations so tests can assert the handler dispatches correctly.
 type stubRefreshRunner struct {
-	got []int
-	err error
+	got        []int
+	err        error
+	refreshAll int // count of RefreshAll calls
+	allErr     error
 }
 
 func (s *stubRefreshRunner) Refresh(_ context.Context, id int) error {
 	s.got = append(s.got, id)
 	return s.err
+}
+
+func (s *stubRefreshRunner) RefreshAll(_ context.Context) error {
+	s.refreshAll++
+	return s.allErr
 }
 
 func TestRefreshSeries_NilRunner_FallsBackToStubLog(t *testing.T) {
@@ -78,27 +85,37 @@ func TestRefreshSeries_PerIDErrorAbsorbed(t *testing.T) {
 	}
 }
 
-func TestRefreshSeries_EmptyBody_NoOps(t *testing.T) {
+// J193 — empty body now fires RefreshAll (the all-series sweep) instead
+// of a stub-log no-op. The 12h scheduled-task tick pushes RefreshSeries
+// with no body, so this is the path the periodic refresh actually
+// exercises.
+func TestRefreshSeries_EmptyBody_FiresRefreshAll(t *testing.T) {
 	t.Parallel()
 	runner := &stubRefreshRunner{}
 	h := handlers.NewRefreshSeries(runner, slog.Default())
 	if err := h.Execute(t.Context(), ""); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
+	if runner.refreshAll != 1 {
+		t.Errorf("RefreshAll call count: got %d, want 1", runner.refreshAll)
+	}
 	if len(runner.got) != 0 {
-		t.Errorf("empty body should no-op; got %d calls", len(runner.got))
+		t.Errorf("per-id Refresh should not be called on empty body; got %d", len(runner.got))
 	}
 }
 
-func TestRefreshSeries_EmptySeriesIDs_NoOps(t *testing.T) {
+// J193 — empty seriesIds list also fires RefreshAll, matching C#
+// Execute :249-282 where SeriesIds.Any() == false jumps to the
+// all-series branch.
+func TestRefreshSeries_EmptySeriesIDs_FiresRefreshAll(t *testing.T) {
 	t.Parallel()
 	runner := &stubRefreshRunner{}
 	h := handlers.NewRefreshSeries(runner, slog.Default())
 	if err := h.Execute(t.Context(), `{"seriesIds":[]}`); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(runner.got) != 0 {
-		t.Errorf("empty seriesIds should no-op; got %d calls", len(runner.got))
+	if runner.refreshAll != 1 {
+		t.Errorf("RefreshAll call count: got %d, want 1", runner.refreshAll)
 	}
 }
 
