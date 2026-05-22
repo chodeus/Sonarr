@@ -43,15 +43,14 @@ import (
 //     `:152` (`Added = DateTime.UtcNow`). Callers pass time.Now()
 //     for production; tests pass a pinned time for determinism.
 //
-// The AddOptions-based monitor override (C# `:154-157`,
-// `AddOptions.Monitor == MonitorTypes.None → Monitored = false`)
-// is NOT ported here because the Go-port `series.Series` struct
-// doesn't yet have an `AddOptions` field; the ImportListSync flow
-// builds the Series row with `Monitored` already derived from
-// `list.ShouldMonitor` (per `importlists.buildSeries` at
-// `internal/importlists/syncservice.go:458-473`), so the gap is
-// only a divergence for callers that PASS AddOptions explicitly
-// (the v3 API series-POST path, when it lands).
+//  5. Honours the AddOptions-based monitor override (C# `:154-157`):
+//     when the Series carries an AddOptions JSON blob that decodes
+//     to Monitor=None, flips [Series.Monitored] to false. Missing /
+//     malformed AddOptions degrade silently (no override applied) —
+//     matches the C# `newSeries.AddOptions != null` guard. The blob
+//     can carry the Monitor field as either the camelCase enum name
+//     ("none") OR the integer ordinal (12); both decode via
+//     [MonitorType.UnmarshalJSON] (see slice 5.J189).
 //
 // The validation step (C# `:159-164`,
 // `_addSeriesValidator.Validate(newSeries)`) is also deferred —
@@ -78,6 +77,13 @@ func PrepareForAdd(s *Series, now time.Time, folderName func(*Series) string) {
 	if s.Added == nil || s.Added.IsZero() {
 		utc := now.UTC()
 		s.Added = &utc
+	}
+	// AddOptions.Monitor=None → Monitored=false. Decode failures
+	// fall through (matches C# `AddOptions != null` guard treating
+	// a missing/junk blob as no-override). The blob stays on the
+	// Series for the post-insert RemoveAddOptions sweep to clear.
+	if opts, err := DecodeAddOptions(s.AddOptions); err == nil && opts != nil && opts.Monitor == MonitorNone {
+		s.Monitored = false
 	}
 }
 

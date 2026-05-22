@@ -9,6 +9,78 @@ import (
 
 var prepareForAddFixed = time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
 
+// J189 — AddOptions.Monitor=None flips Monitored to false.
+func TestPrepareForAdd_AddOptionsMonitorNone_FlipsMonitored(t *testing.T) {
+	t.Parallel()
+	s := &series.Series{
+		Title:          "Show",
+		TvdbID:         42,
+		RootFolderPath: "/tv",
+		Monitored:      true, // upstream said monitor; AddOptions overrides
+		AddOptions:     `{"monitor":"none"}`,
+	}
+	series.PrepareForAdd(s, prepareForAddFixed, func(*series.Series) string { return "Show" })
+	if s.Monitored {
+		t.Errorf("Monitored: want false (AddOptions.Monitor=None), got true")
+	}
+}
+
+// J189 — integer-form ordinal also triggers the override (C# allows both).
+func TestPrepareForAdd_AddOptionsMonitorNoneInt_FlipsMonitored(t *testing.T) {
+	t.Parallel()
+	s := &series.Series{
+		Title:      "Show",
+		Monitored:  true,
+		AddOptions: `{"monitor":12}`,
+	}
+	series.PrepareForAdd(s, prepareForAddFixed, nil)
+	if s.Monitored {
+		t.Errorf("Monitored (int 12): want false, got true")
+	}
+}
+
+// J189 — AddOptions.Monitor=All leaves Monitored untouched.
+func TestPrepareForAdd_AddOptionsMonitorAll_PreservesMonitored(t *testing.T) {
+	t.Parallel()
+	s := &series.Series{
+		Title:      "Show",
+		Monitored:  true,
+		AddOptions: `{"monitor":"all"}`,
+	}
+	series.PrepareForAdd(s, prepareForAddFixed, nil)
+	if !s.Monitored {
+		t.Errorf("Monitored: want preserved-true (Monitor=All), got false")
+	}
+}
+
+// J189 — empty AddOptions blob = no override (typical import-list row).
+func TestPrepareForAdd_EmptyAddOptions_NoOverride(t *testing.T) {
+	t.Parallel()
+	s := &series.Series{
+		Title:      "Show",
+		Monitored:  true,
+		AddOptions: "",
+	}
+	series.PrepareForAdd(s, prepareForAddFixed, nil)
+	if !s.Monitored {
+		t.Errorf("Monitored: want preserved-true (empty AddOptions), got false")
+	}
+}
+
+// J189 — malformed AddOptions blob degrades silently to no-override.
+func TestPrepareForAdd_MalformedAddOptions_NoOverride(t *testing.T) {
+	t.Parallel()
+	s := &series.Series{
+		Title:      "Show",
+		Monitored:  true,
+		AddOptions: `{not json`,
+	}
+	series.PrepareForAdd(s, prepareForAddFixed, nil)
+	if !s.Monitored {
+		t.Errorf("Monitored: malformed AddOptions should be silent no-op, got false")
+	}
+}
+
 // J186 happy path: every property set when input has Path empty +
 // RootFolderPath set + folderName returns non-empty.
 func TestPrepareForAdd_HappyPath(t *testing.T) {
