@@ -504,3 +504,143 @@ func TestFinaleDetection_FirstEpisodeOfLastSeason_NoStamp(t *testing.T) {
 		t.Errorf("S1E1 alone: FinaleType=%q, want empty (>1 guard)", store.inserted[0].FinaleType)
 	}
 }
+
+// ---- J202 — UnmonitorReaddedEpisodes tests ----
+
+func TestUnmonitorReadded_AddOptionsSet_Skips(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	old := now.AddDate(0, 0, -30) // 30 days ago — would normally trigger
+	store := &stubStore{}         // no existing → cold-add path
+	svc := j201Service(t, store, now)
+
+	ser := &series.Series{
+		ID: 42,
+		// Non-empty AddOptions → AddSeriesService monitor override
+		// is active; UnmonitorReaddedEpisodes must not interfere.
+		AddOptions: `{"ignoreEpisodesWithFiles":true}`,
+		Seasons:    `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AirDateUtc: &old},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	if !store.inserted[0].Monitored {
+		t.Errorf("AddOptions present: Monitored should NOT be flipped to false (got false)")
+	}
+}
+
+func TestUnmonitorReadded_ColdAdd_OldEpisodes_Unmonitors(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	old := now.AddDate(0, 0, -30) // 30 days ago — past both thresholds
+	yesterday := now.AddDate(0, 0, -2)
+	recent := now.AddDate(0, 0, 1) // future
+
+	store := &stubStore{} // no existing → cold-add path
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:      42,
+		Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+		// AddOptions empty → reads as nil decoded; the heuristic runs.
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AirDateUtc: &old},       // old → unmonitor
+		{SeasonNumber: 1, EpisodeNumber: 2, AirDateUtc: &yesterday}, // older than 1d → unmonitor
+		{SeasonNumber: 1, EpisodeNumber: 3, AirDateUtc: &recent},    // future → keep monitored
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	got := map[int]bool{}
+	for _, ep := range store.inserted {
+		got[ep.EpisodeNumber] = ep.Monitored
+	}
+	if got[1] {
+		t.Errorf("E1 (old): Monitored=true, want false")
+	}
+	if got[2] {
+		t.Errorf("E2 (yesterday): Monitored=true, want false")
+	}
+	if !got[3] {
+		t.Errorf("E3 (future): Monitored=false, want true (preserved)")
+	}
+}
+
+func TestUnmonitorReadded_HasExisting_OnlyWarns_NoUnmonitor(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	old := now.AddDate(0, 0, -30) // way past detection threshold
+	store := &stubStore{
+		existing: []episodes.Episode{
+			{ID: 99, SeasonNumber: 1, EpisodeNumber: 1, Title: "already-known-episode"},
+		},
+	}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{
+		ID:      42,
+		Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	// E2 is brand new + old-aired. With existing E1 in the persistence,
+	// the heuristic must NOT auto-unmonitor — log only.
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, Title: "refreshed-E1"},
+		{SeasonNumber: 1, EpisodeNumber: 2, Title: "newly-back-filled-old-E2", AirDateUtc: &old},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	var e2 *episodes.Episode
+	for i := range store.inserted {
+		if store.inserted[i].EpisodeNumber == 2 {
+			e2 = &store.inserted[i]
+		}
+	}
+	if e2 == nil {
+		t.Fatal("E2 not inserted")
+	}
+	if !e2.Monitored {
+		t.Errorf("hasExisting + old-back-fill: E2.Monitored=false, want true (warn-only path)")
+	}
+}
+
+func TestUnmonitorReadded_NoOldEpisodes_NoOp(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	recent := now.AddDate(0, 0, -3) // within detection threshold but recent
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{ID: 42, Seasons: `[{"seasonNumber":1,"monitored":true}]`}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AirDateUtc: &recent},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	if !store.inserted[0].Monitored {
+		t.Errorf("recent AirDateUtc: Monitored=false, want true (no old episodes → no-op)")
+	}
+}
+
+func TestUnmonitorReadded_ColdAdd_DetectionOnly_NoUnmonitor(t *testing.T) {
+	t.Parallel()
+	// Episode is older than 1d (unmonitor threshold) but newer than 14d
+	// (detection threshold) — the heuristic should NOT fire at all since
+	// detection requires AirDateUtc < now - 14d.
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	between := now.AddDate(0, 0, -5) // 5 days ago: past 1d, well within 14d
+	store := &stubStore{}
+	svc := j201Service(t, store, now)
+	ser := &series.Series{ID: 42, Seasons: `[{"seasonNumber":1,"monitored":true}]`}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AirDateUtc: &between},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	if !store.inserted[0].Monitored {
+		t.Errorf("5d-old AirDateUtc: Monitored=false, want true (detection threshold not reached)")
+	}
+}

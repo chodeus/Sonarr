@@ -125,7 +125,6 @@ func (s *Service) RefreshEpisodeInfo(ctx context.Context, ser *series.Series, re
 	}
 
 	hasExisting := len(existing) > 0
-	_ = hasExisting // J200 keeps this for future use by UnmonitorReaddedEpisodes (deferred).
 
 	// dedupeFreeRemote keeps the first occurrence per (season,episode)
 	// key, matching C# DistinctBy at `:41`.
@@ -172,6 +171,13 @@ func (s *Service) RefreshEpisodeInfo(ctx context.Context, ser *series.Series, re
 		maybeStampSeriesFinale(&fresh, ser, latestSeason, episodesPerSeason, hasExistingFinaleInLatestSeason, nowUTC)
 		newList = append(newList, &fresh)
 	}
+
+	// J202 — UnmonitorReaddedEpisodes pass (C# `:118`). Operates on the
+	// newList only (newly-inserted episodes), reads hasExisting captured
+	// pre-reconcile, and mutates Monitored in-place on the cold-add path
+	// to prevent unexpected downloads when TheTVDB suddenly back-fills
+	// old episodes that aired before the user added the series.
+	s.unmonitorReaddedEpisodes(ctx, ser, newList, hasExisting, nowUTC)
 
 	// What remains after the matcher is the to-delete set.
 	toDelete := make([]episodes.Episode, 0)
@@ -446,4 +452,77 @@ func maybeStampSeriesFinale(
 		return
 	}
 	ep.FinaleType = "series"
+}
+
+// unmonitorReaddedEpisodes ports the C# heuristic at
+// `RefreshEpisodeService.cs:157-189`. Defends against a TheTVDB
+// back-fill where a refresh pass suddenly emits episodes that aired
+// before the user added the series — without this guard the next
+// scheduled-task tick would treat them as monitored-and-missing and
+// search the indexers.
+//
+// Decision tree (line-aligned with C#):
+//
+//   - `:159-162` if Series.AddOptions != null → skip (active add flow,
+//     the AddSeriesService monitor-override at AddSeriesService.cs:154-157
+//     handles it; J189 ports that arm).
+//   - `:166` collect oldEpisodes from newList where AirDateUtc <
+//     now - 14d (detection threshold).
+//   - `:168` if no old episodes → no-op.
+//   - `:170-173` if hasExisting → warn-log only ("please check
+//     monitored status"). The series already had episodes pre-reconcile,
+//     so the user has been curating it; don't auto-unmonitor.
+//   - `:175-186` else (cold-add path, no pre-existing episodes) →
+//     re-walk newList with a now - 1d threshold (more permissive than
+//     detection), set Monitored=false on every match, then warn-log.
+//     Two different thresholds: detection at 14d gates whether to
+//     act at all; the cold-add unmonitor at 1d is broader.
+//
+// The cold-add 1-day cutoff matches C# behaviour exactly — the J202
+// port preserves the asymmetry between detection (14d) and unmonitor
+// (1d) thresholds. The rationale is that on a fresh add, anything
+// that aired before "yesterday" is presumed already-watched-or-skipped
+// by the user; the 14-day detection threshold is just the trigger.
+//
+// J202.
+func (s *Service) unmonitorReaddedEpisodes(ctx context.Context, ser *series.Series, newList []*episodes.Episode, hasExisting bool, now time.Time) {
+	// Skip when AddOptions is wired — the AddSeriesService monitor
+	// override already handled the initial monitored-state choice.
+	opts, _ := series.DecodeAddOptions(ser.AddOptions)
+	if opts != nil {
+		return
+	}
+
+	detectionCutoff := now.AddDate(0, 0, -14)
+	oldCount := 0
+	for _, ep := range newList {
+		if ep.AirDateUtc != nil && ep.AirDateUtc.Before(detectionCutoff) {
+			oldCount++
+		}
+	}
+	if oldCount == 0 {
+		return
+	}
+
+	if hasExisting {
+		s.log.LogAttrs(ctx, slog.LevelWarn,
+			"refreshepisodes: old episodes appeared on refresh — please check monitored status",
+			slog.Int("tvdbId", ser.TvdbID),
+			slog.String("title", ser.Title),
+			slog.Int("oldCount", oldCount))
+		return
+	}
+
+	// Cold-add path: more permissive 1-day threshold for the unmonitor pass.
+	unmonitorCutoff := now.AddDate(0, 0, -1)
+	for _, ep := range newList {
+		if ep.AirDateUtc != nil && ep.AirDateUtc.Before(unmonitorCutoff) {
+			ep.Monitored = false
+		}
+	}
+	s.log.LogAttrs(ctx, slog.LevelWarn,
+		"refreshepisodes: old episodes appeared on cold-add — unmonitored aired episodes to prevent unexpected downloads",
+		slog.Int("tvdbId", ser.TvdbID),
+		slog.String("title", ser.Title),
+		slog.Int("oldCount", oldCount))
 }
