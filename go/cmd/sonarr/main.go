@@ -2905,7 +2905,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		importListSyncFactory,
 		importListExclusionsRepo,
 		seriesLookupAdapter{svc: seriesSvc},
-		seriesAdderAdapter{svc: seriesSvc, log: logger},
+		seriesAdderAdapter{svc: seriesSvc, namingCfg: namingConfigSvc, log: logger},
 		nil, // IDTranslator wired once metadata-source M3b lands.
 		logger,
 	)

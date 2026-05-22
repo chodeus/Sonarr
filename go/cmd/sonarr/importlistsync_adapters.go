@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"log/slog"
+	"time"
 
+	"sonarr.tv/sonarr/internal/namingconfig"
+	"sonarr.tv/sonarr/internal/organizer"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -45,19 +48,70 @@ func (a seriesLookupAdapter) AllTvdbIDs(ctx context.Context) ([]int, error) {
 // cache, episode seeding) land — but the event plumbing is now
 // in place so each follow-up just adds its own subscriber.
 type seriesAdderAdapter struct {
-	svc *series.Service
-	log *slog.Logger
+	svc       *series.Service
+	namingCfg *namingconfig.Service
+	log       *slog.Logger
+	now       func() time.Time // overridable for deterministic tests
 }
 
-// AddSeries loops *series.Service.AddSeries per row, logging
-// per-row failures at warn level + continuing the batch. Returns
-// nil unless the batch is nil/empty (which short-circuits with
-// nil). Each successful add publishes a SeriesAddedEvent on the
-// bus — downstream subscribers (folder creation, future refresh
+// folderNameForSeries loads the SeriesFolderFormat from
+// namingconfig.Service and runs the result through
+// organizer.GetSeriesFolder — bundles the C# `IBuildFileNames.
+// GetSeriesFolder(newSeries)` call site at
+// `AddSeriesService.cs:146`. Returns empty when the config load
+// fails or the format produces an empty literal; the caller
+// (series.PrepareForAdd) treats both as "don't compute a Path"
+// and leaves Series.Path empty — matches the C# `Path.IsNullOrWhiteSpace`
+// guard at `:144` letting the row persist without a folder.
+//
+// Errors from GetConfig degrade to a warn log + empty return; the
+// add-series batch keeps running with whatever folder names later
+// rows produce. Pinning the namingconfig getter inline avoids a
+// per-row round-trip cost in the typical case (the *Service
+// caches its row internally — repeat GetConfig calls hit the
+// cache, no DB round-trip per row).
+func (a seriesAdderAdapter) folderNameForSeries(ctx context.Context) func(*series.Series) string {
+	cfg, err := a.namingCfg.GetConfig(ctx)
+	if err != nil || cfg == nil {
+		if err != nil {
+			a.log.LogAttrs(ctx, slog.LevelWarn,
+				"importlistsync: AddSeries: namingconfig.GetConfig failed (Path will stay empty for this batch)",
+				slog.Any("err", err))
+		}
+		return nil
+	}
+	opts := organizer.FolderOptions{
+		SeriesFolderFormat:   cfg.SeriesFolderFormat,
+		SeasonFolderFormat:   cfg.SeasonFolderFormat,
+		SpecialsFolderFormat: cfg.SpecialsFolderFormat,
+		Clean:                organizer.CleanNameOptions{ReplaceIllegalCharacters: true},
+	}
+	return func(s *series.Series) string {
+		return organizer.GetSeriesFolder(s, opts)
+	}
+}
+
+// AddSeries loops *series.Service.AddSeries per row, running
+// [series.PrepareForAdd] beforehand to set CleanTitle / SortTitle /
+// Added / Path (mirrors C# `AddSeriesService.SetPropertiesAndValidate`
+// at `:142-167`). Per-row failures absorbed via warn-log-and-continue
+// (matches C# `ignoreErrors=true` at `ImportListSyncService.cs:261`).
+// Each successful add publishes SeriesAddedEvent on the bus —
+// downstream subscribers (J185 folder creation, future refresh
 // pipeline) react per row.
+//
+// The folder-name builder is constructed ONCE per batch by
+// folderNameForSeries — repeated namingconfig.GetConfig calls
+// would hit the cache, but pre-resolving avoids per-row indirection.
 func (a seriesAdderAdapter) AddSeries(ctx context.Context, batch []series.Series) error {
+	folderName := a.folderNameForSeries(ctx)
+	nowFn := a.now
+	if nowFn == nil {
+		nowFn = func() time.Time { return time.Now().UTC() }
+	}
 	for i := range batch {
 		row := batch[i]
+		series.PrepareForAdd(&row, nowFn(), folderName)
 		if _, err := a.svc.AddSeries(ctx, &row); err != nil {
 			a.log.LogAttrs(ctx, slog.LevelWarn,
 				"importlistsync: AddSeries: per-row AddSeries failed (batch continues)",

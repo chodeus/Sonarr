@@ -5,9 +5,81 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"time"
 
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/parser"
 )
+
+// PrepareForAdd ports the non-SkyHook subset of C#
+// `AddSeriesService.SetPropertiesAndValidate` at
+// `src/NzbDrone.Core/Tv/AddSeriesService.cs:142-167`. Mutates `s`
+// in-place before persistence:
+//
+//  1. Sets [Series.Path] to `filepath.Join(s.RootFolderPath,
+//     folderName(s))` when Path is empty AND RootFolderPath is set
+//     AND `folderName` is non-nil AND returns a non-empty result.
+//     Mirrors C# `:144-148` (`Path = Path.Combine(RootFolderPath,
+//     _fileNameBuilder.GetSeriesFolder(newSeries))`). Callers that
+//     don't have a folder-name builder available (tests, migrations)
+//     pass nil to skip the arm; the row persists with empty Path
+//     and the J185 folder-creation subscriber stays a no-op for
+//     that row (existing C# behaviour when Path is omitted).
+//
+//  2. Sets [Series.CleanTitle] = [parser.CleanSeriesTitle](Title).
+//     Mirrors C# `:150` (`CleanTitle = newSeries.Title.CleanSeriesTitle()`).
+//     Used by series.Repo.FindByTitle to match user-entered queries
+//     against the persisted row.
+//
+//  3. Sets [Series.SortTitle] = [NormalizeTitle](Title, TvdbID).
+//     Mirrors C# `:151` (`SortTitle =
+//     SeriesTitleNormalizer.Normalize(newSeries.Title, newSeries.TvdbId)`).
+//     Used by the v3 API's series-list sort. The Go-port
+//     NormalizeTitle delegates to parser.NormalizeTitle and
+//     lowercases — same shape as C# Normalize.
+//
+//  4. Sets [Series.Added] to `now` (UTC) when zero. Mirrors C#
+//     `:152` (`Added = DateTime.UtcNow`). Callers pass time.Now()
+//     for production; tests pass a pinned time for determinism.
+//
+// The AddOptions-based monitor override (C# `:154-157`,
+// `AddOptions.Monitor == MonitorTypes.None → Monitored = false`)
+// is NOT ported here because the Go-port `series.Series` struct
+// doesn't yet have an `AddOptions` field; the ImportListSync flow
+// builds the Series row with `Monitored` already derived from
+// `list.ShouldMonitor` (per `importlists.buildSeries` at
+// `internal/importlists/syncservice.go:458-473`), so the gap is
+// only a divergence for callers that PASS AddOptions explicitly
+// (the v3 API series-POST path, when it lands).
+//
+// The validation step (C# `:159-164`,
+// `_addSeriesValidator.Validate(newSeries)`) is also deferred —
+// the validator's checks (path-not-already-used, root-folder-
+// writability, etc.) need the rootfolders.Service + a series
+// existence query; these can land as a follow-up
+// `series.AddValidator` that PrepareForAdd composes with.
+//
+// Slice 5.J186 (closes the second piece of the C# AddSeriesService
+// side-effect pipeline — J185 wired folder creation off
+// SeriesAddedEvent, J186 makes the Path field non-empty for the
+// import-list-add flow so that subscriber's gate actually fires).
+func PrepareForAdd(s *Series, now time.Time, folderName func(*Series) string) {
+	if s == nil {
+		return
+	}
+	if s.Path == "" && s.RootFolderPath != "" && folderName != nil {
+		if folder := folderName(s); folder != "" {
+			s.Path = filepath.Join(s.RootFolderPath, folder)
+		}
+	}
+	s.CleanTitle = parser.CleanSeriesTitle(s.Title)
+	s.SortTitle = NormalizeTitle(s.Title, s.TvdbID)
+	if s.Added == nil || s.Added.IsZero() {
+		utc := now.UTC()
+		s.Added = &utc
+	}
+}
 
 // EpisodeMonitorCascade is the slice of `IEpisodeService` the C#
 // SeriesService reaches for at `SeriesService.cs:217` —
