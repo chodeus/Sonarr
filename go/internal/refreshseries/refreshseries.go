@@ -44,14 +44,15 @@ type SeriesInfoProvider interface {
 }
 
 // SeriesStore is the narrow slice of *series.Service the refresh path
-// uses. Get + UpdateSeries are enough for the J191 single-id surface;
-// J193 grew GetAllSeries for the all-series sweep. Future slices that
-// wire RefreshEpisodeService + tags + disk-rescan can grow the
-// interface further.
+// uses. Get + UpdateSeries cover the J191 single-id surface; J193
+// grew GetAllSeries for the all-series sweep; J196 grew UpdateTags
+// for the per-row auto-tagging refresh. Future slices that wire
+// RefreshEpisodeService + disk-rescan can grow the interface further.
 type SeriesStore interface {
 	GetSeries(ctx context.Context, id int) (*series.Series, error)
 	GetAllSeries(ctx context.Context) ([]series.Series, error)
 	UpdateSeries(ctx context.Context, ns *series.Series, opts series.UpdateOptions) (*series.Series, error)
+	UpdateTags(ctx context.Context, s *series.Series) (changed bool, err error)
 }
 
 // Service is the RefreshSeriesService port. Per-id Refresh is the
@@ -181,6 +182,11 @@ func (s *Service) RefreshAll(ctx context.Context) error {
 				slog.Int("seriesId", row.ID),
 				slog.String("title", row.Title))
 			skipped++
+			// J196 — even skipped rows get UpdateTags per C# sweep
+			// `:277-279`: auto-tagging rules can change independently
+			// of TheTVDB metadata, so the tick re-evaluates them
+			// regardless of refresh decision.
+			s.updateTags(ctx, &row)
 			continue
 		}
 		if _, err := s.RefreshSeriesInfo(ctx, row.ID); err != nil {
@@ -265,12 +271,44 @@ func (s *Service) RefreshSeriesInfo(ctx context.Context, seriesID int) (*series.
 		return nil, fmt.Errorf("refreshseries: UpdateSeries(%d): %w", seriesID, err)
 	}
 
+	// J196 — auto-tagging refresh per C# `RefreshSeriesService.Execute`
+	// at `:226` and `:272`: UpdateTags runs after every per-id
+	// RefreshSeriesInfo success.
+	s.updateTags(ctx, updated)
+
 	s.log.LogAttrs(ctx, slog.LevelInfo,
 		"refreshseries: refresh complete",
 		slog.Int("seriesId", seriesID),
 		slog.String("title", updated.Title),
 		slog.Int("tvdbId", updated.TvdbID))
 	return updated, nil
+}
+
+// updateTags ports C# `RefreshSeriesService.UpdateTags(series)` at
+// `RefreshSeriesService.cs:201-209` — calls series.Service.UpdateTags
+// (which computes the auto-tagging delta + persists if changed) and
+// swallows errors with a warn log so a tag-system hiccup doesn't
+// abort the refresh batch. C# `:201-209` doesn't catch; the Go-port
+// adds the absorb posture to match the broader "refresh failures
+// don't abort the batch" stance the rest of the service takes.
+//
+// Returns whether tags changed (informational only — caller doesn't
+// branch on it). The C# version checks `tagsUpdated` to decide
+// whether to call UpdateSeries again, but the Go-port
+// series.Service.UpdateTags persists internally when changed (see
+// `internal/series/mutations.go:206-262`), so the caller's
+// post-call UpdateSeries pass isn't needed.
+func (s *Service) updateTags(ctx context.Context, row *series.Series) {
+	if row == nil {
+		return
+	}
+	if _, err := s.store.UpdateTags(ctx, row); err != nil {
+		s.log.LogAttrs(ctx, slog.LevelWarn,
+			"refreshseries: UpdateTags failed",
+			slog.Int("seriesId", row.ID),
+			slog.String("title", row.Title),
+			slog.Any("err", err))
+	}
 }
 
 // handleSeriesNotFound ports C# `RefreshSeriesService.cs:70-81` —

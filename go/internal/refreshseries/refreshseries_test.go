@@ -29,12 +29,16 @@ func (s *stubProvider) GetSeriesInfo(_ context.Context, tvdbID int) (*series.Ser
 }
 
 type stubStore struct {
-	stored    *series.Series
-	all       []series.Series // optional — feeds GetAllSeries when set
-	allErr    error
-	getErr    error
-	updated   *series.Series // captures the row passed to UpdateSeries
-	updateErr error
+	stored       *series.Series
+	all          []series.Series // optional — feeds GetAllSeries when set
+	allErr       error
+	getErr       error
+	updated      *series.Series // captures the row passed to UpdateSeries
+	updateErr    error
+	tagsCalled   int   // counts UpdateTags invocations
+	tagsCalledOn []int // captures the series IDs UpdateTags was called for
+	tagsChanged  bool
+	tagsErr      error
 }
 
 func (s *stubStore) GetSeries(_ context.Context, id int) (*series.Series, error) {
@@ -73,6 +77,14 @@ func (s *stubStore) UpdateSeries(_ context.Context, ns *series.Series, _ series.
 	cp := *ns
 	s.updated = &cp
 	return &cp, nil
+}
+
+func (s *stubStore) UpdateTags(_ context.Context, row *series.Series) (bool, error) {
+	s.tagsCalled++
+	if row != nil {
+		s.tagsCalledOn = append(s.tagsCalledOn, row.ID)
+	}
+	return s.tagsChanged, s.tagsErr
 }
 
 func mustNewService(t *testing.T, info *stubProvider, store *stubStore) *refreshseries.Service {
@@ -503,6 +515,66 @@ func TestRefreshAll_CtxCancelMidSweep_PropagatesCancel(t *testing.T) {
 	cancel() // pre-cancel
 	if err := svc.RefreshAll(ctx); !errors.Is(err, context.Canceled) {
 		t.Errorf("RefreshAll: want context.Canceled, got %v", err)
+	}
+}
+
+// J196 — RefreshSeriesInfo calls UpdateTags after successful persist.
+func TestRefreshSeriesInfo_CallsUpdateTags(t *testing.T) {
+	t.Parallel()
+	info := &stubProvider{merged: &series.Series{TvdbID: 100, Seasons: "[]"}}
+	store := &stubStore{
+		stored: &series.Series{ID: 42, TvdbID: 100, Seasons: "[]"},
+	}
+	svc := mustNewService(t, info, store)
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+		t.Fatalf("RefreshSeriesInfo: %v", err)
+	}
+	if store.tagsCalled != 1 {
+		t.Errorf("UpdateTags call count: got %d, want 1", store.tagsCalled)
+	}
+	if len(store.tagsCalledOn) != 1 || store.tagsCalledOn[0] != 42 {
+		t.Errorf("UpdateTags called for: got %v, want [42]", store.tagsCalledOn)
+	}
+}
+
+// J196 — RefreshSeriesInfo absorbs UpdateTags errors with a warn log.
+func TestRefreshSeriesInfo_UpdateTagsError_Absorbed(t *testing.T) {
+	t.Parallel()
+	info := &stubProvider{merged: &series.Series{TvdbID: 100, Seasons: "[]"}}
+	store := &stubStore{
+		stored:  &series.Series{ID: 42, TvdbID: 100, Seasons: "[]"},
+		tagsErr: errors.New("autotag down"),
+	}
+	svc := mustNewService(t, info, store)
+	if _, err := svc.RefreshSeriesInfo(t.Context(), 42); err != nil {
+		t.Errorf("RefreshSeriesInfo: UpdateTags error should be absorbed, got %v", err)
+	}
+}
+
+// J196 — RefreshAll calls UpdateTags for skipped rows too (C# :277-279).
+func TestRefreshAll_CallsUpdateTagsOnSkippedRows(t *testing.T) {
+	t.Parallel()
+	info := &stubProvider{merged: &series.Series{TvdbID: 100, Seasons: "[]"}}
+	now := func() time.Time { return time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC) }
+	// Row recently synced + status ended + no recent episodes → skip.
+	store := &stubStore{
+		all: []series.Series{
+			{
+				ID:           1,
+				TvdbID:       100,
+				SortTitle:    "alpha",
+				Status:       series.SeriesStatusEnded,
+				LastInfoSync: ptrTime(now().Add(-1 * time.Hour)),
+			},
+		},
+	}
+	svc, _ := refreshseries.NewService(info, store, nil, now, nil)
+	svc.SetEpisodeLookup(&stubEpisodeLookup{ /* no episodes — ended-no-recent skips */ })
+	if err := svc.RefreshAll(t.Context()); err != nil {
+		t.Fatalf("RefreshAll: %v", err)
+	}
+	if store.tagsCalled != 1 {
+		t.Errorf("UpdateTags call count (skipped row): got %d, want 1 (skipped rows still get UpdateTags)", store.tagsCalled)
 	}
 }
 
