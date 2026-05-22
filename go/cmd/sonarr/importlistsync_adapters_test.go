@@ -40,12 +40,13 @@ func TestHasSeasons_Malformed_TreatedAsEmpty(t *testing.T) {
 type stubSeriesInfoProvider struct {
 	got    int
 	merged *series.Series
+	eps    []episodes.Episode
 	err    error
 }
 
 func (s *stubSeriesInfoProvider) GetSeriesInfo(_ context.Context, tvdbID int) (*series.Series, []episodes.Episode, error) {
 	s.got = tvdbID
-	return s.merged, nil, s.err
+	return s.merged, s.eps, s.err
 }
 
 func TestAddSkyHookData_MergesSkyhookOverUserShape(t *testing.T) {
@@ -77,7 +78,7 @@ func TestAddSkyHookData_MergesSkyhookOverUserShape(t *testing.T) {
 		Seasons:          "", // empty → SkyHook seasons win
 	}
 
-	got, err := addSkyHookData(t.Context(), provider, user)
+	got, _, err := addSkyHookData(t.Context(), provider, user)
 	if err != nil {
 		t.Fatalf("addSkyHookData: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestAddSkyHookData_PreservesUserSeasonsWhenNonEmpty(t *testing.T) {
 		TvdbID:  200,
 		Seasons: `[{"seasonNumber":2,"monitored":true}]`, // user pre-picked S2
 	}
-	got, err := addSkyHookData(t.Context(), provider, user)
+	got, _, err := addSkyHookData(t.Context(), provider, user)
 	if err != nil {
 		t.Fatalf("addSkyHookData: %v", err)
 	}
@@ -153,7 +154,7 @@ func TestAddSkyHookData_ProviderErrorPropagates(t *testing.T) {
 	t.Parallel()
 	want := errors.New("skyhook unreachable")
 	provider := &stubSeriesInfoProvider{err: want}
-	_, err := addSkyHookData(t.Context(), provider, series.Series{TvdbID: 200})
+	_, _, err := addSkyHookData(t.Context(), provider, series.Series{TvdbID: 200})
 	if !errors.Is(err, want) {
 		t.Fatalf("err: got %v, want %v", err, want)
 	}
@@ -164,7 +165,7 @@ func TestAddSkyHookData_NilMergedReturnsError(t *testing.T) {
 	// Defensive — buggy provider returning (nil, nil, nil) should error
 	// rather than panic.
 	provider := &stubSeriesInfoProvider{merged: nil, err: nil}
-	_, err := addSkyHookData(t.Context(), provider, series.Series{TvdbID: 200})
+	_, _, err := addSkyHookData(t.Context(), provider, series.Series{TvdbID: 200})
 	if err == nil {
 		t.Fatal("addSkyHookData: want error on nil merged")
 	}
@@ -173,3 +174,48 @@ func TestAddSkyHookData_NilMergedReturnsError(t *testing.T) {
 // Compile-time assertion that [stubSeriesInfoProvider] satisfies the metadatasource
 // interface — keeps the test honest if the interface shape drifts.
 var _ metadatasource.SeriesInfoProvider = (*stubSeriesInfoProvider)(nil)
+
+// TestAddSkyHookData_ReturnsEpisodes — J190 verifies the previously-
+// dropped episode slice is now passed through. Caller seeds these
+// into episodes.Repo.InsertMany via the AddSeries loop's seeder.
+func TestAddSkyHookData_ReturnsEpisodes(t *testing.T) {
+	t.Parallel()
+	provider := &stubSeriesInfoProvider{
+		merged: &series.Series{TvdbID: 200, Title: "Show"},
+		eps: []episodes.Episode{
+			{SeasonNumber: 1, EpisodeNumber: 1, Title: "Pilot"},
+			{SeasonNumber: 1, EpisodeNumber: 2, Title: "Two"},
+		},
+	}
+	_, eps, err := addSkyHookData(t.Context(), provider, series.Series{TvdbID: 200})
+	if err != nil {
+		t.Fatalf("addSkyHookData: %v", err)
+	}
+	if len(eps) != 2 {
+		t.Fatalf("episodes count: got %d, want 2", len(eps))
+	}
+	if eps[0].EpisodeNumber != 1 || eps[1].EpisodeNumber != 2 {
+		t.Errorf("episode order/values not preserved: %+v", eps)
+	}
+}
+
+// stubEpisodeSeeder is a test double for the [episodeSeeder] narrow
+// interface — captures the seed-list so tests can assert SeriesID
+// stamping + InsertMany invocation.
+type stubEpisodeSeeder struct {
+	got       []*episodes.Episode
+	callCount int
+	err       error
+}
+
+func (s *stubEpisodeSeeder) InsertMany(_ context.Context, list []*episodes.Episode) error {
+	s.callCount++
+	if s.err != nil {
+		return s.err
+	}
+	s.got = append(s.got, list...)
+	return nil
+}
+
+// Compile-time assertion stub satisfies the interface.
+var _ episodeSeeder = (*stubEpisodeSeeder)(nil)

@@ -8,11 +8,21 @@ import (
 	"strings"
 	"time"
 
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/metadatasource"
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/organizer"
 	"sonarr.tv/sonarr/internal/series"
 )
+
+// episodeSeeder is the narrow slice of [*episodes.Repo] the
+// import-list adder reaches for to bulk-insert episode rows freshly
+// returned by the SkyHook GetSeriesInfo call. Defined here as an
+// interface so the test double can stub without dragging the whole
+// episodes.Repo construction surface into the adapter test.
+type episodeSeeder interface {
+	InsertMany(ctx context.Context, list []*episodes.Episode) error
+}
 
 // seriesLookupAdapter satisfies the importlists.SyncService
 // `seriesLookup` narrow interface (AllTvdbIDs) via the existing
@@ -56,6 +66,7 @@ type seriesAdderAdapter struct {
 	namingCfg  *namingconfig.Service
 	validator  *series.AddValidator              // optional; nil skips pre-insert validation
 	seriesInfo metadatasource.SeriesInfoProvider // optional; nil skips SkyHook TVDB-merge
+	episodes   episodeSeeder                     // optional; nil skips post-insert episode seeding
 	log        *slog.Logger
 	now        func() time.Time // overridable for deterministic tests
 }
@@ -99,15 +110,26 @@ func hasSeasons(seasons string) bool {
 // pollute the whole batch — the row is skipped with a warn log.
 //
 // ctx cancellation propagates verbatim.
-func addSkyHookData(ctx context.Context, provider metadatasource.SeriesInfoProvider, row series.Series) (series.Series, error) {
-	merged, _, err := provider.GetSeriesInfo(ctx, row.TvdbID)
+//
+// J190 — second return value carries the episode slice SkyHook
+// emitted alongside the Series. The C# AddSeriesService discards
+// these (RefreshSeriesService re-fetches them later when the
+// RefreshSeriesCommand fires). The Go-port shortcut: AddSeries's
+// caller seeds them inline post-insert via [episodes.Repo.InsertMany]
+// to avoid the double SkyHook hit while the real RefreshSeries
+// handler is still stubbed. When the RefreshSeries port lands
+// this seam stays in place — the seeder becomes idempotent (rows
+// the import-list path inserted skip the RefreshSeries reconcile),
+// or the inline seed gets removed in favour of the command pipe.
+func addSkyHookData(ctx context.Context, provider metadatasource.SeriesInfoProvider, row series.Series) (series.Series, []episodes.Episode, error) {
+	merged, eps, err := provider.GetSeriesInfo(ctx, row.TvdbID)
 	if err != nil {
-		return series.Series{}, err
+		return series.Series{}, nil, err
 	}
 	if merged == nil {
 		// Defensive: a provider that returns (nil, nil, nil) is buggy
 		// but we'd rather skip-with-warn than panic on the deref below.
-		return series.Series{}, errors.New("addSkyHookData: provider returned nil series")
+		return series.Series{}, nil, errors.New("addSkyHookData: provider returned nil series")
 	}
 	// Preserve caller-supplied Seasons when non-empty; otherwise the
 	// freshly-mapped SkyHook shape (which seeds Seasons from the
@@ -116,7 +138,7 @@ func addSkyHookData(ctx context.Context, provider metadatasource.SeriesInfoProvi
 		row.Seasons = merged.Seasons
 	}
 	merged.ApplyChanges(&row)
-	return *merged, nil
+	return *merged, eps, nil
 }
 
 // folderNameForSeries loads the SeriesFolderFormat from
@@ -176,8 +198,9 @@ func (a seriesAdderAdapter) AddSeries(ctx context.Context, batch []series.Series
 	}
 	for i := range batch {
 		row := batch[i]
+		var pendingEpisodes []episodes.Episode
 		if a.seriesInfo != nil {
-			merged, err := addSkyHookData(ctx, a.seriesInfo, row)
+			merged, eps, err := addSkyHookData(ctx, a.seriesInfo, row)
 			if err != nil {
 				// Matches the C# `AddSeriesService.AddSeries(List<Series>,
 				// ignoreErrors:true)` catch-and-continue arm at
@@ -192,6 +215,7 @@ func (a seriesAdderAdapter) AddSeries(ctx context.Context, batch []series.Series
 				continue
 			}
 			row = merged
+			pendingEpisodes = eps
 		}
 		series.PrepareForAdd(&row, nowFn(), folderName)
 		if a.validator != nil {
@@ -210,12 +234,35 @@ func (a seriesAdderAdapter) AddSeries(ctx context.Context, batch []series.Series
 				continue
 			}
 		}
-		if _, err := a.svc.AddSeries(ctx, &row); err != nil {
+		stored, err := a.svc.AddSeries(ctx, &row)
+		if err != nil {
 			a.log.LogAttrs(ctx, slog.LevelWarn,
 				"importlistsync: AddSeries: per-row AddSeries failed (batch continues)",
 				slog.Int("tvdbId", row.TvdbID),
 				slog.String("title", row.Title),
 				slog.Any("err", err))
+			continue
+		}
+		// Episode seeding — J190 short-circuit to avoid the double
+		// SkyHook fetch the RefreshSeriesService would otherwise do.
+		// Each captured episode gets SeriesID stamped from the
+		// freshly-inserted row before bulk-insert. Errors warn and
+		// continue — episode rows can be backfilled by a future
+		// RefreshSeries handler run if any of the inserts fail.
+		if a.episodes != nil && stored != nil && len(pendingEpisodes) > 0 {
+			seedList := make([]*episodes.Episode, 0, len(pendingEpisodes))
+			for j := range pendingEpisodes {
+				ep := pendingEpisodes[j]
+				ep.SeriesID = stored.ID
+				seedList = append(seedList, &ep)
+			}
+			if err := a.episodes.InsertMany(ctx, seedList); err != nil {
+				a.log.LogAttrs(ctx, slog.LevelWarn,
+					"importlistsync: AddSeries: episode seeding failed (batch continues)",
+					slog.Int("seriesId", stored.ID),
+					slog.Int("episodeCount", len(seedList)),
+					slog.Any("err", err))
+			}
 		}
 	}
 	return nil

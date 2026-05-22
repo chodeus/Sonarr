@@ -2910,6 +2910,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			namingCfg:  namingConfigSvc,
 			validator:  series.NewAddValidator(seriesRepo, seriesRepo),
 			seriesInfo: metadataSourceProxy,
+			episodes:   episodesRepo,
 			log:        logger,
 		},
 		nil, // IDTranslator wired once metadata-source M3b lands.
