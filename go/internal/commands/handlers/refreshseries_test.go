@@ -6,11 +6,14 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"sonarr.tv/sonarr/internal/commands"
 	"sonarr.tv/sonarr/internal/commands/handlers"
+	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 var refreshSeriesFixedTime = time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
@@ -38,7 +41,7 @@ func TestRefreshSeries_NilRunner_FallsBackToStubLog(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	h := handlers.NewRefreshSeries(nil, logger)
+	h := handlers.NewRefreshSeries(nil, nil, logger)
 
 	if err := h.Execute(t.Context(), `{}`); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -50,7 +53,7 @@ func TestRefreshSeries_NilRunner_FallsBackToStubLog(t *testing.T) {
 
 func TestRefreshSeries_NewWithNilLogger_Defaults(t *testing.T) {
 	t.Parallel()
-	h := handlers.NewRefreshSeries(nil, nil)
+	h := handlers.NewRefreshSeries(nil, nil, nil)
 	if err := h.Execute(t.Context(), ""); err != nil {
 		t.Errorf("Execute with default logger: %v", err)
 	}
@@ -59,7 +62,7 @@ func TestRefreshSeries_NewWithNilLogger_Defaults(t *testing.T) {
 func TestRefreshSeries_DispatchesPerID(t *testing.T) {
 	t.Parallel()
 	runner := &stubRefreshRunner{}
-	h := handlers.NewRefreshSeries(runner, slog.Default())
+	h := handlers.NewRefreshSeries(runner, nil, slog.Default())
 	if err := h.Execute(t.Context(), `{"seriesIds":[1,2,3]}`); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -73,7 +76,7 @@ func TestRefreshSeries_PerIDErrorAbsorbed(t *testing.T) {
 	runner := &stubRefreshRunner{err: errors.New("not found")}
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	h := handlers.NewRefreshSeries(runner, logger)
+	h := handlers.NewRefreshSeries(runner, nil, logger)
 	if err := h.Execute(t.Context(), `{"seriesIds":[1,2]}`); err != nil {
 		t.Fatalf("Execute should absorb per-id errors: %v", err)
 	}
@@ -92,7 +95,7 @@ func TestRefreshSeries_PerIDErrorAbsorbed(t *testing.T) {
 func TestRefreshSeries_EmptyBody_FiresRefreshAll(t *testing.T) {
 	t.Parallel()
 	runner := &stubRefreshRunner{}
-	h := handlers.NewRefreshSeries(runner, slog.Default())
+	h := handlers.NewRefreshSeries(runner, nil, slog.Default())
 	if err := h.Execute(t.Context(), ""); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -110,7 +113,7 @@ func TestRefreshSeries_EmptyBody_FiresRefreshAll(t *testing.T) {
 func TestRefreshSeries_EmptySeriesIDs_FiresRefreshAll(t *testing.T) {
 	t.Parallel()
 	runner := &stubRefreshRunner{}
-	h := handlers.NewRefreshSeries(runner, slog.Default())
+	h := handlers.NewRefreshSeries(runner, nil, slog.Default())
 	if err := h.Execute(t.Context(), `{"seriesIds":[]}`); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -119,10 +122,95 @@ func TestRefreshSeries_EmptySeriesIDs_FiresRefreshAll(t *testing.T) {
 	}
 }
 
+// J194 — SeriesRefreshStarting / SeriesRefreshComplete events fire
+// around every refresh batch (per-id and all-series).
+func TestRefreshSeries_PublishesRefreshEvents_PerIDPath(t *testing.T) {
+	t.Parallel()
+	runner := &stubRefreshRunner{}
+	bus := messaging.New(slog.Default())
+	defer bus.BeginShutdown()
+
+	var mu sync.Mutex
+	var seq []string // recorded event order
+	messaging.Subscribe(bus, "test.Starting", func(_ context.Context, _ series.SeriesRefreshStartingEvent) error {
+		mu.Lock()
+		seq = append(seq, "starting")
+		mu.Unlock()
+		return nil
+	})
+	messaging.Subscribe(bus, "test.Complete", func(_ context.Context, _ series.SeriesRefreshCompleteEvent) error {
+		mu.Lock()
+		seq = append(seq, "complete")
+		mu.Unlock()
+		return nil
+	})
+
+	h := handlers.NewRefreshSeries(runner, bus, slog.Default())
+	if err := h.Execute(t.Context(), `{"seriesIds":[1,2]}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seq) != 2 || seq[0] != "starting" || seq[1] != "complete" {
+		t.Errorf("event sequence: got %v, want [starting complete]", seq)
+	}
+}
+
+func TestRefreshSeries_PublishesRefreshEvents_AllSeriesPath(t *testing.T) {
+	t.Parallel()
+	runner := &stubRefreshRunner{}
+	bus := messaging.New(slog.Default())
+	defer bus.BeginShutdown()
+
+	var mu sync.Mutex
+	starting := 0
+	complete := 0
+	messaging.Subscribe(bus, "test.Starting", func(_ context.Context, _ series.SeriesRefreshStartingEvent) error {
+		mu.Lock()
+		starting++
+		mu.Unlock()
+		return nil
+	})
+	messaging.Subscribe(bus, "test.Complete", func(_ context.Context, _ series.SeriesRefreshCompleteEvent) error {
+		mu.Lock()
+		complete++
+		mu.Unlock()
+		return nil
+	})
+
+	h := handlers.NewRefreshSeries(runner, bus, slog.Default())
+	if err := h.Execute(t.Context(), ""); err != nil { // empty body → all-series sweep
+		t.Fatalf("Execute: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if starting != 1 || complete != 1 {
+		t.Errorf("event counts (all-series): starting=%d complete=%d, want 1 each", starting, complete)
+	}
+	if runner.refreshAll != 1 {
+		t.Errorf("RefreshAll not fired: count=%d", runner.refreshAll)
+	}
+}
+
+func TestRefreshSeries_NilBus_NoPublishButStillRefreshes(t *testing.T) {
+	t.Parallel()
+	runner := &stubRefreshRunner{}
+	h := handlers.NewRefreshSeries(runner, nil /* nil bus */, slog.Default())
+	if err := h.Execute(t.Context(), `{"seriesIds":[1]}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// Refresh still happens — bus is just optional.
+	if len(runner.got) != 1 || runner.got[0] != 1 {
+		t.Errorf("runner calls: got %v, want [1]", runner.got)
+	}
+}
+
 func TestRefreshSeries_MalformedBody_DegradesSilently(t *testing.T) {
 	t.Parallel()
 	runner := &stubRefreshRunner{}
-	h := handlers.NewRefreshSeries(runner, slog.Default())
+	h := handlers.NewRefreshSeries(runner, nil, slog.Default())
 	if err := h.Execute(t.Context(), `{not json`); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

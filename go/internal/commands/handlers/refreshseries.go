@@ -15,15 +15,18 @@
 //     follow-up).
 //
 // Deferred:
-//   - All-series sweep when SeriesIds is empty (C# `:249-282`). The
-//     C# implementation walks every row and checks ShouldRefresh; the
-//     Go-port currently no-ops on an empty list and logs.
-//   - SeriesRefreshStartingEvent / SeriesRefreshCompleteEvent.
 //   - UpdateTags + RescanSeries.
 //
 // Back-compat: when [Deps.RefreshSeries] is nil the handler falls
 // back to the J166 stub log so hosts that haven't wired the runner
-// still register the slot.
+// still register the slot. When the bus is nil, the
+// SeriesRefreshStarting/Complete event publishes are silently
+// skipped — the refresh itself still runs.
+//
+// Slice 5.J194 added the bus dep + the SeriesRefreshStartingEvent /
+// SeriesRefreshCompleteEvent emit pair that wraps every refresh
+// batch (both the per-id and the all-series sweep paths). Mirrors
+// C# RefreshSeriesService.cs:215 + :284.
 
 package handlers
 
@@ -32,6 +35,9 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+
+	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 // RefreshSeriesName is the registry key + Commands.Name +
@@ -51,16 +57,19 @@ type RefreshSeriesRunner interface {
 // RefreshSeries is the IExecute<RefreshSeriesCommand> port.
 type RefreshSeries struct {
 	runner RefreshSeriesRunner // optional; nil falls back to stub log
+	bus    *messaging.Bus      // optional; nil silently skips refresh-event publish
 	log    *slog.Logger
 }
 
 // NewRefreshSeries builds the handler. `runner` is optional — nil
-// preserves the J166 stub posture so old wiring still boots.
-func NewRefreshSeries(runner RefreshSeriesRunner, log *slog.Logger) *RefreshSeries {
+// preserves the J166 stub posture so old wiring still boots. `bus` is
+// optional — nil silently skips SeriesRefreshStarting/Complete event
+// publishes (the refresh itself still runs).
+func NewRefreshSeries(runner RefreshSeriesRunner, bus *messaging.Bus, log *slog.Logger) *RefreshSeries {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &RefreshSeries{runner: runner, log: log}
+	return &RefreshSeries{runner: runner, bus: bus, log: log}
 }
 
 // refreshSeriesCommandBody mirrors the wire shape of C#
@@ -92,27 +101,37 @@ func (h *RefreshSeries) Execute(ctx context.Context, body string) error {
 	}
 
 	trimmed := strings.TrimSpace(body)
+	var cmd refreshSeriesCommandBody
+	allSeriesSweep := false
 	if trimmed == "" || trimmed == "{}" || trimmed == "null" {
 		// J193 — empty body now fires the all-series sweep (was a
 		// stub-log no-op pre-J193). The 12h scheduled-task tick
 		// pushes RefreshSeries with no body, so this is the path
 		// the periodic refresh actually exercises.
-		return h.runner.RefreshAll(ctx)
-	}
-
-	var cmd refreshSeriesCommandBody
-	if err := json.Unmarshal([]byte(trimmed), &cmd); err != nil {
+		allSeriesSweep = true
+	} else if err := json.Unmarshal([]byte(trimmed), &cmd); err != nil {
 		h.log.LogAttrs(ctx, slog.LevelWarn,
 			"refreshseries: malformed body — skipping refresh",
 			slog.String("body", trimmed),
 			slog.Any("err", err))
 		return nil
-	}
-	if len(cmd.SeriesIDs) == 0 {
+	} else if len(cmd.SeriesIDs) == 0 {
 		// J193 — empty seriesIds list also fires the all-series
-		// sweep, matching C# `Execute` :249-282 where
-		// `message.SeriesIds.Any()` returning false jumps to the
-		// all-series branch.
+		// sweep, matching C# Execute :249-282 where SeriesIds.Any()
+		// == false jumps to the all-series branch.
+		allSeriesSweep = true
+	}
+
+	// J194 — wrap the batch with the C# SeriesRefreshStarting /
+	// SeriesRefreshComplete event pair (C# :215, :284). ManualTrigger
+	// mirrors C# CommandTrigger.Manual — the Go-port doesn't yet
+	// distinguish manual-vs-scheduled at the handler tier (no Trigger
+	// field on the wire shape today), so we default to false. When
+	// the Trigger split lands, the body parsing above can populate it.
+	h.publishRefreshStart(ctx, false /* ManualTrigger */)
+	defer h.publishRefreshComplete(ctx)
+
+	if allSeriesSweep {
 		return h.runner.RefreshAll(ctx)
 	}
 
@@ -128,4 +147,18 @@ func (h *RefreshSeries) Execute(ctx context.Context, body string) error {
 		}
 	}
 	return nil
+}
+
+func (h *RefreshSeries) publishRefreshStart(ctx context.Context, manualTrigger bool) {
+	if h.bus == nil {
+		return
+	}
+	_ = messaging.Publish(ctx, h.bus, series.SeriesRefreshStartingEvent{ManualTrigger: manualTrigger})
+}
+
+func (h *RefreshSeries) publishRefreshComplete(ctx context.Context) {
+	if h.bus == nil {
+		return
+	}
+	_ = messaging.Publish(ctx, h.bus, series.SeriesRefreshCompleteEvent{})
 }

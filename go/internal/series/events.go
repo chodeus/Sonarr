@@ -43,6 +43,23 @@ type SeriesDeletedEvent struct {
 	AddImportListExclusion bool
 }
 
+// SeriesRefreshStartingEvent ports `Tv/Events/SeriesRefreshStartingEvent.cs`.
+// Published by the RefreshSeries command handler at the start of a
+// refresh batch (whether per-id or all-series sweep). ManualTrigger is
+// true when the command came from a user-initiated action; false for
+// scheduled tasks. Subscribers (XemService, SceneMappingService in C#)
+// use this to drop caches before the refresh repopulates them.
+type SeriesRefreshStartingEvent struct {
+	ManualTrigger bool
+}
+
+// SeriesRefreshCompleteEvent ports `Tv/Events/SeriesRefreshCompleteEvent.cs`.
+// Published by the RefreshSeries command handler when the batch ends
+// (after all per-id or sweep iterations complete). C# carries no
+// payload; the Go-port mirrors. Useful for orchestration that needs to
+// run after refresh activity quiesces.
+type SeriesRefreshCompleteEvent struct{}
+
 // SeriesUpdatedEvent ports `Tv/Events/SeriesUpdatedEvent.cs`. Distinct
 // from [SeriesEditedEvent]: SeriesUpdatedEvent fires after a successful
 // RefreshSeries metadata sync (C# `RefreshSeriesService.cs:132` +

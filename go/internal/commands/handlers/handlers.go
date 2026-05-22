@@ -246,7 +246,7 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 		Handler: checkHealth,
 	})
 	registry.Register(RefreshSeriesName, commands.CommandSpec{
-		Handler: NewRefreshSeries(deps.RefreshSeries, deps.Log),
+		Handler: NewRefreshSeries(deps.RefreshSeries, deps.RssSyncBus, deps.Log),
 	})
 	registry.Register(RefreshMonitoredDownloadsName, commands.CommandSpec{
 		Handler: NewRefreshMonitoredDownloads(deps.MonitoredDownloadRefresher, deps.Log),
