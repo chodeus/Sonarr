@@ -72,6 +72,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodefilemoving"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
+	"sonarr.tv/sonarr/internal/episoderefreshed"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/extrafiles"
 	"sonarr.tv/sonarr/internal/faileddownloads"
@@ -2948,6 +2949,30 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	}
 	refreshSeriesSvc.SetEpisodeRefresher(refreshEpisodesSvc)
 
+	// J210 — wire episoderefreshed.Service at the composition root.
+	// Subscribes Handle to the bus's EpisodeInfoRefreshedEvent (which
+	// refreshEpisodesSvc just started publishing at J200). seriesSvc
+	// satisfies SeriesLookup via GetSeries; episodesSvc satisfies
+	// EpisodeLookup via GetEpisode. The EpisodeSearcher is a slice-
+	// taking wrapper around *indexersearch.Service.EpisodeSearch (the
+	// per-episode loop matches what J39's MissingEpisodeSearch handler
+	// already does internally — see episodeRefreshedSearcherAdapter
+	// below). Service.Search has no caller yet — the SeriesScannedEvent
+	// publisher + subscriber hookup is the next slice in this arc; once
+	// that lands, the rescan→re-search dispatch chain closes
+	// end-to-end (C# SeriesScannedHandler.cs:42).
+	_, err = episoderefreshed.NewService(
+		bus,
+		seriesSvc,
+		episodesSvc,
+		episodeRefreshedSearcherAdapter{svc: indexerSearchSvc, log: logger},
+		nil,
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("episoderefreshed service: %w", err)
+	}
+
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:                   cmdSvc,
 		Housekeeping:               houseSvc,
@@ -3239,6 +3264,34 @@ func (a handlerEpisodeSearchAdapter) EpisodeSearch(ctx context.Context, episodeI
 		return 0, err
 	}
 	return len(decisions), nil
+}
+
+// episodeRefreshedSearcherAdapter satisfies
+// episoderefreshed.EpisodeSearcher (J209) — a slice-taking dispatch
+// shape that C# `EpisodeRefreshedService.cs:47` provides via
+// `_commandQueueManager.Push(new EpisodeSearchCommand(...))`. The Go
+// port currently lacks a multi-episode EpisodeSearchCommand handler,
+// so we loop over IDs and dispatch each through the existing
+// per-episode `*indexersearch.Service.EpisodeSearch` (same pattern as
+// J39's MissingEpisodeSearch handler at handlers/missingepisodesearch.go:172).
+// Per-episode failures are warn-logged and swallowed; one bad indexer
+// query in a batch shouldn't abort the rest. Slice 5.J210.
+type episodeRefreshedSearcherAdapter struct {
+	svc *indexersearch.Service
+	log *slog.Logger
+}
+
+func (a episodeRefreshedSearcherAdapter) SearchEpisodes(ctx context.Context, episodeIDs []int) error {
+	for _, id := range episodeIDs {
+		if _, err := a.svc.EpisodeSearch(ctx, id, indexersearch.SearchSettings{}); err != nil {
+			a.log.LogAttrs(ctx, slog.LevelWarn,
+				"episoderefreshed: per-episode search failed",
+				slog.Int("episodeId", id),
+				slog.Any("err", err))
+			continue
+		}
+	}
+	return nil
 }
 
 // updateBranchAdapter narrows *configfile.Provider for the
