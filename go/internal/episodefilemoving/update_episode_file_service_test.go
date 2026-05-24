@@ -1,6 +1,7 @@
 package episodefilemoving_test
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodefilemoving"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -316,4 +318,180 @@ func TestChangeFileDateForFile_PreEpochClamp(t *testing.T) {
 func TestUpdateService_SatisfiesFileDateUpdater(t *testing.T) {
 	t.Parallel()
 	var _ episodefilemoving.FileDateUpdater = (*episodefilemoving.UpdateService)(nil)
+}
+
+// ---- J212 — HandleSeriesScanned tests ----
+
+type stubEpisodesLister struct {
+	rows []episodes.Episode
+	err  error
+}
+
+func (s *stubEpisodesLister) EpisodesWithFiles(_ context.Context, _ int) ([]episodes.Episode, error) {
+	return s.rows, s.err
+}
+
+type stubFileLookup struct {
+	files map[int]*episodefiles.File
+	errs  map[int]error
+}
+
+func (s *stubFileLookup) GetFile(_ context.Context, id int) (*episodefiles.File, error) {
+	if err, ok := s.errs[id]; ok {
+		return nil, err
+	}
+	return s.files[id], nil
+}
+
+func ptrInt(v int) *int { return &v }
+
+func TestHandleSeriesScanned_FileDateNone_NoOp(t *testing.T) {
+	t.Parallel()
+	mgr := &stubTimeMgr{}
+	svc := newSvc(t, mgr, stubCfg{value: "None"})
+	// Even with deps wired, FileDate=None must short-circuit before
+	// any episode lookup fires.
+	lister := &stubEpisodesLister{rows: []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(10)}}}
+	files := &stubFileLookup{files: map[int]*episodefiles.File{10: {ID: 10, RelativePath: "ep.mkv"}}}
+	svc.SetSeriesScannedDeps(lister, files)
+	err := svc.HandleSeriesScanned(t.Context(), mediafiles.SeriesScannedEvent{
+		Series: &series.Series{ID: 42, Path: "/tv/Show"},
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if mgr.setCalls != 0 {
+		t.Errorf("FileDate=None: set should not fire; got %d", mgr.setCalls)
+	}
+}
+
+func TestHandleSeriesScanned_NoDepsWired_DebugLogsAndSkips(t *testing.T) {
+	t.Parallel()
+	mgr := &stubTimeMgr{}
+	svc := newSvc(t, mgr, stubCfg{value: "LocalAirDate"})
+	// Don't call SetSeriesScannedDeps — both deps stay nil.
+	err := svc.HandleSeriesScanned(t.Context(), mediafiles.SeriesScannedEvent{
+		Series: &series.Series{ID: 42, Path: "/tv/Show"},
+	})
+	if err != nil {
+		t.Fatalf("err: %v (nil deps must be tolerated)", err)
+	}
+	if mgr.setCalls != 0 {
+		t.Errorf("nil deps: set should not fire; got %d", mgr.setCalls)
+	}
+}
+
+func TestHandleSeriesScanned_NilEvent_NoOp(t *testing.T) {
+	t.Parallel()
+	mgr := &stubTimeMgr{}
+	svc := newSvc(t, mgr, stubCfg{value: "LocalAirDate"})
+	svc.SetSeriesScannedDeps(&stubEpisodesLister{}, &stubFileLookup{})
+	if err := svc.HandleSeriesScanned(t.Context(), mediafiles.SeriesScannedEvent{Series: nil}); err != nil {
+		t.Fatalf("nil Series event: %v", err)
+	}
+}
+
+func TestHandleSeriesScanned_GroupsByFileID_OneCallPerFile(t *testing.T) {
+	t.Parallel()
+	air := time.Date(2026, 5, 24, 18, 0, 0, 0, time.UTC)
+	existing := time.Date(2010, 1, 1, 0, 0, 0, 0, time.UTC)
+	mgr := &stubTimeMgr{getReturn: existing}
+	svc := newSvc(t, mgr, stubCfg{value: "LocalAirDate"})
+
+	// Two episodes pointing at the SAME EpisodeFileID — a two-part
+	// story sharing one physical file. C# groups by EpisodeFileId so
+	// ChangeFileDate fires once; the Go-port mirrors via the groups map.
+	rows := []episodes.Episode{
+		{ID: 1, EpisodeFileID: ptrInt(10), AirDateUtc: ptrTime(air)},
+		{ID: 2, EpisodeFileID: ptrInt(10), AirDateUtc: ptrTime(air)},
+		{ID: 3, EpisodeFileID: ptrInt(11), AirDateUtc: ptrTime(air)},
+	}
+	svc.SetSeriesScannedDeps(
+		&stubEpisodesLister{rows: rows},
+		&stubFileLookup{files: map[int]*episodefiles.File{
+			10: {ID: 10, RelativePath: "two-parter.mkv"},
+			11: {ID: 11, RelativePath: "next.mkv"},
+		}},
+	)
+	err := svc.HandleSeriesScanned(t.Context(), mediafiles.SeriesScannedEvent{
+		Series: &series.Series{ID: 42, Path: "/tv/Show"},
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	// 2 distinct fileIDs → 2 FileSetLastWriteTime calls (one per file,
+	// not per episode).
+	if mgr.setCalls != 2 {
+		t.Errorf("set calls: got %d, want 2 (one per distinct fileID)", mgr.setCalls)
+	}
+}
+
+func TestHandleSeriesScanned_SkipsEpisodesWithNoFile(t *testing.T) {
+	t.Parallel()
+	air := time.Date(2026, 5, 24, 18, 0, 0, 0, time.UTC)
+	existing := time.Date(2010, 1, 1, 0, 0, 0, 0, time.UTC)
+	mgr := &stubTimeMgr{getReturn: existing}
+	svc := newSvc(t, mgr, stubCfg{value: "LocalAirDate"})
+	rows := []episodes.Episode{
+		{ID: 1, EpisodeFileID: nil, AirDateUtc: ptrTime(air)},
+		{ID: 2, EpisodeFileID: ptrInt(0), AirDateUtc: ptrTime(air)}, // zero pointee
+		{ID: 3, EpisodeFileID: ptrInt(10), AirDateUtc: ptrTime(air)},
+	}
+	svc.SetSeriesScannedDeps(
+		&stubEpisodesLister{rows: rows},
+		&stubFileLookup{files: map[int]*episodefiles.File{10: {ID: 10, RelativePath: "e3.mkv"}}},
+	)
+	err := svc.HandleSeriesScanned(t.Context(), mediafiles.SeriesScannedEvent{
+		Series: &series.Series{ID: 42, Path: "/tv/Show"},
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if mgr.setCalls != 1 {
+		t.Errorf("set calls: got %d, want 1 (only id=10 should be processed)", mgr.setCalls)
+	}
+}
+
+func TestHandleSeriesScanned_ListerError_Propagates(t *testing.T) {
+	t.Parallel()
+	mgr := &stubTimeMgr{}
+	svc := newSvc(t, mgr, stubCfg{value: "LocalAirDate"})
+	svc.SetSeriesScannedDeps(
+		&stubEpisodesLister{err: errors.New("DB exploded")},
+		&stubFileLookup{},
+	)
+	err := svc.HandleSeriesScanned(t.Context(), mediafiles.SeriesScannedEvent{
+		Series: &series.Series{ID: 42, Path: "/tv/Show"},
+	})
+	if err == nil {
+		t.Fatal("lister err: want propagated, got nil")
+	}
+}
+
+func TestHandleSeriesScanned_PerFileLookupError_AbsorbedAndContinues(t *testing.T) {
+	t.Parallel()
+	air := time.Date(2026, 5, 24, 18, 0, 0, 0, time.UTC)
+	existing := time.Date(2010, 1, 1, 0, 0, 0, 0, time.UTC)
+	mgr := &stubTimeMgr{getReturn: existing}
+	svc := newSvc(t, mgr, stubCfg{value: "LocalAirDate"})
+	rows := []episodes.Episode{
+		{ID: 1, EpisodeFileID: ptrInt(10), AirDateUtc: ptrTime(air)},
+		{ID: 2, EpisodeFileID: ptrInt(11), AirDateUtc: ptrTime(air)},
+	}
+	svc.SetSeriesScannedDeps(
+		&stubEpisodesLister{rows: rows},
+		&stubFileLookup{
+			files: map[int]*episodefiles.File{11: {ID: 11, RelativePath: "e2.mkv"}},
+			errs:  map[int]error{10: errors.New("missing row")},
+		},
+	)
+	err := svc.HandleSeriesScanned(t.Context(), mediafiles.SeriesScannedEvent{
+		Series: &series.Series{ID: 42, Path: "/tv/Show"},
+	})
+	if err != nil {
+		t.Fatalf("per-file lookup err must be absorbed: %v", err)
+	}
+	if mgr.setCalls != 1 {
+		t.Errorf("set calls: got %d, want 1 (id=11 still processed despite id=10 lookup failure)", mgr.setCalls)
+	}
 }

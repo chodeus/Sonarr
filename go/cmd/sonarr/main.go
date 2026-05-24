@@ -1974,6 +1974,22 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("episodefilemoving fileDate: %w", err)
 	}
+	// J212 — wire fileDateUpdater as a SeriesScannedEvent subscriber.
+	// Ports C# UpdateEpisodeFileService.cs:103-136 (the
+	// IHandle<SeriesScannedEvent> arm). episodesSvc satisfies
+	// EpisodesWithFilesLister via EpisodesWithFiles; episodeFilesSvc
+	// satisfies EpisodeFileLookup via GetFile. SetSeriesScannedDeps
+	// MUST run before the Subscribe so the handler has its deps when
+	// the first event fires. Per-series scan-complete now re-stamps
+	// every episode file's mtime to the air date — was previously
+	// only invoked via the move-on-import path (slice 3.BK FileDateUpdater
+	// seam), so post-J212 the user-configured FileDate setting also
+	// applies to pre-existing files discovered on disk during scan.
+	fileDateUpdater.SetSeriesScannedDeps(episodesSvc, episodeFilesSvc)
+	messaging.Subscribe(bus, "episodefilemoving.HandleSeriesScanned",
+		func(ctx context.Context, ev mediafiles.SeriesScannedEvent) error {
+			return fileDateUpdater.HandleSeriesScanned(ctx, ev)
+		})
 	// Slice 3.BL (queue [15]): the *videofileinforeader.Reader the
 	// MediaInfo updater wires below is also the MediaInfoReader the
 	// new ImportScriptService needs (the RenameRequested arm at C#

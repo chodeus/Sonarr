@@ -1,6 +1,7 @@
 package episodefilemoving
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -95,19 +97,44 @@ type FileDateConfigReader interface {
 // precision, so the C# code clamps and logs.
 var epochTime = time.Unix(0, 0).UTC()
 
-// UpdateService ports the public surface of `UpdateEpisodeFileService`
-// at `MediaFiles/UpdateEpisodeFileService.cs:22-44`. This slice
-// (3.BK, queue [14]) lands the [ChangeFileDateForFile] method only
-// — the IHandle<SeriesScannedEvent> subscriber at `:103-136`
-// remains unported (flagged for follow-up; orthogonal to the writer
-// path that already pulls ChangeFileDateForFile per-file via
-// [FileDateUpdater]).
+// EpisodesWithFilesLister narrows [episodes.Service] to the read
+// accessor [UpdateService.HandleSeriesScanned] uses to enumerate
+// episodes attached to a file on disk. `*episodes.Service` satisfies
+// via the method at `episodes/service.go:165`. Slice J212.
+type EpisodesWithFilesLister interface {
+	EpisodesWithFiles(ctx context.Context, seriesID int) ([]episodes.Episode, error)
+}
+
+// EpisodeFileLookup narrows [episodefiles.Service] to the by-id read
+// accessor [UpdateService.HandleSeriesScanned] uses to load each
+// EpisodeFile after grouping. `*episodefiles.Service` satisfies via
+// `episodefiles/service.go:209 GetFile`. Slice J212.
+type EpisodeFileLookup interface {
+	GetFile(ctx context.Context, id int) (*episodefiles.File, error)
+}
+
+// UpdateService ports `UpdateEpisodeFileService` at
+// `MediaFiles/UpdateEpisodeFileService.cs:22-136`. Slice 3.BK landed
+// [ChangeFileDateForFile] (the public IUpdateEpisodeFileService
+// surface at C# `:41-44`); slice J212 lands the
+// IHandle<SeriesScannedEvent> subscriber at C# `:103-136` via
+// [UpdateService.HandleSeriesScanned] + [UpdateService.SetSeriesScannedDeps].
 //
-// Goroutine-safe: stateless after construction.
+// `episodesLister` and `fileLookup` are optional — when either is nil
+// HandleSeriesScanned debug-logs + returns nil. This keeps the
+// existing slice-3.BK [NewUpdateService] signature stable; callers
+// that need the scan-subscriber behaviour wire the two extras post-
+// construction via SetSeriesScannedDeps.
+//
+// Goroutine-safe: stateless after construction (post-construction
+// setter must run before the bus subscription that drives
+// HandleSeriesScanned).
 type UpdateService struct {
-	disk FileTimeManager
-	cfg  FileDateConfigReader
-	log  *slog.Logger
+	disk           FileTimeManager
+	cfg            FileDateConfigReader
+	log            *slog.Logger
+	episodesLister EpisodesWithFilesLister
+	fileLookup     EpisodeFileLookup
 }
 
 // NewUpdateService binds the two narrow deps. nil-required-dep
@@ -234,4 +261,128 @@ func withoutTicks(t time.Time) time.Time {
 // fix avoids backup-tool churn by not rewriting sub-seconds to zero.
 func withTicksFrom(t, src time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), src.Nanosecond(), t.Location())
+}
+
+// SetSeriesScannedDeps wires the two optional dependencies that
+// [UpdateService.HandleSeriesScanned] reaches for. Must be called
+// before the bus subscription that drives HandleSeriesScanned —
+// either dep nil keeps the handler in debug-log-and-skip mode. Slice
+// J212.
+func (s *UpdateService) SetSeriesScannedDeps(episodesLister EpisodesWithFilesLister, fileLookup EpisodeFileLookup) {
+	if s == nil {
+		return
+	}
+	s.episodesLister = episodesLister
+	s.fileLookup = fileLookup
+}
+
+// HandleSeriesScanned ports C# `UpdateEpisodeFileService.cs:103-136`
+// — the IHandle<SeriesScannedEvent> subscriber that re-stamps every
+// episode file's mtime to its episode air date after a disk scan
+// completes.
+//
+// Decision tree (line-aligned with C#):
+//
+//   - `:105-108` if FileDate == None → no-op (the default config —
+//     most users never touch this).
+//   - `:110` fetch `EpisodesWithFiles(seriesId)` — only episodes with
+//     a non-nil EpisodeFileID participate.
+//   - `:115` group episodes by EpisodeFileId so multi-episode files
+//     (two-part stories sharing a single physical file) get a single
+//     ChangeFileDate call rather than one-per-episode.
+//   - `:120-125` for each group: load the EpisodeFile by ID and call
+//     [ChangeFileDateForFile]. The C# version reaches the file via the
+//     joined `episodesInFile.First().EpisodeFile` populated by the
+//     `QueryJoined<Episode, EpisodeFile>` shape; the Go port walks
+//     the lookup explicitly because [episodes.Service.EpisodesWithFiles]
+//     leaves the join unpopulated (see queries.go:189-194 doc-comment).
+//   - `:128-135` log a one-line summary of how many files were
+//     processed.
+//
+// Divergence note: C# tracks an "updated" count separate from the
+// total based on whether ChangeFileDate returned true (the file mtime
+// actually differed from the target). The Go-port's [ChangeFileDateForFile]
+// collapses the bool return to error (slice 3.BK established this
+// convention since the writer-side caller didn't read it). The
+// summary log here counts "processed" files — same semantic intent,
+// loses the no-op-vs-actual-change distinction. Restoring the bool
+// would touch every existing call site for marginal gain.
+//
+// Per-episode-file failures (lookup or write) are warn-logged and
+// swallowed so one bad file doesn't abort the whole series. C#
+// behaviour: ChangeFileDate's catch at `:94-97` already absorbs
+// disk-write errors; the Go-port adds the same posture for lookup
+// failures.
+//
+// Returns nil on the happy path. Returns a wrapped error only when
+// the initial EpisodesWithFiles query fails (the series-level
+// load — distinct from per-file errors).
+//
+// Slice J212.
+func (s *UpdateService) HandleSeriesScanned(ctx context.Context, ev mediafiles.SeriesScannedEvent) error {
+	if s == nil || ev.Series == nil {
+		return nil
+	}
+	if s.episodesLister == nil || s.fileLookup == nil {
+		s.log.LogAttrs(ctx, slog.LevelDebug,
+			"episodefilemoving: SeriesScanned deps not wired — skipping",
+			slog.Int("seriesId", ev.Series.ID),
+			slog.String("title", ev.Series.Title))
+		return nil
+	}
+	if ParseFileDateType(s.cfg.FileDate()) == FileDateNone {
+		return nil
+	}
+	eps, err := s.episodesLister.EpisodesWithFiles(ctx, ev.Series.ID)
+	if err != nil {
+		return fmt.Errorf("episodefilemoving: EpisodesWithFiles(%d): %w", ev.Series.ID, err)
+	}
+	groups := make(map[int][]episodes.Episode)
+	for _, ep := range eps {
+		if ep.EpisodeFileID == nil || *ep.EpisodeFileID == 0 {
+			continue
+		}
+		groups[*ep.EpisodeFileID] = append(groups[*ep.EpisodeFileID], ep)
+	}
+	if len(groups) == 0 {
+		s.log.LogAttrs(ctx, slog.LevelDebug,
+			"episodefilemoving: no episode files to update",
+			slog.Int("seriesId", ev.Series.ID),
+			slog.String("title", ev.Series.Title))
+		return nil
+	}
+	processed := 0
+	for fileID, group := range groups {
+		file, err := s.fileLookup.GetFile(ctx, fileID)
+		if err != nil {
+			s.log.LogAttrs(ctx, slog.LevelWarn,
+				"episodefilemoving: GetFile failed — skipping",
+				slog.Int("fileId", fileID),
+				slog.Any("err", err))
+			continue
+		}
+		if file == nil {
+			continue
+		}
+		if err := s.ChangeFileDateForFile(file, ev.Series, group); err != nil {
+			s.log.LogAttrs(ctx, slog.LevelWarn,
+				"episodefilemoving: ChangeFileDateForFile failed",
+				slog.Int("fileId", fileID),
+				slog.Any("err", err))
+			continue
+		}
+		processed++
+	}
+	if processed > 0 {
+		s.log.LogAttrs(ctx, slog.LevelInfo,
+			"episodefilemoving: processed file dates after scan",
+			slog.Int("files", processed),
+			slog.Int("of", len(groups)),
+			slog.String("series", ev.Series.Title))
+	} else {
+		s.log.LogAttrs(ctx, slog.LevelDebug,
+			"episodefilemoving: no file dates processed after scan",
+			slog.String("series", ev.Series.Title))
+	}
+	return nil
 }
