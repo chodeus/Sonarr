@@ -3027,15 +3027,26 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		})
 
 	if err := handlers.RegisterAll(registry, handlers.Deps{
-		Commands:                   cmdSvc,
-		Housekeeping:               houseSvc,
-		HealthCheck:                healthSvc,
-		RescanSeries:               mediafilesSvc,
-		Backup:                     backupSvc,
-		Lifecycle:                  lifecycleSvc,
-		ApplicationCheckUpdate:     updateChecker,
-		MissingEpisodeLister:       episodesSvc,
-		MissingEpisodeSearcher:     episodeSearchAdapter,
+		Commands:               cmdSvc,
+		Housekeeping:           houseSvc,
+		HealthCheck:            healthSvc,
+		RescanSeries:           mediafilesSvc,
+		Backup:                 backupSvc,
+		Lifecycle:              lifecycleSvc,
+		ApplicationCheckUpdate: updateChecker,
+		MissingEpisodeLister:   episodesSvc,
+		MissingEpisodeSearcher: episodeSearchAdapter,
+		// J215 — SeriesSearchCommand handler deps. seriesSvc satisfies
+		// SeriesSearchLookup via GetSeries; episodesSvc satisfies
+		// SeriesSearchEpisodesLister via GetEpisodesBySeries;
+		// MissingEpisodeSearcher above (the per-episode adapter)
+		// doubles as the per-episode dispatcher for the no-seasons-
+		// monitored branch. seasonSearchAdapter wraps
+		// *indexersearch.Service.SeasonSearch into the decisions-count
+		// SeasonSearcher shape — see the type at the bottom of this file.
+		SeriesSearchLookup:         seriesSvc,
+		SeriesSearchEpisodes:       episodesSvc,
+		SeriesSeasonSearcher:       seasonSearchAdapter{svc: indexerSearchSvc},
 		MonitoredDownloadRefresher: downloadMonitoringSvc,
 		RssSync:                    indexerSearchSvc,
 		RssSyncBus:                 bus,
@@ -3313,6 +3324,24 @@ type handlerEpisodeSearchAdapter struct {
 // path which uses bulk defaults (no UserInvokedSearch override).
 func (a handlerEpisodeSearchAdapter) EpisodeSearch(ctx context.Context, episodeID int) (int, error) {
 	decisions, err := a.svc.EpisodeSearch(ctx, episodeID, indexersearch.SearchSettings{})
+	if err != nil {
+		return 0, err
+	}
+	return len(decisions), nil
+}
+
+// seasonSearchAdapter narrows *indexersearch.Service.SeasonSearch
+// (returns []decisionengine.Decision) into the decisions-count shape
+// the SeriesSearch handler (slice 5.J215) wants. The third positional
+// argument is `missingOnly`; SearchSettings zero value matches the
+// C# `SeriesSearchService` bulk-default posture (no UserInvokedSearch
+// override; matches the J215 documented quality-profile divergence).
+type seasonSearchAdapter struct {
+	svc *indexersearch.Service
+}
+
+func (a seasonSearchAdapter) SeasonSearch(ctx context.Context, seriesID, seasonNumber int, missingOnly bool) (int, error) {
+	decisions, err := a.svc.SeasonSearch(ctx, seriesID, seasonNumber, missingOnly, indexersearch.SearchSettings{})
 	if err != nil {
 		return 0, err
 	}

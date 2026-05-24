@@ -148,6 +148,16 @@ type Deps struct {
 	MissingEpisodeLister   EpisodeMissingLister
 	MissingEpisodeSearcher EpisodeSearcher
 
+	// SeriesSearchLookup / SeriesSearchEpisodes / SeriesSeasonSearcher
+	// wire the IExecute<SeriesSearchCommand> handler (slice 5.J215).
+	// All four (incl. MissingEpisodeSearcher above which doubles as
+	// the per-episode dispatcher) optional — any nil falls back to the
+	// stub-log behaviour so hosts without a wired indexersearch.Service
+	// still register the command slot.
+	SeriesSearchLookup   SeriesSearchLookup
+	SeriesSearchEpisodes SeriesSearchEpisodesLister
+	SeriesSeasonSearcher SeasonSearcher
+
 	// MonitoredDownloadRefresher wires the
 	// IExecute<RefreshMonitoredDownloadsCommand> handler into the
 	// dispatcher with a real refresher. Slice 5.J37 (audit B.3).
@@ -256,6 +266,9 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	})
 	registry.Register(MissingEpisodeSearchName, commands.CommandSpec{
 		Handler: NewMissingEpisodeSearch(deps.MissingEpisodeLister, deps.MissingEpisodeSearcher, deps.Log),
+	})
+	registry.Register(SeriesSearchName, commands.CommandSpec{
+		Handler: NewSeriesSearch(deps.SeriesSearchLookup, deps.SeriesSearchEpisodes, deps.MissingEpisodeSearcher, deps.SeriesSeasonSearcher, deps.Log),
 	})
 	registry.Register(ImportListSyncName, commands.CommandSpec{
 		Handler: NewImportListSync(deps.ImportListSync, deps.Log),
