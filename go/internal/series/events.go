@@ -60,6 +60,25 @@ type SeriesRefreshStartingEvent struct {
 // run after refresh activity quiesces.
 type SeriesRefreshCompleteEvent struct{}
 
+// SeriesAddCompletedEvent ports `Tv/Events/SeriesAddCompletedEvent.cs`.
+// Published by the SeriesScannedHandler post-add-actions arm (C#
+// `Tv/SeriesScannedHandler.cs:49`) after a freshly-added series
+// finishes its first disk scan AND the per-episode monitor cascade +
+// search-command pushes complete. Distinct from [SeriesAddedEvent]
+// (which fires immediately on insert from `series.Service.Add`):
+// SeriesAddCompletedEvent fires only after the post-add lifecycle
+// fully settles — the right moment for notification providers to
+// announce "series added" to users.
+//
+// C# subscriber: NotificationService at
+// `src/NzbDrone.Core/Notifications/NotificationService.cs:25 +
+// :420`. The Go-port adds the type for slice 5.J216 (post-add-actions
+// arm port) — the notification subscriber lands when the notification
+// service ports its IHandle<SeriesAddCompletedEvent> arm.
+type SeriesAddCompletedEvent struct {
+	Series *Series
+}
+
 // SeriesUpdatedEvent ports `Tv/Events/SeriesUpdatedEvent.cs`. Distinct
 // from [SeriesEditedEvent]: SeriesUpdatedEvent fires after a successful
 // RefreshSeries metadata sync (C# `RefreshSeriesService.cs:132` +

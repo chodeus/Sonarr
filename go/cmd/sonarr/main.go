@@ -72,6 +72,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodefilemoving"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
+	"sonarr.tv/sonarr/internal/episodemonitored"
 	"sonarr.tv/sonarr/internal/episoderefreshed"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/extrafiles"
@@ -114,6 +115,7 @@ import (
 	"sonarr.tv/sonarr/internal/scenemappings"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/seriesadd"
 	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
@@ -3025,6 +3027,37 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			}
 			return episodeRefreshedSvc.Search(ctx, ev.Series.ID)
 		})
+
+	// J216 — SeriesScannedHandler post-add-actions arm (C# AddOptions!=null
+	// branch of HandleScanEvents at SeriesScannedHandler.cs:47-73).
+	// seriesadd.Service runs the 4-step sequence when a freshly-added
+	// series completes its first scan: (1) episode monitored cascade
+	// via episodemonitored.Service (J213); (2) publish
+	// series.SeriesAddCompletedEvent; (3) push the right search
+	// command based on AddOptions search flags (SeriesSearch when both
+	// flags set per J215, MissingEpisodeSearch when only-Missing per
+	// J39, CutoffUnmet-only branch DEFERRED — handler not yet ported);
+	// (4) clear AddOptions via series.Service.RemoveAddOptions.
+	// AddOptions == nil branch is independently handled by the J211
+	// episoderefreshed subscribers above — each subscriber gates the
+	// opposite way so the two paths never double-handle.
+	//
+	// Construct a separate episodemonitored.Service instance here for
+	// the seriesadd wiring — the J214 instance lives in host_wiring.go
+	// v3Routes scope. episodemonitored has no internal state so a
+	// per-consumer instance is fine; per the J214 doc-comment.
+	postAddCascader, err := episodemonitored.NewService(episodesSvc, seriesSvc, nil, logger)
+	if err != nil {
+		return fmt.Errorf("seriesadd cascader: %w", err)
+	}
+	seriesAddSvc, err := seriesadd.NewService(postAddCascader, cmdSvc, seriesSvc, bus, logger)
+	if err != nil {
+		return fmt.Errorf("seriesadd service: %w", err)
+	}
+	messaging.Subscribe(bus, "seriesadd.HandleSeriesScanned",
+		seriesAddSvc.HandleSeriesScanned)
+	messaging.Subscribe(bus, "seriesadd.HandleSeriesScanSkipped",
+		seriesAddSvc.HandleSeriesScanSkipped)
 
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:               cmdSvc,
