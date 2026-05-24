@@ -243,3 +243,49 @@ func TestDispatcher_ConnectionClose(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestDispatcher_ContextCancellation_PropagatesToHTTPClient is the
+// J218 / audit-row-C.1.h regression guard. C# upstream commit
+// 5477cd262 threaded CancellationToken through the HttpClient async
+// surface; the Go-port already uses NewRequestWithContext at the
+// dispatcher seam (see buildHTTPRequest), so the parity check is
+// purely a regression guard against a future refactor that
+// accidentally severs the ctx → request link. A future
+// http.NewRequest (without WithContext) at the dispatcher would make
+// this test no longer cancel mid-flight.
+//
+// J218.
+func TestDispatcher_ContextCancellation_PropagatesToHTTPClient(t *testing.T) {
+	// Server that sleeps long enough for us to cancel via ctx, then
+	// returns. The Dispatch call should return a cancellation error
+	// long before the server finishes.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			// Context was cancelled — return without writing so the
+			// client side sees the cancellation propagate.
+			return
+		case <-time.After(2 * time.Second):
+			_, _ = w.Write([]byte("too late"))
+		}
+	}))
+	defer srv.Close()
+
+	d := newTestDispatcher()
+	req, _ := NewRequest(srv.URL + "/")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel after a short delay so the request is in-flight.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err := d.Dispatch(ctx, req)
+	if err == nil {
+		t.Fatal("Dispatch returned nil err on cancelled ctx; want context.Canceled or wrapped")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v; want context.Canceled (or wrapping it)", err)
+	}
+}
