@@ -2,11 +2,14 @@ package v3
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"sonarr.tv/sonarr/internal/episodemonitored"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -26,7 +29,7 @@ func TestSeasonPassHandler_MonitoredToggle(t *testing.T) {
 	}}
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	SeasonPassHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
+	SeasonPassHandler(w, em, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -51,7 +54,7 @@ func TestSeasonPassHandler_MonitoringOptionsNone_ForcesMonitoredFalse(t *testing
 	}
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	SeasonPassHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
+	SeasonPassHandler(w, &fakeSeriesEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -73,7 +76,7 @@ func TestSeasonPassHandler_SeasonsToggleExistingJSON(t *testing.T) {
 	}}
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	SeasonPassHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
+	SeasonPassHandler(w, &fakeSeriesEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -111,7 +114,7 @@ func TestSeasonPassHandler_SeasonsSynthesizedWhenEmptyExistingJSON(t *testing.T)
 	}}
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	SeasonPassHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
+	SeasonPassHandler(w, &fakeSeriesEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -134,7 +137,7 @@ func TestSeasonPassHandler_NilMonitoredPreserves(t *testing.T) {
 	body := SeasonPassResource{Series: []SeasonPassSeriesResource{{ID: 1}}}
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	SeasonPassHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
+	SeasonPassHandler(w, &fakeSeriesEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -148,7 +151,7 @@ func TestSeasonPassHandler_EmptySeriesArray_400(t *testing.T) {
 	body := SeasonPassResource{Series: nil}
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	SeasonPassHandler(&fakeSeriesWriter{}, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
+	SeasonPassHandler(&fakeSeriesWriter{}, &fakeSeriesEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
 	}
@@ -167,7 +170,7 @@ func TestSeasonPassHandler_MissingSeries_404_NoWrites(t *testing.T) {
 	}}
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	SeasonPassHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
+	SeasonPassHandler(w, &fakeSeriesEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status: %d", rr.Code)
 	}
@@ -180,8 +183,101 @@ func TestSeasonPassHandler_MissingSeries_404_NoWrites(t *testing.T) {
 func TestSeasonPassHandler_MalformedJSON_400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	SeasonPassHandler(&fakeSeriesWriter{}, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader([]byte(`{bad`))))
+	SeasonPassHandler(&fakeSeriesWriter{}, &fakeSeriesEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader([]byte(`{bad`))))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// ---- J214 — cascader-wired path tests ----
+
+type fakeCascader struct {
+	calls []fakeCascaderCall
+	err   error
+}
+
+type fakeCascaderCall struct {
+	seriesID int
+	monitor  series.MonitorType
+}
+
+func (c *fakeCascader) SetEpisodeMonitoredStatus(_ context.Context, ser *series.Series, opts *episodemonitored.MonitoringOptions) error {
+	if c.err != nil {
+		return c.err
+	}
+	c.calls = append(c.calls, fakeCascaderCall{seriesID: ser.ID, monitor: opts.Monitor})
+	return nil
+}
+
+// TestSeasonPassHandler_CascaderWired_RoutesThroughCascader verifies J214's
+// happy path: when both a cascader is wired AND the body has
+// MonitoringOptions, the per-series persist is delegated to
+// cascader.SetEpisodeMonitoredStatus rather than svc.Update.
+func TestSeasonPassHandler_CascaderWired_RoutesThroughCascader(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 1, Monitored: true}}
+	w := &fakeSeriesWriter{rows: rows}
+	c := &fakeCascader{}
+	body := SeasonPassResource{
+		Series:            []SeasonPassSeriesResource{{ID: 1}},
+		MonitoringOptions: &MonitoringOptions{Monitor: "all"},
+	}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeasonPassHandler(w, &fakeSeriesEmitter{}, c).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(c.calls) != 1 {
+		t.Fatalf("cascader calls: got %d, want 1", len(c.calls))
+	}
+	if c.calls[0].seriesID != 1 || c.calls[0].monitor != series.MonitorAll {
+		t.Errorf("cascader call: got %+v, want {1, MonitorAll}", c.calls[0])
+	}
+}
+
+// TestSeasonPassHandler_CascaderWired_NoMonitoringOptions_FallsBackToUpdate
+// verifies the fallback: when the body has NO MonitoringOptions, the
+// cascader is NOT invoked (svc.Update fires through the existing path
+// since there's no Monitor option to cascade).
+func TestSeasonPassHandler_CascaderWired_NoMonitoringOptions_FallsBackToUpdate(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 1, Monitored: true}}
+	w := &fakeSeriesWriter{rows: rows}
+	c := &fakeCascader{}
+	body := SeasonPassResource{
+		Series: []SeasonPassSeriesResource{{ID: 1, Monitored: boolPtrSP(false)}},
+	}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeasonPassHandler(w, &fakeSeriesEmitter{}, c).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(c.calls) != 0 {
+		t.Errorf("cascader must NOT fire without MonitoringOptions; got %d calls", len(c.calls))
+	}
+	// fakeSeriesWriter.Update mutated the row (the fallback path).
+	if w.rows[0].Monitored {
+		t.Errorf("fallback path: svc.Update should have flipped Monitored to false")
+	}
+}
+
+// TestSeasonPassHandler_CascaderError_Propagates500 verifies that a
+// cascader failure surfaces as a 500 rather than silently swallowing.
+func TestSeasonPassHandler_CascaderError_Propagates500(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 1, Monitored: true}}
+	w := &fakeSeriesWriter{rows: rows}
+	c := &fakeCascader{err: errors.New("DB down")}
+	body := SeasonPassResource{
+		Series:            []SeasonPassSeriesResource{{ID: 1}},
+		MonitoringOptions: &MonitoringOptions{Monitor: "missing"},
+	}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeasonPassHandler(w, &fakeSeriesEmitter{}, c).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/seasonpass", bytes.NewReader(buf)))
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d, want 500", rr.Code)
 	}
 }

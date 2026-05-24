@@ -23,6 +23,7 @@ import (
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/episodemonitored"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/faileddownloads"
 	"sonarr.tv/sonarr/internal/frontend"
@@ -1107,6 +1108,24 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		exclusions:   exclusionsSvc,
 		logger:       logger,
 	}
+	// J214 — episodemonitored.Service satisfies
+	// apiv3.EpisodeMonitorCascader for the SeasonPassHandler. The
+	// SeasonPass handler hands per-series MonitoringOptions cascades
+	// off to this service which handles BOTH the per-episode toggle
+	// AND the series persist (matches C# SeasonPassController.cs:53).
+	// Constructing in v3Routes scope rather than threading through
+	// buildHostServer's already-37-param signature — episodemonitored
+	// has no internal state, so a fresh instance per host construct
+	// is fine.
+	episodeMonitoredSvc, err := episodemonitored.NewService(episodesSvc, seriesSvc, nil, logger)
+	if err != nil {
+		// Fail-soft: log and continue with nil cascader (the J214
+		// fallback path uses svc.Update directly without the cascade).
+		// A constructor failure here would mean episodesSvc or seriesSvc
+		// is nil — a wider regression that the rest of host_wiring would
+		// have caught already.
+		logger.Warn("v3 routes: episodemonitored.NewService failed; seasonpass cascade disabled", "err", err)
+	}
 	// 5.E3: blocklistSvc construction is repeated here (and in main.go
 	// at line 1979 for the IHandle subscribers) since both wires need
 	// a Service. Service is stateless, so two instances are equivalent.
@@ -1339,7 +1358,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "PUT", Path: "/api/v3/series/editor", Handler: apiv3.SeriesEditorUpdateHandler(seriesWriter, seriesEmitter)},
 		{Method: "DELETE", Path: "/api/v3/series/editor", Handler: apiv3.SeriesEditorDeleteHandler(seriesWriter, seriesEmitter)},
 		{Method: "POST", Path: "/api/v3/series/import", Handler: apiv3.SeriesImportHandler(seriesWriter, seriesEmitter)},
-		{Method: "POST", Path: "/api/v3/seasonpass", Handler: apiv3.SeasonPassHandler(seriesWriter, seriesEmitter)},
+		{Method: "POST", Path: "/api/v3/seasonpass", Handler: apiv3.SeasonPassHandler(seriesWriter, seriesEmitter, episodeMonitoredSvc)},
 		{Method: "GET", Path: "/api/v3/system/backup", Handler: apiv3.BackupListHandler(backupAdmin{svc: backupSvc})},
 		{Method: "DELETE", Path: "/api/v3/system/backup/{id}", Handler: apiv3.BackupDeleteHandler(backupAdmin{svc: backupSvc})},
 		{Method: "POST", Path: "/api/v3/system/backup/restore/{id}", Handler: apiv3.BackupRestoreHandler(backupAdmin{svc: backupSvc})},

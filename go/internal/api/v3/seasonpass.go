@@ -8,10 +8,28 @@ import (
 	"net/http"
 	"strings"
 
+	"sonarr.tv/sonarr/internal/episodemonitored"
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/signalr"
 )
+
+// EpisodeMonitorCascader is the narrow seam through which the
+// season-pass handler can hand the per-series MonitoringOptions cascade
+// off to [episodemonitored.Service]. Optional dependency — when nil,
+// SeasonPassHandler falls back to a direct svc.Update with no
+// per-episode cascade (the pre-J214 behaviour, retained so older
+// tests + hosts that don't construct episodemonitored.Service keep
+// working).
+//
+// `*episodemonitored.Service` satisfies via its
+// SetEpisodeMonitoredStatus method, which both cascades per-episode
+// Monitored bookkeeping AND persists the series row via UpdateSeries
+// internally. When this seam is used the handler does NOT separately
+// call svc.Update.
+type EpisodeMonitorCascader interface {
+	SetEpisodeMonitoredStatus(ctx context.Context, ser *series.Series, opts *episodemonitored.MonitoringOptions) error
+}
 
 // SeasonPassResource is the wire shape for POST /api/v3/seasonpass.
 // Mirrors C# `Sonarr.Api.V3.SeasonPass.SeasonPassResource` at
@@ -49,8 +67,10 @@ type SeasonPassSeasonOnWrite struct {
 // `unmonitorSpecials` / `none` / `skip`.
 //
 // The `IgnoreEpisodesWith{File,outFiles}` booleans are consumed by
-// the per-episode SetEpisodeMonitoredStatus pass — DEFERRED at the
-// Go port (the episode-bulk-update service doesn't exist yet).
+// the LegacySetEpisodeMonitoredStatus arm (Monitor==Unknown) which
+// the Go-port's [episodemonitored.Service] explicitly defers (see
+// episodemonitored.Service package doc). They round-trip on the wire
+// but currently don't drive any cascade behaviour.
 type MonitoringOptions struct {
 	IgnoreEpisodesWithFiles    bool   `json:"ignoreEpisodesWithFiles"`
 	IgnoreEpisodesWithoutFiles bool   `json:"ignoreEpisodesWithoutFiles"`
@@ -81,17 +101,16 @@ type seasonPassSeasonOnDisk struct {
 //     matches a body entry.
 //  4. Persist via svc.Update.
 //
-// DEFERRED: the C# call to `_episodeMonitoredService.SetEpisodeMonitoredStatus`
-// at `:55` cascades per-episode Monitored bookkeeping based on the
-// MonitoringOptions enum (e.g. "Missing" sets Episode.Monitored =
-// (EpisodeFileID == 0)). The Go port's episodes.Service has no
-// bulk-set-monitored method yet — episode-level state will diverge
-// from the series-level Seasons[].Monitored until that cascade
-// ports. Series-level Monitored + Seasons[].Monitored DO update.
+// J214: when an [EpisodeMonitorCascader] is wired AND the body
+// includes MonitoringOptions, the per-series persist + per-episode
+// cascade routes through the cascader (which mirrors C# `:53`
+// `_episodeMonitoredService.SetEpisodeMonitoredStatus`). When the
+// cascader is nil OR the body has no MonitoringOptions, the handler
+// falls back to a direct svc.Update with no per-episode cascade.
 //
 // Returns 202 with `{}`. Missing series ids 404 the whole batch
 // (matches the C# `SingleOrDefault` which throws on missing).
-func SeasonPassHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
+func SeasonPassHandler(svc SeriesWriter, emitter SeriesEmitter, cascader EpisodeMonitorCascader) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := decodeSeasonPassBody(r)
 		if err != nil {
@@ -133,9 +152,30 @@ func SeasonPassHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
 				}
 				row.Seasons = updated
 			}
-			if err := svc.Update(r.Context(), row); err != nil {
-				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("seasonpass: update %d: %w", s.ID, err), nil)
-				return
+			// J214 cascader path: cascader handles BOTH the per-episode
+			// monitored cascade AND the series persist (matches C# :53).
+			// Fall back to the direct svc.Update when no cascader is
+			// wired OR when the body has no MonitoringOptions — pre-J214
+			// behaviour, preserved for hosts/tests that don't construct
+			// episodemonitored.Service. When the cascader IS used, the
+			// series-level Seasons[].Monitored entries set by
+			// updateSeasonsJSON above WILL be re-stamped by the cascader's
+			// per-episode→per-season cascade (this matches C# semantics:
+			// MonitoringOptions takes precedence over the body's Seasons[]
+			// overlay when both are present).
+			if cascader != nil && body.MonitoringOptions != nil {
+				cascadeOpts := &episodemonitored.MonitoringOptions{
+					Monitor: series.ParseMonitorTypeName(body.MonitoringOptions.Monitor),
+				}
+				if err := cascader.SetEpisodeMonitoredStatus(r.Context(), row, cascadeOpts); err != nil {
+					httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("seasonpass: cascade %d: %w", s.ID, err), nil)
+					return
+				}
+			} else {
+				if err := svc.Update(r.Context(), row); err != nil {
+					httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("seasonpass: update %d: %w", s.ID, err), nil)
+					return
+				}
 			}
 			res := ToSeriesResource(*row)
 			signalr.FireAndLog(httperr.LoggerFromRequest(r), "series", "updated", func() error {

@@ -88,11 +88,16 @@ func (m *MonitorType) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
-	*m = parseMonitorTypeName(s)
+	*m = ParseMonitorTypeName(s)
 	return nil
 }
 
-func parseMonitorTypeName(s string) MonitorType {
+// ParseMonitorTypeName parses a C# MonitorTypes enum-identifier string
+// (case-insensitive) into the typed enum. Unknown / empty input
+// returns [MonitorUnknown]. Exported so external packages (e.g.
+// `internal/api/v3` which converts wire-form camelCase strings) can
+// reuse the same parser the AddOptions UnmarshalJSON uses.
+func ParseMonitorTypeName(s string) MonitorType {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "unknown":
 		return MonitorUnknown
