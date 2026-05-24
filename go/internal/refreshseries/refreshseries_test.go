@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -923,5 +924,83 @@ func TestRescanSeries_AfterManualMode_ManualTrigger_CallsScan(t *testing.T) {
 	}
 	if scanner.callCount() != 1 || scanner.calls[0] != 42 {
 		t.Errorf("AfterManual+manual must call Scan; got %+v", scanner.calls)
+	}
+}
+
+// TestRefreshSeriesInfo_NormalisesPath verifies the J208 path-canonicalisation
+// wiring at C# `RefreshSeriesService.cs:118-124`. A series with a path
+// containing redundant separators + "."/".." segments should land in
+// the persisted row in its cleaned absolute form.
+func TestRefreshSeriesInfo_NormalisesPath(t *testing.T) {
+	t.Parallel()
+	info := &stubProvider{
+		merged: &series.Series{
+			TvdbID:  100,
+			Title:   "skyhook-title",
+			Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+			Status:  1,
+		},
+	}
+	store := &stubStore{
+		stored: &series.Series{
+			ID:      42,
+			TvdbID:  100,
+			Title:   "stale-title",
+			Path:    "/tmp/refresh/./test/../show",
+			Seasons: `[{"seasonNumber":1,"monitored":false}]`,
+		},
+	}
+	svc := mustNewService(t, info, store)
+
+	got, err := svc.RefreshSeriesInfo(t.Context(), 42, false)
+	if err != nil {
+		t.Fatalf("RefreshSeriesInfo: %v", err)
+	}
+	want := filepath.Clean("/tmp/refresh/./test/../show")
+	if got.Path != want {
+		t.Errorf("Path: got %q, want %q (cleaned)", got.Path, want)
+	}
+	if store.updated == nil || store.updated.Path != want {
+		t.Errorf("persisted Path: got %q, want %q", store.updated.Path, want)
+	}
+}
+
+// TestRefreshSeriesInfo_EmptyPath_AbsorbsError verifies the C# try/catch
+// posture at `:121-124`. A series with an empty Path triggers
+// normalizePath's empty-input error; the refresh should NOT abort —
+// the other refreshed fields still need to persist.
+func TestRefreshSeriesInfo_EmptyPath_AbsorbsError(t *testing.T) {
+	t.Parallel()
+	info := &stubProvider{
+		merged: &series.Series{
+			TvdbID:  100,
+			Title:   "skyhook-title",
+			Seasons: `[{"seasonNumber":1,"monitored":true}]`,
+			Status:  1,
+		},
+	}
+	store := &stubStore{
+		stored: &series.Series{
+			ID:      42,
+			TvdbID:  100,
+			Title:   "stale-title",
+			Path:    "", // triggers normalizePath error
+			Seasons: `[{"seasonNumber":1,"monitored":false}]`,
+		},
+	}
+	svc := mustNewService(t, info, store)
+
+	got, err := svc.RefreshSeriesInfo(t.Context(), 42, false)
+	if err != nil {
+		t.Fatalf("RefreshSeriesInfo: %v (path error must be absorbed)", err)
+	}
+	if got.Title != "skyhook-title" {
+		t.Errorf("Title not refreshed: got %q (path error must not block field copy)", got.Title)
+	}
+	if got.Path != "" {
+		t.Errorf("Path: got %q, want %q (unchanged when normalisation fails)", got.Path, "")
+	}
+	if store.updated == nil {
+		t.Fatal("UpdateSeries not called (path error must not block persist)")
 	}
 }

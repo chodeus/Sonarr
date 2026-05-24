@@ -330,6 +330,23 @@ func (s *Service) RefreshSeriesInfo(ctx context.Context, seriesID int, isManual 
 	utcNow := s.now().UTC()
 	row.LastInfoSync = &utcNow
 
+	// J208 — path canonicalisation per C# `RefreshSeriesService.cs:118-124`.
+	// Two steps: DirectoryInfo.FullName canonicalisation (always-on) and
+	// GetActualCasing (Windows-only in C#; no-op on the Go-port until the
+	// dedicated Windows slice lands — see pathcasing.go). Errors absorbed
+	// via warn-log + continue mirroring C# try/catch at `:121-124` so a
+	// transient path issue doesn't bubble past the per-series-refresh
+	// boundary; the row's other refreshed fields still persist.
+	if normalized, err := normalizePath(row.Path); err != nil {
+		s.log.LogAttrs(ctx, slog.LevelWarn,
+			"refreshseries: couldn't normalise series path",
+			slog.Int("seriesId", row.ID),
+			slog.String("path", row.Path),
+			slog.Any("err", err))
+	} else {
+		row.Path = getActualCasing(normalized)
+	}
+
 	mergedSeasons, err := mergeSeasons(row.Seasons, merged.Seasons, row.MonitorNewItems == 0, s.log, ctx, row)
 	if err != nil {
 		// Decode failures on either side fall back to the SkyHook
