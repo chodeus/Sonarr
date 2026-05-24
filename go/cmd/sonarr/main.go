@@ -2957,11 +2957,8 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// taking wrapper around *indexersearch.Service.EpisodeSearch (the
 	// per-episode loop matches what J39's MissingEpisodeSearch handler
 	// already does internally — see episodeRefreshedSearcherAdapter
-	// below). Service.Search has no caller yet — the SeriesScannedEvent
-	// publisher + subscriber hookup is the next slice in this arc; once
-	// that lands, the rescan→re-search dispatch chain closes
-	// end-to-end (C# SeriesScannedHandler.cs:42).
-	_, err = episoderefreshed.NewService(
+	// below).
+	episodeRefreshedSvc, err := episoderefreshed.NewService(
 		bus,
 		seriesSvc,
 		episodesSvc,
@@ -2972,6 +2969,46 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("episoderefreshed service: %w", err)
 	}
+
+	// J211 — invoke episoderefreshed.Service.Search on every
+	// SeriesScanned[Skipped]Event the mediafiles package emits. Mirrors
+	// C# Tv/SeriesScannedHandler.cs:36-44 (the AddOptions==null branch
+	// of HandleScanEvents). Both events route to the same Search call
+	// in C# via the dual `IHandle<SeriesScannedEvent>` +
+	// `IHandle<SeriesScanSkippedEvent>` interfaces on
+	// SeriesScannedHandler. The Go-port's mediafiles.Service already
+	// publishes both — completedScanning at service.go:367 emits
+	// SeriesScannedEvent on the happy path, publishSkipped at
+	// service.go:380 emits SeriesScanSkippedEvent on the
+	// root-folder-missing/empty early-out paths.
+	//
+	// The AddOptions gate is upstream — episoderefreshed.Service.Handle
+	// short-circuits the cache write for AddOptions-set series (J209),
+	// so Search finds an empty cache and no-ops for those rows without
+	// any subscriber-side gate needed.
+	//
+	// The C# SeriesScannedHandler also runs post-add actions when
+	// AddOptions IS set (:47-73 — set monitored status, publish
+	// SeriesAddCompletedEvent, push per-add search commands, clear
+	// AddOptions). That branch is DEFERRED to its own slice — it
+	// touches an entirely different code path (episode-monitored
+	// service + per-add search dispatcher + SeriesAddCompletedEvent),
+	// none of which are pre-requisites for the J207-J210
+	// rescan-to-search chain that J211 closes.
+	messaging.Subscribe(bus, "episoderefreshed.SearchOnSeriesScanned",
+		func(ctx context.Context, ev mediafiles.SeriesScannedEvent) error {
+			if ev.Series == nil {
+				return nil
+			}
+			return episodeRefreshedSvc.Search(ctx, ev.Series.ID)
+		})
+	messaging.Subscribe(bus, "episoderefreshed.SearchOnSeriesScanSkipped",
+		func(ctx context.Context, ev mediafiles.SeriesScanSkippedEvent) error {
+			if ev.Series == nil {
+				return nil
+			}
+			return episodeRefreshedSvc.Search(ctx, ev.Series.ID)
+		})
 
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:                   cmdSvc,
