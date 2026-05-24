@@ -9,6 +9,31 @@ For closure narrative, see commit history `5.J1` … `5.J22` on `go-port`. The t
 
 # Open
 
+## C.1 — upstream/v5-develop catch-up merge (added 2026-05-24)
+
+**Status:** OPEN. `chodeus/Sonarr v5-develop` was force-pushed to fully sync with `Sonarr/Sonarr v5-develop` at HEAD `f0f59b95c` on 2026-05-24 (56 upstream commits + merge). `go-port` is currently **875 ahead / 58 behind** `v5-develop` — none of the upstream catch-up is in `go-port`'s history yet. This row captures both the merge itself and the new C#-side surface that go-port will need to mirror.
+
+**Per-slice protocol applies:** do NOT bundle these sub-items into one mega-slice. Each new C# endpoint / behaviour is its own slice with hard-gates and per-slice STATUS append.
+
+| Sub-item | C# reference | Notes / scope |
+|---|---|---|
+| **C.1.a** Absorb v5-develop into go-port | the merge commit itself | `git merge v5-develop` on `go-port`. Pre-merge sanity: run `go test ./...` + contract gates on baseline first, then run again post-merge to see what (if anything) breaks. Likely impact area: `frontend/` files served by `go/internal/host` SPA handlers — verify the React Router v7 + new bundle structure still gets served correctly. Skim merge diff for any new files under `src/Sonarr.Api.V5/` (the new endpoints listed below land in this dir). |
+| **C.1.b** Port v5 Custom Format controller | `src/Sonarr.Api.V5/CustomFormats/CustomFormatController.cs` + `CustomFormatBulkResource.cs` | New v5 controller (`v5` namespace, distinct from existing v3 `customformat`). Go-port's `internal/api/` currently exposes v3 only. New slice should add `internal/api/v5/customformat/` mirroring the v3 layout. Includes bulk PUT/DELETE endpoint per the BulkResource. |
+| **C.1.c** Port v5 Import List controller | `src/Sonarr.Api.V5/ImportLists/{ImportListController,ImportListResource,ImportListBulkResource}.cs` | Same pattern — new v5 surface. Likely overlaps with the existing v3 `importlist` handler; the v5 shape may add fields. |
+| **C.1.d** Port v5 Import List Settings controller | `src/Sonarr.Api.V5/Settings/{ImportListSettingsController,ImportListSettingsResource}.cs` | Separate from C.1.c — wraps the global import-list options (cleanup flags, etc.) as a settings resource. |
+| **C.1.e** Port v5 Auto-Tagging controller | `src/Sonarr.Api.V5/AutoTagging/{AutoTaggingController,AutoTaggingResource,AutoTaggingSpecificationSchema}.cs` | New endpoint family. Auto-tagging engine in `src/NzbDrone.Core/AutoTagging/` may need porting first if go-port doesn't already have it — confirm scope before slicing. |
+| **C.1.f** Pushover E2E encryption setting | upstream commit `e79077d5f` | Add optional end-to-end encryption field to Pushover notification provider settings + encrypt-on-send. Single-provider change; small slice. |
+| **C.1.g** Localhost auth bypass | upstream commit `0ea943cdb` | New "allow bypassing authentication for Localhost" config option. Touches the API key / forms-auth middleware in `go/internal/api/auth/`. Verify against C# `Sonarr.Http/Authentication/` for exact predicate. |
+| **C.1.h** CancellationToken on HttpClient async | upstream commit `5477cd262` | C# threaded `CancellationToken` through `IHttpClient.ExecuteAsync` / `GetAsync` / etc. Go-port already uses `context.Context` end-to-end via `ctx`, so this is mostly a parity-checkpoint slice: verify every Go-port HTTP call site that maps to a C# async caller propagates `ctx.Done()`. Likely a no-op or 1-2 file fix. |
+| **C.1.i** Re-run contract-replay diff baseline | `go/test/contract/` | The C# baseline shifted by 56 commits. Re-record (or re-diff against the published Sonarr container if recordings come from there) to see which Go-port goldens drift. Phase 6 readiness gate — Phase 6's shadow-traffic comparison only works if the byte-baseline is current. Likely will surface a handful of new known-failing rows that need C.1.b–C.1.e closures first. |
+| **C.1.j** Recently-aired refresh logging | upstream commit `b81de8570` | Trivial log-line addition when searching for recently-aired episodes after refresh. Tiny slice; pair with C.1.h or do as warmup. |
+
+**Sequencing:** C.1.a first (the actual merge — gates need to pass before any other sub-item makes sense). Then C.1.h + C.1.j as warm-ups (low-LOC). Then C.1.f + C.1.g as single-area behaviour ports. C.1.b → C.1.c → C.1.d → C.1.e as the new-endpoint family in dependency order (CustomFormat first since other v5 resources may reference it). C.1.i runs at the tail to capture all the parity gains.
+
+**Acceptance for closing C.1:** every sub-item lands or has an explicit deferred-with-reason note; PROGRESS.md "Current state" notes that go-port is current with v5-develop HEAD; contract-replay known-failing baseline either stays at 5 (J181 close baseline) or has documented additions.
+
+---
+
 ## B.2 — SignalR broadcast fan-out
 
 **Status:** CLOSED 2026-05-20 across 10 second-wave slices (5.J24–5.J32 wired, 5.J33 rejected). First wave (5.J20) wired `qualityprofile` + `customformat`. Second wave shipped 9 additional channels: `episodefile`-Update (5.J24), `command` distinct from system/task (5.J25), `episode` monitor (5.J26), `customformat`-Update third subscriber (5.J27), `blocklist` (5.J28), `delayprofile` (5.J29), `customfilter` (5.J30), `releaseprofile` (5.J31), `remotepathmapping` (5.J32). The `config/*` row was rejected (5.J33) — audit misread the UI surface; no SignalR `config/*` channels exist in either C# or Go.

@@ -35,7 +35,8 @@ HEAD at `J206` — all three frontend-smoke blockers closed (J204 `/initialize.j
 
 ## Next candidates (for next loop-run)
 
-1. **Frontend smoke pass 2** — boot the rebuilt Go binary, point a browser at `:8989`, click through every nav target. Identify the NEXT layer of issues (likely: SignalR connect/subscribe drift, mutation paths that touch unported services, asset URL rewriter when urlBase is non-empty).
+1. **C.1 upstream/v5-develop catch-up** — `chodeus/Sonarr v5-develop` force-synced to upstream HEAD `f0f59b95c` on 2026-05-24 (56 upstream commits); `go-port` is now 58 behind. New row in AUDIT_FIX_BACKLOG.md `Open` section with 10 sub-items (C.1.a–C.1.j). Sequencing: C.1.a merge first, then small warm-ups (C.1.h CancellationToken parity check, C.1.j refresh-log line), then single-area behaviour ports (C.1.f Pushover E2E, C.1.g Localhost auth bypass), then new v5 endpoint family (C.1.b CustomFormat → C.1.c ImportList → C.1.d ImportList Settings → C.1.e AutoTagging), then C.1.i contract-replay re-baseline. **Per-slice protocol: one sub-item = one slice.**
+2. **Frontend smoke pass 2** — boot the rebuilt Go binary, point a browser at `:8989`, click through every nav target. Identify the NEXT layer of issues (likely: SignalR connect/subscribe drift, mutation paths that touch unported services, asset URL rewriter when urlBase is non-empty). Now also needs to validate the React Router v7 upgrade (came in via C.1.a merge) renders correctly when served by the Go binary.
 3. **RefreshEpisodeService anime absolute-episode-number renumbering** (~80 LOC) — port C# `:43-46, :228-236` + `AbsoluteEpisodeNumberAdded` flag. Smallest impact since anime is a minority of series.
 4. **Path-normalisation via GetActualCasing** (~100 LOC) — port C# `RefreshSeriesService.cs:118-119`. Final B.3 sub-arc.
 5. **Image-download subscriber off SeriesAddedEvent** (~200 LOC, needs design pass) — wire `mediacover.Service.EnsureCovers`.
