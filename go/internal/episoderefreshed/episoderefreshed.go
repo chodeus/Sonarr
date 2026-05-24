@@ -235,12 +235,22 @@ func (s *Service) Handle(ctx context.Context, ev episodes.EpisodeInfoRefreshedEv
 	return nil
 }
 
-// Search ports C# `EpisodeRefreshedService.Search(int seriesId)` at
+// Search ports C# `EpisodeRefreshedService.Search` at
 // `EpisodeRefreshedService.cs:37-52`. Drains the per-series cache,
 // loads each episode, filters to those still missing a file on disk
 // (HasFile==false), and dispatches a search via [EpisodeSearcher].
 // The cache entry is removed regardless of dispatch outcome — matches
 // C# `:51 _searchCache.Remove(...)` which fires unconditionally.
+//
+// J217 forward-ports upstream commit `b81de8570` (2026-05-13: "Add
+// logging when searching for recently aired episodes after refresh")
+// — the C# Search signature changed from `Search(int seriesId)` to
+// `Search(Series series)` so the new info-log can carry the series
+// title. The Go-port preserves the by-id signature and loads the
+// series via [SeriesLookup] internally, then emits the same info-log
+// shape on the dispatch path. Independent of the full C.1.a v5
+// merge — this single behaviour can land now and the eventual merge
+// resolves clean.
 //
 // No-op if the cache is empty for `seriesID`. A nil searcher
 // short-circuits the dispatch (logs at debug) but still drains the
@@ -252,9 +262,11 @@ func (s *Service) Handle(ctx context.Context, ev episodes.EpisodeInfoRefreshedEv
 // missing row doesn't abort the dispatch — matches C# behaviour where
 // `_episodeService.GetEpisode(e)` would throw and propagate, but the
 // Go-port adopts the warn-and-continue posture established by J191's
-// per-id refresh loop.
+// per-id refresh loop. A series-lookup failure on the J217 title
+// fetch is also absorbed — falls back to a less-informative log line
+// rather than aborting the dispatch.
 //
-// J209.
+// J209 baseline + J217 info-log forward-port.
 func (s *Service) Search(ctx context.Context, seriesID int) error {
 	if s == nil {
 		return errors.New("episoderefreshed: nil Service")
@@ -302,6 +314,19 @@ func (s *Service) Search(ctx context.Context, seriesID int) error {
 			slog.Int("missingCount", len(missing)))
 		return nil
 	}
+
+	// J217 — load the series for the title-bearing info-log per upstream
+	// commit b81de8570. Lookup error degrades to a less-informative log;
+	// don't block the dispatch on a missing series row.
+	title := ""
+	if ser, err := s.seriesLookup.GetSeries(ctx, seriesID); err == nil && ser != nil {
+		title = ser.Title
+	}
+	s.log.LogAttrs(ctx, slog.LevelInfo,
+		"episoderefreshed: searching for episodes recently added or had absolute episode number added",
+		slog.Int("missingCount", len(missing)),
+		slog.String("seriesTitle", title),
+		slog.Int("seriesId", seriesID))
 
 	if err := s.searcher.SearchEpisodes(ctx, missing); err != nil {
 		return fmt.Errorf("episoderefreshed: SearchEpisodes(%v): %w", missing, err)

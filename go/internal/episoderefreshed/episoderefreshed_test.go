@@ -489,3 +489,44 @@ func TestNewService_NilEpisodeLookup_Errors(t *testing.T) {
 		t.Fatal("NewService(nil episodeLookup): want error, got nil")
 	}
 }
+
+// ---- J217 — series-lookup absorption for the info-log forward-port ----
+
+// TestSearch_SeriesLookupErr_AbsorbedDispatchStillRuns verifies that
+// the J217 GetSeries call (added for the title-bearing info-log) fails
+// gracefully — search still dispatches even when the series row can't
+// be loaded for the log title.
+func TestSearch_SeriesLookupErr_AbsorbedDispatchStillRuns(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	ser := &series.Series{ID: seriesID, Monitored: true}
+	eps := map[int]*episodes.Episode{
+		1: {ID: 1, EpisodeFileID: nil},
+	}
+	// Seed the cache via a successful Handle. Then break GetSeries for
+	// the Search-side call by clearing the lookup row.
+	sl := &stubSeriesLookup{rows: map[int]*series.Series{seriesID: ser}}
+	el := &stubEpisodeLookup{rows: eps}
+	searcher := &stubSearcher{}
+	svc, err := episoderefreshed.NewService(nil, sl, el, searcher, at(now), nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	ev := episodes.EpisodeInfoRefreshedEvent{
+		SeriesID: seriesID,
+		Added: []episodes.Episode{
+			{ID: 1, AirDateUtc: ptrTime(now.AddDate(0, 0, -3)), Monitored: true},
+		},
+	}
+	if err := svc.Handle(t.Context(), ev); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	// Now sabotage GetSeries to return an error on the J217 title fetch.
+	sl.err = errors.New("DB down — title fetch failed")
+	if err := svc.Search(t.Context(), seriesID); err != nil {
+		t.Fatalf("Search: %v (series-lookup err must be absorbed)", err)
+	}
+	if searcher.callCount() != 1 {
+		t.Errorf("dispatch must still run despite series-lookup err; searcher calls=%d", searcher.callCount())
+	}
+}
