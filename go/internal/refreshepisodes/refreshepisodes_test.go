@@ -876,3 +876,208 @@ func TestAdjustDirectToDvd_NilFirstAired_NoStamp(t *testing.T) {
 		t.Errorf("nil FirstAired: AirDateUtc=%v, want nil (FirstAired guard)", *store.inserted[0].AirDateUtc)
 	}
 }
+
+// ---- J207 — anime absolute-episode-number renumbering tests ----
+
+func intPtr(v int) *int { return &v }
+
+// TestAnime_FiltersDuplicateAbsoluteNumbers verifies the
+// mapAbsoluteEpisodeNumbers pass at C# `:228-236`. Two remote episodes
+// share abs=42 across S1 and S2; the reconcile should keep only the
+// S2 instance (highest-season wins) so the persisted set has one row
+// for abs=42, not two.
+func TestAnime_FiltersDuplicateAbsoluteNumbers(t *testing.T) {
+	t.Parallel()
+	store := &stubStore{} // empty existing
+	svc := mustNewSvc(t, store)
+	ser := &series.Series{
+		ID:         42,
+		SeriesType: series.SeriesTypeAnime,
+		Seasons:    `[{"seasonNumber":1,"monitored":true},{"seasonNumber":2,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AbsoluteEpisodeNumber: intPtr(42), Title: "S1-canon"},
+		{SeasonNumber: 2, EpisodeNumber: 7, AbsoluteEpisodeNumber: intPtr(42), Title: "S2-canon-winner"},
+		{SeasonNumber: 1, EpisodeNumber: 2, AbsoluteEpisodeNumber: intPtr(43), Title: "S1E2"},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	// abs=42 has two candidates; the S2 instance wins. abs=43 has one
+	// candidate. Net: 2 inserts.
+	if len(store.inserted) != 2 {
+		t.Fatalf("inserted=%d, want 2 (highest-season wins on abs collision)", len(store.inserted))
+	}
+	for _, ep := range store.inserted {
+		if ep.AbsoluteEpisodeNumber == nil {
+			t.Fatalf("inserted episode missing abs: %+v", ep)
+		}
+		if *ep.AbsoluteEpisodeNumber == 42 && ep.SeasonNumber != 2 {
+			t.Errorf("abs=42 winner: SeasonNumber=%d, want 2", ep.SeasonNumber)
+		}
+	}
+}
+
+// TestAnime_OrdersAbsThenNonAbsByEpisode verifies orderEpisodes at C#
+// `:238-251`. Three remote episodes: two with abs in shuffled order +
+// one without abs. After orderEpisodes the iteration order should be
+// [abs=1, abs=5, no-abs] — i.e. abs ASC first, then non-abs by
+// (season,episode) ASC. Observable via the insert order because
+// stubStore appends as called.
+func TestAnime_OrdersAbsThenNonAbsByEpisode(t *testing.T) {
+	t.Parallel()
+	store := &stubStore{}
+	svc := mustNewSvc(t, store)
+	ser := &series.Series{
+		ID:         42,
+		SeriesType: series.SeriesTypeAnime,
+		Seasons:    `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	// Input order is intentionally NOT sorted: shuffle abs5, no-abs, abs1.
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 5, AbsoluteEpisodeNumber: intPtr(5), Title: "Abs5"},
+		{SeasonNumber: 1, EpisodeNumber: 99, Title: "NoAbs"},
+		{SeasonNumber: 1, EpisodeNumber: 1, AbsoluteEpisodeNumber: intPtr(1), Title: "Abs1"},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	if len(store.inserted) != 3 {
+		t.Fatalf("inserted=%d, want 3", len(store.inserted))
+	}
+	wantTitles := []string{"Abs1", "Abs5", "NoAbs"}
+	for i, want := range wantTitles {
+		if got := store.inserted[i].Title; got != want {
+			t.Errorf("insert[%d]: title=%q, want %q (anime ordering abs ASC then non-abs)", i, got, want)
+		}
+	}
+}
+
+// TestAnime_StampsAbsoluteEpisodeNumberAddedFlag verifies the flag set
+// at C# `:64-69`. Existing row has abs=nil; remote provides abs=10. On
+// match, the updated row should carry AbsoluteEpisodeNumberAdded=true.
+func TestAnime_StampsAbsoluteEpisodeNumberAddedFlag(t *testing.T) {
+	t.Parallel()
+	store := &stubStore{
+		existing: []episodes.Episode{
+			{ID: 1, SeriesID: 42, SeasonNumber: 1, EpisodeNumber: 1, AbsoluteEpisodeNumber: nil},
+			{ID: 2, SeriesID: 42, SeasonNumber: 1, EpisodeNumber: 2, AbsoluteEpisodeNumber: intPtr(99) /* already had abs */},
+		},
+	}
+	svc := mustNewSvc(t, store)
+	ser := &series.Series{
+		ID:         42,
+		SeriesType: series.SeriesTypeAnime,
+		Seasons:    `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AbsoluteEpisodeNumber: intPtr(10), Title: "FirstEp"},
+		{SeasonNumber: 1, EpisodeNumber: 2, AbsoluteEpisodeNumber: intPtr(11), Title: "SecondEp"},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	if len(store.updated) != 2 {
+		t.Fatalf("updated=%d, want 2", len(store.updated))
+	}
+	// Find each updated row by ID and verify flag.
+	byID := map[int]episodes.Episode{}
+	for _, ep := range store.updated {
+		byID[ep.ID] = ep
+	}
+	if !byID[1].AbsoluteEpisodeNumberAdded {
+		t.Errorf("ID=1 (was abs=nil, remote abs=10): AbsoluteEpisodeNumberAdded=false, want true")
+	}
+	if byID[2].AbsoluteEpisodeNumberAdded {
+		t.Errorf("ID=2 (already had abs=99, remote abs=11): flag should NOT be set on existing-already-has-abs row")
+	}
+}
+
+// TestNonAnime_DoesNotStampAddedFlag verifies the anime gate at C#
+// `:65 series.SeriesType == SeriesTypes.Anime`. A Standard series with
+// the same nil→abs transition should NOT stamp the flag.
+func TestNonAnime_DoesNotStampAddedFlag(t *testing.T) {
+	t.Parallel()
+	store := &stubStore{
+		existing: []episodes.Episode{
+			{ID: 1, SeriesID: 42, SeasonNumber: 1, EpisodeNumber: 1, AbsoluteEpisodeNumber: nil},
+		},
+	}
+	svc := mustNewSvc(t, store)
+	ser := &series.Series{
+		ID:         42,
+		SeriesType: series.SeriesTypeStandard, // not anime
+		Seasons:    `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AbsoluteEpisodeNumber: intPtr(10), Title: "FirstEp"},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	if len(store.updated) != 1 {
+		t.Fatalf("updated=%d, want 1", len(store.updated))
+	}
+	if store.updated[0].AbsoluteEpisodeNumberAdded {
+		t.Errorf("Standard series: AbsoluteEpisodeNumberAdded=true, want false (anime-only flag)")
+	}
+	// And abs WAS copied (apply still runs).
+	if store.updated[0].AbsoluteEpisodeNumber == nil || *store.updated[0].AbsoluteEpisodeNumber != 10 {
+		t.Errorf("AbsoluteEpisodeNumber not copied from remote")
+	}
+}
+
+// TestNonAnime_PreservesStandardOrdering verifies orderEpisodes at C#
+// `:248-250`. Standard series sorts by (season, episode) regardless of
+// abs presence/order.
+func TestNonAnime_PreservesStandardOrdering(t *testing.T) {
+	t.Parallel()
+	store := &stubStore{}
+	svc := mustNewSvc(t, store)
+	ser := &series.Series{
+		ID:         42,
+		SeriesType: series.SeriesTypeStandard,
+		Seasons:    `[{"seasonNumber":1,"monitored":true},{"seasonNumber":2,"monitored":true}]`,
+	}
+	// Input shuffled: S2E1, S1E2, S1E1, S2E2.
+	remote := []episodes.Episode{
+		{SeasonNumber: 2, EpisodeNumber: 1, Title: "S2E1"},
+		{SeasonNumber: 1, EpisodeNumber: 2, Title: "S1E2"},
+		{SeasonNumber: 1, EpisodeNumber: 1, Title: "S1E1"},
+		{SeasonNumber: 2, EpisodeNumber: 2, Title: "S2E2"},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	wantTitles := []string{"S1E1", "S1E2", "S2E1", "S2E2"}
+	for i, want := range wantTitles {
+		if got := store.inserted[i].Title; got != want {
+			t.Errorf("insert[%d]: title=%q, want %q (standard (season,episode) ASC)", i, got, want)
+		}
+	}
+}
+
+// TestAnime_NoAbsCollision_PassesThroughUnchanged verifies the
+// mapAbsoluteEpisodeNumbers no-op path: an anime payload where every
+// abs is unique should not lose any episodes.
+func TestAnime_NoAbsCollision_PassesThroughUnchanged(t *testing.T) {
+	t.Parallel()
+	store := &stubStore{}
+	svc := mustNewSvc(t, store)
+	ser := &series.Series{
+		ID:         42,
+		SeriesType: series.SeriesTypeAnime,
+		Seasons:    `[{"seasonNumber":1,"monitored":true}]`,
+	}
+	remote := []episodes.Episode{
+		{SeasonNumber: 1, EpisodeNumber: 1, AbsoluteEpisodeNumber: intPtr(1), Title: "E1"},
+		{SeasonNumber: 1, EpisodeNumber: 2, AbsoluteEpisodeNumber: intPtr(2), Title: "E2"},
+		{SeasonNumber: 1, EpisodeNumber: 3, AbsoluteEpisodeNumber: intPtr(3), Title: "E3"},
+	}
+	if err := svc.RefreshEpisodeInfo(t.Context(), ser, remote); err != nil {
+		t.Fatalf("RefreshEpisodeInfo: %v", err)
+	}
+	if len(store.inserted) != 3 {
+		t.Errorf("inserted=%d, want 3 (no collisions → all pass through)", len(store.inserted))
+	}
+}

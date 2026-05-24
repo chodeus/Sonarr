@@ -4,7 +4,7 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Current state
 
-HEAD at `J206` — all three frontend-smoke blockers closed (J204 `/initialize.json` + J205 HTML template substitution + J206 SPA fallback exclusions). The React UI should now actually render against the Go binary. Second-pass smoke can identify the next layer of issues. All three gates clean.
+HEAD at `J207` — RefreshEpisodeService anime absolute-episode-number renumbering ported (C# `:43-46, :228-251`) + `AbsoluteEpisodeNumberAdded` transient flag (Episode.cs:49 + TableMapping.cs:132 ignore mirrored as `json:"-"` field on `episodes.Episode`). Closes the second-to-last B.3 sub-arc. All three gates clean.
 
 ## Closed this loop-run
 
@@ -19,6 +19,7 @@ HEAD at `J206` — all three frontend-smoke blockers closed (J204 `/initialize.j
 - **J204** — `/initialize.json` endpoint port (`host.InitializeJSONHandler`); React app can now fetch its bootstrap config; 3 tests.
 - **J205** — HTML template substitution middleware (`injectHTMLTemplates` for `__URL_BASE__`, `_THEME_`, `__MINI_PROFILER__`); `WithTheme` option; chained between static handler and `injectBaseHref`; 6 tests.
 - **J206** — SPA fallback exclusions in both `staticHandlerFS` + `staticHandler`; route gaps now 404 instead of leaking the SPA HTML; 4 test groups including regression guards for existing-file-with-dot + bare-SPA-route preservation.
+- **J207** — Anime absolute-episode-number renumbering: `mapAbsoluteEpisodeNumbers` filter (highest-season-wins on abs collisions) + `orderEpisodes` (abs ASC then non-abs by (season,episode) for anime; (season,episode) ASC for standard) + `AbsoluteEpisodeNumberAdded` transient flag on `episodes.Episode` (json:"-"); wired into `RefreshEpisodeInfo` between dedupe + reconcile; episodesPerSeason + hasExistingFinaleInLatestSeason now consume the ordered list; 6 tests.
 
 ## Previous loop-run (J187-J196)
 
@@ -37,6 +38,6 @@ HEAD at `J206` — all three frontend-smoke blockers closed (J204 `/initialize.j
 
 1. **C.1 upstream/v5-develop catch-up** — `chodeus/Sonarr v5-develop` force-synced to upstream HEAD `f0f59b95c` on 2026-05-24 (56 upstream commits); `go-port` is now 58 behind. New row in AUDIT_FIX_BACKLOG.md `Open` section with 10 sub-items (C.1.a–C.1.j). Sequencing: C.1.a merge first, then small warm-ups (C.1.h CancellationToken parity check, C.1.j refresh-log line), then single-area behaviour ports (C.1.f Pushover E2E, C.1.g Localhost auth bypass), then new v5 endpoint family (C.1.b CustomFormat → C.1.c ImportList → C.1.d ImportList Settings → C.1.e AutoTagging), then C.1.i contract-replay re-baseline. **Per-slice protocol: one sub-item = one slice.**
 2. **Frontend smoke pass 2** — boot the rebuilt Go binary, point a browser at `:8989`, click through every nav target. Identify the NEXT layer of issues (likely: SignalR connect/subscribe drift, mutation paths that touch unported services, asset URL rewriter when urlBase is non-empty). Now also needs to validate the React Router v7 upgrade (came in via C.1.a merge) renders correctly when served by the Go binary.
-3. **RefreshEpisodeService anime absolute-episode-number renumbering** (~80 LOC) — port C# `:43-46, :228-236` + `AbsoluteEpisodeNumberAdded` flag. Smallest impact since anime is a minority of series.
-4. **Path-normalisation via GetActualCasing** (~100 LOC) — port C# `RefreshSeriesService.cs:118-119`. Final B.3 sub-arc.
+3. **Path-normalisation via GetActualCasing** (~100 LOC) — port C# `RefreshSeriesService.cs:118-119`. Final B.3 sub-arc; with J207 closed this is the only remaining B.3 follow-up.
+4. **EpisodeRefreshedService port** — downstream consumer of `EpisodeInfoRefreshedEvent` + `AbsoluteEpisodeNumberAdded` flag (C# `EpisodeRefreshedService.cs`). Triggers re-search for renumbered episodes. ~150 LOC; subscribes to the event J200 already publishes.
 5. **Image-download subscriber off SeriesAddedEvent** (~200 LOC, needs design pass) — wire `mediacover.Service.EnsureCovers`.

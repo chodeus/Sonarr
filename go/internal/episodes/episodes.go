@@ -58,6 +58,15 @@ type Episode struct {
 	TvdbID                     *int       `json:"tvdbId"`
 	Runtime                    int        `json:"runtime"`
 	FinaleType                 string     `json:"finaleType"`
+
+	// AbsoluteEpisodeNumberAdded is a transient in-memory flag set by
+	// refreshepisodes.RefreshEpisodeInfo when an anime episode that
+	// previously had no AbsoluteEpisodeNumber now does. Consumed by the
+	// (not-yet-ported) EpisodeRefreshedService to drive a re-search of
+	// affected episodes. Mirrors C# `Episode.cs:49` paired with
+	// `TableMapping.cs:132` `.Ignore(e => e.AbsoluteEpisodeNumberAdded)`
+	// — never persisted, never on the wire (json:"-").
+	AbsoluteEpisodeNumberAdded bool `json:"-"`
 }
 
 // ErrNotFound is returned when no row matches.

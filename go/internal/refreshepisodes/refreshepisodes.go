@@ -21,8 +21,6 @@
 //     multi-episode air times by series.Runtime.
 //   - AdjustDirectToDvdAirDate (C# `:216-226`) — backfills AirDateUtc
 //     from series.FirstAired for ended-shows with no episode dates.
-//   - Anime absolute-episode-number renumbering (C# `:43-46, :228-236`)
-//     + AbsoluteEpisodeNumberAdded flag tracking.
 //   - Finale heuristic (C# `:95-107`) — stamps FinaleType=series for
 //     the last episode of the last season of recently-ended shows.
 //
@@ -37,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"sonarr.tv/sonarr/internal/episodes"
@@ -130,13 +129,27 @@ func (s *Service) RefreshEpisodeInfo(ctx context.Context, ser *series.Series, re
 	// key, matching C# DistinctBy at `:41`.
 	dupeFreeRemote := dedupeBySeasonEpisode(remote)
 
+	// J207 — anime-only abs-number filter at C# `:43-46`. Collapses
+	// cross-season duplicates that share an AbsoluteEpisodeNumber down
+	// to the highest-season instance. No-op for non-anime; also no-op
+	// for anime shows whose remote payload has no abs-number collisions.
+	if ser.SeriesType == series.SeriesTypeAnime {
+		dupeFreeRemote = mapAbsoluteEpisodeNumbers(dupeFreeRemote)
+	}
+
+	// J207 — explicit ordering pass at C# `:48`. For anime, abs-numbered
+	// episodes ASC then non-abs (season, episode) ASC; for standard,
+	// (season, episode) ASC. The downstream loop + episodesPerSeason
+	// count consume `ordered` rather than the input.
+	ordered := orderEpisodes(ser, dupeFreeRemote)
+
 	monitoredSeasons := monitoredSeasonsLookup(ser)
 
 	// J201 — finale-detection heuristic prep (C# :49-50, :104).
 	// latestSeason mirrors C# `seasons.MaxBy(s => s.SeasonNumber)` —
 	// the latest-known season for the series.
-	// episodesPerSeason counts episodes per season from the
-	// dupeFreeRemote list (C# `:49 episodesPerSeason`); used in the
+	// episodesPerSeason counts episodes per season from `ordered`
+	// (C# `:49 orderedEpisodes.GroupBy(...)`); used in the
 	// last-episode-of-season check.
 	// hasExistingFinaleInLatestSeason mirrors C# `:104` — when ANY
 	// episode in the latest season already carries a FinaleType
@@ -144,20 +157,28 @@ func (s *Service) RefreshEpisodeInfo(ctx context.Context, ser *series.Series, re
 	// stamped it), the heuristic skips. Pre-scanned across the batch
 	// so the decision is consistent regardless of iteration order.
 	latestSeason := latestSeasonNumber(ser)
-	episodesPerSeason := countEpisodesPerSeason(dupeFreeRemote)
-	hasExistingFinaleInLatestSeason := anyFinaleInSeason(dupeFreeRemote, latestSeason)
+	episodesPerSeason := countEpisodesPerSeason(ordered)
+	hasExistingFinaleInLatestSeason := anyFinaleInSeason(ordered, latestSeason)
 	nowUTC := s.now().UTC()
 
-	updateList := make([]*episodes.Episode, 0, len(dupeFreeRemote))
-	newList := make([]*episodes.Episode, 0, len(dupeFreeRemote))
+	isAnime := ser.SeriesType == series.SeriesTypeAnime
+	updateList := make([]*episodes.Episode, 0, len(ordered))
+	newList := make([]*episodes.Episode, 0, len(ordered))
 
-	for i := range dupeFreeRemote {
-		rem := &dupeFreeRemote[i]
+	for i := range ordered {
+		rem := &ordered[i]
 		key := seasonEpisodeKey{Season: rem.SeasonNumber, Episode: rem.EpisodeNumber}
 		if matched, ok := existingByKey[key]; ok && !matched.matched {
 			matched.matched = true
 			row := matched.ep
+			// J207 — capture pre-copy state for the AbsoluteEpisodeNumberAdded
+			// stamp at C# `:64-69`. Must read BEFORE applyRemoteFields
+			// overwrites row.AbsoluteEpisodeNumber.
+			existingHadAbs := row.AbsoluteEpisodeNumber != nil
 			applyRemoteFields(&row, rem)
+			if isAnime && !existingHadAbs && rem.AbsoluteEpisodeNumber != nil {
+				row.AbsoluteEpisodeNumberAdded = true
+			}
 			maybeStampSeriesFinale(&row, ser, latestSeason, episodesPerSeason, hasExistingFinaleInLatestSeason, nowUTC)
 			updateList = append(updateList, &row)
 			continue
@@ -246,6 +267,99 @@ func (s *Service) RefreshEpisodeInfo(ctx context.Context, ser *series.Series, re
 // existing-vs-remote matching.
 type seasonEpisodeKey struct {
 	Season, Episode int
+}
+
+// mapAbsoluteEpisodeNumbers ports C# `RefreshEpisodeService.cs:228-236`.
+// Anime-only filter applied to dupeFreeRemote BEFORE orderEpisodes /
+// reconcile. From episodes WITH an AbsoluteEpisodeNumber, keeps the
+// HIGHEST-season variant per unique abs number — mirrors C#
+// `OrderByDescending(SeasonNumber).DistinctBy(AbsoluteEpisodeNumber)`
+// where the stable sort guarantees the highest season wins on the
+// first-occurrence-wins distinct pass. Episodes WITHOUT an
+// AbsoluteEpisodeNumber pass through in their original input order,
+// concatenated after the distinct block.
+//
+// Used by anime shows where TheTVDB lists the same abs number in
+// multiple seasons (e.g. seasonal re-airing of the same content); the
+// higher-season instance is treated as canonical so the reconcile
+// doesn't pile multiple persisted rows onto the same abs key.
+//
+// J207.
+func mapAbsoluteEpisodeNumbers(in []episodes.Episode) []episodes.Episode {
+	withAbs := make([]episodes.Episode, 0, len(in))
+	withoutAbs := make([]episodes.Episode, 0)
+	for _, e := range in {
+		if e.AbsoluteEpisodeNumber != nil {
+			withAbs = append(withAbs, e)
+		} else {
+			withoutAbs = append(withoutAbs, e)
+		}
+	}
+	// Stable sort by SeasonNumber DESC so the first-occurrence-wins
+	// distinct pass below picks the highest-season instance per abs key.
+	sort.SliceStable(withAbs, func(i, j int) bool {
+		return withAbs[i].SeasonNumber > withAbs[j].SeasonNumber
+	})
+	seen := make(map[int]bool, len(withAbs))
+	distinct := make([]episodes.Episode, 0, len(withAbs))
+	for _, e := range withAbs {
+		abs := *e.AbsoluteEpisodeNumber
+		if seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		distinct = append(distinct, e)
+	}
+	out := make([]episodes.Episode, 0, len(distinct)+len(withoutAbs))
+	out = append(out, distinct...)
+	out = append(out, withoutAbs...)
+	return out
+}
+
+// orderEpisodes ports C# `RefreshEpisodeService.cs:238-251`. For anime,
+// abs-numbered episodes sort by AbsoluteEpisodeNumber ASC then concat
+// with non-abs episodes ordered by (SeasonNumber, EpisodeNumber) ASC.
+// For non-anime, all episodes order by (SeasonNumber, EpisodeNumber)
+// ASC. Stable sorts to keep input order for equal keys.
+//
+// The returned slice is a fresh copy — callers can index/pointer into
+// it without aliasing the input.
+//
+// J207.
+func orderEpisodes(ser *series.Series, in []episodes.Episode) []episodes.Episode {
+	out := make([]episodes.Episode, len(in))
+	copy(out, in)
+	if ser != nil && ser.SeriesType == series.SeriesTypeAnime {
+		withAbs := make([]episodes.Episode, 0, len(out))
+		withoutAbs := make([]episodes.Episode, 0)
+		for _, e := range out {
+			if e.AbsoluteEpisodeNumber != nil {
+				withAbs = append(withAbs, e)
+			} else {
+				withoutAbs = append(withoutAbs, e)
+			}
+		}
+		sort.SliceStable(withAbs, func(i, j int) bool {
+			return *withAbs[i].AbsoluteEpisodeNumber < *withAbs[j].AbsoluteEpisodeNumber
+		})
+		sort.SliceStable(withoutAbs, func(i, j int) bool {
+			if withoutAbs[i].SeasonNumber != withoutAbs[j].SeasonNumber {
+				return withoutAbs[i].SeasonNumber < withoutAbs[j].SeasonNumber
+			}
+			return withoutAbs[i].EpisodeNumber < withoutAbs[j].EpisodeNumber
+		})
+		merged := make([]episodes.Episode, 0, len(withAbs)+len(withoutAbs))
+		merged = append(merged, withAbs...)
+		merged = append(merged, withoutAbs...)
+		return merged
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].SeasonNumber != out[j].SeasonNumber {
+			return out[i].SeasonNumber < out[j].SeasonNumber
+		}
+		return out[i].EpisodeNumber < out[j].EpisodeNumber
+	})
+	return out
 }
 
 // dedupeBySeasonEpisode keeps the first occurrence per (season,
