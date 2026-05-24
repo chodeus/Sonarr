@@ -56,6 +56,14 @@ type Settings struct {
 	Ttl int `json:"ttl"`
 	// Sound is the optional per-notification sound name. C# `:53`.
 	Sound string `json:"sound"`
+	// EncryptionKey is the optional 64-char-hex AES-256 key for
+	// Pushover's end-to-end encryption flow. C# upstream commit
+	// `e79077d5f` added this at `PushoverSettings.cs:57`. When non-
+	// empty AND matches the regex `^[0-9a-fA-F]{64}$`, [Pushover]
+	// encrypts the title + message via [encryptField] and sets
+	// `encrypted=1` on the wire. When empty, payloads ship as
+	// plaintext (the existing pre-J219 behaviour). Slice 5.J219.
+	EncryptionKey string `json:"encryptionKey"`
 }
 
 // Validate runs the FluentValidation-equivalent rules from
@@ -82,6 +90,12 @@ func (s *Settings) Validate() []notifications.TestFailure {
 		out = append(out, notifications.TestFailure{
 			PropertyName: "Ttl",
 			ErrorMessage: "Ttl must be ≥ 0.",
+		})
+	}
+	if err := validateEncryptionKey(s.EncryptionKey); err != nil {
+		out = append(out, notifications.TestFailure{
+			PropertyName: "EncryptionKey",
+			ErrorMessage: err.Error(),
 		})
 	}
 	return out

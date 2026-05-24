@@ -2,6 +2,7 @@ package pushover_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -274,6 +275,108 @@ func TestPushover_RegisteredInDefault(t *testing.T) {
 	t.Parallel()
 	if !notifications.Default().Has(pushover.Implementation, pushover.ConfigContract) {
 		t.Errorf("registry missing %s/%s", pushover.Implementation, pushover.ConfigContract)
+	}
+}
+
+// J219 — Pushover end-to-end encryption integration tests.
+
+// TestPushover_EncryptionKey_AddsEncryptedFlagAndShipsCiphertext verifies
+// that when EncryptionKey is set, the wire payload (a) sets
+// `encrypted=1` on the form, (b) ships base64-encoded title + message
+// instead of plaintext, AND (c) the ciphertext envelope can be
+// decoded back to the original plaintext.
+func TestPushover_EncryptionKey_AddsEncryptedFlagAndShipsCiphertext(t *testing.T) {
+	t.Parallel()
+	const key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	var capturedForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		capturedForm = r.Form
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	prov := makePushoverForServerWithRewrite(t, srv, func(s *pushover.Settings) {
+		s.EncryptionKey = key
+	})
+	if err := prov.OnGrab(context.Background(), notifications.GrabMessage{Message: "secret payload"}); err != nil {
+		t.Fatalf("OnGrab: %v", err)
+	}
+	if capturedForm.Get("encrypted") != "1" {
+		t.Errorf("encrypted form param: got %q, want %q", capturedForm.Get("encrypted"), "1")
+	}
+	if capturedForm.Get("title") == "Episode Grabbed" {
+		t.Error("title shipped plaintext when EncryptionKey set; expected base64 envelope")
+	}
+	if capturedForm.Get("message") == "secret payload" {
+		t.Error("message shipped plaintext when EncryptionKey set; expected base64 envelope")
+	}
+	// Sanity: payloads are base64 (decode without error).
+	if _, err := base64.StdEncoding.DecodeString(capturedForm.Get("title")); err != nil {
+		t.Errorf("title not valid base64: %v", err)
+	}
+	if _, err := base64.StdEncoding.DecodeString(capturedForm.Get("message")); err != nil {
+		t.Errorf("message not valid base64: %v", err)
+	}
+}
+
+// TestPushover_NoEncryptionKey_PreservesPlaintextWire verifies the
+// pre-J219 plaintext behaviour is preserved when EncryptionKey is empty.
+func TestPushover_NoEncryptionKey_PreservesPlaintextWire(t *testing.T) {
+	t.Parallel()
+	var capturedForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		capturedForm = r.Form
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	prov := makePushoverForServerWithRewrite(t, srv, nil) // no EncryptionKey
+	if err := prov.OnGrab(context.Background(), notifications.GrabMessage{Message: "plain"}); err != nil {
+		t.Fatalf("OnGrab: %v", err)
+	}
+	if capturedForm.Get("encrypted") != "" {
+		t.Errorf("encrypted form param leaked: %q (want empty when EncryptionKey absent)", capturedForm.Get("encrypted"))
+	}
+	if capturedForm.Get("title") != "Episode Grabbed" {
+		t.Errorf("title: got %q, want plaintext", capturedForm.Get("title"))
+	}
+	if capturedForm.Get("message") != "plain" {
+		t.Errorf("message: got %q, want plaintext", capturedForm.Get("message"))
+	}
+}
+
+// TestSettings_EncryptionKey_RejectsMalformed verifies the J219 settings-
+// layer validator rejects non-64-hex strings + accepts empty.
+func TestSettings_EncryptionKey_RejectsMalformed(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		key     string
+		wantErr bool
+	}{
+		{"empty", "", false},
+		{"valid", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", false},
+		{"too-short", "0123abcd", true},
+		{"non-hex", "g123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := pushover.Settings{UserKey: "u", EncryptionKey: tc.key}
+			fails := s.Validate()
+			hasEncErr := false
+			for _, f := range fails {
+				if f.PropertyName == "EncryptionKey" {
+					hasEncErr = true
+				}
+			}
+			if hasEncErr != tc.wantErr {
+				t.Errorf("hasEncryptionKeyErr: got %v, want %v (fails=%+v)", hasEncErr, tc.wantErr, fails)
+			}
+		})
 	}
 }
 

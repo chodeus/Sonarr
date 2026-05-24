@@ -34,6 +34,30 @@ var ErrSendFailed = errors.New("pushover: send failed")
 // constant — matches the C# behaviour where the cloned-app default
 // token at the settings UI fills in the same value.
 func sendNotification(ctx context.Context, doer httpDoer, settings *Settings, title, message string) error {
+	// J219 — Pushover end-to-end encryption per upstream commit
+	// e79077d5f. When EncryptionKey is set the title + message ship
+	// as base64-encoded AES-256-CBC envelopes + the form gets the
+	// `encrypted=1` flag. Pushover's client decrypts on-device using
+	// the same key. Empty EncryptionKey preserves the pre-J219
+	// plaintext path.
+	encrypted := strings.TrimSpace(settings.EncryptionKey) != ""
+	if encrypted {
+		key, err := hexStringToBytes(settings.EncryptionKey)
+		if err != nil {
+			return fmt.Errorf("pushover: parse EncryptionKey: %w (cause: %w)", ErrSendFailed, err)
+		}
+		encTitle, err := encryptField(title, key)
+		if err != nil {
+			return fmt.Errorf("pushover: encrypt title: %w (cause: %w)", ErrSendFailed, err)
+		}
+		encMsg, err := encryptField(message, key)
+		if err != nil {
+			return fmt.Errorf("pushover: encrypt message: %w (cause: %w)", ErrSendFailed, err)
+		}
+		title = encTitle
+		message = encMsg
+	}
+
 	form := url.Values{}
 	token := strings.TrimSpace(settings.ApiKey)
 	if token == "" {
@@ -45,6 +69,9 @@ func sendNotification(ctx context.Context, doer httpDoer, settings *Settings, ti
 	form.Set("title", title)
 	form.Set("message", message)
 	form.Set("priority", strconv.Itoa(settings.Priority))
+	if encrypted {
+		form.Set("encrypted", "1")
+	}
 	if Priority(settings.Priority) == PriorityEmergency {
 		form.Set("retry", strconv.Itoa(settings.Retry))
 		form.Set("expire", strconv.Itoa(settings.Expire))
