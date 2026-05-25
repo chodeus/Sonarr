@@ -168,6 +168,23 @@ func TestRequireAPIKeyLocalBypass(t *testing.T) {
 		// Mode = Enabled (default) → reject local IP too.
 		{"mode_enabled_no_bypass", policyResolver{key: "secret", mode: "Enabled"}, "127.0.0.1:5544", 401},
 		// Mode = DisabledForLocalAddresses but valid API key supplied — still 200 (key wins).
+
+		// DisabledForLocalhost (C.1.g) — strict IsLoopback only.
+		// Loopback IPv4 / IPv6 → bypass.
+		{"localhost_v4_bypass", policyResolver{key: "secret", mode: "DisabledForLocalhost"}, "127.0.0.1:5544", 200},
+		{"localhost_v4_127_subnet_bypass", policyResolver{key: "secret", mode: "DisabledForLocalhost"}, "127.0.0.55:5544", 200},
+		{"localhost_v6_bypass", policyResolver{key: "secret", mode: "DisabledForLocalhost"}, "[::1]:5544", 200},
+		// LAN / link-local / CGNAT → reject under Localhost mode
+		// (only the broader DisabledForLocalAddresses mode covers them).
+		{"localhost_rejects_lan_class_c", policyResolver{key: "secret", mode: "DisabledForLocalhost"}, "192.168.1.5:5544", 401},
+		{"localhost_rejects_lan_class_a", policyResolver{key: "secret", mode: "DisabledForLocalhost"}, "10.0.0.3:5544", 401},
+		{"localhost_rejects_link_local", policyResolver{key: "secret", mode: "DisabledForLocalhost"}, "169.254.10.5:5544", 401},
+		// CGNAT trust flag MUST NOT extend Localhost mode (C# `:39-47`
+		// has no CGNAT branch — it's `DisabledForLocalAddresses` only).
+		{"localhost_ignores_cgnat_trust", policyResolver{key: "secret", mode: "DisabledForLocalhost", trustCgnat: true}, "100.64.0.1:5544", 401},
+		{"localhost_rejects_public_ip", policyResolver{key: "secret", mode: "DisabledForLocalhost"}, "8.8.8.8:5544", 401},
+		// Mode-string case-insensitivity (uses strings.EqualFold).
+		{"localhost_mode_case_insensitive", policyResolver{key: "secret", mode: "disabledforlocalhost"}, "127.0.0.1:5544", 200},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

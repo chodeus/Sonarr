@@ -91,8 +91,10 @@ func AuthenticationRequiredFromName(s string) (string, error) {
 		return "Enabled", nil
 	case "disabledForLocalAddresses":
 		return "DisabledForLocalAddresses", nil
+	case "disabledForLocalhost":
+		return "DisabledForLocalhost", nil
 	}
-	return "", fmt.Errorf("unknown authenticationRequired value %q (want enabled|disabledForLocalAddresses)", s)
+	return "", fmt.Errorf("unknown authenticationRequired value %q (want enabled|disabledForLocalAddresses|disabledForLocalhost)", s)
 }
 
 // UpdateMechanismFromName reverses CamelCaseEnumName for the

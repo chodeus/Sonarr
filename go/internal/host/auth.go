@@ -22,10 +22,14 @@ type APIKeyResolver interface {
 // AuthPolicy is the optional extension some APIKeyResolver
 // implementations satisfy. When the resolver also exposes these two
 // settings, the requireAPIKey middleware applies the C#
-// `AuthenticationRequired = DisabledForLocalAddresses` bypass for
-// loopback / LAN / (optionally) CGNAT peers — mirroring
+// `AuthenticationRequired` bypass — mirroring
 // `Sonarr.Http.Authentication.UiAuthorizationHandler` at
-// `src/Sonarr.Http/Authentication/UiAuthorizationHandler.cs:25-41`.
+// `src/Sonarr.Http/Authentication/UiAuthorizationHandler.cs:25-47`:
+//
+//   - `DisabledForLocalAddresses`: bypass for loopback / LAN /
+//     (optionally, when TrustCgnatIpAddresses is set) CGNAT peers.
+//   - `DisabledForLocalhost`: bypass for IPv4 / IPv6 loopback only.
+//     Added upstream in commit `0ea943cdb` (audit row C.1.g).
 //
 // Lightweight test fakes (`staticAPIKey`, etc.) that only implement
 // `APIKey` simply never trip the bypass — the type assertion falls
@@ -126,7 +130,8 @@ func (s *Server) requireAPIKey(next http.Handler) http.Handler {
 			return
 		}
 
-		// 4. DisabledForLocalAddresses bypass (A.4).
+		// 4. DisabledForLocalAddresses / DisabledForLocalhost bypass
+		// (A.4 + C.1.g).
 		if policy, ok := s.apiKey.(AuthPolicy); ok && allowLocalBypass(r, policy) {
 			next.ServeHTTP(w, r)
 			return
@@ -208,30 +213,45 @@ func parseAPIKey(r *http.Request) string {
 }
 
 // allowLocalBypass replicates the C# UiAuthorizationHandler decision:
-// AuthenticationRequired must be DisabledForLocalAddresses, and the
-// peer IP must be a local address (loopback / IPv4 private / IPv6
-// link-local et al.) — or, when TrustCgnatIpAddresses is set, an
-// IPv4 CGNAT (100.64.0.0/10) address.
+//
+//   - `DisabledForLocalAddresses`: peer IP must be a local address
+//     (loopback / IPv4 private / IPv6 link-local et al.) — or, when
+//     TrustCgnatIpAddresses is set, an IPv4 CGNAT (100.64.0.0/10)
+//     address. Mirrors `UiAuthorizationHandler.cs:25-35`.
+//   - `DisabledForLocalhost`: peer IP must be loopback specifically
+//     (IPv4 127.0.0.0/8 or IPv6 ::1). Strict subset of the local-
+//     addresses mode — no LAN / link-local / CGNAT branches. Mirrors
+//     `UiAuthorizationHandler.cs:39-47` (upstream commit 0ea943cdb,
+//     audit row C.1.g).
 //
 // Returns false if the AuthenticationRequired lookup errors, if the
 // remote address can't be parsed, or if the mode is anything other
-// than DisabledForLocalAddresses (the default "Enabled" never
-// bypasses).
+// than one of the two bypass values above (the default "Enabled"
+// never bypasses).
 func allowLocalBypass(r *http.Request, policy AuthPolicy) bool {
 	ctx := r.Context()
 	mode, err := policy.AuthenticationRequired(ctx)
-	if err != nil || !strings.EqualFold(strings.TrimSpace(mode), "DisabledForLocalAddresses") {
+	if err != nil {
 		return false
 	}
+	mode = strings.TrimSpace(mode)
+
 	ip := remoteIP(r)
 	if ip == nil {
 		return false
 	}
-	if isLocalAddress(ip) {
-		return true
-	}
-	if trust, err := policy.TrustCgnatIpAddresses(ctx); err == nil && trust && isCgnatAddress(ip) {
-		return true
+
+	switch {
+	case strings.EqualFold(mode, "DisabledForLocalAddresses"):
+		if isLocalAddress(ip) {
+			return true
+		}
+		if trust, err := policy.TrustCgnatIpAddresses(ctx); err == nil && trust && isCgnatAddress(ip) {
+			return true
+		}
+		return false
+	case strings.EqualFold(mode, "DisabledForLocalhost"):
+		return ip.IsLoopback()
 	}
 	return false
 }

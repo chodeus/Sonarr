@@ -31,6 +31,33 @@ func TestCamelCaseEnumName(t *testing.T) {
 	}
 }
 
+func TestAuthenticationRequiredFromName(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"enabled", "Enabled", false},
+		{"disabledForLocalAddresses", "DisabledForLocalAddresses", false},
+		// C.1.g (upstream commit 0ea943cdb) — new enum value.
+		{"disabledForLocalhost", "DisabledForLocalhost", false},
+		{"DisabledForLocalhost", "", true}, // PascalCase rejected (input must be camelCase).
+		{"disabled", "", true},             // not a member of the AuthenticationRequiredType enum.
+		{"", "", true},                     // empty rejects.
+	}
+	for _, tc := range cases {
+		got, err := AuthenticationRequiredFromName(tc.in)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("AuthenticationRequiredFromName(%q): err=%v wantErr=%v", tc.in, err, tc.wantErr)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("AuthenticationRequiredFromName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestProperDownloadTypeName(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
