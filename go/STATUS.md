@@ -9058,3 +9058,70 @@ Hard gates clean: `go build ./...` no errors, `go test ./...` 0 FAIL, `golangci-
 Net diff: ~30 internal/api/v5/importlistsettings/importlistsettings.go (new file — package doc-comment + 3 type aliases + 2 re-exported handler vars) + ~100 internal/api/v5/importlistsettings/importlistsettings_test.go (new file — fakeCfg helper + 4 tests) + ~6 cmd/sonarr/host_wiring.go (1 new import + 3 new route bindings + 1 slice anchor comment) + ~3 PROGRESS.md + ~24 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md (C.1.d row strikethrough + CLOSED summary).
 
 Behavioural impact: clients targeting `/api/v5/settings/importlist` get the v5 path with the same wire contract as v3's `/api/v3/config/importlist`. C.1 backlog now down to 2 open sub-items: e (AutoTagging — the LAST new v5 endpoint family) + i (contract-replay re-baseline). After C.1.e the C.1 row is fully drained — Phase 6 prep can begin.
+
+## Phase 5.J225 — v5 AutoTagging controller (audit row C.1.e closed) — 2026-05-26
+
+FOURTH and last new-endpoint slice in the v5 endpoint family. With this slice landed, all four C.1.b–e new v5 controllers (CustomFormat, ImportList, ImportList Settings, AutoTagging) are now ported. Only C.1.i (contract-replay re-baseline) remains open in C.1.
+
+Scope check passed: go-port already has the full `internal/autotagging/` engine (Tag / AutoTag types, Service, Repo, marshal helpers, change tracking, events) and v3 `internal/api/v3/autotagging.go` with full CRUD wired at `cmd/sonarr/host_wiring.go:1165-1170`. No engine port needed — the v5 controller is a wire-shape change only.
+
+v5 vs v3 wire surface comparison:
+  - Resource shape: IDENTICAL (5 fields — id, name, removeTagsAutomatically, tags, specifications).
+  - SpecificationSchema shape: IDENTICAL.
+  - GET / → 200 + list (same).
+  - GET /{id} → 200 + resource (same).
+  - GET /schema → 200 + schema list (same).
+  - POST → 201 Created + resource (same).
+  - PUT /{id} → 202 Accepted + resource (same).
+  - **DELETE /{id} → 204 No Content** (v3 returns 200 empty body — only divergence).
+
+No bulk endpoints in either v3 OR v5 (unlike CustomFormat / ImportList — AutoTagging's smaller surface area means the new-handler footprint is just one).
+
+Implementation:
+
+internal/api/v5/autotagging/autotagging.go (NEW): minimal v5-package shape.
+  - Type aliases: `Resource = apiv3.AutoTaggingResource` / `SpecificationSchema = apiv3.AutoTaggingSpecificationSchema` / `Lister = apiv3.AutoTaggingLister` / `Writer = apiv3.AutoTaggingWriter`.
+  - Re-exported handlers (same statuses + bodies as v3): `var ListHandler = apiv3.AutoTaggingHandler` / `ByIDHandler` / `SchemaHandler` / `CreateHandler` / `UpdateHandler`.
+  - New `DeleteHandler` ports the v3 handler logic verbatim (parseID + Delete + NotFound/500 error paths) with `w.WriteHeader(http.StatusNoContent)` swapped in for `StatusOK`. Mirrors `AutoTaggingController.DeleteAutoTagging` at `src/Sonarr.Api.V5/AutoTagging/AutoTaggingController.cs:82-88`.
+  - `parseID` helper inlined (mirrors v3's `parseAutoTaggingID`, which is unexported) so the v5 package can stand alone for routing-table purposes.
+
+Wiring in cmd/sonarr/host_wiring.go: 6 new routes at `/api/v5/autotagging*` directly below the existing v3 autotagging block. New import: `autotaggingv5 "sonarr.tv/sonarr/internal/api/v5/autotagging"`.
+
+Routes:
+  - GET /api/v5/autotagging
+  - GET /api/v5/autotagging/{id}
+  - GET /api/v5/autotagging/schema
+  - POST /api/v5/autotagging
+  - PUT /api/v5/autotagging/{id}
+  - DELETE /api/v5/autotagging/{id}
+
+Tests (autotagging_test.go — NEW, ~125 LOC, 6 tests):
+  - TestDeleteHandler_NoContent204: pins the v3→v5 flip from 200 to 204 + empty body assertion + delete-call count.
+  - TestDeleteHandler_NotFound404: ErrNotFound path bubbles unchanged.
+  - TestDeleteHandler_InvalidID400: malformed id path-value rejects with 400.
+  - TestDeleteHandler_ServiceErr500: generic service err surfaces as 500.
+  - TestReexportedHandlers_NonNil: smoke pin that List / ByID / Schema / Create / Update aliases resolve to non-nil http.Handler values.
+  - (fakeWriter implementation — covers All / GetByID / Insert / Update / Delete on autotagging.Tag and AutoTag types).
+
+Fake-type gotcha during implementation: the autotagging package has TWO related types — `autotagging.Tag` (the persistence projection returned by All / GetByID) and `autotagging.AutoTag` (the write-in projection for Insert / Update). The v3 Writer interface mixes both. First-pass test fake used only `*autotagging.AutoTag` and failed to satisfy the interface; corrected to use `*autotagging.Tag` for All / GetByID return paths.
+
+Hard gates clean: `go build ./...` no errors, `go test ./...` 0 FAIL, `golangci-lint run ./internal/api/v5/autotagging/... ./cmd/sonarr/...` 0 issues.
+
+Net diff: ~105 internal/api/v5/autotagging/autotagging.go (new file — package doc-comment + 4 type aliases + 5 re-exported handler vars + 1 new DeleteHandler + 1 parseID helper) + ~125 internal/api/v5/autotagging/autotagging_test.go (new file — fakeWriter + 6 tests) + ~10 cmd/sonarr/host_wiring.go (1 new import + 6 new route bindings + 1 slice anchor comment) + ~3 PROGRESS.md + ~28 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md (C.1.e row strikethrough + CLOSED summary).
+
+Behavioural impact: clients targeting `/api/v5/autotagging` get the v5 typed-result status (204 on delete) that upstream callers expect (e.g. third-party tooling consuming `src/Sonarr.Api.V5/openapi.json`). The v3 surface stays bit-perfect.
+
+## C.1 family — current state after J225
+
+C.1 backlog: **1 of 10 sub-items remains open** (C.1.i — contract-replay re-baseline). The 9 closed sub-items are:
+  - C.1.a (J221) — v5-develop catch-up merge
+  - C.1.b (J222) — v5 CustomFormat controller
+  - C.1.c (J223) — v5 ImportList controller
+  - C.1.d (J224) — v5 ImportList Settings controller
+  - C.1.e (J225) — v5 AutoTagging controller [THIS SLICE]
+  - C.1.f (J219) — Pushover E2E encryption
+  - C.1.g (J220) — Localhost auth bypass
+  - C.1.h (J218) — CancellationToken parity verification
+  - C.1.j (J217) — Recently-aired refresh logging
+
+**C.1.i remains as the final tail slice.** It rolls up: the deferred localization refresh (Go-port `internal/localization/en.json` is 4 keys behind C# source after the J221 merge — needs to be sync'd from `src/NzbDrone.Core/Localization/Core/en.json`), the locale-file refresh (bg/ca/de/en/es/hu/pl/pt_BR/ru/sk updates from the merge), and the contract-replay golden re-record against the new C# baseline (`v5-develop f0f59b95c`). After C.1.i lands, the C.1 row is fully drained and PROGRESS.md's "current state" can flip to "current with v5-develop HEAD" — Phase 6 prep can begin.

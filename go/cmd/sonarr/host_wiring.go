@@ -10,6 +10,7 @@ import (
 	"time"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
+	autotaggingv5 "sonarr.tv/sonarr/internal/api/v5/autotagging"
 	customformatv5 "sonarr.tv/sonarr/internal/api/v5/customformat"
 	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
@@ -1168,6 +1169,14 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v3/autotagging", Handler: apiv3.AutoTaggingCreateHandler(autoTagsSvc)},
 		{Method: "PUT", Path: "/api/v3/autotagging/{id}", Handler: apiv3.AutoTaggingUpdateHandler(autoTagsSvc)},
 		{Method: "DELETE", Path: "/api/v3/autotagging/{id}", Handler: apiv3.AutoTaggingDeleteHandler(autoTagsSvc)},
+		// v5 AutoTagging — same wire shape as v3, tightened status
+		// code on DELETE /{id} (204). Audit row C.1.e — closed 5.J225.
+		{Method: "GET", Path: "/api/v5/autotagging", Handler: autotaggingv5.ListHandler(autoTagsSvc)},
+		{Method: "GET", Path: "/api/v5/autotagging/{id}", Handler: autotaggingv5.ByIDHandler(autoTagsSvc)},
+		{Method: "GET", Path: "/api/v5/autotagging/schema", Handler: autotaggingv5.SchemaHandler()},
+		{Method: "POST", Path: "/api/v5/autotagging", Handler: autotaggingv5.CreateHandler(autoTagsSvc)},
+		{Method: "PUT", Path: "/api/v5/autotagging/{id}", Handler: autotaggingv5.UpdateHandler(autoTagsSvc)},
+		{Method: "DELETE", Path: "/api/v5/autotagging/{id}", Handler: autotaggingv5.DeleteHandler(autoTagsSvc)},
 		{Method: "GET", Path: "/api/v3/blocklist", Handler: apiv3.BlocklistHandler(blocklistPagedAdapter{repo: blocklistRepo})},
 		{Method: "DELETE", Path: "/api/v3/blocklist/{id}", Handler: apiv3.BlocklistDeleteHandler(blocklistSvc)},
 		{Method: "DELETE", Path: "/api/v3/blocklist/bulk", Handler: apiv3.BlocklistBulkDeleteHandler(blocklistSvc)},
