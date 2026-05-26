@@ -608,6 +608,15 @@ func pushoverSchema() NotificationSchemaResource {
 		{Order: 5, Name: "expire", Label: "Expire", HelpText: "Maximum time to retry Emergency alerts, maximum 86400 seconds", Type: "textbox", Privacy: "normal", Value: 0, ValueSet: true},
 		{Order: 6, Name: "ttl", Label: "Time To Live", HelpText: "Time in seconds before the message expires. Set to 0 for unlimited duration", Type: "textbox", Privacy: "normal", Advanced: true, Value: 0, ValueSet: true},
 		{Order: 7, Name: "sound", Label: "Sound", HelpText: "Notification sound, leave blank to use the default", HelpLink: "https://pushover.net/api#sounds", Type: "textbox", Privacy: "normal"},
+		// Order 8 added in J230 (C.1.i-follow-1). Upstream commit
+		// `e79077d5f` (audit row C.1.f / J219) added the Pushover
+		// end-to-end encryption feature: the `pushover.Settings` struct
+		// + encryption logic + tests landed at J219, but this
+		// hand-written schema didn't expose the field. Verified against
+		// live `Sonarr v5.0.0.1658` recording at
+		// `~/Code/GitHub/Sonarr-reference/v5-develop-7c41dcbe2/schemas/v3.notification.schema.json`
+		// (Pushover entry, index 8).
+		{Order: 8, Name: "encryptionKey", Label: "Encryption Key", HelpText: "Optional 64-character hex key (256-bit) to enable end-to-end encryption of the title and message", HelpLink: "https://pushover.net/api#e2ee", Type: "textbox", Privacy: "apiKey", Advanced: true},
 	}
 	return s
 }

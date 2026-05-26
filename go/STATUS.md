@@ -9299,3 +9299,25 @@ Open follow-up rows surfaced during C.1 closure (5 small slices, each <100 LOC):
   - C.1.i-follow-3 (J228): Unredacted `lastDuration` in tasks corpus.
   - C.1.i-follow-4 (J228): DELETE idempotency per-handler audit.
   - C.1.i-follow-5 (J228): Route coverage audit via DOT dump.
+
+## Phase 5.J230 — Pushover encryptionKey field added to v3 schema (audit row C.1.i-follow-1 closed) — 2026-05-26
+
+First of the 5 follow-up rows from the J228 reference capture. Closes the gap surfaced in J227: the Go-port's `pushover.Settings` struct had the `EncryptionKey` field since J219 (with full encryption logic + validator + tests) but `internal/api/v3/notification_schema.go pushoverSchema()` is hand-written and didn't expose it. A UI built against the Go-port wouldn't render the EncryptionKey input even though the backend would persist it correctly.
+
+Implementation:
+
+internal/api/v3/notification_schema.go: added order-8 `FieldDef` entry to the `pushoverSchema().Fields` slice, matching upstream C# `Sonarr.Core.Notifications.Pushover.PushoverSettings.cs:57`'s schema emit verbatim. Doc-comment notes the J219/J228 chain that surfaced the gap, with a pointer to the reference recording at `~/Code/GitHub/Sonarr-reference/v5-develop-7c41dcbe2/schemas/v3.notification.schema.json` (Pushover entry, index 8) as the byte-eq target.
+
+Field shape: `{Order: 8, Name: "encryptionKey", Label: "Encryption Key", HelpText: "...", HelpLink: "https://pushover.net/api#e2ee", Type: "textbox", Privacy: "apiKey", Advanced: true}`. Privacy "apiKey" matches the existing `apiKey` field (the input renders as a masked textbox); Advanced=true buries it in the form's collapsed-section so it doesn't crowd the basic-config UX.
+
+test/contract/golden/v3-empty-state/v3.notification.schema.golden.json: surgical append of the new field onto the Pushover entry's `fields` array. Pushover entry's `fields.length` goes from 8 → 9. Used a Python script that finds the entry by `implementation == "Pushover"`, checks for idempotency (already-present skip), appends the JSON object, json.dump indent=2 + trailing newline matching the existing golden format. Avoided wholesale copy from the J228 reference recording because that would have imported environmental noise (Date headers, X-Miniprofiler-Ids, etc.) — surgical append leaves all other bytes untouched.
+
+Verification: `TestV3NotificationSchemaContract` passes byte-eq. Full `go test ./...` 0 FAIL. `golangci-lint run ./internal/api/v3/...` 0 issues.
+
+Read/write balance: this slice is read-side (GET /api/v3/notification/schema). The write side (POST /api/v3/notification with a body containing `encryptionKey`) was already wired at J219 — the `pushover.Settings` struct has the field with `json:"encryptionKey"` tag, the persistence layer round-trips it, the FluentValidation-equivalent validator gates against the regex, the encryption logic fires on `sendNotification`. End-to-end the feature now works for any UI consumer.
+
+Net diff: ~12 internal/api/v3/notification_schema.go (1 new FieldDef + doc-comment block) + ~12 test/contract/golden/v3-empty-state/v3.notification.schema.golden.json (1 new fields-array entry) + ~3 AUDIT_FIX_BACKLOG.md (row strikethrough + CLOSED summary) + ~3 PROGRESS.md cursor.
+
+Behavioural impact: third-party tooling that consumes `/api/v3/notification/schema` (e.g. Configuration manager apps that auto-render Sonarr settings UIs) now sees the EncryptionKey field on Pushover and can render it. Sonarr Mobile / *-arr-suite tooling that targets v3 now has full Pushover E2E parity with C# upstream.
+
+Open follow-ups remaining (4 of 5): C.1.i-follow-2 (validation envelope policy), C.1.i-follow-3 (lastDuration redaction), C.1.i-follow-4 (DELETE idempotency audit), C.1.i-follow-5 (route coverage audit).

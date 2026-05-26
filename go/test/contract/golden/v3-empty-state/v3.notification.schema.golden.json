@@ -2115,6 +2115,17 @@
           "order": 7,
           "privacy": "normal",
           "type": "textbox"
+        },
+        {
+          "advanced": true,
+          "helpLink": "https://pushover.net/api#e2ee",
+          "helpText": "Optional 64-character hex key (256-bit) to enable end-to-end encryption of the title and message",
+          "isFloat": false,
+          "label": "Encryption Key",
+          "name": "encryptionKey",
+          "order": 8,
+          "privacy": "apiKey",
+          "type": "textbox"
         }
       ],
       "implementation": "Pushover",
