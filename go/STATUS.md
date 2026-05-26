@@ -10157,3 +10157,67 @@ Phase 6 prep remaining slice candidates (per PROGRESS.md "Next candidates"):
 - (E) Cross-tool integration smoke test (`go/cmd/shadowtraffic-e2e/`, ~150 LOC). Code work — proves the J239+J240+J241 triad composes end-to-end.
 
 (D) is the natural next-slice — small, scoped, lands the JSONL format reference operators will need anyway once they start editing logs by hand. (E) is the most ambitious remaining slice and could unblock test confidence for the broader Phase 6.4 cutover.
+
+## Phase 5.J245 — Shadow-traffic JSONL FORMAT.md
+
+### Why
+
+Phase 6.1's three binaries (J239 diff / J240 replay / J241 record) communicate via a one-line-per-entry JSONL file. Field shapes are documented in code (the `LogEntry` / `RecordedEntry` struct doc-comments at `cmd/shadow-traffic-replay/log.go:21-45` and `cmd/shadow-traffic-record/writer.go:34-41`) but only mentioned in narrative form across the J239/J240/J241/J244 STATUS slices. Operators editing logs by hand — the realistic Phase 6 workflow when scripting probes or pruning a recorded session — need a single-source reference rather than having to grep four commits' worth of free-form prose.
+
+J245 lands that reference: `cmd/shadow-traffic-record/FORMAT.md` is the authoritative per-field schema. The doc is co-located with the recorder (the binary that writes the format) and explicitly labels itself secondary to the code — if it disagrees with `writer.go` or `replay.go`, the code wins and the doc is the bug.
+
+### What's in it
+
+Sections:
+
+1. **File shape** — JSONL conventions: one JSON object per non-blank, non-comment line, no surrounding brackets, append-only, 4 MiB max-line cap.
+2. **Per-entry schema** — six-row table covering `ts` / `method` / `path` / `headers` / `body` / `status` with JSON type, tag (including the subtle `ts` tag difference between recorder's `json:"ts"` and replay's `json:"ts,omitzero"`), required-or-optional, and operational meaning.
+3. **Minimal entries** — the smallest legal entry (just `method` + `path`).
+4. **Body encoding** — UTF-8 caveat (json.Marshal mangles non-UTF-8 bytes; cited as the lesson from the J244 test gotcha) + gzip in-place decompression contract (per J244: decompressed body + stripped Content-Encoding on success; verbatim body + retained Content-Encoding on malformed gzip).
+5. **Headers map** — single-value-per-key map shape; what's stripped on capture (hop-by-hop per RFC 7230; API keys when `-drop-api-keys=true` default; Content-Encoding only when decompression succeeded); upstream still sees original headers verbatim (proxy transparency).
+6. **Status=0 sentinel** — upstream-failure encoding via omitempty-elided field; `-status 0` filter targets only failures.
+7. **Truncation marker** — literal `...<truncated>` ASCII sentinel; replay-incompatible (deliberate trade — truncation is an inspection knob, set `-max-body-len=0` for byte-perfect replay).
+8. **Comments and blank lines** — reader-side conventions for hand-edited logs (lines starting with `#` skipped; whitespace-only lines skipped). Writer never emits them — they're for humans.
+9. **Examples** — 7 worked entries: plain GET, POST with JSON body, originally-gzipped POST (showing Content-Encoding stripped), API-key-stripped POST, Status=0 upstream-unreachable, truncated body, hand-edited probe with no timestamp.
+10. **Inter-tool contract** — 3-row matrix showing which binary reads/writes the format; clarifies that diff doesn't touch the format directly (it's a live reverse-proxy) but chains via `replay -target=<diff-listen-addr>` for log-driven diffing.
+11. **Stability** — schema-evolution rules: additive `omitempty` fields are backward-compatible; mandatory-field additions break captures and would need a schema-version tag (none today — the format is small enough that operator inspection catches drift).
+
+### Co-location vs central docs
+
+The file goes at `cmd/shadow-traffic-record/FORMAT.md` rather than `go/docs/SHADOW_TRAFFIC_FORMAT.md` or similar central location. Reasoning: the record binary owns the on-disk format (it's the writer); the replay binary just consumes what the recorder produces. Anyone editing a JSONL log by hand has the record binary's source on screen at some point — the doc is two paths away (`-record/FORMAT.md`). The other two binaries cross-reference it via comment in their doc-comments (replay's `LogEntry` and diff's reverse-proxy code).
+
+The alternative — putting it in `go/cmd/shadowtraffic/FORMAT.md` next to the J243 shared httputil package — was considered. Rejected: J243's shared package is a 45-LOC HTTP utility, not a tool-suite root. There's no `cmd/shadowtraffic/` directory housing the three binaries; they're siblings at `cmd/shadow-traffic-{record,replay,diff}/`. Co-location with the writer is the natural anchor.
+
+### What this doc does NOT cover
+
+- **CLI flags for the three binaries** — those are documented via `go run ./cmd/shadow-traffic-record -h` (and likewise for replay + diff). FORMAT.md only covers the on-disk format; not how operators invoke each tool.
+- **Replay pacing semantics** — `-speed` multiplier, `-concurrency` worker pool, `-timeout` per-request — those are operational tuning knobs, not file-format concerns. They're covered in J240's STATUS slice.
+- **Diff redaction rules** — `RedactConfig` JSON shape, default redact paths — those are diff-binary-specific and covered in J239's STATUS slice.
+- **CI integration** — the Phase 6.3 nightly-contract workflow doesn't read or write this format directly; it shells out to the existing `test/contract/replayer` (a different binary with its own corpus format).
+
+Boundary chosen deliberately: FORMAT.md is the file-format reference; per-tool operational behaviour stays in each tool's `-h` output + the J239/J240/J241/J244 STATUS slices.
+
+### Code change
+
+None. Pure markdown addition (~210 lines).
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./cmd/shadow-traffic-record/...
+(clean)
+```
+
+No tests to run (no code change). The doc itself is self-validating in a small way: every example JSONL entry has been hand-checked against the live `RecordedEntry`/`LogEntry` schemas, including the subtle `ts` tag difference and the `status,omitempty` ≡ `status:0` equivalence.
+
+### Slice (D) closes; (C) and (E) remain
+
+Phase 6 prep remaining slice candidates:
+
+- (C) Phase 6.2 smoke runbook scaffold (`go/PHASE_6_SMOKE.md`, pure markdown). Pure docs work — natural next slice.
+- (E) Cross-tool integration smoke test (`go/cmd/shadowtraffic-e2e/`, ~150 LOC). Code work — proves the J239+J240+J241 triad composes end-to-end.
+
+(C) and (E) are independent; (C) is faster (docs only, ~30 min budget) while (E) is more rigorous (validates the triad's actual composition). Order doesn't matter for downstream Phase 6 progress.
