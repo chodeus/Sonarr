@@ -10657,3 +10657,117 @@ Both are Wave 1 candidates per the loop contract. Will fire as future slices.
 - CutoffUnmetEpisodeSearchCommand handler (needs new episodecutoff infrastructure)
 
 Wave 1 still has 4-5 candidates. Next tick picks one — likely J237 indexer/dc name→id (smallest) or image-download subscriber if the cover-download HTTP plumbing is closer than expected.
+
+## Phase 5.J250 — release/push indexer + downloadclient name→id resolve (Wave 1 deferred sub-arc)
+
+### Why
+
+The J237 port of `POST /api/v3/release/push` landed the end-to-end synthetic-ReleaseInfo dispatch path, but stubbed two sub-arms with a doc-comment deferral:
+
+> Build a synthetic ReleaseInfo from the body. Set Guid = `"PUSH-" + DownloadUrl` (C# `:59`). Re-tag with resolved indexer + downloadclient identifiers (DEFERRED — indexer/dc name→id resolution helpers not yet ported; the dispatch still fires correctly using the body's IndexerID + IndexerName).
+
+In real Sonarr deployments the push endpoint is the integration seam for 3rd-party Newznab/Torznab clients (Prowlarr, Jackett, custom scripts). Those clients sometimes know an indexer's NAME but not its database id (because they don't read Sonarr's `/api/v3/indexer` themselves; they just push releases they discovered upstream). When the client sends `{"indexer": "MyIndexer"}` with no `indexerId`, the C# code resolves the name to the row id; the Go-port pre-J250 just stored the name verbatim and dispatched. The downstream history-stamping + queue-routing rely on the canonical id, so without the resolve those records lose the indexer association.
+
+Symmetrically: the download-client resolve lets a client say "send this to my qBit instance by name" without needing to know the db row id.
+
+### Design
+
+Two new narrow interfaces:
+
+```go
+type ReleasePushIndexerLookup interface {
+    Get(ctx context.Context, id int) (*indexers.Indexer, error)
+    FindByName(ctx context.Context, name string) (*indexers.Indexer, error)
+}
+
+type ReleasePushDownloadClientLookup interface {
+    Get(ctx context.Context, id int) (*downloadclients.DownloadClient, error)
+    FindByName(ctx context.Context, name string) (*downloadclients.DownloadClient, error)
+}
+```
+
+Both satisfied by the existing repos via Go structural typing — no host_wiring.go adapter. `*indexers.Repo` already has `FindByName` (J213-era) + inherits `Get(ctx, id)` from the embedded `repo.Repository[Indexer]`. Same for `*downloadclients.Repo`.
+
+The two helpers `resolvePushIndexer` and `resolvePushDownloadClient` are byte-for-byte ports of C# `IndexerFactory.ResolveIndexer:95-122` and `DownloadClientFactory.ResolveDownloadClient:59-92`. They share an identical algorithm; the helpers stay separate (rather than generic) because the failure-message PropertyName strings differ ("Indexer" vs "DownloadClient") and Go generics over the row type would require either type parameters on the failure constants OR runtime reflection — both more complex than a 60-LOC paired helper.
+
+Algorithm (mirrored from C#):
+
+1. Trim whitespace on `name` input — matches C# `IsNullOrWhiteSpace`.
+2. If `id > 0` → call `lookup.Get(ctx, id)`. On success → byID. On ErrNotFound → byID stays nil. On any other error → return validation failure with the lookup-error message.
+3. If `name != ""` → call `lookup.FindByName(ctx, name)`. Same handling.
+4. If `id > 0` AND `byID == nil` → 400 "Indexer with ID 'N' could not be found".
+5. If `name != ""` AND `byName == nil` → 400 "Indexer with name 'X' could not be found".
+6. If `byID == nil` AND `byName == nil` → return `(nil, nil)`. The caller proceeds with body fields verbatim (matches C# `:111-114` null-fallback).
+7. If both matched but row ids differ → 400 "Indexer with name 'X' does not match indexer with ID 'N'".
+8. Otherwise prefer `byID` (matches C# `:121 return clientById ?? clientByName`).
+
+On non-ErrNotFound DB errors, the helper surfaces a 400 with a generic "lookup failed" failure rather than 500. The C# code throws which the `ApiController` exception filter converts to a 4xx problem-details response; the Go-port's J233-policy uniform `[Envelope]` shape lands on 400. Either is acceptable to clients — the wire shape is "validation envelope with a property-named failure," which is what every other write-path 400 surfaces too.
+
+The handler signature grew from `(decisionMaker, dispatcher, cache)` to `(decisionMaker, dispatcher, cache, indexerLookup, dcLookup)`. Both new params are nil-tolerant: when nil the resolver step skips entirely. This matches C# `if indexer == null` at `:90` which logs Debug "Push Release {0} not associated with an indexer" and proceeds with the body fields. The Go nil-tolerance also lets tests exercise the handler without wiring repos when the resolve isn't the focus of the test.
+
+After successful resolve, the handler mutates `body.IndexerID + body.Indexer` (and `body.DownloadClientID + body.DownloadClient`) before baking them into the synthetic `parser.ReleaseInfo`. This matches C# `:97-98`:
+
+```csharp
+release.IndexerId = indexer.Id;
+release.Indexer = indexer.Name;
+```
+
+The mutation flows through to the cache-seed step too (the cache-key is `<indexerId>_PUSH-<downloadUrl>`, so resolve correctness ensures a subsequent `POST /api/v3/release` finds the cached entry under the canonical id).
+
+### Wiring
+
+`cmd/sonarr/host_wiring.go:1389` updated:
+
+```go
+{Method: "POST", Path: "/api/v3/release/push", Handler: apiv3.ReleasePushHandler(downloadDecider, processDownloadDecisions, releaseCache, indexersRepo, downloadClientsRepo)},
+```
+
+No `buildHostServer` signature churn — both repos were already in scope for other v3 routes.
+
+### Tests
+
+18 existing push-handler tests had `ReleasePushHandler(...)` call sites; bulk-updated via sed to add `, nil, nil` (none of them exercise resolve behaviour). 9 new tests:
+
+End-to-end through the handler (5):
+
+- `TestReleasePushHandler_IndexerResolve_ByID_OverwritesNameFromRepo` — body has id-only; resolver looks up Get(42); 1 Get call, 0 FindByName calls (skipped because name empty); dispatched ReleaseInfo carries the repo's canonical name.
+- `TestReleasePushHandler_IndexerResolve_NameOnly_LooksUpByName` — body has name-only; resolver looks up FindByName; 0 Get calls (id zero), 1 FindByName('Newznab-A') call; dispatch succeeds.
+- `TestReleasePushHandler_IndexerResolve_IDNotFound_400` — id=9999, ErrNotFound from Get; expects 400 + validation envelope naming the missing id.
+- `TestReleasePushHandler_IndexerResolve_IDNameMismatch_400` — body claims id=1 + name="B"; repo's Get(1) returns id-1 row, FindByName('B') returns id-2 row; expects 400 + envelope saying "does not match".
+- `TestReleasePushHandler_IndexerResolve_NeitherSupplied_NullReturn` — body has neither id nor name; expects 200 + zero lookup calls (resolver short-circuits + push uses empty body fields).
+
+Helper unit tests (4) exercise `resolvePushIndexer` directly with fake lookups:
+
+- `TestResolvePushIndexer_IDFoundOnlyReturnsByID` — happy id path.
+- `TestResolvePushIndexer_NameFoundOnly_ReturnsByName` — happy name path.
+- `TestResolvePushIndexer_BothMatch_PrefersByID` — both lookups return the SAME row id; verifies byID is returned (not byName) per C# `:121 clientById ?? clientByName`.
+- `TestResolvePushIndexer_NameNotFound_Validation` — only name supplied, ErrNotFound; expects exactly one validation failure on the `Indexer` property.
+
+No equivalent helper-unit tests on the download-client variant — the algorithm is byte-identical, the type substitution is mechanical, and the existing handler-level tests already exercise it indirectly. If the algorithms diverge in future ports (e.g. download-client gains an "enabled" filter) a parallel set lands then.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v3/
+ok  sonarr.tv/sonarr/internal/api/v3  1.860s
+```
+
+Test count grew by 9 (5 handler + 4 helper). No other packages touched.
+
+### Wave 1 progress
+
+- [CLOSED J248] Windows getActualCasing impl
+- [CLOSED J249] J237 release-POST ShouldOverride Subject mutation
+- **[CLOSED J250] J237 release/push indexer + downloadclient name→id resolve**
+- J237 release/push full ReleaseResource projection on response (one J237 sub-arc remaining — `toReleaseResource` needs to accept Decision input + emit the 50+ ReleaseResource fields; deferred until the helper's input shape gains scoring/custom-format/scene-mapping coverage)
+- EpisodeRefreshedService re-search consumer (closed at J209-J211; contract was stale)
+- Image-download subscriber off SeriesAddedEvent (mediacover.Service.EnsureCovers — 2-slice budget: covers download impl + subscriber wire-in)
+- CutoffUnmetEpisodeSearchCommand handler (needs new episodecutoff package)
+
+Wave 1 still has 3-4 candidates. Next tick picks one — likely image-download subscriber (the EnsureCovers download impl is real port work + the wiring slice is small) or CutoffUnmet (episodecutoff package is closer to a Wave 3-scale port than a Wave 1 deferred sub-arc, but the handler itself is small once the dep lands). The remaining J237 sub-arc (full ReleaseResource projection on push) is bounded by the `toReleaseResource` helper's input-shape coverage — non-trivial scope; may defer past Wave 1.

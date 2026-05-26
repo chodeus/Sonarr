@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/download"
+	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/indexers"
@@ -49,6 +51,31 @@ type ReleaseOverrideSeriesLookup interface {
 // J249.
 type ReleaseOverrideEpisodeLookup interface {
 	GetEpisodes(ctx context.Context, ids []int) ([]episodes.Episode, error)
+}
+
+// ReleasePushIndexerLookup is the narrow read surface the push
+// handler's name→id resolver uses to find an indexer by id and/or
+// name (matches C# `IndexerFactory.ResolveIndexer` at
+// `:95-122`). *indexers.Repo satisfies this via the embedded
+// repo.Repository + the package's FindByName helper. Nil-tolerant:
+// when nil, the resolver skips and the push uses the body's
+// IndexerID/Indexer verbatim (this is the same fallback the C# code
+// uses when the factory returns null — body fields ride through).
+//
+// J250.
+type ReleasePushIndexerLookup interface {
+	Get(ctx context.Context, id int) (*indexers.Indexer, error)
+	FindByName(ctx context.Context, name string) (*indexers.Indexer, error)
+}
+
+// ReleasePushDownloadClientLookup mirrors ReleasePushIndexerLookup for
+// the download-client side of the resolve. *downloadclients.Repo
+// satisfies it.
+//
+// J250.
+type ReleasePushDownloadClientLookup interface {
+	Get(ctx context.Context, id int) (*downloadclients.DownloadClient, error)
+	FindByName(ctx context.Context, name string) (*downloadclients.DownloadClient, error)
 }
 
 // ReleaseDecisionMaker is the narrow decision-engine interface for
@@ -314,9 +341,16 @@ func applyShouldOverride(
 //     this initial port returns a stripped-down view of the dispatch
 //     outcome (DEFERRED full ReleaseResource projection — see notes).
 //
-// Audit row C.1.i-follow-5a (J237). Indexer/dc resolve + full
-// ReleaseResource response projection deferred.
-func ReleasePushHandler(decisionMaker ReleaseDecisionMaker, dispatcher ReleaseDispatcher, cache *releasecache.Cache) http.Handler {
+// Audit row C.1.i-follow-5a (J237). J250 closes the indexer/dc
+// name→id resolve sub-arc; full ReleaseResource response projection
+// remains deferred.
+func ReleasePushHandler(
+	decisionMaker ReleaseDecisionMaker,
+	dispatcher ReleaseDispatcher,
+	cache *releasecache.Cache,
+	indexerLookup ReleasePushIndexerLookup,
+	dcLookup ReleasePushDownloadClientLookup,
+) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body ReleasePushBody
 		dec := json.NewDecoder(r.Body)
@@ -342,6 +376,37 @@ func ReleasePushHandler(decisionMaker ReleaseDecisionMaker, dispatcher ReleaseDi
 		if len(failures) > 0 {
 			httperr.WriteValidation(w, failures)
 			return
+		}
+
+		// J250 — Indexer + download client name↔id resolve. Mirrors
+		// C# `ReleasePushController.ResolveIndexer` + `ResolveDownloadClientId`
+		// at `:85-122`. Errors here surface as 400 validation envelopes
+		// (the C# code throws ResolveIndexerException / ResolveDownloadClientException
+		// which the ApiController filter converts to 4xx). Nil-lookup
+		// fallback: skip resolve and dispatch with body fields verbatim
+		// (matches the C# `if indexer == null` branch which logs Debug
+		// and proceeds with the body's IndexerId / IndexerName).
+		if indexerLookup != nil {
+			resolved, vf := resolvePushIndexer(r.Context(), indexerLookup, body.IndexerID, body.Indexer)
+			if len(vf) > 0 {
+				httperr.WriteValidation(w, vf)
+				return
+			}
+			if resolved != nil {
+				body.IndexerID = resolved.ID
+				body.Indexer = resolved.Name
+			}
+		}
+		if dcLookup != nil {
+			resolved, vf := resolvePushDownloadClient(r.Context(), dcLookup, body.DownloadClientID, body.DownloadClient)
+			if len(vf) > 0 {
+				httperr.WriteValidation(w, vf)
+				return
+			}
+			if resolved != nil {
+				body.DownloadClientID = resolved.ID
+				body.DownloadClient = resolved.Name
+			}
 		}
 		// Build the synthetic ReleaseInfo. Match C# `ReleaseResource.ToModel`
 		// at `ReleaseResource.cs:167-202`.
@@ -459,3 +524,137 @@ func rejectionStrings(d decisionengine.Decision) []string {
 // httperr.NotFound which produces the envelope shape; tests assert on
 // status, not on this sentinel.
 var ErrReleaseCacheMiss = errors.New("release: cache miss")
+
+// resolvePushIndexer ports C# `IndexerFactory.ResolveIndexer` at
+// `:95-122`. Returns (resolved-row, nil) on success; (nil, nil) when
+// neither id nor name was supplied (matches C# null-return — caller
+// proceeds with body fields verbatim); (nil, vfails) when validation
+// fails (id not found / name not found / both supplied but mismatch).
+//
+// J250.
+func resolvePushIndexer(ctx context.Context, lookup ReleasePushIndexerLookup, id int, name string) (*indexers.Indexer, []httperr.Failure) {
+	name = strings.TrimSpace(name)
+	var byID, byName *indexers.Indexer
+	if id > 0 {
+		row, err := lookup.Get(ctx, id)
+		if err == nil {
+			byID = row
+		} else if !errors.Is(err, indexers.ErrNotFound) {
+			// Unexpected DB error — surface as a 500-ish envelope via
+			// validation channel for parity with C#'s exception path.
+			return nil, []httperr.Failure{{
+				PropertyName: "IndexerId",
+				ErrorMessage: fmt.Sprintf("indexer lookup failed: %v", err),
+				Severity:     "error",
+			}}
+		}
+	}
+	if name != "" {
+		row, err := lookup.FindByName(ctx, name)
+		if err == nil {
+			byName = row
+		} else if !errors.Is(err, indexers.ErrNotFound) {
+			return nil, []httperr.Failure{{
+				PropertyName: "Indexer",
+				ErrorMessage: fmt.Sprintf("indexer lookup failed: %v", err),
+				Severity:     "error",
+			}}
+		}
+	}
+	// C# `:101-104` — id supplied but no row.
+	if id > 0 && byID == nil {
+		return nil, []httperr.Failure{{
+			PropertyName: "IndexerId",
+			ErrorMessage: fmt.Sprintf("Indexer with ID '%d' could not be found", id),
+			Severity:     "error",
+		}}
+	}
+	// C# `:106-109` — name supplied but no row.
+	if name != "" && byName == nil {
+		return nil, []httperr.Failure{{
+			PropertyName: "Indexer",
+			ErrorMessage: fmt.Sprintf("Indexer with name '%s' could not be found", name),
+			Severity:     "error",
+		}}
+	}
+	// C# `:111-114` — neither supplied OR neither matched → null return.
+	if byID == nil && byName == nil {
+		return nil, nil
+	}
+	// C# `:116-119` — both supplied but mismatched.
+	if byID != nil && byName != nil && byID.ID != byName.ID {
+		return nil, []httperr.Failure{{
+			PropertyName: "Indexer",
+			ErrorMessage: fmt.Sprintf("Indexer with name '%s' does not match indexer with ID '%d'", name, id),
+			Severity:     "error",
+		}}
+	}
+	// C# `:121` — prefer byID over byName.
+	if byID != nil {
+		return byID, nil
+	}
+	return byName, nil
+}
+
+// resolvePushDownloadClient ports C# `DownloadClientFactory.ResolveDownloadClient`
+// at `:59-92`. Same shape as resolvePushIndexer above — the C# code
+// has additional sub-arms for enabled-check + name-match-id-cross-check
+// that the Go-port follows verbatim.
+//
+// J250.
+func resolvePushDownloadClient(ctx context.Context, lookup ReleasePushDownloadClientLookup, id int, name string) (*downloadclients.DownloadClient, []httperr.Failure) {
+	name = strings.TrimSpace(name)
+	var byID, byName *downloadclients.DownloadClient
+	if id > 0 {
+		row, err := lookup.Get(ctx, id)
+		if err == nil {
+			byID = row
+		} else if !errors.Is(err, downloadclients.ErrNotFound) {
+			return nil, []httperr.Failure{{
+				PropertyName: "DownloadClientId",
+				ErrorMessage: fmt.Sprintf("download client lookup failed: %v", err),
+				Severity:     "error",
+			}}
+		}
+	}
+	if name != "" {
+		row, err := lookup.FindByName(ctx, name)
+		if err == nil {
+			byName = row
+		} else if !errors.Is(err, downloadclients.ErrNotFound) {
+			return nil, []httperr.Failure{{
+				PropertyName: "DownloadClient",
+				ErrorMessage: fmt.Sprintf("download client lookup failed: %v", err),
+				Severity:     "error",
+			}}
+		}
+	}
+	if id > 0 && byID == nil {
+		return nil, []httperr.Failure{{
+			PropertyName: "DownloadClientId",
+			ErrorMessage: fmt.Sprintf("Download client with ID '%d' could not be found", id),
+			Severity:     "error",
+		}}
+	}
+	if name != "" && byName == nil {
+		return nil, []httperr.Failure{{
+			PropertyName: "DownloadClient",
+			ErrorMessage: fmt.Sprintf("Download client with name '%s' could not be found", name),
+			Severity:     "error",
+		}}
+	}
+	if byID == nil && byName == nil {
+		return nil, nil
+	}
+	if byID != nil && byName != nil && byID.ID != byName.ID {
+		return nil, []httperr.Failure{{
+			PropertyName: "DownloadClient",
+			ErrorMessage: fmt.Sprintf("Download client with name '%s' does not match download client with ID '%d'", name, id),
+			Severity:     "error",
+		}}
+	}
+	if byID != nil {
+		return byID, nil
+	}
+	return byName, nil
+}

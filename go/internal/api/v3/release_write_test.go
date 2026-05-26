@@ -140,7 +140,7 @@ func TestReleasePushHandler_HappyPath(t *testing.T) {
 	}`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", strings.NewReader(bodyJSON))
-	ReleasePushHandler(dm, disp, cache).ServeHTTP(rr, req)
+	ReleasePushHandler(dm, disp, cache, nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200; body=%s", rr.Code, rr.Body.String())
 	}
@@ -159,7 +159,7 @@ func TestReleasePushHandler_ValidatorTitleRequired(t *testing.T) {
 	rr := httptest.NewRecorder()
 	body := strings.NewReader(`{"title":"","downloadUrl":"x","protocol":2,"publishDate":"2026-01-15T00:00:00Z"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", body)
-	ReleasePushHandler(&fakeDecisionMaker{}, &fakeReleaseDispatcher{}, releasecache.New(0)).ServeHTTP(rr, req)
+	ReleasePushHandler(&fakeDecisionMaker{}, &fakeReleaseDispatcher{}, releasecache.New(0), nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400", rr.Code)
 	}
@@ -170,7 +170,7 @@ func TestReleasePushHandler_ValidatorDownloadOrMagnetRequired(t *testing.T) {
 	rr := httptest.NewRecorder()
 	body := strings.NewReader(`{"title":"X","downloadUrl":"","magnetUrl":"","protocol":2,"publishDate":"2026-01-15T00:00:00Z"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", body)
-	ReleasePushHandler(&fakeDecisionMaker{}, &fakeReleaseDispatcher{}, releasecache.New(0)).ServeHTTP(rr, req)
+	ReleasePushHandler(&fakeDecisionMaker{}, &fakeReleaseDispatcher{}, releasecache.New(0), nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (neither url provided)", rr.Code)
 	}
@@ -187,7 +187,7 @@ func TestReleasePushHandler_MagnetOnlyOK(t *testing.T) {
 	body := strings.NewReader(`{"title":"Y","magnetUrl":"magnet:?xt=urn:btih:abc","protocol":2,"publishDate":"2026-01-15T00:00:00Z","indexerId":1}`)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", body)
-	ReleasePushHandler(dm, &fakeReleaseDispatcher{}, releasecache.New(0)).ServeHTTP(rr, req)
+	ReleasePushHandler(dm, &fakeReleaseDispatcher{}, releasecache.New(0), nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Errorf("status: got %d want 200 (magnet-only allowed)", rr.Code)
 	}
@@ -198,7 +198,7 @@ func TestReleasePushHandler_ValidatorProtocolRequired(t *testing.T) {
 	rr := httptest.NewRecorder()
 	body := strings.NewReader(`{"title":"X","downloadUrl":"y","protocol":0,"publishDate":"2026-01-15T00:00:00Z"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", body)
-	ReleasePushHandler(&fakeDecisionMaker{}, &fakeReleaseDispatcher{}, releasecache.New(0)).ServeHTTP(rr, req)
+	ReleasePushHandler(&fakeDecisionMaker{}, &fakeReleaseDispatcher{}, releasecache.New(0), nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (protocol=Unknown rejected)", rr.Code)
 	}
@@ -210,7 +210,7 @@ func TestReleasePushHandler_ValidatorPublishDateRequired(t *testing.T) {
 	// publishDate omitted → IsZero
 	body := strings.NewReader(`{"title":"X","downloadUrl":"y","protocol":2}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", body)
-	ReleasePushHandler(&fakeDecisionMaker{}, &fakeReleaseDispatcher{}, releasecache.New(0)).ServeHTTP(rr, req)
+	ReleasePushHandler(&fakeDecisionMaker{}, &fakeReleaseDispatcher{}, releasecache.New(0), nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (publishDate IsZero rejected)", rr.Code)
 	}
@@ -229,7 +229,7 @@ func TestReleasePushHandler_UnableToParse400(t *testing.T) {
 	body := strings.NewReader(`{"title":"X","downloadUrl":"https://e/x.torrent","protocol":2,"publishDate":"2026-01-15T00:00:00Z","indexerId":1}`)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", body)
-	ReleasePushHandler(dm, &fakeReleaseDispatcher{}, releasecache.New(0)).ServeHTTP(rr, req)
+	ReleasePushHandler(dm, &fakeReleaseDispatcher{}, releasecache.New(0), nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400", rr.Code)
 	}
@@ -245,7 +245,7 @@ func TestReleasePushHandler_EmptyDecisionList400(t *testing.T) {
 	body := strings.NewReader(`{"title":"X","downloadUrl":"https://e/x.torrent","protocol":2,"publishDate":"2026-01-15T00:00:00Z","indexerId":1}`)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", body)
-	ReleasePushHandler(dm, &fakeReleaseDispatcher{}, releasecache.New(0)).ServeHTTP(rr, req)
+	ReleasePushHandler(dm, &fakeReleaseDispatcher{}, releasecache.New(0), nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (empty decisions)", rr.Code)
 	}
@@ -263,7 +263,7 @@ func TestReleasePushHandler_TorrentProtocolTorrentInfoBuilt(t *testing.T) {
 	body := strings.NewReader(`{"title":"Z","downloadUrl":"https://e/z.torrent","magnetUrl":"magnet:?xt=urn:btih:zzz","protocol":2,"publishDate":"2026-01-15T00:00:00Z","indexerId":1}`)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", body)
-	ReleasePushHandler(dm, &fakeReleaseDispatcher{}, releasecache.New(0)).ServeHTTP(rr, req)
+	ReleasePushHandler(dm, &fakeReleaseDispatcher{}, releasecache.New(0), nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Errorf("status: got %d want 200", rr.Code)
 	}
@@ -435,3 +435,195 @@ func newErr(s string) error { return &simpleErr{s} }
 type simpleErr struct{ s string }
 
 func (e *simpleErr) Error() string { return e.s }
+
+// ----- POST /api/v3/release/push indexer/dc resolve (J250) -----
+
+// fakePushIndexerLookup tracks Get + FindByName calls and returns
+// configured rows or errors. Both arms can be primed independently.
+type fakePushIndexerLookup struct {
+	gotID       int
+	gotName     string
+	returnByID  *indexers.Indexer
+	returnName  *indexers.Indexer
+	errByID     error
+	errByName   error
+	callsByID   int
+	callsByName int
+}
+
+func (f *fakePushIndexerLookup) Get(_ context.Context, id int) (*indexers.Indexer, error) {
+	f.gotID = id
+	f.callsByID++
+	return f.returnByID, f.errByID
+}
+
+func (f *fakePushIndexerLookup) FindByName(_ context.Context, name string) (*indexers.Indexer, error) {
+	f.gotName = name
+	f.callsByName++
+	return f.returnName, f.errByName
+}
+
+func TestReleasePushHandler_IndexerResolve_ByID_OverwritesNameFromRepo(t *testing.T) {
+	t.Parallel()
+	dm := &fakeDecisionMaker{returnDecisions: []decisionengine.Decision{
+		decisionengine.NewDecision(&decisionengine.Subject{
+			Release:           &parser.ReleaseInfo{Title: "Z"},
+			ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{ReleaseTitle: "Z"},
+		}),
+	}}
+	indexerLook := &fakePushIndexerLookup{
+		returnByID: &indexers.Indexer{ID: 42, Name: "CanonicalName"},
+		errByName:  indexers.ErrNotFound, // not used when name is empty
+	}
+	// Body sends id-only; name absent. Resolver should look up by id
+	// and the dispatched ReleaseInfo should carry the canonical name.
+	body := strings.NewReader(`{"title":"Z","downloadUrl":"https://x/y","protocol":1,"publishDate":"2026-01-15T00:00:00Z","indexerId":42}`)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", body)
+	ReleasePushHandler(dm, &fakeReleaseDispatcher{}, releasecache.New(0), indexerLook, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if indexerLook.callsByID != 1 {
+		t.Errorf("expected 1 Get(id=42) call, got %d", indexerLook.callsByID)
+	}
+	if indexerLook.callsByName != 0 {
+		t.Errorf("expected 0 FindByName calls when name is empty, got %d", indexerLook.callsByName)
+	}
+}
+
+func TestReleasePushHandler_IndexerResolve_NameOnly_LooksUpByName(t *testing.T) {
+	t.Parallel()
+	dm := &fakeDecisionMaker{returnDecisions: []decisionengine.Decision{
+		decisionengine.NewDecision(&decisionengine.Subject{
+			Release:           &parser.ReleaseInfo{Title: "Z"},
+			ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{ReleaseTitle: "Z"},
+		}),
+	}}
+	indexerLook := &fakePushIndexerLookup{
+		returnName: &indexers.Indexer{ID: 99, Name: "Newznab-A"},
+	}
+	body := strings.NewReader(`{"title":"Z","downloadUrl":"https://x/y","protocol":1,"publishDate":"2026-01-15T00:00:00Z","indexer":"Newznab-A"}`)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", body)
+	ReleasePushHandler(dm, &fakeReleaseDispatcher{}, releasecache.New(0), indexerLook, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if indexerLook.callsByID != 0 {
+		t.Errorf("expected 0 Get calls when id is zero, got %d", indexerLook.callsByID)
+	}
+	if indexerLook.callsByName != 1 || indexerLook.gotName != "Newznab-A" {
+		t.Errorf("expected 1 FindByName('Newznab-A'), got calls=%d name=%q", indexerLook.callsByName, indexerLook.gotName)
+	}
+}
+
+func TestReleasePushHandler_IndexerResolve_IDNotFound_400(t *testing.T) {
+	t.Parallel()
+	indexerLook := &fakePushIndexerLookup{errByID: indexers.ErrNotFound}
+	body := strings.NewReader(`{"title":"Z","downloadUrl":"https://x/y","protocol":1,"publishDate":"2026-01-15T00:00:00Z","indexerId":9999}`)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", body)
+	ReleasePushHandler(&fakeDecisionMaker{}, &fakeReleaseDispatcher{}, releasecache.New(0), indexerLook, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400 (IndexerId not found)", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "9999") {
+		t.Errorf("validation envelope should name the missing id; got body=%s", rr.Body.String())
+	}
+}
+
+func TestReleasePushHandler_IndexerResolve_IDNameMismatch_400(t *testing.T) {
+	t.Parallel()
+	indexerLook := &fakePushIndexerLookup{
+		returnByID: &indexers.Indexer{ID: 1, Name: "A"},
+		returnName: &indexers.Indexer{ID: 2, Name: "B"},
+	}
+	// Body claims id=1 + name="B" — repo says these are two different rows.
+	body := strings.NewReader(`{"title":"Z","downloadUrl":"https://x/y","protocol":1,"publishDate":"2026-01-15T00:00:00Z","indexerId":1,"indexer":"B"}`)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", body)
+	ReleasePushHandler(&fakeDecisionMaker{}, &fakeReleaseDispatcher{}, releasecache.New(0), indexerLook, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400 (id/name mismatch)", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "does not match") {
+		t.Errorf("validation envelope should signal the mismatch; got body=%s", rr.Body.String())
+	}
+}
+
+func TestReleasePushHandler_IndexerResolve_NeitherSupplied_NullReturn(t *testing.T) {
+	t.Parallel()
+	// No id, no name → resolver returns null and the push proceeds
+	// with body fields verbatim (which are also empty).
+	dm := &fakeDecisionMaker{returnDecisions: []decisionengine.Decision{
+		decisionengine.NewDecision(&decisionengine.Subject{
+			Release:           &parser.ReleaseInfo{Title: "Z"},
+			ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{ReleaseTitle: "Z"},
+		}),
+	}}
+	indexerLook := &fakePushIndexerLookup{}
+	body := strings.NewReader(`{"title":"Z","downloadUrl":"https://x/y","protocol":1,"publishDate":"2026-01-15T00:00:00Z"}`)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/release/push", body)
+	ReleasePushHandler(dm, &fakeReleaseDispatcher{}, releasecache.New(0), indexerLook, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200 (neither id nor name); body=%s", rr.Code, rr.Body.String())
+	}
+	if indexerLook.callsByID != 0 || indexerLook.callsByName != 0 {
+		t.Errorf("no lookups should fire when both id+name absent; got id=%d name=%d", indexerLook.callsByID, indexerLook.callsByName)
+	}
+}
+
+// resolvePushIndexer / resolvePushDownloadClient unit tests below
+// exercise the package-private helper directly with fake lookups.
+// Faster than going through the handler for the table-driven shape.
+
+func TestResolvePushIndexer_IDFoundOnlyReturnsByID(t *testing.T) {
+	t.Parallel()
+	lk := &fakePushIndexerLookup{returnByID: &indexers.Indexer{ID: 7, Name: "FromRepo"}}
+	got, vf := resolvePushIndexer(context.Background(), lk, 7, "")
+	if len(vf) > 0 {
+		t.Fatalf("unexpected vf: %+v", vf)
+	}
+	if got == nil || got.ID != 7 {
+		t.Errorf("got %+v, want id=7", got)
+	}
+}
+
+func TestResolvePushIndexer_NameFoundOnly_ReturnsByName(t *testing.T) {
+	t.Parallel()
+	lk := &fakePushIndexerLookup{returnName: &indexers.Indexer{ID: 3, Name: "Indexed"}}
+	got, vf := resolvePushIndexer(context.Background(), lk, 0, "Indexed")
+	if len(vf) > 0 {
+		t.Fatalf("unexpected vf: %+v", vf)
+	}
+	if got == nil || got.ID != 3 {
+		t.Errorf("got %+v, want id=3", got)
+	}
+}
+
+func TestResolvePushIndexer_BothMatch_PrefersByID(t *testing.T) {
+	t.Parallel()
+	// Both lookups return the SAME row id → no mismatch → byID wins.
+	lk := &fakePushIndexerLookup{
+		returnByID: &indexers.Indexer{ID: 5, Name: "X"},
+		returnName: &indexers.Indexer{ID: 5, Name: "X"},
+	}
+	got, vf := resolvePushIndexer(context.Background(), lk, 5, "X")
+	if len(vf) > 0 {
+		t.Fatalf("unexpected vf: %+v", vf)
+	}
+	if got == nil || got.ID != 5 {
+		t.Errorf("got %+v, want id=5", got)
+	}
+}
+
+func TestResolvePushIndexer_NameNotFound_Validation(t *testing.T) {
+	t.Parallel()
+	lk := &fakePushIndexerLookup{errByName: indexers.ErrNotFound}
+	_, vf := resolvePushIndexer(context.Background(), lk, 0, "ghost")
+	if len(vf) != 1 || vf[0].PropertyName != "Indexer" {
+		t.Errorf("want one Indexer-property failure; got %+v", vf)
+	}
+}
