@@ -5,7 +5,7 @@
     { "id": "v3.system.routes",            "request": { "method": "GET", "path": "/api/v3/system/routes" } },
     { "id": "v3.system.health",            "request": { "method": "GET", "path": "/api/v3/health" } },
     { "id": "v3.system.tasks",             "request": { "method": "GET", "path": "/api/v3/system/task" },
-      "normalize": { "redact_paths": ["$[*].lastExecution", "$[*].nextExecution", "$[*].lastStartTime", "$[*].id"] } },
+      "normalize": { "redact_paths": ["$[*].lastExecution", "$[*].nextExecution", "$[*].lastStartTime", "$[*].lastDuration", "$[*].id"] } },
 
     { "id": "v3.config.host",              "request": { "method": "GET", "path": "/api/v3/config/host" },
       "normalize": { "redact_paths": ["$.apiKey", "$.instanceName", "$.analyticsEnabled", "$.launchBrowser", "$.port"] } },

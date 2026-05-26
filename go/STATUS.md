@@ -9321,3 +9321,21 @@ Net diff: ~12 internal/api/v3/notification_schema.go (1 new FieldDef + doc-comme
 Behavioural impact: third-party tooling that consumes `/api/v3/notification/schema` (e.g. Configuration manager apps that auto-render Sonarr settings UIs) now sees the EncryptionKey field on Pushover and can render it. Sonarr Mobile / *-arr-suite tooling that targets v3 now has full Pushover E2E parity with C# upstream.
 
 Open follow-ups remaining (4 of 5): C.1.i-follow-2 (validation envelope policy), C.1.i-follow-3 (lastDuration redaction), C.1.i-follow-4 (DELETE idempotency audit), C.1.i-follow-5 (route coverage audit).
+
+## Phase 5.J231 — `lastDuration` redaction added to v3.system.tasks corpus (audit row C.1.i-follow-3 closed) — 2026-05-26
+
+Trivial one-line corpus PR. Closes the J228 finding: the `v3.system.tasks` entry in `test/contract/corpus/v3-empty-state.json` redacts `lastExecution`, `nextExecution`, `lastStartTime`, and `id` — but not `lastDuration`, which is a `739737.06:56:55.4737650`-shaped TimeSpan tick-count that moves with wallclock time. Every re-recording surfaced this as a 21-byte drift (per J227) when the actual field shape was unchanged.
+
+Implementation:
+
+test/contract/corpus/v3-empty-state.json: added `$[*].lastDuration` to the existing `redact_paths` array on the `v3.system.tasks` entry. The normalization layer at `test/contract/internal/normalize` reads `redact_paths` JSONPath expressions and replaces matched values with `"<redacted>"` before the byte-eq comparison; the `$[*]` prefix walks every element of the top-level array (since the response IS an array, not an object).
+
+No `v5.system.tasks` corpus entry exists — the v5 surface doesn't expose `/api/v5/system/task` as a distinct path (it inherits v3 via the shared host server). So only the v3 corpus needs the fix.
+
+Verification: contract tests (`TestV3SystemTasksContract` if it exists, and the contract-replayer harness) continue to pass with the broader redaction. `go test ./...` 0 FAIL. The next re-recording against live C# will no longer surface lastDuration as drift.
+
+Read/write balance: this is a test-infra fix, not a wire-shape change. No read or write paths in the Go-port touched. The corpus is consumed by both the recorder (writes goldens) and replayer (reads them + compares).
+
+Net diff: ~1 test/contract/corpus/v3-empty-state.json (single JSONPath added to existing array) + ~3 PROGRESS.md cursor + ~12 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md (row strikethrough + CLOSED summary).
+
+3 of 5 follow-up rows remain: C.1.i-follow-2 (validation envelope policy), C.1.i-follow-4 (DELETE idempotency audit), C.1.i-follow-5 (route coverage audit).
