@@ -35,6 +35,7 @@ import (
 	logv5 "sonarr.tv/sonarr/internal/api/v5/log"
 	manualimportv5 "sonarr.tv/sonarr/internal/api/v5/manualimport"
 	systemv5 "sonarr.tv/sonarr/internal/api/v5/system"
+	systembackupv5 "sonarr.tv/sonarr/internal/api/v5/systembackup"
 	systemtaskv5 "sonarr.tv/sonarr/internal/api/v5/systemtask"
 	tagv5 "sonarr.tv/sonarr/internal/api/v5/tag"
 	wantedv5 "sonarr.tv/sonarr/internal/api/v5/wanted"
@@ -1483,6 +1484,19 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// parity). v5-specific Resource + handlers (cannot path-alias).
 		{Method: "GET", Path: "/api/v5/system/task", Handler: systemtaskv5.ListHandler(taskSvc)},
 		{Method: "GET", Path: "/api/v5/system/task/{id}", Handler: systemtaskv5.ByIDHandler(taskSvc)},
+		// J276 — v5 SystemBackup endpoint family (4 endpoints; 148 LOC
+		// C# across BackupController + BackupResource). 2 divergences
+		// from v3: (1) DELETE/{id} → 204 (v5 NoContent) vs v3's
+		// 200+`{}` — v5util.RewriteSuccessTo204 wrapper. (2) POST
+		// /restore/upload bad-extension path: v5 returns 400 +
+		// `{"error":"Invalid extension..."}` vs v3's 415+envelope —
+		// v5-specific handler (status+body shape divergence too
+		// significant to wrap). GET list + POST /restore/{id} are
+		// pure path-aliases.
+		{Method: "GET", Path: "/api/v5/system/backup", Handler: systembackupv5.ListHandler(backupAdmin{svc: backupSvc})},
+		{Method: "DELETE", Path: "/api/v5/system/backup/{id}", Handler: systembackupv5.DeleteHandler(backupAdmin{svc: backupSvc})},
+		{Method: "POST", Path: "/api/v5/system/backup/restore/{id}", Handler: systembackupv5.RestoreHandler(backupAdmin{svc: backupSvc})},
+		{Method: "POST", Path: "/api/v5/system/backup/restore/upload", Handler: systembackupv5.RestoreUploadHandler(backupUploader{svc: backupSvc, tempPath: backupTempPath})},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to

@@ -12689,3 +12689,60 @@ Pattern observation: this is the first Wave 3 slice where the v5 surface adds a 
 - Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
 - Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J276 — Wave 3 twenty-fifth slice: v5 SystemBackup family port (148 LOC C# source)
+
+Combo slice — status-wrapper for one endpoint + custom v5-specific handler for another (status AND body shape divergence too significant to wrap).
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :282-385):
+
+| endpoint                                     | v5 status     | v3 Go-port                       | strategy                             |
+|----------------------------------------------|---------------|----------------------------------|--------------------------------------|
+| GET    /api/v5/system/backup                 | 200           | 200 (apiv3.BackupListHandler)     | path-alias                          |
+| DELETE /api/v5/system/backup/{id}            | **204/404**   | 200+`{}` / 404                   | v5util.RewriteSuccessTo204           |
+| POST   /api/v5/system/backup/restore/{id}    | 200/404       | 200+`{restartRequired:true}` / 404 | path-alias                        |
+| POST   /api/v5/system/backup/restore/upload  | **200/400**   | 200/415 (bad extension)          | v5-specific handler                  |
+
+**Resource diff** — none. v5 BackupResource at `src/Sonarr.Api.V5/System/Backup/BackupResource.cs` is byte-identical to v3 (6 fields: id/name/path/size/type/time). Type alias is wire-safe.
+
+**Divergence #1 — DELETE 200→204**: v5 `Results<NoContent, NotFound>` returns NoContent on success; v3 returns 200 + `{}`. v5util.RewriteSuccessTo204 demotes; 404 on missing id passes through unchanged because the wrapper predicate only matches 200 success responses (J269/J272 confirmed pattern).
+
+**Divergence #2 — Restore upload bad-extension**: BOTH status AND body shape differ. v5:
+```csharp
+return TypedResults.BadRequest<object>(new { error = $"Invalid extension..." });
+```
+v3:
+```csharp
+throw new UnsupportedMediaTypeException($"Invalid extension...");
+```
+
+v3 emits 415 + standard error envelope (`{message, content, errors}` shape via `httperr.Write`). v5 emits 400 + `{"error":"Invalid extension, must be one of: .zip, .db, .xml"}`. Too much divergence for a response-rewriting wrapper — write a v5-specific handler that mirrors v3's pipeline but with the v5 extension-check branch.
+
+The v3 handler's body parsing, max-bytes guard, multipart-form walk, SaveStream/Restore/DeleteFile sequence, and happy-path response are all identical to v5 — only the one branch differs. New `RestoreUploadHandler` is ~60 LOC of duplicated handler code (acceptable — the v3 handler can't be cleanly composed because the extension-check sits in the middle of the pipeline). The shared `firstFile` + `extensionAllowed` + `validExtensions` + `uploadMaxBytes`/`uploadParseMemory` constants are duplicated rather than re-exported to keep v3's private surface stable.
+
+**Restore-by-id PATH-ALIAS**: v5 C# uses `Results<Ok<object>, NotFound>` returning `new { RestartRequired = true }` — wire-identical to v3's anonymous object. No wrapper needed.
+
+**SignalR**: v5 BackupController doesn't declare any IHandle<> interfaces — backup operations are synchronous + don't broadcast. No Wave 2 mop-up here.
+
+**Slice scope** — 433 lines (152 source + 281 test) + 1 import + 4 routes:
+
+- New `internal/api/v5/systembackup/systembackup.go` (152 LOC) — Resource type alias to `apiv3.BackupResource` + Admin/Uploader type aliases + ListHandler variable alias to apiv3 + RestoreHandler variable alias to apiv3 + DeleteHandler (wraps apiv3.BackupDeleteHandler via v5util.RewriteSuccessTo204) + new RestoreUploadHandler (mirrors v5 C# semantics — copies the multipart-parse + temp-file + save+restore+cleanup pipeline from v3 but emits 400 + `{"error":"..."}` on bad extension instead of v3's 415 + envelope) + private extensionAllowed helper + private firstFile helper (multipart Form.File map iteration, same as v3's local copy).
+- New `internal/api/v5/systembackup/systembackup_test.go` (281 LOC) — 9 tests: ListHandlerAlias-empty (`[]`), ListHandlerAlias-populated (Resource projection round-trips Name/Path/Type), DeleteHandler-rewrites-200-to-204 (svc.DeleteFile called once + body empty + Content-Type stripped), DeleteHandler-missing-id-passes-through-404 (canonical wrapper-contract pin), RestoreHandlerAlias-found (svc.Restore called + restartRequired=true), RestoreHandlerAlias-NotFound, RestoreUploadHandler-happy-path (200 + body match + full pipeline saved/restored/deleted), RestoreUploadHandler-bad-extension-v5-shape-is-400 (canonical divergence guard — pins 400 + `{"error":"..."}` body NOT v3's 415+envelope; also asserts upload pipeline does NOT run on bad extension), RestoreUploadHandler-missing-file-400 (envelope-style — same as v3 for this branch), TypeAliases compile-time pin.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`systembackupv5`) + 4 new routes alongside the existing /api/v3/system/backup routes. Re-uses backupAdmin + backupUploader + backupSvc + backupTempPath deps verbatim — the v3 and v5 surfaces share the same backing service and admin wrappers.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/systembackup/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/systembackup/... ./cmd/sonarr/...` ✓ (9 v5/systembackup tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 28/~50 → 29/~50.
+
+Pattern observation: this is the first Wave 3 slice that combines a v5util status-wrapper (DELETE 200→204) with a fully-custom v5 handler (RestoreUpload). The slice demonstrates that when status AND body shape both diverge, wrapping isn't worth the complexity — copy 60 LOC of pipeline code to keep semantics clear. The DELETE/RestoreUpload pair shows the "wrap when only status differs; fork when both status AND body differ" decision rule cleanly.
+
+### Next Wave 3 candidates ascending
+
+- Profiles/Quality/QualityProfileController (88 LOC) + QualityProfileSchemaController (28 LOC)
+- Profiles/Release/ReleaseProfileController (95 LOC)
+- Settings/* (multiple controllers — UpdateSettings 24, IndexerSettings 30, UiSettings 31, Settings 55, MediaManagementSettings 70, GeneralSettings 114, NamingSettings 143)
+- Episodes/EpisodeController (85 LOC) + RenameEpisodeController (48 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
+- Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
+- Release/ReleasePushController (120 LOC)
