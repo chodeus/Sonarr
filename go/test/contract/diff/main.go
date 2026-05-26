@@ -40,7 +40,7 @@ import (
 	"sync"
 	"time"
 
-	"sonarr.tv/sonarr/test/contract/internal/normalize"
+	"sonarr.tv/sonarr/internal/normalize"
 	"sonarr.tv/sonarr/test/contract/internal/runner"
 	"sonarr.tv/sonarr/test/contract/internal/spec"
 )

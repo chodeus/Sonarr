@@ -12,7 +12,7 @@ import (
 	"net/url"
 	"strings"
 
-	"sonarr.tv/sonarr/test/contract/internal/normalize"
+	"sonarr.tv/sonarr/internal/normalize"
 	"sonarr.tv/sonarr/test/contract/internal/spec"
 )
 

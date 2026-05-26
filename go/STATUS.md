@@ -9694,3 +9694,57 @@ Read/write balance: WRITE-side audit work. The POST endpoint mutates the respons
   - 1 acknowledged deferred sub-arc: J237's ShouldOverride Subject mutation + indexer/dc name→id resolve + full ReleaseResource projection (documented in the J237 handler doc-comments; lands when toReleaseResource gains the missing custom-format + scene-mapping fields).
 
 **Cleared to pivot to Phase 6 prep** per the user's direction "5a-5e. Lets wrap up as much phase 5 as we can before moving to phase 6."
+
+
+## Phase 5.J239 — Phase 6.1 shadow-traffic harness skeleton — 2026-05-26
+
+First Phase 6 prep slice. The Phase 6 scope doc (PHASE_6_SCOPE.md § 6.1) calls for a reverse-proxy binary that dual-dispatches every API request to both the canonical C# Sonarr backend and the Go-port binary, returns the primary's response to the caller, diffs the secondary's body against the primary post-redaction, and writes daily diff reports grouped by severity. J239 ships that binary at `go/cmd/shadow-traffic-diff/`.
+
+Architecture:
+
+  - `main.go` (~150 LOC) — flag parsing, signal-handling, periodic-flush goroutine, graceful shutdown.
+  - `proxy.go` (~250 LOC) — DualProxy http.Handler. Buffers inbound request body once, replays to both backends via goroutines with shared deadline, streams primary's response to caller, kicks off a background diff goroutine after the client stream completes (never blocks the caller's latency).
+  - `differ.go` (~120 LOC) — RedactConfig + Differ wrapping the existing normalize package. Severity classification: any KindMissingInA/KindMissingInB/KindTypeMismatch present → HIGH (structural divergence — a real port gap); only KindValueMismatch entries → LOW (likely environmental noise); both bodies byte-equal post-redact → OK.
+  - `report.go` (~180 LOC) — in-memory DiffRow + OKBucket buffer + periodic flush to date-stamped JSONL (diffs) + JSON (OK summary) files. Append-mode so service restart doesn't truncate the day's report. RecordOK aggregates byte-equal events into per-(method,path,status) counters.
+
+Refactor — `test/contract/internal/normalize/` → `internal/normalize/`:
+
+  The normalize package was internal to `test/contract/`, blocking import from `cmd/`. Moved to project-level `internal/normalize/` (still internal to the module, but importable from cmd/ and internal/). 4 prior call sites updated: `cmd/shadow-traffic-diff/differ.go` (new), `internal/normalize/diff_test.go`, `test/contract/diff/main.go`, `test/contract/replayer/replayer.go`, `test/contract/internal/runner/runner.go`. Existing contract test suite still passes at the new import path.
+
+Failure-mode handling (per PHASE_6_SCOPE.md operational expectations):
+
+  - Primary unreachable / connection error → return 502 to caller, record HIGH-sev diff with the failure reason. Primary down is the most important shadow-period signal because it breaks the canonical reference.
+  - Secondary unreachable / timeout → return primary's response verbatim (caller unaffected), record HIGH-sev diff. The Go port being down doesn't break the canonical surface but does block diff coverage for that request.
+  - 200 vs 4xx / 4xx vs 5xx → HIGH-sev (status mismatch always indicates a real port gap).
+  - 200 vs 200 byte-equal post-redact → OK aggregate bucket, no per-event row.
+  - 200 vs 200 with body diff post-redact:
+    - Only KindValueMismatch (e.g. an unredacted timestamp) → LOW.
+    - Any KindMissingInA/B or KindTypeMismatch (e.g. Go-port omits a field) → HIGH.
+
+Default RedactConfig (operator override via `-redact-config <file>.json`):
+
+  Conservative baseline covering the dynamic fields already surfaced by the J231/J234 audit slices: system/task `lastDuration` / `nextExecution` / `lastExecution` / `lastStartTime`; command `queued` / `started` / `ended` / `duration` / `stateChangeTime` / `lastExecutionTime`; health `source`; log `records[*].time` / `exception` / `id`; system/status `startTime` / `buildTime` / `runtimeVersion` / `version` / `osVersion` / `osName` / `architecture`; diskspace `freeSpace` / `totalSpace`. New noise discovered during the shadow period gets appended to a deployed `-redact-config` file rather than recompiling the binary.
+
+Test coverage (`proxy_test.go`, 14 tests):
+
+  - End-to-end through the front proxy: byte-equal-no-diff (OK aggregate increments, no diff row); status mismatch HIGH-sev; pure body value diff LOW-sev; missing-field HIGH-sev; secondary-down HIGH-sev; primary-down → 502 to client + HIGH-sev recorded; POST body replayed verbatim to both backends (atomic.Value assertion on each backend's received body); redacted-field difference suppressed (lastDuration values differ but no diff row recorded).
+  - Report unit: Flush writes both files; second flush appends to existing files (3 OK bumps → counter=3, 2 DiffRows → 2 JSONL lines).
+  - Differ unit: non-JSON body always HIGH-sev (HTML stack trace from a C# 500 catches via this path).
+  - Helpers: singleJoin, RedactConfig.RedactPathsFor (empty PathPrefix matches all, prefix-match works, nil-receiver returns nil), LoadRedactConfig (happy + missing-file + malformed-JSON), Severity.String roundtrip.
+
+Hard gates clean: `go build ./...` no errors; `go test ./cmd/shadow-traffic-diff/` 14/14 PASS; `go test -race ./cmd/shadow-traffic-diff/` race-clean; `go test ./internal/normalize/ ./test/contract/...` all green at the new import path.
+
+Net diff: ~150 lines cmd/shadow-traffic-diff/main.go + ~250 cmd/shadow-traffic-diff/proxy.go + ~120 cmd/shadow-traffic-diff/differ.go + ~180 cmd/shadow-traffic-diff/report.go + ~370 cmd/shadow-traffic-diff/proxy_test.go + 4 import path edits + git mv test/contract/internal/normalize → internal/normalize + PROGRESS.md update + STATUS.md slice note.
+
+Phase 6 progress after J239:
+
+  - 6.1 shadow-traffic harness — skeleton DONE; ready to point at staging-host backends when those land.
+  - 6.2 smoke runbook — NOT STARTED (operator-driven, not autonomous-loop work).
+  - 6.3 nightly contract-suite CI — NOT STARTED (workflow file change only).
+  - 6.4 cutover commit — NOT STARTED (gated on 14+ days of zero unexplained diff in 6.1's daily reports).
+
+Open follow-ups documented in handler doc-comments for future slices:
+
+  - Production-log replay tool (a separate tee/replay binary that captures from a real Sonarr install and feeds the request stream into shadow-traffic-diff's listen addr).
+  - Optional TLS termination support (currently HTTP only — fine for staging-localhost deployments, would need wrapping for cross-network).
+  - SignalR / WebSocket dual-dispatch — currently the binary handles HTTP only. SignalR shadow-diffing is materially harder (long-lived connections, sequence-dependent event ordering) and is a separate slice.

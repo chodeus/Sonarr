@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"sonarr.tv/sonarr/test/contract/internal/normalize"
+	"sonarr.tv/sonarr/internal/normalize"
 )
 
 func TestJSONDiff_Equal(t *testing.T) {
