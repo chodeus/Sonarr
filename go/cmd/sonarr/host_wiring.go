@@ -23,6 +23,7 @@ import (
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
 	qualitydefinitionv5 "sonarr.tv/sonarr/internal/api/v5/qualitydefinition"
 	qualityprofilev5 "sonarr.tv/sonarr/internal/api/v5/qualityprofile"
+	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
 	remotepathmappingv5 "sonarr.tv/sonarr/internal/api/v5/remotepathmapping"
 	rootfolderv5 "sonarr.tv/sonarr/internal/api/v5/rootfolder"
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
@@ -1515,6 +1516,20 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v5/qualityprofile", Handler: qualityprofilev5.CreateHandler(qualityProfilesSvc, customFormatsSvc)},
 		{Method: "PUT", Path: "/api/v5/qualityprofile/{id}", Handler: qualityprofilev5.UpdateHandler(qualityProfilesSvc, customFormatsSvc)},
 		{Method: "DELETE", Path: "/api/v5/qualityprofile/{id}", Handler: qualityprofilev5.DeleteHandler(qualityProfilesSvc)},
+		// J278 — v5 ReleaseProfile endpoint family (5 endpoints; 154
+		// LOC C# across ReleaseProfileController + ReleaseProfileResource).
+		// TWO divergences from v3: (1) field rename + type change
+		// `indexerId` (int) → `indexerIds` ([]int) — v5-specific
+		// Resource + custom mapper required; v5 GET/POST/PUT all use
+		// v5-specific handlers. (2) DELETE/{id} 200+empty → 204+empty
+		// via v5util.RewriteSuccessTo204 (J277 pattern). Status codes
+		// on the other 4 endpoints already match v3 directly
+		// (POST→201, PUT→202, GETs→200).
+		{Method: "GET", Path: "/api/v5/releaseprofile", Handler: releaseprofilev5.ListHandler(releaseProfilesSvc)},
+		{Method: "GET", Path: "/api/v5/releaseprofile/{id}", Handler: releaseprofilev5.ByIDHandler(releaseProfilesSvc)},
+		{Method: "POST", Path: "/api/v5/releaseprofile", Handler: releaseprofilev5.CreateHandler(releaseProfilesSvc)},
+		{Method: "PUT", Path: "/api/v5/releaseprofile/{id}", Handler: releaseprofilev5.UpdateHandler(releaseProfilesSvc)},
+		{Method: "DELETE", Path: "/api/v5/releaseprofile/{id}", Handler: releaseprofilev5.DeleteHandler(releaseProfilesSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to

@@ -12809,3 +12809,65 @@ Pattern observation: this slice exemplifies the cleanest application of the J269
 - Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
 - Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J278 — Wave 3 twenty-seventh slice: v5 ReleaseProfile family port (154 LOC C# source)
+
+Combo slice — Resource field rename+type-change (J254/J262/J274 pattern) plus DELETE status wrapper (J277 pattern).
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :4280-4476 region):
+
+| endpoint                                  | v5 status   | v3 Go-port           | strategy                              |
+|-------------------------------------------|-------------|----------------------|---------------------------------------|
+| GET    /api/v5/releaseprofile             | 200         | 200                  | v5-specific (Resource diff)           |
+| GET    /api/v5/releaseprofile/{id}        | 200 / 404   | 200 / 404            | v5-specific (Resource diff)           |
+| POST   /api/v5/releaseprofile             | 201 Created | 201 Created          | v5-specific (Resource diff)           |
+| PUT    /api/v5/releaseprofile/{id}        | 202 Accepted| 202 Accepted         | v5-specific (Resource diff)           |
+| **DELETE /api/v5/releaseprofile/{id}**    | **204**     | 200+empty            | v5util.RewriteSuccessTo204            |
+
+Path-aliasing isn't usable for the GET/POST/PUT endpoints because the Resource wire shape differs in a load-bearing field. Only the DELETE can wrap.
+
+**Resource diff** (v5 `ReleaseProfileResource` per `src/Sonarr.Api.V5/Profiles/Release/ReleaseProfileResource.cs` vs v3 Go-port `apiv3.ReleaseProfileResource`):
+
+| field                 | v3 Go-port              | v5 C#                       | notes |
+|-----------------------|-------------------------|------------------------------|-------|
+| **indexerId**         | int (singular)          | —                            | v5 RENAMES + RETYPES |
+| **indexerIds**        | —                       | List<int> (plural)          | v5 adds; full slice  |
+| name                  | string                  | string?                     | shared |
+| enabled               | bool                    | bool                        | shared |
+| required[]            | List<string>            | List<string>                | shared |
+| ignored[]             | List<string>            | List<string>                | shared |
+| airDateRestriction    | bool                    | bool                        | shared |
+| airDateGracePeriod    | int                     | int                         | shared |
+| tags[]                | HashSet<int>            | HashSet<int>                | shared |
+| excludedTags[]        | HashSet<int>            | HashSet<int>                | shared |
+
+The v3 C# Resource has `IndexerId` (int, scalar) but the underlying `ReleaseProfile.IndexerIDs` model is already a List<int> — v3 collapses it via `FirstOrDefault(0)` per resource.cs:49. v5 stops collapsing and exposes the full list. The Go-port underlying `releaseprofiles.Profile.IndexerIDs []int` (per `internal/releaseprofiles/releaseprofiles.go:40`) is ready — no service-port slice needed.
+
+Required/Ignored on v3 C# are declared as `object` (polymorphic — accepts both `string` (CSV) and `List<string>` for backward compatibility per the comment at resource.cs:15-17). v3 Go-port already pins to []string on the wire per `apiv3.ReleaseProfileResource:43-44` — only the POST body parsing differs (v3 C# `ParseArray` falls back to comma-split on string input; v3 Go-port and v5 both expect List<string>). v5's strict List<string> just locks in what the v3 Go-port already emits.
+
+**Decoder shift — DisallowUnknownFields**: v5 decoder uses `dec.DisallowUnknownFields()` per the standard v5 pattern. A v3-shaped POST body sending `indexerId` (singular) → 400 BadRequest on the v5 surface. Test `TestCreateHandler_RejectsV3IndexerIdField` pins this contract.
+
+**DELETE wrapper composition**: v3 handler is J232-idempotent (`releaseprofile.go:227-231` swallows ErrNotFound and emits 200). The v5util.RewriteSuccessTo204 wrapper rewrites both happy-path-200 AND idempotent-missing-id-200 to 204+empty, matching v5's strict `TypedResults.NoContent()` for both branches. 500-class errors pass through unchanged because the wrapper predicate only matches 200.
+
+**Validation chain**: same SharedValidator Custom() block as v3, with one v5-only rule DEFERRED (per-indexer existence check, ReleaseProfileController.cs:41-47). v3 Go-port already deferred this (doc-comment at `releaseprofile.go:160-165` — "Requires plumbing an IndexerExistence adapter"). v5 inherits the same deferral.
+
+**Slice scope** — 530 lines (280 source + 250 test) + 1 import + 5 routes:
+
+- New `internal/api/v5/releaseprofile/releaseprofile.go` (280 LOC) — v5-specific Resource struct (10 wire fields with indexerIds plural) + Lister/Writer type aliases (re-export apiv3 service-interface contracts; the service layer is unchanged) + ListHandler/ByIDHandler/CreateHandler/UpdateHandler new v5-specific impls (port the v3 logic with v5 mapper) + DeleteHandler wrapping `apiv3.ReleaseProfileDeleteHandler` via v5util.RewriteSuccessTo204 + private toResource/fromResource mappers (handle nil-slice → []slice nil-guards; collapse/expand IndexerIDs↔[]int) + private parseID/decodeBody/writeJSON helpers + ported `validate`/`intersectInts` from v3 (kept private to v5 to avoid widening v3 exports).
+- New `internal/api/v5/releaseprofile/releaseprofile_test.go` (250 LOC) — 11 tests: ListHandler-emits-indexerIds-plural (canonical field-rename guard — asserts `"indexerIds":[10,20]` present AND `"indexerId"` absent — the single most important contract test for this slice), ListHandler-empty-returns-array, ByIDHandler-found-populates-IndexerIds (round-trip + ID + len), ByIDHandler-NotFound (404), CreateHandler-accepts-indexerIds-plural-returns-201 (round-trip + svc.Add called with full IndexerIds list), CreateHandler-rejects-v3-indexerId-field (DisallowUnknownFields pin — v3-shaped body MUST 400 on v5 surface), CreateHandler-validation-fires (empty Required+Ignored+!AirDateRestriction → 400), UpdateHandler-found-returns-202 (round-trip new IndexerIds), UpdateHandler-NotFound (404), DeleteHandler-rewrites-to-204 (svc.Delete called once + body empty), DeleteHandler-missing-id-idempotent-rewritten (J232 swallow + wrapper to 204).
+- `cmd/sonarr/host_wiring.go` — 1 new import (`releaseprofilev5`) + 5 new routes alongside the existing /api/v3/releaseprofile routes. Re-uses releaseProfilesSvc dep verbatim.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/releaseprofile/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/releaseprofile/... ./cmd/sonarr/...` ✓ (11 v5/releaseprofile tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 30/~50 → 31/~50.
+
+Pattern observation: this slice combines TWO classic Wave-3 patterns — Resource-field-divergence (J254/J262/J274) AND status-wrapper (J277) — in one family. The dispatch is per-endpoint: 4 endpoints need v5-specific handlers (because they touch the Resource shape) and 1 endpoint can wrap v3 (because the body is empty so the field-rename is moot for DELETE).
+
+### Next Wave 3 candidates ascending
+
+- Settings/* (multiple controllers — UpdateSettings 24, IndexerSettings 30, UiSettings 31, Settings 55, MediaManagementSettings 70, GeneralSettings 114, NamingSettings 143)
+- Episodes/EpisodeController (85 LOC) + RenameEpisodeController (48 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
+- Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
+- Release/ReleasePushController (120 LOC)
