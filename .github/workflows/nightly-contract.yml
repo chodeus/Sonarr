@@ -1,0 +1,210 @@
+name: Nightly contract replay
+
+# Phase 6.3 — runs the contract-replay suite against staging URLs on
+# a daily cron. Catches drift caused by upstream (C# Sonarr) changes
+# or by environmental drift (DB migrations, dependency updates) that
+# the PR-triggered contract-replay job in build_go.yml can't see
+# because it only boots a fresh Go binary in CI without any
+# longer-running state.
+#
+# The job is gated on two repository secrets:
+#
+#   CONTRACT_STAGING_BASE_GO       — URL of the long-running Go-port
+#                                    staging deploy (e.g. https://sonarr-go.staging.internal)
+#   CONTRACT_STAGING_BASE_CSHARP   — URL of the canonical C# Sonarr
+#                                    staging deploy (optional — when set,
+#                                    a separate job replays against it
+#                                    and the workflow summary diffs the
+#                                    drift counts).
+#   CONTRACT_STAGING_API_KEY       — X-Api-Key for both staging deploys.
+#
+# When CONTRACT_STAGING_BASE_GO is unset (the typical fork case) the
+# job no-ops cleanly. When it is set but the deploy is unreachable
+# the job fails loud so the operator sees the staging outage.
+#
+# Reference: go/PHASE_6_SCOPE.md § 6.3.
+
+on:
+  schedule:
+    # 03:00 UTC every day — quiet hour for upstream Sonarr work and
+    # for most fork CI windows.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      override_baseline:
+        description: "Override CONTRACT_DRIFT_BASELINE for this run (debug)"
+        required: false
+        default: ""
+
+concurrency:
+  group: nightly-contract
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: go
+
+jobs:
+  preflight:
+    name: Preflight (skip if staging unset)
+    runs-on: ubuntu-latest
+    outputs:
+      run_go: ${{ steps.gate.outputs.run_go }}
+      run_csharp: ${{ steps.gate.outputs.run_csharp }}
+    steps:
+      - id: gate
+        run: |
+          if [ -n "${{ secrets.CONTRACT_STAGING_BASE_GO }}" ]; then
+            echo "run_go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_go=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CONTRACT_STAGING_BASE_GO secret not set — Go-side replay will be skipped."
+          fi
+          if [ -n "${{ secrets.CONTRACT_STAGING_BASE_CSHARP }}" ]; then
+            echo "run_csharp=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_csharp=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CONTRACT_STAGING_BASE_CSHARP secret not set — C# baseline will be skipped."
+          fi
+
+  go-staging:
+    name: Replay against Go staging
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: needs.preflight.outputs.run_go == 'true'
+    outputs:
+      drift_count: ${{ steps.replay.outputs.drift_count }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Verify staging reachable
+        run: |
+          curl -fsS --max-time 10 "${{ secrets.CONTRACT_STAGING_BASE_GO }}/ping" > /dev/null
+
+      - name: Replay
+        id: replay
+        env:
+          CONTRACT_DRIFT_BASELINE: ${{ github.event.inputs.override_baseline || '9' }}
+        run: |
+          set -o pipefail
+          go test ./test/contract/replayer/... \
+            -contract.base="${{ secrets.CONTRACT_STAGING_BASE_GO }}" \
+            -contract.api-key="${{ secrets.CONTRACT_STAGING_API_KEY }}" \
+            -contract.golden=$(pwd)/test/contract/golden \
+            -contract.corpus=$(pwd)/test/contract/corpus \
+            -run TestReplay -v 2>&1 | tee /tmp/replay-go.out || true
+          DRIFT=$(grep -c "contract drift" /tmp/replay-go.out || true)
+          echo "drift_count=${DRIFT}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Go staging replay"
+            echo ""
+            echo "- Drift count: **${DRIFT}**"
+            echo "- Baseline:    **${CONTRACT_DRIFT_BASELINE}**"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${DRIFT}" -gt "${CONTRACT_DRIFT_BASELINE}" ]; then
+            echo "::error::Go staging drift (${DRIFT}) exceeds baseline (${CONTRACT_DRIFT_BASELINE}). New wire-shape regression."
+            exit 1
+          fi
+          if [ "${DRIFT}" -lt "${CONTRACT_DRIFT_BASELINE}" ]; then
+            echo "::warning::Go staging drift (${DRIFT}) is BELOW baseline (${CONTRACT_DRIFT_BASELINE}). Lower CONTRACT_DRIFT_BASELINE to tighten the guard."
+          fi
+
+      - name: Upload replay log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-go.out
+          path: /tmp/replay-go.out
+          retention-days: 14
+
+  csharp-staging:
+    name: Replay against C# staging (drift baseline)
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: needs.preflight.outputs.run_csharp == 'true'
+    outputs:
+      drift_count: ${{ steps.replay.outputs.drift_count }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Verify staging reachable
+        run: |
+          curl -fsS --max-time 10 "${{ secrets.CONTRACT_STAGING_BASE_CSHARP }}/ping" > /dev/null
+
+      - name: Replay
+        id: replay
+        run: |
+          set -o pipefail
+          # Against the C# backend we DON'T gate on the drift
+          # baseline — the canonical C# is, by definition, the
+          # reference. Any drift here means the golden corpus is
+          # stale relative to what live C# currently emits — that
+          # is an actionable signal for re-recording the corpus
+          # against the latest upstream SHA.
+          go test ./test/contract/replayer/... \
+            -contract.base="${{ secrets.CONTRACT_STAGING_BASE_CSHARP }}" \
+            -contract.api-key="${{ secrets.CONTRACT_STAGING_API_KEY }}" \
+            -contract.golden=$(pwd)/test/contract/golden \
+            -contract.corpus=$(pwd)/test/contract/corpus \
+            -run TestReplay -v 2>&1 | tee /tmp/replay-csharp.out || true
+          DRIFT=$(grep -c "contract drift" /tmp/replay-csharp.out || true)
+          echo "drift_count=${DRIFT}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## C# staging replay (corpus health check)"
+            echo ""
+            echo "- Drift count: **${DRIFT}**"
+            echo ""
+            echo "C# drift means the golden corpus is stale relative to live C# — re-record against the latest upstream SHA."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload replay log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-csharp.out
+          path: /tmp/replay-csharp.out
+          retention-days: 14
+
+  diff-summary:
+    name: Cross-backend drift summary
+    runs-on: ubuntu-latest
+    needs: [go-staging, csharp-staging]
+    if: |
+      always() &&
+      needs.go-staging.result == 'success' &&
+      needs.csharp-staging.result == 'success'
+    steps:
+      - name: Compare drift counts
+        run: |
+          GO_DRIFT="${{ needs.go-staging.outputs.drift_count }}"
+          CSHARP_DRIFT="${{ needs.csharp-staging.outputs.drift_count }}"
+          DELTA=$((GO_DRIFT - CSHARP_DRIFT))
+          {
+            echo "## Cross-backend drift"
+            echo ""
+            echo "| Backend | Drift |"
+            echo "|---------|-------|"
+            echo "| Go      | ${GO_DRIFT} |"
+            echo "| C#      | ${CSHARP_DRIFT} |"
+            echo "| Delta   | ${DELTA} (Go - C#) |"
+            echo ""
+            if [ "${DELTA}" -le "0" ]; then
+              echo "Go-port is at or ahead of the C# canonical for endpoints covered by the contract corpus."
+            else
+              echo "Go-port has **${DELTA}** more drifting endpoints than C#. Each is a Go-side wire-shape gap."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

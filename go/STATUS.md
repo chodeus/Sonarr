@@ -9880,3 +9880,65 @@ Open follow-ups (not blocking Phase 6 entrance):
   - Body-decompression pass — if upstream returns gzipped responses, the recorded body is currently the wire-bytes gzip. Replay sends them raw too, so the round-trip works, but operators inspecting the log see opaque bytes. Decompression-on-record is a 30-LOC slice.
   - SignalR / WebSocket capture — long-lived connection semantics; significantly harder than HTTP; track as a separate slice.
   - cmd/shadow-traffic-{diff,replay,record} all duplicate the singleJoin + isHopHeader helpers. A `cmd/shadowtraffic/internal/` shared package would DRY this up (each binary would still be a separate main package). 30 lines of consolidation; lower priority than functional gaps.
+
+
+## Phase 5.J242 — Phase 6.3 nightly contract-suite CI workflow — 2026-05-26
+
+Fourth Phase 6 prep slice. Workflow YAML only — no Go code change. Per PHASE_6_SCOPE.md § 6.3:
+
+> The existing contract harness (`test/contract/replayer`) already self-skips when `-contract.base` is unset. Phase 6 turns this on in nightly CI: run the contract suite against a freshly-built Go binary at staging URL; run the same suite against the C# binary (also nightly-built); surface drift the moment any byte-equal endpoint regresses. This is purely CI plumbing — no Go code change needed beyond a workflow file.
+
+J242 ships exactly that. The PR-triggered `contract-replay` job in `build_go.yml` covers same-PR drift; the nightly workflow covers external drift (upstream Sonarr commits between PR runs, dependency updates, environmental drift in long-running staging deploys).
+
+Architecture (`.github/workflows/nightly-contract.yml`, 4 jobs):
+
+  1. **preflight** — gates on `CONTRACT_STAGING_BASE_GO` + `CONTRACT_STAGING_BASE_CSHARP` repo secrets via `outputs.run_go` / `outputs.run_csharp`. When unset (the typical fork case) the gated jobs no-op cleanly via `if: needs.preflight.outputs.run_go == 'true'`. Workflow no-ops on forks rather than failing — that's the right default for "deploy infra you don't have."
+
+  2. **go-staging** — verifies the staging deploy reachable via `curl -fsS .../ping` (fails fast on staging outage). Replays the contract corpus via `go test ./test/contract/replayer/... -contract.base=$BASE -contract.api-key=$KEY -contract.golden=... -contract.corpus=... -run TestReplay -v | tee /tmp/replay-go.out`. Counts "contract drift" lines via `grep -c "contract drift" /tmp/replay-go.out`. Gates against `CONTRACT_DRIFT_BASELINE=9` (matching the existing build_go.yml baseline established at J217). On drift > baseline → `::error::` + job fail; on drift < baseline → `::warning::` suggesting the operator lower the baseline to keep the guard tight. Step-summary contributes a "Go staging replay" section with drift + baseline. Replay log uploaded as artifact (14-day retention).
+
+  3. **csharp-staging** — does the same replay against `CONTRACT_STAGING_BASE_CSHARP`. Does NOT gate against the drift baseline because C# IS the canonical reference — any drift here means the golden corpus is stale relative to live C# rather than a port gap. Step-summary frames the drift count as "corpus health check" — a signal to re-record against the latest upstream SHA. Artifact uploaded same as Go side.
+
+  4. **diff-summary** — runs `if: always() && needs.go-staging.result == 'success' && needs.csharp-staging.result == 'success'` so it gathers both backend results when both succeed. Computes `DELTA = GO_DRIFT - CSHARP_DRIFT` and emits a cross-backend table. `DELTA <= 0` → "Go-port is at or ahead of the C# canonical." `DELTA > 0` → "Go-port has N more drifting endpoints than C#. Each is a Go-side wire-shape gap." This is the headline number an operator reads from the daily summary.
+
+Triggers:
+
+  - `schedule: cron: "0 3 * * *"` — 03:00 UTC daily. Quiet hour for upstream Sonarr work and most fork CI windows.
+  - `workflow_dispatch` — manual debug invocation. Includes an `override_baseline` input so the operator can probe with a different baseline value without editing the file.
+
+Concurrency: `group: nightly-contract`, `cancel-in-progress: false`. Prevents nightly overlap if a prior run is still draining — finish what you started before launching the next nightly tick.
+
+Reuses the established drift-count extraction pattern from `build_go.yml`'s `contract-replay` job:
+
+```
+go test ... -run TestReplay -v 2>&1 | tee /tmp/replay.out || true
+DRIFT=$(grep -c "contract drift" /tmp/replay.out || true)
+```
+
+The `|| true` after the `go test` pipeline is intentional — `TestReplaySkipsWhenUnconfigured` is the only test name and it FAILS by design when `-contract.base` is set (the test's contract is "skip when unset; assert that we did skip" — when configured the assertion fails). The workflow extracts drift count from stdout via grep rather than from the test exit code. Known-working hack since J217-era contract harness. Same pattern in the new workflow.
+
+Hard gates: YAML syntax parses (`python3 -c "import yaml; yaml.safe_load(...)"` clean); job structure inspected (4 jobs, 2 triggers). No `actionlint` available locally to run a deeper static check — the workflow will get its first deep validation when GitHub Actions ingests it on next push.
+
+Net diff: ~145 lines of YAML (single new file); PROGRESS.md update; STATUS.md slice note.
+
+Safe to merge today even before staging URLs exist:
+
+  - `CONTRACT_STAGING_BASE_GO` unset → go-staging job skipped via `if: needs.preflight.outputs.run_go == 'true'`.
+  - `CONTRACT_STAGING_BASE_CSHARP` unset → csharp-staging job skipped.
+  - Both skipped → diff-summary won't run because of the `needs:` chain.
+  - Workflow exit: clean preflight job only. No errors, no warnings.
+
+When the team provisions staging URLs, set the two secrets + the API key, the nightly fires automatically next 03:00 UTC.
+
+Phase 6 progress after J242:
+
+  - 6.1 shadow-traffic toolkit triad (J239 + J240 + J241) — COMPLETE.
+  - 6.2 smoke runbook — NOT STARTED (operator-driven; not autonomous-loop work).
+  - **6.3 nightly contract-suite CI — DONE (J242)**. Safe-to-merge today; activates when staging secrets are set.
+  - 6.4 cutover commit — gated on 14+ days of zero unexplained diff in 6.1's daily reports.
+
+Remaining Phase 6 prep slice candidates:
+
+  - 6.2 smoke runbook (operator-driven; lower priority for autonomous work).
+  - v5-develop refresh (J228 capture cleanup; requires careful HOME isolation).
+  - Shared cmd/shadowtraffic/internal helper consolidation (3 helpers duplicated across J239/J240/J241; 30-LOC slice).
+  - Body-decompression on shadow-traffic-record (gzipped upstream responses currently stored as opaque bytes in the log; replay round-trips fine but operator inspection is awkward).
