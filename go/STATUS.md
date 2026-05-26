@@ -9502,3 +9502,46 @@ Hard gates: no production code change in this slice. Audit is doc + investigatio
 Net diff: ~30 AUDIT_FIX_BACKLOG.md (C.1.i-follow-5 strikethrough + CLOSED summary + 5 new sub-rows) + ~3 PROGRESS.md cursor + ~50 STATUS.md slice note + ~9959 bytes of route-audit.md (outside any git tree).
 
 C.1 family — FINAL state after J234: 10 originally-numbered sub-items closed (a-j + i), 5 follow-ups from J228 reference capture also closed (follow-1 through -5). 5 NEW backlog rows surfaced from J234 route audit (5a-5e). Plus the Phase-7-level v5 endpoint family roadmap (~46 families remaining). **The autonomous-loop-closable backlog is fully drained.** Phase 6 prep can begin in parallel with the 5a-5e write-side ports.
+
+## Phase 5.J235 — C.1.i-follow-5d + 5e closed as already-wired (J234 audit over-stated scope) — 2026-05-26
+
+Closes 2 of the 5 J234-surfaced follow-up rows without any code change. The J234 route coverage audit over-stated their scope due to DFA-graph false positives — many endpoints flagged as gaps were intermediate routing states (DFA nodes for parameter binding, catch-all suffixes) rather than real missing endpoints.
+
+Verification:
+
+5d — Provider per-resource action / test / testall POST endpoints. Per-route grep on cmd/sonarr/host_wiring.go confirms ALL 15 endpoints are wired:
+
+  - POST /api/v3/indexer/test, /indexer/testall, /indexer/action/{name}
+  - POST /api/v3/downloadclient/test, /downloadclient/testall, /downloadclient/action/{name}
+  - POST /api/v3/notification/test, /notification/testall, /notification/action/{name}
+  - POST /api/v3/metadata/test, /metadata/testall, /metadata/action/{name}
+  - POST /api/v3/importlist/test, /importlist/testall, /importlist/action/{name}
+
+These landed across earlier slices (importlist at J19 family, indexer at J35-J45 era, downloadclient + notification + metadata around the same time). J234 audit flagged them based on DFA noise; J235 verifies completeness.
+
+5e — System action endpoints. Per-route grep confirms:
+
+  - POST /api/v3/system/restart  → wired (lifecycleSvc)
+  - POST /api/v3/system/shutdown → wired (lifecycleSvc)
+  - GET  /api/v3/system/backup → wired (BackupListHandler)
+  - DELETE /api/v3/system/backup/{id} → wired (BackupDeleteHandler)
+  - POST /api/v3/system/backup/restore/{id} → wired (BackupRestoreHandler)
+  - POST /api/v3/system/backup/restore/upload → wired (BackupRestoreUploadHandler + tempPath)
+  - GET  /api/v3/system/status → wired
+  - GET  /api/v3/system/task, /system/task/{id} → wired
+
+The J234 audit also flagged POST /api/v3/system/backup (manual backup trigger) as missing — but that endpoint does not exist in C# either. Manual backup is triggered via POST /api/v3/command body={"name":"Backup"} which dispatches the Backup scheduled-task command. The Go-port already supports this path via the existing commands/handlers/backup.go handler.
+
+Lessons learned for future route audits:
+  - DFA-graph dumps need MORE aggressive noise filtering than my J234 script did
+  - GET/POST normalization should account for path-segment collation order (which is non-trivial in ASP.NET routing)
+  - Cross-checking high-impact CLAIMED gaps against host_wiring.go via grep BEFORE opening backlog rows would catch the false positives upfront
+
+Net diff: ~3 PROGRESS.md cursor + ~22 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md (2 rows strikethrough + CLOSED summaries).
+
+Open rows after J235:
+  - C.1.i-follow-5a — POST /api/v3/release + /release/push (genuinely new port work; needs RemoteEpisode cache + DownloadService dispatch)
+  - C.1.i-follow-5b — POST /api/v3/manualimport (ManualImportHandler stub exists; needs action-payload port)
+  - C.1.i-follow-5c — POST /api/v3/queue/grab/{id} + /grab/bulk (needs pendingreleases.Grab method)
+
+These 3 remaining rows are real port work, each touching new subsystems. Estimated 2-4 hours each depending on test coverage depth. The user requested "wrap up as much Phase 5 as we can" — proceeding in order of impact: 5b → 5c → 5a (5a has the largest new-subsystem footprint with the RemoteEpisode cache).
