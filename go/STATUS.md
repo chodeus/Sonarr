@@ -12442,3 +12442,45 @@ Pattern observation: this is the first slice in Wave 3 to combine THREE strategi
 ### Next Wave 3 candidates ascending
 
 ManualImport (236), Commands (247), Logs (286).
+
+## Phase 5.J271 — Wave 3 twentieth slice: v5 ManualImport family port (236 LOC C# source)
+
+Pure path-alias slice — both endpoints share status (200) + envelope shape with the existing v3 Go-port handlers. ManualImport carries the heaviest deferral footprint of Wave 3 so far: 20-field Resource widening + entire backend service pipeline (disk-walk + parser + decision-engine + custom-format calculator) all sit on the same Wave 1 chain pending the service port.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :3631-3760):
+
+| endpoint                          | v5 status | v3 Go-port            | strategy                              |
+|-----------------------------------|-----------|------------------------|---------------------------------------|
+| GET  /api/v5/manualimport         | 200       | 200 + `[]` stub        | alias                                 |
+| POST /api/v5/manualimport         | 200       | 200 + reprocessed items| alias (DisallowUnknownFields caveat)  |
+
+**Resource widening** (C# v5 vs v3 Go-port):
+
+v5 `ManualImportResource` has 20 fields: path, relativePath, folderName, name, size, series (SeriesResource?), seasonNumber, episodes (List<EpisodeResource>), episodeFileId, releaseGroup, quality (QualityModel?), languages (List<Language>), qualityWeight (computed from Quality.DefaultQualityDefinitions), downloadId, customFormats (List<CustomFormatResource>), customFormatScore, indexerFlags, releaseType, rejections (IEnumerable<ImportRejectionResource>) — plus inherited id (hash of Path per `ManualImportResource.cs:46` `HashConverter.GetHashInt31(model.Path)`).
+
+v3 Go-port doesn't declare a Resource struct yet — the GET handler is a `[]`-emitting stub per `internal/api/v3/manual_import.go:26-32` (the manual-import service that performs the disk walk + parser + decision-engine evaluation isn't ported). When the service pipeline lands, both v3 + v5 surfaces gain a shared Resource type aliased here.
+
+**POST body widening**: v5 `ManualImportReprocessResource` adds `relativePath?` to v3's 14-field `ManualImportReprocessItem`. The v3 POST handler uses `json.Decoder.DisallowUnknownFields()` (per `:150`), so a real v5 client sending `relativePath` would get a 400. Empty-corpus contract-replay never POSTs this field. Two follow-up tracks pending:
+
+1. v3 decoder relaxes to accept (or v5-specific decoder accepts and forwards) the `relativePath` field
+2. Reprocess logic gains the `relativePath` fallback wired (`ManualImportController.cs:91-94` `if (item.RelativePath.IsNotNullOrWhiteSpace()) processedItem.RelativePath = item.RelativePath`)
+
+Both are tied to the same Wave 1 calculator + manual-import-service deferred chain. Annotated in the Wave 4 audit row as a `relativePath`-specific gap on the v5 surface.
+
+**NEW v5 query param**: `filterExistingFiles` (default true) on GET. v3 Go-port handler validates int params (seriesId/seasonNumber) but ignores all other query params — invisible at empty-corpus.
+
+**Slice scope** — 178 lines (82 source + 96 test) + 1 import + 2 routes:
+
+- New `internal/api/v5/manualimport/manualimport.go` (82 LOC) — 3 type aliases (ReprocessItem = apiv3.ManualImportReprocessItem, SeriesLookup, EpisodeLookup) + 2 variable aliases (GetHandler, ReprocessHandler). No Resource type alias because v3 doesn't declare a per-row struct yet.
+- New `internal/api/v5/manualimport/manualimport_test.go` (96 LOC) — 5 tests: GET-empty-corpus-returns-200-empty-array with Content-Type pin, GET-invalid-seriesId-400, POST-empty-body-400 (items required, C# parity at :41-44), POST-malformed-body-400, variable-aliases non-nil + type-aliases compile-time pin.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`manualimportv5`) + 2 new routes alongside the existing /api/v3/manualimport routes. Re-uses seriesSvc + episodesSvc deps that already back v3.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/manualimport/...` ✓; `go test -race -count=1 ./internal/api/v5/manualimport/...` ✓ (5 tests, 1.6s).
+
+**v5 surface coverage**: 23/~50 → 24/~50.
+
+Pattern observation: this is the first Wave 3 slice where the v3 Go-port deliberately omits the Resource type entirely (not just deferred-populated-row mapping). The "absence-as-deferral" signal in v3 is a clean indicator that the v5 surface should NOT introduce a type that doesn't yet exist in v3 — when the service pipeline lands, both surfaces gain the type at once via the shared alias.
+
+### Next Wave 3 candidates ascending
+
+Commands (247), Logs (286).

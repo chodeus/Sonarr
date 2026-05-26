@@ -31,6 +31,7 @@ import (
 	historyv5 "sonarr.tv/sonarr/internal/api/v5/history"
 	indexerv5 "sonarr.tv/sonarr/internal/api/v5/indexer"
 	localizationv5 "sonarr.tv/sonarr/internal/api/v5/localization"
+	manualimportv5 "sonarr.tv/sonarr/internal/api/v5/manualimport"
 	tagv5 "sonarr.tv/sonarr/internal/api/v5/tag"
 	wantedv5 "sonarr.tv/sonarr/internal/api/v5/wanted"
 	"sonarr.tv/sonarr/internal/auth"
@@ -1423,6 +1424,15 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/history/season", Handler: historyv5.SeasonHandler()},
 		{Method: "GET", Path: "/api/v5/history/episode", Handler: historyv5.EpisodeHandler()},
 		{Method: "POST", Path: "/api/v5/history/failed/{id}", Handler: historyv5.MarkAsFailedHandler(failedDownloadsSvc)},
+		// J271 — v5 ManualImport endpoint family (2 endpoints; 236 LOC C#).
+		// Pure path-alias at empty-corpus level. Both endpoints share
+		// status (200). v3 Go-port emits `[]` for GET (manual-import
+		// service deferred); POST reprocess re-uses v3 logic. v5
+		// ReprocessResource adds `relativePath` field — empty-corpus
+		// replay never POSTs this field; real v5 frontend will hit
+		// v3's DisallowUnknownFields 400 (deferred follow-up).
+		{Method: "GET", Path: "/api/v5/manualimport", Handler: manualimportv5.GetHandler()},
+		{Method: "POST", Path: "/api/v5/manualimport", Handler: manualimportv5.ReprocessHandler(seriesSvc, episodesSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
