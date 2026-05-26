@@ -109,6 +109,7 @@ import (
 	"sonarr.tv/sonarr/internal/recyclebin"
 	"sonarr.tv/sonarr/internal/refreshepisodes"
 	"sonarr.tv/sonarr/internal/refreshseries"
+	"sonarr.tv/sonarr/internal/releasecache"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
 	"sonarr.tv/sonarr/internal/remotepathmappings"
 	"sonarr.tv/sonarr/internal/rootfolders"
@@ -3243,7 +3244,8 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if backupTempPath == "" {
 		backupTempPath = os.TempDir()
 	}
-	hostSrv, err := buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
+	releaseCache := releasecache.New(0) // 30-min default TTL per J237 / C# `ReleaseController.cs:240`.
+	hostSrv, err := buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
 	if err != nil {
 		return err
 	}

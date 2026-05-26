@@ -9589,3 +9589,51 @@ Read/write balance: this is WRITE side — DELETE is state-changing, dispatching
 Open follow-ups remaining (2 of 3 from J234):
   - C.1.i-follow-5a — POST /api/v3/release + /release/push (RemoteEpisode cache + Newznab push)
   - C.1.i-follow-5b — POST /api/v3/manualimport (manual-import service)
+
+## Phase 5.J237 — v3 release POST + push endpoints (audit row C.1.i-follow-5a closed) — 2026-05-26
+
+Second of the 3 real-work follow-up rows from J234. Ports POST /api/v3/release + POST /api/v3/release/push, the two write-side endpoints in the indexer-release surface. C# references: src/Sonarr.Api.V3/Indexers/ReleaseController.cs (manual download) + ReleasePushController.cs (Newznab/Torznab push).
+
+New package — internal/releasecache/:
+
+  TTL-keyed in-memory cache mirroring C# ICached<RemoteEpisode>. The 30-minute default TTL pins against C# ReleaseController.cs:240. Goroutine-safe via sync.RWMutex; lazy eviction on Get (no background sweeper since cache size is bounded by search-fanout cadence × TTL). Key format <indexerID>_<guid> matches C# GetCacheKey. Injectable clock for deterministic tests. ~165 LOC + ~150 LOC tests including a -race sweep with 50 concurrent writers and 50 concurrent readers.
+
+POST /api/v3/release (ReleaseDownloadHandler):
+
+  Cache-lookup path. Body: {indexerId, guid, downloadClient, downloadClientId, shouldOverride, seriesId, episodeId, episodeIds, quality, languages}. PostValidator: IndexerId > 0 + Guid non-empty. Cache miss → 404 with the canonical message Couldnt find requested release in cache, try searching again (matches C# wire). Cache hit → ProcessDecisions dispatch + 200 + echo of the request body (matches C# return release). ShouldOverride branch DEFERRED — the C# arm clones the cached RemoteEpisode and mutates Series/Episodes/Quality/Languages from body fields; the Go-port port requires episodes.Service.Get + JSON-deserialise Quality/Languages which the cache itself doesn't carry, and the common UI flow (user clicks Download without override) works without this branch.
+
+POST /api/v3/release/push (ReleasePushHandler):
+
+  Newznab/Torznab push notification entry — 3rd-party indexers drop a release without Sonarr RSS-polling. Body: {title, downloadUrl, magnetUrl, protocol, publishDate, indexer, indexerId, size, infoUrl, commentUrl, downloadClient, downloadClientId}. PostValidator (matches C# ReleasePushController.cs:42-47): Title non-empty + (DownloadUrl OR MagnetUrl non-empty) + Protocol != Unknown + PublishDate != IsZero. Pipeline:
+
+    1. Build synthetic parser.ReleaseInfo (TorrentInfo variant when Protocol=2) with Guid = PUSH-<DownloadUrl> matching C# :59 verbatim.
+    2. Run GetRssDecision(ctx, []any{info}, pushedRelease=true) — same path RssSync uses but pushedRelease flag signals to specs that this came from a 3rd-party push (some skip stricter checks).
+    3. Empty decision list or nil ParsedEpisodeInfo → 400 with Title: Unable to parse validation failure (matches C# :76-79 guard).
+    4. Seed the cache under <IndexerID>_PUSH-<DownloadUrl> so a subsequent POST /release click-to-download finds it.
+    5. ProcessDecisions dispatch.
+    6. 200 response carrying single-entry list with body fields + Approved/Rejected/Rejections.
+
+  Deferred sub-arcs documented in handler doc-comments:
+    (a) Indexer name→id resolve at C# :84-99 (ResolveIndexer). Dispatch works fine with body IndexerID; resolution is for logging consistency.
+    (b) DownloadClient name→id resolve at C# :101-115 (ResolveDownloadClientId).
+    (c) Full ReleaseResource projection on response (50+ fields with custom-format scoring, scene mapping, language inference). Initial port emits stripped-down shape; full projection lands when toReleaseResource at release.go:163 gains the missing fields.
+
+Test coverage (release_write_test.go, 16 tests):
+
+  - POST /release: 5 cases (cache miss 404, cache hit + dispatch verification, IndexerId validator, Guid validator, malformed body 400).
+  - POST /release/push: 10 cases (happy path with cache-seed verification, Title validator, DownloadUrl/MagnetUrl validator, magnet-only OK, Protocol validator, PublishDate validator, Unable-to-parse on nil ParsedEpisodeInfo, empty-decision-list 400, Torrent protocol routes through TorrentInfo branch, smoke).
+  - Plus 1 unused-import guard.
+
+Wiring (cmd/sonarr/host_wiring.go + main.go):
+
+  Two new params on buildHostServer + v3Routes signatures: downloadDecider *decisionengine.DownloadDecisionMaker + releaseCache *releasecache.Cache. main.go constructs releaseCache := releasecache.New(0) (= 30-min default) before the buildHostServer call. Routes wired after the existing GET /api/v3/release.
+
+Hard gates clean: go build ./... no errors, go test ./... 0 FAIL (including the release write tests and the existing release contract tests), golangci-lint run on touched packages 0 issues (4 minor lint nits surfaced and fixed via gofmt + 1 doc-comment correction).
+
+Net diff: ~165 internal/releasecache/cache.go (new) + ~150 internal/releasecache/cache_test.go (new) + ~310 internal/api/v3/release_write.go (new) + ~270 internal/api/v3/release_write_test.go (new) + ~5 cmd/sonarr/host_wiring.go (1 new import + 2 new params + 1 import block reformat + 2 new route lines) + ~3 cmd/sonarr/main.go (1 new import + releaseCache instantiation + 1 call-site update) + ~3 PROGRESS.md cursor + ~38 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md (row strikethrough + CLOSED summary).
+
+Read/write balance: heavily WRITE side. The cache itself is read+write infrastructure but the consumers are state-changing dispatch paths (POST /release sends a real grab request to a download client; POST /release/push runs the full decision engine + dispatch). The push endpoint unblocks 3rd-party Newznab/Torznab indexer integration which is a documented Phase 6 readiness signal — without it, 3rd-party indexers that push releases to Sonarr instead of RSS-polling fail at the HTTP layer.
+
+Open follow-ups after J237:
+  - C.1.i-follow-5b — POST /api/v3/manualimport (manual import service, ~700 LOC C#, multi-day port)
+  - C.1.i-follow-5a-deferred — ShouldOverride Subject mutation + indexer/dc resolve + full ReleaseResource projection (sub-arcs documented in J237 slice notes)
