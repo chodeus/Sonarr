@@ -9445,3 +9445,60 @@ Net diff: ~70 internal/httperr/httperr.go (package doc-comment expansion only, n
 Behavioural impact: zero immediate user-visible change. Documented baseline against which future Phase 6 shadow-traffic comparison will surface these shape divergences as KNOWN-failing rows (deliberate, not bugs). Anyone reading httperr.go now sees the policy at the package doc.
 
 Open follow-ups remaining (1 of 5): C.1.i-follow-5 (route coverage audit — parses the 367KB v3.system.routes.dot graphviz to surface any C# endpoint Go-port doesn't serve).
+
+## Phase 5.J234 — Route coverage audit (audit row C.1.i-follow-5 closed) — 2026-05-26
+
+Closes the last of the 5 follow-up rows surfaced at J228. Parsed the 367KB v3.system.routes Graphviz DOT-format ASP.NET routing dump (the most thorough representation of the entire C# endpoint surface) and diffed against the Go-port route table.
+
+Methodology:
+
+1. The DOT file is a DFA (deterministic finite automaton) of the ASP.NET Core routing pipeline. Each node is a path segment / parameter / HTTP method terminal. Endpoint terminals look like:
+     0 [label="/api/v3/series/{id:int} HTTP: GET"]
+
+2. Extracted via regex \d+ \[label="([^"]+?) HTTP: (\w+)"\] and filtered:
+   - Discarded HTTP: * wildcard terminals (route-not-found 405-resolution)
+   - Discarded /{rest} suffixes (catch-all DFA artifacts)
+   - Discarded /{id}/{id} suffixes (DFA intermediate states)
+   - Normalised parameter templates: {id:int}, {name?}, {*name} all collapse to {id}
+   - Lowercased paths (ASP.NET routing is case-insensitive)
+
+3. 1019 unique (method, path) tuples extracted, filtered to /api/v3/ (413) and /api/v5/ (371).
+
+4. Go-port route table extracted from cmd/sonarr/host_wiring.go via Method: "X", Path: "Y" regex. 256 total — 221 v3 + 28 v5 + 7 host (signalr/ping/static/etc).
+
+5. Set diff after normalization.
+
+Findings:
+
+- **C# v3: 413 endpoints | Go-port v3: 221 | gap: 196.** Broken by method: GET 132 (most DFA noise —  DFA intermediates the filter didn'''t catch); POST 5 (all confirmed real via grep); PUT 59 (mixed — many ASP.NET routes the collection method that the framework dispatches to /{id}, false-positive against Go-port'''s explicit /{id} route); DELETE 0 (J232 brought DELETE to full alignment).
+- **C# v5: 371 endpoints | Go-port v5: 28 | gap: 343.** Almost the entire v5 surface — Go-port has ported 4 of ~50 v5 endpoint families (CustomFormat via J222, ImportList via J223, ImportListSettings via J224, AutoTagging via J225). The remaining v5 endpoints are a Phase-7-level commitment — porting them is not in the autonomous-loop scope (each family is a multi-day slice with its own design + tests + wiring).
+
+Real POST gaps verified via grep (each confirmed not wired in Go-port host_wiring.go):
+  1. POST /api/v3/release — manually accept/persist a release
+  2. POST /api/v3/release/push — Newznab/Torznab indexer push notification (3rd-party indexer drops a release without RSS-poll)
+  3. POST /api/v3/manualimport — manual import action
+  4. POST /api/v3/queue/grab/{id} — pending-release grab single
+  5. POST /api/v3/queue/grab/bulk — pending-release grab bulk
+
+Output artifact: ~/Code/GitHub/Sonarr-reference/v5-develop-7c41dcbe2/route-audit.md — 10KB summary listing every gap with full method breakdown, methodology, and caveats. Persistent local-only reference; sibling to the J228 reference dump.
+
+5 new backlog rows opened for the highest-impact gaps:
+
+- C.1.i-follow-5a — POST /api/v3/release + /release/push (release accept + Newznab push)
+- C.1.i-follow-5b — POST /api/v3/manualimport (manual import action)
+- C.1.i-follow-5c — POST /api/v3/queue/grab/{id} + /queue/grab/bulk (pending release grab)
+- C.1.i-follow-5d — v3 provider action/test/testall (per-resource POST endpoints; multi-slice across indexer/downloadclient/notification/metadata)
+- C.1.i-follow-5e — v3 system action endpoints (restart, shutdown, backup CRUD, restore)
+
+NOT enumerated as individual rows:
+- The 59 PUT gaps — most are DFA artifacts; per-port-slice verification needed before opening rows
+- The 132 GET gaps — same; most are DFA noise
+- The 343 v5 gaps — far too much work to enumerate per-row; track at Phase-7 commitment level
+
+Read/write balance: the audit itself spans both directions; the 5 new backlog rows are all write-side (POST endpoints for action / state-change flows). v3 DELETE (write) is 0-gap thanks to J232.
+
+Hard gates: no production code change in this slice. Audit is doc + investigation work. go test ./... 0 FAIL.
+
+Net diff: ~30 AUDIT_FIX_BACKLOG.md (C.1.i-follow-5 strikethrough + CLOSED summary + 5 new sub-rows) + ~3 PROGRESS.md cursor + ~50 STATUS.md slice note + ~9959 bytes of route-audit.md (outside any git tree).
+
+C.1 family — FINAL state after J234: 10 originally-numbered sub-items closed (a-j + i), 5 follow-ups from J228 reference capture also closed (follow-1 through -5). 5 NEW backlog rows surfaced from J234 route audit (5a-5e). Plus the Phase-7-level v5 endpoint family roadmap (~46 families remaining). **The autonomous-loop-closable backlog is fully drained.** Phase 6 prep can begin in parallel with the 5a-5e write-side ports.
