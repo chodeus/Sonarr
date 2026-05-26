@@ -10221,3 +10221,76 @@ Phase 6 prep remaining slice candidates:
 - (E) Cross-tool integration smoke test (`go/cmd/shadowtraffic-e2e/`, ~150 LOC). Code work — proves the J239+J240+J241 triad composes end-to-end.
 
 (C) and (E) are independent; (C) is faster (docs only, ~30 min budget) while (E) is more rigorous (validates the triad's actual composition). Order doesn't matter for downstream Phase 6 progress.
+
+## Phase 5.J246 — Phase 6.2 operator smoke runbook
+
+### Why
+
+The Phase 6 strategic plan ("Pre-cutover gate" in `~/.claude/plans/curried-discovering-meadow.md`) names three layers of pre-cutover validation:
+
+| Layer  | Mechanism                          | Lands at  |
+| ------ | ---------------------------------- | --------- |
+| 6.1    | Shadow-traffic harness             | J239-J241 |
+| 6.2    | Manual smoke checklist             | **J246**  |
+| 6.3    | Nightly contract-suite CI          | J242      |
+
+6.1 and 6.3 are automated; 6.2 is operator-driven. The strategic plan's exact phrasing — "Add a series, run a search, grab a release, import a file, send notifications, take a backup, restore the backup — end-to-end on both binaries with identical results" — is a seven-scenario checklist that needs to live somewhere committed so the operator running smoke isn't reinventing the steps each time.
+
+### What J246 lands
+
+`go/PHASE_6_SMOKE.md` — operator-facing runbook (~210 lines markdown). Co-located with `PHASE_6_SCOPE.md` so the doc tree under `go/` carries the full Phase 6 operational reference together. (Alternative locations considered: `docs/PHASE_6_SMOKE.md` rejected because `go/` doesn't have a `docs/` tree today; `cmd/sonarr/SMOKE.md` rejected because smoke is about the whole tree, not a single binary.)
+
+Sections:
+
+1. **Scope** — Seven scenarios in scope. Out-of-scope explicitly: performance benchmarking, live DB migration, UI pixel diff (separate runbooks). The boundary matters — without it, smoke-runbook scope-creep makes the gate unable to ever pass.
+2. **Setup** — Two side-by-side binaries (C# at `:8989`, Go at `:8990`), fresh DBs on each. Two browser windows. Standardised result-recording fields (C# result, Go-port result, verdict).
+3. **Verdict rubric** — PASS (user-visible behaviour equivalent), DIVERGE-LOW (cosmetic — timing, log wording), DIVERGE-HIGH (functional — different status code, missing field, persistence mismatch). DIVERGE-LOW doesn't block 6.4; DIVERGE-HIGH does.
+4. **Seven scenarios** — Each gets: UI steps (clickable affordances), expected wire (specific API endpoints + status codes), expected UI behaviour, observable assertions, cross-binary verdict criteria.
+5. **Reporting** — Operator writes `phase6-smoke-YYYY-MM-DD.md` in local notes (NOT committed — operator workspace). Tally per scenario. Smoke gate passes when `K=0 DIVERGE-HIGH AND M≤2 DIVERGE-LOW`.
+6. **Layer-coverage table** — Explicitly contrasts what 6.1 + 6.3 + 6.2 each catch and miss. Headline insight: 6.1 + 6.3 see each individual API call in isolation; 6.2 catches multi-call workflow ordering bugs that the body diff can't see.
+7. **Re-running cadence** — Before each 6.4 cutover attempt; after touching the listed internal/* packages; monthly during the shadow-traffic monitoring period.
+8. **Open questions** — Backup format compatibility (cross-binary restore), notification provider account prereq, drop folder permissions.
+
+### Port-history landmines surfaced as scenario-specific assertions
+
+The runbook calls out specific scenarios where prior port slices fixed regressions the operator MUST verify on a real run:
+
+- **Scenario 3 (Grab a release)**: Verifies the POST /api/v3/release path returns 200 (not 404). J237 introduced the in-memory release cache that fixed the "couldn't find requested release in cache, try searching again" 404 when the cache TTL ran out under bulk-grab flows. The contract harness wouldn't catch a cache-TTL regression — it only sees individual endpoint calls.
+- **Scenario 4 (Import a file)**: Verifies POST /api/v3/manualimport returns 200 with non-empty `series` field. J238 wired the manualimport REPROCESS endpoint port; the runbook is the integration check that the wire-shape decisions made in J238 (CamelCaseEnumName + null-as-empty CustomFormats + folder-based series lookup) work end-to-end through the UI.
+- **Scenario 5 (Test notifications, Pushover-specific)**: Verifies E2E encryption when `encryptionKey` is set. J219 wired the Pushover AES-256-CBC + HMAC-SHA256 + gzip envelope; the runbook is the integration check that the operator can configure a key in settings → click "Test" → receive an encrypted notification at the Pushover client.
+
+These callouts make the runbook MORE than a generic functional check — it's a regression-verification gate specifically for the multi-call paths the contract harness can't reach.
+
+### Why manual
+
+The runbook is explicitly NOT automated. Reasoning:
+
+- Automating the seven scenarios would re-implement the React UI in headless form (Playwright / Cypress / Selenium). That's a Phase 6.5 effort, not a Phase 6.2 effort.
+- The signal-to-noise ratio of UI automation is poor for smoke testing — flakiness from CSS animations, timing, server start ordering. An hour of operator clicking is more reliable than 4 hours of CI debugging.
+- The runbook is intentionally re-runnable monthly during the shadow-traffic monitoring period. A monthly cadence makes the manual cost acceptable; a per-commit cadence would not.
+- Selenium-style automation also can't observe SignalR fan-out reliably without a custom WebSocket client — the simpler "operator watches the live UI update" check is more direct.
+
+### Code change
+
+None. Pure markdown addition.
+
+### Hard gates
+
+```
+$ cd go && go build ./...
+(clean)
+```
+
+No tests to run (no code change). The runbook itself is self-validating: every wire-shape assertion in the seven scenarios maps to a specific port slice in `STATUS.md` (J39 for searches, J216 for SeriesAddCompletedEvent fan-out, J219 for Pushover, J237 for release cache, J238 for manualimport, etc.).
+
+### Slice (C) closes; (E) remains
+
+The autonomous-loop candidate list:
+
+- (A) [CLOSED at J243] Shared cmd/shadowtraffic helper consolidation.
+- (B) [CLOSED at J244] gzip body decompression on shadow-traffic-record.
+- (C) [CLOSED at J246] Phase 6.2 smoke runbook scaffold.
+- (D) [CLOSED at J245] Shadow-traffic JSONL FORMAT.md.
+- (E) Cross-tool integration smoke test (`go/cmd/shadowtraffic-e2e/`, ~150 LOC). **Only remaining slice.**
+
+After J246 the only autonomous-loop slice left is (E). It's a different shape than (A-D) — it's actual integration test code (~150 LOC) that proves the J239+J240+J241 shadow-traffic triad composes end-to-end. The other Phase 6 prep arcs (6.4 cutover commit, v5-develop reference refresh) are gated on external infra (staging URLs / re-spinning C# Sonarr with HOME isolation) and explicitly NOT in autonomous-loop scope per the loop prompt.
