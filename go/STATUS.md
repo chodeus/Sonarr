@@ -12746,3 +12746,66 @@ Pattern observation: this is the first Wave 3 slice that combines a v5util statu
 - Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
 - Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J277 — Wave 3 twenty-sixth slice: v5 QualityProfile family port (116 LOC C# source)
+
+Status-mop-up slice — Resource shape byte-identical across v3 ↔ v5 (sub-resources too), the only wire divergence is the DELETE status code.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :4642-4798):
+
+| endpoint                                  | v5 status   | v3 Go-port           | strategy                              |
+|-------------------------------------------|-------------|----------------------|---------------------------------------|
+| GET    /api/v5/qualityprofile             | 200         | 200                  | alias                                 |
+| GET    /api/v5/qualityprofile/{id}        | 200 / 404   | 200 / 404            | alias                                 |
+| GET    /api/v5/qualityprofile/schema      | 200         | 200                  | alias                                 |
+| POST   /api/v5/qualityprofile             | 201 Created | 201 Created          | alias                                 |
+| PUT    /api/v5/qualityprofile/{id}        | 202 Accepted| 202 Accepted         | alias                                 |
+| **DELETE /api/v5/qualityprofile/{id}**    | **204**     | 200+empty / 409      | v5util.RewriteSuccessTo204            |
+
+v3 Go-port already emits POST → 201 and PUT → 202 (matching v5's `TypedCreated(model.Id)` and `TypedAccepted(model.Id)` at QualityProfileController.cs:55+74). Only the DELETE 200→204 demote needs the wrapper.
+
+**Resource shape** — byte-identical between v3 and v5 (verified per `src/Sonarr.Api.V3/Profiles/Quality/QualityProfileResource.cs` and v5 sibling at the same path):
+
+| field                          | type                            | v3 ↔ v5 |
+|--------------------------------|---------------------------------|----------|
+| id                             | int (inherited RestResource)   | ✓        |
+| name                           | string                          | ✓        |
+| upgradeAllowed                 | bool                            | ✓        |
+| cutoff                         | int                             | ✓        |
+| items[]                        | List<QualityProfileQualityItemResource> | ✓ |
+| minFormatScore                 | int                             | ✓        |
+| cutoffFormatScore              | int                             | ✓        |
+| minUpgradeFormatScore          | int                             | ✓        |
+| formatItems[]                  | List<ProfileFormatItemResource> | ✓        |
+
+Nested QualityProfileQualityItemResource: id/name/quality?/items[]/allowed/minSize?/maxSize?/preferredSize? — 7 fields field-for-field. Nested ProfileFormatItemResource: format/name/score — 3 fields. Type aliases are wire-safe across the entire family tree.
+
+**v3 DELETE strict-409 carry-through** (J269/J272 wrapper-contract reapplied): v3 handler returns 409 on `ErrQualityProfileInUse` (`qualityprofile.go:407-409` — deletion not allowed when the profile is referenced by series). The wrapper's 200→204 predicate only matches 200 success responses; 409 (and 500-class errors) pass through unchanged — both v3 and v5 surfaces emit 409 for in-use profile deletion, matching parity.
+
+**v3 DELETE-on-missing** is already J232-idempotent: the handler swallows `ErrNotFound` and returns 200 (per qualityprofile.go:405-406 "Swallow — idempotent posture"). The wrapper rewrites 200→204 — both happy-path and missing-id deletes now return 204+empty, matching v5's strict `TypedResults.NoContent()` for both branches.
+
+**FluentValidation chain** — sits in the C# v5 controller constructor (lines 22-46): Name not empty / MinUpgradeFormatScore ≥ 1 / ValidCutoff / ValidItems / FormatItems set-equality / Custom-format min-score satisfiability + the explicit QualityProfileResourceValidator. v3 Go-port handles the equivalent validation server-side via `internal/validation` ports — the wire-level 400 envelope is identical across versions, no v5-specific re-port needed. The shape of the validation errors that real clients see is structurally byte-equal at empty-corpus because both surfaces share the same backing service.
+
+**Schema endpoint** (GET /qualityprofile/schema) — v5 controller calls `_profileService.GetDefaultProfile(string.Empty).ToResource()`. v3 Go-port's QualityProfileSchemaHandler does the same and returns 200+Resource. Pure path-alias.
+
+**Slice scope** — 214 lines (84 source + 130 test) + 1 import + 6 routes:
+
+- New `internal/api/v5/qualityprofile/qualityprofile.go` (84 LOC) — 7 type aliases (Resource = apiv3.QualityProfileResource, ItemResource, FormatItemResource, Lister, SchemaLister, Writer, CustomFormatNameLister) + 5 variable aliases for the path-aliased handlers (List/ByID/Schema/Create/Update) + 1 wrapper func (DeleteHandler via v5util.RewriteSuccessTo204). NO new handler code apart from the wrapper.
+- New `internal/api/v5/qualityprofile/qualityprofile_test.go` (130 LOC) — 5 tests: DELETE-rewrites-200-to-204 (svc.Delete called once + body empty), DELETE-in-use-passes-409-through (canonical wrapper-contract pin for non-200 success codes — verifies the 200→204 wrapper doesn't corrupt the 409 InUse status), DELETE-missing-id-idempotent-rewritten (J232 swallow + wrapper to 204 — pins the compounded contract), variable-aliases non-nil (all 5 handlers + the Schema alias), type-aliases compile-time pin (Resource/ItemResource/FormatItemResource addressable). fakeWriter satisfies the QualityProfileWriter interface with mutex-protected counters for `-race` cleanliness.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`qualityprofilev5`) + 6 new routes alongside the existing /api/v3/qualityprofile routes. Re-uses qualityProfilesSvc + customFormatsSvc deps verbatim — v3 and v5 surfaces share the same backing service and format-join wrapper.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/qualityprofile/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/qualityprofile/... ./cmd/sonarr/...` ✓ (5 v5/qualityprofile tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 29/~50 → 30/~50. Two-thirds milestone crossed (rough estimate).
+
+Pattern observation: this slice exemplifies the cleanest application of the J269/J272/J276 status-wrapper template — a multi-endpoint family (6 endpoints) where 5 are pure path-aliases and only 1 needs a status downgrade. The wrapper composes cleanly with both v3's idempotent-200 (ErrNotFound → 200 → 204) AND v3's strict-409 (ErrQualityProfileInUse → 409 → passthrough) — demonstrating that the 200-only predicate keeps the wrapper additive across the full error-code surface.
+
+### Next Wave 3 candidates ascending
+
+- Profiles/Release/ReleaseProfileController (95 LOC)
+- Settings/* (multiple controllers — UpdateSettings 24, IndexerSettings 30, UiSettings 31, Settings 55, MediaManagementSettings 70, GeneralSettings 114, NamingSettings 143)
+- Episodes/EpisodeController (85 LOC) + RenameEpisodeController (48 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
+- Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
+- Release/ReleasePushController (120 LOC)

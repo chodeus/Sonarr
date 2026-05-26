@@ -22,6 +22,7 @@ import (
 	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
 	qualitydefinitionv5 "sonarr.tv/sonarr/internal/api/v5/qualitydefinition"
+	qualityprofilev5 "sonarr.tv/sonarr/internal/api/v5/qualityprofile"
 	remotepathmappingv5 "sonarr.tv/sonarr/internal/api/v5/remotepathmapping"
 	rootfolderv5 "sonarr.tv/sonarr/internal/api/v5/rootfolder"
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
@@ -1497,6 +1498,23 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "DELETE", Path: "/api/v5/system/backup/{id}", Handler: systembackupv5.DeleteHandler(backupAdmin{svc: backupSvc})},
 		{Method: "POST", Path: "/api/v5/system/backup/restore/{id}", Handler: systembackupv5.RestoreHandler(backupAdmin{svc: backupSvc})},
 		{Method: "POST", Path: "/api/v5/system/backup/restore/upload", Handler: systembackupv5.RestoreUploadHandler(backupUploader{svc: backupSvc, tempPath: backupTempPath})},
+		// J277 — v5 QualityProfile + QualityProfileSchema endpoint
+		// family (6 endpoints; 116 LOC C# across QualityProfileController
+		// + QualityProfileSchemaController + QualityProfileResource).
+		// Resource shape byte-identical to v3 (8 top-level fields +
+		// 7-field nested item + 3-field nested format-item). ONE
+		// status-only divergence: DELETE/{id} 200+empty → 204+empty
+		// via v5util.RewriteSuccessTo204. v3 Go-port already emits
+		// POST→201 and PUT→202 matching v5's TypedCreated/TypedAccepted
+		// directly — other 5 endpoints pure path-alias. v3 DELETE's
+		// 409 on ErrQualityProfileInUse passes through the wrapper
+		// unchanged.
+		{Method: "GET", Path: "/api/v5/qualityprofile", Handler: qualityprofilev5.ListHandler(qualityProfilesSvc, customFormatsSvc)},
+		{Method: "GET", Path: "/api/v5/qualityprofile/{id}", Handler: qualityprofilev5.ByIDHandler(qualityProfilesSvc, customFormatsSvc)},
+		{Method: "GET", Path: "/api/v5/qualityprofile/schema", Handler: qualityprofilev5.SchemaHandler(qualityProfilesSvc, customFormatsSvc)},
+		{Method: "POST", Path: "/api/v5/qualityprofile", Handler: qualityprofilev5.CreateHandler(qualityProfilesSvc, customFormatsSvc)},
+		{Method: "PUT", Path: "/api/v5/qualityprofile/{id}", Handler: qualityprofilev5.UpdateHandler(qualityProfilesSvc, customFormatsSvc)},
+		{Method: "DELETE", Path: "/api/v5/qualityprofile/{id}", Handler: qualityprofilev5.DeleteHandler(qualityProfilesSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
