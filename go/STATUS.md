@@ -9023,3 +9023,38 @@ Hard gates clean: `go build ./...` no errors, `go test ./...` 0 FAIL, `golangci-
 Net diff: ~225 internal/api/v5/importlist/importlist.go (new file — package doc-comment + 8 type aliases with individual doc comments + 7 re-exported handlers + 4 v5-specific handlers + 2 response-rewriting middleware functions + 1 bufferingWriter type with 3 methods + 2 copyHeaders helpers) + ~310 internal/api/v5/importlist/importlist_test.go (new file — 5 fake types + 14 tests + 1 helper) + ~17 cmd/sonarr/host_wiring.go (1 new import + 11 new route bindings + 1 slice anchor comment) + ~3 PROGRESS.md + ~36 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md (C.1.c row strikethrough + CLOSED summary).
 
 Behavioural impact: clients targeting `/api/v5/importlist` get the v5 typed-result statuses upstream callers (third-party tooling consuming `src/Sonarr.Api.V5/openapi.json`) expect. The v3 surface stays bit-perfect. The middleware approach is reusable for C.1.d (ImportList Settings — likely similar pattern) and may also apply to C.1.e (AutoTagging — depends on the shape there). C.1 backlog now down to 2 open sub-items: d (ImportList Settings — likely small) + e (AutoTagging — may need an internal/autotagging port first) + i (contract-replay re-baseline). The v5 endpoint family is more than half ported (2/4 controllers done).
+
+## Phase 5.J224 — v5 ImportList Settings controller (audit row C.1.d closed) — 2026-05-26
+
+Third slice in the v5 endpoint family. The smallest possible v5 port: pure path-alias. The C# v5 controller at `src/Sonarr.Api.V5/Settings/ImportListSettingsController.cs:9-26` inherits from `SettingsController<TResource>` (`src/Sonarr.Api.V5/Settings/SettingsController.cs:31-51`) which produces:
+  - GET → 200 OK + the resource (`{id, listSyncLevel, listSyncTag}`).
+  - PUT → 202 Accepted + the persisted resource.
+These are BYTE-IDENTICAL to v3's `ImportListConfigController` — both status codes match, and the wire shape (2-field resource with camelCase enum value) is unchanged. The only on-paper divergence is the v5 SettingsController's reflection-based `SaveConfigDictionary` (vs v3's explicit per-field setters), but on the wire both code paths persist the same two config rows and emit the same JSON.
+
+Implementation:
+
+internal/api/v5/importlistsettings/importlistsettings.go (NEW): pure type-alias + re-export package.
+  - `type Resource = apiv3.ImportListConfigResource` (unchanged wire shape).
+  - `type Getter = apiv3.ImportListConfigGetter` (the read interface — satisfied by `*config.Provider`).
+  - `type Writer = apiv3.ImportListConfigWriter` (the read/write interface — getter + 2 setters; also satisfied by `*config.Provider`).
+  - `var GetHandler = apiv3.ImportListConfigHandler` (re-exports the GET handler — same wire shape + 200 status).
+  - `var UpdateHandler = apiv3.ImportListConfigUpdateHandler` (re-exports the PUT handler — same wire shape + 202 status + the KeepAndTag-tag-required validation).
+
+Wiring in cmd/sonarr/host_wiring.go: 3 new routes at `/api/v5/settings/importlist*` directly below the existing v3 `config/importlist` block. New import: `importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"`.
+
+Routes:
+  - GET /api/v5/settings/importlist (singleton resource shorthand)
+  - GET /api/v5/settings/importlist/{id} (idiomatic REST collection-with-id form; same handler)
+  - PUT /api/v5/settings/importlist/{id} (the update endpoint)
+
+Tests (importlistsettings_test.go — NEW, ~100 LOC, 4 tests):
+  - TestReexportedHandlers_NonNil: smoke pin that the GetHandler + UpdateHandler aliases resolve to non-nil http.Handler values when called with a config provider.
+  - TestGet_ReturnsConfigJSON: GET happy path — provider with ListSyncLevel="KeepAndTag" + ListSyncTag=7 → 200 + body containing `"id":1` + `"listSyncLevel":"keepAndTag"` (camelCased per CamelCaseEnumName) + `"listSyncTag":7`.
+  - TestUpdate_Accepted202: PUT happy path — body `{id:1, listSyncLevel:"keepAndTag", listSyncTag:5}` → 202 + persisted level converts to PascalCase `KeepAndTag` + persisted tag = 5 + response body re-encodes camelCase form.
+  - TestUpdate_KeepAndTag_RejectsZeroTag: validator pin — `keepAndTag` + `tag=0` → 400 with message `"Tag must be specified"` (matches C# `SharedValidator.RuleFor(c => c.ListSyncTag).ValidId().WithMessage("Tag must be specified").When(c => c.ListSyncLevel == KeepAndTag)` at ImportListSettingsController.cs:16-19, preserved via the v3 handler's existing validation).
+
+Hard gates clean: `go build ./...` no errors, `go test ./...` 0 FAIL, `golangci-lint run ./internal/api/v5/importlistsettings/... ./cmd/sonarr/...` 0 issues.
+
+Net diff: ~30 internal/api/v5/importlistsettings/importlistsettings.go (new file — package doc-comment + 3 type aliases + 2 re-exported handler vars) + ~100 internal/api/v5/importlistsettings/importlistsettings_test.go (new file — fakeCfg helper + 4 tests) + ~6 cmd/sonarr/host_wiring.go (1 new import + 3 new route bindings + 1 slice anchor comment) + ~3 PROGRESS.md + ~24 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md (C.1.d row strikethrough + CLOSED summary).
+
+Behavioural impact: clients targeting `/api/v5/settings/importlist` get the v5 path with the same wire contract as v3's `/api/v3/config/importlist`. C.1 backlog now down to 2 open sub-items: e (AutoTagging — the LAST new v5 endpoint family) + i (contract-replay re-baseline). After C.1.e the C.1 row is fully drained — Phase 6 prep can begin.

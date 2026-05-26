@@ -12,6 +12,7 @@ import (
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	customformatv5 "sonarr.tv/sonarr/internal/api/v5/customformat"
 	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
+	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/backup"
@@ -1186,6 +1187,12 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v3/config/importlist", Handler: apiv3.ImportListConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/importlist/{id}", Handler: apiv3.ImportListConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/importlist/{id}", Handler: apiv3.ImportListConfigUpdateHandler(configProv)},
+		// v5 ImportList Settings — same wire shape + status codes as
+		// v3's config/importlist; path-alias-only slice. Audit row
+		// C.1.d — closed 5.J224.
+		{Method: "GET", Path: "/api/v5/settings/importlist", Handler: importlistsettingsv5.GetHandler(configProv)},
+		{Method: "GET", Path: "/api/v5/settings/importlist/{id}", Handler: importlistsettingsv5.GetHandler(configProv)},
+		{Method: "PUT", Path: "/api/v5/settings/importlist/{id}", Handler: importlistsettingsv5.UpdateHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},
