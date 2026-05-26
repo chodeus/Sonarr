@@ -11,6 +11,7 @@ import (
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	autotaggingv5 "sonarr.tv/sonarr/internal/api/v5/autotagging"
+	customfilterv5 "sonarr.tv/sonarr/internal/api/v5/customfilter"
 	customformatv5 "sonarr.tv/sonarr/internal/api/v5/customformat"
 	diskspacev5 "sonarr.tv/sonarr/internal/api/v5/diskspace"
 	filesystemv5 "sonarr.tv/sonarr/internal/api/v5/filesystem"
@@ -1270,6 +1271,15 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// 204 NoContent while v3 returns 202 + `{}`; wrapped via the
 		// new rewriteAcceptedTo204 middleware variant).
 		{Method: "POST", Path: "/api/v5/seasonpass", Handler: seasonpassv5.PostHandler(seriesWriter, seriesEmitter, episodeMonitoredSvc)},
+		// J257 — v5 CustomFilters endpoint family (5 endpoints; only
+		// DELETE differs vs v3 — v5 returns 204 while v3 returns
+		// 200+EMPTY body; demoted via v5util.RewriteSuccessTo204 whose
+		// expanded predicate (per J256) matches 200+empty bodies).
+		{Method: "GET", Path: "/api/v5/customfilter", Handler: customfilterv5.ListHandler(customFiltersSvc)},
+		{Method: "GET", Path: "/api/v5/customfilter/{id}", Handler: customfilterv5.ByIDHandler(customFiltersSvc)},
+		{Method: "POST", Path: "/api/v5/customfilter", Handler: customfilterv5.CreateHandler(customFiltersSvc)},
+		{Method: "PUT", Path: "/api/v5/customfilter/{id}", Handler: customfilterv5.UpdateHandler(customFiltersSvc)},
+		{Method: "DELETE", Path: "/api/v5/customfilter/{id}", Handler: customfilterv5.DeleteHandler(customFiltersSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to

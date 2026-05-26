@@ -11416,3 +11416,117 @@ All 10 v5 packages green under -race. No test changes outside the importlist tes
 ### Wave 3 unblocked
 
 Next tick: CustomFilters port using `v5util.RewriteSuccessTo204` for the DELETE-200-empty → 204 demotion. Subsequent provider-family slices (Parse / Update / RemotePathMappings / etc.) drop their own inline helpers in favour of the consolidated v5util — the 4th duplication threshold ensures consolidation happens at the right time without premature abstraction earlier.
+
+## Phase 5.J257 — v5 CustomFilters family (Wave 3, first v5util consumer)
+
+### What
+
+`internal/api/v5/customfilter/` package + 5 new routes at `/api/v5/customfilter*`. Sixth Wave 3 slice; first to consume the J256-consolidated `v5util.RewriteSuccessTo204` helper.
+
+### Wire-shape diff vs v3
+
+CustomFilterResource body shape is identical between v3 and v5:
+
+| Field    | v3              | v5              |
+| -------- | --------------- | --------------- |
+| id       | int             | int             |
+| type     | string          | string?         |
+| label    | string          | string?         |
+| filters  | []json.RawMessage | List<ExpandoObject> |
+
+The Go-port carries `[]json.RawMessage` in both v3 and v5; this serialises to the same wire bytes as C# v3's `List<JsonElement>` AND C# v5's `List<ExpandoObject>`. All three boil down to "array of generic JSON objects, opaque to the typed layer." No projection layer needed; the v5 package uses a type alias.
+
+The ONLY divergence is the DELETE status:
+
+- v3 DELETE/{id} → 200 OK + EMPTY body (per the J232 idempotency posture — DELETE signals "deleted or already gone" without a body payload).
+- v5 DELETE/{id} → 204 NoContent + empty body (per `TypedResults.NoContent()`).
+
+This is precisely the case the J256 v5util consolidation expanded the happy-body predicate for. Pre-J256, `rewriteSuccessTo204` matched ONLY `body == "{}"`; the CustomFilter DELETE's empty body wouldn't have matched. J256 expanded to `len(body) == 0 || body == "{}"` specifically to handle this case (and any future v3-emit-200-empty handlers).
+
+### Code
+
+`customfilter.go` (~85 LOC including doc-comments):
+
+```go
+package customfilter
+
+import (
+    "net/http"
+    apiv3 "sonarr.tv/sonarr/internal/api/v3"
+    "sonarr.tv/sonarr/internal/api/v5/internal/v5util"
+)
+
+type Resource = apiv3.CustomFilterResource
+type Lister = apiv3.CustomFilterLister
+type Writer = apiv3.CustomFilterWriter
+
+var ListHandler = apiv3.CustomFilterHandler
+var ByIDHandler = apiv3.CustomFilterByIDHandler
+var CreateHandler = apiv3.CustomFilterCreateHandler
+var UpdateHandler = apiv3.CustomFilterUpdateHandler
+
+func DeleteHandler(svc Writer) http.Handler {
+    return v5util.RewriteSuccessTo204(apiv3.CustomFilterDeleteHandler(svc))
+}
+```
+
+Compared to J253 (Metadata) which duplicated ~70 LOC of inline middleware, this slice is significantly leaner — the wrapper is now a single function-call wrap, with all the middleware logic centralised in v5util.
+
+### Wiring
+
+`cmd/sonarr/host_wiring.go` gains 5 routes + 1 import (`customfilterv5`):
+
+```go
+{Method: "GET",    Path: "/api/v5/customfilter",      Handler: customfilterv5.ListHandler(customFiltersSvc)},
+{Method: "GET",    Path: "/api/v5/customfilter/{id}", Handler: customfilterv5.ByIDHandler(customFiltersSvc)},
+{Method: "POST",   Path: "/api/v5/customfilter",      Handler: customfilterv5.CreateHandler(customFiltersSvc)},
+{Method: "PUT",    Path: "/api/v5/customfilter/{id}", Handler: customfilterv5.UpdateHandler(customFiltersSvc)},
+{Method: "DELETE", Path: "/api/v5/customfilter/{id}", Handler: customfilterv5.DeleteHandler(customFiltersSvc)},
+```
+
+The `customFiltersSvc` is the SAME `*customfilters.Service` already used for the v3 routes — no new repo / service / adapter needed.
+
+### Tests (4)
+
+- `TestDeleteHandler_Success_Returns204EmptyBody` — happy path: fixture row exists; DELETE returns 204 + empty body + Content-Type stripped; the underlying `svc.Delete` IS called exactly once (proves the v3 handler's logic still runs through the wrapper).
+- `TestDeleteHandler_MissingID_Returns204Idempotent` — J232 idempotency carry-through: id=999 not found; v3 returns 200 + empty (the idempotent "already gone" signal); the wrapper demotes to 204. `svc.Delete` is called (per v3's no-pre-check posture).
+- `TestVariableAliases_NonNil` — sanity check that the four `var X = apiv3.Y` re-exports didn't silently bind to nil (would indicate a v3 rename without a corresponding v5 update).
+- `TestTypeAliasesMatchV3` — compile-time invariant guard per the J251 pattern.
+
+### Why no separate non-DELETE tests
+
+The 4 path-aliased handlers (List / ByID / Create / Update) are tested at `internal/api/v3/customfilter_test.go`. The v5 package re-exports the v3 handler verbatim via `var X = apiv3.Y` — calling `customfilterv5.ListHandler(svc)` invokes `apiv3.CustomFilterHandler(svc)` byte-for-byte. Re-testing those paths from the v5 package would just exercise the v3 implementation a second time without adding signal.
+
+The DELETE wrapper IS the v5-specific contribution; that's where the v5 tests focus.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/api/v5/customfilter/...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v5/customfilter/...
+ok  sonarr.tv/sonarr/internal/api/v5/customfilter  1.715s
+```
+
+### v5 surface progress
+
+9/~50 → 10/~50 families. Endpoints added: 5.
+
+### Slice productivity post-consolidation
+
+J257 was significantly smaller than J253 (Metadata, which introduced the wrapper duplication) and J255 (SeasonPass, the third duplicator). The consolidation slice (J256) paid off immediately:
+
+- **J253 (Metadata):** ~70 LOC of inline middleware + 2 wrapper calls + 9 endpoints wired = ~280 LOC delta.
+- **J255 (SeasonPass):** ~85 LOC of inline middleware + 1 wrapper call + 1 endpoint wired = ~165 LOC delta.
+- **J257 (CustomFilters, this slice):** ~0 LOC of middleware + 1 wrapper call (via v5util) + 5 endpoints wired = ~85 LOC delta.
+
+The future-proof shape: subsequent Wave 3 slices needing wrappers add 1 line per usage instead of 50-110.
+
+### Next Wave 3 candidates ascending
+
+Parse (101) — POST with body; check v5 openapi for shape divergence vs v3.
+Update (121), RemotePathMappings (122), Blocklist (127), RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143).
