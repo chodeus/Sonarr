@@ -12306,3 +12306,41 @@ Pattern observation: This is the FIRST Wave 3 slice with a path RENAME (not a pa
 ### Next Wave 3 candidates ascending
 
 Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).
+
+## Phase 5.J268 — Wave 3 seventeenth slice: v5 Calendar family port (184 LOC C# source)
+
+Pure path-alias slice (J251/J259/J264 pattern). The CalendarController inherits EpisodeControllerWithSignalR (which inherits RestControllerWithSignalR) — same base class as Wanted (J264). The CalendarFeedController is a standalone iCal generator.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :514-666):
+
+| endpoint                                | v5 status   | v3 Go-port             | strategy                |
+|-----------------------------------------|-------------|------------------------|-------------------------|
+| GET /api/v5/calendar                    | 200         | 200 + []EpisodeResource | alias                   |
+| GET /api/v5/calendar/{id}               | 200/404     | 200/404                | alias (inherited ByID)  |
+| GET /feed/v5/calendar/sonarr.ics        | 200/204     | 200/204                | alias (URL case change) |
+
+**URL CASING change on the feed**: v3 exposes `/feed/v3/calendar/Sonarr.ics` (capital S); v5 lowercases to `/feed/v5/calendar/sonarr.ics`. Go's http.ServeMux pattern is case-sensitive, so the v5 route is wired with the lowercase exactly. Same backing handler — only the route pattern changes.
+
+**Wire-contract diffs vs v3**:
+
+1. **Query-param shape differs (calendar list).** v3 takes three independent bools (`includeSeries` / `includeEpisodeFile` / `includeEpisodeImages`); v5 collapses to one CSV enum array `includeSubresources` of `CalendarSubresource` (Series, EpisodeFile, Images) and adds `tags` (CSV) + `includeSpecials` (default true). Invisible at the empty-corpus level because the v3 Go-port handler ignores ALL sub-resource flags and emits the base EpisodeResource projection regardless. Same deferral pattern as J258/J259/J261/J264.
+
+2. **EpisodeResource widens in v5.** v5 EpisodeResource adds `EndTime?` + `GrabDate?` and marks more fields explicitly nullable. At empty-corpus level (records `[]`) the envelope shape is identical. Same deferral chain.
+
+3. **Feed body / ICS format**: identical between v3 and v5 (both use Ical.Net with the same calendar properties + event shape). Path-alias is byte-equal at the empty-corpus level.
+
+**Slice scope** — 249 lines (93 source + 156 test) + 1 import + 3 routes:
+
+- New `internal/api/v5/calendar/calendar.go` (93 LOC) — 4 type aliases (`Resource = apiv3.EpisodeResource`, `EpisodeLister = apiv3.CalendarEpisodeLister`, `FeedSeriesLister = apiv3.CalendarFeedSeriesLister`, `EpisodeByIDGetter = apiv3.EpisodeByIDGetter`) + 3 variable aliases (`ListHandler`, `ByIDHandler`, `FeedHandler`). NO new handler code — pure re-export.
+- New `internal/api/v5/calendar/calendar_test.go` (156 LOC) — 7 tests: empty-corpus-returns-200-empty-array (pins `[]` shape), status-and-content-type-match-v3, ByID-NotFound→404, ByID-Found→200 with Resource round-trip, feed-empty-corpus-returns-200 with VCALENDAR envelope and text/calendar Content-Type, variable-aliases non-nil, type-aliases compile-time pin.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`calendarv5`) + 3 new routes alongside the existing v3 routes. Re-uses episodesSvc + seriesSvc deps that already back v3.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/calendar/...` ✓; `go test -race -count=1 ./internal/api/v5/calendar/...` ✓ (7 tests, 1.6s).
+
+**v5 surface coverage**: 20/~50 → 21/~50.
+
+Pattern observation: this is the FIRST Wave 3 slice to touch the `/feed/v5/` route namespace (everything before was under `/api/v5/`). The wire-path namespace shift (feed/ vs api/) is purely a host_wiring concern — the handler aliases work identically.
+
+### Next Wave 3 candidates ascending
+
+Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).

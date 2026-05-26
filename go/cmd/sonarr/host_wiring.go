@@ -26,6 +26,7 @@ import (
 	rootfolderv5 "sonarr.tv/sonarr/internal/api/v5/rootfolder"
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
 	updatev5 "sonarr.tv/sonarr/internal/api/v5/update"
+	calendarv5 "sonarr.tv/sonarr/internal/api/v5/calendar"
 	connectionv5 "sonarr.tv/sonarr/internal/api/v5/connection"
 	indexerv5 "sonarr.tv/sonarr/internal/api/v5/indexer"
 	localizationv5 "sonarr.tv/sonarr/internal/api/v5/localization"
@@ -1386,6 +1387,14 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v5/connection/action/{name}", Handler: connectionv5.RequestActionHandler(notificationTester)},
 		{Method: "PUT", Path: "/api/v5/connection/{id}", Handler: connectionv5.UpdateHandler(notificationsRepo, notificationRegistry, notificationEmitter)},
 		{Method: "DELETE", Path: "/api/v5/connection/{id}", Handler: connectionv5.DeleteHandler(notificationsRepo, notificationEmitter)},
+		// J268 — v5 Calendar endpoint family (3 endpoints; 184 LOC C#).
+		// Pure path-alias slice — same envelope/status/sort as v3 at the
+		// empty-corpus level. Sub-resource hydration deferred per the
+		// Wave 1 chain (J258/J259/J261/J264). v5 lowercases the feed
+		// URL: /feed/v3/calendar/Sonarr.ics → /feed/v5/calendar/sonarr.ics.
+		{Method: "GET", Path: "/api/v5/calendar", Handler: calendarv5.ListHandler(episodesSvc)},
+		{Method: "GET", Path: "/api/v5/calendar/{id}", Handler: calendarv5.ByIDHandler(episodesSvc)},
+		{Method: "GET", Path: "/feed/v5/calendar/sonarr.ics", Handler: calendarv5.FeedHandler(episodesSvc, seriesSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
