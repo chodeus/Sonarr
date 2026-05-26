@@ -26,6 +26,7 @@ import (
 	rootfolderv5 "sonarr.tv/sonarr/internal/api/v5/rootfolder"
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
 	updatev5 "sonarr.tv/sonarr/internal/api/v5/update"
+	indexerv5 "sonarr.tv/sonarr/internal/api/v5/indexer"
 	wantedv5 "sonarr.tv/sonarr/internal/api/v5/wanted"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
@@ -1334,6 +1335,26 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/wanted/missing/{id}", Handler: wantedv5.ByIDHandler(episodesSvc)},
 		{Method: "GET", Path: "/api/v5/wanted/cutoff", Handler: wantedv5.ListHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, wantedv5.ScopeCutoff)},
 		{Method: "GET", Path: "/api/v5/wanted/cutoff/{id}", Handler: wantedv5.ByIDHandler(episodesSvc)},
+		// J265 — v5 Indexer + IndexerFlag endpoint family (12 endpoints;
+		// Resource shape identical to v3 — 9 fields field-for-field. Four
+		// status divergences: DELETE/{id} + DELETE/bulk + POST/test all
+		// demote 200+`{}` → 204 via v5util.RewriteSuccessTo204; PUT/bulk
+		// is the inverse — v3 Go-port emits 202+body, v5 wants 200+body
+		// via v5util.RewriteAcceptedToOK. Other 8 endpoints path-alias.
+		// v3 Go-port's POST / already emits 201 and PUT/{id} already
+		// emits 202 — both happen to match v5 directly).
+		{Method: "GET", Path: "/api/v5/indexer", Handler: indexerv5.ListHandler(indexersRepo)},
+		{Method: "GET", Path: "/api/v5/indexer/schema", Handler: indexerv5.SchemaHandler()},
+		{Method: "GET", Path: "/api/v5/indexer/{id}", Handler: indexerv5.ByIDHandler(indexersRepo)},
+		{Method: "POST", Path: "/api/v5/indexer", Handler: indexerv5.CreateHandler(indexersRepo, indexerEmitter)},
+		{Method: "POST", Path: "/api/v5/indexer/test", Handler: indexerv5.TestHandler(indexerTester)},
+		{Method: "POST", Path: "/api/v5/indexer/testall", Handler: indexerv5.TestAllHandler(indexersRepo, indexerTester)},
+		{Method: "POST", Path: "/api/v5/indexer/action/{name}", Handler: indexerv5.RequestActionHandler(indexerTester)},
+		{Method: "PUT", Path: "/api/v5/indexer/bulk", Handler: indexerv5.BulkUpdateHandler(indexersRepo, indexerEmitter)},
+		{Method: "DELETE", Path: "/api/v5/indexer/bulk", Handler: indexerv5.BulkDeleteHandler(indexersRepo, indexerEmitter)},
+		{Method: "PUT", Path: "/api/v5/indexer/{id}", Handler: indexerv5.UpdateHandler(indexersRepo, indexerEmitter)},
+		{Method: "DELETE", Path: "/api/v5/indexer/{id}", Handler: indexerv5.DeleteHandler(indexersRepo, indexerEmitter)},
+		{Method: "GET", Path: "/api/v5/indexerflag", Handler: indexerv5.FlagsHandler()},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to

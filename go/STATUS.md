@@ -12167,3 +12167,55 @@ Pattern observation: Wanted is the THIRD Wave 3 family on the Wave 1 deferral ch
 ### Next Wave 3 candidates ascending
 
 Indexers (139), Localization (143), Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).
+
+## Phase 5.J265 — Wave 3 fourteenth slice: v5 Indexers + IndexerFlag family port (139 LOC C# source)
+
+Status-mop-up slice in the J260/J261 pattern family — Resource shape is IDENTICAL field-for-field across v3 ↔ v5 (no field diffs), the only divergence is FOUR HTTP status code shifts on FOUR of the 12 endpoints.
+
+**Wire-contract diff vs v3** (per `src/Sonarr.Api.V5/openapi.json` :2939-3309 + `src/Sonarr.Api.V3/openapi.json` :3400-3792):
+
+| endpoint                                | v5 (openapi) | v3 Go-port emits  | wrapper                              |
+|-----------------------------------------|--------------|-------------------|--------------------------------------|
+| GET    /api/v5/indexer                  | 200          | 200               | alias                                |
+| GET    /api/v5/indexer/schema           | 200          | 200               | alias                                |
+| GET    /api/v5/indexer/{id}             | 200          | 200               | alias                                |
+| POST   /api/v5/indexer                  | 201          | 201               | alias (Go-port already matches v5)   |
+| PUT    /api/v5/indexer/{id}             | 202          | 202               | alias (Go-port already matches v5)   |
+| **DELETE /api/v5/indexer/{id}**         | **204**      | 200+`{}`          | RewriteSuccessTo204                  |
+| POST   /api/v5/indexer/testall          | 200          | 200               | alias                                |
+| **POST  /api/v5/indexer/test**          | **204**      | 200+`{}`          | RewriteSuccessTo204                  |
+| POST   /api/v5/indexer/action/{name}    | 200          | 200               | alias                                |
+| **PUT  /api/v5/indexer/bulk**           | **200**      | 202+body          | RewriteAcceptedToOK                  |
+| **DELETE /api/v5/indexer/bulk**         | **204**      | 200+`{}`          | RewriteSuccessTo204                  |
+| GET    /api/v5/indexerflag              | 200          | 200               | alias                                |
+
+Resource shapes are 1:1:
+
+- `IndexerResource` — 9 fields (`enableRss`, `enableAutomaticSearch`, `enableInteractiveSearch`, `supportsRss`, `supportsSearch`, `protocol`, `priority`, `seasonSearchMaximumSingleEpisodeAge`, `downloadClientId`) plus inherited `ProviderResource<>` (id/name/fields/implementation/configContract/tags/...). v3 and v5 `IndexerResource.cs` files diff only by namespace, nullable annotations on the same fields, and one removed `if (definition == null) return null` early-out (C# v5 uses `?` instead). On the wire — same.
+- `IndexerBulkResource` — 5 nullable fields, identical between v3 and v5.
+- `IndexerFlagResource` — 3 fields (id/name + computed nameLower), identical.
+
+The `v3 Go-port emits` column is the interesting one — for `POST /` the Go-port already emits 201 (not the C# v3 openapi's documented 200; v3 Go-port apparently chose to match the v5 `Created<>` convention preemptively per `internal/api/v3/indexer.go:164`), and for `PUT /{id}` the Go-port already emits 202 (matching v5's `Accepted<>`). Those two are alias-compatible "for free". Four endpoints need wrappers.
+
+**Slice scope** — 377 lines (154 source + 223 test) + 1 import + 12 routes:
+
+- New `internal/api/v5/indexer/indexer.go` (154 LOC) — 9 type aliases (`Resource = apiv3.IndexerResource`, `BulkResource = apiv3.IndexerBulkResource`, `FlagResource = apiv3.IndexerFlagResource`, `Lister`, `ByIDGetter`, `Writer`, `Emitter`, `Tester`, `Actioner`) + 8 variable aliases (List/ByID/Schema/Create/Update/TestAll/RequestAction/Flags) + 4 wrapper functions (`DeleteHandler` / `BulkDeleteHandler` / `TestHandler` all via `v5util.RewriteSuccessTo204`; `BulkUpdateHandler` via `v5util.RewriteAcceptedToOK`). NO new handler logic — pure rewire.
+- New `internal/api/v5/indexer/indexer_test.go` (223 LOC) — 7 tests:
+  - DeleteHandler rewrites 200→204 (svc.Delete called once + body empty)
+  - DeleteHandler missing-id returns 204 (J232 idempotent contract carries through wrapper)
+  - BulkDeleteHandler rewrites 200→204 (svc.Delete called per-id)
+  - TestHandler success rewrites 200→204 (allows 400 passthrough because `fromIndexerResource` may pre-reject empty body — wrapper contract is "200→204"; 4xx flows through unchanged)
+  - BulkUpdateHandler rewrites 202→200 with body preserved (array of updated IndexerResource; svc.Update called per-id)
+  - Variable-aliases non-nil sanity
+  - Type-aliases match v3 compile-time pin
+- `cmd/sonarr/host_wiring.go` — 1 new import (`indexerv5`) + 12 new routes alongside the existing v3 routes. Re-uses the existing `indexersRepo`, `indexerEmitter`, `indexerTester` deps (v5 + v3 share the same backing services + SignalR emitter).
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/indexer/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/indexer/...` ✓ (7 tests, 0.5s).
+
+**v5 surface coverage**: 17/~50 → 18/~50.
+
+Pattern observation: Indexers is the FOURTH pure-status-mop-up slice in Wave 3 (after J255 SeasonPass POST 202→204, J257 CustomFilters DELETE 200→204, J260 RemotePathMappings PUT 202→200 + DELETE 200→204, J261 Blocklist two DELETEs 200→204). The shared `v5util` consolidation from J256 has paid for itself — each subsequent status-only slice has been ~6-12 lines per endpoint (one type alias + one wrapper call). Resource-shape-identical slices like this one need no per-endpoint reasoning beyond looking up the openapi status code.
+
+### Next Wave 3 candidates ascending
+
+Localization (143), Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).
