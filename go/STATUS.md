@@ -11729,3 +11729,95 @@ The slice cost ramps with each pattern complexity step:
 ### Next Wave 3 candidates ascending
 
 RemotePathMappings (122), Blocklist (127), RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143), Connections (154), Calendar (184).
+
+## Phase 5.J260 — v5 RemotePathMappings family (Wave 3)
+
+### What
+
+`internal/api/v5/remotepathmapping/` package + 5 new routes at `/api/v5/remotepathmapping*`. Ninth Wave 3 slice. First slice combining TWO v5util wrappers in one family.
+
+### Wire-shape diff vs v3
+
+Body shape identical (id / host / remotePath / localPath) per openapi v5 `RemotePathMappingResource` schema.
+
+TWO status divergences:
+
+| Method | v3                 | v5                 | Wrapper                       |
+| ------ | ------------------ | ------------------ | ----------------------------- |
+| GET    | 200                | 200                | (none — path-alias)           |
+| GET/{id}| 200               | 200                | (none — path-alias)           |
+| POST   | 201 + body         | 201 + body         | (none — path-alias)           |
+| PUT/{id}| **202 + body**    | **200 + body**     | `v5util.RewriteAcceptedToOK`  |
+| DELETE/{id}| **200 + empty** | **204 + empty**   | `v5util.RewriteSuccessTo204`  |
+
+### Why PUT 200 vs the provider-family 202 convention
+
+Most v5 controllers inheriting from `ProviderControllerBase` (Metadata, ImportList, Indexer, DownloadClient, Notification, etc.) emit `TypedAccepted` on PUT → 202 Accepted. RemotePathMapping is one of the few v5 controllers that uses `TypedResults.Ok<...>` instead. From the C# source `RemotePathMappingController.cs:84-91`:
+
+```csharp
+[RestPutById]
+public Results<Ok<RemotePathMappingResource>, NotFound> UpdateMapping([FromBody] RemotePathMappingResource resource)
+{
+    var mapping = resource.ToModel();
+    return TypedResults.Ok(_remotePathMappingService.Update(mapping).ToResource());
+}
+```
+
+The `Ok<>` not `Accepted<>` is the v5 contract here. Other v5 controllers using `Ok<>` on PUT: CustomFilters (J257 already), Tags, Qualities, etc.
+
+This is worth noting because future v5 family ports should NOT blindly assume `TypedAccepted` on PUT — each controller needs the openapi.json check.
+
+### Code
+
+```go
+type Resource = apiv3.RemotePathMappingResource
+type Lister = apiv3.RemotePathMappingLister
+type Writer = apiv3.RemotePathMappingWriter
+
+var ListHandler = apiv3.RemotePathMappingHandler
+var ByIDHandler = apiv3.RemotePathMappingByIDHandler
+var CreateHandler = apiv3.RemotePathMappingCreateHandler
+
+func UpdateHandler(svc Writer) http.Handler {
+    return v5util.RewriteAcceptedToOK(apiv3.RemotePathMappingUpdateHandler(svc))
+}
+
+func DeleteHandler(svc Writer) http.Handler {
+    return v5util.RewriteSuccessTo204(apiv3.RemotePathMappingDeleteHandler(svc))
+}
+```
+
+3 type aliases + 3 variable aliases + 2 wrapped handlers. Total ~80 LOC. The v5util pre-consolidation slice budget (J253 Metadata) for an equivalent shape would have been ~280 LOC; J260 lands at ~80 LOC + ~155 LOC of tests = ~235 LOC total, well within the 30-500 budget envelope.
+
+### Tests (5)
+
+- `TestUpdateHandler_Success_Returns200WithBody` — pin the PUT 202→200 demote: fixture row → PUT with modified Host/RemotePath/LocalPath → asserts (a) status=200, (b) body has the new values (proves v3 cascade through-flows verbatim), (c) svc.Update called once.
+- `TestDeleteHandler_Success_Returns204EmptyBody` — DELETE existing → 204 + empty body, svc.Remove called once.
+- `TestDeleteHandler_MissingID_Returns204Idempotent` — DELETE id=999 (not present) → 204 (J232 idempotency carry-through via wrapper).
+- `TestVariableAliases_NonNil` — sanity guard for the 3 var aliases.
+- `TestTypeAliasesMatchV3` — compile-time invariant guard.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/api/v5/remotepathmapping/...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v5/remotepathmapping/...
+ok  sonarr.tv/sonarr/internal/api/v5/remotepathmapping  1.670s
+```
+
+### v5 surface progress
+
+12/~50 → 13/~50 families. Endpoints added: 5.
+
+### Pattern footnote: TWO-wrapper combo
+
+J260 is the first family with two distinct v5util wrapper variants in one slice (RewriteAcceptedToOK + RewriteSuccessTo204). Pattern recipe: list each endpoint's `v3 status → v5 status` in a table, pick the matching wrapper per row. Both wrappers are independent — they don't interact, just compose at the handler level. Future families with three or more divergences just stack more rows in the table.
+
+### Next Wave 3 candidates ascending
+
+Blocklist (127), RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143), Connections (154), Calendar (184), Tags (192).

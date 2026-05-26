@@ -20,6 +20,7 @@ import (
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
 	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
+	remotepathmappingv5 "sonarr.tv/sonarr/internal/api/v5/remotepathmapping"
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
 	updatev5 "sonarr.tv/sonarr/internal/api/v5/update"
 	"sonarr.tv/sonarr/internal/auth"
@@ -1289,6 +1290,14 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// J259 — v5 Update endpoint family (single GET; pure path-alias
 		// to v3 handler — same wire shape, same 200 status).
 		{Method: "GET", Path: "/api/v5/update", Handler: updatev5.GetHandler(emptyUpdateLister{})},
+		// J260 — v5 RemotePathMappings endpoint family (5 endpoints; TWO
+		// status divergences: PUT 202→200 via v5util.RewriteAcceptedToOK,
+		// DELETE 200+empty→204 via v5util.RewriteSuccessTo204).
+		{Method: "GET", Path: "/api/v5/remotepathmapping", Handler: remotepathmappingv5.ListHandler(remotePathMappingsSvc)},
+		{Method: "GET", Path: "/api/v5/remotepathmapping/{id}", Handler: remotepathmappingv5.ByIDHandler(remotePathMappingsSvc)},
+		{Method: "POST", Path: "/api/v5/remotepathmapping", Handler: remotepathmappingv5.CreateHandler(remotePathMappingsSvc)},
+		{Method: "PUT", Path: "/api/v5/remotepathmapping/{id}", Handler: remotepathmappingv5.UpdateHandler(remotePathMappingsSvc)},
+		{Method: "DELETE", Path: "/api/v5/remotepathmapping/{id}", Handler: remotepathmappingv5.DeleteHandler(remotePathMappingsSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
