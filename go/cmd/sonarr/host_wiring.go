@@ -27,6 +27,7 @@ import (
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
 	updatev5 "sonarr.tv/sonarr/internal/api/v5/update"
 	calendarv5 "sonarr.tv/sonarr/internal/api/v5/calendar"
+	commandv5 "sonarr.tv/sonarr/internal/api/v5/command"
 	connectionv5 "sonarr.tv/sonarr/internal/api/v5/connection"
 	historyv5 "sonarr.tv/sonarr/internal/api/v5/history"
 	indexerv5 "sonarr.tv/sonarr/internal/api/v5/indexer"
@@ -1433,6 +1434,15 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// v3's DisallowUnknownFields 400 (deferred follow-up).
 		{Method: "GET", Path: "/api/v5/manualimport", Handler: manualimportv5.GetHandler()},
 		{Method: "POST", Path: "/api/v5/manualimport", Handler: manualimportv5.ReprocessHandler(seriesSvc, episodesSvc)},
+		// J272 — v5 Command endpoint family (4 endpoints; 247 LOC C#).
+		// Resource shape identical to v3 (same fields, same JSON tags,
+		// same computed-property semantics). ONE status divergence:
+		// DELETE/{id} 200+`{}` → 204 via v5util.RewriteSuccessTo204.
+		// Other 3 endpoints path-alias (POST already 201 in v3 Go-port).
+		{Method: "GET", Path: "/api/v5/command", Handler: commandv5.ListHandler(cmdSvc)},
+		{Method: "GET", Path: "/api/v5/command/{id}", Handler: commandv5.ByIDHandler(cmdSvc)},
+		{Method: "POST", Path: "/api/v5/command", Handler: commandv5.CreateHandler(cmdSvc, cmdRegistry)},
+		{Method: "DELETE", Path: "/api/v5/command/{id}", Handler: commandv5.DeleteHandler(cmdSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to

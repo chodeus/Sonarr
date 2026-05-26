@@ -12484,3 +12484,40 @@ Pattern observation: this is the first Wave 3 slice where the v3 Go-port deliber
 ### Next Wave 3 candidates ascending
 
 Commands (247), Logs (286).
+
+## Phase 5.J272 — Wave 3 twenty-first slice: v5 Commands family port (247 LOC C# source)
+
+Status-mop-up slice — Resource shape identical across v3 ↔ v5 (19 wire fields including computed projections), the only wire divergence is DELETE/{id} status. Same pattern family as J269 Tags and J267 Connections.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :693-790):
+
+| endpoint                       | v5 status | v3 Go-port         | strategy                  |
+|--------------------------------|-----------|--------------------|---------------------------|
+| GET    /api/v5/command         | 200       | 200                | alias                     |
+| POST   /api/v5/command         | 201       | 201 (matches v5)   | alias                     |
+| GET    /api/v5/command/{id}    | 200       | 200                | alias                     |
+| **DELETE /api/v5/command/{id}** | **204**  | 200+`{}`           | RewriteSuccessTo204       |
+
+**Resource shape** (identical to v3 CommandResource):
+
+19 wire fields: id, name, commandName, message, body (Command? polymorphic payload), priority, status, result, queued, started?, ended?, duration?, exception, trigger, clientUserAgent, stateChangeTime? (computed from started ?? ended), sendUpdatesToClient (computed from body), updateScheduledTask (computed from body), lastExecutionTime?.
+
+The C# v5 implementation uses computed properties for stateChangeTime / sendUpdatesToClient / updateScheduledTask while the v3 Go-port mapper hand-rolls the same precedence. JSON output is byte-identical at both populated and empty corpus. The `completionMessage` field is declared with `[JsonIgnore]` in C# (and absent from the v3 Go-port struct entirely) so it never hits the wire.
+
+**SignalR**: v5 CommandController declares `IHandle<CommandUpdatedEvent>` with a 100ms Debouncer that pushes per-id updates via `BroadcastResourceChange(ModelAction.Updated, ...)`. The v3 Go-port wires the equivalent broadcast off the command-bus event subscription in cmd/sonarr/signalr_wiring.go; that carries through to the v5 surface unchanged because both versions share the same backing emitter channel. The Wave 2 SignalR mop-up has a separate MessagingCleanupCommand → Sync side-effect that the v5 C# adds at CommandController.cs:120-122 (Sync broadcast on completion of any MessagingCleanupCommand) — not yet wired on either the v3 or v5 Go-port side; tracked under Wave 2.
+
+**v3 DELETE strict-404 reapplied (J269 pattern)**: v3 CommandDeleteHandler returns 404 on ErrNotFound per command.go:233-236 — the wrapper's RewriteSuccessTo204 predicate only matches 200 responses so 404s pass through unchanged. Tested via `TestDeleteHandler_NotFound_PassesThrough` to pin the contract.
+
+**Slice scope** — 186 lines (90 source + 96 test) + 1 import + 4 routes:
+
+- New `internal/api/v5/command/command.go` (90 LOC) — 3 type aliases (Resource = apiv3.CommandResource, Service, NameResolver) + 3 variable aliases (List/ByID/Create handler re-exports) + 1 wrapper func (DeleteHandler via RewriteSuccessTo204). NO new handler logic — pure re-export + wrap.
+- New `internal/api/v5/command/command_test.go` (96 LOC) — 4 tests: DELETE-rewrites-200-to-204 (svc.Cancel called once + body empty), DELETE-NotFound-passes-through (J269 wrapper-contract pattern), variable-aliases non-nil, type-aliases compile-time pin.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`commandv5`) + 4 new routes alongside the existing /api/v3/command routes. Re-uses cmdSvc + cmdRegistry deps that already back v3.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/command/...` ✓; `go test -race -count=1 ./internal/api/v5/command/...` ✓ (4 tests, 1.6s).
+
+**v5 surface coverage**: 24/~50 → 25/~50. Crossed the halfway mark.
+
+### Next Wave 3 candidates ascending
+
+Logs (286). After Logs, the queued ascending list drains — next size-tier are the larger families (Series, EpisodeFiles, Queue, ImportList, AutoTagging, DelayProfile, ReleaseProfile, CustomFormat, etc.) which the loop contract instructs to defer.
