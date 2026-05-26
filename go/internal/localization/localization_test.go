@@ -8,11 +8,12 @@ import (
 
 func TestService_GetLocalizationDictionary_Count(t *testing.T) {
 	t.Parallel()
-	// The embedded en.json carries 2269 entries per the C# recording.
+	// The embedded en.json carries 2273 entries per the C# recording
+	// at v5-develop f0f59b95c (refreshed in C.1.i partial / 5.J226).
 	// A drift here means the source file under
 	// `src/NzbDrone.Core/Localization/Core/en.json` changed and the
 	// Go-side copy needs a refresh.
-	const wantCount = 2269
+	const wantCount = 2273
 	s := localization.NewService()
 	if got := len(s.GetLocalizationDictionary()); got != wantCount {
 		t.Errorf("dict size: got %d want %d", got, wantCount)
