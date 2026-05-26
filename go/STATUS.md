@@ -9173,3 +9173,66 @@ Open follow-up (NOT loop work; needs developer time):
   - C.1.i-full — Full contract-replay re-baseline against live C# Sonarr at v5-develop f0f59b95c. Phase 6 readiness gate.
 
 **PROGRESS.md "current state" reflects this transition: Phase 6 prep can begin. The loop pauses here — next iteration would have nothing autonomous to do until either (a) C.1.i-full is closed manually, or (b) a new audit row opens.**
+
+## Phase 5.J227 — Contract-replay full re-baseline (audit row C.1.i-full closed) — 2026-05-26
+
+Closes the deferred contract-replay re-baseline against a live C# Sonarr v5-develop backend. Used the GitHub Actions artifact route (NOT a local dotnet build) because the chodeus checkout has `global.json` pinned to `10.0.300+` and the local Mac SDK was at `10.0.203` — the artifact path sidesteps that without modifying the global.json pin.
+
+Recording method:
+
+1. `gh run download 26260203682 -R Sonarr/Sonarr -n build-osx-arm64 -D /tmp/sonarr-v5-arm64` — downloaded the latest successful v5-develop CI build (SHA `7c41dcbe2`, run 26260203682, 108MB extracted to 261MB on disk).
+2. Inspected the artifact: native Mach-O arm64 launcher at `/tmp/sonarr-v5-arm64/osx-arm64/net10.0/Sonarr/Sonarr` (~125KB launcher) + 469 supporting DLLs in the same directory. Both `Sonarr.Api.V3.dll` AND `Sonarr.Api.V5.dll` present (confirms v5 surface). No `com.apple.quarantine` xattr (gh artifacts don't quarantine).
+3. FIRST LAUNCH ATTEMPT FAILED with side-effects: Sonarr's auto-migration logic detected an existing dormant `~/.config/Sonarr/` (default-installation leftover from an earlier test on the Mac) and silently migrated those files into `/tmp/sonarr-record-fresh/` via `DiskTransferService: Mirror Folder` — then crashed mid-migration with a SQL logic error (the migrated old DB was incompatible with the v5 schema). The dormant `~/.config/Sonarr/{Sonarr.db, config.xml}` was deleted from the home dir.
+4. RECOVERY: killed the deadlocked process (it hung at "Press enter to exit" rather than exiting cleanly); restored the 2 user files to `~/.config/Sonarr/`; deleted the scratch dir. The auto-mode classifier correctly blocked the first `mv` attempt because it looked like an unauthorised install into a user-config path — required explicit user OK before restoring.
+5. SECOND LAUNCH SUCCEEDED with two changes: (a) `HOME=/tmp/sonarr-fake-home` to point Sonarr at a non-existent default location, blocking the migration scan; (b) pre-seeded `config.xml` in `-data=/tmp/sonarr-record-fresh` with `Port=8990` + `BindAddress=127.0.0.1` to avoid port collision and force loopback-only. Sonarr v5.0.0.1658 booted cleanly through 230 migrations, listening on `http://127.0.0.1:8990`.
+6. `curl http://127.0.0.1:8990/api/v3/system/status` confirmed v3 surface alive (version `5.0.0.1658`). `curl http://127.0.0.1:8990/api/v5/customformat` returned `[]` with HTTP 200 — v5 surface alive.
+7. `go run ./test/contract/recorder -base http://127.0.0.1:8990 -api-key <key> -corpus ./test/contract/corpus -out /tmp/sonarr-recorded-golden` recorded all 83 corpus entries against this live backend.
+8. Compared against committed goldens via a body-only Python diff (ignoring HTTP headers like `Date` + `X-Miniprofiler-Ids` random UUIDs which would otherwise dominate).
+
+Body-level drift summary — 71/83 byte-identical, 12 with body differences:
+
+  | Endpoint | Δ bytes | Classification |
+  |---|---|---|
+  | `v3.command` | 5488 | KNOWN — J181 (scheduler warmup timing) |
+  | `v5.command` | 5488 | KNOWN — J181 |
+  | `v5.localization` | 354 | KNOWN — J226 (4 new keys: DisabledForLocalhost + 3 Pushover encryption strings) |
+  | `v3.log` | 303 | KNOWN — J181 (NLog buffer) |
+  | `v3.notification.schema` | 299 | **NEW** — Pushover `encryptionKey` field missing from `pushoverSchema()` |
+  | `v5.log` | 193 | KNOWN — J181 |
+  | `v3.episodefile.list` | 122 | KNOWN — J180 (stack-trace path environmental) |
+  | `v3.system.tasks` | 21 | env (same 11 task names, internal field reordering) |
+  | `v3.config.host` | 7 | env (my pre-seeded `config.xml` LogLevel + BindAddress) |
+  | `v3.system.status` | 1 | env (`isProduction: False → True` — CI release vs old debug build) |
+  | `v3.importlist.schema` | 0 | env (same 10 implementations, internal reordering same byte count) |
+  | `v5.system.status` | 0 | env (`isDebug`/`isProduction` toggle, no size change) |
+
+The 71 byte-identical endpoints are strong positive evidence that the J217-J225 v3+v5 wire-shape ports are correct against live upstream — including all 4 new v5 endpoint families (customformat, importlist, importlistsettings, autotagging), the Localhost auth bypass middleware, Pushover encryption envelope, and all other Phase 5 work touching the v3 surface.
+
+The 1 NEW gap surfaced: `internal/api/v3/notification_schema.go:584-610 pushoverSchema()` is hand-written and lists 8 fields (indices 0-7). The new C# baseline emits 9 fields, with `encryptionKey` at index 8 (label "Encryption Key", type "textbox", privacy "apiKey", advanced=true, helpLink=`https://pushover.net/api#e2ee`, helpText="Optional 64-character hex key (256-bit) to enable end-to-end encryption of the title and message"). The Go-port already has the encryption logic + struct field (J219), but the schema endpoint — which the UI calls to render the settings form — doesn't expose the field. A UI built against the Go-port today wouldn't show the EncryptionKey textbox. Tracked as `C.1.i-follow-1` in AUDIT_FIX_BACKLOG.md for a small follow-up slice.
+
+Goldens NOT updated in this slice. Rationale: (a) the C.1.i-follow-1 gap is product-side and out of scope per the seed prompt's "DO NOT fix product bugs in this slice; that's separate work" rule; (b) updating `v3.notification.schema.golden.json` now would make `TestV3NotificationSchemaContract` start failing (intentional — surfaces the gap), which is appropriate but should land WITH the schema fix; (c) the other 11 drifts are environmental noise where updating goldens would just bake in different noise. The committed goldens at J226 + earlier remain authoritative; the new finding is documented in the backlog row instead.
+
+Cleanup performed: process killed; scratch dirs removed (`/tmp/sonarr-v5-arm64`, `/tmp/sonarr-recorded-golden`, `/tmp/sonarr-record-fresh`, `/tmp/sonarr-fake-home`, `/tmp/sonarr-boot.log`, `/tmp/sonarr-record-fresh.log`); `~/.config/Sonarr/` verified intact post-recording (`Sonarr.db` + `config.xml` at the same timestamps the restore set them to).
+
+Hard gates clean: `go test ./...` 0 FAIL (the committed goldens stay the source of truth; the recording was a diff snapshot, not a replacement).
+
+Net diff: ~3 PROGRESS.md (cursor flip + new closed entry) + ~30 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md (C.1.i-full row strikethrough + CLOSED summary + new C.1.i-follow-1 row).
+
+## C.1 family — FINAL state after J227
+
+Originally-numbered sub-items (a–j + i): **all closed.** 10 of 10:
+  - C.1.a (J221) — v5-develop catch-up merge
+  - C.1.b (J222) — v5 CustomFormat controller
+  - C.1.c (J223) — v5 ImportList controller
+  - C.1.d (J224) — v5 ImportList Settings controller
+  - C.1.e (J225) — v5 AutoTagging controller
+  - C.1.f (J219) — Pushover E2E encryption
+  - C.1.g (J220) — Localhost auth bypass
+  - C.1.h (J218) — CancellationToken parity verification
+  - C.1.j (J217) — Recently-aired refresh logging
+  - C.1.i (J226 + J227) — Localization refresh + full contract re-baseline
+
+Follow-up surfaced during closure:
+  - C.1.i-follow-1 — Pushover `encryptionKey` field missing from v3 notification.schema (tiny single-handler change)
+
+The audit IS fully drained of original work; the one follow-up is a new finding sized as a tiny follow-up rather than a deferred gap. PROGRESS.md "current state" can now claim go-port is current with `v5-develop @ 7c41dcbe2` (the recording baseline).
