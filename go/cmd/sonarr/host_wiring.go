@@ -1336,6 +1336,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v3/log/file/update/{filename}", Handler: apiv3.UpdateLogFileByNameHandler(logFileSvc)},
 		{Method: "GET", Path: "/api/v3/log/file/{filename}", Handler: apiv3.LogFileByNameHandler(logFileSvc)},
 		{Method: "GET", Path: "/api/v3/manualimport", Handler: apiv3.ManualImportHandler()},
+		// J238 / C.1.i-follow-5b: manualimport POST reprocess endpoint.
+		{Method: "POST", Path: "/api/v3/manualimport", Handler: apiv3.ManualImportReprocessHandler(seriesSvc, episodesSvc)},
 		{Method: "GET", Path: "/api/v3/mediacover/{seriesId}/{filename}", Handler: apiv3.MediaCoverHandler(mediaCoverSvc)},
 		{Method: "GET", Path: "/api/v3/metadata", Handler: apiv3.MetadataListHandler(metadataRepo)},
 		{Method: "GET", Path: "/api/v3/metadata/schema", Handler: apiv3.MetadataSchemaHandler()},

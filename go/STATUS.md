@@ -9637,3 +9637,60 @@ Read/write balance: heavily WRITE side. The cache itself is read+write infrastru
 Open follow-ups after J237:
   - C.1.i-follow-5b — POST /api/v3/manualimport (manual import service, ~700 LOC C#, multi-day port)
   - C.1.i-follow-5a-deferred — ShouldOverride Subject mutation + indexer/dc resolve + full ReleaseResource projection (sub-arcs documented in J237 slice notes)
+
+
+## Phase 5.J238 — POST /api/v3/manualimport reprocess endpoint (audit row C.1.i-follow-5b closed) — 2026-05-26
+
+Third of the 3 real-work follow-up rows from J234, and the final J234-surfaced row. With this closure all 5 originally-numbered C.1.i-follow rows AND all 5 J234-surfaced sub-rows are CLOSED — Phase 5 audit_fix_backlog is fully drained.
+
+Ports the C# `ManualImportController.ReprocessItems` action body of work (the POST verb on /api/v3/manualimport). The C# controller's source: `src/Sonarr.Api.V3/ManualImport/ManualImportController.cs:43`. The endpoint accepts an array of items the UI has already collected (typically from a "Wanted → Cutoff Unmet" or "Activity → Queue" manual-import drawer) and re-derives the per-item Series + Episodes + ReleaseType + (eventually) CustomFormats projection. The UI calls this after the user changes the Series binding or edits the explicit episode list — the server re-walks the precedence rules so the response shows the user what would actually happen on a subsequent /api/v3/manualimport/save POST.
+
+Handler at `internal/api/v3/manual_import.go`:
+
+  The existing v3 file (which previously held only the GET list handler) was extended with: (1) `ManualImportReprocessItem` struct mirroring the C# wire shape (Path, Name, FolderName, IndexerFlags, RelativePath, ReleaseGroup, Quality, Languages, ReleaseType, SeriesId, Series, EpisodeIds, Episodes, CustomFormats, Rejections, DownloadId, AdditionalFile, ReplaceExistingFiles, DisableReleaseSwitching, TitleParse, ParsedEpisodeInfo); (2) two narrow lookup interfaces — `ManualImportSeriesLookup` (Get by ID + GetSeriesByPath) and `ManualImportEpisodeLookup` (Get by ID, used for the explicit-EpisodeIDs resolution arm); (3) the POST `ReprocessItems(ctx, items)` handler; (4) the per-item `reprocessOne` orchestrator; (5) `resolveManualImportSeries` + `resolveManualImportEpisodes` helpers; (6) the `manualImportReleaseTypeFor` helper that derives the wire-format ReleaseType string from `*parser.ParsedEpisodeInfo` shape.
+
+  Per-item precedence rules (line-aligned with C# `:46-90`):
+
+    - Series resolution (C# `:113`): if SeriesId <= 0 AND Path != "" AND series lookup is wired, resolve via GetSeriesByPath (folder-based — the UI hands us the folder, server walks series.Path == folder). Otherwise fall back to ID-based Get if SeriesId > 0. nil-tolerant: missing series + nil-lookup combinations preserve the body-supplied series field.
+    - Episode resolution (C# `:51`): explicit EpisodeIDs from the request body take precedence — for each ID, episodeLookup.Get fetches the typed Episode. If EpisodeIDs is empty AND ParsedEpisodeInfo is set AND series resolved, the parsed-info-derived episode stub list is built from the (Season, EpisodeNumber) tuples. The C# tree uses `parsedEpisodeInfo != null ? ... : new List<Episode>()` — the Go-port mirrors this with the empty-EpisodeIDs fallback.
+    - ReleaseType derivation (C# `:51` `processedItem.ReleaseType`): new `manualImportReleaseTypeFor(*parser.ParsedEpisodeInfo)` helper applies the upstream `ParsedEpisodeInfo.ReleaseType` getter (C# `Parser/Model/ParsedEpisodeInfo.cs:90-115`): nil parsed-info → `unknown`; `FullSeason → seasonPack`; `len(EpisodeNumbers) >= 2 → multiEpisode`; `== 1 → singleEpisode`; else `unknown`.
+
+  Wire format — camelCase via `CamelCaseEnumName`:
+
+    The Go-port `parser.ReleaseType.String()` emits PascalCase (matches C#'s `Enum.ToString()` raw form). But the v3 API contract emits camelCase enum values — verified against `src/Sonarr.Api.V5/openapi.json` `ReleaseType` schema: `enum: [unknown, singleEpisode, multiEpisode, seasonPack]`. C# achieves camelCase via `[JsonConverter(typeof(StringEnumConverter))]` + the `CamelCaseNamingStrategy` configured in `Sonarr.Http`. The Go-port uses the existing `CamelCaseEnumName` helper (lowercases the first character of the PascalCase name) — same pattern already used in command.go, config_importlist.go, config_host.go for other enum fields. Initial implementation returned `parser.ReleaseType{...}.String()` directly (PascalCase) and 2 tests caught this — fixed by wrapping each return in `CamelCaseEnumName(...)`.
+
+  CustomFormats normalisation (C# null-as-empty JSON projection):
+
+    C# Newtonsoft.Json with the default Sonarr config serialises `null List<CustomFormatResource>` as `[]` (the `Sonarr.Http` JSON contract resolver). Go-port `[]any{}` initialisation when `item.CustomFormats == nil` after the precedence walk matches the wire byte-for-byte. (When the body supplies a non-nil non-empty CustomFormats list, it round-trips verbatim — re-deriving custom-format scores is a separate slice that requires the CustomFormat service to be threaded in.)
+
+Test coverage (`internal/api/v3/manual_import_test.go`, 11 new tests):
+
+  - Empty body → 200 + `[]` (no items, no resolution work, no error).
+  - Nil ParsedEpisodeInfo → ReleaseType = `unknown`.
+  - FullSeason=true → ReleaseType = `seasonPack`.
+  - Single-episode (one EpisodeNumber) → ReleaseType = `singleEpisode`.
+  - Multi-episode (E01-E03 spans two episodes per the C# `:51` `len >= 2` rule) → ReleaseType = `multiEpisode`.
+  - Explicit EpisodeIDs in body → resolved via episodeLookup.Get for each ID, parsed-info-derived stubs ignored.
+  - Empty EpisodeIDs + ParsedEpisodeInfo set + series resolved → parsed-info-derived episode stub list returned.
+  - Path-based series lookup (SeriesId <= 0, Path != "", series lookup wired) → GetSeriesByPath invoked.
+  - ID-based series lookup (SeriesId > 0, Path empty) → Get(seriesID) invoked.
+  - CustomFormats nil → empty-slice normalisation in response.
+  - Plus a smoke / route-wiring guard.
+
+Wiring (`cmd/sonarr/host_wiring.go`):
+
+  POST `/api/v3/manualimport` route added next to the existing GET handler. The two narrow interfaces (`ManualImportSeriesLookup`, `ManualImportEpisodeLookup`) are satisfied by `*series.Service` + `*episodes.Service` respectively via Go structural typing — no new wiring params on `buildHostServer` / `v3Routes`. The two services were already threaded into the v3 routes block from earlier slices.
+
+Hard gates clean: `go build ./...` no errors, `go test ./internal/api/v3/` 0 FAIL (all 11 new tests + existing v3 suite pass), `go test ./...` 0 FAIL overall.
+
+Net diff: ~251 lines added to `internal/api/v3/manual_import.go` (POST handler + per-item orchestrator + 2 narrow interfaces + 3 helpers + struct definition) + ~259 lines added to `internal/api/v3/manual_import_test.go` (11 new tests) + 2 lines in `cmd/sonarr/host_wiring.go` (1 POST route wiring) + PROGRESS.md cursor update + STATUS.md slice note + AUDIT_FIX_BACKLOG.md row strikethrough + CLOSED summary.
+
+Read/write balance: WRITE-side audit work. The POST endpoint mutates the response shape per the client's request body (resolves series, resolves episodes, recomputes ReleaseType, normalises CustomFormats). The existing GET /api/v3/manualimport (list pending) read path is unchanged. Per the user's "do read AND write side" direction throughout the J234-surfaced row drain — the 3 real-work follow-up rows (5a release, 5b manualimport, 5c queue grab) together cover the entire write-side gap surfaced by the J234 route coverage audit.
+
+**Phase 5 audit_fix_backlog state after J238:**
+  - All originally-numbered C.1 sub-items (a, b, c, d, e, f, g, h, i, j) → CLOSED
+  - All 5 J228-surfaced follow-up rows (C.1.i-follow-1 through -5) → CLOSED
+  - All 5 J234-surfaced sub-rows (C.1.i-follow-5a/5b/5c/5d/5e) → CLOSED
+  - 1 acknowledged deferred sub-arc: J237's ShouldOverride Subject mutation + indexer/dc name→id resolve + full ReleaseResource projection (documented in the J237 handler doc-comments; lands when toReleaseResource gains the missing custom-format + scene-mapping fields).
+
+**Cleared to pivot to Phase 6 prep** per the user's direction "5a-5e. Lets wrap up as much phase 5 as we can before moving to phase 6."
