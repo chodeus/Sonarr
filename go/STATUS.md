@@ -10294,3 +10294,127 @@ The autonomous-loop candidate list:
 - (E) Cross-tool integration smoke test (`go/cmd/shadowtraffic-e2e/`, ~150 LOC). **Only remaining slice.**
 
 After J246 the only autonomous-loop slice left is (E). It's a different shape than (A-D) — it's actual integration test code (~150 LOC) that proves the J239+J240+J241 shadow-traffic triad composes end-to-end. The other Phase 6 prep arcs (6.4 cutover commit, v5-develop reference refresh) are gated on external infra (staging URLs / re-spinning C# Sonarr with HOME isolation) and explicitly NOT in autonomous-loop scope per the loop prompt.
+
+## Phase 5.J247 — Cross-tool integration smoke test for the shadow-traffic triad
+
+### Why
+
+The Phase 6.1 toolkit (J239 diff + J240 replay + J241 record) was built in three slices. Each had its own unit tests (HTTP-level tests within the binary's package). What was missing: a single test that proves the THREE binaries actually compose. Specifically:
+
+- That `record`'s JSONL output is byte-shape-compatible with `replay`'s JSONL input (the schema documented in J245 FORMAT.md).
+- That `replay` can drive `diff`'s listen addr without protocol mismatch.
+- That `diff`'s downstream dispatch to two backends produces the diff-report shape the report.go writes (and that the operator would actually open).
+- That the SIGTERM-flush invariants on `record` + `diff` actually work when invoked from a subprocess parent.
+
+Each binary's unit tests assume an in-process composition. The real Phase 6.1 deployment is three separate processes communicating via file + HTTP. The integration test pins that mode.
+
+### Test shape
+
+`cmd/shadowtraffic-e2e/e2e_test.go`. Package `shadowtraffic_e2e` (test-only — `doc.go` carries the package declaration for `go build ./...` cleanliness). Run via `go test ./cmd/shadowtraffic-e2e/...`.
+
+Two tests:
+
+**TestTriadComposesEndToEnd** — the full end-to-end:
+
+1. Two `httptest.NewServer` fakes: fake C# returns `{"server":"csharp","id":1}`; fake Go returns `{"server":"go","id":1}` — value-only diff to exercise the LOW-severity classification path (the J239 differ classifies field-presence/type mismatches as HIGH and value-only mismatches as LOW).
+2. Start `shadow-traffic-record` fronting fake C#; `-flush-interval 50ms`, `-sync-on-close true`, `-stats-interval 1h` (the last to suppress periodic stats noise that would otherwise litter test stderr).
+3. Drive 3 GET requests at the record's front. Each request asserts the client sees the C# response body (proving record's reverse-proxy forwarding works under subprocess spawn).
+4. SIGTERM record. The graceful-shutdown path flushes the JSONL log to disk + closes cleanly.
+5. Read the JSONL log via the test's `readJSONL` helper (which respects FORMAT.md's blank+comment-line conventions). Assert 3 entries with `method=GET` + `path=/api/v3/series`.
+6. Start `shadow-traffic-diff` with both fakes wired as `-primary-url` (C#) + `-secondary-url` (Go); `-flush-interval 200ms` keeps the report-flush cadence test-friendly.
+7. Reset the fake-backend hit counters.
+8. Run `shadow-traffic-replay` with `-log` pointing at record's output + `-target` pointing at diff's listen addr + `-speed 0` (no throttling). Replay's `main.go` exits on log EOF, so the parent test just `Wait()`s.
+9. Assert both fakes saw 3 hits each. This proves diff's dual-dispatch fan-out works (each inbound request → both backends in parallel).
+10. Sleep 600ms (one flush-interval + safety margin) so the diff's async report-writer drains.
+11. SIGTERM diff. Final flush on shutdown.
+12. Glob `*.diffs.jsonl` files in the report-dir; expect at least one. Decode each row to a map; expect at least one row whose JSON contains both "server" and either "csharp" or "go" (the value diff).
+
+**TestRecordReplayRoundTripsCleanly** — the narrower companion. Isolates the record↔replay format contract from the diff binary so a failure points at one half vs the other:
+
+1. One backend instead of two; it appends every received request shape to a slice (Method + Path + Body) protected by a channel-based mutex.
+2. Run record → drive 3 probes (GET / POST with body / DELETE).
+3. SIGTERM record. Snapshot the backend's recording-phase capture.
+4. Run replay against the SAME backend (`-target=backend.URL`).
+5. Backend's replay-phase capture must byte-equal the recording-phase capture probe-by-probe.
+
+Why two tests: when (TestTriadComposesEndToEnd) fails, it could be any of three binaries; when (TestRecordReplayRoundTripsCleanly) ALSO fails, the bug is in record or replay; when only the e2e test fails, the bug is in diff or in how diff consumes replay's output. Bisects the failure space.
+
+### TestMain — build once, share across tests
+
+```go
+func TestMain(m *testing.M) {
+    tmp, _ := os.MkdirTemp("", "shadowtraffic-e2e-bins-")
+    for _, name := range []string{"shadow-traffic-diff", "shadow-traffic-replay", "shadow-traffic-record"} {
+        out := filepath.Join(tmp, name)
+        build := exec.Command("go", "build", "-o", out, "sonarr.tv/sonarr/cmd/"+name)
+        // ... run build, populate binaries map
+    }
+    code := m.Run()
+    _ = os.RemoveAll(tmp)
+    os.Exit(code)
+}
+```
+
+Three binaries built once per `go test` invocation; both tests share. Build failure aborts the whole test run with a clear stderr message. Tmpdir cleaned even when tests panic (defer-equivalent ordering: m.Run returns → cleanup → os.Exit).
+
+### Helpers
+
+- `pickPort(t)` — `net.Listen("tcp", "127.0.0.1:0")`, capture port, immediately close. The kernel may reassign the port before the binary binds, but the race window is tiny and 2 ports per test run is well within tolerance. (Alternative: pass `-listen :0` to the binary and have it print the actual port — would require changes to all three binaries. Out of scope for a test scaffold.)
+- `waitListening(t, addr, max)` — poll-connect with 20ms ticks until something accepts or deadline. Replaces the brittle "sleep 200ms after Start" pattern.
+- `stopAndWait(t, cmd, name)` — SIGTERM + 5s grace + Kill fallback. Logs (doesn't fail) on non-clean exit because the binaries' SIGTERM handlers DO exit cleanly via the signal-handler block — but a Kill fallback ExitError still passes through `Wait()`, and that's fine; we assert on output not exit codes.
+- `readJSONL(t, path)` — reads a JSONL file, skips blank + `#`-prefixed lines per FORMAT.md, decodes each remaining line to `map[string]any`. Test-side mirror of the recorder's writer + replayer's reader; if FORMAT.md is wrong, all three of (recorder writes / replayer reads / readJSONL parses) diverge and the test will catch it.
+
+### Honours `-short`
+
+Both tests start with `if testing.Short() { t.Skip(...) }`. The reasoning: the e2e tests spawn 3 subprocesses + 2 `httptest` servers and consume ~5 seconds of wallclock. The existing fast-unit-test sweep (`go test -short ./...`) shouldn't pay that cost on every CI run. The e2e tests run on `go test ./...` (the default), so any commit touching the three binaries triggers the integration check; `-short` is the escape hatch for developers iterating on unrelated packages.
+
+### Why ~440 LOC instead of the prompt's "~150 LOC"
+
+The prompt estimated ~150 LOC. Actual: ~440 LOC. The overage is in scaffolding, not assertions:
+
+- TestMain + binaries map + helpers (~110 LOC) — could be skipped if all three binaries were in the same package, but they're three separate `main` packages requiring subprocess spawn.
+- Per-test subprocess lifecycle (~40 LOC each across two tests = 80 LOC) — Start + waitListening + drive traffic + SIGTERM + cleanup deferred for failure path.
+- Per-test response handling + flush-timing waits (~40 LOC each = 80 LOC).
+- Two tests instead of one (~80 LOC for the second). Could have collapsed to one larger test but the bisect-the-failure-space argument carried the day.
+- Assertions + comments inline with steps (~90 LOC).
+
+The prompt's "~150 LOC" estimate assumed the tests would be one function with minimal scaffolding. The reality of multi-binary integration testing — port allocation, process lifecycle, output assertion across binaries that don't share types — needed more infrastructure.
+
+### Subtle correctness notes
+
+- **Diff binary returns the PRIMARY response to the caller.** During TestTriadComposesEndToEnd step 8 (replay drives diff), replay's HTTP requests get back the C# response body (because diff streams primary's response to the caller). The Go fake's response is only consumed by diff's background diff-goroutine. We assert on hit counts (both backends got 3 hits) rather than on response bodies because the response bodies are by-design "primary wins."
+- **Diff's flush is async + interval-driven.** The `-flush-interval 200ms` flag drives when the in-memory report buffer is written to disk. Step 10 sleeps 600ms (3x the interval) before reading reports — defensive, accommodates scheduling jitter on busy test runners.
+- **SIGTERM forces final flush.** Step 11 SIGTERMs diff before reading reports, even though step 10 already waited for the interval flush. The graceful-shutdown path is the safety net for "what if a report was generated in the last 200ms and the interval-flush missed it."
+- **Mutex via channel-as-semaphore.** TestRecordReplayRoundTripsCleanly uses `var mu = make(chan struct{}, 1); mu <- struct{}{}` rather than `sync.Mutex`. Reason: the test reads + writes a slice from inside an HTTP handler goroutine while the main test goroutine reads the snapshot. Channel-mutex makes the synchronisation visible at the call sites (`<-mu` / `mu <- struct{}{}`) which is helpful for the integration-test reader who's already context-switching across three binaries' worth of code.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./...
+(clean)
+
+$ go test -race -count=1 -timeout 120s ./cmd/shadowtraffic-e2e/...
+ok  sonarr.tv/sonarr/cmd/shadowtraffic-e2e  4.892s
+```
+
+Both tests pass under -race in under 5 seconds. The build-binaries-in-TestMain dominates the wallclock (3x `go build` calls); the actual subprocess orchestration is sub-second per test.
+
+### Slice (E) closes; autonomous-loop scope DRAINED
+
+Closing (E) drains the autonomous-loop candidate list:
+
+- (A) [CLOSED at J243] Shared cmd/shadowtraffic helper consolidation.
+- (B) [CLOSED at J244] gzip body decompression on shadow-traffic-record.
+- (C) [CLOSED at J246] Phase 6.2 smoke runbook scaffold.
+- (D) [CLOSED at J245] Shadow-traffic JSONL FORMAT.md.
+- (E) [CLOSED at J247] Cross-tool integration smoke test.
+
+The deferred Phase 6 arcs (per the loop prompt's DO NOT TOUCH list) remain explicitly out of autonomous-loop scope until external infra unblocks them:
+
+- **v5-develop reference refresh** — requires re-spinning local C# Sonarr with HOME isolation (`HOME=/tmp/sonarr-fake-home`); previously corrupted `~/.config/Sonarr/` when run without isolation. Operator-driven.
+- **Phase 6.4 cutover commit** — gated on 14+ days of zero unexplained diff in the 6.1 shadow-traffic daily reports; needs staging URLs + the nightly contract gate (J242) actively gating real traffic.
+
+At J247 the loop has nothing left to autonomously close. The next tick should re-orient (per loop standing instructions) and look for unanchored work in `AUDIT_FIX_BACKLOG.md` / `PHASE_6_SCOPE.md` / `STATUS.md` tail; if nothing surfaces (which is the expected state), the loop should STOP with a "loop drained" paragraph per the standing block-policy rather than invent slices.
