@@ -12562,3 +12562,65 @@ Pure path-alias slice — drains the queued ascending Wave 3 list. v3 Go-port al
 ### Next slice strategy decision
 
 Per the loop contract: "Defer truly large families (Series, EpisodeFiles, Queue)" — leaves the medium-tier families (ImportList, AutoTagging, DelayProfile, ReleaseProfile, NamingConfig, QualityProfile, CustomFormat, etc.) as the next-candidate set. Per-tick survey will pick the smallest of those for J274.
+
+## Phase 5.J274 — Wave 3 twenty-third slice: v5 System family port (169 LOC C# source)
+
+Status-mop-up + field-divergence + v3-port-gap-closure combo slice. Smallest unported v5 endpoint family per the J273 survey result (excluding the System/Tasks and System/Backup sub-controllers reserved for separate slices).
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :6295-6386):
+
+| endpoint                                  | v5 status | v3 Go-port               | strategy                                |
+|-------------------------------------------|-----------|--------------------------|-----------------------------------------|
+| GET  /api/v5/system/status                | 200       | 200                      | v5-specific Resource + custom handler   |
+| GET  /api/v5/system/routes                | 200       | NOT WIRED                | new v5 stub (empty text/plain)          |
+| GET  /api/v5/system/routes/duplicate      | 200       | 200 + `[]`               | new v5 handler (emits `{}` per v5 schema)|
+| POST /api/v5/system/shutdown              | 200       | 200 + `{shuttingDown:true}` | path-alias                          |
+| POST /api/v5/system/restart               | 200       | 200 + `{restarting:true}`   | path-alias                          |
+
+**Resource diff** (v5 `SystemResource` per `src/Sonarr.Api.V5/System/SystemResource.cs` — 31 fields) vs v3 Go-port `SystemStatusResource` (29 fields per `internal/api/v3/system_status.go:29-59`):
+
+| field                          | v3 Go-port | v5 C#       | notes |
+|--------------------------------|------------|-------------|-------|
+| `isContainerized`              | ✓          | —           | v5 OMITS                       |
+| `packageVersion`               | —          | required    | v5 ADDS (Wave 1 deferred — `""`)|
+| `packageAuthor`                | —          | required    | v5 ADDS (Wave 1 deferred — `""`)|
+| `packageUpdateMechanismMessage`| —          | required    | v5 ADDS (Wave 1 deferred — `""`)|
+
+All other 28 fields shared field-for-field with identical JSON tag spelling. Both v3 Go-port and v5 Go-port omit `sqliteVersion` (v3 C# carries it; same Wave 1 deferral). C# v5 + v3 sources both use IDeploymentInfoProvider for `package*`; the Go port hasn't ported that provider yet, so the three new v5 fields surface as empty strings until the provider lands — at which point both v3 Go-port (gains all 4 fields back) and v5 Go-port (gains the 3 new ones with values) widen via the shared deployment-info adapter.
+
+**Wire shape divergence #2** — GET /routes/duplicate. The v5 openapi schema is `type: object, additionalProperties: {type: array, items: string}` — Dictionary<string, List<string>> in C#. v5 emits `{}` when empty (object-typed). v3 Go-port at `internal/api/v3/system_lifecycle.go:64-70` emits `[]` (array-typed) — a divergence from v3 C# that was a previous design choice (per the doc-comment "The Go-port route table is statically declared ... duplicates can't survive registration — this handler emits `[]` unconditionally"). For v5, the wire shape MUST be `{}` per the openapi schema; the v3 surface stays as-is to avoid v3-side regression risk.
+
+**v3-port-gap pattern (J266 reapplied)** — GET /system/routes. The C# v5 controller writes a Graphviz DOT-format dump of the ASP.NET route DFA via `DfaGraphWriter`. Neither v3 nor v5 Go-port has a DfaGraphWriter equivalent (Go's net/http stack uses a static route table — there's no DFA to dump). v3 Go-port simply doesn't wire the endpoint. v5 surface CLOSES the gap with a stub that emits empty `text/plain; charset=utf-8` body — preserves the wire surface (Content-Type, status, method shape) so a real client doesn't 404, but explicitly defers the route-graph content. When/if a route-graph dumper lands (Wave 1 follow-up), both v3 and v5 widen via a shared adapter. J266 pattern (close the gap on the v5 wire only, leave v3 untouched).
+
+**Shutdown + Restart** — pure path-aliases. v3 Go-port handlers (`internal/api/v3/system_lifecycle.go:36-54` + `:78-96`) already emit the correct wire shape: 200 + `{shuttingDown:true}` / `{restarting:true}`, body sent BEFORE the async lifecycle dispatch goroutine starts. The v5 controller does exactly the same: `Task.Factory.StartNew(() => _lifecycleService.Shutdown())` then `return TypedResults.Ok<object>(new { ShuttingDown = true })`. Variable aliases re-export the v3 handler verbatim. SignalR not involved on either side (no broadcast event for system lifecycle in either v3 or v5 C#).
+
+**Status code parity** — all 5 endpoints return 200. No status wrappers needed. SystemResource is a non-mutation read, so the v5 controller uses `Ok<SystemResource>` (not Accepted); shutdown/restart use `Ok<object>` (not NoContent — matches the v3 envelope shape).
+
+**Slice scope** — 372 lines (175 source + 197 test) + 1 import + 5 routes:
+
+- New `internal/api/v5/system/system.go` (175 LOC) — v5-specific `StatusContext` struct (embeds `apiv3.SystemStatusContext` + 3 new string fields for Package*) + `StatusGetter` type alias to `apiv3.SystemStatusGetter` (no new dynamic fields) + v5-specific `Resource` struct (31 fields, no isContainerized) + `StatusHandler` (ports v3 logic with v5 Resource shape) + `LifecycleRunner` type alias + `ShutdownHandler` / `RestartHandler` variable aliases (to apiv3) + `RoutesDuplicateHandler` (new — emits `{}`) + `RoutesHandler` (new — emits empty text/plain).
+- New `internal/api/v5/system/system_test.go` (197 LOC) — 7 tests: StatusHandler-v5-shape-omits-isContainerized (canonical field-divergence pin — decodes JSON into map, asserts isContainerized absent + presence of all 4 package* fields; pins authentication / packageUpdateMechanism camelCase via apiv3.CamelCaseEnumName), RoutesDuplicateHandler-empty-object (pins `{}` not `[]` + Content-Type), RoutesHandler-empty-text-plain (pins empty body + text/plain Content-Type), ShutdownHandlerAlias-responds-and-dispatches (mutex-protected fakeLifecycle to satisfy `-race`), RestartHandlerAlias-responds-and-dispatches, StatusContext-V3-embedding (compile-time pin on the extensible struct shape so future Package*-population at boot doesn't need a refactor).
+- `cmd/sonarr/host_wiring.go` — 1 new import (`systemv5`) + 5 new routes alongside the existing /api/v3/system/* routes. StatusContext constructed inline via `systemv5.StatusContext{V3: systemStatus}` leaving Package* fields as zero strings (Wave 1 deferred). cfg + lifecycleSvc passed through verbatim — same deps the v3 routes use.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/system/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/system/... ./cmd/sonarr/...` ✓ (7 v5/system tests + cmd/sonarr suite, 1.4s + 3.7s).
+
+**v5 surface coverage**: 26/~50 → 27/~50.
+
+Pattern observation: this is the first Wave 3 slice to use struct EMBEDDING (StatusContext.V3 holds apiv3.SystemStatusContext) rather than type aliasing for a context object. The v5 controller's only non-aliased dynamic state (the 3 deferred Package* strings) lives on the v5 type without disturbing v3's wiring; when IDeploymentInfoProvider lands, the boot code at cmd/sonarr will populate the 3 fields without any v3-side change. Same scope-discipline as J266 LocalizationByIDHandler — close the gap on the v5 wire only.
+
+### Next Wave 3 candidates
+
+Remaining unported families (smallest-first per `wc -l` on the C# controllers):
+
+- System/Tasks (65 LOC, src/Sonarr.Api.V5/System/Tasks/) — separate sub-controller, 2 endpoints (list + by-id)
+- System/Backup (135 LOC, src/Sonarr.Api.V5/System/Backup/) — separate sub-controller, 4 endpoints
+- Profiles/Quality/QualityProfileController (88 LOC) + QualityProfileSchemaController (28 LOC) — 2 sub-controllers
+- Profiles/Release/ReleaseProfileController (95 LOC)
+- Settings/* (UpdateSettingsController 24, IndexerSettings 30, UiSettings 31, Settings 55, MediaManagementSettings 70, GeneralSettings 114, NamingSettings 143) — multi-family
+- Episodes/EpisodeController (85 LOC) + RenameEpisodeController (48 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
+- Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC) — Queue itself (410 LOC) is deferred
+- Release/ReleasePushController (120 LOC) — main Release (343 LOC) deferred
+
+Next tick will pick from the System/Tasks (smallest) or Profiles/Quality (next-tier family).

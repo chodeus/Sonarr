@@ -34,6 +34,7 @@ import (
 	localizationv5 "sonarr.tv/sonarr/internal/api/v5/localization"
 	logv5 "sonarr.tv/sonarr/internal/api/v5/log"
 	manualimportv5 "sonarr.tv/sonarr/internal/api/v5/manualimport"
+	systemv5 "sonarr.tv/sonarr/internal/api/v5/system"
 	tagv5 "sonarr.tv/sonarr/internal/api/v5/tag"
 	wantedv5 "sonarr.tv/sonarr/internal/api/v5/wanted"
 	"sonarr.tv/sonarr/internal/auth"
@@ -1455,6 +1456,21 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/log/file/update", Handler: logv5.UpdateFileListHandler(logFileSvc)},
 		{Method: "GET", Path: "/api/v5/log/file/update/{filename}", Handler: logv5.UpdateFileByNameHandler(logFileSvc)},
 		{Method: "GET", Path: "/api/v5/log/file/{filename}", Handler: logv5.FileByNameHandler(logFileSvc)},
+		// J274 — v5 System endpoint family (5 endpoints; 169 LOC C#).
+		// SystemResource diverges: v5 omits `isContainerized` and adds
+		// 3 deployment-info fields (`packageVersion`, `packageAuthor`,
+		// `packageUpdateMechanismMessage`). v3 Go-port doesn't wire
+		// IDeploymentInfoProvider yet — the 3 added fields emit as
+		// empty strings (Wave 1 deferred-fields chain). GET
+		// /routes/duplicate emits `{}` (v5 schema) vs v3's `[]`. GET
+		// /routes is a v3-port gap — v5 emits empty text/plain (J266
+		// pattern: close the v5 wire only). Shutdown + restart are
+		// pure path-aliases.
+		{Method: "GET", Path: "/api/v5/system/status", Handler: systemv5.StatusHandler(systemv5.StatusContext{V3: systemStatus}, cfg)},
+		{Method: "GET", Path: "/api/v5/system/routes", Handler: systemv5.RoutesHandler()},
+		{Method: "GET", Path: "/api/v5/system/routes/duplicate", Handler: systemv5.RoutesDuplicateHandler()},
+		{Method: "POST", Path: "/api/v5/system/shutdown", Handler: systemv5.ShutdownHandler(lifecycleSvc)},
+		{Method: "POST", Path: "/api/v5/system/restart", Handler: systemv5.RestartHandler(lifecycleSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
