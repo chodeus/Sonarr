@@ -12521,3 +12521,44 @@ The C# v5 implementation uses computed properties for stateChangeTime / sendUpda
 ### Next Wave 3 candidates ascending
 
 Logs (286). After Logs, the queued ascending list drains — next size-tier are the larger families (Series, EpisodeFiles, Queue, ImportList, AutoTagging, DelayProfile, ReleaseProfile, CustomFormat, etc.) which the loop contract instructs to defer.
+
+## Phase 5.J273 — Wave 3 twenty-second slice: v5 Logs family port (286 LOC C# source)
+
+Pure path-alias slice — drains the queued ascending Wave 3 list. v3 Go-port already exposes all 5 endpoints; v5 surface re-exports them via type + variable aliases.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :3526-3608 + :6752-6800):
+
+| endpoint                                  | v5 status  | v3 Go-port              | strategy   |
+|-------------------------------------------|------------|-------------------------|------------|
+| GET /api/v5/log                           | 200        | 200 + paged envelope    | alias      |
+| GET /api/v5/log/file                      | 200        | 200 + []LogFileResource | alias      |
+| GET /api/v5/log/file/{filename}           | 200/404    | 200 text/plain or 404   | alias      |
+| GET /api/v5/log/file/update               | 200        | 200 + []LogFileResource | alias      |
+| GET /api/v5/log/file/update/{filename}    | 200/404    | 200 text/plain or 404   | alias      |
+
+**Resource shapes**:
+
+- LogResource — v3 carries 8 fields (id, time, exception?, exceptionType?, level, logger, message, **method?**); v5 omits `method` (per `src/Sonarr.Api.V5/Logs/LogResource.cs` — 6 fields). Invisible at the empty-corpus level because v3 Go-port returns `records: []` (the log DB plumbing isn't ported per `internal/api/v3/log.go:8-12`). When the log-DB port lands, v5 Go-port will need a v5-specific Resource that omits `method` from the wire; until then both surfaces emit an empty page.
+- LogFileResource — IDENTICAL 5 fields (id, filename, lastWriteTime, contentsUrl, downloadUrl) between v3 and v5. Both versions reuse the same LogFileControllerBase pattern (per `LogFileControllerBase.cs:30-52`) so the per-file projection is byte-equal.
+
+**SortKey rewrite** (GET /log): v5 controller stores `id` internally for the SQL query but rewrites the response SortKey to `time` so the React UI sees the user-facing key (per `LogController.cs:39-42` + `:73`). The v3 Go-port handler at `internal/api/v3/log.go:36-38` does the same rewrite. Path-alias preserves the behaviour. Test `TestLogHandler_EmptyCorpus_Returns200PagedEmpty` pins both `records:[]` and `sortKey:"time"`.
+
+**`level` query-param cascade filter** (fatal → error → warn → info → debug → trace, each enabling everything above): v5 implements it per `LogController.cs:46-69`. v3 Go-port handler ignores the filter (always returns empty page) — invisible at empty-corpus. When log-DB lands, both versions widen.
+
+**Path-traversal regex guard**: both v3 and v5 enforce `^[-.a-zA-Z0-9]+\.txt$` on the `{filename}` path-value. Tested via `TestFileByNameHandler_InvalidFilename_Returns400` (asserts a `../etc/passwd` filename returns 400).
+
+**Slice scope** — 228 lines (103 source + 125 test) + 1 import + 5 routes:
+
+- New `internal/api/v5/log/log.go` (103 LOC) — 4 type aliases (Resource = apiv3.LogResource, FileResource, FileLister, UpdateFileLister) + 5 variable aliases (LogHandler, FileListHandler, FileByNameHandler, UpdateFileListHandler, UpdateFileByNameHandler). NO new handler code — pure re-export.
+- New `internal/api/v5/log/log_test.go` (125 LOC) — 7 tests: Log-empty-corpus-200-paged-empty (pins `records:[]` + sortKey-rewritten-to-time), FileList-nonexistent-folder-empty-array, FileByName-missing-404, FileByName-invalid-filename-400 (path-traversal regex guard), UpdateFileList-nonexistent-folder-empty-array, variable-aliases non-nil, type-aliases compile-time pin.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`logv5`) + 5 new routes alongside the existing /api/v3/log routes. Re-uses logFileSvc which satisfies both FileLister and UpdateFileLister via duck-typing (production logFileLister snapshots both LogFolder + UpdateLogFolder at boot).
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/log/...` ✓; `go test -race -count=1 ./internal/api/v5/log/...` ✓ (7 tests, 1.6s).
+
+**v5 surface coverage**: 25/~50 → 26/~50.
+
+**Queued ascending Wave 3 list DRAINED.** All families ≤286 LOC are now ported. Remaining families (Series, EpisodeFiles, Queue, ImportList, AutoTagging, DelayProfile, ReleaseProfile, CustomFormat, QualityProfile, NamingConfig, ImportList-related, etc.) are intentionally larger and the loop contract instructs to defer them. Next tick will need to either: (a) survey the remaining v5 endpoint families to pick the next-smallest, (b) advance to Wave 4 (v3 endpoint-gap audit), or (c) emit a "wave drained" signal pending user direction.
+
+### Next slice strategy decision
+
+Per the loop contract: "Defer truly large families (Series, EpisodeFiles, Queue)" — leaves the medium-tier families (ImportList, AutoTagging, DelayProfile, ReleaseProfile, NamingConfig, QualityProfile, CustomFormat, etc.) as the next-candidate set. Per-tick survey will pick the smallest of those for J274.

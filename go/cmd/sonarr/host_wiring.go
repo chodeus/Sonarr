@@ -32,6 +32,7 @@ import (
 	historyv5 "sonarr.tv/sonarr/internal/api/v5/history"
 	indexerv5 "sonarr.tv/sonarr/internal/api/v5/indexer"
 	localizationv5 "sonarr.tv/sonarr/internal/api/v5/localization"
+	logv5 "sonarr.tv/sonarr/internal/api/v5/log"
 	manualimportv5 "sonarr.tv/sonarr/internal/api/v5/manualimport"
 	tagv5 "sonarr.tv/sonarr/internal/api/v5/tag"
 	wantedv5 "sonarr.tv/sonarr/internal/api/v5/wanted"
@@ -1443,6 +1444,17 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/command/{id}", Handler: commandv5.ByIDHandler(cmdSvc)},
 		{Method: "POST", Path: "/api/v5/command", Handler: commandv5.CreateHandler(cmdSvc, cmdRegistry)},
 		{Method: "DELETE", Path: "/api/v5/command/{id}", Handler: commandv5.DeleteHandler(cmdSvc)},
+		// J273 — v5 Log endpoint family (5 endpoints; 286 LOC C#).
+		// Pure path-alias at empty-corpus level. All endpoints GET, all
+		// 200. v3 Go-port already exposes all 5. LogResource v3 carries
+		// `method?` field which v5 omits — invisible at empty-corpus
+		// (v3 Go-port returns `records: []`; log DB plumbing deferred).
+		// LogFileResource identical 5-field shape between v3 and v5.
+		{Method: "GET", Path: "/api/v5/log", Handler: logv5.LogHandler()},
+		{Method: "GET", Path: "/api/v5/log/file", Handler: logv5.FileListHandler(logFileSvc)},
+		{Method: "GET", Path: "/api/v5/log/file/update", Handler: logv5.UpdateFileListHandler(logFileSvc)},
+		{Method: "GET", Path: "/api/v5/log/file/update/{filename}", Handler: logv5.UpdateFileByNameHandler(logFileSvc)},
+		{Method: "GET", Path: "/api/v5/log/file/{filename}", Handler: logv5.FileByNameHandler(logFileSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
