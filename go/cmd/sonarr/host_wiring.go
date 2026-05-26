@@ -12,6 +12,7 @@ import (
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	autotaggingv5 "sonarr.tv/sonarr/internal/api/v5/autotagging"
 	customformatv5 "sonarr.tv/sonarr/internal/api/v5/customformat"
+	diskspacev5 "sonarr.tv/sonarr/internal/api/v5/diskspace"
 	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
 	"sonarr.tv/sonarr/internal/auth"
@@ -1249,6 +1250,10 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "PUT", Path: "/api/v3/delayprofile/reorder/{id}", Handler: apiv3.DelayProfileReorderHandler(delayProfilesSvc)},
 		{Method: "DELETE", Path: "/api/v3/delayprofile/{id}", Handler: apiv3.DelayProfileDeleteHandler(delayProfilesSvc)},
 		{Method: "GET", Path: "/api/v3/diskspace", Handler: apiv3.DiskSpaceHandler(diskSpaceLister)},
+		// J251 — v5 DiskSpace endpoint family (Wave 3 first slice). Re-uses
+		// the v3 handler via diskspacev5.GetHandler (variable alias). Same
+		// wire shape; no v5-specific status-code tightening on this family.
+		{Method: "GET", Path: "/api/v5/diskspace", Handler: diskspacev5.GetHandler(diskSpaceLister)},
 		{Method: "GET", Path: "/api/v3/filesystem", Handler: apiv3.FileSystemHandler()},
 		{Method: "GET", Path: "/api/v3/filesystem/type", Handler: apiv3.FileSystemTypeHandler()},
 		{Method: "GET", Path: "/api/v3/filesystem/mediafiles", Handler: apiv3.FileSystemMediaFilesHandler()},

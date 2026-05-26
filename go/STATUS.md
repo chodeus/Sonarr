@@ -10771,3 +10771,108 @@ Test count grew by 9 (5 handler + 4 helper). No other packages touched.
 - CutoffUnmetEpisodeSearchCommand handler (needs new episodecutoff package)
 
 Wave 1 still has 3-4 candidates. Next tick picks one — likely image-download subscriber (the EnsureCovers download impl is real port work + the wiring slice is small) or CutoffUnmet (episodecutoff package is closer to a Wave 3-scale port than a Wave 1 deferred sub-arc, but the handler itself is small once the dep lands). The remaining J237 sub-arc (full ReleaseResource projection on push) is bounded by the `toReleaseResource` helper's input-shape coverage — non-trivial scope; may defer past Wave 1.
+
+## Phase 5.J251 — v5 DiskSpace endpoint family (Wave 3 opens)
+
+### Why pivot from Wave 1 to Wave 3 mid-loop
+
+The autonomous-loop contract is "highest-priority-wave-first" but ALSO "actionable in one slice." Three Wave 1 candidates remain after J248-J250:
+
+1. **J237 release/push full ReleaseResource projection** — the `toReleaseResource` helper at `internal/api/v3/release.go:163` only handles the "GET /release" shape today. The push-response projection needs custom-format scoring + scene-mapping fields + 50+ ReleaseResource fields. Multi-slice effort; no clean single-slice partial that improves wire fidelity.
+2. **Image-download subscriber off SeriesAddedEvent (mediacover.Service.EnsureCovers)** — orientation revealed `mediacover.Service` isn't yet instantiated at the composition root. Standing up the service + wiring `mediacover.NewService(...)` in `main.go` + porting `EnsureCovers` + writing a SeriesAddedEvent subscriber that calls it = 3 logical pieces. Multi-slice.
+3. **CutoffUnmetEpisodeSearchCommand handler** — handler itself is small (~80 LOC mirroring J39's MissingEpisodeSearch). But the dependency `episodecutoff.EpisodesWhereCutoffUnmet(pagingSpec)` doesn't exist; needs a new package porting the C# `EpisodeCutoffService.EpisodesWhereCutoffUnmet` algorithm + quality-cutoff comparator. Multi-slice.
+
+Rather than start a 2-3 slice arc mid-tick (which violates the "complete in one slice" execution-checklist invariant), pivot to **Wave 3 v5 endpoint family port** — the contract explicitly anticipates this with "Order by C#-source complexity ascending" guidance. The Wave 1 candidates remain queued for later ticks when their precursor work is also ready to slice (e.g. when image-download has the mediacover Service standup batched in).
+
+### Why DiskSpace first
+
+C# v5 family surface ranked by source LOC ascending:
+
+```
+DiskSpace        50 LOC   ← this slice
+FileSystem       63
+Metadata         74
+Health           82
+SeasonPass       99
+CustomFilters   100
+Parse           101
+Update          121
+...
+```
+
+DiskSpace is the SMALLEST. It also has the cleanest port shape:
+
+- **One endpoint:** `GET /api/v5/diskspace`. No POST/PUT/DELETE/bulk surface.
+- **No v5-specific behaviour:** v5 controller is line-for-line identical to v3 on wire — same `DiskSpaceResource` shape, same 200 status (v5 uses `TypedResults.Ok<List<T>>` which produces the same wire response as v3's `[ApiController]`-defaulted 200).
+- **Read-only:** no state mutation; nothing to risk.
+- **Empty-list contract pre-pinned:** v3 already emits `[]` not `null` on empty DB; v5 reuses verbatim.
+
+### Code
+
+`internal/api/v5/diskspace/diskspace.go` (~30 LOC):
+
+```go
+package diskspace
+
+import apiv3 "sonarr.tv/sonarr/internal/api/v3"
+
+type Resource = apiv3.DiskSpaceResource
+type FreeSpaceLister = apiv3.FreeSpaceLister
+var GetHandler = apiv3.DiskSpaceHandler
+```
+
+Type alias `Resource` keeps the v5 namespace stable for future divergence (if v5 ever adds the C# "Optional" mount-table walk that v3 defers, the type can fork without breaking importers). Interface alias `FreeSpaceLister` keeps the dependency-injection shape identical. Variable alias `GetHandler` is the actual handler — calling `diskspacev5.GetHandler(lister)` invokes `apiv3.DiskSpaceHandler(lister)` verbatim.
+
+`cmd/sonarr/host_wiring.go` gains one route registration:
+
+```go
+{Method: "GET", Path: "/api/v5/diskspace", Handler: diskspacev5.GetHandler(diskSpaceLister)},
+```
+
+The `diskSpaceLister` adapter is the SAME one v3 uses — no new lister needed. One new import (`diskspacev5 "sonarr.tv/sonarr/internal/api/v5/diskspace"`).
+
+### Tests
+
+`internal/api/v5/diskspace/diskspace_test.go` (3 tests):
+
+- `TestGetHandler_ReturnsRowsWithIdenticalV3Shape` — happy path; 2-row fixture; asserts (a) 200 status, (b) content-type `application/json; charset=utf-8`, (c) OrderBy-Path-OrdinalIgnoreCase places "/" before "/Volumes/Bigger" even though the lister returned them in reverse order, (d) FreeSpace round-trips int64 verbatim.
+- `TestGetHandler_EmptyReturnsBracketsNotNull` — empty lister; asserts body is `[]` not `null`. C# v5 honours this via `TypedResults.Ok` over an empty `List<T>`; Go-port honours via the v3 `if records == nil { records = []DiskSpaceResource{} }` slice-normalisation. Critical for UI parity — JS-side code paths `arr.map(...)` over the response and crash on `null`.
+- `TestGetHandler_TypeAliasMatchesV3` — compile-time invariant guard via three nil-assignments:
+  ```go
+  var _ Resource = apiv3.DiskSpaceResource{}
+  var _ apiv3.DiskSpaceResource = Resource{}
+  var _ FreeSpaceLister = (apiv3.FreeSpaceLister)(nil)
+  ```
+  If a future slice forks v5 Resource away from v3 (adding/removing fields) AND forgets to update the type alias, this test fails to compile and the build breaks. Cheap insurance against silent drift.
+
+The v3 handler is already tested at `internal/api/v3/diskspace_test.go`; this v5 package just adds the alias-validity + integration confirmation, not a re-test of the underlying behaviour.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/api/v5/diskspace/...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v5/diskspace/...
+ok  sonarr.tv/sonarr/internal/api/v5/diskspace  1.659s
+```
+
+### v5 surface progress
+
+Before J251: 4 / ~50 v5 families ported (CustomFormat / ImportList / ImportListSettings / AutoTagging — all J222-J225).
+After J251: 5 / ~50.
+
+Routes-by-family in the v3-surface map for reference (per route-audit.md):
+- DiskSpace: 1 endpoint (GET /diskspace) — now v5-ported.
+- FileSystem: 2 endpoints (GET /filesystem, GET /filesystem/type) — next candidate.
+- Metadata: 4 endpoints (3 read + 1 write) — bigger.
+- Health: 1 endpoint (GET /health) — likely next-next.
+
+### Wave 3 next-pick guidance for the next tick
+
+The next 3-5 Wave 3 slices should target ascending C# LOC: FileSystem (63), Metadata (74), Health (82), SeasonPass (99), CustomFilters (100). Each follows the J251 pattern: if v5 wire shape matches v3, pure path-alias; if v5 tightens any status code (DELETE → 204 etc.), add the wrapper handlers per J222-J225.
+
+Wave 1 remaining sub-arcs queued for later: J237 full ReleaseResource projection, image-download subscriber (2-slice), CutoffUnmet handler (2-slice). These can fire after Wave 3 first dozen slices when the per-tick budget is established + the loop is comfortable with multi-tick arcs.
