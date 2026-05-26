@@ -1385,7 +1385,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v3/queue/grab/bulk", Handler: apiv3.QueueGrabBulkHandler(pendingReleasesRepo, seriesSvc, processDownloadDecisions)},
 		{Method: "GET", Path: "/api/v3/release", Handler: apiv3.ReleaseHandler(indexerSearchSvc)},
 		// J237 / C.1.i-follow-5a: release POST (cache-lookup + dispatch) + Newznab push.
-		{Method: "POST", Path: "/api/v3/release", Handler: apiv3.ReleaseDownloadHandler(releaseCache, processDownloadDecisions)},
+		{Method: "POST", Path: "/api/v3/release", Handler: apiv3.ReleaseDownloadHandler(releaseCache, processDownloadDecisions, seriesSvc, episodesSvc)},
 		{Method: "POST", Path: "/api/v3/release/push", Handler: apiv3.ReleasePushHandler(downloadDecider, processDownloadDecisions, releaseCache)},
 		{Method: "GET", Path: "/api/v3/releaseprofile", Handler: apiv3.ReleaseProfileHandler(releaseProfilesSvc)},
 		{Method: "GET", Path: "/api/v3/rename", Handler: apiv3.RenameHandler()},

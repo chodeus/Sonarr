@@ -10545,3 +10545,115 @@ The race-check on the Windows-specific tests would require a real Windows host (
 Wave 1 candidates remaining: J237 release-POST sub-arcs (3 items), EpisodeRefreshedService re-search consumer, image-download subscriber, CutoffUnmetEpisodeSearchCommand handler. Plus any new deferred items captured during in-progress work.
 
 Next tick: pick next Wave 1 candidate (likely EpisodeRefreshedService re-search consumer — small, well-scoped, captures-the-J207-flag).
+
+## Phase 5.J249 — J237 ShouldOverride Subject mutation (Wave 1 deferred sub-arc)
+
+### Why
+
+The J237 release-POST port landed `POST /api/v3/release` end-to-end for the common case — cache lookup, dispatch via ProcessDecisions, return body verbatim. But the `ShouldOverride=true` branch was stubbed with a doc-comment deferral:
+
+> The C# `ShouldOverride==true` arm mutates the cached RemoteEpisode (clones, sets Series/Episodes/Quality/Languages from the request body). DEFERRED in this port — Subject mutation requires series.Service.Get + episodes.Service.Get + json-deserialise Quality/Languages, none of which the cache itself carries the deps for. Documented in AUDIT_FIX_BACKLOG.md as a follow-up sub-row to C.1.i-follow-5a. Without override, the dispatch uses the original cached Subject which is the common case (user clicked "Download" without manually overriding series/episode/quality).
+
+ShouldOverride is the Sonarr manual-override UI flow: when the user clicks "Download" on a release row, the standard path uses the parser-inferred series + episodes + quality. ShouldOverride covers the case where the user manually picked a different series (e.g. the parser mismatched), a different episode set (e.g. multi-episode release that the parser split incorrectly), or a different quality (e.g. the user knows the release is actually HDTV-1080p despite the title saying SDTV). Without this branch, the operator's manual overrides silently get ignored — the dispatch uses the original cached Subject regardless.
+
+### Design
+
+Two new narrow interfaces on the `internal/api/v3` package:
+
+```go
+type ReleaseOverrideSeriesLookup interface {
+    GetSeries(ctx context.Context, id int) (*series.Series, error)
+}
+
+type ReleaseOverrideEpisodeLookup interface {
+    GetEpisodes(ctx context.Context, ids []int) ([]episodes.Episode, error)
+}
+```
+
+Both satisfied via Go structural typing by `*series.Service` and `*episodes.Service` respectively — no host_wiring.go adapter needed. Nil-tolerant: when the handler receives `ShouldOverride=true` AND either lookup is nil, the override branch returns 503 (the operator's UI sent an override but the server isn't wired to honour it).
+
+The handler signature grew from `(cache, dispatcher)` to `(cache, dispatcher, seriesLookup, episodeLookup)`. The two pre-existing call sites at host_wiring.go pass `seriesSvc` + `episodesSvc` (the services already in scope; no buildHostServer signature churn).
+
+The override logic lives in a new helper `applyShouldOverride(ctx, body, cached, seriesLookup, episodeLookup)` returning `(decisionengine.Decision, status int, msg string, vfails []httperr.Failure)` — the multi-return shape lets the handler emit the right response type per outcome (validation envelope for missing fields, error envelope for deps/decode failures, modified decision for success). Sequence inside the helper:
+
+1. **Validate required body fields** matching C# `Ensure.That` chain at `:86-90`: SeriesId > 0, EpisodeIds non-empty, Quality non-empty, Languages non-empty. Validation envelope shape matches J233 policy.
+2. **Check lookup deps**: both must be non-nil. Else 503.
+3. **Look up series + episodes** via the interfaces. Either erroring → 500.
+4. **Decode Quality** (json.RawMessage → quality.Model). The quality.Model type carries its own MarshalJSON / UnmarshalJSON for the persisted `{quality: <id>, revision: {...}}` shape, so json.Unmarshal Just Works.
+5. **Decode Languages** (json.RawMessage → []language.Language). Similar.
+6. **Type-assert cached Subject** to `*decisionengine.Subject`. The cache stores `decisionengine.Decision` whose `Subject any` field carries the concrete Subject pointer. If the assertion fails (shouldn't happen — every cache insertion uses this type), 500.
+7. **Shallow-clone Subject + nested ParsedEpisodeInfo.** This is the critical correctness point: the cached entry is shared in-memory across concurrent /api/v3/release requests AND the background search-cache populator. Mutating the cached Subject in place would (a) corrupt other in-flight users of the same release and (b) make the override stick across cache TTL, defeating the "override is per-request" semantic.
+8. **Override** .Series / .Episodes / .ParsedEpisodeInfo.Quality / .Languages on the clone.
+9. **Build the overridden Decision** by copying the cached Decision value + swapping Subject to the clone. Dispatch.
+
+The fields preserved verbatim from the cached Subject match the explicit enumeration in C# `ReleaseController.cs:94-104`'s `new RemoteEpisode { Release = ..., ParsedEpisodeInfo = ..., SceneMapping = ..., MappedSeasonNumber = ..., EpisodeRequested = ..., DownloadAllowed = ..., SeedConfiguration = ..., CustomFormats = ..., CustomFormatScore = ..., SeriesMatchType = ..., ReleaseSource = ... }` clone. The Go Subject struct has all these fields plus the four override targets; the shallow-copy via `cloned := *origSubj` carries them along automatically.
+
+### The shallow-clone correctness invariant
+
+The cached `decisionengine.Decision` is shared. `cache.Get(key)` returns the same Decision value every call until TTL expires. The Decision's `Subject any` field holds a pointer to a `decisionengine.Subject` struct that ALSO lives in cache memory. Mutating that Subject in place would mutate every concurrent reader's view.
+
+The C# clone (`new RemoteEpisode { ... }`) creates a new struct and field-copies. Go's equivalent: `cloned := *origSubj` shallow-copies the struct fields (scalars copied, slice headers copied, pointer fields copied — but the *pointee* is shared).
+
+For the override:
+
+- `.Series` field is `*series.Series`. We overwrite the POINTER on the clone — the cached Subject's pointer is unaffected.
+- `.Episodes` field is `[]episodes.Episode` (slice of values). We overwrite the slice header on the clone — the cached Subject's slice header is unaffected.
+- `.Languages` field is `[]language.Language`. Same.
+- `.ParsedEpisodeInfo` field is `*parser.ParsedEpisodeInfo`. We need to mutate the Quality field on it — but the pointer copied to the clone points at the SHARED cached ParsedEpisodeInfo. So we must shallow-clone the ParsedEpisodeInfo struct too (`parsedClone := *origSubj.ParsedEpisodeInfo`) before mutating .Quality, then point the clone at parsedClone.
+
+The TestReleaseDownloadHandler_OverrideHappyPath_OverridesSubjectAndDispatches test pins this with a direct pointer assertion at the end:
+
+```go
+if subj.ParsedEpisodeInfo == origParsed {
+    t.Errorf("override mutated the cached ParsedEpisodeInfo in place; expected a shallow clone")
+}
+```
+
+Without this invariant the override silently becomes a stuck cache mutation; the test catches that regression.
+
+### Tests
+
+5 existing tests in `release_write_test.go` updated to pass `nil, nil` for the two new lookup params — none of them exercise override behaviour so the nil deps are correct. 4 new tests on the override path:
+
+- **TestReleaseDownloadHandler_OverrideHappyPath_OverridesSubjectAndDispatches** — cached Subject has series id=1 + episodes [{99}] + parsed quality SDTV; override body has seriesId=42, episodeIds=[10,11], quality=HDTV-1080p (any registry id round-trips through the unmarshal), languages=[{ID:1}]; asserts (a) seriesLookup called with id=42; (b) episodeLookup called with [10,11]; (c) dispatched Subject has overridden Series/Episodes/Languages/Quality; (d) cached ParsedEpisodeInfo pointer NOT mutated.
+- **TestReleaseDownloadHandler_OverrideMissingRequiredFields_400Validation** — table-driven over SeriesId / EpisodeIds / Quality / Languages absence; asserts 400 + validation envelope names the missing field per C# `Ensure.That` chain.
+- **TestReleaseDownloadHandler_OverrideWithNilDeps_503** — handler given nil for both lookups; override body sent; expects 503 + zero dispatch calls.
+- **TestReleaseDownloadHandler_OverrideWithLookupError_500** — seriesLookup returns an error; expects 500 + zero dispatch calls.
+
+The tests build the cache state manually via `decisionengine.NewDecision(&decisionengine.Subject{...})` and inject the override body as raw JSON. The fakeOverrideSeriesLookup + fakeOverrideEpisodeLookup record the call arguments so the test can assert "the handler did look up exactly what the body asked for."
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v3/
+ok  sonarr.tv/sonarr/internal/api/v3  1.919s
+```
+
+The v3 package test count grew by 4. No other packages touched.
+
+### Two J237 sub-arcs remain
+
+The J237 close-time docstring listed three deferred items. J249 closes one of them. Remaining:
+
+1. **Indexer/downloadclient name→id resolve on /release/push.** The push handler currently builds the synthetic ReleaseInfo using the body's IndexerID/IndexerName verbatim. C# `ReleasePushController.cs:60-65` looks up the indexer by name (when the body provides a name but not an id) and similarly for the download client. Smallest of the three remaining; needs an indexersRepo.FindByName + downloadclientsRepo.FindByName helper or similar.
+2. **Full ReleaseResource projection on /release/push response.** The push handler currently returns a stripped-down view. C# returns `MapDecisions(new[] { decision })` which produces the full ReleaseResource shape — same as GET /release. Needs the `toReleaseResource` mapper helper at internal/api/v3/release.go to accept a Decision input.
+
+Both are Wave 1 candidates per the loop contract. Will fire as future slices.
+
+### Wave 1 progress
+
+- [CLOSED J248] Windows getActualCasing impl
+- **[CLOSED J249] J237 ShouldOverride Subject mutation**
+- J237 indexer/dc name→id resolve on /release/push (deferred)
+- J237 full ReleaseResource projection on /release/push (deferred)
+- EpisodeRefreshedService re-search consumer (closed at J209-J211; contract was stale)
+- Image-download subscriber off SeriesAddedEvent (mediacover.Service.EnsureCovers — needs new download impl)
+- CutoffUnmetEpisodeSearchCommand handler (needs new episodecutoff infrastructure)
+
+Wave 1 still has 4-5 candidates. Next tick picks one — likely J237 indexer/dc name→id (smallest) or image-download subscriber if the cover-download HTTP plumbing is closer than expected.

@@ -10,10 +10,14 @@ import (
 
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/download"
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/parser"
+	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/releasecache"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 // ReleaseDispatcher is the narrow dispatch interface for both write
@@ -22,6 +26,29 @@ import (
 // without one's interface changing forcing the other to update.
 type ReleaseDispatcher interface {
 	ProcessDecisions(ctx context.Context, decisions []decisionengine.Decision) *download.ProcessedDecisions
+}
+
+// ReleaseOverrideSeriesLookup is the narrow series-by-id lookup the
+// ShouldOverride=true branch uses to swap Subject.Series. Satisfied
+// by *series.Service via Go structural typing — no host_wiring.go
+// adapter needed. Nil-tolerant from the handler's perspective: when
+// nil AND the request has ShouldOverride=true the handler returns
+// a 4xx (the operator's UI sent an override but the server isn't
+// wired to honour it).
+//
+// J249.
+type ReleaseOverrideSeriesLookup interface {
+	GetSeries(ctx context.Context, id int) (*series.Series, error)
+}
+
+// ReleaseOverrideEpisodeLookup is the narrow episodes-by-ids lookup
+// the ShouldOverride=true branch uses to swap Subject.Episodes.
+// Satisfied by *episodes.Service via Go structural typing.
+// Nil-tolerant: same posture as ReleaseOverrideSeriesLookup above.
+//
+// J249.
+type ReleaseOverrideEpisodeLookup interface {
+	GetEpisodes(ctx context.Context, ids []int) ([]episodes.Episode, error)
 }
 
 // ReleaseDecisionMaker is the narrow decision-engine interface for
@@ -106,7 +133,12 @@ type ReleaseDownloadBody struct {
 //  4. Return the same body back to the caller (matches C# `return release`).
 //
 // Audit row C.1.i-follow-5a (J237). Override-branch port deferred.
-func ReleaseDownloadHandler(cache *releasecache.Cache, dispatcher ReleaseDispatcher) http.Handler {
+func ReleaseDownloadHandler(
+	cache *releasecache.Cache,
+	dispatcher ReleaseDispatcher,
+	seriesLookup ReleaseOverrideSeriesLookup,
+	episodeLookup ReleaseOverrideEpisodeLookup,
+) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body ReleaseDownloadBody
 		dec := json.NewDecoder(r.Body)
@@ -133,16 +165,23 @@ func ReleaseDownloadHandler(cache *releasecache.Cache, dispatcher ReleaseDispatc
 			httperr.NotFound(w, "Couldn't find requested release in cache, try searching again")
 			return
 		}
-		// The C# `ShouldOverride==true` arm mutates the cached
-		// RemoteEpisode (clones, sets Series/Episodes/Quality/Languages
-		// from the request body). DEFERRED in this port — Subject
-		// mutation requires series.Service.Get + episodes.Service.Get
-		// + json-deserialise Quality/Languages, none of which the
-		// cache itself carries the deps for. Documented in
-		// AUDIT_FIX_BACKLOG.md as a follow-up sub-row to C.1.i-follow-5a.
-		// Without override, the dispatch uses the original cached
-		// Subject which is the common case (user clicked "Download"
-		// without manually overriding series/episode/quality).
+
+		// J249 — ShouldOverride=true arm: clone the cached Subject
+		// + override Series / Episodes / Quality / Languages from
+		// the request body. Mirrors C# `ReleaseController.cs:84-110`.
+		if body.ShouldOverride {
+			overridden, status, msg, vfails := applyShouldOverride(r.Context(), &body, decision, seriesLookup, episodeLookup)
+			if len(vfails) > 0 {
+				httperr.WriteValidation(w, vfails)
+				return
+			}
+			if status != 0 {
+				httperr.Write(w, status, msg, "", nil)
+				return
+			}
+			decision = overridden
+		}
+
 		_ = dispatcher.ProcessDecisions(r.Context(), []decisionengine.Decision{decision})
 		// C# returns the request body back verbatim. Match.
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -150,6 +189,108 @@ func ReleaseDownloadHandler(cache *releasecache.Cache, dispatcher ReleaseDispatc
 		buf, _ := json.Marshal(body)
 		_, _ = w.Write(buf)
 	})
+}
+
+// applyShouldOverride builds the override-mutated Decision when the
+// caller set body.ShouldOverride=true. Returns:
+//
+//   - overridden (Decision, nil-zero-value-on-error): the cached
+//     Decision with a shallow-cloned Subject whose Series / Episodes /
+//     ParsedEpisodeInfo.Quality / Languages have been swapped per the
+//     body. The Release / SceneMapping / MappedSeasonNumber / other
+//     decision-engine-computed fields are preserved verbatim from the
+//     cache (matches C# `:93-104` — the C# clone enumerates exactly
+//     these fields).
+//   - status, msg: when non-zero, the handler should write that as the
+//     HTTP response. Used for the deps-not-wired (503) and lookup-
+//     error (500) cases.
+//   - vfails: per-field validation failures when the override body
+//     is incomplete (C# `:86-90 Ensure.That` chain).
+//
+// Mirrors C# `ReleaseController.cs:84-110`. The fields preserved
+// verbatim from the cached Subject are listed inline in the C# clone
+// expression at `:94-104`; the Go port's `decisionengine.Subject`
+// covers the same shape with `Release / SceneMapping /
+// MappedSeasonNumber / EpisodeRequested / DownloadAllowed /
+// SeedConfiguration / CustomFormats / CustomFormatScore /
+// SeriesMatchType / ReleaseSource` plus the overridden Series /
+// Episodes / ParsedEpisodeInfo.Quality / Languages.
+//
+// J249.
+func applyShouldOverride(
+	ctx context.Context,
+	body *ReleaseDownloadBody,
+	cached decisionengine.Decision,
+	seriesLookup ReleaseOverrideSeriesLookup,
+	episodeLookup ReleaseOverrideEpisodeLookup,
+) (decisionengine.Decision, int, string, []httperr.Failure) {
+	// Validation matching C# `:86-90` Ensure.That chain.
+	var vfails []httperr.Failure
+	if body.SeriesID <= 0 {
+		vfails = append(vfails, httperr.Failure{PropertyName: "SeriesId", ErrorMessage: "'Series Id' must not be empty.", Severity: "error"})
+	}
+	if len(body.EpisodeIDs) == 0 {
+		vfails = append(vfails, httperr.Failure{PropertyName: "EpisodeIds", ErrorMessage: "'Episode Ids' must not be empty.", Severity: "error"})
+	}
+	if len(body.Quality) == 0 || string(body.Quality) == "null" {
+		vfails = append(vfails, httperr.Failure{PropertyName: "Quality", ErrorMessage: "'Quality' must not be empty.", Severity: "error"})
+	}
+	if len(body.Languages) == 0 || string(body.Languages) == "null" {
+		vfails = append(vfails, httperr.Failure{PropertyName: "Languages", ErrorMessage: "'Languages' must not be empty.", Severity: "error"})
+	}
+	if len(vfails) > 0 {
+		return decisionengine.Decision{}, 0, "", vfails
+	}
+
+	if seriesLookup == nil || episodeLookup == nil {
+		return decisionengine.Decision{}, http.StatusServiceUnavailable, "release override: series/episodes lookup not wired", nil
+	}
+
+	srs, err := seriesLookup.GetSeries(ctx, body.SeriesID)
+	if err != nil {
+		return decisionengine.Decision{}, http.StatusInternalServerError, fmt.Sprintf("release override: series lookup: %v", err), nil
+	}
+	eps, err := episodeLookup.GetEpisodes(ctx, body.EpisodeIDs)
+	if err != nil {
+		return decisionengine.Decision{}, http.StatusInternalServerError, fmt.Sprintf("release override: episodes lookup: %v", err), nil
+	}
+
+	// Decode quality + languages from body raw JSON.
+	var q quality.Model
+	if err := json.Unmarshal(body.Quality, &q); err != nil {
+		return decisionengine.Decision{}, http.StatusBadRequest, fmt.Sprintf("release override: quality decode: %v", err), nil
+	}
+	var langs []language.Language
+	if err := json.Unmarshal(body.Languages, &langs); err != nil {
+		return decisionengine.Decision{}, http.StatusBadRequest, fmt.Sprintf("release override: languages decode: %v", err), nil
+	}
+
+	// Shallow-clone the Subject (matches C# `:94-104` "new RemoteEpisode { ... }").
+	// The cached Subject is a `*decisionengine.Subject`; type-assert + dereference
+	// to copy the underlying struct.
+	origSubj, ok := cached.Subject.(*decisionengine.Subject)
+	if !ok || origSubj == nil {
+		return decisionengine.Decision{}, http.StatusInternalServerError, "release override: cached subject shape unexpected", nil
+	}
+	cloned := *origSubj
+	// ParsedEpisodeInfo is referenced by pointer in Subject; the C#
+	// `JsonClone()` call at `:96` deep-clones it before we mutate
+	// .Quality. We need an equivalent shallow-of-the-struct clone so
+	// the original cached ParsedEpisodeInfo isn't mutated.
+	if origSubj.ParsedEpisodeInfo != nil {
+		parsedClone := *origSubj.ParsedEpisodeInfo
+		parsedClone.Quality = q
+		cloned.ParsedEpisodeInfo = &parsedClone
+	}
+	cloned.Series = srs
+	cloned.Episodes = eps
+	cloned.Languages = langs
+
+	// Build the overridden Decision. Decision struct itself is
+	// value-typed; copy + swap Subject.
+	out := cached
+	out.Subject = &cloned
+	return out, 0, "", nil
 }
 
 // ReleasePushHandler returns POST /api/v3/release/push.
