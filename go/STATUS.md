@@ -10967,3 +10967,102 @@ Next Wave 3 candidates by ascending LOC:
 - CustomFilters (100), Parse (101), Update (121), and on.
 
 Wave 1 deferred sub-arcs and Wave 2 SignalR mop-up items remain queued for ticks where their precursor work batches into a single-slice scope (or for explicit user redirect).
+
+## Phase 5.J253 — v5 Metadata provider family (Wave 3)
+
+### What
+
+`internal/api/v5/metadata/` package + 9 new routes at `/api/v5/metadata*`. Third Wave 3 slice (after J251 DiskSpace + J252 FileSystem).
+
+### Why this family was bigger than the prior two Wave 3 slices
+
+J251 and J252 were pure path-alias slices — the v5 controllers' wire shapes were byte-equivalent to v3, so a couple of type aliases + variable aliases sufficed. J253 introduces two new complexity sources:
+
+1. **C# `[NonAction]` overrides.** The v5 `MetadataController` explicitly disables the inherited bulk PUT + bulk DELETE methods:
+
+   ```csharp
+   [NonAction]
+   public override Results<...> UpdateProvider([FromBody] MetadataBulkResource providerResource) {
+       throw new NotImplementedException();
+   }
+
+   [NonAction]
+   public override NoContent DeleteProviders([FromBody] MetadataBulkResource resource) {
+       throw new NotImplementedException();
+   }
+   ```
+
+   `[NonAction]` removes a method from the controller's route table — these endpoints don't exist in v5. So the v5 surface is 9 endpoints (not the 11 v3 has). Operator semantic: v5/metadata callers MUST iterate ids client-side; there's no server-side bulk for this family. (CustomFormat / ImportList / AutoTagging keep the bulk endpoints — the carve-out is metadata-specific because the Tags-apply machinery is a structural no-op for this family per the J222-era port note in `metadata.go:207-225`.)
+
+2. **v5 status-code tightening on two endpoints.** v3 metadata DELETE/{id} and POST /test both emit 200 + `{}` body; v5 emits 204 NoContent with empty body. This is the standard `TypedResults.NoContent()` vs `[ApiController]` 200-default divergence per the provider-base class.
+
+### Endpoint map
+
+| v5 endpoint                          | Status | Handler source                                     |
+| ------------------------------------ | ------ | -------------------------------------------------- |
+| GET    /api/v5/metadata              | 200    | `metadatav5.ListHandler` = `apiv3.MetadataListHandler`      |
+| GET    /api/v5/metadata/{id}         | 200    | `metadatav5.ByIDHandler` = `apiv3.MetadataByIDHandler`      |
+| GET    /api/v5/metadata/schema       | 200    | `metadatav5.SchemaHandler` = `apiv3.MetadataSchemaHandler`  |
+| POST   /api/v5/metadata              | 201    | `metadatav5.CreateHandler` = `apiv3.MetadataCreateHandler`  |
+| PUT    /api/v5/metadata/{id}         | 202    | `metadatav5.UpdateHandler` = `apiv3.MetadataUpdateHandler` (v3 already emits 202 — no wrapper needed) |
+| **DELETE /api/v5/metadata/{id}**     | **204**| **`metadatav5.DeleteHandler`** = `rewriteSuccessTo204(apiv3.MetadataDeleteHandler)` |
+| **POST   /api/v5/metadata/test**     | **204**| **`metadatav5.TestHandler`** = `rewriteSuccessTo204(apiv3.MetadataTestHandler)` |
+| POST   /api/v5/metadata/testall      | 200/400| `metadatav5.TestAllHandler` = `apiv3.MetadataTestAllHandler`|
+| POST   /api/v5/metadata/action/{name}| 200/400| `metadatav5.RequestActionHandler` = `apiv3.MetadataRequestActionHandler` |
+| ~~PUT /api/v5/metadata/bulk~~        | N/A    | **`[NonAction]` — NOT routed**                     |
+| ~~DELETE /api/v5/metadata/bulk~~     | N/A    | **`[NonAction]` — NOT routed**                     |
+
+### The rewriteSuccessTo204 wrapper
+
+Same shape as J223's ImportList port. The wrapper runs the v3 handler against an in-memory `bufferingWriter`, inspects the buffered response, and:
+
+- On status==200 AND body==`{}` (the v3 happy-path shape): strip Content-Type, emit 204 + empty body.
+- On any other status (400 / 404 / 500) or non-`{}` body: pass through verbatim.
+
+This preserves v3's full happy + error-path semantics (SignalR Deleted broadcast, idempotent missing-id handling per J232, validation envelope shape) while only altering the on-wire status code for the 200-`{}` case that v5 wants to demote.
+
+### Why duplicate the wrapper instead of extracting it?
+
+J223 (ImportList) keeps its `bufferingWriter` + `rewriteSuccessTo204` + `copyHeaders`/`copyHeadersExcept` package-private. J253 duplicates the same ~50 LOC of middleware. The duplication is intentional — extracting now would require designing a shared `v5util` package upfront without knowing how the next 5-10 v5 families' edge cases shape the surface. Three duplications IS enough signal for the consolidation slice, but four is the natural trigger (the J243-pattern threshold). Currently:
+
+- J223 ImportList — has the helpers (4 callsites: Delete, Test, BulkDelete + bulk handler internals).
+- J253 Metadata — has the helpers (2 callsites: Delete + Test).
+- J222 CustomFormat — does NOT use the wrapper; writes fresh handlers per J225's pattern.
+- J225 AutoTagging — does NOT use the wrapper; writes fresh handlers.
+
+The next provider-family slice that wants the wrapper (likely Indexers, DownloadClients, Notifications under v5) should consolidate. A `v5util` package at `internal/api/v5/internal/v5util/` (Go-internal-scoped to v5/) is the natural home — STATUS pre-flagged in J243's slice for shared-helper consolidation patterns.
+
+### Tests (5)
+
+- `TestDeleteHandler_Success_Returns204EmptyBody` — happy path; asserts status=204, body empty, Content-Type stripped, SignalR Deleted broadcast fires exactly once.
+- `TestDeleteHandler_MissingID_Returns204Idempotent` — id=999 doesn't exist; J232 idempotency posture means v3 returns 200+`{}` swallowing the not-found; v5 wrapper demotes that to 204; SignalR Deleted must NOT fire (no actual delete happened). Pins both the wrapper invariant AND the J232 SignalR-gating invariant.
+- `TestTestHandler_Success_Returns204EmptyBody` — happy POST /test; tester returns no failures; v3 emits 200+`{}`; wrapper emits 204+empty.
+- `TestTestHandler_ValidationFailure_PassesThrough400` — tester returns failures; v3 emits 400 + validation envelope; wrapper MUST preserve verbatim (don't strip the envelope, don't demote to 204). This is the critical correctness assertion for the wrapper — if it accidentally rewrites 400-with-non-`{}`-body, we'd corrupt every error response.
+- `TestTypeAliasesMatchV3` — compile-time invariant guard.
+
+### Wiring
+
+`cmd/sonarr/host_wiring.go` gains 9 new routes + 1 import (`metadatav5`). The existing v3 metadata routes at lines 1353-1363 stay; v5 is an additive surface. The 2 bulk v5 routes are NOT wired — per the `[NonAction]`.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/api/v5/metadata/...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v5/metadata/...
+ok  sonarr.tv/sonarr/internal/api/v5/metadata  1.767s
+```
+
+### v5 surface progress
+
+6/~50 → 7/~50 families. Endpoints added this slice: 9 (vs 3 in J252, 1 in J251).
+
+Next Wave 3 candidates by ascending LOC: Health (82) — health-check read endpoints; SeasonPass (99) — POST with body; CustomFilters (100), Parse (101), Update (121), RemotePathMappings (122).
+
+### Subtle correctness note for future v5-family-port authors
+
+The first draft of `TestTestHandler_ValidationFailure_PassesThrough400` had `metadata.TestFailure{PropertyName: "Path", Message: "Not writable"}` — `Message` is the v3 wire field name on `httperr.Failure`, but the `metadata.TestFailure` Go struct field is `ErrorMessage` (the C# property name preserved). Vet caught it before tests ran. Future provider-family ports should grep `internal/<family>/*.go` for the actual TestFailure struct shape before writing test fixtures.

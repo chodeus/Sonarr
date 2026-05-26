@@ -16,6 +16,7 @@ import (
 	filesystemv5 "sonarr.tv/sonarr/internal/api/v5/filesystem"
 	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
+	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/backup"
@@ -1260,6 +1261,19 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/filesystem", Handler: filesystemv5.ListHandler()},
 		{Method: "GET", Path: "/api/v5/filesystem/type", Handler: filesystemv5.TypeHandler()},
 		{Method: "GET", Path: "/api/v5/filesystem/mediafiles", Handler: filesystemv5.MediaFilesHandler()},
+		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
+		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
+		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
+		// emit 204; other endpoints reuse v3 handlers verbatim.
+		{Method: "GET", Path: "/api/v5/metadata", Handler: metadatav5.ListHandler(metadataRepo)},
+		{Method: "GET", Path: "/api/v5/metadata/schema", Handler: metadatav5.SchemaHandler()},
+		{Method: "GET", Path: "/api/v5/metadata/{id}", Handler: metadatav5.ByIDHandler(metadataRepo)},
+		{Method: "POST", Path: "/api/v5/metadata", Handler: metadatav5.CreateHandler(metadataRepo, metadataEmitter)},
+		{Method: "POST", Path: "/api/v5/metadata/test", Handler: metadatav5.TestHandler(metadataTester)},
+		{Method: "POST", Path: "/api/v5/metadata/testall", Handler: metadatav5.TestAllHandler(metadataRepo, metadataTester)},
+		{Method: "POST", Path: "/api/v5/metadata/action/{name}", Handler: metadatav5.RequestActionHandler(metadataTester)},
+		{Method: "PUT", Path: "/api/v5/metadata/{id}", Handler: metadatav5.UpdateHandler(metadataRepo, metadataEmitter)},
+		{Method: "DELETE", Path: "/api/v5/metadata/{id}", Handler: metadatav5.DeleteHandler(metadataRepo, metadataEmitter)},
 		{Method: "GET", Path: "/api/v3/filesystem", Handler: apiv3.FileSystemHandler()},
 		{Method: "GET", Path: "/api/v3/filesystem/type", Handler: apiv3.FileSystemTypeHandler()},
 		{Method: "GET", Path: "/api/v3/filesystem/mediafiles", Handler: apiv3.FileSystemMediaFilesHandler()},
