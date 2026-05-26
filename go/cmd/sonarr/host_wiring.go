@@ -21,6 +21,7 @@ import (
 	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
+	updatev5 "sonarr.tv/sonarr/internal/api/v5/update"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/backup"
@@ -1285,6 +1286,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// v3 ONLY in the empty-input case — v3 emits literal `null`,
 		// v5 emits a ParseResource object with `title` field).
 		{Method: "GET", Path: "/api/v5/parse", Handler: parsev5.GetHandler()},
+		// J259 — v5 Update endpoint family (single GET; pure path-alias
+		// to v3 handler — same wire shape, same 200 status).
+		{Method: "GET", Path: "/api/v5/update", Handler: updatev5.GetHandler(emptyUpdateLister{})},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to

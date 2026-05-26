@@ -11669,3 +11669,63 @@ Both (1) and (2) need v5-specific handlers; the difference is whether the Resour
 ### Next Wave 3 candidates ascending
 
 Update (121), RemotePathMappings (122), Blocklist (127), RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143), Connections (154).
+
+## Phase 5.J259 — v5 Update family (Wave 3, path-alias)
+
+### What
+
+`internal/api/v5/update/` package + 1 new route at `/api/v5/update`. Eighth Wave 3 slice. Pure path-alias to v3 per the J251/J252 pattern — fastest possible Wave 3 slice shape.
+
+### Wire-shape diff vs v3
+
+None — the v5 `UpdateResource` schema in openapi.json matches v3 verbatim (12 fields: id, version, branch, releaseDate, fileName, url, installed, installedOn, installable, latest, changes, hash). The v5 controller (`UpdateController.cs:18-79`, 121 LOC) implements the same Latest/Installable/Installed flag computation + InstallDates merge that the v3 Go-port handler already does (and the v3 C# does too).
+
+The C# v5 controller carries logic to merge update-history install-dates when `_configFileProvider.LogDbEnabled` — this is C#-side DB-driven enrichment that the Go-port v3 handler doesn't yet implement (the `RecentUpdateProvider` port at `internal/update` doesn't have an install-history side-table). When the Go-port adds that, both v3 and v5 handlers pick up the enrichment automatically because they share the underlying handler.
+
+### Code
+
+```go
+type Resource = apiv3.UpdateResource
+type Changes = apiv3.UpdateChanges
+type Lister = apiv3.UpdateLister
+var GetHandler = apiv3.UpdateHandler
+```
+
+3 type aliases + 1 variable alias. The route wiring reuses `emptyUpdateLister{}` — the cmd/sonarr stub that satisfies `apiv3.UpdateLister` by returning an empty slice (the Go-port has no `RecentUpdateProvider` adapter yet; placeholder until the provider lands).
+
+### Tests (3)
+
+- `TestGetHandler_ReturnsRowsWithIdenticalV3Shape` — fixture with one Sonarr v5.0.0.1658 row + Latest/Installed flags; asserts 200, content-type, decoded shape.
+- `TestGetHandler_EmptyReturnsBracketsNotNull` — empty lister → exactly `[]`.
+- `TestTypeAliasesMatchV3` — compile-time invariant guard.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/api/v5/update/...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v5/update/...
+ok  sonarr.tv/sonarr/internal/api/v5/update  1.651s
+```
+
+### v5 surface progress
+
+11/~50 → 12/~50 families. Endpoints added: 1.
+
+### Slice budget observation
+
+J259 is the second pure-path-alias slice this loop run (after J252 FileSystem). Both completed in well under the typical slice budget — the J254 STATUS pattern-guide's first rule ("if body shape + status both match → path-alias") is the cheapest possible Wave 3 slice. Future v5 families that match this profile should complete just as fast.
+
+The slice cost ramps with each pattern complexity step:
+- Path-alias (J251/J252/J259): ~30-80 LOC + 3 tests
+- Status-wrapper (J253/J255/J257): ~50-100 LOC + 4-5 tests
+- Shape-divergence in branch (J258): ~80 LOC + 5 tests
+- Field-divergence with custom mapper (J254): ~110 LOC + 3 tests + reverse-lookup table (+~65 LOC for the Reason enum stringer)
+
+### Next Wave 3 candidates ascending
+
+RemotePathMappings (122), Blocklist (127), RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143), Connections (154), Calendar (184).
