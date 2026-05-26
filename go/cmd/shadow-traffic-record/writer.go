@@ -14,6 +14,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -224,7 +226,13 @@ func (w *LogWriter) drain(flushEvery time.Duration, syncOnClose bool) {
 // + a single representative value per key. Matches the sanitization
 // applied by both the recording proxy here and the replay binary's
 // dispatch, so captured-then-replayed traffic is internally consistent.
-func stripHopHeaders(h map[string][]string, dropAPIKeys bool) map[string]string {
+//
+// dropContentEncoding causes the Content-Encoding header to also be
+// removed; the recorder sets it when the body has been decompressed in
+// place (J244 — gzipped request body → decompressed JSON in log). The
+// captured Content-Encoding would otherwise lie about the now-plain
+// body bytes.
+func stripHopHeaders(h map[string][]string, dropAPIKeys, dropContentEncoding bool) map[string]string {
 	out := make(map[string]string, len(h))
 	for k, vs := range h {
 		if httputil.IsHopHeader(k) {
@@ -233,9 +241,57 @@ func stripHopHeaders(h map[string][]string, dropAPIKeys bool) map[string]string 
 		if dropAPIKeys && (strings.EqualFold(k, "X-Api-Key") || strings.EqualFold(k, "Authorization")) {
 			continue
 		}
+		if dropContentEncoding && strings.EqualFold(k, "Content-Encoding") {
+			continue
+		}
 		if len(vs) > 0 {
 			out[k] = vs[0]
 		}
 	}
 	return out
+}
+
+// maybeDecompressForLog returns (decompressed body, true) when the
+// supplied Content-Encoding indicates a supported compression and the
+// body decompresses cleanly; (original body, false) otherwise.
+//
+// The returned bool is the cue for callers to also strip the
+// Content-Encoding header from the logged Headers map — leaving it in
+// place would lie about the now-plain body bytes.
+//
+// Currently only gzip is decoded (the only encoding Sonarr's API ever
+// emits in practice — deflate/br aren't on the table). Malformed gzip
+// degrades to (original, false) so the recorder never panics on
+// adversarial input; the original (possibly garbage) bytes are stored
+// verbatim and the operator sees them as-is.
+//
+// Limit caps the input size to keep the decompression bomb surface
+// bounded — a 1KB gzip can expand to gigabytes. A reader bounded by
+// io.LimitReader is used; if the decompressed stream exceeds limit
+// the function returns (original, false) and the caller logs verbatim.
+// Pass 0 to disable the cap.
+func maybeDecompressForLog(body []byte, contentEncoding string, limit int64) ([]byte, bool) {
+	if !strings.EqualFold(contentEncoding, "gzip") {
+		return body, false
+	}
+	if len(body) == 0 {
+		return body, false
+	}
+	gr, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return body, false
+	}
+	defer func() { _ = gr.Close() }()
+	var src io.Reader = gr
+	if limit > 0 {
+		src = io.LimitReader(gr, limit+1)
+	}
+	out, err := io.ReadAll(src)
+	if err != nil {
+		return body, false
+	}
+	if limit > 0 && int64(len(out)) > limit {
+		return body, false
+	}
+	return out, true
 }

@@ -10084,3 +10084,76 @@ Phase 6 prep remaining slice candidates (per PROGRESS.md "Next candidates"):
 - (E) Cross-tool integration smoke test (`cmd/shadowtraffic-e2e/`, ~150 LOC).
 
 (B) is the natural next slice — small, well-scoped, real operator value (gzipped capture logs are currently opaque). (C)/(D) are docs work. (E) is more ambitious but proves the triad composes end-to-end.
+
+## Phase 5.J244 — gzip request body decompression on shadow-traffic-record
+
+### Why
+
+The Phase 6.1 recorder (J241) tees client requests into a JSONL log file for later replay or operator inspection. When the client (e.g. a curl script gzipping its payload to save bandwidth) sends `Content-Encoding: gzip`, the captured `Body` field in the log was the raw gzipped bytes. Replay round-trips this fine — it sends those same bytes back upstream with the same `Content-Encoding: gzip` header. But the operator opening the log file saw gzip garbage and couldn't tell what was actually posted. For a port-validation toolkit (which is what 6.1 is) this matters — the whole point is for a human to inspect captured production traffic and confirm the Go-port behaves the same as C#.
+
+Sonarr's stock UI doesn't gzip request bodies, but operators-in-the-wild scripts sometimes do (the manualimport/customformat-bulk endpoints take large JSON bodies that compress 5-10x), and the recorder is also used in capture-from-anywhere scenarios where the upstream client is not under the team's control.
+
+### Design
+
+The minimum-invasive change:
+
+1. Decompress gzipped request bodies into `RecordedEntry.Body` BEFORE writing to JSONL.
+2. Strip `Content-Encoding` from the captured `Headers` map (otherwise the header would lie about the now-plain body bytes — replay would try to gunzip plain JSON and fail).
+3. Crucially: do NOT alter the upstream-bound bytes. The proxy must remain semantically transparent — upstream receives the byte-identical original payload, the same `Content-Encoding` header, and behaves exactly as if the recorder weren't in the path.
+4. Malformed gzip degrades cleanly: body stays in the log verbatim, `Content-Encoding` header retained (because the body IS still gzip-tagged garbage — the header is truthful).
+5. Decompression-bomb guard: a 1KB gzip can expand to gigabytes. Cap the decompressed output and fall back to verbatim logging if exceeded.
+
+### Code
+
+`writer.go` gains the helper `maybeDecompressForLog(body, contentEncoding, limit)` (~35 LOC). Only gzip is decoded (case-insensitive); `deflate` and `br` aren't on the table because Sonarr's API doesn't emit either in practice. Empty body with gzip encoding degrades to (empty, false) — no point trying to read a gzip stream from zero bytes. The `limit+1` then `>` check is the standard idiom for "did the input exceed the cap" — `io.LimitReader` returns up to limit+1 bytes; if we got exactly limit+1, the source had more. `gzip.NewReader` validates the header — non-gzip bytes return `gzip.ErrHeader` immediately; no panic risk.
+
+`stripHopHeaders` extended with a third parameter `dropContentEncoding bool`. The recorder sets it when decompression actually succeeded; the captured header would otherwise lie about the now-plain body bytes.
+
+`proxy.go` `record()` calls `maybeDecompressForLog` against `r.Header.Get("Content-Encoding")` with the writer's `maxBodyLen` (or 8 MiB default) as the decompression cap, propagates the success flag to `stripHopHeaders`, and emits a warn-log on decompression skip when the header actually said gzip + body was non-empty (the "something went wrong" case worth noticing; empty body or non-gzip encoding are quiet skips). A small `decompressLimitFor(w *LogWriter) int64` ladder picks the writer's `maxBodyLen` if set (keeping the decompression cap aligned with the existing body-truncation threshold) otherwise the 8 MiB default — sufficient for any realistic Sonarr POST body (the largest stock UI submissions are manualimport JSON at <500 KiB).
+
+### Upstream is NOT touched (the critical invariant)
+
+The existing dispatch path uses the ORIGINAL buffered `body []byte` — the same gzipped bytes the client sent. The decompression in `record()` only affects what gets written to the JSONL log; the variable `body` itself is never mutated. Upstream sees `Content-Encoding: gzip` + the original gzipped payload. The recorder is semantically transparent.
+
+The end-to-end test `TestRecordingProxy_GzipRequestBody_DecompressedInLog_VerbatimToUpstream` pins this invariant via two assertions: upstream-side, the test handler reads the request body and atomically flags whether it byte-equals the original gzipped bytes the client sent; log-side, the JSONL Body must equal the plain JSON. If either fails, the slice has regressed.
+
+### Tests
+
+10 net test additions (6 brand new + 4 updates to existing TestStripHopHeaders to cover Content-Encoding scenarios):
+
+- `TestMaybeDecompressForLog_Gzip` — happy-path round-trip on a hand-built gzip stream containing a small JSON object.
+- `TestMaybeDecompressForLog_GzipCaseInsensitive` — `gzip` / `GZIP` / `Gzip` all match (RFC 9110 makes the header value case-insensitive).
+- `TestMaybeDecompressForLog_NoGzip` — empty encoding and `Content-Encoding: identity` both return (original, false) without mutating the body.
+- `TestMaybeDecompressForLog_MalformedGzip` — bytes that don't form a valid gzip stream return (original, false) rather than panicking. Tested with arbitrary text AND with nil body — both degrade cleanly.
+- `TestMaybeDecompressForLog_BombGuard` — gzip that decompresses to 2 KiB, tested with limit=1024 (over-limit → falls back to verbatim) and limit=4096 (under-limit → decompresses cleanly). Both cases exercised.
+- `TestRecordingProxy_GzipRequestBody_DecompressedInLog_VerbatimToUpstream` — end-to-end through the proxy: client POSTs gzipped JSON; verifies (a) upstream received original gzipped bytes via atomic.Bool flag in the test handler, (b) JSONL log entry has decompressed JSON in `Body`, (c) `Content-Encoding` absent from log's `Headers` map.
+- `TestRecordingProxy_PlainRequestBody_RecordedVerbatim_NoEncodingHeader` — sanity check: a non-gzip POST is still recorded verbatim with original `Content-Type` (no regression in the no-encoding path).
+- `TestRecordingProxy_GzipMalformedBody_LoggedVerbatim_HeaderRetained` — adversarial: `Content-Encoding: gzip` but the body isn't valid gzip. Verifies (a) no panic, (b) log body has original bytes verbatim, (c) `Content-Encoding` STAYS in the log headers (still truthful — the body IS gzip-tagged garbage), (d) upstream received original bytes.
+- `TestStripHopHeaders` updated — input map gained a `Content-Encoding: gzip` row; new assertions test both directions of the `dropContentEncoding` flag.
+
+Subtle test-infrastructure gotcha worth recording: my first draft of the malformed-gzip end-to-end test used the gzip magic prefix bytes followed by ASCII garbage as the payload, figuring it would be a realistic "looks like gzip but isn't" probe. But the second magic byte (0x8b) is an invalid UTF-8 continuation byte without a start byte, and the JSONL log uses `json.Marshal` which silently replaces invalid UTF-8 with the Unicode replacement character U+FFFD. The round-trip through JSON mangled the bytes, and the assertion `entries[0].Body != string(garbage)` triggered a false-positive failure. Switched the garbage payload to pure ASCII ("not actually gzipped data") and the test passes. Lesson noted inline: log bodies are JSON-encoded, so binary payloads need UTF-8-safe test fixtures unless you explicitly want to test the lossy round-trip.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./...
+(clean)
+
+$ go test -race -count=1 ./cmd/shadow-traffic-record/...
+ok  sonarr.tv/sonarr/cmd/shadow-traffic-record  1.496s
+```
+
+All tests pass under -race (test count grew by 6 new + 4 reinforcements via the TestStripHopHeaders expansion).
+
+### Slice (B) closes; (C/D/E) remain
+
+Phase 6 prep remaining slice candidates (per PROGRESS.md "Next candidates"):
+
+- (C) Phase 6.2 smoke runbook scaffold (`go/PHASE_6_SMOKE.md`, pure markdown). Pure docs work.
+- (D) Shadow-traffic toolkit FORMAT.md (`go/cmd/shadow-traffic-record/FORMAT.md` documenting the JSONL log schema). Pure docs work.
+- (E) Cross-tool integration smoke test (`go/cmd/shadowtraffic-e2e/`, ~150 LOC). Code work — proves the J239+J240+J241 triad composes end-to-end.
+
+(D) is the natural next-slice — small, scoped, lands the JSONL format reference operators will need anyway once they start editing logs by hand. (E) is the most ambitious remaining slice and could unblock test confidence for the broader Phase 6.4 cutover.

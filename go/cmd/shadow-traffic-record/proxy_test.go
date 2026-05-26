@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -372,13 +373,14 @@ func TestRecordingProxy_StatsIncrement(t *testing.T) {
 
 func TestStripHopHeaders(t *testing.T) {
 	in := map[string][]string{
-		"Connection":    {"keep-alive"},
-		"X-Api-Key":     {"secret"},
-		"Authorization": {"Bearer x"},
-		"X-Custom":      {"preserved", "ignored"},
-		"Content-Type":  {"application/json"},
+		"Connection":       {"keep-alive"},
+		"X-Api-Key":        {"secret"},
+		"Authorization":    {"Bearer x"},
+		"X-Custom":         {"preserved", "ignored"},
+		"Content-Type":     {"application/json"},
+		"Content-Encoding": {"gzip"},
 	}
-	out := stripHopHeaders(in, true)
+	out := stripHopHeaders(in, true, false)
 	if _, ok := out["Connection"]; ok {
 		t.Error("Connection should be hop-stripped")
 	}
@@ -394,11 +396,21 @@ func TestStripHopHeaders(t *testing.T) {
 	if out["Content-Type"] != "application/json" {
 		t.Errorf("Content-Type: %q", out["Content-Type"])
 	}
+	if out["Content-Encoding"] != "gzip" {
+		t.Errorf("with dropContentEncoding=false, Content-Encoding should come through, got %q", out["Content-Encoding"])
+	}
 
 	// With dropAPIKeys=false the keys come through.
-	out2 := stripHopHeaders(in, false)
+	out2 := stripHopHeaders(in, false, false)
 	if out2["X-Api-Key"] != "secret" {
 		t.Errorf("with dropAPIKeys=false, X-Api-Key should come through, got %q", out2["X-Api-Key"])
+	}
+
+	// With dropContentEncoding=true the encoding is dropped (J244 —
+	// recorder set this because it decompressed the body in place).
+	out3 := stripHopHeaders(in, true, true)
+	if _, ok := out3["Content-Encoding"]; ok {
+		t.Errorf("with dropContentEncoding=true, Content-Encoding should be stripped, got %q", out3["Content-Encoding"])
 	}
 }
 
@@ -431,3 +443,234 @@ func TestRecordingProxy_LargeResponse_NotBuffered(t *testing.T) {
 	_ = writer.Close(context.Background())
 }
 
+
+func TestMaybeDecompressForLog_Gzip(t *testing.T) {
+	var gzbuf bytes.Buffer
+	gw := gzip.NewWriter(&gzbuf)
+	if _, err := gw.Write([]byte(`{"hello":"world"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, ok := maybeDecompressForLog(gzbuf.Bytes(), "gzip", 0)
+	if !ok {
+		t.Fatal("expected decompressed=true")
+	}
+	if string(out) != `{"hello":"world"}` {
+		t.Errorf("got %q", out)
+	}
+}
+
+func TestMaybeDecompressForLog_GzipCaseInsensitive(t *testing.T) {
+	var gzbuf bytes.Buffer
+	gw := gzip.NewWriter(&gzbuf)
+	_, _ = gw.Write([]byte("hi"))
+	_ = gw.Close()
+	for _, enc := range []string{"gzip", "GZIP", "Gzip"} {
+		out, ok := maybeDecompressForLog(gzbuf.Bytes(), enc, 0)
+		if !ok {
+			t.Errorf("encoding %q: expected ok=true", enc)
+		}
+		if string(out) != "hi" {
+			t.Errorf("encoding %q: got %q", enc, out)
+		}
+	}
+}
+
+func TestMaybeDecompressForLog_NoGzip(t *testing.T) {
+	body := []byte(`{"plain":true}`)
+	out, ok := maybeDecompressForLog(body, "", 0)
+	if ok {
+		t.Error("expected ok=false for empty encoding")
+	}
+	if !bytes.Equal(out, body) {
+		t.Errorf("body mutated: %q", out)
+	}
+	out2, ok2 := maybeDecompressForLog(body, "identity", 0)
+	if ok2 {
+		t.Error("expected ok=false for identity encoding")
+	}
+	if !bytes.Equal(out2, body) {
+		t.Errorf("body mutated: %q", out2)
+	}
+}
+
+func TestMaybeDecompressForLog_MalformedGzip(t *testing.T) {
+	// "Content-Encoding: gzip" but the bytes aren't a valid gzip stream
+	// — must NOT panic; degrade to logging verbatim.
+	body := []byte("not actually gzipped")
+	out, ok := maybeDecompressForLog(body, "gzip", 0)
+	if ok {
+		t.Error("expected ok=false for malformed gzip")
+	}
+	if !bytes.Equal(out, body) {
+		t.Errorf("malformed-gzip body mutated: %q", out)
+	}
+
+	// Empty body with gzip encoding — also degrade cleanly.
+	out2, ok2 := maybeDecompressForLog(nil, "gzip", 0)
+	if ok2 {
+		t.Error("expected ok=false for empty body with gzip encoding")
+	}
+	if len(out2) != 0 {
+		t.Errorf("empty body mutated: %q", out2)
+	}
+}
+
+func TestMaybeDecompressForLog_BombGuard(t *testing.T) {
+	// Build a gzip that decompresses to 2 KiB; then call with limit=1 KiB.
+	// Expect (original, false) — the recorder falls back to verbatim.
+	var gzbuf bytes.Buffer
+	gw := gzip.NewWriter(&gzbuf)
+	_, _ = gw.Write(bytes.Repeat([]byte("A"), 2048))
+	_ = gw.Close()
+	out, ok := maybeDecompressForLog(gzbuf.Bytes(), "gzip", 1024)
+	if ok {
+		t.Error("expected ok=false when decompressed size exceeds limit")
+	}
+	if !bytes.Equal(out, gzbuf.Bytes()) {
+		t.Error("body should fall back to verbatim when over-limit")
+	}
+
+	// Same gzip but limit=4 KiB (above decompressed size) — decompresses cleanly.
+	out2, ok2 := maybeDecompressForLog(gzbuf.Bytes(), "gzip", 4096)
+	if !ok2 {
+		t.Error("expected ok=true when decompressed size under limit")
+	}
+	if !bytes.Equal(out2, bytes.Repeat([]byte("A"), 2048)) {
+		t.Errorf("under-limit decompression returned wrong bytes (len=%d)", len(out2))
+	}
+}
+
+func TestRecordingProxy_GzipRequestBody_DecompressedInLog_VerbatimToUpstream(t *testing.T) {
+	// Client POSTs a gzipped JSON body with Content-Encoding: gzip.
+	// Expectations:
+	//   - Upstream receives the original gzipped bytes verbatim (the
+	//     proxy must NOT alter the upstream-bound payload — semantic
+	//     transparency).
+	//   - The captured log entry has the decompressed JSON in Body
+	//     (operator inspection sees readable JSON, not gzip garbage).
+	//   - The captured Headers map has NO Content-Encoding entry
+	//     (it would lie about the now-plain body bytes).
+	plain := []byte(`{"hello":"world","nested":{"k":1}}`)
+	var gzbuf bytes.Buffer
+	gw := gzip.NewWriter(&gzbuf)
+	_, _ = gw.Write(plain)
+	_ = gw.Close()
+
+	var upstreamSawGzipped atomic.Bool
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ := io.ReadAll(r.Body)
+		if bytes.Equal(got, gzbuf.Bytes()) {
+			upstreamSawGzipped.Store(true)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	front, _, writer, logPath, cleanup := newRecorder(t, upstream)
+	defer cleanup()
+
+	req, _ := http.NewRequest("POST", front.URL+"/api/v3/customformat", bytes.NewReader(gzbuf.Bytes()))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	if !upstreamSawGzipped.Load() {
+		t.Error("upstream did not receive the original gzipped bytes — transparency violated")
+	}
+
+	_ = writer.Close(context.Background())
+	entries := readEntries(t, logPath)
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Body != string(plain) {
+		t.Errorf("log body: %q, want decompressed JSON %q", e.Body, plain)
+	}
+	if _, ok := e.Headers["Content-Encoding"]; ok {
+		t.Errorf("Content-Encoding should be stripped from log headers, got %q", e.Headers["Content-Encoding"])
+	}
+}
+
+func TestRecordingProxy_PlainRequestBody_RecordedVerbatim_NoEncodingHeader(t *testing.T) {
+	// Sanity: a non-gzip POST still records verbatim with original
+	// headers (apart from hop-by-hop / API-key drops handled elsewhere).
+	plain := []byte(`{"plain":true}`)
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	front, _, writer, logPath, cleanup := newRecorder(t, upstream)
+	defer cleanup()
+
+	req, _ := http.NewRequest("POST", front.URL+"/api/v3/customformat", bytes.NewReader(plain))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	_ = writer.Close(context.Background())
+
+	entries := readEntries(t, logPath)
+	if len(entries) != 1 {
+		t.Fatal("expected 1 entry")
+	}
+	if entries[0].Body != string(plain) {
+		t.Errorf("body: %q, want %q", entries[0].Body, plain)
+	}
+	if entries[0].Headers["Content-Type"] != "application/json" {
+		t.Errorf("Content-Type missing")
+	}
+}
+
+func TestRecordingProxy_GzipMalformedBody_LoggedVerbatim_HeaderRetained(t *testing.T) {
+	// Adversarial input: Content-Encoding says gzip but the body isn't
+	// a valid gzip stream. Expectations:
+	//   - Recorder doesn't panic.
+	//   - Log Body has the original (garbage) bytes verbatim.
+	//   - Content-Encoding stays in the log headers (it's still truthful
+	//     — the body in the log IS the bytes the client sent, gzip-tagged).
+	//   - Upstream still receives the original bytes verbatim.
+	// Use UTF-8-safe bytes — the log is JSON-encoded so non-UTF-8 bytes
+	// would be mangled by json.Marshal before they even hit the file,
+	// confusing the byte-equality assertion below.
+	garbage := []byte("not actually gzipped data")
+	var upstreamSawOriginal atomic.Bool
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ := io.ReadAll(r.Body)
+		if bytes.Equal(got, garbage) {
+			upstreamSawOriginal.Store(true)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	front, _, writer, logPath, cleanup := newRecorder(t, upstream)
+	defer cleanup()
+
+	req, _ := http.NewRequest("POST", front.URL+"/api/v3/manualimport", bytes.NewReader(garbage))
+	req.Header.Set("Content-Encoding", "gzip")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	_ = writer.Close(context.Background())
+
+	if !upstreamSawOriginal.Load() {
+		t.Error("upstream did not receive original bytes")
+	}
+	entries := readEntries(t, logPath)
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries", len(entries))
+	}
+	if entries[0].Body != string(garbage) {
+		t.Errorf("log body: %q, want garbage verbatim", entries[0].Body)
+	}
+	if entries[0].Headers["Content-Encoding"] != "gzip" {
+		t.Errorf("malformed gzip: header should be retained, got %q", entries[0].Headers["Content-Encoding"])
+	}
+}

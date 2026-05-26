@@ -138,14 +138,34 @@ func (p *RecordingProxy) record(r *http.Request, body []byte, status int) {
 	if p.Writer == nil {
 		return
 	}
+	logBody, decompressed := maybeDecompressForLog(body, r.Header.Get("Content-Encoding"), decompressLimitFor(p.Writer))
+	if !decompressed && r.Header.Get("Content-Encoding") != "" && strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") && len(body) > 0 && p.Logger != nil {
+		p.Logger.Warn("gzip request body decompression skipped; logging verbatim", "path", r.URL.Path, "len", len(body))
+	}
 	entry := RecordedEntry{
 		Timestamp: time.Now().UTC(),
 		Method:    r.Method,
 		Path:      r.URL.RequestURI(),
-		Headers:   stripHopHeaders(r.Header, p.DropAPIKeys),
-		Body:      string(body),
+		Headers:   stripHopHeaders(r.Header, p.DropAPIKeys, decompressed),
+		Body:      string(logBody),
 		Status:    status,
 	}
 	p.Writer.Enqueue(entry)
+}
+
+// decompressLimitFor derives the decompression-bomb cap from the
+// writer's configured max body length: same as maxBodyLen when set
+// (the recorder already truncates above that anyway), otherwise an
+// 8 MiB sane default. The cap protects against malicious gzip bombs
+// — a few-KB gzip can expand to GiB. When exceeded, the recorder
+// falls back to logging the gzipped bytes verbatim.
+func decompressLimitFor(w *LogWriter) int64 {
+	if w == nil {
+		return 8 * 1024 * 1024
+	}
+	if w.maxBodyLen > 0 {
+		return int64(w.maxBodyLen)
+	}
+	return 8 * 1024 * 1024
 }
 
