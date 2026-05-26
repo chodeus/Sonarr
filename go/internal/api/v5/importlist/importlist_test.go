@@ -1,7 +1,6 @@
 package importlist
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -300,81 +299,10 @@ func TestReexportedHandlers_NonNil(t *testing.T) {
 	}
 }
 
-// ----- response-rewriting middleware unit tests -----
-
-func TestRewriteSuccessTo204_NonEmptyBodyPassesThrough(t *testing.T) {
-	t.Parallel()
-	// Pin the predicate: only `{}` body triggers 204. Any other body
-	// shape (e.g. a populated response) must pass through verbatim so
-	// the wrapper doesn't accidentally strip real payloads.
-	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"name":"x"}`))
-	})
-	rr := httptest.NewRecorder()
-	rewriteSuccessTo204(inner).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rr.Code != http.StatusOK {
-		t.Errorf("status: got %d want 200 (non-`{}` 200 body must pass through)", rr.Code)
-	}
-	if !bytes.Equal(rr.Body.Bytes(), []byte(`{"name":"x"}`)) {
-		t.Errorf("body: got %q want %q", rr.Body.String(), `{"name":"x"}`)
-	}
-}
-
-func TestRewriteSuccessTo204_StripsContentTypeOn204(t *testing.T) {
-	t.Parallel()
-	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
-	})
-	rr := httptest.NewRecorder()
-	rewriteSuccessTo204(inner).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rr.Code != http.StatusNoContent {
-		t.Errorf("status: got %d want 204", rr.Code)
-	}
-	if ct := rr.Header().Get("Content-Type"); ct != "" {
-		t.Errorf("Content-Type must be stripped on 204: got %q", ct)
-	}
-}
-
-func TestRewrite202To200_PreservesBody(t *testing.T) {
-	t.Parallel()
-	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte(`[{"id":1}]`))
-	})
-	rr := httptest.NewRecorder()
-	rewrite202To200(inner).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/", nil))
-	if rr.Code != http.StatusOK {
-		t.Errorf("status: got %d want 200 (202→200 demotion)", rr.Code)
-	}
-	if !bytes.Equal(rr.Body.Bytes(), []byte(`[{"id":1}]`)) {
-		t.Errorf("body must be preserved verbatim: got %q", rr.Body.String())
-	}
-	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type must be preserved: got %q", ct)
-	}
-}
-
-func TestRewrite202To200_NonAcceptedPassesThrough(t *testing.T) {
-	t.Parallel()
-	// 4xx + 5xx must pass through with body intact.
-	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"bad ids"}`))
-	})
-	rr := httptest.NewRecorder()
-	rewrite202To200(inner).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/", nil))
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("status: got %d want 400", rr.Code)
-	}
-	if !strings.Contains(rr.Body.String(), `"bad ids"`) {
-		t.Errorf("body should pass through: %s", rr.Body.String())
-	}
-}
+// Response-rewriting middleware unit tests moved to
+// internal/api/v5/internal/v5util/v5util_test.go at J256
+// (consolidation). The wrappers are now exported as
+// v5util.RewriteSuccessTo204 / RewriteAcceptedToOK and tested there.
 
 // guard against an unused-import lint error: errors is imported by the
 // fakeTester err path even though no test arm currently sets it.

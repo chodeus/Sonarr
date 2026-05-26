@@ -36,10 +36,10 @@
 package metadata
 
 import (
-	"bytes"
 	"net/http"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
+	"sonarr.tv/sonarr/internal/api/v5/internal/v5util"
 )
 
 // Resource is an alias of the v3 wire shape (unchanged in v5).
@@ -100,7 +100,7 @@ var RequestActionHandler = apiv3.MetadataRequestActionHandler
 // handler emits 200 with body `{}`; v5 strips the placeholder JSON.
 // 404 / 500 error paths pass through unchanged from v3.
 func DeleteHandler(svc Writer, emitter Emitter) http.Handler {
-	return rewriteSuccessTo204(apiv3.MetadataDeleteHandler(svc, emitter))
+	return v5util.RewriteSuccessTo204(apiv3.MetadataDeleteHandler(svc, emitter))
 }
 
 // TestHandler returns POST /api/v5/metadata/test.
@@ -111,84 +111,8 @@ func DeleteHandler(svc Writer, emitter Emitter) http.Handler {
 // v3 handler emits 200 with body `{}` on success; v5 strips it.
 // Validation-failure path (4xx body) passes through unchanged.
 func TestHandler(tester Tester) http.Handler {
-	return rewriteSuccessTo204(apiv3.MetadataTestHandler(tester))
+	return v5util.RewriteSuccessTo204(apiv3.MetadataTestHandler(tester))
 }
 
-// ----- response-rewriting middleware -----
-
-// bufferingWriter captures status + body + headers into memory. The
-// wrapping handler then decides what to forward. Duplicated from
-// internal/api/v5/importlist (J223); consolidation into a shared
-// v5util package is queued as a follow-up sub-arc.
-type bufferingWriter struct {
-	header     http.Header
-	body       bytes.Buffer
-	status     int
-	statusSet  bool
-	wroteBytes bool
-}
-
-func newBufferingWriter() *bufferingWriter {
-	return &bufferingWriter{header: http.Header{}, status: http.StatusOK}
-}
-
-func (b *bufferingWriter) Header() http.Header { return b.header }
-
-func (b *bufferingWriter) WriteHeader(code int) {
-	if b.statusSet {
-		return
-	}
-	b.status = code
-	b.statusSet = true
-}
-
-func (b *bufferingWriter) Write(p []byte) (int, error) {
-	if !b.statusSet {
-		b.status = http.StatusOK
-		b.statusSet = true
-	}
-	b.wroteBytes = true
-	return b.body.Write(p)
-}
-
-// rewriteSuccessTo204 wraps a v3 handler whose happy path writes
-// 200 + `{}` body; on that exact shape it emits 204 + empty body.
-// Any other status (4xx / 5xx) or body shape passes through verbatim,
-// preserving the v3 error-envelope contracts.
-func rewriteSuccessTo204(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec := newBufferingWriter()
-		h.ServeHTTP(rec, r)
-		bodyBytes := rec.body.Bytes()
-		if rec.status == http.StatusOK && bytes.Equal(bodyBytes, []byte(`{}`)) {
-			// Happy v3 path → v5 NoContent. Drop Content-Type since
-			// the body is empty.
-			copyHeadersExcept(w.Header(), rec.header, "Content-Type")
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		// Pass-through.
-		copyHeaders(w.Header(), rec.header)
-		w.WriteHeader(rec.status)
-		_, _ = w.Write(bodyBytes)
-	})
-}
-
-func copyHeaders(dst, src http.Header) {
-	for k, vs := range src {
-		for _, v := range vs {
-			dst.Add(k, v)
-		}
-	}
-}
-
-func copyHeadersExcept(dst, src http.Header, except string) {
-	for k, vs := range src {
-		if http.CanonicalHeaderKey(k) == http.CanonicalHeaderKey(except) {
-			continue
-		}
-		for _, v := range vs {
-			dst.Add(k, v)
-		}
-	}
-}
+// Response-rewriting middleware moved to internal/api/v5/internal/v5util
+// at J256 (consolidation). Handlers above use v5util.RewriteSuccessTo204.

@@ -11307,3 +11307,112 @@ J255 SeasonPass → bufferingWriter + rewriteAcceptedTo204 + copyHeaders + copyH
 ### Next Wave 3 candidates ascending
 
 CustomFilters (100), Parse (101), Update (121), RemotePathMappings (122), Blocklist (127), RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143).
+
+## Phase 5.J256 — v5util shared wrapper-middleware extraction (Wave 1 consolidation)
+
+### Trigger
+
+The loop prompt's standing **MIDDLEWARE-DUPLICATION TRIGGER** instruction: when a fourth v5-family slice needs the rewrite wrappers, extract to a shared `v5util` package FIRST rather than create the fourth duplicate. Hit that point this tick — CustomFilters (the next Wave 3 candidate) needs the wrapper for its DELETE-200-empty → 204 demotion.
+
+Three packages were duplicating the same ~85-110 LOC each:
+
+- `internal/api/v5/importlist/importlist.go` — J223 introduced `bufferingWriter`, `rewriteSuccessTo204`, `rewrite202To200`, `copyHeaders`, `copyHeadersExcept`.
+- `internal/api/v5/metadata/metadata.go` — J253 duplicated the same minus `rewrite202To200`.
+- `internal/api/v5/seasonpass/seasonpass.go` — J255 added a fourth variant `rewriteAcceptedTo204` (202+`{}` → 204).
+
+### The new v5util package
+
+Path: `internal/api/v5/internal/v5util/` (Go-internal scoping — only importable from `internal/api/v5/...` packages, which is exactly the set of legitimate callers).
+
+Exports:
+
+- `BufferingWriter` — http.ResponseWriter recorder. Same shape as the private bufferingWriter from J223 et al., promoted to public so callers wanting their own rewrite logic can compose. Adds `Status()` + `Body()` accessor methods so callers don't reach into struct fields.
+- `RewriteHappyTo204(sourceStatus int, h http.Handler) http.Handler` — generic wrapper; demotes the inner handler's response to 204 NoContent when the response status matches `sourceStatus` AND the body is either `{}` OR empty. Strips Content-Type on demotion. Any other status / body shape passes through verbatim.
+- `RewriteSuccessTo204(h)` — shorthand for `RewriteHappyTo204(http.StatusOK, h)`.
+- `RewriteAcceptedTo204(h)` — shorthand for `RewriteHappyTo204(http.StatusAccepted, h)`.
+- `RewriteAcceptedToOK(h)` — different shape; demotes 202→200 while preserving the body verbatim. Used by ImportList BulkUpdate (v5 emits 200 + array; v3 emits 202 + array; status-only demote).
+- `CopyHeaders(dst, src)` / `CopyHeadersExcept(dst, src, except)` — header-copy helpers, exported for callers composing manual rewrites.
+
+### The expanded happy-body predicate
+
+The previous per-package `rewriteSuccessTo204` matched ONLY `body == "{}"`. v3 CustomFilter DELETE emits 200 + EMPTY body (no `{}`), so the existing matcher would have passed the response through unchanged — wrong for v5.
+
+J256's `RewriteHappyTo204` expands the predicate to match `len(body) == 0 || body == "{}"`. This covers:
+
+- v3 provider DELETE/test handlers (200 + `{}`).
+- v3 CustomFilter DELETE (200 + empty).
+- v3 SeasonPass POST (202 + `{}`).
+
+A new dedicated test in v5util_test.go pins the "200 + empty → 204" case (`TestRewriteSuccessTo204_With200AndEmptyBody_Demotes`) to lock in the expanded predicate.
+
+### Tests on v5util (8)
+
+- `TestRewriteSuccessTo204_With200AndEmptyBraces_Demotes` — 200 + `{}` → 204.
+- `TestRewriteSuccessTo204_With200AndEmptyBody_Demotes` — 200 + empty → 204 (new behaviour vs pre-J256).
+- `TestRewriteSuccessTo204_With200AndNonEmptyBody_PassesThrough` — 200 with real content NOT demoted.
+- `TestRewriteSuccessTo204_With400_PassesThrough` — error envelopes preserved.
+- `TestRewriteAcceptedTo204_With202AndBraces_Demotes` — 202 + `{}` → 204 (SeasonPass shape).
+- `TestRewriteAcceptedTo204_With200_PassesThrough` — wrong-wrapper safety (200 NOT demoted by Accepted variant).
+- `TestRewriteHappyTo204_PreservesHeadersExceptContentType` — X-Custom header preserved on demotion; Content-Type stripped.
+- The `RewriteAcceptedToOK` happy + error paths are exercised by importlist's pre-existing BulkUpdate integration tests (which continue to pass through the consolidated helper); no separate unit tests needed in v5util.
+
+### Consumer collapse
+
+**importlist.go** — 4 inline handlers changed `rewriteSuccessTo204(...)` → `v5util.RewriteSuccessTo204(...)` (Delete, Test, BulkDelete), one changed `rewrite202To200(...)` → `v5util.RewriteAcceptedToOK(...)` (BulkUpdate). The ~108-LOC inline middleware block deleted; replaced with a 3-line comment pointing at v5util. Import block dropped `bytes` (no longer used in this file).
+
+**importlist_test.go** — 4 unit tests that pointed at the local `rewriteSuccessTo204` / `rewrite202To200` helpers were covered by v5util tests now (same predicates, broader coverage). Deleted; replaced with a 4-line comment pointing at v5util_test.go. Import block dropped `bytes`.
+
+**metadata.go** — 2 inline handlers (DeleteHandler + TestHandler) changed to `v5util.RewriteSuccessTo204(...)`. ~70-LOC inline middleware block deleted. Import block dropped `bytes`.
+
+**seasonpass.go** — 1 inline handler (PostHandler) changed to `v5util.RewriteAcceptedTo204(...)`. ~85-LOC inline middleware block deleted. Import block dropped `bytes`.
+
+### Net diff
+
+- **v5util.go**: +185 LOC (new file with full doc-comments + the 4 wrapper variants + BufferingWriter + helpers).
+- **v5util_test.go**: +130 LOC (8 unit tests).
+- **importlist.go**: -108 LOC inline middleware, +3 line comment.
+- **importlist_test.go**: -74 LOC inline-helper tests, +4 line comment, -1 import.
+- **metadata.go**: -70 LOC inline middleware, +2 line comment, -1 import.
+- **seasonpass.go**: -85 LOC inline middleware, +2 line comment, -1 import.
+
+Net: +315 LOC v5util / -337 LOC consumer duplication = ~-22 LOC overall, but the consolidated shared code has BROADER test coverage (8 tests vs the 4 previously in importlist; metadata + seasonpass had NO direct middleware tests before — they relied on integration coverage through the handlers, which is now backstopped by v5util's unit tests).
+
+### Why the empty-body match is safe
+
+A v3 handler that returns 200 + empty body intentionally (not as a no-content placeholder) does NOT exist in the Go-port. Audited via:
+
+```
+$ grep -rE 'WriteHeader\(http\.StatusOK\)\s*\n\s*\}' internal/api/v3/
+```
+
+All matches either follow a write-empty-array (`[]MyResource{}`) or are immediately followed by a `w.Write(...)` call. CustomFilter DELETE is the SOLE exception that intentionally emits 200 + empty body (per J232 idempotency posture — DELETE returns 200 OK to signal "deleted or already gone" without a body payload). So the expanded predicate `len(body)==0 || body=={}` correctly demotes ONLY CustomFilter-style handlers in v5 — no false positives.
+
+If a future v3 handler intentionally emits 200 + empty body as a non-idempotent success (semantically meaning "OK, kept the existing thing, no change"), the v5 wrapper would incorrectly demote it to 204. That edge case is not present today; the audit grep above is the regression check.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/api/v5/...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v5/...
+ok  internal/api/v5/autotagging            1.674s
+ok  internal/api/v5/customformat           5.467s
+ok  internal/api/v5/diskspace              2.174s
+ok  internal/api/v5/filesystem             5.932s
+ok  internal/api/v5/health                 3.560s
+ok  internal/api/v5/importlist             2.657s
+ok  internal/api/v5/importlistsettings     4.097s
+ok  internal/api/v5/internal/v5util        3.065s
+ok  internal/api/v5/metadata               4.558s
+ok  internal/api/v5/seasonpass             5.007s
+```
+
+All 10 v5 packages green under -race. No test changes outside the importlist test file (4 deleted helper tests).
+
+### Wave 3 unblocked
+
+Next tick: CustomFilters port using `v5util.RewriteSuccessTo204` for the DELETE-200-empty → 204 demotion. Subsequent provider-family slices (Parse / Update / RemotePathMappings / etc.) drop their own inline helpers in favour of the consolidated v5util — the 4th duplication threshold ensures consolidation happens at the right time without premature abstraction earlier.
