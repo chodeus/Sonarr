@@ -27,6 +27,7 @@ import (
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
 	updatev5 "sonarr.tv/sonarr/internal/api/v5/update"
 	indexerv5 "sonarr.tv/sonarr/internal/api/v5/indexer"
+	localizationv5 "sonarr.tv/sonarr/internal/api/v5/localization"
 	wantedv5 "sonarr.tv/sonarr/internal/api/v5/wanted"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
@@ -1355,6 +1356,18 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "PUT", Path: "/api/v5/indexer/{id}", Handler: indexerv5.UpdateHandler(indexersRepo, indexerEmitter)},
 		{Method: "DELETE", Path: "/api/v5/indexer/{id}", Handler: indexerv5.DeleteHandler(indexersRepo, indexerEmitter)},
 		{Method: "GET", Path: "/api/v5/indexerflag", Handler: indexerv5.FlagsHandler()},
+		// J266 — v5 Localization endpoint family (5 endpoints; 143 LOC
+		// C# across LanguageController + LocalizationController + 3
+		// resources). Resource shapes identical to v3 — pure type
+		// aliases. Three list/dict endpoints are path-aliases of v3
+		// handlers. Two new v5-specific ByID handlers (v3 Go-port
+		// doesn't expose /{id} variants — they're inherited from
+		// RestController in C# v5).
+		{Method: "GET", Path: "/api/v5/language", Handler: localizationv5.LanguageHandler(langs)},
+		{Method: "GET", Path: "/api/v5/language/{id}", Handler: localizationv5.LanguageByIDHandler(langs)},
+		{Method: "GET", Path: "/api/v5/localization", Handler: localizationv5.LocalizationHandler(localizationSvc)},
+		{Method: "GET", Path: "/api/v5/localization/language", Handler: localizationv5.LocalizationLanguageHandler(configProv.UILanguage)},
+		{Method: "GET", Path: "/api/v5/localization/{id}", Handler: localizationv5.LocalizationByIDHandler(localizationSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to

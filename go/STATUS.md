@@ -12219,3 +12219,44 @@ Pattern observation: Indexers is the FOURTH pure-status-mop-up slice in Wave 3 (
 ### Next Wave 3 candidates ascending
 
 Localization (143), Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).
+
+## Phase 5.J266 — Wave 3 fifteenth slice: v5 Localization family port (143 LOC C# source)
+
+Multi-mode slice — 3 path-aliases + 2 new v5-specific handlers. Resource shape identical across v3 ↔ v5, but v3 Go-port is missing the openapi-declared `/{id}` variants on both `/language` and `/localization` (gap noted in J234's audit but not yet closed on the v3 surface). The C# v5 inherits those from RestController.GetResourceById; this slice ports them onto the v5 surface only — the v3 gap remains open as a separate Wave 4 item.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :3400-3493):
+
+| endpoint                              | v5 status   | v3 Go-port status | strategy                    |
+|---------------------------------------|-------------|-------------------|-----------------------------|
+| GET /api/v5/language                  | 200         | 200 (path-alias)  | re-export apiv3.LanguageHandler |
+| GET /api/v5/language/{id}             | 200/404     | NOT WIRED         | new v5 handler              |
+| GET /api/v5/localization              | 200         | 200 (path-alias)  | re-export apiv3.LocalizationHandler |
+| GET /api/v5/localization/language     | 200         | 200 (path-alias)  | re-export apiv3.LocalizationLanguageHandler |
+| GET /api/v5/localization/{id}         | 200         | NOT WIRED         | new v5 handler              |
+
+**Resource shapes** (identical to v3):
+
+- `LanguageResource = {id, name, nameLower}` — C# v5 declares `NameLower => Name?.ToLowerInvariant()` as a computed property; v3 Go-port precomputes the value into a struct field via `ListAll`. JSON output is identical.
+- `LocalizationResource = {strings: {key: value, ...}}` — C# v5 uses a JsonConverter to preserve dict insertion order on emit; Go map iteration is non-deterministic but the contract-test normalizer alphabetizes keys before diff, so insertion order is unobservable on byte-eq.
+- `LocalizationLanguageResource = {identifier}` — BCP-47-style "TwoLetter[-COUNTRY]".
+
+**ByID semantics** (C# parity per `LanguageController.cs:12-22` + `LocalizationController.cs:23-26`):
+
+- `LanguageByIDHandler`: cast `(Language)id` via `language.FindByID`. Per Language.cs:196-199, id=0 returns `Unknown` (not a 404 — C# `FindById(0) => Unknown`). Unknown ids return 404 (C# `FindById` throws ArgumentException → openapi-documented 404 response). Invalid id format (non-numeric path segment) → 400.
+- `LocalizationByIDHandler`: parses + ignores the id (matches C# `:23-26` which ignores the `int id` parameter and unconditionally delegates to `_localizationService.GetLocalizationDictionary().ToResource()`). Invalid id format still returns 400 because we parse before discarding — this keeps the wire surface consistent with other ByID endpoints.
+
+**Slice scope** — 345 lines (171 source + 174 test) + 1 import + 5 routes:
+
+- New `internal/api/v5/localization/localization.go` (171 LOC) — 4 type aliases (`LanguageResource`, `LocalizationResource`, `LocalizationLanguageResource`, `StringsLister`) + 3 variable aliases (`LanguageHandler` / `LocalizationHandler` / `LocalizationLanguageHandler`) + 2 new handler funcs (`LanguageByIDHandler` + `LocalizationByIDHandler`) + 1 private `writeJSON` helper.
+- New `internal/api/v5/localization/localization_test.go` (174 LOC) — 9 tests: path-alias smoke for language list / localization dict / localization-language identifier; LanguageByID-found-returns-200 + LanguageByID-unknown-returns-404 + LanguageByID-zero-returns-Unknown (C# parity) + LanguageByID-invalid-format-returns-400; LocalizationByID-any-id-returns-dict (asserts both id=1 and id=999 return the same body — pins the C# "id ignored" contract) + LocalizationByID-invalid-format-returns-400; type-aliases match v3 compile-time pin + variable-aliases non-nil.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`localizationv5`) + 5 new routes alongside the existing v3 routes. Re-uses `langs`, `localizationSvc`, `configProv.UILanguage` deps that already back v3.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/localization/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/localization/...` ✓ (9 tests, 1.7s).
+
+**v5 surface coverage**: 18/~50 → 19/~50.
+
+Pattern observation: This is the first Wave 3 slice where v5 covers MORE endpoints than the v3 Go-port — the `/{id}` variants for /language and /localization are openapi-declared in v3 but never wired in the Go-port. Closing that gap on v5 only (without backfilling v3) is the right call because the v3 omission is a separate audit item (Wave 4) and adding v3 handlers in the same slice would scope-creep. If those v3 audit items land later, the v5 handlers can be retro-aliased to v3 via the standard alias pattern — but this is optional cleanup, not a contract gap.
+
+### Next Wave 3 candidates ascending
+
+Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).
