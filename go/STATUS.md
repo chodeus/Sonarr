@@ -8962,3 +8962,64 @@ Hard gates clean: `go build ./...` no errors, `go test ./...` 0 FAIL (incl. exis
 Net diff: ~210 internal/api/v5/customformat/customformat.go (new file — package doc-comment + 5 type aliases + 5 re-exported handlers + 3 new handlers + 1 helper) + ~250 internal/api/v5/customformat/customformat_test.go (new file — fakeWriter helper + 14 tests) + ~20 internal/api/v3/customformat.go (2 new exported helper wrappers + doc-comment ordering fix) + ~12 cmd/sonarr/host_wiring.go (1 new import + 8 new route bindings + slice anchor comment) + ~3 PROGRESS.md + ~36 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md (C.1.b row strikethrough + CLOSED summary).
 
 Behavioural impact: clients that target `/api/v5/customformat` get the typed-result statuses upstream callers (e.g. third-party tooling that consumes the OpenAPI schema in `src/Sonarr.Api.V5/openapi.json`) expect. The v3 surface stays bit-perfect — no consumer of `/api/v3/customformat` sees any change. The pattern proves out for the next three slices: C.1.c (ImportList — same shape, same bulk-resource pattern) → C.1.d (ImportList Settings) → C.1.e (AutoTagging). The type-alias + re-exported-handler + new-handler-only-for-divergence approach minimises duplication while keeping a clean per-version package boundary. C.1 backlog now down to 3 open sub-items: c/d/e (the remaining new v5 endpoint families) + i (the contract-replay re-baseline including the deferred localization refresh).
+
+## Phase 5.J223 — v5 ImportList controller (audit row C.1.c closed) — 2026-05-26
+
+Second slice in the v5 endpoint family. The C# v5 `ImportListController` inherits from `ProviderControllerBase<TResource, TBulkResource, ...>` which mirrors v3's provider-base verbatim on wire shapes but tightens response statuses via `TypedResults`. FOUR status codes flip vs v3 (one more than J222 customformat, because providers also have a POST /test endpoint):
+
+  - `DELETE /api/v5/importlist/{id}` → 204 No Content (v3 returns 200 + `{}`).
+  - `POST /api/v5/importlist/test` → 204 No Content (v3 returns 200 + `{}` on success — validation-failure 400 path unchanged).
+  - `PUT /api/v5/importlist/bulk` → 200 OK with body (v3 returns 202 Accepted with the same body).
+  - `DELETE /api/v5/importlist/bulk` → 204 No Content (v3 returns 200 + `{}`).
+
+All other endpoints (GET list / GET by-id / GET schema / POST / PUT /{id} / POST /testall / POST /action/{name}) produce identical statuses + bodies between v3 and v5.
+
+Implementation approach — response-rewriting middleware (NOT handler duplication):
+
+Two small wrappers in `internal/api/v5/importlist/importlist.go`:
+  - `rewriteSuccessTo204(h http.Handler) http.Handler` — wraps a v3 handler whose happy path writes `200 + `{}` body`; rewrites that EXACT shape to `204 + empty body`. Other statuses (4xx / 5xx) and other 200-body shapes pass through verbatim, preserving the v3 error-envelope contracts and any future success-body changes. Content-Type is stripped on 204 downgrades to match C# `TypedResults.NoContent()` no-header semantics.
+  - `rewrite202To200(h http.Handler) http.Handler` — wraps a v3 handler whose happy path writes 202 Accepted with a body; demotes the status to 200 OK while preserving the body byte-for-byte. Any other status passes through unchanged.
+
+Supporting type: `bufferingWriter` — a 12-LOC minimal `http.ResponseWriter` recorder that captures status / headers / body into memory. The wrapper invokes the v3 handler against this buffer, then decides whether to forward verbatim, demote status, or strip body. The first-call-wins WriteHeader semantic mirrors `net/http`'s real ResponseWriter.
+
+Why this beats J222's duplicate-and-modify:
+  - The v3 ImportList handlers contain non-trivial logic — SignalR Deleted/Updated broadcast emission via `signalr.FireAndLog`, validation chains, body parsing, error envelope generation. Duplicating that into v5 would either (a) duplicate ~150 LOC of business logic, or (b) require exporting half the v3 unexported helper surface. Both options expand maintenance burden and create drift risk.
+  - The middleware approach keeps v3's tested logic as the single source of truth. v5 is genuinely a thin response-shape adapter — no fork in CUD semantics, no fork in validation, no fork in broadcast emission.
+  - Trade-off: an extra in-memory buffer per v5 request (acceptable — these are CRUD handlers handling JSON < 100 KB, not hot paths). The buffer is per-request, freed on handler return.
+
+Re-exported handlers (status codes match v3, no rewriter needed):
+  - `ListHandler = apiv3.ImportListHandler`
+  - `ByIDHandler = apiv3.ImportListByIDHandler`
+  - `SchemaHandler = apiv3.ImportListSchemaHandler`
+  - `CreateHandler = apiv3.ImportListCreateHandler`
+  - `UpdateHandler = apiv3.ImportListUpdateHandler`
+  - `TestAllHandler = apiv3.ImportListTestAllHandler`
+  - `RequestActionHandler = apiv3.ImportListRequestActionHandler`
+
+Type aliases (split into 6 individual `type X = apiv3.Y` declarations after revive flagged the original grouped `type ( ... )` block — revive requires per-type doc comments on exported aliases):
+  - `Resource = apiv3.ImportListResource`
+  - `BulkResource = apiv3.ImportListBulkResource`
+  - `Lister = apiv3.ImportListLister`
+  - `ByIDGetter = apiv3.ImportListByIDGetter`
+  - `Writer = apiv3.ImportListWriter`
+  - `Emitter = apiv3.ImportListEmitter`
+  - `Tester = apiv3.ImportListTester`
+  - `Actioner = apiv3.ImportListActioner`
+
+Wiring in cmd/sonarr/host_wiring.go: added 11 routes at `/api/v5/importlist*` directly below the existing v3 importlist block — full CRUD + bulk PUT/DELETE + POST /test + POST /testall + POST /action/{name} + GET /schema. New import: `importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"`.
+
+Query-param divergence DEFERRED: C# v5 renames v3's `?forceSave=` to `?skipTesting=&skipValidation=` on POST + PUT. The Go-port's v3 importlist handlers do not implement `forceSave` (the test step is unwired into the CRUD flow today). Both v3 and v5 ignore the query params with consistent posture — a follow-up slice can port both at once when the importlist Test seam is fully integrated into CUD. This consistent-divergence-from-C# stance is documented in the v5 package doc-comment.
+
+Test coverage (internal/api/v5/importlist/importlist_test.go — NEW, ~310 LOC, 14 tests):
+  - DELETE /{id}: NoContent204 happy path (pins 204 + empty body + Content-Type stripped + Deleted broadcast still fires) + NotFound404PassesThrough + InvalidID400PassesThrough.
+  - POST /test: NoContent204 happy path (pins 204 + empty body) + ValidationFailurePassesThrough (400 with body bubbles unchanged).
+  - PUT /bulk: OK200 happy path (pins the 202→200 demotion + body preserved + Updated broadcasts fire) + EmptyIds400 (bubbles through).
+  - DELETE /bulk: NoContent204 happy path (204 + empty + Deleted broadcasts fire) + EmptyIds400PassesThrough.
+  - Reexported smoke: 7 non-nil checks on List / ByID / Schema / Create / Update / TestAll / RequestAction aliases.
+  - Middleware unit tests: rewriteSuccessTo204 non-`{}` body passes through (pins predicate — only `{}` triggers downgrade) + rewriteSuccessTo204 Content-Type stripped on 204 + rewrite202To200 body preserved (200 returned, body unchanged, Content-Type preserved) + rewrite202To200 non-Accepted passes through (4xx error path with body intact).
+
+Hard gates clean: `go build ./...` no errors, `go test ./...` 0 FAIL, `golangci-lint run ./internal/api/v5/importlist/... ./cmd/sonarr/...` 0 issues (3 revive nits surfaced on first iteration — grouped-type-alias doc comment + 2 unexported-method-name-collides-with-interface comments — all fixed by splitting the type block + adding 3 short doc comments).
+
+Net diff: ~225 internal/api/v5/importlist/importlist.go (new file — package doc-comment + 8 type aliases with individual doc comments + 7 re-exported handlers + 4 v5-specific handlers + 2 response-rewriting middleware functions + 1 bufferingWriter type with 3 methods + 2 copyHeaders helpers) + ~310 internal/api/v5/importlist/importlist_test.go (new file — 5 fake types + 14 tests + 1 helper) + ~17 cmd/sonarr/host_wiring.go (1 new import + 11 new route bindings + 1 slice anchor comment) + ~3 PROGRESS.md + ~36 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md (C.1.c row strikethrough + CLOSED summary).
+
+Behavioural impact: clients targeting `/api/v5/importlist` get the v5 typed-result statuses upstream callers (third-party tooling consuming `src/Sonarr.Api.V5/openapi.json`) expect. The v3 surface stays bit-perfect. The middleware approach is reusable for C.1.d (ImportList Settings — likely similar pattern) and may also apply to C.1.e (AutoTagging — depends on the shape there). C.1 backlog now down to 2 open sub-items: d (ImportList Settings — likely small) + e (AutoTagging — may need an internal/autotagging port first) + i (contract-replay re-baseline). The v5 endpoint family is more than half ported (2/4 controllers done).

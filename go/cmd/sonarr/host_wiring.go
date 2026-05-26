@@ -11,6 +11,7 @@ import (
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	customformatv5 "sonarr.tv/sonarr/internal/api/v5/customformat"
+	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/backup"
@@ -1269,6 +1270,20 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "DELETE", Path: "/api/v3/importlist/bulk", Handler: apiv3.ImportListBulkDeleteHandler(importListsRepo, importListEmitter)},
 		{Method: "PUT", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListUpdateHandler(importListsRepo, importListEmitter)},
 		{Method: "DELETE", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListDeleteHandler(importListsRepo, importListEmitter)},
+		// v5 ImportList — same wire shape as v3, tightened status
+		// codes on DELETE /{id} (204), POST /test (204), PUT /bulk (200),
+		// DELETE /bulk (204 empty). Audit row C.1.c — closed 5.J223.
+		{Method: "GET", Path: "/api/v5/importlist", Handler: importlistv5.ListHandler(importListsRepo)},
+		{Method: "GET", Path: "/api/v5/importlist/schema", Handler: importlistv5.SchemaHandler()},
+		{Method: "GET", Path: "/api/v5/importlist/{id}", Handler: importlistv5.ByIDHandler(importListsRepo)},
+		{Method: "POST", Path: "/api/v5/importlist", Handler: importlistv5.CreateHandler(importListsRepo, importListEmitter)},
+		{Method: "POST", Path: "/api/v5/importlist/test", Handler: importlistv5.TestHandler(importListTester)},
+		{Method: "POST", Path: "/api/v5/importlist/testall", Handler: importlistv5.TestAllHandler(importListsRepo, importListTester)},
+		{Method: "POST", Path: "/api/v5/importlist/action/{name}", Handler: importlistv5.RequestActionHandler(importListTester)},
+		{Method: "PUT", Path: "/api/v5/importlist/bulk", Handler: importlistv5.BulkUpdateHandler(importListsRepo, importListEmitter)},
+		{Method: "DELETE", Path: "/api/v5/importlist/bulk", Handler: importlistv5.BulkDeleteHandler(importListsRepo, importListEmitter)},
+		{Method: "PUT", Path: "/api/v5/importlist/{id}", Handler: importlistv5.UpdateHandler(importListsRepo, importListEmitter)},
+		{Method: "DELETE", Path: "/api/v5/importlist/{id}", Handler: importlistv5.DeleteHandler(importListsRepo, importListEmitter)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion", Handler: apiv3.ImportListExclusionHandler(importListExclusionsRepo)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion/paged", Handler: apiv3.ImportListExclusionPagedHandler(importListExclusionsRepo)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion/{id}", Handler: apiv3.ImportListExclusionByIDHandler(importListExclusionsRepo)},
