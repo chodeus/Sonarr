@@ -10418,3 +10418,130 @@ The deferred Phase 6 arcs (per the loop prompt's DO NOT TOUCH list) remain expli
 - **Phase 6.4 cutover commit** — gated on 14+ days of zero unexplained diff in the 6.1 shadow-traffic daily reports; needs staging URLs + the nightly contract gate (J242) actively gating real traffic.
 
 At J247 the loop has nothing left to autonomously close. The next tick should re-orient (per loop standing instructions) and look for unanchored work in `AUDIT_FIX_BACKLOG.md` / `PHASE_6_SCOPE.md` / `STATUS.md` tail; if nothing surfaces (which is the expected state), the loop should STOP with a "loop drained" paragraph per the standing block-policy rather than invent slices.
+
+## Phase 5.J248 — Windows getActualCasing impl (Wave 1 deferred sub-arc)
+
+### Why
+
+J208 closed the path-canonicalisation arc with `normalizePath(path) (string, error)` as the always-on first half of C# `RefreshSeriesService.cs:118` (`new DirectoryInfo(series.Path).FullName`), AND with `getActualCasing(path) string` as a no-op stub on all platforms — the second half. The C# extension at `PathExtensions.cs:213-236` is genuinely no-op on non-Windows (short-circuits via `if OsInfo.IsNotWindows`), so the J208 stub matched C# verbatim for the Linux containers Sonarr primarily runs on. Windows behaviour was deferred per the J208 doc-comment: "When that slice lands it can split this function into build-tagged files (`pathcasing_windows.go` + `pathcasing_other.go`) without changing the call site at RefreshSeriesInfo."
+
+J248 lands that split. The user-visible payoff is small (a Sonarr install on Windows that has a series Path entered in non-canonical casing — e.g. `C:\\media\\BREAKING.BAD\\` vs the on-disk `C:\\Media\\Breaking.Bad\\` — will now have the persisted Path normalised to the on-disk form). But the slice mainly closes a captured-during-completion debt item — the kind of TODO that erodes confidence in the port if it lingers.
+
+### Structure
+
+Three files under `internal/refreshseries/`:
+
+**`pathcasing.go`** (always-on) — keeps `normalizePath` from J208 verbatim, removes the `getActualCasing` stub, adds the new `caseFixWalker(path, readDir)` helper. Signature uses `io/fs.DirEntry` rather than `os.DirEntry` so the readDir callback is injectable (tests pass fakes; live callers pass `os.ReadDir` adapted via a one-line closure).
+
+```go
+func caseFixWalker(path string, readDir func(string) ([]fs.DirEntry, error)) string {
+    parent := filepath.Dir(path)
+    if parent == path {
+        return strings.ToUpper(path)
+    }
+    name := filepath.Base(path)
+    parentCased := caseFixWalker(parent, readDir)
+    if entries, err := readDir(parentCased); err == nil {
+        for _, e := range entries {
+            if strings.EqualFold(e.Name(), name) {
+                return filepath.Join(parentCased, e.Name())
+            }
+        }
+    }
+    return filepath.Join(parentCased, name)
+}
+```
+
+Ports the C# `GetProperCapitalization` recursion at `:194-211`. Behaviour rules pinned verbatim from C#:
+
+- Root segment (when `filepath.Dir(p) == p` — drive letter on Windows or `/` on POSIX) gets `strings.ToUpper` applied. Matches C# `:199 dirInfo.Name.ToUpper()`. On POSIX `strings.ToUpper("/") == "/"` so this is a no-op for the root step.
+- Non-root segments: ReadDir the case-corrected parent, scan for case-insensitive name match, use on-disk casing if found.
+- ReadDir failure (permission denied, parent missing) → preserve input casing for that segment + continue walking down with case-corrected ancestor prefix. Matches the absorb-and-keep-walking posture C# relies on (DirectoryInfo doesn't throw for missing parents).
+- No case-insensitive match in readDir output → preserve input casing for that segment. Matches C# `:204-207` where `folderName` defaults to `dirInfo.Name`.
+
+**`pathcasing_other.go`** (`//go:build !windows`) — three-line no-op `getActualCasing`. Mirrors C# `:215-218` (`if OsInfo.IsNotWindows`). POSIX filesystems are typically case-sensitive (ext4 / XFS / APFS-default) so on-disk casing IS the input casing; nothing to recover.
+
+**`pathcasing_windows.go`** (`//go:build windows`) — real entry point:
+
+```go
+func getActualCasing(path string) string {
+    if len(path) == 0 {
+        return path
+    }
+    if path[0] == '\\' || path[0] == '/' {
+        return path
+    }
+    return caseFixWalker(path, func(p string) ([]fs.DirEntry, error) {
+        return os.ReadDir(p)
+    })
+}
+```
+
+The UNC + leading-slash bail matches C# `:215-218 path.StartsWith("\\")`. C# additionally bails on bare leading-backslash relative paths (`\foo`) — Go has the same guard. The extra `/` guard is defensive in case Go's path normalisation converted a separator inbound; doesn't change C# semantics on Windows where `\\` is the canonical form.
+
+### Why the algorithm lives outside the build-tagged files
+
+Two reasons:
+
+1. **Cross-platform unit testability.** With `caseFixWalker` always-on, tests inject a fake `readDir` from a `map[parent][]name` fixture and exercise every behaviour rule (recovery, missing segment, no match, root uppercase, always-fail) on the dev's macOS box. Without this extraction the Windows-only code would be untestable until someone boots a Windows VM.
+2. **Future-proofing.** If a similar parent-walk casing recovery becomes useful in a Linux context (e.g. case-insensitive filesystem mounts like exFAT or NTFS-over-CIFS), the algorithm is already isolated and can be wired without rewriting.
+
+### Tests
+
+**`pathcasing_test.go`** (cross-platform, 5 new tests via fake readDir):
+
+- `TestCaseFixWalker_RecoversOnDiskCasing` — happy path: fixture has `/tmp/Refresh/Show`; input `/tmp/REFRESH/show` returns `/tmp/Refresh/Show`. Mirrors C# regression test at `PathExtensionFixture.cs:247-263`.
+- `TestCaseFixWalker_PreservesInputOnMissingSegment` — fixture has `/tmp/Refresh` but no entries below; input `/tmp/REFRESH/show` returns `/tmp/Refresh/show` (parent recovered, tail preserved).
+- `TestCaseFixWalker_PreservesInputOnNoMatch` — fixture has `/tmp/OtherDir` but no "Refresh" entry; input `/tmp/refresh` returns `/tmp/refresh` verbatim.
+- `TestCaseFixWalker_UppercasesRoot` — exercises the `ToUpper(root)` rule via a path that recurses to "/". POSIX `ToUpper("/") == "/"` so this also serves as a no-regression guard on the root step.
+- `TestCaseFixWalker_ReadDirAlwaysErrors` — every parent lookup returns `fs.ErrPermission`; every segment retains input casing.
+
+The fake readDir builds `fs.DirEntry` instances via a small `fakeEntry` struct implementing the interface (Name + IsDir + Type + Info methods). Path keys in the fixture use `/` so the tests run identically on macOS and Linux without separator conditionals.
+
+**`pathcasing_other_test.go`** (`//go:build !windows`, 1 test) — re-pins the no-op contract on POSIX builds. Without this the contract would be implicit ("trust the algorithm wasn't run"); with it the contract is explicit ("verified the function returns input verbatim for these inputs").
+
+**`pathcasing_windows_test.go`** (`//go:build windows`, 5 tests, real filesystem) — integration tests that only run on Windows hosts:
+
+- `TestGetActualCasing_WalksParents` — creates `<tmp>/MixedCase/SubDir/Leaf.txt`; asserts `getActualCasing("<tmp>/MIXEDCASE/subdir/LEAF.txt")` returns the canonical form.
+- `TestGetActualCasing_PreservesNonExistentTail` — creates `<tmp>/RealParent`; asserts `getActualCasing("<tmp>/realparent/doesNotExist.txt")` recovers the parent casing but preserves the non-existent tail.
+- `TestGetActualCasing_UNCReturnsUnchanged` — pins the `\\\\server\\share\\...` + `\\foo\\bar` bail.
+- `TestGetActualCasing_Empty` — empty string returns empty string (avoids crash inside `filepath.Dir` recursion).
+- `TestGetActualCasing_UppercaseDriveLetter` — mangle the temp dir drive letter to lowercase, walk back, assert the result starts with the upper-cased letter + colon. Skips if the temp dir isn't on a drive letter (CI runners on Linux that somehow ran the Windows test would skip cleanly).
+
+The Windows tests use `t.TempDir()` which on Windows lives on the drive the OS configured. No cleanup needed — `t.TempDir` handles removal.
+
+### Hard gates
+
+Native (host macOS):
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/refreshseries/...
+(clean)
+
+$ go test -race -count=1 ./internal/refreshseries/...
+ok  sonarr.tv/sonarr/internal/refreshseries  1.662s
+```
+
+Cross-compile (Windows target):
+
+```
+$ GOOS=windows go build ./internal/refreshseries/...
+(clean — pathcasing_windows.go compiles)
+
+$ GOOS=windows go vet ./internal/refreshseries/...
+(clean)
+
+$ GOOS=windows GOARCH=amd64 go test -count=1 -c -o /tmp/x.test ./internal/refreshseries/
+(clean — test binary builds; -race omitted because cross-compile lacks cgo)
+```
+
+The race-check on the Windows-specific tests would require a real Windows host (cgo + Windows-native compiler); deferred until a Windows-CI lane lands or until an operator runs the tests on a real Windows box. For now the cross-compile test-binary build confirms the Windows code is structurally sound + statically type-clean.
+
+### Slice (Wave 1 item 1) closes
+
+Wave 1 candidates remaining: J237 release-POST sub-arcs (3 items), EpisodeRefreshedService re-search consumer, image-download subscriber, CutoffUnmetEpisodeSearchCommand handler. Plus any new deferred items captured during in-progress work.
+
+Next tick: pick next Wave 1 candidate (likely EpisodeRefreshedService re-search consumer — small, well-scoped, captures-the-J207-flag).

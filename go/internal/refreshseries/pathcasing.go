@@ -2,7 +2,9 @@ package refreshseries
 
 import (
 	"errors"
+	"io/fs"
 	"path/filepath"
+	"strings"
 )
 
 // normalizePath ports the first half of C# `RefreshSeriesService.cs:118`
@@ -33,28 +35,50 @@ func normalizePath(path string) (string, error) {
 	return abs, nil
 }
 
-// getActualCasing ports the Windows-only second half of C#
-// `RefreshSeriesService.cs:119` `series.Path = series.Path.GetActualCasing()`,
-// where `GetActualCasing` is the extension defined at C#
-// `NzbDrone.Common/Extensions/PathExtensions.cs:213-236`.
+// caseFixWalker is the cross-platform-testable core of `getActualCasing`.
+// It walks the parent chain of `path`, recursively recovering on-disk
+// casing for each segment via case-insensitive match against the
+// supplied readDir callback. Mirrors C# `PathExtensions.GetProperCapitalization`
+// at `:194-211` (the recursive helper that backs `GetActualCasing`).
 //
-// On non-Windows the C# extension is a no-op (returns input
-// unchanged at `:215-218 if OsInfo.IsNotWindows || path.StartsWith("\\")`).
-// On Windows it walks parent directories enumerating
-// `parentDir.GetDirectories(dirInfo.Name)[0].Name` so the on-disk
-// casing recovers regardless of what the user typed in the UI when
-// setting the series path.
+// Behaviour rules (mirrored from C# verbatim):
 //
-// For the Go-port this slice ships the no-op behaviour on ALL
-// platforms — implementing the Windows parent-walk casing recovery
-// requires Win32 directory enumeration semantics (FindFirstFile and
-// friends) which is a non-trivial slice on its own and is irrelevant
-// on Linux containers where Sonarr primarily runs. When that slice
-// lands it can split this function into build-tagged files
-// (`pathcasing_windows.go` + `pathcasing_other.go`) without changing
-// the call site at RefreshSeriesInfo.
+//   - The root (when `filepath.Dir(p) == p`, i.e. drive letter on
+//     Windows or "/" on POSIX) is upper-cased. Matches C# `:199`
+//     `dirInfo.Name.ToUpper()`. POSIX root "/" upper-cases to itself
+//     so this is a no-op on Linux/macOS for the root step.
+//   - For each non-root segment we call `readDir(parentCased)` and
+//     scan for a case-insensitive match against the leaf segment. If
+//     found, we use the on-disk casing; otherwise we keep the input
+//     casing (matches C# `:204-207` where folderName defaults to
+//     `dirInfo.Name` when the directory doesn't exist).
+//   - A readDir error (parent missing / permission denied) preserves
+//     input casing for that segment AND continues the walk down with
+//     the case-corrected ancestor prefix. Matches the absorb-and-keep-
+//     walking posture of the C# recursion (it relies on `DirectoryInfo`
+//     not throwing for missing parents).
 //
-// J208.
-func getActualCasing(path string) string {
-	return path
+// The injected `readDir` parameter exists so unit tests can exercise
+// the algorithm with a fake filesystem on any host platform — the
+// build-tagged callers (`pathcasing_windows.go`, `pathcasing_other.go`)
+// pass `os.ReadDir` when invoking for real.
+//
+// J248.
+func caseFixWalker(path string, readDir func(string) ([]fs.DirEntry, error)) string {
+	parent := filepath.Dir(path)
+	if parent == path {
+		// Root reached (drive letter on Windows, "/" on POSIX).
+		return strings.ToUpper(path)
+	}
+	name := filepath.Base(path)
+	parentCased := caseFixWalker(parent, readDir)
+
+	if entries, err := readDir(parentCased); err == nil {
+		for _, e := range entries {
+			if strings.EqualFold(e.Name(), name) {
+				return filepath.Join(parentCased, e.Name())
+			}
+		}
+	}
+	return filepath.Join(parentCased, name)
 }
