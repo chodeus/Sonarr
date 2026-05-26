@@ -19,6 +19,7 @@ import (
 	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
 	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
+	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
@@ -1280,6 +1281,10 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v5/customfilter", Handler: customfilterv5.CreateHandler(customFiltersSvc)},
 		{Method: "PUT", Path: "/api/v5/customfilter/{id}", Handler: customfilterv5.UpdateHandler(customFiltersSvc)},
 		{Method: "DELETE", Path: "/api/v5/customfilter/{id}", Handler: customfilterv5.DeleteHandler(customFiltersSvc)},
+		// J258 — v5 Parse endpoint family (single GET; v5 differs from
+		// v3 ONLY in the empty-input case — v3 emits literal `null`,
+		// v5 emits a ParseResource object with `title` field).
+		{Method: "GET", Path: "/api/v5/parse", Handler: parsev5.GetHandler()},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to

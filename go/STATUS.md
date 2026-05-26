@@ -11530,3 +11530,142 @@ The future-proof shape: subsequent Wave 3 slices needing wrappers add 1 line per
 
 Parse (101) — POST with body; check v5 openapi for shape divergence vs v3.
 Update (121), RemotePathMappings (122), Blocklist (127), RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143).
+
+## Phase 5.J258 — v5 Parse family (Wave 3)
+
+### What
+
+`internal/api/v5/parse/` package + 1 new route at `/api/v5/parse`. Seventh Wave 3 slice.
+
+### Wire-shape diff vs v3 — the SOLE divergence is the empty-input case
+
+The v5 controller (`src/Sonarr.Api.V5/Parse/ParseController.cs`, 101 LOC) has a single GET endpoint:
+
+```csharp
+[HttpGet]
+[Produces("application/json")]
+public Ok<ParseResource> Parse(string? title, string? path)
+{
+    if (title.IsNullOrWhiteSpace())
+    {
+        return TypedResults.Ok(new ParseResource { Title = title });
+    }
+    // ... parser pipeline
+}
+```
+
+The CRITICAL detail is the empty-input branch returning `Ok<ParseResource>(new ParseResource { Title = title })`. Wire-shape: a JSON OBJECT `{"title": <input-or-null>}`. The v3 Go-port handler (per `internal/api/v3/parse.go:42-49`) emits the LITERAL JSON `null` in the same scenario:
+
+```go
+if title == "" && path == "" {
+    w.Header().Set("Content-Type", "application/json; charset=utf-8")
+    w.WriteHeader(http.StatusOK)
+    _, _ = w.Write([]byte(`null`))
+    return
+}
+```
+
+This is a real wire divergence — UI code that does `if (response === null)` on v3 would not crash, but the same code on v5 would fall through to `response.title === undefined` checks. The slice must NOT path-alias the v3 handler; it MUST emit the v5 contract.
+
+Other branches match v3 line-for-line:
+
+- Path takes precedence over title (matches C# `if (path.IsNotNullOrWhiteSpace())`).
+- Parser returns nil → 200 + ParseResource{Title} (same shape as the empty-input case, except Title is the original input).
+- Parser returns non-nil → 200 + ParseResource{Title, ParsedEpisodeInfo}.
+
+### Why the joined fields stay deferred
+
+The C# v5 `ParseResource` has 7 fields:
+
+```csharp
+public class ParseResource : RestResource
+{
+    public string? Title { get; set; }
+    public ParsedEpisodeInfo? ParsedEpisodeInfo { get; set; }
+    public SeriesResource? Series { get; set; }
+    public List<EpisodeResource>? Episodes { get; set; }
+    public List<Language>? Languages { get; set; }
+    public List<CustomFormatResource>? CustomFormats { get; set; }
+    public int CustomFormatScore { get; set; }
+}
+```
+
+The last 5 (Series / Episodes / Languages / CustomFormats / CustomFormatScore) need:
+
+- `parsingService.Map(parsedEpisodeInfo, 0, 0, null)` — maps the parsed info to a `RemoteEpisode` with Series/Episodes joined from the database via TVDB lookup.
+- `aggregationService.Augment(remoteEpisode)` — adds languages by walking the parsed-info + media-info heuristics.
+- `formatCalculator.ParseCustomFormat(remoteEpisode, 0)` — runs the custom-format spec engine against the release.
+- `series.QualityProfile.CalculateCustomFormatScore(...)` — computes the score.
+
+None of that pipeline is ported to Go yet. The v3 Go-port handler explicitly defers it (doc-comment at parse.go:10-16); v5 inherits the same deferral. Once `internal/parsingservice` + `internal/customformats/calculator` + `internal/series/qualityprofiles` get the Map + Calculate methods, both v3 and v5 handlers can widen the Resource projection to fill in the joined fields. Until then, both emit the minimal `{title, parsedEpisodeInfo}` shape — which BYTE-EQUIVALENTLY matches what C# v5 also emits when its parsingService.Map returns null.
+
+So in steady-state operation today, the v3 and v5 Go-port responses are byte-identical on populated-title queries (both emit the minimal shape). The ONLY observable wire diff is the empty-input case — and that's what this slice's tests pin.
+
+### Code
+
+`parse.go` (~80 LOC including doc-comments):
+
+```go
+type Resource = apiv3.ParseResource
+
+func GetHandler() http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        q := r.URL.Query()
+        title := q.Get("title")
+        path := q.Get("path")
+        // v5 empty-input branch: object with Title field (not literal null).
+        if title == "" && path == "" {
+            writeJSON(w, Resource{Title: title})
+            return
+        }
+        var parsed *parser.ParsedEpisodeInfo
+        if path != "" {
+            parsed = parser.ParsePath(path)
+        } else {
+            parsed = parser.ParseTitle(title)
+        }
+        writeJSON(w, Resource{Title: title, ParsedEpisodeInfo: parsed})
+    })
+}
+```
+
+The `Resource` type alias means when the joined-field pipeline lands, fixing the v3 Resource (adding the 5 fields with omitempty) automatically widens the v5 emit shape too — no separate v5 work needed.
+
+### Tests (5)
+
+- `TestGetHandler_EmptyInput_ReturnsObjectNotNull` — the canonical divergence guard. Empty query → asserts body is NOT literal `"null"`, decodes as Resource, contains `"title":""`.
+- `TestGetHandler_TitleWithoutEpisodeInfo` — `title=random+gibberish+nothing+to+see` → Resource with Title set, ParsedEpisodeInfo undefined (parser may or may not return nil; doesn't assert).
+- `TestGetHandler_TitleParses` — `title=Breaking.Bad.S01E01.720p.HDTV.x264` → ParsedEpisodeInfo NON-nil (real parser dispatch).
+- `TestGetHandler_PathTakesPrecedence` — both title + path supplied; handler accepts; sanity check that the path branch is reachable.
+- `TestTypeAliasMatchesV3` — compile-time invariant guard.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/api/v5/parse/...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v5/parse/...
+ok  sonarr.tv/sonarr/internal/api/v5/parse  1.668s
+```
+
+### v5 surface progress
+
+10/~50 → 11/~50 families. Endpoints added: 1.
+
+### Pattern footnote
+
+J258 demonstrates a wire-divergence variant the J254 STATUS pattern-guide didn't enumerate: the body SHAPE in one branch differs (literal null vs object) without the resource TYPE changing. The pattern recipe is:
+
+1. If body SHAPE differs in the empty / null / fallback case (J258 Parse) → write a v5-specific handler reusing the v3 Resource type alias.
+2. If body FIELDS differ on the populated case (J254 Health) → write a v5-specific Resource type + custom mapper.
+3. If only status differs → v5util wrappers (J253/J255/J257).
+
+Both (1) and (2) need v5-specific handlers; the difference is whether the Resource type itself needs to fork. In Parse's case, the Resource doesn't fork (same shape across versions even though one branch handles it differently); in Health's case, the Resource forks because v5 added a `reason` field.
+
+### Next Wave 3 candidates ascending
+
+Update (121), RemotePathMappings (122), Blocklist (127), RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143), Connections (154).
