@@ -12139,3 +12139,31 @@ Pattern noted: when writing tests for an API package whose Resource projects fro
 ### Next Wave 3 candidates ascending
 
 Wanted (136), Indexers (139), Localization (143), Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).
+
+## Phase 5.J264 — Wave 3 thirteenth slice: v5 Wanted family port (136 LOC C# source)
+
+Pure path-alias slice (J251/J252/J259 pattern). v5 wanted/missing + wanted/cutoff (+ by-id) controllers (`src/Sonarr.Api.V5/Wanted/MissingController.cs` + `CutoffController.cs`) total 136 LOC of C# source. Both inherit `EpisodeControllerWithSignalR` and emit `Ok<PagingResource<EpisodeResource>>` (200 OK) — same status + envelope as v3.
+
+**Wire-contract diff vs v3** (per openapi `:1237-1410` + `:4117-4222`):
+
+1. **Status / envelope / Resource: IDENTICAL.** Both versions return 200 + `PagingResource<EpisodeResource>` for list endpoints and `EpisodeResource` / 404 for by-id endpoints. Default sort matches: `sortKey="episodes.airDateUtc"`, `sortDirection=Ascending`.
+2. **Query-param shape differs.** v3 takes three independent bools (`includeSeries`/`includeImages`/`includeEpisodeFile`) plus `monitored`. v5 collapses to one CSV enum array `includeSubresources` of `MissingSubresource` (Series, Images) or `CutoffSubresource` (Series, EpisodeFile, Images); v5 missing also adds `includeSpecials` (default true). At the empty-corpus level this is invisible because the v3 Go-port `wantedRepoLister` stub ignores ALL sub-resource flags and returns the base EpisodeResource projection regardless.
+3. **EpisodeResource widens in v5.** v5 EpisodeResource adds `EndTime?` + `GrabDate?` and marks more fields nullable; v3 Go-port's reduced Resource (no Series/EpisodeFile/Images hydration anyway) doesn't expose the divergence at the empty-corpus envelope (`records: []`).
+
+Both populated-row divergences (`includeSubresources` enum CSV + EndTime/GrabDate fields) sit on the SAME Wave 1 deferral chain as J258 (Parse) and J261 (Blocklist): they need the custom-format calculator + Series/EpisodeFile join port to land before the v5 wire surface gets its own projector. Until then the path-alias matches the recorded empty-DB golden.
+
+**Slice scope** — 221 lines (95 source + 126 test) + 1 import + 4 routes in host_wiring.go:
+
+- New `internal/api/v5/wanted/wanted.go` (95 LOC) — 5 type aliases (`Resource = apiv3.EpisodeResource`, `Scope = apiv3.WantedScope`, `EpisodeLister = apiv3.WantedEpisodeLister`, `EpisodeByIDGetter = apiv3.EpisodeByIDGetter`) + 2 const re-exports (`ScopeMissing = apiv3.WantedMissing`, `ScopeCutoff = apiv3.WantedCutoff`) + 2 variable aliases (`ListHandler = apiv3.WantedHandler`, `ByIDHandler = apiv3.EpisodeByIDHandler`). NO new handler code — pure re-export.
+- New `internal/api/v5/wanted/wanted_test.go` (126 LOC) — 5 tests: list-empty-corpus-path-alias-shape (BOTH scopes pinned in the same loop, asserts `records:[]` and default sortKey), list-status-matches-v3 (200 + Content-Type pin), ByID-NotFound→404, ByID-Found→200 with Resource round-trip, type-aliases compile-time pin.
+- `cmd/sonarr/host_wiring.go`: 1 new import (`wantedv5`) + 4 new routes alongside the existing v3 routes (`GET /api/v5/wanted/{missing,cutoff}` + `GET /api/v5/wanted/{missing,cutoff}/{id}`). Empty-corpus parity is preserved by re-using the existing `wantedRepoLister{episodes: episodesRepo, now: time.Now}` adapter that already backs v3.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/wanted/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/wanted/...` ✓ (5 tests, 1.6s).
+
+**v5 surface coverage**: 16/~50 → 17/~50.
+
+Pattern observation: Wanted is the THIRD Wave 3 family on the Wave 1 deferral chain (Parse + Blocklist + now Wanted). All three currently emit the v3-reduced Resource shape because Series/EpisodeFile/CustomFormat hydration isn't ported — when the custom-format calculator + EpisodeResource join port lands, all three v5 families widen at once via the shared alias. No v5-specific handler code needed in any of the three until then.
+
+### Next Wave 3 candidates ascending
+
+Indexers (139), Localization (143), Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).

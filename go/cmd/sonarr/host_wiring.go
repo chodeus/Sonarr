@@ -26,6 +26,7 @@ import (
 	rootfolderv5 "sonarr.tv/sonarr/internal/api/v5/rootfolder"
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
 	updatev5 "sonarr.tv/sonarr/internal/api/v5/update"
+	wantedv5 "sonarr.tv/sonarr/internal/api/v5/wanted"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/backup"
@@ -1324,6 +1325,15 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/qualitydefinition/{id}", Handler: qualitydefinitionv5.ByIDHandler(qualityDefSvc)},
 		{Method: "PUT", Path: "/api/v5/qualitydefinition/{id}", Handler: qualitydefinitionv5.UpdateHandler(qualityDefSvc)},
 		{Method: "PUT", Path: "/api/v5/qualitydefinition", Handler: qualitydefinitionv5.UpdateManyHandler(qualityDefSvc, qualityDefSvc)},
+		// J264 — v5 Wanted endpoint family (4 endpoints; pure path-alias
+		// at empty-corpus level — envelope/status/Resource identical to
+		// v3, query-param shape divergence is ignored by current stub).
+		// EpisodeResource widening (EndTime/GrabDate) deferred per same
+		// chain as J258/J259/J261.
+		{Method: "GET", Path: "/api/v5/wanted/missing", Handler: wantedv5.ListHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, wantedv5.ScopeMissing)},
+		{Method: "GET", Path: "/api/v5/wanted/missing/{id}", Handler: wantedv5.ByIDHandler(episodesSvc)},
+		{Method: "GET", Path: "/api/v5/wanted/cutoff", Handler: wantedv5.ListHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, wantedv5.ScopeCutoff)},
+		{Method: "GET", Path: "/api/v5/wanted/cutoff/{id}", Handler: wantedv5.ByIDHandler(episodesSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
