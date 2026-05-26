@@ -9748,3 +9748,73 @@ Open follow-ups documented in handler doc-comments for future slices:
   - Production-log replay tool (a separate tee/replay binary that captures from a real Sonarr install and feeds the request stream into shadow-traffic-diff's listen addr).
   - Optional TLS termination support (currently HTTP only — fine for staging-localhost deployments, would need wrapping for cross-network).
   - SignalR / WebSocket dual-dispatch — currently the binary handles HTTP only. SignalR shadow-diffing is materially harder (long-lived connections, sequence-dependent event ordering) and is a separate slice.
+
+
+## Phase 5.J240 — Phase 6.1 production-log replay helper — 2026-05-26
+
+Second Phase 6 prep slice. J239 landed the shadow-traffic-diff binary (the diff side of the harness); J240 lands its replay companion. Together the two binaries form a complete Phase 6.1 toolkit:
+
+  1. Capture a request log somewhere (real Sonarr install via tee tool, manual scripting, or curl-the-corpus).
+  2. `shadow-traffic-replay -log capture.jsonl -target http://localhost:9000` feeds the requests into J239's listen addr.
+  3. shadow-traffic-diff dispatches each request to both backends in parallel.
+  4. Daily diff reports under shadow-reports/.
+  5. Operator triages diffs.
+
+Architecture (`go/cmd/shadow-traffic-replay/`):
+
+  - `main.go` (~140 LOC) — flag parsing, signal-handling, periodic stats reporter goroutine, final summary on exit.
+  - `log.go` (~180 LOC) — JSONL log format definition (LogEntry struct), streaming LogReader (4 MiB max line for big POST bodies — manualimport / customformat-bulk wouldn't fit the default 64 KiB), Filter struct with method/path-prefix/status matching, ParseStatusFilter helper for the mixed-code-and-class CSV form ("200,4xx,503,5xx").
+  - `replay.go` (~250 LOC) — Replayer struct, Stats counter (atomic ints), pacing logic, worker pool, per-request dispatch with header sanitisation (drop hop-by-hop, drop Host, inject Content-Type if Body present and not set, inject User-Agent if missing).
+
+JSONL log format (one object per line):
+
+  Required: method, path. Optional: ts (RFC3339 — used for pacing), headers (map), body (raw string), status (used for filtering).
+
+  Comments (`#` lines) and blank lines are skipped — supports hand-edited test logs without needing a separate tool to strip them.
+
+Pacing model:
+
+  - `-speed 0` → no throttle, fire as fast as the network can carry.
+  - `-speed 1.0` (default) → preserve original cadence between entries. Sleep duration = (entry.Timestamp - prev.Timestamp) scaled by 1/Speed.
+  - `-speed 10.0` → 10x faster than recorded.
+  - `-concurrency N` (N>1) → fan out via worker pool, disables timestamp pacing (parallel workers destroy serial ordering — Speed=0 is the only sensible setting).
+  - Entry with zero timestamp → no pacing applied, fires immediately after previous.
+
+Filtering (combined with AND):
+
+  - `-method GET,POST` → method allowlist, case-insensitive exact match.
+  - `-path /api/v3/series,/api/v3/episode` → path-prefix allowlist (CSV).
+  - `-status 200,4xx,503,5xx` → mixed exact codes + classes. Classes match the N00-N99 range.
+
+Stats (atomic counters):
+
+  - Sent / Filtered / Errors / Status2xx / Status4xx / Status5xx / StatusOther
+  - TotalLatency (sum of per-request durations, microseconds) → AvgLatency in snapshot
+
+  Single-line format: `sent=10 filtered=2 errors=0 2xx=8 4xx=1 5xx=1 other=0 avg=1.5ms`. Emitted every -stats-interval (default 5s) + final summary on exit with elapsed + computed rps.
+
+Test coverage (`replay_test.go`, 18 tests):
+
+  - Log parse: happy (3 entries including comment skip), malformed line (error mentions line number), missing required fields.
+  - Filter: method allowlist (case-insensitive), path-prefix, status (mixed codes + classes), empty-Filter passes all.
+  - ParseStatusFilter: mixed codes + classes round-trip, empty no-error, sub-100 reject ("99" errors), malformed token ("xx2" errors).
+  - statusClassMatch boundary tests (199/200/299/300/600 cases).
+  - Replayer end-to-end: dispatches each entry to a real httptest server (assertion on count + POST body via sync.Map), preserves query string from path (e.g. `/api/v3/episode?seriesId=1&seasonNumber=2`), respects compound filter (only entries matching BOTH method AND path-prefix pass), paces by timestamp at Speed=2.0 within ±50ms tolerance (skipped on -short), Speed=0 fires 3 entries with 2-second recorded gaps in <500ms wall time, Concurrency=5 max-in-flight assertion (≥2 means parallel actually worked), ctx cancel breaks a long pacing wait within 5s, dispatch error counter on dead-target (127.0.0.1:1), status bucket classification across 200/201/404/500/503/301.
+  - Helpers: OpenLogFile happy + missing-file, splitCSV (empty → nil, single, "a, b ,, c" → [a b c]), StatsSnapshot.String formatting.
+
+Hard gates clean: `go build ./...` no errors; `go test ./cmd/shadow-traffic-replay/` 18/18 PASS; `go test -race` race-clean; `go vet` clean.
+
+Net diff: ~140 main.go + ~180 log.go + ~250 replay.go + ~440 replay_test.go + PROGRESS.md update + STATUS.md slice note.
+
+Phase 6 progress after J240:
+
+  - 6.1 shadow-traffic harness — toolkit COMPLETE (diff side J239 + replay side J240). Ready to point at staging-host backends with captured traffic.
+  - 6.2 smoke runbook — NOT STARTED (operator-driven, not autonomous-loop work).
+  - 6.3 nightly contract-suite CI — NOT STARTED (workflow file change only).
+  - 6.4 cutover commit — gated on 14+ days of zero unexplained diff in 6.1's daily reports.
+
+Open follow-ups for future slices (documented in handler doc-comments):
+
+  - Tee/recorder tool that captures inbound traffic from a real Sonarr install into a J240-compatible JSONL log. Could be a sub-mode of shadow-traffic-diff (record mode) or a separate binary at `cmd/shadow-traffic-record/`.
+  - SignalR / WebSocket replay (long-lived connection semantics — significantly harder than the HTTP path; track as a separate slice).
+  - TLS termination support (HTTP-only suffices for localhost-pair staging deployments).
