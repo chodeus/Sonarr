@@ -1,17 +1,21 @@
 # Phase 6 — Cutover Scope
 
-This document scopes Phase 6 of the C# → Go port. It exists because Phase 5 has structurally closed (REST surface + SignalR fan-out + frontend wiring all wired and lint-clean) and the next session needs a clear entry point. The authoritative strategic plan still lives at `~/.claude/plans/curried-discovering-meadow.md`; this doc is the operational expansion of that plan's two-line "Phase 6 — Cutover" entry.
+This document scopes Phase 6 of the C# → Go port. It exists because Phase 5 has structurally closed (REST surface + SignalR fan-out + frontend wiring all wired and lint-clean, audit_fix_backlog drained) and the next session needs a clear entry point. The authoritative strategic plan still lives at `~/.claude/plans/curried-discovering-meadow.md`; this doc is the operational expansion of that plan's two-line "Phase 6 — Cutover" entry.
 
 ## Phase 5 closure summary
 
+Phase 5 closed across two waves: the initial REST + SignalR + frontend wiring (4.E*-4.F* slices), and a subsequent post-merge fix-mission loop (J1-J228) that closed every row in `AUDIT_FIX_BACKLOG.md`.
+
 | Sub-arc                | Status                       | Commits     |
 | ---------------------- | ---------------------------- | ----------- |
-| REST V3 endpoints      | 41/51 byte-equal              | 4.ED → 4.EO |
-| SignalR fan-out (7 families) | wired end-to-end + WS transport + 5s debouncer | 4.EP → 4.FB |
-| Frontend bundle wiring | `--frontenddir`, `WithStaticDir`, `WithStaticFS`, `WithURLBase`, `//go:embed` fallback | 4.FC → 4.FG |
+| REST V3 endpoints      | 41/51 byte-equal initially; 4 schema endpoints closed in subsequent slices | 4.ED → 4.EO |
+| SignalR fan-out (10 families) | wired end-to-end + WS transport + 5s debouncer; second wave at J24-J33 added 9 channels | 4.EP → 4.FB + J24-J33 |
+| Frontend bundle wiring | `--frontenddir`, `WithStaticDir`, `WithStaticFS`, `WithURLBase`, `//go:embed` fallback; React Router v7 served via SPA fallback at J206 | 4.FC → 4.FG + J204-J206 |
 | Mop-up                 | queue/status Pause/Resume bracket, end-to-end integration smoke, graceful-shutdown Stop() wired | 4.FH → 4.FJ |
+| Audit-fix mission      | 200+ slices closing every row in `AUDIT_FIX_BACKLOG.md` (write paths, missing provider impls, missing reads, error envelopes, logging, contract drift) | J1 → J228 |
+| v5-develop catch-up    | Full upstream merge + 4 new v5 endpoint families (CustomFormat / ImportList / ImportListSettings / AutoTagging) + 4 standalone behaviour ports + localization refresh + contract re-baseline against live C# `7c41dcbe2` (71/83 endpoints byte-identical) | J217 → J228 |
 
-The 10 REST endpoints NOT byte-equal are documented below — none are blockers for Phase 6 entrance because Phase 6 introduces a shadow-traffic comparison that runs against LIVE Go + C# state simultaneously, so the timing-sensitive endpoints (which can never byte-equal a frozen golden) get exercised properly against a moving reference.
+5 small follow-up rows surfaced during C.1 closure remain queued (C.1.i-follow-1 through -5) — none block Phase 6 entrance; each is a targeted slice <100 LOC.
 
 ## 10 unmatched REST endpoints
 
@@ -113,10 +117,14 @@ This commit is the cutover. After merge, Phase 7 (idiomatic-Go cleanup pass) beg
 
 ## Next slice candidates (post-4.FJ)
 
-These keep the Phase 5 momentum if Phase 6 entrance is blocked on staging infra:
+These keep momentum if Phase 6 entrance is blocked on staging infra:
 
-- **4.FK series of slices**: one schema endpoint per slice (importlist.schema, indexer.schema, notification.schema, downloadclient.schema). Each is mechanical per the slice 4.EN pattern.
-- **4.FL series**: SignalR mop-up — wire EpisodeFileRenamedEvent broadcast, add Series.Path join for EpisodeFile Added (the cleanest path is option (b) — broadcast-time series lookup, not event-shape change).
-- **4.FM**: the shadow-traffic harness skeleton — start with the reverse-proxy binary even before the staging host exists, so the test infra is ready when staging lands.
+- **C.1.i-follow-1 through -5** (queued in `AUDIT_FIX_BACKLOG.md`): five small slices surfaced during the v5-develop reference capture at J228. Each is <100 LOC. Together they polish the v3+v5 surface enough that shadow-traffic at Phase 6.1 will run with minimum noise. Both read paths (schema GET, 404 envelopes, route coverage on GETs) and write paths (DELETE idempotency, POST/PUT validation envelopes, route coverage on POST/PUT/DELETE) need attention.
+- **Phase 6.1 shadow-traffic harness skeleton** (`go/cmd/shadow-traffic-diff/`): start the reverse-proxy binary even before the staging host exists, so the test infra is ready when staging lands. Reuses `test/contract/internal/normalize` redact-paths machinery.
+- **Phase 6.2 smoke runbook** (`go/PHASE_6_SMOKE.md`): operator-driven, not autonomous-loop work.
 
 Pick by what the team can resource — Phase 6 is operational rather than code-focused, and the bottleneck is typically infra rather than implementation.
+
+## Reference data
+
+A captured snapshot of upstream `Sonarr v5.0.0.1658` (v5-develop SHA `7c41dcbe2`) lives at `~/Code/GitHub/Sonarr-reference/v5-develop-7c41dcbe2/` — outside any git tree, persistent local-only. Contains the full corpus replay, all provider bulk schemas, validation envelope samples covering 4 distinct C# response shapes, seeded-state captures, the 367KB `v3.system.routes` graphviz dump, and the SignalR negotiate handshake. See its `INDEX.md` for layout + a reproducible recipe for capturing newer SHAs.
