@@ -12385,3 +12385,60 @@ Pattern observation: this slice surfaces an interesting subtlety of `v5util.Rewr
 ### Next Wave 3 candidates ascending
 
 History (232), ManualImport (236), Commands (247), Logs (286).
+
+## Phase 5.J270 — Wave 3 nineteenth slice: v5 History family port (232 LOC C# source)
+
+Mixed slice — combines THREE patterns in one family: path-alias (for 3 endpoints), new v5-specific stub handlers for v3-gap endpoints (J266 pattern, for 2 endpoints), and status-rewrite wrapper (J267 pattern, for 1 endpoint).
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :1955-2310):
+
+| endpoint                          | v5 status | v3 Go-port           | strategy                                |
+|-----------------------------------|-----------|----------------------|-----------------------------------------|
+| GET /api/v5/history               | 200       | 200 (paged)          | alias                                   |
+| GET /api/v5/history/since         | 200       | 200                  | alias                                   |
+| GET /api/v5/history/series        | 200       | 200                  | alias                                   |
+| GET /api/v5/history/season        | 200       | NOT WIRED            | new v5 stub (validates → `[]`)          |
+| GET /api/v5/history/episode       | 200       | NOT WIRED            | new v5 stub (validates → `[]`)          |
+| **POST /api/v5/history/failed/{id}** | **204** | 200+`{}`          | RewriteSuccessTo204                     |
+
+**HistoryResource widening** (C# v5 vs v3 Go-port):
+
+| field                    | v3 Go-port | v5 C#        |
+|--------------------------|------------|--------------|
+| id                       | ✓          | ✓            |
+| seriesId                 | ✓          | ✓            |
+| episodeId                | ✓          | ✓            |
+| sourceTitle              | ✓          | ✓            |
+| date                     | ✓          | ✓            |
+| downloadId               | ✓          | ✓            |
+| eventType                | ✓          | ✓            |
+| **languages[]**          | —          | required     |
+| **quality**              | —          | required     |
+| **customFormats[]**      | —          | required     |
+| **customFormatScore**    | —          | required     |
+| **qualityCutoffNotMet**  | —          | required     |
+| **data{}**               | —          | required     |
+| **episode?**             | —          | optional sub |
+| **series?**              | —          | optional sub |
+
+Same Wave 1 deferred chain as J258/J259/J261/J264/J268 — populated-row mapping needs the custom-format calculator + Languages/Quality joins to land before the v5 surface widens. At empty-corpus level (records `[]`), the envelope shape is identical so path-alias is byte-equal.
+
+**Query-param shape divergence** (history list): v5 takes `eventType[]`, `episodeId`, `downloadId`, `seriesIds[]`, `languages[]`, `quality[]`, `includeSubresources[]` (enum CSV) — v3 Go-port handler today ignores most filters per `internal/api/v3/history.go:43-49`. Invisible at empty-corpus. Same deferral chain.
+
+**v3-gap pattern (J266 reapplied)**: v3 Go-port has NO handlers for `/season` and `/episode` because the underlying `history.Service.GetBySeason` + `GetByEpisode` methods are marked DEFERRED at `internal/history/service.go:127` (only GetBySeries is currently ported). The v5 surface emits `[]` from stub handlers that validate the required query params (400 on missing/invalid) — pure empty-corpus parity, no service call. When the service methods land, the stub bodies swap to real GetBySeason/GetByEpisode calls without rewiring the routes. Same scope-discipline as J266 LocalizationByIDHandler — close the gap on the v5 wire surface only, leave the v3 gap as a separate Wave 4 item.
+
+**Slice scope** — 309 lines (178 source + 131 test) + 1 import + 6 routes:
+
+- New `internal/api/v5/history/history.go` (178 LOC) — 4 type aliases (Resource, PagedLister, RangeReader, FailedDownloadMarker) + 3 variable aliases (ListHandler, SinceHandler, SeriesHandler) + 2 new stub handler funcs (SeasonHandler + EpisodeHandler) + 1 wrapper func (MarkAsFailedHandler via RewriteSuccessTo204) + 1 private writeEmptyHistoryList helper.
+- New `internal/api/v5/history/history_test.go` (131 LOC) — 8 tests: MarkAsFailed-rewrites-200-to-204 (svc.MarkAsFailed called once + body empty), Season-valid-query-returns-empty-array (pins `[]` empty-corpus contract), Season-missing-seriesId-400, Season-missing-seasonNumber-400, Episode-valid-query-returns-empty-array (with Content-Type pin), Episode-missing-episodeId-400, variable-aliases non-nil, type-aliases compile-time pin.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`historyv5`) + 6 new routes alongside the existing /api/v3/history routes. Re-uses historyPagedAdapter + historySvc + failedDownloadsSvc deps.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/history/...` ✓; `go test -race -count=1 ./internal/api/v5/history/...` ✓ (8 tests, 1.6s).
+
+**v5 surface coverage**: 22/~50 → 23/~50.
+
+Pattern observation: this is the first slice in Wave 3 to combine THREE strategies (path-alias + v5-specific stub + status wrapper) in a single family. The MIXED-slice template is becoming clearer: per-endpoint strategy selection lets each route pick the lightest-weight approach without forcing the whole family into one mode. The `internal/api/v5/<family>/` package shape stays consistent (type aliases + var aliases + a few funcs); only the per-endpoint code varies.
+
+### Next Wave 3 candidates ascending
+
+ManualImport (236), Commands (247), Logs (286).

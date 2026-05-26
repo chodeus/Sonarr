@@ -28,6 +28,7 @@ import (
 	updatev5 "sonarr.tv/sonarr/internal/api/v5/update"
 	calendarv5 "sonarr.tv/sonarr/internal/api/v5/calendar"
 	connectionv5 "sonarr.tv/sonarr/internal/api/v5/connection"
+	historyv5 "sonarr.tv/sonarr/internal/api/v5/history"
 	indexerv5 "sonarr.tv/sonarr/internal/api/v5/indexer"
 	localizationv5 "sonarr.tv/sonarr/internal/api/v5/localization"
 	tagv5 "sonarr.tv/sonarr/internal/api/v5/tag"
@@ -1410,6 +1411,18 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "DELETE", Path: "/api/v5/tag/{id}", Handler: tagv5.DeleteHandler(tagsSvc)},
 		{Method: "GET", Path: "/api/v5/tag/detail", Handler: tagv5.DetailListHandler(emptyTagDetailLister{})},
 		{Method: "GET", Path: "/api/v5/tag/detail/{id}", Handler: tagv5.DetailByIDHandler(emptyTagDetailLister{})},
+		// J270 — v5 History endpoint family (6 endpoints; 232 LOC C#).
+		// 3 path-aliases (list/since/series) + 2 new v5-specific stub
+		// handlers (/season + /episode; v3 has neither, underlying
+		// GetBySeason/GetByEpisode service methods are deferred —
+		// stubs emit `[]` for empty-corpus parity) + 1 status wrapper
+		// (POST /failed/{id} 200+`{}` → 204 via v5util.RewriteSuccessTo204).
+		{Method: "GET", Path: "/api/v5/history", Handler: historyv5.ListHandler(historyPagedAdapter{repo: historyRepo})},
+		{Method: "GET", Path: "/api/v5/history/since", Handler: historyv5.SinceHandler(historySvc)},
+		{Method: "GET", Path: "/api/v5/history/series", Handler: historyv5.SeriesHandler(historySvc)},
+		{Method: "GET", Path: "/api/v5/history/season", Handler: historyv5.SeasonHandler()},
+		{Method: "GET", Path: "/api/v5/history/episode", Handler: historyv5.EpisodeHandler()},
+		{Method: "POST", Path: "/api/v5/history/failed/{id}", Handler: historyv5.MarkAsFailedHandler(failedDownloadsSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
