@@ -11188,3 +11188,122 @@ Combinations of (4) + (5) are possible — e.g. a family that adds a field AND t
 
 SeasonPass (99) — POST with body; check for v5-specific shape.
 CustomFilters (100), Parse (101), Update (121), RemotePathMappings (122), Blocklist (127), RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143), Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).
+
+## Phase 5.J255 — v5 SeasonPass family (Wave 3)
+
+### What
+
+`internal/api/v5/seasonpass/` package + one new POST route at `/api/v5/seasonpass`. Fifth Wave 3 slice.
+
+### Wire-shape diff vs v3
+
+Per the Wave 3 pattern from J254's STATUS note: grep openapi.json + diff fields. SeasonPassResource is identical between v3 and v5:
+
+```jsonc
+"SeasonPassResource": {
+  "type": "object",
+  "properties": {
+    "series":            { "type": "array", "items": {"$ref": "...SeasonPassSeriesResource"} },
+    "monitoringOptions": { "$ref": "...MonitoringOptionsResource", "nullable": true }
+  }
+}
+```
+
+The only thing that DIFFERS between v3 and v5 is the success status:
+
+- v3: `202 Accepted` + body `{}` (per the v3 Go-port handler at `internal/api/v3/seasonpass.go:185-187`).
+- v5: `204 NoContent` + empty body (per the v5 C# controller's `TypedResults.NoContent()`).
+
+Pattern: status-only divergence → wrap v3 handler via status-rewrite middleware.
+
+### The new rewriteAcceptedTo204 middleware variant
+
+J223 (ImportList) and J253 (Metadata) introduced `rewriteSuccessTo204` — wraps v3 handlers whose happy path emits `200 OK` + `{}` and demotes to `204 NoContent` + empty body. That doesn't fit SeasonPass because v3 emits `202 Accepted` (not 200) on success.
+
+Two design options:
+
+(A) Generalise the existing wrapper to accept the source status as a parameter.
+(B) Add a parallel `rewriteAcceptedTo204` variant.
+
+Chose (B) for this slice — generalising means parametrising 3 packages' duplicated wrappers, which IS the v5util consolidation slice that's already queued. Doing it inline here would either (i) couple the v5util design to whatever shape J255 chose without thinking it through, or (ii) leave J223/J253 on the OLD un-parametrised version. Cleaner trade: keep J255 narrow, do the consolidation as its own slice.
+
+The new wrapper is structurally identical to `rewriteSuccessTo204` — same `bufferingWriter`, same `copyHeaders`/`copyHeadersExcept`, same pass-through-on-mismatch posture. Differs only in the status-code match:
+
+```go
+// Was:  if rec.status == http.StatusOK && bytes.Equal(bodyBytes, []byte(`{}`)) {
+// Now:  if rec.status == http.StatusAccepted && bytes.Equal(bodyBytes, []byte(`{}`)) {
+```
+
+Same exit behaviour: strip Content-Type, write 204, return.
+
+### Why SeasonPass is the only v3-202 endpoint
+
+Surveyed the v3 surface — the SeasonPass POST is the only endpoint that uses 202 Accepted for a non-Created success. Most v3 endpoints that "complete a long-running operation" use 200 + payload (custom-format bulk, manualimport reprocess). The SeasonPass is special because it's a fire-and-forget bulk write that may take seconds for hundreds of series — 202 signals "queued, won't block the caller waiting on per-row completion" — although in practice the Go-port (and C#) does run the cascade synchronously.
+
+So the new wrapper is genuinely single-use today. If a future v3-202 endpoint emerges, it can reuse the same helper. If the v5util consolidation lands first, the consolidated wrapper takes a status-code parameter and both 200 and 202 variants collapse into one.
+
+### Code
+
+`seasonpass.go` (~165 LOC including doc-comments + duplicated middleware):
+
+```go
+type Resource = apiv3.SeasonPassResource
+type SeriesResource = apiv3.SeasonPassSeriesResource
+type SeasonOnWrite = apiv3.SeasonPassSeasonOnWrite
+type MonitoringOptions = apiv3.MonitoringOptions
+type SeriesWriter = apiv3.SeriesWriter
+type SeriesEmitter = apiv3.SeriesEmitter
+type EpisodeMonitorCascader = apiv3.EpisodeMonitorCascader
+
+func PostHandler(svc SeriesWriter, emitter SeriesEmitter, cascader EpisodeMonitorCascader) http.Handler {
+    return rewriteAcceptedTo204(apiv3.SeasonPassHandler(svc, emitter, cascader))
+}
+```
+
+The 7 type aliases keep the v5 namespace stable. The PostHandler signature mirrors v3's — same three deps — so cmd/sonarr can wire the v5 route using the same `seriesWriter`, `seriesEmitter`, and `episodeMonitoredSvc` already in scope for the v3 route. No new repo / service / adapter needed.
+
+### Wiring
+
+`cmd/sonarr/host_wiring.go` gains:
+
+```go
+{Method: "POST", Path: "/api/v5/seasonpass", Handler: seasonpassv5.PostHandler(seriesWriter, seriesEmitter, episodeMonitoredSvc)},
+```
+
+One new import (`seasonpassv5`).
+
+### Tests (4)
+
+- `TestPostHandler_Success_Returns204EmptyBody` — happy path; fixture has one series with Monitored=true; body toggles to false; asserts status=204, body empty, Content-Type stripped, SignalR Updated broadcast fires, AND the actual Monitored mutation lands in the fake writer (proves the v3 cascade through-flows verbatim — not just a status rewrite, the full handler logic runs).
+- `TestPostHandler_MalformedBody_PassesThrough400` — malformed JSON → v3 emits 400 + error envelope; wrapper preserves verbatim. Critical correctness assertion against accidentally rewriting 400-with-non-`{}`-body.
+- `TestPostHandler_MissingSeries_PassesThrough404` — body references id=999 in an empty fake; v3 returns 404; wrapper preserves verbatim.
+- `TestTypeAliasesMatchV3` — compile-time invariant guard via 5 nil-assignments.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/api/v5/seasonpass/...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v5/seasonpass/...
+ok  sonarr.tv/sonarr/internal/api/v5/seasonpass  1.636s
+```
+
+### v5 surface progress
+
+8/~50 → 9/~50 families. Endpoints added: 1.
+
+### Middleware duplication count
+
+J223 ImportList → bufferingWriter + rewriteSuccessTo204 + rewrite202To200 (for PUT bulk) + copyHeaders + copyHeadersExcept.
+J253 Metadata → bufferingWriter + rewriteSuccessTo204 + copyHeaders + copyHeadersExcept.
+J255 SeasonPass → bufferingWriter + rewriteAcceptedTo204 + copyHeaders + copyHeadersExcept.
+
+3 packages duplicate the middleware now. The J243 pattern triggers consolidation at the 4th. Next v5 family slice that wants the wrapper should do the consolidation first — extract to `cmd/internal/api/v5/internal/v5util/` (Go-internal scoped) with a unified `rewriteHappyTo204(sourceStatus int, sourceBody []byte)` API that takes the source status + body bytes as parameters. After the consolidation, J223 + J253 + J255 collapse to single-line imports of the shared helper.
+
+### Next Wave 3 candidates ascending
+
+CustomFilters (100), Parse (101), Update (121), RemotePathMappings (122), Blocklist (127), RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143).

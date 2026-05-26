@@ -18,6 +18,7 @@ import (
 	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
 	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
+	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/backup"
@@ -1265,6 +1266,10 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// J254 — v5 Health endpoint family (single GET; v5 adds `reason`
 		// field over v3 per the openapi v5 HealthResource schema).
 		{Method: "GET", Path: "/api/v5/health", Handler: healthv5.ListHandler(healthSvc)},
+		// J255 — v5 SeasonPass endpoint family (single POST; v5 returns
+		// 204 NoContent while v3 returns 202 + `{}`; wrapped via the
+		// new rewriteAcceptedTo204 middleware variant).
+		{Method: "POST", Path: "/api/v5/seasonpass", Handler: seasonpassv5.PostHandler(seriesWriter, seriesEmitter, episodeMonitoredSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
