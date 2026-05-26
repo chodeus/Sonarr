@@ -9942,3 +9942,145 @@ Remaining Phase 6 prep slice candidates:
   - v5-develop refresh (J228 capture cleanup; requires careful HOME isolation).
   - Shared cmd/shadowtraffic/internal helper consolidation (3 helpers duplicated across J239/J240/J241; 30-LOC slice).
   - Body-decompression on shadow-traffic-record (gzipped upstream responses currently stored as opaque bytes in the log; replay round-trips fine but operator inspection is awkward).
+
+## Phase 5.J243 — Shared `cmd/internal/shadowtraffic/httputil` package (dedup singleJoin + isHopHeader)
+
+Three Phase 6.1 binaries (`cmd/shadow-traffic-diff` / `cmd/shadow-traffic-replay` / `cmd/shadow-traffic-record`) each kept byte-identical copies of two helpers:
+
+```go
+func singleJoin(base, req string) string { ... }
+func isHopHeader(h string) bool { ... }
+```
+
+The replay binary's copy even carried the comment "matches the helper in cmd/shadow-traffic-diff/proxy.go" and the record binary's copy noted "keeping each cmd self-contained matters more than DRY here." Three implementations is the threshold at which the "keep self-contained" argument loses weight — any future hop-by-hop header list change has to land in three files, and the C# upstream's `WebSocketHandler` precedent (RFC 9110 §7.6.1 added `Proxy-Connection` to some lists) suggests this list isn't static.
+
+J243 consolidates.
+
+### Package location: `cmd/internal/shadowtraffic/httputil/`
+
+The autonomous-loop prompt's slice-(A) suggested `cmd/shadowtraffic/internal/httputil/`. That path is structurally broken: Go's `internal/` rule scopes imports to the parent of `internal/`, which would be `cmd/shadowtraffic/`. The three consumers live at `cmd/shadow-traffic-diff/`, `cmd/shadow-traffic-replay/`, `cmd/shadow-traffic-record/` — siblings, not children of `cmd/shadowtraffic/`. Per Go's spec, a `cmd/shadowtraffic/internal/httputil` import from `cmd/shadow-traffic-diff` would error with `use of internal package not allowed`.
+
+The fix is to scope `internal/` to a common ancestor: `cmd/internal/shadowtraffic/httputil/`. Anything under `cmd/*` (including all three binaries) can import; nothing else can. Same encapsulation guarantee, working import path.
+
+### Package contents (`httputil.go` ~45 LOC + `httputil_test.go` ~60 LOC)
+
+```go
+// Package httputil holds tiny HTTP helpers shared across the
+// cmd/shadow-traffic-{diff,replay,record} binaries.
+package httputil
+
+func SingleJoin(base, req string) string {
+    if base == "" || base == "/" { return req }
+    if base[len(base)-1] == '/' && len(req) > 0 && req[0] == '/' {
+        return base + req[1:]
+    }
+    return base + req
+}
+
+func IsHopHeader(h string) bool {
+    switch http.CanonicalHeaderKey(h) {
+    case "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
+         "Te", "Trailers", "Transfer-Encoding", "Upgrade":
+        return true
+    }
+    return false
+}
+```
+
+Behaviour identical to the prior local copies. Both functions exported (capitalised) since they cross a package boundary now.
+
+### Test coverage (broader than prior local tests)
+
+The prior `TestSingleJoin` blocks tested 4-5 cases. The consolidated test covers 8 cases adding 3 edge cases the locals missed:
+
+- `SingleJoin("/prefix", "")` → `"/prefix"` (empty req)
+- `SingleJoin("", "")` → `""` (both empty)
+- `SingleJoin("/", "")` → `""` (slash base with empty req — exercises the `base == "/"` short-circuit with falsy req)
+
+`TestIsHopHeader` is brand new (no binary had one) and covers:
+
+- 10 hop-positive cases: each canonical name + 3 case-variants on `Connection` (lowercase, uppercase, canonical) to pin `CanonicalHeaderKey` behaviour.
+- 8 hop-negative cases including the substring-trap `X-Connection-Hint` (the name contains "Connection" but is not the literal "Connection" header — must not match) + empty string + `Host` + `Content-Length` (intentionally NOT in the hop list — both proxies strip it via a separate explicit check).
+
+### Per-binary call-site rewires
+
+`cmd/shadow-traffic-diff/proxy.go`:
+- Added `"sonarr.tv/sonarr/cmd/internal/shadowtraffic/httputil"` import.
+- 3 call sites: `isHopHeader(k)` → `httputil.IsHopHeader(k)` (twice for request + response header filtering) and `singleJoin(target.Path, src.URL.Path)` → `httputil.SingleJoin(...)`.
+- 17 lines of local `singleJoin` + `isHopHeader` definitions removed.
+
+`cmd/shadow-traffic-diff/proxy_test.go`:
+- 14-line local `TestSingleJoin` removed (covered by shared package now).
+
+`cmd/shadow-traffic-record/proxy.go`:
+- Same import added.
+- 3 call sites updated (request `isHopHeader` filter + response `isHopHeader || Content-Length` filter + `singleJoin(p.Upstream.Path, r.URL.Path)`).
+- 22-line local helper block + comment removed.
+
+`cmd/shadow-traffic-record/writer.go`:
+- Same import added.
+- 1 call site in `stripHopHeaders` body updated (it iterates the captured header map and skips hop-by-hops before writing to the JSONL log).
+- `stripHopHeaders` itself stays local — it's a record-specific helper that also applies the `-drop-api-keys` security policy + the "single representative value per key" projection. Not a general HTTP utility.
+
+`cmd/shadow-traffic-record/proxy_test.go`:
+- 13-line local `TestSingleJoin` removed.
+- `TestStripHopHeaders` retained (it tests the record-specific stripHopHeaders, which still lives in writer.go).
+
+`cmd/shadow-traffic-replay/replay.go`:
+- Same import added.
+- 3 call sites: 2 `singleJoin` calls in URL composition (one for path-only, one for path-stripped-of-query) + 1 `isHopHeader || Host || Content-Length` filter in the replay-request header copier.
+- 18-line local helper block + comment removed.
+
+`cmd/shadow-traffic-replay/replay_test.go`:
+- No `TestSingleJoin` to delete — replay never had one (was tested implicitly through the end-to-end replay-against-target tests).
+
+### Why `stripHopHeaders` stays local to record
+
+The shared package could expose `StripHopHeaders(headers, dropAPIKeys) map[string]string` as a third helper. Decision: NO — it mixes 3 concerns (hop filtering + API-key dropping + "single representative value per key" map projection) and only the record binary uses all three. The diff and replay binaries DO filter hop-by-hops but they preserve multi-value headers and don't apply the API-key drop. Generalising `stripHopHeaders` into a shared helper would either parameterise it heavily (4+ flags) or split it into a chain — both worse than the current scoped helper. The smaller `IsHopHeader` primitive is the right shared seam; the record-binary keeps its sanitization layer on top.
+
+### Net diff
+
+```
+ cmd/internal/shadowtraffic/httputil/httputil.go      |  45 ++++++++++++  (new)
+ cmd/internal/shadowtraffic/httputil/httputil_test.go |  60 ++++++++++++++  (new)
+ cmd/shadow-traffic-diff/proxy.go                     |   6 +++--  (3 call-sites + import + 17-line block deleted)
+ cmd/shadow-traffic-diff/proxy_test.go                |   0 ---  (TestSingleJoin deleted)
+ cmd/shadow-traffic-record/proxy.go                   |   6 +++--  (3 call-sites + import + 22-line block deleted)
+ cmd/shadow-traffic-record/writer.go                  |   3 ++-  (1 call-site + import)
+ cmd/shadow-traffic-record/proxy_test.go              |   0 ---  (TestSingleJoin deleted)
+ cmd/shadow-traffic-replay/replay.go                  |   5 ++-  (3 call-sites + import + 18-line block deleted)
+```
+
+Roughly +105 LOC (shared package, mostly tests) − ~85 LOC (3 binaries' duplicates + 2 dropped tests) = ~+20 LOC net for a more thoroughly tested + structurally consolidated shared seam.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./cmd/shadow-traffic-diff/... ./cmd/shadow-traffic-replay/... \
+       ./cmd/shadow-traffic-record/... ./cmd/internal/shadowtraffic/...
+(clean)
+
+$ go test -race -count=1 ./cmd/shadow-traffic-diff/... \
+        ./cmd/shadow-traffic-replay/... ./cmd/shadow-traffic-record/... \
+        ./cmd/internal/shadowtraffic/...
+ok      sonarr.tv/sonarr/cmd/shadow-traffic-diff           1.736s
+ok      sonarr.tv/sonarr/cmd/shadow-traffic-replay         2.813s
+ok      sonarr.tv/sonarr/cmd/shadow-traffic-record         2.096s
+ok      sonarr.tv/sonarr/cmd/internal/shadowtraffic/httputil  2.899s
+```
+
+All four packages green, race-clean. The pre-existing `TestStripHopHeaders` in record still passes (it doesn't reference `isHopHeader` directly — it observes the behaviour of `stripHopHeaders`, whose `isHopHeader` call now resolves to `httputil.IsHopHeader`).
+
+### Slice closes (A) from the autonomous-loop candidate list
+
+Phase 6 prep remaining slice candidates (per PROGRESS.md "Next candidates"):
+
+- (B) gzip body decompression on shadow-traffic-record (~40 LOC + 4 tests).
+- (C) Phase 6.2 smoke runbook scaffold (`go/PHASE_6_SMOKE.md`, pure markdown).
+- (D) Shadow-traffic toolkit FORMAT.md (JSONL log schema doc).
+- (E) Cross-tool integration smoke test (`cmd/shadowtraffic-e2e/`, ~150 LOC).
+
+(B) is the natural next slice — small, well-scoped, real operator value (gzipped capture logs are currently opaque). (C)/(D) are docs work. (E) is more ambitious but proves the triad composes end-to-end.

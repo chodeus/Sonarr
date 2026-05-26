@@ -389,22 +389,6 @@ func TestReport_FlushAndAppend(t *testing.T) {
 	}
 }
 
-func TestSingleJoin(t *testing.T) {
-	cases := []struct{ base, req, want string }{
-		{"", "/api/v3", "/api/v3"},
-		{"/", "/api/v3", "/api/v3"},
-		{"/prefix", "/api/v3", "/prefix/api/v3"},
-		{"/prefix/", "/api/v3", "/prefix/api/v3"},
-		{"/prefix/", "api/v3", "/prefix/api/v3"},
-	}
-	for _, tc := range cases {
-		got := singleJoin(tc.base, tc.req)
-		if got != tc.want {
-			t.Errorf("singleJoin(%q, %q) = %q, want %q", tc.base, tc.req, got, tc.want)
-		}
-	}
-}
-
 func TestRedactConfig_PathsFor(t *testing.T) {
 	cfg := &RedactConfig{
 		Rules: []RedactRule{

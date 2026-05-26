@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"sonarr.tv/sonarr/cmd/internal/shadowtraffic/httputil"
 )
 
 // Replayer dispatches LogEntry values from a stream against a target.
@@ -198,9 +200,9 @@ func (r *Replayer) dispatch(ctx context.Context, e LogEntry) {
 	}
 
 	u := *r.Target
-	u.Path = singleJoin(r.Target.Path, e.Path)
+	u.Path = httputil.SingleJoin(r.Target.Path, e.Path)
 	if idx := strings.IndexByte(e.Path, '?'); idx >= 0 {
-		u.Path = singleJoin(r.Target.Path, e.Path[:idx])
+		u.Path = httputil.SingleJoin(r.Target.Path, e.Path[:idx])
 		u.RawQuery = e.Path[idx+1:]
 	}
 
@@ -218,7 +220,7 @@ func (r *Replayer) dispatch(ctx context.Context, e LogEntry) {
 		return
 	}
 	for k, v := range e.Headers {
-		if isHopHeader(k) || strings.EqualFold(k, "Host") || strings.EqualFold(k, "Content-Length") {
+		if httputil.IsHopHeader(k) || strings.EqualFold(k, "Host") || strings.EqualFold(k, "Content-Length") {
 			continue
 		}
 		req.Header.Set(k, v)
@@ -258,21 +260,3 @@ func (r *Replayer) dispatch(ctx context.Context, e LogEntry) {
 	}
 }
 
-// singleJoin matches the helper in cmd/shadow-traffic-diff/proxy.go.
-func singleJoin(base, req string) string {
-	if base == "" || base == "/" {
-		return req
-	}
-	if base[len(base)-1] == '/' && len(req) > 0 && req[0] == '/' {
-		return base + req[1:]
-	}
-	return base + req
-}
-
-func isHopHeader(h string) bool {
-	switch http.CanonicalHeaderKey(h) {
-	case "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailers", "Transfer-Encoding", "Upgrade":
-		return true
-	}
-	return false
-}

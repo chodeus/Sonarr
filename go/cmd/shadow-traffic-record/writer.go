@@ -24,6 +24,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"sonarr.tv/sonarr/cmd/internal/shadowtraffic/httputil"
 )
 
 // RecordedEntry mirrors the JSONL log shape consumed by
@@ -225,7 +227,7 @@ func (w *LogWriter) drain(flushEvery time.Duration, syncOnClose bool) {
 func stripHopHeaders(h map[string][]string, dropAPIKeys bool) map[string]string {
 	out := make(map[string]string, len(h))
 	for k, vs := range h {
-		if isHopHeader(k) {
+		if httputil.IsHopHeader(k) {
 			continue
 		}
 		if dropAPIKeys && (strings.EqualFold(k, "X-Api-Key") || strings.EqualFold(k, "Authorization")) {

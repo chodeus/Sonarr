@@ -370,20 +370,6 @@ func TestRecordingProxy_StatsIncrement(t *testing.T) {
 	_ = writer.Close(context.Background())
 }
 
-func TestSingleJoin(t *testing.T) {
-	cases := []struct{ base, req, want string }{
-		{"", "/api/v3", "/api/v3"},
-		{"/", "/api/v3", "/api/v3"},
-		{"/prefix", "/api/v3", "/prefix/api/v3"},
-		{"/prefix/", "/api/v3", "/prefix/api/v3"},
-	}
-	for _, tc := range cases {
-		if got := singleJoin(tc.base, tc.req); got != tc.want {
-			t.Errorf("singleJoin(%q, %q) = %q, want %q", tc.base, tc.req, got, tc.want)
-		}
-	}
-}
-
 func TestStripHopHeaders(t *testing.T) {
 	in := map[string][]string{
 		"Connection":    {"keep-alive"},

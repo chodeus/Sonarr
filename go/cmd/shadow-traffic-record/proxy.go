@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"sonarr.tv/sonarr/cmd/internal/shadowtraffic/httputil"
 )
 
 // RecordingProxy is the http.Handler that fronts a single upstream
@@ -78,7 +80,7 @@ func (p *RecordingProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Dispatch to upstream.
 	upstreamURL := *p.Upstream
-	upstreamURL.Path = singleJoin(p.Upstream.Path, r.URL.Path)
+	upstreamURL.Path = httputil.SingleJoin(p.Upstream.Path, r.URL.Path)
 	upstreamURL.RawQuery = r.URL.RawQuery
 
 	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL.String(), bytes.NewReader(body))
@@ -88,7 +90,7 @@ func (p *RecordingProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, vs := range r.Header {
-		if isHopHeader(k) {
+		if httputil.IsHopHeader(k) {
 			continue
 		}
 		for _, v := range vs {
@@ -111,7 +113,7 @@ func (p *RecordingProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Copy response headers minus hop-by-hop + Content-Length.
 	for k, vs := range resp.Header {
-		if isHopHeader(k) || strings.EqualFold(k, "Content-Length") {
+		if httputil.IsHopHeader(k) || strings.EqualFold(k, "Content-Length") {
 			continue
 		}
 		for _, v := range vs {
@@ -147,25 +149,3 @@ func (p *RecordingProxy) record(r *http.Request, body []byte, status int) {
 	p.Writer.Enqueue(entry)
 }
 
-// singleJoin / isHopHeader duplicate the helpers in
-// cmd/shadow-traffic-diff and cmd/shadow-traffic-replay — keeping each
-// cmd self-contained matters more than DRY here (a shared cmd helper
-// package would force every binary to import it through a stable
-// boundary that doesn't currently exist).
-func singleJoin(base, req string) string {
-	if base == "" || base == "/" {
-		return req
-	}
-	if base[len(base)-1] == '/' && len(req) > 0 && req[0] == '/' {
-		return base + req[1:]
-	}
-	return base + req
-}
-
-func isHopHeader(h string) bool {
-	switch http.CanonicalHeaderKey(h) {
-	case "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailers", "Transfer-Encoding", "Upgrade":
-		return true
-	}
-	return false
-}

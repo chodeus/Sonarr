@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"sonarr.tv/sonarr/cmd/internal/shadowtraffic/httputil"
 )
 
 // DualProxy is the http.Handler that dispatches each incoming request to
@@ -118,7 +120,7 @@ func (p *DualProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Copy headers minus hop-by-hop and Content-Length (which the
 	// stdlib's response writer re-derives from the bytes we write).
 	for k, vs := range primaryResp.headers {
-		if isHopHeader(k) || k == "Content-Length" {
+		if httputil.IsHopHeader(k) || k == "Content-Length" {
 			continue
 		}
 		for _, v := range vs {
@@ -135,7 +137,7 @@ func (p *DualProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (p *DualProxy) dispatch(ctx context.Context, label string, target *url.URL, src *http.Request, reqBody []byte) upstreamResp {
 	start := time.Now()
 	u := *target
-	u.Path = singleJoin(target.Path, src.URL.Path)
+	u.Path = httputil.SingleJoin(target.Path, src.URL.Path)
 	u.RawQuery = src.URL.RawQuery
 
 	req, err := http.NewRequestWithContext(ctx, src.Method, u.String(), bytes.NewReader(reqBody))
@@ -143,7 +145,7 @@ func (p *DualProxy) dispatch(ctx context.Context, label string, target *url.URL,
 		return upstreamResp{label: label, err: err, took: time.Since(start)}
 	}
 	for k, vs := range src.Header {
-		if isHopHeader(k) {
+		if httputil.IsHopHeader(k) {
 			continue
 		}
 		for _, v := range vs {
@@ -252,27 +254,6 @@ func itoa(n int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
-}
-
-// singleJoin joins a base URL path with the request path, collapsing the
-// duplicated leading slash that would otherwise result from concatenation
-// when base ends with "/" and request starts with "/".
-func singleJoin(base, req string) string {
-	if base == "" || base == "/" {
-		return req
-	}
-	if base[len(base)-1] == '/' && len(req) > 0 && req[0] == '/' {
-		return base + req[1:]
-	}
-	return base + req
-}
-
-func isHopHeader(h string) bool {
-	switch http.CanonicalHeaderKey(h) {
-	case "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailers", "Transfer-Encoding", "Upgrade":
-		return true
-	}
-	return false
 }
 
 // ErrSecondaryTimeout signals the secondary backend didn't respond
