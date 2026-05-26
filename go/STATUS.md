@@ -12013,3 +12013,129 @@ The two patterns don't interact — they apply to different endpoints. The v5uti
 ### Next Wave 3 candidates ascending
 
 Qualities (135), Wanted (136), Indexers (139), Localization (143), Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).
+
+## Phase 5.J263 — v5 QualityDefinition family (Wave 3, complex slice)
+
+### What
+
+`internal/api/v5/qualitydefinition/` package + 4 new routes at `/api/v5/qualitydefinition*`. Twelfth Wave 3 slice. Most complex Wave 3 family so far — THREE distinct wire-contract shifts in one family.
+
+### Three divergences
+
+**1. Resource shape REDUCED (J254/J262 pattern but inverted).** v5 drops fields rather than adding them:
+
+| Field           | v3 Go-port + v3 C# | v5 C# (this slice) |
+| --------------- | ------------------ | ------------------ |
+| id              | yes                | yes                |
+| quality         | yes                | yes                |
+| title           | yes                | yes                |
+| weight          | yes                | yes                |
+| **minSize**     | **yes**            | **REMOVED**        |
+| **maxSize**     | **yes**            | **REMOVED**        |
+| **preferredSize**| **yes**           | **REMOVED**        |
+
+Per the comment in v3 Go-port `qualitydefinition.go:36`: "post-207 these live on QualityProfile" — the size limits migrated to QualityProfile.Items in v3 already, but v3 contract still ships the fields on the QualityDefinition wire for backwards compatibility. v5 dropped them.
+
+**2. Route map changed.** v5 reorganises the bulk-update path AND removes a GET endpoint:
+
+| Method | v3 path                          | v5 path                          | Notes                |
+| ------ | -------------------------------- | -------------------------------- | -------------------- |
+| GET    | /api/v3/qualitydefinition        | /api/v5/qualitydefinition        | same                 |
+| GET    | /api/v3/qualitydefinition/{id}   | /api/v5/qualitydefinition/{id}   | same                 |
+| GET    | /api/v3/qualitydefinition/limits | (REMOVED)                        | v5 has no /limits    |
+| PUT    | /api/v3/qualitydefinition/{id}   | /api/v5/qualitydefinition/{id}   | same                 |
+| PUT    | /api/v3/qualitydefinition/update | /api/v5/qualitydefinition        | **MOVED to bare path** |
+
+The bare PUT path conflicts with GET on the same path; Go's `http.ServeMux` resolves by HTTP method.
+
+**3. UpdateMany status changed.** v3 emits 202 Accepted + body; v5 emits 200 OK + body. (Single-Update still emits 202 in both — only the bulk endpoint changed.)
+
+### Why all 4 handlers are v5-specific
+
+Because the Resource shape itself differs (drops 3 fields), every handler that projects a Resource onto the wire needs the v5 mapper. Path-aliasing to v3 would emit the v3-with-size-fields shape — wrong on every endpoint.
+
+This is the J254/J262 pattern (field divergence → v5-specific handlers) at its purest. Even the GET list + GET /{id} handlers need to be v5-specific despite no other behaviour change.
+
+### v5 size-limit propagation is dead code
+
+The C# v5 Update controller still inspects `model.MinSize/MaxSize/PreferredSize.HasValue` to decide whether to fire `UpdateAllSizeLimits`:
+
+```csharp
+if (model.MinSize.HasValue || model.MaxSize.HasValue || model.PreferredSize.HasValue)
+{
+    _qualityProfileService.UpdateAllSizeLimits(new QualityProfileSizeLimit(model));
+}
+```
+
+But the v5 Resource doesn't carry those fields — the deserialised model always has them as null. The branch never fires in v5. C# kept the check anyway (probably for parity with v3 model code reuse). The Go-port v5 handlers skip the propagation entirely; one fewer service dep needed (no `QualityProfileSizeLimitUpdater` param on v5 handlers, simplifying the wiring).
+
+### Inline QualityResource DTO
+
+v3 has a package-private `qualityResource` struct (4 fields: id/name/source/resolution). To avoid exporting v3's private type just for v5's reuse, the v5 package defines its own `QualityResource` exported struct with identical shape. The `Source` field is camelCased via the already-exported `apiv3.QualitySourceName` helper.
+
+Two consumers (v3 + v5) of essentially the same 4-field DTO. If a third v5 family needs it (Indexer / DownloadClient at later slices?), promote to a shared `internal/api/v5/internal/common` package. For now, J243-pattern threshold of four duplications isn't hit.
+
+### Code
+
+```go
+type Resource struct {
+    ID      int             `json:"id"`
+    Quality QualityResource `json:"quality"`
+    Title   string          `json:"title"`
+    Weight  int             `json:"weight"`
+}
+
+type QualityResource struct {
+    ID         int    `json:"id"`
+    Name       string `json:"name"`
+    Source     string `json:"source"`
+    Resolution int    `json:"resolution"`
+}
+
+type Lister = apiv3.QualityDefinitionLister
+type Writer = apiv3.QualityDefinitionWriter
+
+func toResource(d qualitydefinitions.Decorated) Resource { /* ... */ }
+
+func ListHandler(lister Lister) http.Handler { /* v5 mapper */ }
+func ByIDHandler(svc Writer) http.Handler { /* v5 mapper */ }
+func UpdateHandler(svc Writer) http.Handler { /* 202 + body, no size propagation */ }
+func UpdateManyHandler(svc Writer, lister Lister) http.Handler { /* 200 + body */ }
+```
+
+### Tests (8)
+
+- `TestListHandler_ResourceShapeOmitsSizeFields` — canonical divergence guard: fixture row, list endpoint, body MUST NOT contain `"minSize"` / `"maxSize"` / `"preferredSize"`.
+- `TestByIDHandler_Success` — fixture row + path-id; asserts 200 + body has quality name.
+- `TestByIDHandler_NotFound_Returns404` — id=999; 404.
+- `TestUpdateHandler_Success_Returns202` — body with title update; asserts 202 + svc.Update called once + response body lacks size fields.
+- `TestUpdateHandler_EmptyTitle_Returns400` — validation.
+- `TestUpdateManyHandler_Success_Returns200` — array body with 2 updates; asserts 200 (NOT 202; v5 demote from v3) + svc.Update called twice.
+- `TestUpdateManyHandler_MalformedBody_Returns400` — malformed JSON.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/api/v5/qualitydefinition/...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v5/qualitydefinition/...
+ok  sonarr.tv/sonarr/internal/api/v5/qualitydefinition  1.658s
+```
+
+### v5 surface progress
+
+15/~50 → 16/~50 families. Endpoints added: 4 (removed 1 vs v3: /limits).
+
+### Subtle gotcha caught by go vet
+
+First-draft test fixtures used `qualitydefinitions.Decorated{Definition: qualitydefinitions.Definition{ID:1, ...}, Quality: ...}` — assumed Decorated embeds Definition. Actual `internal/qualitydefinitions/service.go:20` declares Decorated with direct fields (ID/Quality/Title/Weight/GroupName), not embedded. Vet caught it; switched to flat field literals.
+
+Pattern noted: when writing tests for an API package whose Resource projects from an internal package's typed model, double-check the model's actual struct layout via grep before assuming composition. The v3 package handles this via the `toQualityDefinitionResource(d Decorated)` mapper which doesn't expose the internal shape; tests have to look it up.
+
+### Next Wave 3 candidates ascending
+
+Wanted (136), Indexers (139), Localization (143), Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).

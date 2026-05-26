@@ -21,6 +21,7 @@ import (
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
 	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
+	qualitydefinitionv5 "sonarr.tv/sonarr/internal/api/v5/qualitydefinition"
 	remotepathmappingv5 "sonarr.tv/sonarr/internal/api/v5/remotepathmapping"
 	rootfolderv5 "sonarr.tv/sonarr/internal/api/v5/rootfolder"
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
@@ -1313,6 +1314,16 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/rootfolder/{id}", Handler: rootfolderv5.ByIDHandler(rootFoldersSvc)},
 		{Method: "POST", Path: "/api/v5/rootfolder", Handler: rootfolderv5.CreateHandler(rootFoldersSvc)},
 		{Method: "DELETE", Path: "/api/v5/rootfolder/{id}", Handler: rootfolderv5.DeleteHandler(rootFoldersSvc)},
+		// J263 — v5 QualityDefinition endpoint family. v5 Resource drops
+		// the 3 size fields (minSize/maxSize/preferredSize); UpdateMany
+		// moves to PUT `/qualitydefinition` (no /update suffix) AND
+		// returns 200 (v3 returned 202); no /limits endpoint in v5.
+		// All 4 handlers are v5-specific because the Resource shape
+		// itself differs (J254/J262 pattern).
+		{Method: "GET", Path: "/api/v5/qualitydefinition", Handler: qualitydefinitionv5.ListHandler(qualityDefSvc)},
+		{Method: "GET", Path: "/api/v5/qualitydefinition/{id}", Handler: qualitydefinitionv5.ByIDHandler(qualityDefSvc)},
+		{Method: "PUT", Path: "/api/v5/qualitydefinition/{id}", Handler: qualitydefinitionv5.UpdateHandler(qualityDefSvc)},
+		{Method: "PUT", Path: "/api/v5/qualitydefinition", Handler: qualitydefinitionv5.UpdateManyHandler(qualityDefSvc, qualityDefSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
