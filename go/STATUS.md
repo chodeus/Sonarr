@@ -9418,3 +9418,30 @@ Sonarr probe was the third spin-up this session. Same `HOME=/tmp/sonarr-fake-hom
 Behavioural impact: tools that consume the Go-port v3 surface and expect C#-style idempotent DELETE (e.g. UI delete operations that don't re-fetch state first, *-arr-suite scripts that may retry DELETE) now get the same response shape as upstream C#. Previously a UI that double-clicked Delete would have seen 200 then 404 on the second click; now it sees 200 both times.
 
 Open follow-ups remaining (2 of 5): C.1.i-follow-2 (validation envelope policy — also write/read split), C.1.i-follow-5 (route coverage audit).
+
+## Phase 5.J233 — Validation envelope policy (audit row C.1.i-follow-2 closed) — 2026-05-26
+
+Closes C.1.i-follow-2 via documented deliberate divergence + policy regression-guard test. No production-code change.
+
+J228 surfaced four distinct C# response shapes; this slice documents the Go-port stance per shape:
+
+  1. **RFC 9110 problem-details** — Go-port does NOT mirror. ASP.NET Core auto-emits this on [ApiController] malformed-JSON 400 + true-404 routes; framework-incidental, not deliberate API design. Go-port keeps the consistent [Envelope] across all paths.
+  2. **Bare ValidationFailure[]** — Go-port MIRRORS via WriteValidation. Most consumer-facing shape; React frontend renderer expects it.
+  3. **{message, content}** legacy envelope — Go-port does NOT mirror. Single observed path (); the "BadRequest: " prefix is BadRequestException.ToString() leakage.
+  4. **{message, description} + .NET stack trace 500** — Go-port does NOT mirror. Upstream null-deref bugs in FluentValidation chain (post.customformat.empty-name + post.qualityprofile.duplicate); Go-port handles nil correctly and returns clean 400.
+
+Implementation:
+
+internal/httperr/httperr.go: ~60 lines of package doc-comment added covering all 4 shapes + per-path rationale + cite paths to ~/Code/GitHub/Sonarr-reference/v5-develop-7c41dcbe2/validation-envelopes/. No code change.
+
+internal/httperr/httperr_test.go: new TestPolicy_DoesNotEmitRFC9110ProblemDetails — table-driven test against BadRequest, NotFound, Conflict. Asserts no "type", "title", "status", or "traceId" key in body (RFC 9110 signature fields) AND that "message" IS present. Any future accidental RFC 9110 leakage (e.g. someone refactoring NotFound to wrap a problem-details helper) fails this test loud.
+
+Read/write balance: policy spans both — 404 read envelopes (NotFound, GET-not-found paths) and 4xx write envelopes (BadRequest, validation 400s, Conflict). Regression-guard covers BadRequest + NotFound + Conflict, hitting read AND write paths in one test.
+
+Hard gates clean: go test ./internal/httperr/... 0 FAIL, go test ./... 0 FAIL, golangci-lint 0 issues.
+
+Net diff: ~70 internal/httperr/httperr.go (package doc-comment expansion only, no code change) + ~50 internal/httperr/httperr_test.go (new test + 1 helper function via existing strings.Contains import) + ~3 PROGRESS.md cursor + ~14 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md.
+
+Behavioural impact: zero immediate user-visible change. Documented baseline against which future Phase 6 shadow-traffic comparison will surface these shape divergences as KNOWN-failing rows (deliberate, not bugs). Anyone reading httperr.go now sees the policy at the package doc.
+
+Open follow-ups remaining (1 of 5): C.1.i-follow-5 (route coverage audit — parses the 367KB v3.system.routes.dot graphviz to surface any C# endpoint Go-port doesn't serve).

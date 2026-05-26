@@ -275,6 +275,49 @@ func TestWriteErr_ExplicitLoggerWinsOverContext(t *testing.T) {
 	}
 }
 
+// TestPolicy_DoesNotEmitRFC9110ProblemDetails pins the J233 envelope
+// policy decision (C.1.i-follow-2): the Go-port deliberately does NOT
+// adopt RFC 9110 problem-details (`{type, title, status, errors,
+// traceId}`) even on the malformed-JSON 400 + true-404 paths where
+// upstream C# Sonarr's `[ApiController]` ASP.NET Core middleware does
+// emit that shape. Rationale: framework-incidental in C#, not
+// deliberate; one consistent Envelope across the entire Go-port
+// surface is more consumer-friendly than C#'s mixed bag.
+//
+// If a future change accidentally introduces a "type" key into the
+// 4xx body (e.g. someone refactors NotFound to use a problem-details
+// helper), this test catches it. Update the test deliberately if the
+// policy reverses; don't silently break it.
+func TestPolicy_DoesNotEmitRFC9110ProblemDetails(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		emit func(http.ResponseWriter)
+	}{
+		{"BadRequest", func(w http.ResponseWriter) { BadRequest(w, "malformed body") }},
+		{"NotFound", func(w http.ResponseWriter) { NotFound(w, "series 99 not found") }},
+		{"Conflict", func(w http.ResponseWriter) { Conflict(w, "in use") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			tc.emit(rr)
+			body := rr.Body.String()
+			// RFC 9110 problem-details signature fields. None must appear.
+			forbidden := []string{`"type"`, `"title"`, `"status"`, `"traceId"`}
+			for _, key := range forbidden {
+				if strings.Contains(body, key) {
+					t.Errorf("RFC 9110 key %s leaked into Envelope body for %s: %s", key, tc.name, body)
+				}
+			}
+			// Envelope key MUST appear.
+			if !strings.Contains(body, `"message"`) {
+				t.Errorf("Envelope `message` key missing for %s: %s", tc.name, body)
+			}
+		})
+	}
+}
+
 func TestWriteErr_EmittedShapeMatchesEnvelope(t *testing.T) {
 	t.Parallel()
 	// Verify that WriteErr's body is the same envelope shape Write

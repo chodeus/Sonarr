@@ -29,6 +29,67 @@
 // 500-class errors at slog.Error when given a non-nil logger; this
 // closes the "zero handler-side logging" gap surfaced by the Phase 5
 // audit.
+//
+// # Validation envelope policy (C.1.i-follow-2 — closed at J233)
+//
+// The J228 reference capture against live C# v5-develop `7c41dcbe2`
+// surfaced FOUR distinct error-response shapes in C# Sonarr. The
+// Go-port deliberately standardises on TWO shapes (the Envelope above
+// and the Failure array). Per-path divergence rationale:
+//
+//   - **C# shape (1) — RFC 9110 problem-details** (`{type, title, status,
+//     errors, traceId}`) emitted on (a) malformed JSON 400 and (b) true
+//     404 from `[ApiController]` routes. This is ASP.NET Core's automatic
+//     `ProblemDetailsFactory` middleware — framework-incidental, not
+//     deliberate API design. **Go-port does NOT mirror.** Our `BadRequest`
+//     and `NotFound` use the [Envelope] shape so consumers see one
+//     consistent error format across the entire surface. Cost: tools that
+//     parse RFC 9110 problem-details specifically (rare in the Sonarr
+//     ecosystem) lose that path. Benefit: a single parser handles every
+//     error response from Go-port.
+//
+//   - **C# shape (2) — bare `FluentValidation.ValidationFailure[]` array**
+//     on field-validator 400s. This is the most consumer-facing shape
+//     across the Sonarr surface and the one the React frontend's
+//     validation-error renderer expects. **Go-port mirrors via
+//     [WriteValidation].**
+//
+//   - **C# shape (3) — `{message, content}` legacy envelope** on a single
+//     observed path (`v5.put.customformat-bulk.empty-ids` → 400 with
+//     `{message: "BadRequest: ids must be provided", content: "ids must
+//     be provided"}`). This is C#'s `BadRequestException.ToString()`
+//     leakage — the "BadRequest: " prefix is an artifact of the Exception
+//     subclass name, not deliberate. **Go-port does NOT mirror.** Our
+//     [BadRequest] emits the standard [Envelope] without the prefix and
+//     without the duplicated `content` field. Functionally equivalent
+//     (the human-readable message is the same modulo prefix); structurally
+//     consistent with the rest of the surface.
+//
+//   - **C# shape (4) — `{message, description}` with .NET stack trace**
+//     on 500-class errors that bubble unhandled. Observed at
+//     `post.customformat.empty-name` and `post.qualityprofile.duplicate`
+//     in the J228 capture: these are upstream null-deref bugs in the
+//     FluentValidation chain (the validator's `_formatService.All()` call
+//     returns null when called during a Custom() rule, passing null to
+//     `Enumerable.Any` which throws ArgumentNullException). The Go-port
+//     handles nil correctly and returns clean 400 validation envelopes
+//     for these inputs — **accidentally BETTER than C#.** Documented
+//     deliberate divergence; do not "fix" by reproducing the upstream
+//     null-deref.
+//
+// Reference samples for each shape (live C# v5.0.0.1658 against an
+// empty-state install):
+//
+//	~/Code/GitHub/Sonarr-reference/v5-develop-7c41dcbe2/validation-envelopes/
+//	  post.series.bad-json.json              C# shape (1) — malformed JSON 400
+//	  get.series.404.json                    C# shape (1) — true 404
+//	  post.series.empty-body.json            C# shape (2) — field validator 400
+//	  v5.put.customformat-bulk.empty-ids.json  C# shape (3) — legacy envelope
+//	  post.customformat.empty-name.json      C# shape (4) — upstream null-deref 500
+//
+// Future "Phase 6 shadow-traffic" comparison will surface these
+// shape divergences as known-failing rows — they are deliberate, not
+// bugs.
 package httperr
 
 import (
