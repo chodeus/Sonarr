@@ -11,6 +11,7 @@ import (
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	autotaggingv5 "sonarr.tv/sonarr/internal/api/v5/autotagging"
+	blocklistv5 "sonarr.tv/sonarr/internal/api/v5/blocklist"
 	customfilterv5 "sonarr.tv/sonarr/internal/api/v5/customfilter"
 	customformatv5 "sonarr.tv/sonarr/internal/api/v5/customformat"
 	diskspacev5 "sonarr.tv/sonarr/internal/api/v5/diskspace"
@@ -1298,6 +1299,12 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v5/remotepathmapping", Handler: remotepathmappingv5.CreateHandler(remotePathMappingsSvc)},
 		{Method: "PUT", Path: "/api/v5/remotepathmapping/{id}", Handler: remotepathmappingv5.UpdateHandler(remotePathMappingsSvc)},
 		{Method: "DELETE", Path: "/api/v5/remotepathmapping/{id}", Handler: remotepathmappingv5.DeleteHandler(remotePathMappingsSvc)},
+		// J261 — v5 Blocklist endpoint family (3 endpoints; GET paged
+		// is path-alias; both DELETEs demote 200+`{}` → 204 via
+		// v5util.RewriteSuccessTo204).
+		{Method: "GET", Path: "/api/v5/blocklist", Handler: blocklistv5.GetHandler(blocklistPagedAdapter{repo: blocklistRepo})},
+		{Method: "DELETE", Path: "/api/v5/blocklist/{id}", Handler: blocklistv5.DeleteHandler(blocklistSvc)},
+		{Method: "DELETE", Path: "/api/v5/blocklist/bulk", Handler: blocklistv5.BulkDeleteHandler(blocklistSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to

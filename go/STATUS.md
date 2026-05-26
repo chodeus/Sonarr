@@ -11821,3 +11821,84 @@ J260 is the first family with two distinct v5util wrapper variants in one slice 
 ### Next Wave 3 candidates ascending
 
 Blocklist (127), RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143), Connections (154), Calendar (184), Tags (192).
+
+## Phase 5.J261 — v5 Blocklist family (Wave 3)
+
+### What
+
+`internal/api/v5/blocklist/` package + 3 new routes at `/api/v5/blocklist*`. Tenth Wave 3 slice.
+
+### Wire-shape diff vs v3 (and vs C#)
+
+| v5 endpoint                | vs v3 Go-port          | vs C# v5                |
+| -------------------------- | ---------------------- | ----------------------- |
+| GET /api/v5/blocklist      | shape matches (reduced)| 5-field reduced (deferred fields) |
+| DELETE /api/v5/blocklist/{id}  | 200+`{}` → **204**  | matches v5            |
+| DELETE /api/v5/blocklist/bulk  | 200+`{}` → **204**  | matches v5            |
+
+The Go-port v3 `BlocklistResource` has 5 fields (id / seriesId / title / date / sourceTitle). The C# v3 + v5 controllers' BlocklistResource has 13 fields including EpisodeIds + Languages + Quality + CustomFormats + Series. The v3 Go-port handler's doc-comment at `blocklist.go:18-23` explicitly defers the joined fields — same chain that defers v5 Parse (J258) and v5 Update (J259):
+
+- CustomFormats + CustomFormatScore need the format CALCULATOR which isn't ported.
+- Quality model lookup, Languages list, Series projection are individually doable but useless without the full record.
+
+Both Go-port v3 AND v5 inherit the reduced shape via the type alias. When the calculator + scoring pipeline lands at `internal/blocklist` + `internal/customformats`, both Resources widen automatically.
+
+### Code
+
+```go
+type Resource = apiv3.BlocklistResource
+type PagedLister = apiv3.BlocklistPagedLister
+type Writer = apiv3.BlocklistWriter
+
+var GetHandler = apiv3.BlocklistHandler
+
+func DeleteHandler(svc Writer) http.Handler {
+    return v5util.RewriteSuccessTo204(apiv3.BlocklistDeleteHandler(svc))
+}
+
+func BulkDeleteHandler(svc Writer) http.Handler {
+    return v5util.RewriteSuccessTo204(apiv3.BlocklistBulkDeleteHandler(svc))
+}
+```
+
+3 type aliases + 1 variable alias + 2 wrapped handlers. Same J257/J260 pattern.
+
+### Tests (6)
+
+- `TestDeleteHandler_Success_Returns204` — DELETE existing → 204 + empty + svc.Delete called once.
+- `TestDeleteHandler_MissingID_Returns204Idempotent` — DELETE id=9999 (not present) → 204 (J232 carry-through; v3 emits 200+`{}` for missing id; wrapper demotes).
+- `TestBulkDeleteHandler_Success_Returns204` — `{"ids":[1,2,3]}` → 204 + svc.DeleteByIDs called once.
+- `TestBulkDeleteHandler_EmptyIDs_Returns204` — `{"ids":[]}` → 204 + silent no-op preserved (C# behaviour mirrored verbatim).
+- `TestVariableAlias_GetHandlerNonNil` — sanity guard.
+- `TestTypeAliasesMatchV3` — compile-time invariant guard.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/api/v5/blocklist/...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v5/blocklist/...
+ok  sonarr.tv/sonarr/internal/api/v5/blocklist  1.668s
+```
+
+### v5 surface progress
+
+13/~50 → 14/~50 families. Endpoints added: 3.
+
+### Cumulative deferred-fields chain (post-J261)
+
+Three Go-port v5 handlers now share the same custom-format-calculator deferral:
+
+- **J258 v5 Parse** — `Resource = apiv3.ParseResource` emits Title + ParsedEpisodeInfo; defers Series/Episodes/Languages/CustomFormats/CustomFormatScore.
+- **J259 v5 Update** — `Resource = apiv3.UpdateResource` emits 12 fields; defers the install-history merge that C# does when LogDbEnabled.
+- **J261 v5 Blocklist** (this slice) — `Resource = apiv3.BlocklistResource` emits 5 fields; defers EpisodeIds/Languages/Quality/CustomFormats/Series.
+
+When the `internal/customformats/calculator` port lands (Wave 1 deferred work), all three families can widen their Resources in a single follow-up slice. Until then, the wire is consistently the Go-port's reduced shape — internally consistent across v3 + v5, just not byte-equivalent to live C#.
+
+### Next Wave 3 candidates ascending
+
+RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143), Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236).
