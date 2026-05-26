@@ -12624,3 +12624,68 @@ Remaining unported families (smallest-first per `wc -l` on the C# controllers):
 - Release/ReleasePushController (120 LOC) — main Release (343 LOC) deferred
 
 Next tick will pick from the System/Tasks (smallest) or Profiles/Quality (next-tier family).
+
+## Phase 5.J275 — Wave 3 twenty-fourth slice: v5 SystemTask family port (79 LOC C# source)
+
+Field-divergence + nullability-shape-shift slice. Smallest remaining unported v5 family per the J274 survey.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :6584-6638):
+
+| endpoint                          | v5 status | v3 Go-port                 | strategy                              |
+|-----------------------------------|-----------|----------------------------|---------------------------------------|
+| GET /api/v5/system/task           | 200       | 200 (`apiv3.SystemTaskHandler`)     | v5-specific Resource + handler |
+| GET /api/v5/system/task/{id}      | 200/404   | 200/400/404 (`apiv3.SystemTaskByIDHandler`) | v5-specific Resource + handler |
+
+Cannot path-alias because the Resource shape differs — v5 widens by one field.
+
+**Resource diff** (v5 `TaskResource` per `src/Sonarr.Api.V5/System/Tasks/TaskResource.cs` — 7 declared properties + inherited Id from RestResource = 8 wire fields):
+
+| field          | v3 Go-port (apiv3.TaskResource) | v5 C# (TaskResource) | notes                                 |
+|----------------|----------------------------------|----------------------|---------------------------------------|
+| id             | ✓                                | ✓                    | inherited RestResource                |
+| name           | ✓                                | ✓                    | splitCamelCase(TypeName)              |
+| taskName       | ✓                                | ✓                    | canonical TypeName                    |
+| interval       | ✓                                | ✓                    | minutes                               |
+| lastExecution  | ✓                                | ✓                    | DateTime                              |
+| **lastStartTime** | ✓ `*time.Time omitempty`     | ✓ non-nullable       | v5 emits unconditionally              |
+| nextExecution  | ✓                                | ✓                    | computed LastExecution+Interval-min   |
+| **lastDuration** | —                              | ✓ TimeSpan string    | v5 ADDS                               |
+
+The v3 Go-port deliberately omitted `lastDuration` (J231 redacted the timing-derived field from the v3 corpus rather than emit it). v3 C# has it as a computed property on TaskResource.cs:15 — meaning v3 C# emits it too, but the v3 Go-port chose absence as a redaction strategy. Going forward, the v3 Go-port could in principle add the field back (Wave 4 / v3-side audit follow-up), but for now v3 stays as-is and v5 gets the new field.
+
+**lastStartTime non-nullability** (v5 openapi declares `type: string, format: date-time` without `nullable: true`) — v5 emits the field unconditionally. When the underlying `scheduledtasks.Task.LastStartTime` is nil, surface as zero `time.Time{}` which `encoding/json` marshals to `"0001-01-01T00:00:00Z"` — matches .NET's `default(DateTime)` ISO-8601 serialisation `"0001-01-01T00:00:00"` (the trailing `Z` is Go's default since zero time is in UTC; .NET omits the zone designator on `DateTime` kind=Unspecified — minor cosmetic difference, not a contract divergence).
+
+**lastDuration TimeSpan format**: .NET's default System.Text.Json TimeSpan serializer uses `ToString("c")` ("constant"/round-trippable) which renders as `[-][d'.']hh':'mm':'ss['.'fffffff]`. Spot examples:
+- zero → `"00:00:00"`
+- 5 minutes → `"00:05:00"`
+- 1 second + 500ms → `"00:00:01.5000000"` (7-digit ticks fractional, not trimmed)
+- 1 day + 1 min → `"1.00:01:00"`
+- negative 1 min → `"-00:01:00"`
+
+The existing v3 helper `formatDuration` at `internal/api/v3/command.go:329-356` covers the hh:mm:ss[.fff…] base case but TRIMS trailing zeros AND doesn't render the days prefix — not safe to reuse for v5 lastDuration (LastStartTime=nil case would generate a multi-millennium duration via LastExecution - default(DateTime), needing days). New private `formatTimeSpan` helper in the v5/systemtask package handles the full layout.
+
+**SignalR**: v5 TaskController declares `IHandle<CommandExecutedEvent>` emitting `ModelAction.Sync` on the task channel (per `:60-64`). Same Wave 2 mop-up status as v3 — not yet wired on either Go-port side; tracked under "ModelEvent<ScheduledTask> for system/task SignalR" in PHASE_6_SCOPE.md.
+
+**Slice scope** — 316 lines (155 source + 161 test) + 1 import + 2 routes:
+
+- New `internal/api/v5/systemtask/systemtask.go` (155 LOC) — v5-specific `Resource` struct (8 fields, non-nullable lastStartTime, new lastDuration) + `Lister` type alias to `apiv3.SystemTaskLister` (re-uses v3's dep surface — the production `*scheduledtasks.Service.GetAll` satisfies both) + `ListHandler` + `ByIDHandler` + private `taskToResource` (handles nil LastStartTime → zero time.Time; computes formatTimeSpan(LastExecution-lastStart)) + private `splitCamelCase` (local copy of v3 helper, kept private to avoid widening v3 exports for a single re-use) + private `formatTimeSpan` (.NET TimeSpan ToString("c") layout, handles days prefix + 7-digit ticks + negative).
+- New `internal/api/v5/systemtask/systemtask_test.go` (161 LOC) — 7 tests: ListHandler-empty-returns-array (pins `[]` + Content-Type), ListHandler-populated-emits-lastDuration (pins ordering by Name "Backup" < "Rss Sync" + LastDuration="00:05:00" + raw body string match), ListHandler-lastStartTime-always-emitted (canonical nullability-shift guard — feeds LastStartTime=nil and asserts `"lastStartTime":"0001-01-01T00:00:00Z"` is present, NOT omitted), ByIDHandler-found (asserts LastDuration="00:00:01" + Name+ID match), ByIDHandler-NotFound (asserts 404), ByIDHandler-invalid-id (asserts 400), NextExecution (LastExecution + Interval-min contract), FormatTimeSpan-variants (sub-second 1.5s → "00:00:01.5000000" ticks).
+- `cmd/sonarr/host_wiring.go` — 1 new import (`systemtaskv5`) + 2 new routes alongside the existing /api/v3/system/task routes (re-uses taskSvc dep — same `*scheduledtasks.Service` instance that backs v3).
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/systemtask/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/systemtask/... ./cmd/sonarr/...` ✓ (7 v5/systemtask tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 27/~50 → 28/~50.
+
+Pattern observation: this is the first Wave 3 slice where the v5 surface adds a field that v3 Go-port deliberately REDACTED (rather than deferred via a chain). The redaction was a corpus-stability call (J231 lastDuration redaction), not a service-port gap — meaning the data IS available, it just isn't projected by v3. v5 projects it freely. Future v3-side audit may revisit and add back, but it isn't coupled.
+
+### Next Wave 3 candidates ascending
+
+- System/Backup (135 LOC, src/Sonarr.Api.V5/System/Backup/BackupController.cs) — 4 endpoints; v3 Go-port already exposes all 4 per host_wiring.go:1636-1639
+- Profiles/Quality/QualityProfileController (88 LOC) + QualityProfileSchemaController (28 LOC) — 2 sub-controllers
+- Profiles/Release/ReleaseProfileController (95 LOC)
+- Settings/* (multiple controllers — UiSettings 31, MediaManagement 70, GeneralSettings 114, NamingSettings 143)
+- Episodes/EpisodeController (85 LOC) + RenameEpisodeController (48 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
+- Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
+- Release/ReleasePushController (120 LOC)

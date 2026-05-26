@@ -35,6 +35,7 @@ import (
 	logv5 "sonarr.tv/sonarr/internal/api/v5/log"
 	manualimportv5 "sonarr.tv/sonarr/internal/api/v5/manualimport"
 	systemv5 "sonarr.tv/sonarr/internal/api/v5/system"
+	systemtaskv5 "sonarr.tv/sonarr/internal/api/v5/systemtask"
 	tagv5 "sonarr.tv/sonarr/internal/api/v5/tag"
 	wantedv5 "sonarr.tv/sonarr/internal/api/v5/wanted"
 	"sonarr.tv/sonarr/internal/auth"
@@ -1471,6 +1472,17 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/system/routes/duplicate", Handler: systemv5.RoutesDuplicateHandler()},
 		{Method: "POST", Path: "/api/v5/system/shutdown", Handler: systemv5.ShutdownHandler(lifecycleSvc)},
 		{Method: "POST", Path: "/api/v5/system/restart", Handler: systemv5.RestartHandler(lifecycleSvc)},
+		// J275 — v5 SystemTask endpoint family (2 endpoints; 79 LOC C#
+		// — TaskController + TaskResource under System/Tasks/). ONE
+		// wire-shape divergence: v5 adds `lastDuration` (TimeSpan as
+		// string, computed as LastExecution - LastStartTime) which v3
+		// Go-port omits entirely (J231 redacted from corpus). v5 also
+		// emits `lastStartTime` unconditionally (non-nullable per v5
+		// openapi schema) — when underlying Task.LastStartTime is nil,
+		// surface as "0001-01-01T00:00:00Z" (.NET default(DateTime)
+		// parity). v5-specific Resource + handlers (cannot path-alias).
+		{Method: "GET", Path: "/api/v5/system/task", Handler: systemtaskv5.ListHandler(taskSvc)},
+		{Method: "GET", Path: "/api/v5/system/task/{id}", Handler: systemtaskv5.ByIDHandler(taskSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
