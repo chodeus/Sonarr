@@ -170,6 +170,97 @@ const (
 	ReasonSkyHookProbeFailed
 )
 
+// reasonNames maps each Reason to its camelCase wire name (as
+// emitted by the v5 `HealthCheckReason` enum per
+// `src/Sonarr.Api.V5/openapi.json` HealthCheckReason schema).
+// Indexed by `int(reason)`. Order MUST match the const block above.
+//
+// The two Go-port-specific entries at the tail (SkyHookUnavailable /
+// SkyHookProbeFailed) are NOT in the C# v5 openapi enum — they emit
+// best-effort camelCase strings the UI will treat as unknown enum
+// values until the C# tree gains parallel entries.
+//
+// J254.
+var reasonNames = [...]string{
+	"appDataLocation",
+	"downloadClientCheckNoneAvailable",
+	"downloadClientCheckUnableToCommunicate",
+	"downloadClientRemovesCompletedDownloads",
+	"downloadClientRootFolder",
+	"downloadClientSorting",
+	"downloadClientStatusAllClients",
+	"downloadClientStatusSingleClient",
+	"importListRootFolderMissing",
+	"importListRootFolderMultipleMissing",
+	"importListStatusAllUnavailable",
+	"importListStatusUnavailable",
+	"importMechanismEnableCompletedDownloadHandlingIfPossible",
+	"importMechanismEnableCompletedDownloadHandlingIfPossibleMultiComputer",
+	"importMechanismHandlingDisabled",
+	"indexerDownloadClient",
+	"indexerJackettAll",
+	"indexerLongTermStatusAllUnavailable",
+	"indexerLongTermStatusUnavailable",
+	"indexerRssNoIndexersAvailable",
+	"indexerRssNoIndexersEnabled",
+	"indexerSearchNoAutomatic",
+	"indexerSearchNoAvailableIndexers",
+	"indexerSearchNoInteractive",
+	"indexerStatusAllUnavailable",
+	"indexerStatusUnavailable",
+	"minimumApiKeyLength",
+	"mountSeries",
+	"notificationStatusAll",
+	"notificationStatusSingle",
+	"package",
+	"proxyBadRequest",
+	"proxyFailed",
+	"proxyResolveIp",
+	"recycleBinUnableToWrite",
+	"remotePathMappingBadDockerPath",
+	"remotePathMappingDockerFolderMissing",
+	"remotePathMappingDownloadPermissionsEpisode",
+	"remotePathMappingFileRemoved",
+	"remotePathMappingFilesBadDockerPath",
+	"remotePathMappingFilesGenericPermissions",
+	"remotePathMappingFilesLocalWrongOSPath",
+	"remotePathMappingFilesWrongOSPath",
+	"remotePathMappingFolderPermissions",
+	"remotePathMappingGenericPermissions",
+	"remotePathMappingImportEpisodeFailed",
+	"remotePathMappingLocalFolderMissing",
+	"remotePathMappingLocalWrongOSPath",
+	"remotePathMappingRemoteDownloadClient",
+	"remotePathMappingWrongOSPath",
+	"removedSeriesMultiple",
+	"removedSeriesSingle",
+	"rootFolderEmpty",
+	"rootFolderMissing",
+	"rootFolderMultipleMissing",
+	"serverNotification",
+	"systemTime",
+	"updateAvailable",
+	"updateStartupNotWritable",
+	"updateStartupTranslocation",
+	"updateUiNotWritable",
+	// Go-port additions (NOT in C# v5 openapi):
+	"skyHookUnavailable",
+	"skyHookProbeFailed",
+}
+
+// String returns the camelCase wire name of r. Out-of-range values
+// (which shouldn't occur since Reason is a closed enum) return
+// "unknown". Mirrors the convention `Result.String` uses at `:69-81`.
+//
+// J254.
+func (r Reason) String() string {
+	i := int(r)
+	if i < 0 || i >= len(reasonNames) {
+		return "unknown"
+	}
+	return reasonNames[i]
+}
+
 // HealthCheck is the value type a Check returns. Mirrors the C#
 // ModelBase-derived class at `HealthCheck.cs:8-46`. Source is the
 // check's struct name (the C# tree uses the .NET Type — Go takes

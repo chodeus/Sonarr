@@ -14,6 +14,7 @@ import (
 	customformatv5 "sonarr.tv/sonarr/internal/api/v5/customformat"
 	diskspacev5 "sonarr.tv/sonarr/internal/api/v5/diskspace"
 	filesystemv5 "sonarr.tv/sonarr/internal/api/v5/filesystem"
+	healthv5 "sonarr.tv/sonarr/internal/api/v5/health"
 	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
 	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
@@ -1261,6 +1262,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/filesystem", Handler: filesystemv5.ListHandler()},
 		{Method: "GET", Path: "/api/v5/filesystem/type", Handler: filesystemv5.TypeHandler()},
 		{Method: "GET", Path: "/api/v5/filesystem/mediafiles", Handler: filesystemv5.MediaFilesHandler()},
+		// J254 — v5 Health endpoint family (single GET; v5 adds `reason`
+		// field over v3 per the openapi v5 HealthResource schema).
+		{Method: "GET", Path: "/api/v5/health", Handler: healthv5.ListHandler(healthSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to

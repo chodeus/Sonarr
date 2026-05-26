@@ -11066,3 +11066,125 @@ Next Wave 3 candidates by ascending LOC: Health (82) — health-check read endpo
 ### Subtle correctness note for future v5-family-port authors
 
 The first draft of `TestTestHandler_ValidationFailure_PassesThrough400` had `metadata.TestFailure{PropertyName: "Path", Message: "Not writable"}` — `Message` is the v3 wire field name on `httperr.Failure`, but the `metadata.TestFailure` Go struct field is `ErrorMessage` (the C# property name preserved). Vet caught it before tests ran. Future provider-family ports should grep `internal/<family>/*.go` for the actual TestFailure struct shape before writing test fixtures.
+
+## Phase 5.J254 — v5 Health family (Wave 3)
+
+### What's new vs prior Wave 3 slices
+
+J251 (DiskSpace) and J252 (FileSystem) were pure path-aliases — v5 wire shape byte-equivalent to v3.
+
+J253 (Metadata) introduced status-code differences (DELETE/{id} + POST /test → 204) handled via the `rewriteSuccessTo204` wrapper.
+
+J254 (Health) is the first Wave 3 slice where **the v5 wire SHAPE differs from v3 in an actual field**. The v5 `HealthResource` has 6 fields where v3 has 5:
+
+| Field    | v3      | v5      |
+| -------- | ------- | ------- |
+| id       | yes     | yes     |
+| source   | yes     | yes     |
+| type     | yes     | yes     |
+| **reason**| **no** | **yes** |
+| message  | yes     | yes     |
+| wikiUrl  | yes     | yes     |
+
+Per the openapi v5 spec at `src/Sonarr.Api.V5/openapi.json` HealthResource schema, both `type` and `reason` emit as camelCase enum names (`"error"` / `"indexerRssNoIndexersAvailable"`). The Go-port already emits Type as camelCase string (via `healthcheck.Result.String()`), so the slice just needs to add the equivalent for Reason.
+
+### The healthcheck.Reason.String() addition
+
+`internal/healthcheck/healthcheck.go` gains a `reasonNames` `[...]string` table indexed by `int(reason)` (since Reason is iota-based starting at 0) + a `func (r Reason) String() string` method that does a bounds check + table lookup.
+
+The table has 62 entries:
+
+- 60 are 1:1 with the C# v5 `HealthCheckReason` enum per the openapi (verified by extracting + diffing the openapi's `HealthCheckReason.enum` array against the Go const block).
+- 2 are Go-port-specific tail entries (`skyHookUnavailable`, `skyHookProbeFailed`) — per the existing PROV-Q36 comment in healthcheck.go, the C# tree has no equivalent because C# `SkyHookProxy` is a singleton without a Test() method or dedicated healthcheck. These emit best-effort camelCase strings the UI will treat as unknown enum values until the C# tree gains parallel entries. Doc-commented as such inline.
+
+The table-lookup approach was chosen over a 62-case `switch` for two reasons:
+
+1. Table is half the LOC (~65 vs ~130).
+2. Adding a new Reason at the bottom only requires extending the iota AND appending to the table — both at obvious locations. A switch would require finding the right alphabetical slot AND adding the case.
+
+The trade-off: the table can drift if a Reason is inserted mid-list (the indexes shift). The existing PROV-Q36 comment already discourages mid-list insertion (preserving int wire values for cross-version stability), so this risk is bounded.
+
+### The v5/health package
+
+```go
+type Resource struct {
+    ID      int    `json:"id,omitempty"`
+    Source  string `json:"source"`
+    Type    string `json:"type"`
+    Reason  string `json:"reason"`
+    Message string `json:"message"`
+    WikiURL string `json:"wikiUrl"`
+}
+
+type Lister = apiv3.HealthResultsLister
+
+func ListHandler(lister Lister) http.Handler { ... }
+
+func toResource(hc healthcheck.HealthCheck) Resource { ... }
+```
+
+The Lister interface is aliased from v3 — `*healthcheck.Service` still satisfies it via the existing `Results() []healthcheck.HealthCheck` method. No new repo / service dep needed; the v5 handler reuses the same data source as v3.
+
+The handler mirrors v3's deterministic sort (`Result-DESC` then `Source-ASC`) because the C# emit-order depends on .NET Dictionary insertion order (non-deterministic across runtimes) and the Go-port's map-based `Results()` is similarly non-deterministic. The sort matches the v3 wire contract.
+
+`toResource(hc)` is the v5-specific projection — calls `hc.Type.String()` (existing) + `hc.Reason.String()` (new from this slice) for the camelCase fields.
+
+### Wire shape vs C# v5
+
+Verified against openapi.json:
+
+- `id` — int (omitempty for unpersisted entries).
+- `source` — nullable string. v5 schema says nullable; Go-port emits empty string if Source is empty. Acceptable since the UI treats `""` and absent the same way.
+- `type` — camelCase enum name from `HealthCheckResult` (ok/notice/warning/error).
+- `reason` — camelCase enum name from `HealthCheckReason`.
+- `message` — nullable string.
+- `wikiUrl` — nullable string.
+
+The Go-port emits `""` for nullable string fields instead of explicit `null`. The C# default for nullable strings IS `null` over the wire, but the React UI gates on falsiness (`!source`) which catches both. If contract-record reveals byte drift on this, file a separate slice — not in J254 scope.
+
+### Tests (3)
+
+- `TestListHandler_EmitsReasonField` — one fixture row with `Reason: ReasonIndexerRssNoIndexersAvailable`; asserts `got[0].Reason == "indexerRssNoIndexersAvailable"`. This is the critical assertion — without J254's reverse-lookup table, the field would emit as the int `19` (or whatever iota position it has). Also pins `type == "error"` to verify the existing v3-pattern Type emission flows through to v5.
+- `TestListHandler_DeterministicSort` — three rows in shuffled input order (Warning/Error/Warning with non-alphabetical sources); asserts output is Error first, then Warnings alphabetical (AlphaCheck, BetaCheck, GammaCheck). Confirms the v5 handler imposes the same Result-DESC-then-Source-ASC sort v3 does.
+- `TestListHandler_EmptyReturnsBracketsNotNull` — empty lister → exactly `"[]"`. JS-side arr.map() non-crash contract.
+
+### Single new route + the [NonAction] semantics
+
+The v5 controller has `[NonAction] GetResourceByIdWithErrorHandler` — removes GET /{id} from the v5 surface. v3 also doesn't expose that endpoint (per host_wiring.go line 1301: only `GET /api/v3/health` exists, no `/api/v3/health/{id}`). So the [NonAction] removal is "doc"-level for v5 only; the Go-port simply doesn't wire a /{id} route at either version. No carve-out test or runtime check needed.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/api/v5/health/... ./internal/healthcheck/...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v5/health/... ./internal/healthcheck/...
+ok  sonarr.tv/sonarr/internal/api/v5/health   1.668s
+ok  sonarr.tv/sonarr/internal/healthcheck     2.212s
+```
+
+`internal/healthcheck/...` tested because J254 added new code there (the reason-names table + String method); the existing healthcheck tests still pass — no regressions in the per-check service code.
+
+### v5 surface progress
+
+7/~50 → 8/~50 families. Endpoints added: 1.
+
+### Subtle correctness note about wire-shape evolution detection
+
+J254 is the first slice where the Go-port porter caught a v5 wire-shape divergence via openapi inspection rather than via contract-record drift. Pattern for future v5 slices:
+
+1. Grep the openapi.json for the family's Resource schema.
+2. Diff field names + types against the v3 Go-port Resource type.
+3. If they match, path-alias (J251/J252 pattern).
+4. If they differ by a field, write a v5-specific Resource + a custom mapper (J254 pattern).
+5. If they differ by a status code, use the `rewriteSuccessTo204` wrapper (J253 pattern).
+
+Combinations of (4) + (5) are possible — e.g. a family that adds a field AND tightens a DELETE status. Apply both patterns in one slice.
+
+### Next Wave 3 candidates by ascending LOC
+
+SeasonPass (99) — POST with body; check for v5-specific shape.
+CustomFilters (100), Parse (101), Update (121), RemotePathMappings (122), Blocklist (127), RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143), Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).
