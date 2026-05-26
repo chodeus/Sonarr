@@ -9818,3 +9818,65 @@ Open follow-ups for future slices (documented in handler doc-comments):
   - Tee/recorder tool that captures inbound traffic from a real Sonarr install into a J240-compatible JSONL log. Could be a sub-mode of shadow-traffic-diff (record mode) or a separate binary at `cmd/shadow-traffic-record/`.
   - SignalR / WebSocket replay (long-lived connection semantics — significantly harder than the HTTP path; track as a separate slice).
   - TLS termination support (HTTP-only suffices for localhost-pair staging deployments).
+
+
+## Phase 5.J241 — Phase 6.1 tee/recorder tool — 2026-05-26
+
+Third Phase 6 prep slice. J239 + J240 + J241 form the complete Phase 6.1 toolkit triad:
+
+  1. **shadow-traffic-record (J241)** — captures inbound traffic from a real install into a JSONL log.
+  2. **shadow-traffic-replay (J240)** — replays a captured log against any target URL.
+  3. **shadow-traffic-diff (J239)** — dual-dispatches inbound traffic to two backends + diffs responses.
+
+Typical Phase 6.1 deployment flow:
+
+  - Day 0: point operator clients at `shadow-traffic-record :9001` fronting C# Sonarr `:8989`. Run normal workflow (add series, search, grab, import). Get `capture.jsonl`.
+  - Day 1+: replay capture.jsonl into `shadow-traffic-diff :9000` (which dual-dispatches to C# `:8989` + Go `:8990`). Daily diff reports under `shadow-reports/`.
+  - 14+ consecutive days of zero unexplained diff → cutover commit (Phase 6.4).
+
+Architecture (`go/cmd/shadow-traffic-record/`):
+
+  - `main.go` (~120 LOC) — flag parsing, signal-handling, periodic stats reporter, graceful shutdown with writer.Close() drain.
+  - `proxy.go` (~130 LOC) — RecordingProxy http.Handler. Single-upstream reverse-proxy that buffers inbound body once, dispatches to upstream, streams response to client via io.Copy (large bodies — full library refresh, log download — not buffered), records the entry AFTER the client stream completes (so the upstream status is known).
+  - `writer.go` (~190 LOC) — LogWriter with bounded channel between request hot path and disk drain goroutine. Non-blocking Enqueue (default queue 1024; full → drop + counter bump). Periodic buffered-writer flush (default 2s). Body-length cap with `...<truncated>` marker. Close drains queue + optional fsync. Atomic counters race-clean.
+
+Best-effort capture rationale:
+
+  Under burst load (e.g. UI's initial page load fans out ~20 requests in <100ms) the writer's queue can fill faster than the disk drain goroutine processes it. Two options: (a) block the request hot path waiting for queue space, adding tail latency to inbound traffic; (b) drop the new entry + bump a counter, leaving the request path untouched. Chose (b) — recording proxies that slow down production traffic make operators turn them off. Drop count surfaces in periodic stats so the operator can tell when capture is lossy and either raise -queue-size or accept the loss.
+
+Security: -drop-api-keys default ON:
+
+  Captured logs routinely get emailed, Slacked, checked into PR drafts, etc. Default-deny on X-Api-Key + Authorization headers in the LOG (still preserved upstream-bound so the proxied request authenticates correctly). Test asserts upstream sees the keys + log doesn't. Operators with tightly-controlled replay environments can `-drop-api-keys=false` for fidelity (no current consumer needs this but the flag is there).
+
+Test coverage (`proxy_test.go`, 14 tests):
+
+  - GET happy path: client gets upstream's body verbatim; log captures method+path+query+timestamp+status.
+  - POST body verbatim: upstream echoes body back to client (proves proxy forwards it); log captures body byte-for-byte.
+  - API key + Authorization stripped from log records, PRESERVED in upstream-bound request (security boundary).
+  - Upstream-down → 502 to client + record-with-Status=0 (operator sees what hit the proxy even when upstream fails); proxy.failures counter increments.
+  - Hop-by-hop headers stripped from log (Connection dropped, X-Custom preserved).
+  - LogWriter queue-full drop counter: 100 enqueues into queue-size-2 → written + dropped sums to 100, both nonzero.
+  - Body truncation: MaxBodyLen=8 + 26-char body → captured body ends with "<truncated>" suffix.
+  - LogWriter.Close idempotent (second call no-ops, doesn't deadlock); Enqueue-after-Close returns false.
+  - Append-mode: two open-write-close cycles → 2 entries in file (not 1, not 0 — proves O_APPEND).
+  - Proxy stats counter: 5 requests → proxy.Requests=5.
+  - 1MB response body streamed (not buffered — would OOM if buffered).
+  - singleJoin, stripHopHeaders, WriterStats.String roundtrip.
+
+Hard gates clean: `go build ./...` no errors; `go test ./cmd/shadow-traffic-record/` 14/14 PASS; `go test -race` race-clean; `go vet` clean.
+
+Net diff: ~120 main.go + ~130 proxy.go + ~190 writer.go + ~360 proxy_test.go + PROGRESS.md update + STATUS.md slice note.
+
+Phase 6 progress after J241:
+
+  - **6.1 shadow-traffic toolkit — TRIAD COMPLETE** (record J241 + replay J240 + diff J239). Ready to deploy on a staging host.
+  - 6.2 smoke runbook — NOT STARTED (operator-driven, not autonomous-loop work).
+  - 6.3 nightly contract-suite CI — NOT STARTED (workflow YAML file).
+  - 6.4 cutover commit — gated on 14+ days of zero unexplained diff from 6.1's daily reports.
+
+Open follow-ups (not blocking Phase 6 entrance):
+
+  - Log-format documentation file at `go/cmd/shadow-traffic-record/FORMAT.md` describing the JSONL schema for operators editing logs by hand.
+  - Body-decompression pass — if upstream returns gzipped responses, the recorded body is currently the wire-bytes gzip. Replay sends them raw too, so the round-trip works, but operators inspecting the log see opaque bytes. Decompression-on-record is a 30-LOC slice.
+  - SignalR / WebSocket capture — long-lived connection semantics; significantly harder than HTTP; track as a separate slice.
+  - cmd/shadow-traffic-{diff,replay,record} all duplicate the singleJoin + isHopHeader helpers. A `cmd/shadowtraffic/internal/` shared package would DRY this up (each binary would still be a separate main package). 30 lines of consolidation; lower priority than functional gaps.
