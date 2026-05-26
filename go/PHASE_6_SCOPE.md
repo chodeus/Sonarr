@@ -15,7 +15,7 @@ Phase 5 closed across two waves: the initial REST + SignalR + frontend wiring (4
 | Audit-fix mission      | 200+ slices closing every row in `AUDIT_FIX_BACKLOG.md` (write paths, missing provider impls, missing reads, error envelopes, logging, contract drift) | J1 → J228 |
 | v5-develop catch-up    | Full upstream merge + 4 new v5 endpoint families (CustomFormat / ImportList / ImportListSettings / AutoTagging) + 4 standalone behaviour ports + localization refresh + contract re-baseline against live C# `7c41dcbe2` (71/83 endpoints byte-identical) | J217 → J228 |
 
-5 small follow-up rows surfaced during C.1 closure remain queued (C.1.i-follow-1 through -5) — none block Phase 6 entrance; each is a targeted slice <100 LOC.
+5 small follow-up rows surfaced during C.1 closure (C.1.i-follow-1 through -5) and 5 sub-rows surfaced during J234 route coverage audit (C.1.i-follow-5a through -5e) all CLOSED across J230-J238. **Phase 5 `AUDIT_FIX_BACKLOG.md` fully drained as of J238.** One acknowledged deferred sub-arc remains: J237's ShouldOverride Subject mutation + indexer/dc name→id resolve + full ReleaseResource projection (documented in handler doc-comments; lands when `toReleaseResource` gains the missing custom-format + scene-mapping fields).
 
 ## 10 unmatched REST endpoints
 
@@ -119,8 +119,8 @@ This commit is the cutover. After merge, Phase 7 (idiomatic-Go cleanup pass) beg
 
 These keep momentum if Phase 6 entrance is blocked on staging infra:
 
-- **C.1.i-follow-1 through -5** (queued in `AUDIT_FIX_BACKLOG.md`): five small slices surfaced during the v5-develop reference capture at J228. Each is <100 LOC. Together they polish the v3+v5 surface enough that shadow-traffic at Phase 6.1 will run with minimum noise. Both read paths (schema GET, 404 envelopes, route coverage on GETs) and write paths (DELETE idempotency, POST/PUT validation envelopes, route coverage on POST/PUT/DELETE) need attention.
-- **Phase 6.1 shadow-traffic harness skeleton** (`go/cmd/shadow-traffic-diff/`): start the reverse-proxy binary even before the staging host exists, so the test infra is ready when staging lands. Reuses `test/contract/internal/normalize` redact-paths machinery.
+- ~~**C.1.i-follow-1 through -5** + **C.1.i-follow-5a through -5e**~~ — **ALL CLOSED across J230-J238**. The J234 route coverage audit surfaced 5 sub-rows; the 3 real-work ones (5a release POST + push, 5b manualimport POST reprocess, 5c queue/grab POST single + bulk) ported during J236/J237/J238, and 5d + 5e closed at J235 as already-wired (J234 audit over-stated their scope due to DFA-graph false positives).
+- **Phase 6.1 shadow-traffic harness skeleton** (`go/cmd/shadow-traffic-diff/`): start the reverse-proxy binary even before the staging host exists, so the test infra is ready when staging lands. Reuses `test/contract/internal/normalize` redact-paths machinery. **← Top candidate for next slice.**
 - **Phase 6.2 smoke runbook** (`go/PHASE_6_SMOKE.md`): operator-driven, not autonomous-loop work.
 
 Pick by what the team can resource — Phase 6 is operational rather than code-focused, and the bottleneck is typically infra rather than implementation.
