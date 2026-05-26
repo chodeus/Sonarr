@@ -3243,7 +3243,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if backupTempPath == "" {
 		backupTempPath = os.TempDir()
 	}
-	hostSrv, err := buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
+	hostSrv, err := buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
 	if err != nil {
 		return err
 	}

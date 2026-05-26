@@ -9545,3 +9545,47 @@ Open rows after J235:
   - C.1.i-follow-5c — POST /api/v3/queue/grab/{id} + /grab/bulk (needs pendingreleases.Grab method)
 
 These 3 remaining rows are real port work, each touching new subsystems. Estimated 2-4 hours each depending on test coverage depth. The user requested "wrap up as much Phase 5 as we can" — proceeding in order of impact: 5b → 5c → 5a (5a has the largest new-subsystem footprint with the RemoteEpisode cache).
+
+## Phase 5.J236 — Queue/grab POST endpoints (audit row C.1.i-follow-5c closed) — 2026-05-26
+
+Second of the 3 real-work follow-up rows from J234. Ports POST /api/v3/queue/grab/{id} + POST /api/v3/queue/grab/bulk — the user-driven pending-release grab action surfaced by the queue UI when a release is held pending (download client busy, delay profile gating, etc.).
+
+C# reference: src/Sonarr.Api.V3/Queue/QueueActionController.cs:24-55. Single + bulk variants. The C# version awaits _downloadService.DownloadReport(remoteEpisode, null) per id; on first NotFoundException the bulk short-circuits.
+
+Go-port pipeline per id:
+
+  1. Lookup the pending release row via PendingReleaseLookup (narrow interface; *pendingreleases.Repo satisfies via embedded *repo.Repository[Release].Get).
+  2. Deserialise the persisted ReleaseInfo column (JSON-marshaled parser.ReleaseInfo from when the row was added).
+  3. Deserialise ParsedEpisodeInfo column (JSON parser.ParsedEpisodeInfo; empty/malformed = zero value, non-fatal — dispatch path only reads Release for protocol+URL).
+  4. Resolve Series row via QueueGrabSeriesLookup (narrow; *series.Service.GetSeries satisfies). SeriesID=0 or nil-lookup tolerated; dispatcher works without it for non-qBittorrent clients.
+  5. Build minimal *decisionengine.Subject: Release + ParsedEpisodeInfo + Series + DownloadAllowed=true (the True flag is required to clear ProcessDecisions isQualified gate; pending releases come from approved-but-deferred decisions so re-approval here is structurally correct).
+  6. Wrap in decisionengine.NewDecision (no Rejections — approved by virtue of being on the pending queue).
+  7. Dispatch via QueueGrabDispatcher.ProcessDecisions (narrow; *download.ProcessDownloadDecisions satisfies). Returns *ProcessedDecisions which classifies the outcome (Grabbed/Pending/Rejected); not surfaced to the caller — matches C# which returns new { } regardless of dispatch outcome (per-outcome feedback flows via SignalR broadcasts and history events, not the HTTP response).
+  8. Respond 200 + {} matching C# return shape.
+
+Episodes deferred: the dispatcher reads only Subject.Release for the actual grab request (URL+protocol). Post-grab history stamping reads ParsedEpisodeInfo + Series at history-write time via the existing trackeddownloads/history seam, so re-resolving Episode rows from ParsedEpisodeInfo at grab time is unnecessary. Documented in handler doc-comment.
+
+Bulk semantics: iterates ids; first ErrNotFound short-circuits to 404 matching C# first-throw-wins. Mid-batch grab failures dont rollback earlier dispatches — same as C# (sequential await, no transactional bracket).
+
+Wiring: added one new parameter to buildHostServer + v3Routes signatures: processDownloadDecisions *download.ProcessDownloadDecisions. main.go call site updated to pass the existing processDownloadDecisions instance constructed at line 2714. Two route bindings added in v3Routes between DELETE /queue/{id} and the existing /queue/bulk DELETE.
+
+Test coverage (queue_grab_test.go, 9 tests):
+  - HappyPath: full pipeline + verifies dispatched Subject shape (Release.Title, Release.DownloadURL, Series.Title, DownloadAllowed=true).
+  - NotFound404: empty pending repo → 404.
+  - InvalidID400: alpha id → 400.
+  - PendingGetErr500: db-down → 500.
+  - NilSeriesLookupTolerated: SeriesID=0 row → 200 + dispatch (Subject.Series=nil).
+  - Bulk HappyPath: two ids → 2 dispatcher calls + 200 + {}.
+  - Bulk FirstMissing404ShortCircuits: [99, 2] → 404 + 0 dispatcher calls (first-miss short-circuit).
+  - Bulk MalformedBody400: non-JSON body → 400.
+  - Bulk EmptyIds200NoDispatch: empty ids array → 200 + 0 dispatches (matches C# zero-iteration).
+
+Hard gates clean: go build ./... no errors, go test ./... 0 FAIL, golangci-lint run ./internal/api/v3/... ./cmd/sonarr/... 0 issues (gofmt auto-fix applied once to align a struct-field comment).
+
+Net diff: ~200 internal/api/v3/queue_grab.go (new file) + ~250 internal/api/v3/queue_grab_test.go (new file with fakes + 9 tests) + ~4 cmd/sonarr/host_wiring.go (1 new import + 1 new param + 1 call-site update + 2 new route lines) + ~3 cmd/sonarr/main.go (1 call-site update) + ~3 PROGRESS.md + ~30 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md (row strikethrough + CLOSED summary).
+
+Read/write balance: this is WRITE side — DELETE is state-changing, dispatching a download is even more so. The matching pending-release read path was already in place (queue_status.go via pendingCountLister). The dispatch itself fires SignalR events (via the existing ProcessDecisions bus integration) so the React UI receives the update without re-polling.
+
+Open follow-ups remaining (2 of 3 from J234):
+  - C.1.i-follow-5a — POST /api/v3/release + /release/push (RemoteEpisode cache + Newznab push)
+  - C.1.i-follow-5b — POST /api/v3/manualimport (manual-import service)
