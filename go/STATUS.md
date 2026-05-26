@@ -9339,3 +9339,82 @@ Read/write balance: this is a test-infra fix, not a wire-shape change. No read o
 Net diff: ~1 test/contract/corpus/v3-empty-state.json (single JSONPath added to existing array) + ~3 PROGRESS.md cursor + ~12 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md (row strikethrough + CLOSED summary).
 
 3 of 5 follow-up rows remain: C.1.i-follow-2 (validation envelope policy), C.1.i-follow-4 (DELETE idempotency audit), C.1.i-follow-5 (route coverage audit).
+
+## Phase 5.J232 — v3 DELETE idempotency alignment to C# (audit row C.1.i-follow-4 closed) — 2026-05-26
+
+Write-side audit alignment. Closes the J228 finding that v3 DELETE posture varied per-handler and diverged from C# upstream behaviour for the majority of endpoints. Re-spun Sonarr v5.0.0.1658 a third time to probe every v3 DELETE-by-id with `id=99999` and determine the live C# truth.
+
+Probe results — v3 DELETE on non-existent id at C# v5-develop `7c41dcbe2`:
+
+  | Endpoint | Status | Body |
+  |---|---|---|
+  | autotagging | 200 | (empty) |
+  | blocklist | 200 | (empty) |
+  | command | 409 | `{message: "Unable to cancel task", ...}` (special — cancel-task semantics) |
+  | customfilter | 200 | (empty) |
+  | customformat | **404** | `{message, description}` |
+  | delayprofile | 200 | (empty) |
+  | downloadclient | 200 | `{}` |
+  | episodefile | **404** | `{message, description}` |
+  | importlist | 200 | `{}` |
+  | importlistexclusion | 200 | (empty) |
+  | indexer | 200 | `{}` |
+  | metadata | 200 | `{}` |
+  | notification | 200 | `{}` |
+  | qualityprofile | 200 | (empty) |
+  | queue | **404** | `{message: "NotFound"}` |
+  | releaseprofile | 200 | (empty) |
+  | remotepathmapping | 200 | (empty) |
+  | rootfolder | 200 | (empty) |
+  | tag | **404** | `{message, description}` |
+  | v5.customformat | **404** | `{message, description}` (TypedResults via override) |
+  | v5.autotagging | 204 | (empty — TypedResults.NoContent) |
+
+C# v3 picks 200-idempotent for most (14 endpoints) but keeps 404 for 4: `customformat`, `episodefile`, `tag`, `queue`. The v5 surface inherits the ProviderControllerBase 200-idempotent posture by default but `v5.customformat` overrides to 404 via the controller-level `RestDeleteById` attribute.
+
+Go-port pre-J232 posture: returned 404 on `ErrNotFound` for ALL DELETE handlers — clean and consistent, but diverged from C# on 13 of 14 idempotent endpoints. (metadata already had silent-on-missing semantics.)
+
+Alignment:
+
+13 handler files edited under `internal/api/v3/`:
+  1. autotagging.go — removed ErrNotFound 404 branch, fall through to 200 empty.
+  2. blocklist.go — same; 200 + `{}` body preserved (provider-like).
+  3. customfilter.go — same; 200 empty.
+  4. delayprofile.go — same; 200 empty. **id==1 (global profile) 405 protection retained.**
+  5. downloadclient.go — same; 200 + `{}`. **SignalR Deleted emit gated on actual delete only.**
+  6. importlist.go — same; 200 + `{}`. **SignalR emit gated.**
+  7. importlistexclusion.go — same; 200 empty.
+  8. indexer.go — same; 200 + `{}`. **SignalR emit gated.**
+  9. metadata.go — same; 200 + `{}`. **SignalR emit gated.**
+  10. notification.go — same; 200 + `{}`. **SignalR emit gated.**
+  11. qualityprofile.go — ErrNotFound branch swallowed (200 empty). **ErrQualityProfileInUse 409 retained** (deletion not permitted when referenced — distinct from missing-id).
+  12. releaseprofile.go — same; 200 empty.
+  13. remotepathmapping.go — same; 200 empty.
+  14. rootfolder.go — same; 200 empty. **SignalR Deleted emit gated.**
+
+Untouched (already aligned with C# 404-on-missing posture):
+  - customformat.go (404 + `{message, description}`) ✓ matches C# v3
+  - episodefile.go (404) ✓
+  - tag.go (404) ✓
+  - queue.go (404) ✓
+  - command.go (special — 409 cancel-task semantics) ✓
+
+Tests:
+
+12 v3 unit tests renamed from `*DeleteHandler_NotFound404` / `_NotFoundIs404` / `_NotFound_404` to `*DeleteHandler_Idempotent`; assertion `http.StatusNotFound` flipped to `http.StatusOK`; doc-comment added citing the live C# probe behaviour at v5-develop `7c41dcbe2`. Provider-style handlers (downloadclient, importlist, indexer, metadata, notification, rootfolder) gained an additional emitter-assertion: SignalR Deleted broadcast must NOT fire on missing-id swallow (a missed delete shouldn't fan-out a Deleted event).
+
+1 v5 unit test renamed: `internal/api/v5/importlist/importlist_test.go::TestDeleteHandler_NotFound404PassesThrough` → `TestDeleteHandler_MissingId204Idempotent`. The v5/importlist DeleteHandler wraps v3's via `rewriteSuccessTo204`. Now that v3 returns 200+`{}` on missing id (idempotent), the wrapper transforms it to 204 NoContent — matching C# v5 `ProviderControllerBase.DeleteProvider` → `TypedResults.NoContent()` which is also idempotent on the live backend.
+
+Existing v5 customformat tests untouched: v5.customformat DELETE is correctly NOT idempotent per upstream (C# v5 `CustomFormatController` overrides the base RestDeleteById to throw on missing — Go-port pins this in `internal/api/v5/customformat/customformat_test.go::TestDeleteHandler_NotFound404`).
+
+Read/write balance: this slice is WRITE side. DELETE is a state-changing operation. The GET-not-found behaviour (read side) was not touched — every GET-by-id Go-port handler continues to return 404 on missing, matching C# v3 GET-by-id behaviour (which IS 404).
+
+Hard gates clean: `go test ./...` 0 FAIL, `golangci-lint run ./internal/api/v3/...` 0 issues.
+
+Net diff: ~110 across 13 production handlers (each ~6-12 lines removed, ~6-12 lines added per file) + ~140 across 13 test files (rename + flip assertion + doc-comment + 6 new SignalR-suppression assertions) + ~3 PROGRESS.md cursor + ~50 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md.
+
+Sonarr probe was the third spin-up this session. Same `HOME=/tmp/sonarr-fake-home` + pre-seeded config.xml safety setup. ~/.config/Sonarr/ verified preserved post-probe (timestamps unchanged from J227 restoration). All scratch dirs cleaned.
+
+Behavioural impact: tools that consume the Go-port v3 surface and expect C#-style idempotent DELETE (e.g. UI delete operations that don't re-fetch state first, *-arr-suite scripts that may retry DELETE) now get the same response shape as upstream C#. Previously a UI that double-clicked Delete would have seen 200 then 404 on the second click; now it sees 200 both times.
+
+Open follow-ups remaining (2 of 5): C.1.i-follow-2 (validation envelope policy — also write/read split), C.1.i-follow-5 (route coverage audit).

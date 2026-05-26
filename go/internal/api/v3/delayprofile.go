@@ -231,12 +231,9 @@ func DelayProfileDeleteHandler(svc DelayProfileWriter) http.Handler {
 			httperr.Write(w, http.StatusMethodNotAllowed, "Cannot delete global delay profile", "", nil)
 			return
 		}
-		err := svc.Delete(r.Context(), id)
-		if errors.Is(err, delayprofiles.ErrNotFound) {
-			httperr.NotFound(w, fmt.Sprintf("delayprofile %d not found", id))
-			return
-		}
-		if err != nil {
+		// Idempotent DELETE on a non-existent id — C.1.i-follow-4 alignment (J232).
+		// C# returns 200 on missing id. The id==1 (global profile) case retains 405.
+		if err := svc.Delete(r.Context(), id); err != nil && !errors.Is(err, delayprofiles.ErrNotFound) {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("delayprofiles: %w", err), nil)
 			return
 		}

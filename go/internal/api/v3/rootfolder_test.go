@@ -303,7 +303,9 @@ func TestRootFolderDeleteHandler_Success(t *testing.T) {
 	}
 }
 
-func TestRootFolderDeleteHandler_NotFound404(t *testing.T) {
+// TestRootFolderDeleteHandler_Idempotent — C.1.i-follow-4 (J232). 200 on missing id.
+// SignalR Deleted emitter must NOT fire when the missing-id branch swallows ErrNotFound.
+func TestRootFolderDeleteHandler_Idempotent(t *testing.T) {
 	t.Parallel()
 	w := &fakeRootFolderWriter{removeErr: rootfolders.ErrNotFound}
 	em := &recordingRootFolderEmitter{}
@@ -311,10 +313,10 @@ func TestRootFolderDeleteHandler_NotFound404(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/api/v3/rootfolder/99", nil)
 	req.SetPathValue("id", "99")
 	RootFolderDeleteHandler(w, em).ServeHTTP(rr, req)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("status: got %d want 404", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d want 200 (idempotent)", rr.Code)
 	}
 	if em.deletedWith != nil {
-		t.Errorf("emitter must NOT fire on 404")
+		t.Errorf("emitter must NOT fire on missing-id swallow")
 	}
 }

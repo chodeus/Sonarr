@@ -204,18 +204,18 @@ func RootFolderDeleteHandler(svc RootFolderWriter, emitter RootFolderEmitter) ht
 		if !ok {
 			return
 		}
+		// Idempotent DELETE — C.1.i-follow-4 alignment (J232). C# returns 200 on missing id.
+		// SignalR Deleted broadcast still fires on actual delete (skipped on missing-id swallow).
 		err := svc.Remove(r.Context(), id)
-		if errors.Is(err, rootfolders.ErrNotFound) {
-			httperr.NotFound(w, fmt.Sprintf("rootfolder %d not found", id))
-			return
-		}
-		if err != nil {
+		if err != nil && !errors.Is(err, rootfolders.ErrNotFound) {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("rootfolders: %w", err), nil)
 			return
 		}
-		signalr.FireAndLog(httperr.LoggerFromRequest(r), "rootfolder", "deleted", func() error {
-			return emitter.Deleted(r.Context(), RootFolderResource{ID: id})
-		})
+		if err == nil {
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "rootfolder", "deleted", func() error {
+				return emitter.Deleted(r.Context(), RootFolderResource{ID: id})
+			})
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 }

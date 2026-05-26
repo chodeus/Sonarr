@@ -256,14 +256,21 @@ func TestAutoTaggingDeleteHandler_Success(t *testing.T) {
 	}
 }
 
-func TestAutoTaggingDeleteHandler_NotFound404(t *testing.T) {
+// TestAutoTaggingDeleteHandler_Idempotent verifies C.1.i-follow-4
+// alignment: live C# `DELETE /api/v3/autotagging/99999` returns 200
+// (not 404) on a non-existent id. The Go-port mirrors this idempotent
+// posture as of J232. The v5 sibling (internal/api/v5/autotagging
+// DeleteHandler) uses TypedResults.NoContent semantics and returns 404
+// — that's a deliberate v5-surface divergence pinned by the
+// internal/api/v5/autotagging tests.
+func TestAutoTaggingDeleteHandler_Idempotent(t *testing.T) {
 	t.Parallel()
 	w := &fakeAutoTaggingWriter{deleteErr: autotagging.ErrNotFound}
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v3/autotagging/99", nil)
 	req.SetPathValue("id", "99")
 	AutoTaggingDeleteHandler(w).ServeHTTP(rr, req)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("status: %d", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d want 200 (v3 DELETE is idempotent — matches live C# v5-develop 7c41dcbe2)", rr.Code)
 	}
 }

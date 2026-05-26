@@ -468,18 +468,18 @@ func MetadataDeleteHandler(svc MetadataWriter, emitter MetadataEmitter) http.Han
 			httperr.BadRequest(w, "metadata: invalid id")
 			return
 		}
+		// Idempotent DELETE — C.1.i-follow-4 alignment (J232). C# returns 200 + `{}` on missing id.
+		// SignalR Deleted broadcast only fires on actual delete (not on missing-id swallow).
 		err = svc.Delete(r.Context(), id)
-		if errors.Is(err, metadata.ErrNotFound) {
-			httperr.NotFound(w, fmt.Sprintf("metadata %d not found", id))
-			return
-		}
-		if err != nil {
+		if err != nil && !errors.Is(err, metadata.ErrNotFound) {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("metadata: delete %d: %w", id, err), nil)
 			return
 		}
-		signalr.FireAndLog(httperr.LoggerFromRequest(r), "metadata", "deleted", func() error {
-			return emitter.Deleted(r.Context(), MetadataResource{ID: id})
-		})
+		if err == nil {
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "metadata", "deleted", func() error {
+				return emitter.Deleted(r.Context(), MetadataResource{ID: id})
+			})
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{}`))

@@ -90,11 +90,9 @@ func BlocklistDeleteHandler(svc BlocklistWriter) http.Handler {
 			httperr.BadRequest(w, "blocklist: invalid id")
 			return
 		}
-		if err := svc.Delete(r.Context(), id); err != nil {
-			if errors.Is(err, blocklist.ErrNotFound) {
-				httperr.NotFound(w, fmt.Sprintf("blocklist %d not found", id))
-				return
-			}
+		// Idempotent DELETE — C.1.i-follow-4 alignment (J232). Live C# v5-develop 7c41dcbe2
+		// `DELETE /api/v3/blocklist/99999` → 200 + `{}` whether the id existed or not.
+		if err := svc.Delete(r.Context(), id); err != nil && !errors.Is(err, blocklist.ErrNotFound) {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("blocklist: delete %d: %w", id, err), nil)
 			return
 		}

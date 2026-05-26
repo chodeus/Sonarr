@@ -280,14 +280,19 @@ func TestDownloadClientDeleteHandler_Success(t *testing.T) {
 	}
 }
 
-func TestDownloadClientDeleteHandler_NotFound_404(t *testing.T) {
+// TestDownloadClientDeleteHandler_Idempotent — C.1.i-follow-4 (J232). 200 + `{}` on missing id.
+func TestDownloadClientDeleteHandler_Idempotent(t *testing.T) {
 	t.Parallel()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v3/downloadclient/999", nil)
 	req.SetPathValue("id", "999")
 	rr := httptest.NewRecorder()
-	DownloadClientDeleteHandler(&fakeDownloadClientWriter{}, &fakeDownloadClientEmitter{}).ServeHTTP(rr, req)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("status: %d", rr.Code)
+	em := &fakeDownloadClientEmitter{}
+	DownloadClientDeleteHandler(&fakeDownloadClientWriter{}, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d want 200 (idempotent)", rr.Code)
+	}
+	if len(em.deleted) > 0 {
+		t.Errorf("SignalR Deleted broadcast must NOT fire on missing-id swallow")
 	}
 }
 

@@ -256,14 +256,15 @@ func TestRemotePathMappingDeleteHandler_Success(t *testing.T) {
 	}
 }
 
-func TestRemotePathMappingDeleteHandler_NotFound404(t *testing.T) {
+// TestRemotePathMappingDeleteHandler_Idempotent — C.1.i-follow-4 (J232). 200 on missing id.
+func TestRemotePathMappingDeleteHandler_Idempotent(t *testing.T) {
 	t.Parallel()
 	w := &fakeRemotePathMappingWriter{removeErr: remotepathmappings.ErrNotFound}
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v3/remotepathmapping/99", nil)
 	req.SetPathValue("id", "99")
 	RemotePathMappingDeleteHandler(w).ServeHTTP(rr, req)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("status: %d", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d want 200 (idempotent)", rr.Code)
 	}
 }

@@ -218,7 +218,15 @@ func AutoTaggingUpdateHandler(svc AutoTaggingWriter) http.Handler {
 }
 
 // AutoTaggingDeleteHandler returns DELETE /api/v3/autotagging/{id}.
-// Mirrors `DeleteFormat` at `:83-87` — 200 empty / 404.
+// Mirrors `DeleteFormat` at C# `AutoTaggingController.cs:83-87`.
+// **Idempotent** — returns 200 empty body whether the id exists or
+// not, matching live C# v5-develop `7c41dcbe2` probe behaviour
+// (`DELETE /api/v3/autotagging/99999` → 200, empty body). C.1.i-follow-4
+// alignment closed at J232.
+//
+// The v5 sibling at `internal/api/v5/autotagging.DeleteHandler` uses
+// strict `TypedResults.NoContent()` (404 on missing) — that's the v5
+// surface's deliberate divergence from the v3 idempotent posture.
 func AutoTaggingDeleteHandler(svc AutoTaggingWriter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseAutoTaggingID(w, r)
@@ -226,11 +234,7 @@ func AutoTaggingDeleteHandler(svc AutoTaggingWriter) http.Handler {
 			return
 		}
 		err := svc.Delete(r.Context(), id)
-		if errors.Is(err, autotagging.ErrNotFound) {
-			httperr.NotFound(w, fmt.Sprintf("autotagging %d not found", id))
-			return
-		}
-		if err != nil {
+		if err != nil && !errors.Is(err, autotagging.ErrNotFound) {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("autotagging: %w", err), nil)
 			return
 		}

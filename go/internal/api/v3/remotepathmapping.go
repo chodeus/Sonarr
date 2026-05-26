@@ -172,12 +172,8 @@ func RemotePathMappingDeleteHandler(svc RemotePathMappingWriter) http.Handler {
 		if !ok {
 			return
 		}
-		err := svc.Remove(r.Context(), id)
-		if errors.Is(err, remotepathmappings.ErrNotFound) {
-			httperr.NotFound(w, fmt.Sprintf("remotepathmapping %d not found", id))
-			return
-		}
-		if err != nil {
+		// Idempotent DELETE — C.1.i-follow-4 alignment (J232). C# returns 200 on missing id.
+		if err := svc.Remove(r.Context(), id); err != nil && !errors.Is(err, remotepathmappings.ErrNotFound) {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("remotepathmappings: %w", err), nil)
 			return
 		}

@@ -141,15 +141,20 @@ func TestDeleteHandler_NoContent204(t *testing.T) {
 	}
 }
 
-func TestDeleteHandler_NotFound404PassesThrough(t *testing.T) {
+// TestDeleteHandler_MissingId204Idempotent — C.1.i-follow-4 (J232) propagation.
+// v3.ImportListDeleteHandler is idempotent (200 + `{}` on missing id, matches C# v3).
+// The v5 rewriteSuccessTo204 wrapper transforms that to 204 NoContent (matches C# v5
+// ProviderControllerBase.DeleteProvider → TypedResults.NoContent). Idempotent on both
+// surfaces — the missing-id status flips 200→204 across v3→v5 but neither is 404.
+func TestDeleteHandler_MissingId204Idempotent(t *testing.T) {
 	t.Parallel()
 	w := &fakeWriter{} // empty — Delete returns ErrNotFound
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v5/importlist/99", nil)
 	req.SetPathValue("id", "99")
 	DeleteHandler(w, &fakeEmitter{}).ServeHTTP(rr, req)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("status: got %d want 404 (error path must pass through unchanged)", rr.Code)
+	if rr.Code != http.StatusNoContent {
+		t.Errorf("status: got %d want 204 (v5 idempotent via rewriteSuccessTo204 of v3's 200+`{}`)", rr.Code)
 	}
 }
 

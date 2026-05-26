@@ -278,15 +278,16 @@ func TestReleaseProfileDeleteHandler_Success(t *testing.T) {
 	}
 }
 
-func TestReleaseProfileDeleteHandler_NotFound404(t *testing.T) {
+// TestReleaseProfileDeleteHandler_Idempotent — C.1.i-follow-4 (J232). 200 on missing id.
+func TestReleaseProfileDeleteHandler_Idempotent(t *testing.T) {
 	t.Parallel()
 	w := &fakeReleaseProfileWriter{deleteErr: releaseprofiles.ErrNotFound}
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v3/releaseprofile/99", nil)
 	req.SetPathValue("id", "99")
 	ReleaseProfileDeleteHandler(w).ServeHTTP(rr, req)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("status: %d", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d want 200 (idempotent)", rr.Code)
 	}
 }
 

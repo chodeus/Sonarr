@@ -116,15 +116,17 @@ func TestBlocklistDeleteHandler_Success(t *testing.T) {
 	}
 }
 
-func TestBlocklistDeleteHandler_NotFound_404(t *testing.T) {
+// TestBlocklistDeleteHandler_Idempotent — C.1.i-follow-4 alignment (J232).
+// Live C# v5-develop returns 200 + `{}` on DELETE of a non-existent id.
+func TestBlocklistDeleteHandler_Idempotent(t *testing.T) {
 	t.Parallel()
 	w := &fakeBlocklistWriter{notFound: true}
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v3/blocklist/999", nil)
 	req.SetPathValue("id", "999")
 	BlocklistDeleteHandler(w).ServeHTTP(rr, req)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("status: %d", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d want 200 (idempotent — matches live C# v5-develop)", rr.Code)
 	}
 }
 

@@ -164,12 +164,8 @@ func CustomFilterDeleteHandler(svc CustomFilterWriter) http.Handler {
 		if !ok {
 			return
 		}
-		err := svc.Delete(r.Context(), id)
-		if errors.Is(err, customfilters.ErrNotFound) {
-			httperr.NotFound(w, fmt.Sprintf("customfilter %d not found", id))
-			return
-		}
-		if err != nil {
+		// Idempotent DELETE — C.1.i-follow-4 alignment (J232). C# returns 200 on missing id.
+		if err := svc.Delete(r.Context(), id); err != nil && !errors.Is(err, customfilters.ErrNotFound) {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("customfilters: %w", err), nil)
 			return
 		}

@@ -446,14 +446,16 @@ func TestQualityProfileDeleteHandler_InUseIs409(t *testing.T) {
 	}
 }
 
-func TestQualityProfileDeleteHandler_NotFoundIs404(t *testing.T) {
+// TestQualityProfileDeleteHandler_Idempotent — C.1.i-follow-4 (J232). 200 on missing id.
+// ErrQualityProfileInUse remains 409 (still pinned by sibling tests).
+func TestQualityProfileDeleteHandler_Idempotent(t *testing.T) {
 	t.Parallel()
 	w := &fakeQualityProfileWriter{deleteErr: qualityprofiles.ErrNotFound}
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v3/qualityprofile/99", nil)
 	req.SetPathValue("id", "99")
 	QualityProfileDeleteHandler(w).ServeHTTP(rr, req)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("status: %d", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d want 200 (idempotent)", rr.Code)
 	}
 }

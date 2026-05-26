@@ -288,14 +288,16 @@ func TestCustomFilterDeleteHandler_Success(t *testing.T) {
 	}
 }
 
-func TestCustomFilterDeleteHandler_NotFound404(t *testing.T) {
+// TestCustomFilterDeleteHandler_Idempotent — C.1.i-follow-4 alignment (J232).
+// Live C# v5-develop returns 200 on DELETE of a non-existent id.
+func TestCustomFilterDeleteHandler_Idempotent(t *testing.T) {
 	t.Parallel()
 	w := &fakeCustomFilterWriter{deleteErr: customfilters.ErrNotFound}
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v3/customfilter/99", nil)
 	req.SetPathValue("id", "99")
 	CustomFilterDeleteHandler(w).ServeHTTP(rr, req)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("status: got %d", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d want 200 (idempotent)", rr.Code)
 	}
 }

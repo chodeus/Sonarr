@@ -257,15 +257,16 @@ func TestImportListExclusionDeleteHandler_Success(t *testing.T) {
 	}
 }
 
-func TestImportListExclusionDeleteHandler_NotFound404(t *testing.T) {
+// TestImportListExclusionDeleteHandler_Idempotent — C.1.i-follow-4 (J232). 200 on missing id.
+func TestImportListExclusionDeleteHandler_Idempotent(t *testing.T) {
 	t.Parallel()
 	store := &fakeImportListExclusionStore{deleteErr: importlistexclusions.ErrNotFound}
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v3/importlistexclusion/99", nil)
 	req.SetPathValue("id", "99")
 	ImportListExclusionDeleteHandler(store).ServeHTTP(rr, req)
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("status: %d", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d want 200 (idempotent)", rr.Code)
 	}
 }
 

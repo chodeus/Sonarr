@@ -569,18 +569,18 @@ func NotificationDeleteHandler(svc NotificationWriter, emitter NotificationEmitt
 			httperr.BadRequest(w, "notification: invalid id")
 			return
 		}
+		// Idempotent DELETE — C.1.i-follow-4 alignment (J232). C# returns 200 + `{}` on missing id.
+		// SignalR Deleted broadcast only fires on actual delete (not on missing-id swallow).
 		err = svc.Delete(r.Context(), id)
-		if errors.Is(err, notifications.ErrNotFound) {
-			httperr.NotFound(w, fmt.Sprintf("notification %d not found", id))
-			return
-		}
-		if err != nil {
+		if err != nil && !errors.Is(err, notifications.ErrNotFound) {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("notification: delete %d: %w", id, err), nil)
 			return
 		}
-		signalr.FireAndLog(httperr.LoggerFromRequest(r), "notification", "deleted", func() error {
-			return emitter.Deleted(r.Context(), NotificationResource{providerResourceCore: providerResourceCore{ID: id}})
-		})
+		if err == nil {
+			signalr.FireAndLog(httperr.LoggerFromRequest(r), "notification", "deleted", func() error {
+				return emitter.Deleted(r.Context(), NotificationResource{providerResourceCore: providerResourceCore{ID: id}})
+			})
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{}`))

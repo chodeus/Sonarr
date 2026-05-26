@@ -398,11 +398,12 @@ func QualityProfileDeleteHandler(profiles QualityProfileWriter) http.Handler {
 		if !ok {
 			return
 		}
+		// Idempotent DELETE — C.1.i-follow-4 alignment (J232). C# returns 200 on missing id.
+		// ErrQualityProfileInUse remains 409 (deletion not allowed when referenced).
 		err := profiles.Delete(r.Context(), id)
 		switch {
 		case errors.Is(err, qualityprofiles.ErrNotFound):
-			httperr.NotFound(w, fmt.Sprintf("qualityprofile %d not found", id))
-			return
+			// Swallow — idempotent posture.
 		case errors.Is(err, qualityprofiles.ErrQualityProfileInUse):
 			httperr.Conflict(w, err.Error())
 			return
