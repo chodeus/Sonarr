@@ -442,6 +442,21 @@ func customFormatToModel(res CustomFormatResource) (customformats.CustomFormat, 
 	}, nil
 }
 
+// CustomFormatModelFromFormat is the exported entrypoint to
+// customFormatToModelFromFormat for cross-version reuse (used by
+// internal/api/v5/customformat for the v5 bulk-update path).
+func CustomFormatModelFromFormat(f *customformats.Format) (customformats.CustomFormat, error) {
+	return customFormatToModelFromFormat(f)
+}
+
+// ToCustomFormatResource is the exported entrypoint to
+// toCustomFormatResource for cross-version reuse (used by
+// internal/api/v5/customformat for the v5 bulk-update response
+// projection).
+func ToCustomFormatResource(f *customformats.Format) CustomFormatResource {
+	return toCustomFormatResource(f)
+}
+
 // customFormatToModelFromFormat reverses the toCustomFormatResource
 // projection plus the Specifications JSON serialisation. Used by
 // the bulk update path where we have the typed Format from

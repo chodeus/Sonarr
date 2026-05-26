@@ -8923,3 +8923,42 @@ Also notable in the merge surface (FYI for the next slices):
 Net diff for the merge commit itself: ~5 global.json (conflict resolution) + ~3 PROGRESS.md (cursor + J221 closed-this-loop-run entry) + ~3 AUDIT_FIX_BACKLOG.md (C.1.a row strikethrough + CLOSED summary) + ~36 STATUS.md slice note + everything v5-develop brought in (filed as the second parent of the merge commit, separate from go-port-side changes).
 
 Behavioural impact: go-port now sits on top of the current upstream v5-develop baseline. Phase 6's shadow-traffic comparison can use the current C# `f0f59b95c` reference for byte-eq diffing. The four new v5 endpoint families (CustomFormat / ImportList / ImportList Settings / AutoTagging) are now port-ready — C.1.b can start as soon as the next iteration picks it. C.1 backlog now down to 4 open sub-items: b/c/d/e (the new v5 endpoint families) + i (the contract-replay re-baseline that includes the localization refresh). The merge proved the seed prompt's worst-case prediction ("likely conflict on localization/en.json") incorrect — the conflict surface was just `global.json` because the Go-port's surface is genuinely orthogonal to the C# tree.
+
+## Phase 5.J222 — v5 CustomFormat controller (audit row C.1.b closed) — 2026-05-26
+
+First slice in the v5 endpoint family. The C# v5 controller at `src/Sonarr.Api.V5/CustomFormats/CustomFormatController.cs` mirrors v3 verbatim on the request/response shapes but tightens response statuses via .NET 8 `TypedResults`. Three status codes flip:
+
+  - `DELETE /api/v5/customformat/{id}` → 204 No Content (v3 returns 200 empty body).
+  - `PUT /api/v5/customformat/bulk` → 200 OK (v3 returns 202 Accepted).
+  - `DELETE /api/v5/customformat/bulk` → 204 with empty body (v3 returns 200 with `{}` body).
+
+All other endpoints (GET list / GET by-id / POST / PUT /{id} / GET schema) produce identical statuses and bodies between v3 and v5.
+
+Implementation approach:
+
+internal/api/v5/customformat/customformat.go (NEW): the v5 package re-uses v3's wire-shape types via `type Resource = apiv3.CustomFormatResource` + `type BulkResource = apiv3.CustomFormatBulkResource` aliases. Re-uses v3's interfaces via `type Lister = apiv3.CustomFormatLister` + `type Writer = apiv3.CustomFormatWriter`. The five same-status handlers are re-exported as package-level vars (`var ListHandler = apiv3.CustomFormatHandler`, etc.) — Go vars bound to function values work as drop-in handler constructors for the route table. Three v5-specific handlers (`DeleteHandler` / `BulkUpdateHandler` / `BulkDeleteHandler`) ship in this package; they implement the status-code-different paths byte-for-byte against the C# `TypedResults.NoContent()` / `Ok<List<T>>` returns.
+
+BulkUpdateHandler null-coalesce: matches the C# `:91-105` flow exactly — when `includeCustomFormatWhenRenaming` is null/absent on the request, each row's existing value is preserved (the `*bool` request field decoded as nil → no patch; non-nil → unconditional patch). Returns 200 with the updated list as JSON. Empty `ids` → 400 with message `"ids must be provided"` matching the C# `BadRequestException`. Missing-id short-circuits to 404 (first GetByID miss returns immediately).
+
+BulkDeleteHandler: iterates ids, first ErrNotFound short-circuits to 404 (matches C# `_formatService.Delete(ids.ToList())` which throws ModelNotFoundException on the first missing id — the Go-port short-circuits to preserve the same atomicity-light posture). Returns 204 with empty body on full success — explicitly NOT writing `{}` like v3 does.
+
+DeleteHandler: same as v3 plus `w.WriteHeader(http.StatusNoContent)` instead of `StatusOK`.
+
+Two helper exports added to v3 (`internal/api/v3/customformat.go`):
+  - `CustomFormatModelFromFormat(f *customformats.Format) (customformats.CustomFormat, error)` — exported wrapper around the existing unexported `customFormatToModelFromFormat`. Used by the v5 BulkUpdateHandler to round-trip a typed Format back to a persistable CustomFormat model.
+  - `ToCustomFormatResource(f *customformats.Format) CustomFormatResource` — exported wrapper around the existing unexported `toCustomFormatResource`. Used by the v5 BulkUpdateHandler to project each updated Format back to the response shape.
+These wrappers add zero behavioural surface — they're 1-line passthroughs that just open the v3 package's projection logic for cross-version reuse, avoiding duplication.
+
+Wiring in cmd/sonarr/host_wiring.go: added 8 routes at `/api/v5/customformat*` directly below the existing v3 customformat block. The host server's `Route` struct + `WithRoutes` option already accepts arbitrary method+path+handler tuples, so per-version paths work without any signature change. New import added: `customformatv5 "sonarr.tv/sonarr/internal/api/v5/customformat"`.
+
+Test coverage (internal/api/v5/customformat/customformat_test.go — NEW, ~250 LOC, 14 tests):
+  - DELETE /{id}: 204_NoContent happy path (pins the v3→v5 status flip from 200 to 204 + empty body assertion) + NotFound404 + InvalidID400 + ServiceErr500.
+  - PUT /bulk: OK200 happy path (pins the v3→v5 status flip from 202 to 200 + body-contains assertions on updated payload + update-call count) + EmptyIds400 (matches C# BadRequestException) + NullIncludeFlagPreservesExisting (pins the C# `?? existing` null-coalesce semantic) + MissingID404 (short-circuit on first miss).
+  - DELETE /bulk: NoContent204 happy path (pins the v3→v5 flip from 200+`{}` to 204+empty body) + MissingID404Short (verifies short-circuit — only the first id's Delete call fires before bailing) + MalformedBody400.
+  - Reexported smoke: 5 non-nil checks on ListHandler / ByIDHandler / CreateHandler / UpdateHandler / SchemaHandler.
+
+Hard gates clean: `go build ./...` no errors, `go test ./...` 0 FAIL (incl. existing v3 customformat tests — adding the two helper exports didn't break anything), `golangci-lint run ./internal/api/v5/customformat/... ./internal/api/v3/... ./cmd/sonarr/...` 0 issues (one revive doc-comment nit on a first iteration of the helper exports — fixed by reordering the comment block).
+
+Net diff: ~210 internal/api/v5/customformat/customformat.go (new file — package doc-comment + 5 type aliases + 5 re-exported handlers + 3 new handlers + 1 helper) + ~250 internal/api/v5/customformat/customformat_test.go (new file — fakeWriter helper + 14 tests) + ~20 internal/api/v3/customformat.go (2 new exported helper wrappers + doc-comment ordering fix) + ~12 cmd/sonarr/host_wiring.go (1 new import + 8 new route bindings + slice anchor comment) + ~3 PROGRESS.md + ~36 STATUS.md slice note + ~2 AUDIT_FIX_BACKLOG.md (C.1.b row strikethrough + CLOSED summary).
+
+Behavioural impact: clients that target `/api/v5/customformat` get the typed-result statuses upstream callers (e.g. third-party tooling that consumes the OpenAPI schema in `src/Sonarr.Api.V5/openapi.json`) expect. The v3 surface stays bit-perfect — no consumer of `/api/v3/customformat` sees any change. The pattern proves out for the next three slices: C.1.c (ImportList — same shape, same bulk-resource pattern) → C.1.d (ImportList Settings) → C.1.e (AutoTagging). The type-alias + re-exported-handler + new-handler-only-for-divergence approach minimises duplication while keeping a clean per-version package boundary. C.1 backlog now down to 3 open sub-items: c/d/e (the remaining new v5 endpoint families) + i (the contract-replay re-baseline including the deferred localization refresh).

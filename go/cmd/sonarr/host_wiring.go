@@ -10,6 +10,7 @@ import (
 	"time"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
+	customformatv5 "sonarr.tv/sonarr/internal/api/v5/customformat"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
 	"sonarr.tv/sonarr/internal/backup"
@@ -1210,6 +1211,17 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "PUT", Path: "/api/v3/customformat/bulk", Handler: apiv3.CustomFormatBulkUpdateHandler(customFormatsSvc)},
 		{Method: "DELETE", Path: "/api/v3/customformat/{id}", Handler: apiv3.CustomFormatDeleteHandler(customFormatsSvc)},
 		{Method: "DELETE", Path: "/api/v3/customformat/bulk", Handler: apiv3.CustomFormatBulkDeleteHandler(customFormatsSvc)},
+		// v5 CustomFormat — same wire shape as v3, tightened status
+		// codes on DELETE /{id} (204), PUT /bulk (200), DELETE /bulk
+		// (204 empty). Audit row C.1.b — closed 5.J222.
+		{Method: "GET", Path: "/api/v5/customformat", Handler: customformatv5.ListHandler(customFormatsSvc)},
+		{Method: "GET", Path: "/api/v5/customformat/{id}", Handler: customformatv5.ByIDHandler(customFormatsSvc)},
+		{Method: "GET", Path: "/api/v5/customformat/schema", Handler: customformatv5.SchemaHandler()},
+		{Method: "POST", Path: "/api/v5/customformat", Handler: customformatv5.CreateHandler(customFormatsSvc)},
+		{Method: "PUT", Path: "/api/v5/customformat/{id}", Handler: customformatv5.UpdateHandler(customFormatsSvc)},
+		{Method: "PUT", Path: "/api/v5/customformat/bulk", Handler: customformatv5.BulkUpdateHandler(customFormatsSvc)},
+		{Method: "DELETE", Path: "/api/v5/customformat/{id}", Handler: customformatv5.DeleteHandler(customFormatsSvc)},
+		{Method: "DELETE", Path: "/api/v5/customformat/bulk", Handler: customformatv5.BulkDeleteHandler(customFormatsSvc)},
 		{Method: "GET", Path: "/api/v3/delayprofile", Handler: apiv3.DelayProfileHandler(delayProfilesSvc)},
 		{Method: "GET", Path: "/api/v3/delayprofile/{id}", Handler: apiv3.DelayProfileByIDHandler(delayProfilesSvc)},
 		{Method: "POST", Path: "/api/v3/delayprofile", Handler: apiv3.DelayProfileCreateHandler(delayProfilesSvc)},
