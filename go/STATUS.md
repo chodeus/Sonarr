@@ -9236,3 +9236,66 @@ Follow-up surfaced during closure:
   - C.1.i-follow-1 — Pushover `encryptionKey` field missing from v3 notification.schema (tiny single-handler change)
 
 The audit IS fully drained of original work; the one follow-up is a new finding sized as a tiny follow-up rather than a deferred gap. PROGRESS.md "current state" can now claim go-port is current with `v5-develop @ 7c41dcbe2` (the recording baseline).
+
+## Phase 5.J228 — Comprehensive v5-develop reference capture (no audit-row closure; investigative work only) — 2026-05-26
+
+Doc-only follow-up to J227. The J227 cleanup deleted `/tmp/sonarr-recorded-golden/` (the 83-file fresh recording from upstream `7c41dcbe2`) before drilling into it deeply enough — only the body-only diff summary was kept. Re-spun Sonarr v5.0.0.1658 a second time using the same safe setup (`HOME=/tmp/sonarr-fake-home`, pre-seeded `config.xml`, `Port=8990`) to capture the data properly and persist it outside `/tmp`.
+
+Output dir: `~/Code/GitHub/Sonarr-reference/v5-develop-7c41dcbe2/` — sibling to this repo, NOT part of any git tree, local-only persistent reference.
+
+Captured (128 files, 3.3MB):
+  - `recording/` — full corpus replay (83 entries, what `test/contract/recorder` writes).
+  - `schemas/` — bulk-schema responses for every provider family at v3 + v5 paths. 81KB notification (25 providers) + 212KB indexer (10 — Newznab has the most fields) + 69KB downloadclient (18) + 29KB importlist (10) + 7KB metadata (2) + 17KB customformat + 10KB autotagging + matching v5 paths for customformat + autotagging.
+  - `validation-envelopes/` — 11 4xx/5xx samples covering malformed-JSON, missing-required-field, 404-not-found, no-apikey-401, empty-name-validator, duplicate-name-validator, delete-missing, v5-delete-missing, v5-bulk-empty-ids, indexer-test-with-unknown-impl, empty-lookup-503. Shows C# v5 emits at least 4 distinct envelope shapes — see Finding A below.
+  - `seeded-state/` — 19 captures after seeding 1 tag + 1 customfilter + 1 customformat (plus 3 failed-validation seed attempts that surfaced more envelope shapes). Both v3 and v5 populated-state GET responses + v5 bulk-PUT live response.
+  - `signalr/` — `negotiate.json` (X-Api-Key auth) + `negotiate.access_token.json` (query-param auth) showing the SignalR Core handshake response: `{negotiateVersion, connectionId, connectionToken, availableTransports: [WebSockets, ServerSentEvents, LongPolling]}`.
+  - `routes/` — `v3.system.routes.dot` 367KB Graphviz DOT-format ASP.NET Core routing diagnostics dump. Complete enumeration of every C# endpoint at every API version.
+  - `system/` — `v3.system.status.json` + `v5.system.status.json` + `initialize.json` (what React frontend calls on bootstrap).
+  - `INDEX.md` — documents the layout + 9 key findings + a reproducible recipe for future re-captures.
+
+Notably NOT captured:
+  - OpenAPI/Swagger spec — probed `/openapi.json`, `/openapi/v{1,5}.json`, `/api/v{3,5}/openapi`, `/swagger*` — all 404 or 401. The `src/Sonarr.Api.V5/openapi.json` 2.3MB file is a BUILD-TIME artifact (output of `dotnet swagger tofile`), not served at runtime. Read from source tree directly if needed.
+  - Live SignalR event payloads — would need a websocket client to capture push events triggered by writes. Doable but beyond the scope of this capture pass. Negotiate response provides the protocol info; payload capture is a separate slice.
+  - Series-add flow — would require a real rootfolder + working SkyHook (TheTVDB) connection. The `get.series.lookup.empty.json` 503 capture documents that lookup fails without skyhook reachability.
+
+Key findings surfaced (each → new C.1.i-follow-N row in AUDIT_FIX_BACKLOG.md):
+
+**A. Validation envelope is non-uniform across C# v5** (C.1.i-follow-2). The C# host emits at least 4 distinct response shapes for 4xx/5xx:
+  1. RFC 9110 problem-details (`{type, title, status, errors, traceId}`) on malformed-JSON 400 + true-404.
+  2. Bare `FluentValidation.ValidationFailure[]` array on field-validation 400 (most common Go-port-targeted shape).
+  3. `{message, content}` legacy envelope on `v5.put.customformat-bulk.empty-ids` 400.
+  4. `{message, description}` with .NET stack trace on 500 — upstream null-deref bugs in FluentValidation chain when LINQ extension methods get null inputs. Go-port returns clean 400 here — accidentally BETTER than C#.
+Go-port's `httperr.WriteValidation` standardised on (2). Per-path policy decisions needed: RFC 9110 mirror? `{message, content}` mirror for v5 bulk? Document (4) as deliberate divergence?
+
+**B. Pushover `encryptionKey` field missing from v3 notification.schema** (C.1.i-follow-1 — already filed at J227).
+
+**C. `v3.system.tasks` 21-byte 'drift' is just unredacted `lastDuration` timestamps** (C.1.i-follow-3). The contract harness redacts `id`, `lastExecution`, `lastStartTime`, `nextExecution`, `queued` for the tasks endpoint — but NOT `lastDuration`, which is a `739737.06:56:55.4737650`-shaped tick-count that moves with wallclock time. Every re-recording surfaces drift on this field for no useful reason. Tiny corpus PR.
+
+**D. `v3/v5.command` drift is scheduler-warmup timing** (already documented at J181). Confirmed: NEW immediate-post-boot recording has `list size: 0`, OLD post-3min-warmup had `list size: 8`. Environmental, not a product bug.
+
+**E. v3 DELETE idempotency is inconsistent** (C.1.i-follow-4). Live tests: `DELETE /api/v3/qualityprofile/9999` → 200 (idempotent); `DELETE /api/v5/customformat/9999` → 404 (TypedResults posture). The v3 surface itself is inconsistent endpoint-by-endpoint. Per-handler audit needed against Go-port's posture.
+
+**F. v3.system.routes 367KB DOT dump enumerates every C# endpoint** (C.1.i-follow-5). Cross-checking against Go-port's `host_wiring.go` route list would surface any C# endpoint not yet wired. Audit slice candidate: parse DOT → extract `(method, path)` tuples → diff against Go-port routes.
+
+**G. OpenAPI not served at runtime** — `src/Sonarr.Api.V5/openapi.json` is a build-time artifact only. No runtime endpoint exposes it. Documented in INDEX.md.
+
+**H. SignalR negotiate response shape captured** — standard SignalR Core handshake. Both `X-Api-Key` header AND `?access_token=` query param authenticate. Useful for future SignalR-transport-parity work.
+
+**I. v5 endpoint surface confirmed end-to-end** — All 4 ported families (J222-J225) live-responsive with the correct status codes. The 71/83 body-equal recording from J227 + the populated-state confirmation here is strong evidence the ports are correct.
+
+Cleanup: process killed cleanly, all `/tmp/sonarr-*` scratch removed, `~/.config/Sonarr/` verified intact at the restored timestamps (`Sonarr.db` + `config.xml` at 09:11 from the J227 restore — never touched in this second pass thanks to HOME isolation).
+
+Hard gates clean: `go test ./...` 0 FAIL (no code changes in this commit). `golangci-lint` not relevant (doc-only).
+
+Net diff: ~3 PROGRESS.md (cursor flip + new closed entry) + ~25 STATUS.md slice note + ~5 AUDIT_FIX_BACKLOG.md (4 new follow-up rows C.1.i-follow-2 through -5). NO code under `internal/` or `cmd/` touched.
+
+## Backlog state after J228
+
+Original C.1.a-j (and C.1.i) sub-items: all closed.
+
+Open follow-up rows surfaced during C.1 closure (5 small slices, each <100 LOC):
+  - C.1.i-follow-1 (J227): Pushover encryptionKey missing from v3 schema.
+  - C.1.i-follow-2 (J228): Validation envelope policy decisions across 4 shapes.
+  - C.1.i-follow-3 (J228): Unredacted `lastDuration` in tasks corpus.
+  - C.1.i-follow-4 (J228): DELETE idempotency per-handler audit.
+  - C.1.i-follow-5 (J228): Route coverage audit via DOT dump.
