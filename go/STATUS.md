@@ -12344,3 +12344,44 @@ Pattern observation: this is the FIRST Wave 3 slice to touch the `/feed/v5/` rou
 ### Next Wave 3 candidates ascending
 
 Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).
+
+## Phase 5.J269 — Wave 3 eighteenth slice: v5 Tags family port (192 LOC C# source)
+
+Status-mop-up slice — Resource shapes identical across v3 ↔ v5 on both controllers, the only wire divergence is a single status code shift on DELETE/{id}.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :6385-6580):
+
+| endpoint                         | v5 status   | v3 Go-port emits         | strategy                  |
+|----------------------------------|-------------|--------------------------|---------------------------|
+| GET    /api/v5/tag               | 200         | 200                      | alias                     |
+| POST   /api/v5/tag               | 201         | 201 (Go-port matches v5) | alias                     |
+| GET    /api/v5/tag/{id}          | 200         | 200                      | alias                     |
+| PUT    /api/v5/tag/{id}          | 202         | 202 (Go-port matches v5) | alias                     |
+| **DELETE /api/v5/tag/{id}**      | **204**     | 200+empty                | RewriteSuccessTo204       |
+| GET    /api/v5/tag/detail        | 200         | 200                      | alias                     |
+| GET    /api/v5/tag/detail/{id}   | 200/404     | 200/404                  | alias                     |
+
+**Resource shapes** (identical to v3):
+
+- `TagResource = {id, label}` — 2 fields. Both v3 and v5 inherit RestResource's `JsonIgnore(WhenWritingDefault)` on id (omitted when zero in PUT-update payloads).
+- `TagDetailsResource = {id, label, delayProfileIds[], importListIds[], notificationIds[], restrictionIds[], excludedReleaseProfileIds[], indexerIds[], downloadClientIds[], autoTagIds[], seriesIds[]}` — 10 fields. All `[]int` lists default to `[]` (never null) per the C# default constructor (`new List<int>()`) and the Go-port's nil-normalisation in TagDetailHandler.
+
+**v3 DELETE semantics — strict, not idempotent**: unlike J232's blocklist/indexer/connection DELETE handlers (which swallow `ErrNotFound` and emit 200+`{}` for parity with C# v3's permissive contract), v3 TagDeleteHandler at `internal/api/v3/tag.go:222-225` returns 404 explicitly for missing ids. The v5 wrapper's RewriteSuccessTo204 predicate only matches 200 responses, so the 404 path passes through unchanged — both v3 and v5 surfaces emit 404 for missing tag ids, matching parity. Tested explicitly via `TestDeleteHandler_MissingID_Returns404Passthrough` to pin the wrapper-contract behaviour.
+
+**SignalR**: v5 TagController declares `IHandle<TagsUpdatedEvent>` + `IHandle<AutoTagsUpdatedEvent>` and emits `Sync` on both via `BroadcastResourceChange(ModelAction.Sync)`. The v3 Go-port wires the TagsUpdated Sync via the bus subscription in cmd/sonarr/signalr_wiring.go (per `internal/api/v3/tag.go:148` doc-comment) — that carries through to the v5 surface unchanged because both versions share the same backing emitter channel. The AutoTagsUpdated Sync emit on the tag channel is a separate cross-broadcast (the autoTag bus event projects onto the tag SignalR channel — neither v3 nor the current Go-port wires that fan-out). Wave 2 SignalR mop-up — out of scope for this slice.
+
+**Slice scope** — 225 lines (108 source + 117 test) + 1 import + 7 routes:
+
+- New `internal/api/v5/tag/tag.go` (108 LOC) — 6 type aliases (Resource = apiv3.TagResource, DetailsResource = apiv3.TagDetailsResource, Lister, Writer, DetailLister, DetailByIDGetter) + 6 variable aliases (List/ByID/Create/Update/DetailList/DetailByID) + 1 wrapper func (DeleteHandler via RewriteSuccessTo204). NO new handler logic — pure re-export + wrap.
+- New `internal/api/v5/tag/tag_test.go` (117 LOC) — 4 tests: DELETE-rewrites-200-to-204 (svc.Delete called once + body empty), DELETE-missing-id-passes-404-through (pins the wrapper-contract behaviour), variable-aliases non-nil, type-aliases compile-time pin.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`tagv5`) + 7 new routes alongside the existing /api/v3/tag routes. Re-uses tagsSvc + emptyTagDetailLister (production tag-detail aggregator pending — same DEFERRED state as v3 surface per `tag_detail.go:21-25`).
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/tag/...` ✓; `go test -race -count=1 ./internal/api/v5/tag/...` ✓ (4 tests, 1.6s).
+
+**v5 surface coverage**: 21/~50 → 22/~50.
+
+Pattern observation: this slice surfaces an interesting subtlety of `v5util.RewriteSuccessTo204` — it ONLY matches 200 OK responses (with empty or `{}` body), so when the underlying v3 handler's failure paths emit different status codes (404 here, 400 elsewhere), those propagate through unchanged. This means the wrapper doesn't have to inspect the failure shape — the predicate is naturally additive: handlers that share success semantics with v3 but differ only on the success code can wrap cleanly without worrying about failure-code drift. Tag's strict-404 semantics are a useful contrast to Indexer/Connection/Blocklist's idempotent-200 — the same wrapper handles both.
+
+### Next Wave 3 candidates ascending
+
+History (232), ManualImport (236), Commands (247), Logs (286).

@@ -30,6 +30,7 @@ import (
 	connectionv5 "sonarr.tv/sonarr/internal/api/v5/connection"
 	indexerv5 "sonarr.tv/sonarr/internal/api/v5/indexer"
 	localizationv5 "sonarr.tv/sonarr/internal/api/v5/localization"
+	tagv5 "sonarr.tv/sonarr/internal/api/v5/tag"
 	wantedv5 "sonarr.tv/sonarr/internal/api/v5/wanted"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
@@ -1395,6 +1396,20 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/calendar", Handler: calendarv5.ListHandler(episodesSvc)},
 		{Method: "GET", Path: "/api/v5/calendar/{id}", Handler: calendarv5.ByIDHandler(episodesSvc)},
 		{Method: "GET", Path: "/feed/v5/calendar/sonarr.ics", Handler: calendarv5.FeedHandler(episodesSvc, seriesSvc)},
+		// J269 — v5 Tag + TagDetails endpoint family (7 endpoints; 192
+		// LOC C#). Resource shapes identical to v3 (TagResource 2 fields;
+		// TagDetailsResource 10 fields). ONE status-only divergence:
+		// DELETE/{id} 200+empty → 204+empty via v5util.RewriteSuccessTo204.
+		// Other 6 endpoints path-alias. Re-uses tagsSvc + emptyTagDetailLister
+		// (production tag-detail aggregator pending — same DEFERRED state
+		// as v3 surface per `tag_detail.go:21-25`).
+		{Method: "GET", Path: "/api/v5/tag", Handler: tagv5.ListHandler(tagsSvc)},
+		{Method: "GET", Path: "/api/v5/tag/{id}", Handler: tagv5.ByIDHandler(tagsSvc)},
+		{Method: "POST", Path: "/api/v5/tag", Handler: tagv5.CreateHandler(tagsSvc)},
+		{Method: "PUT", Path: "/api/v5/tag/{id}", Handler: tagv5.UpdateHandler(tagsSvc)},
+		{Method: "DELETE", Path: "/api/v5/tag/{id}", Handler: tagv5.DeleteHandler(tagsSvc)},
+		{Method: "GET", Path: "/api/v5/tag/detail", Handler: tagv5.DetailListHandler(emptyTagDetailLister{})},
+		{Method: "GET", Path: "/api/v5/tag/detail/{id}", Handler: tagv5.DetailByIDHandler(emptyTagDetailLister{})},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
