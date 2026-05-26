@@ -12260,3 +12260,49 @@ Pattern observation: This is the first Wave 3 slice where v5 covers MORE endpoin
 ### Next Wave 3 candidates ascending
 
 Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).
+
+## Phase 5.J267 — Wave 3 sixteenth slice: v5 Connections family port (154 LOC C# source)
+
+Status-mop-up slice + path-rename. v5 collapses v3's `/notification` family onto a renamed `/connection` URL — backing service stays NotificationFactory + NotificationDefinition, Resource is renamed (NotificationResource → ConnectionResource) but its 30 fields are identical, so a Go type alias is wire-compatible.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :798-1090):
+
+| endpoint                                | v5 status | v3 (notification) Go-port | strategy                            |
+|-----------------------------------------|-----------|---------------------------|-------------------------------------|
+| GET    /api/v5/connection               | 200       | 200                       | alias                               |
+| POST   /api/v5/connection               | 201       | 201 (Go-port matches v5)  | alias                               |
+| GET    /api/v5/connection/{id}          | 200       | 200                       | alias                               |
+| PUT    /api/v5/connection/{id}          | 202       | 202 (Go-port matches v5)  | alias                               |
+| **DELETE /api/v5/connection/{id}**      | **204**   | 200+`{}`                  | RewriteSuccessTo204                 |
+| GET    /api/v5/connection/schema        | 200       | 200                       | alias                               |
+| **POST  /api/v5/connection/test**       | **204**   | 200+`{}`                  | RewriteSuccessTo204                 |
+| POST   /api/v5/connection/testall       | 200       | 200                       | alias                               |
+| POST   /api/v5/connection/action/{name} | 200       | 200                       | alias                               |
+| _PUT  /api/v5/connection/bulk_          | **N/A**   | 501 (v3-only)             | not wired ([NonAction])             |
+| _DELETE /api/v5/connection/bulk_        | **N/A**   | 501 (v3-only)             | not wired ([NonAction])             |
+
+v5 explicitly disables both bulk endpoints with `[NonAction]` + `throw new NotImplementedException()` (per C# ConnectionController :23-31). The v3 Go-port wires `NotificationBulkNotSupportedHandler` (returns 501) at `/api/v3/notification/bulk` with the "diagnostic over 404" rationale; v5 stays silent on the route (matches the C# v5 surface where MVC default 404 fires when no action matches).
+
+**Resource shape** — IDENTICAL to v3 NotificationResource:
+
+- `link` + 14 `on*` flags (`onGrab`, `onDownload`, `onUpgrade`, `onImportComplete`, `onRename`, `onSeriesAdd`, `onSeriesDelete`, `onEpisodeFileDelete`, `onEpisodeFileDeleteForUpgrade`, `onHealthIssue`, `includeHealthWarnings`, `onHealthRestored`, `onApplicationUpdate`, `onManualInteractionRequired`)
+- 14 `supportsOn*` flags (mirror set)
+- `testCommand`
+
+Plus inherited `ProviderResource<>` (id/name/fields/implementation/configContract/tags/...). Field count: 30 + the 7 inherited from ProviderResource = 37 total on the wire. C# v5 ConnectionResource diff vs v3 NotificationResource is namespace-only + nullable annotations on the same fields — JSON output is byte-identical.
+
+**Slice scope** — 296 lines (139 source + 157 test) + 1 import + 9 routes:
+
+- New `internal/api/v5/connection/connection.go` (139 LOC) — 8 type aliases (Resource = apiv3.NotificationResource, Lister, ByIDGetter, Writer, Emitter, RegistryChecker, Tester, Actioner) + 7 variable aliases (List/ByID/Schema/Create/Update/TestAll/RequestAction) + 2 wrapper funcs (DeleteHandler via RewriteSuccessTo204, TestHandler via RewriteSuccessTo204). NO new handler logic — pure re-export + wrap.
+- New `internal/api/v5/connection/connection_test.go` (157 LOC) — 5 tests: DELETE-rewrites-200-to-204 (svc.Delete called once + body empty), DELETE-missing-id-returns-204-idempotent (J232 contract carries through wrapper), POST-test-rewrites-200-to-204 (allows 400 passthrough — fromNotificationResource pre-rejects empty body; wrapper contract is strictly 200→204), variable-aliases non-nil sanity, type-aliases-match-v3 compile-time pin.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`connectionv5`) + 9 new routes wired alongside the existing /api/v3/notification routes. Re-uses notificationsRepo, notificationRegistry, notificationEmitter, notificationTester deps (v5 + v3 share the same backing services + SignalR emitter).
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/connection/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/connection/...` ✓ (5 tests, 1.6s).
+
+**v5 surface coverage**: 19/~50 → 20/~50.
+
+Pattern observation: This is the FIRST Wave 3 slice with a path RENAME (not a path-MOVE like J263 — those moved sub-paths within a family; this renames the entire family root). The "rename via Go type alias" pattern works cleanly because Go aliases preserve field tags and the underlying struct identity — `Resource = apiv3.NotificationResource` means the v5 handler accepts the renamed wire shape without any per-field projection. The path renaming is purely a host_wiring concern.
+
+### Next Wave 3 candidates ascending
+
+Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).

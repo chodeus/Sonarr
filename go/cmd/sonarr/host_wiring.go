@@ -26,6 +26,7 @@ import (
 	rootfolderv5 "sonarr.tv/sonarr/internal/api/v5/rootfolder"
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
 	updatev5 "sonarr.tv/sonarr/internal/api/v5/update"
+	connectionv5 "sonarr.tv/sonarr/internal/api/v5/connection"
 	indexerv5 "sonarr.tv/sonarr/internal/api/v5/indexer"
 	localizationv5 "sonarr.tv/sonarr/internal/api/v5/localization"
 	wantedv5 "sonarr.tv/sonarr/internal/api/v5/wanted"
@@ -1368,6 +1369,23 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/localization", Handler: localizationv5.LocalizationHandler(localizationSvc)},
 		{Method: "GET", Path: "/api/v5/localization/language", Handler: localizationv5.LocalizationLanguageHandler(configProv.UILanguage)},
 		{Method: "GET", Path: "/api/v5/localization/{id}", Handler: localizationv5.LocalizationByIDHandler(localizationSvc)},
+		// J267 — v5 Connection endpoint family (9 endpoints; 154 LOC C#).
+		// Resource shape identical to v3 NotificationResource — 30
+		// fields. Path RENAME: v3 exposed this family as /notification,
+		// v5 renames to /connection on the wire (backing service is
+		// still NotificationFactory + NotificationDefinition). Two
+		// status divergences: DELETE/{id} + POST/test 200+`{}` → 204
+		// via v5util.RewriteSuccessTo204. Other 7 endpoints path-alias.
+		// NO /bulk endpoints — explicitly [NonAction] in C# v5.
+		{Method: "GET", Path: "/api/v5/connection", Handler: connectionv5.ListHandler(notificationsRepo)},
+		{Method: "GET", Path: "/api/v5/connection/schema", Handler: connectionv5.SchemaHandler()},
+		{Method: "GET", Path: "/api/v5/connection/{id}", Handler: connectionv5.ByIDHandler(notificationsRepo)},
+		{Method: "POST", Path: "/api/v5/connection", Handler: connectionv5.CreateHandler(notificationsRepo, notificationRegistry, notificationEmitter)},
+		{Method: "POST", Path: "/api/v5/connection/test", Handler: connectionv5.TestHandler(notificationTester)},
+		{Method: "POST", Path: "/api/v5/connection/testall", Handler: connectionv5.TestAllHandler(notificationsRepo, notificationTester)},
+		{Method: "POST", Path: "/api/v5/connection/action/{name}", Handler: connectionv5.RequestActionHandler(notificationTester)},
+		{Method: "PUT", Path: "/api/v5/connection/{id}", Handler: connectionv5.UpdateHandler(notificationsRepo, notificationRegistry, notificationEmitter)},
+		{Method: "DELETE", Path: "/api/v5/connection/{id}", Handler: connectionv5.DeleteHandler(notificationsRepo, notificationEmitter)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to
