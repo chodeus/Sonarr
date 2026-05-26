@@ -22,6 +22,7 @@ import (
 	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
 	remotepathmappingv5 "sonarr.tv/sonarr/internal/api/v5/remotepathmapping"
+	rootfolderv5 "sonarr.tv/sonarr/internal/api/v5/rootfolder"
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
 	updatev5 "sonarr.tv/sonarr/internal/api/v5/update"
 	"sonarr.tv/sonarr/internal/auth"
@@ -1305,6 +1306,13 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/blocklist", Handler: blocklistv5.GetHandler(blocklistPagedAdapter{repo: blocklistRepo})},
 		{Method: "DELETE", Path: "/api/v5/blocklist/{id}", Handler: blocklistv5.DeleteHandler(blocklistSvc)},
 		{Method: "DELETE", Path: "/api/v5/blocklist/bulk", Handler: blocklistv5.BulkDeleteHandler(blocklistSvc)},
+		// J262 — v5 RootFolders endpoint family (4 endpoints; combo:
+		// custom v5 Resource with `isEmpty` field PLUS DELETE 200+empty
+		// → 204 via v5util.RewriteSuccessTo204).
+		{Method: "GET", Path: "/api/v5/rootfolder", Handler: rootfolderv5.ListHandler(rootFoldersSvc)},
+		{Method: "GET", Path: "/api/v5/rootfolder/{id}", Handler: rootfolderv5.ByIDHandler(rootFoldersSvc)},
+		{Method: "POST", Path: "/api/v5/rootfolder", Handler: rootfolderv5.CreateHandler(rootFoldersSvc)},
+		{Method: "DELETE", Path: "/api/v5/rootfolder/{id}", Handler: rootfolderv5.DeleteHandler(rootFoldersSvc)},
 		// J253 — v5 Metadata endpoint family (9 endpoints; PUT /bulk and
 		// DELETE /bulk are [NonAction] in C# v5 so NOT routed here).
 		// DELETE/{id} + POST /test wrap v3 via rewriteSuccessTo204 to

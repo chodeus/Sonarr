@@ -11902,3 +11902,114 @@ When the `internal/customformats/calculator` port lands (Wave 1 deferred work), 
 ### Next Wave 3 candidates ascending
 
 RootFolders (128), Qualities (135), Wanted (136), Indexers (139), Localization (143), Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236).
+
+## Phase 5.J262 — v5 RootFolders family (Wave 3, combo slice)
+
+### What
+
+`internal/api/v5/rootfolder/` package + 4 new routes at `/api/v5/rootfolder*`. Eleventh Wave 3 slice. FIRST combo slice in this loop run with BOTH field-divergence AND status-divergence in a single family.
+
+### Wire-shape diffs vs v3
+
+**Field divergence (J254 pattern):** v5 RootFolderResource adds a 6th field `isEmpty bool`:
+
+| Field           | v3 Go-port | v5 (this slice) |
+| --------------- | ---------- | --------------- |
+| id              | yes        | yes             |
+| path            | yes        | yes             |
+| accessible      | yes        | yes             |
+| **isEmpty**     | **no**     | **yes**         |
+| freeSpace       | yes (omitempty) | yes (omitempty) |
+| totalSpace      | yes (omitempty) | yes (omitempty) |
+| unmappedFolders | yes        | yes             |
+
+The underlying `rootfolders.Folder` model has IsEmpty computed at `internal/rootfolders/logic.go:41` + `service.go:374` — the field exists, just isn't projected on v3 because v3 C# source doesn't include it either (verified at `src/Sonarr.Api.V3/RootFolders/RootFolderResource.cs`). v3 Go-port matches v3 C# verbatim; v5 surfaces the new field.
+
+**Status divergence (J257 pattern):** v3 DELETE emits 200 + empty body (J232 idempotency posture); v5 DELETE emits 204 NoContent + empty body via `TypedResults.NoContent`.
+
+All other status codes match (GET 200, GET/{id} 200, POST 201 Created via TypedCreated).
+
+### Code organisation
+
+The field divergence forces v5-specific handlers for List / ByID / Create — they project the v5 Resource which has the new field. Path-aliasing to v3 would emit the v3-without-isEmpty shape on the wire.
+
+DELETE wraps the v3 handler via `v5util.RewriteSuccessTo204`. The wrapper only changes the HTTP status; the underlying SignalR Deleted broadcast wiring remains intact through v3's emitter chain (passed via a `nilEmitter{}` placeholder — v5-specific SignalR fan-out is a separate concern, not yet wired in signalr_wiring.go).
+
+```go
+type Resource struct {
+    ID              int                          `json:"id"`
+    Path            string                       `json:"path"`
+    Accessible      bool                         `json:"accessible"`
+    IsEmpty         bool                         `json:"isEmpty"`         // ← v5 addition
+    FreeSpace       *int64                       `json:"freeSpace,omitempty"`
+    TotalSpace      *int64                       `json:"totalSpace,omitempty"`
+    UnmappedFolders []rootfolders.UnmappedFolder `json:"unmappedFolders"`
+}
+
+type Lister = apiv3.RootFolderLister
+type Writer = apiv3.RootFolderWriter
+
+func toResource(f rootfolders.Folder) Resource {
+    // same projection as v3's toRootFolderResource + IsEmpty
+}
+
+func ListHandler(lister Lister) http.Handler   { /* v5-specific */ }
+func ByIDHandler(svc Writer) http.Handler      { /* v5-specific */ }
+func CreateHandler(svc Writer) http.Handler    { /* v5-specific */ }
+func DeleteHandler(svc Writer) http.Handler {
+    return v5util.RewriteSuccessTo204(apiv3.RootFolderDeleteHandler(svc, nilEmitter{}))
+}
+```
+
+The Create handler doesn't take an emitter — v5 SignalR fan-out is deferred. When v5 SignalR channels land in signalr_wiring.go, an Emitter dep can be plumbed through; for now Create just returns 201 + the v5 Resource.
+
+### Why I couldn't reuse v3's helpers
+
+The v3 helpers (`parseRootFolderID`, `decodeRootFolderBody`, `validateRootFolderResource`, `writeRootFolderJSON`, `writeRootFolderFieldErr`) are package-private to v3. Some are type-tied to `apiv3.RootFolderResource` (decode/validate); others are reusable in principle but unexported. Options considered:
+
+1. Export the helpers — would expand v3's public surface for a single v5 caller.
+2. Duplicate the helpers in v5 — adds ~50 LOC.
+3. Write a leaner v5-specific shape — only Path is writable, so the v5 Create body decode is trivial (3 lines).
+
+Chose option 3. v5 has `parseID`, `writeJSON`, `fieldErr` helpers inline — minimal duplication. If a third v5 family needs these same generic helpers (parse-id-from-path, write-JSON-with-status, single-property-validation-failure), they'd promote to v5util — but they're so small that two-package duplication isn't worth the abstraction yet.
+
+### Tests (8)
+
+- `TestListHandler_EmitsIsEmptyField` — canonical field-divergence guard: fixture has IsEmpty=false + IsEmpty=true rows; asserts both surface in JSON. Without J262's custom mapper, both would be omitted on the wire.
+- `TestByIDHandler_EmitsIsEmptyField` — same guard for the single-row endpoint.
+- `TestByIDHandler_NotFound_Returns404` — sanity check the v5 handler preserves v3's NotFound error contract.
+- `TestCreateHandler_Success_Returns201WithIsEmpty` — POST with `{"path":"/tv"}` → 201 + body has isEmpty, svc.Add called once.
+- `TestCreateHandler_EmptyPath_Returns400` — POST with `{"path":""}` → 400.
+- `TestDeleteHandler_Success_Returns204` — DELETE id=1 → 204 + empty + svc.Remove called once.
+- `TestDeleteHandler_MissingID_Returns204Idempotent` — J232 carry-through via wrapper.
+- `TestCreateHandler_MalformedBody_Returns400` — `{not json` → 400.
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/api/v5/rootfolder/...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v5/rootfolder/...
+ok  sonarr.tv/sonarr/internal/api/v5/rootfolder  1.610s
+```
+
+### v5 surface progress
+
+14/~50 → 15/~50 families. Endpoints added: 4.
+
+### Pattern footnote: combo (field + status) divergence
+
+J262 is the first slice where BOTH a field divergence AND a status divergence land in one family. The two patterns compose cleanly:
+
+- Field divergence → custom v5 Resource + custom v5-specific handlers (3 of 4 endpoints).
+- Status divergence → v5util wrapper around the unaffected v3 handler (1 of 4 endpoints).
+
+The two patterns don't interact — they apply to different endpoints. The v5util wrapper takes the v3 handler unchanged because the response shape is empty (the 200→204 demotion + Content-Type strip is sufficient). If the divergent-status endpoint ALSO needed a body field change (e.g. a POST that emits the resource AND has a v5-specific shape), the wrapper couldn't be used and a v5-specific handler would be needed instead.
+
+### Next Wave 3 candidates ascending
+
+Qualities (135), Wanted (136), Indexers (139), Localization (143), Connections (154), Calendar (184), Tags (192), History (232), ManualImport (236), Commands (247), Logs (286).
