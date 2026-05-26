@@ -13,6 +13,7 @@ import (
 	autotaggingv5 "sonarr.tv/sonarr/internal/api/v5/autotagging"
 	customformatv5 "sonarr.tv/sonarr/internal/api/v5/customformat"
 	diskspacev5 "sonarr.tv/sonarr/internal/api/v5/diskspace"
+	filesystemv5 "sonarr.tv/sonarr/internal/api/v5/filesystem"
 	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
 	"sonarr.tv/sonarr/internal/auth"
@@ -1254,6 +1255,11 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// the v3 handler via diskspacev5.GetHandler (variable alias). Same
 		// wire shape; no v5-specific status-code tightening on this family.
 		{Method: "GET", Path: "/api/v5/diskspace", Handler: diskspacev5.GetHandler(diskSpaceLister)},
+		// J252 — v5 FileSystem endpoint family (3 GET endpoints; all match
+		// v3 wire shape; variable-alias re-exports of the v3 handlers).
+		{Method: "GET", Path: "/api/v5/filesystem", Handler: filesystemv5.ListHandler()},
+		{Method: "GET", Path: "/api/v5/filesystem/type", Handler: filesystemv5.TypeHandler()},
+		{Method: "GET", Path: "/api/v5/filesystem/mediafiles", Handler: filesystemv5.MediaFilesHandler()},
 		{Method: "GET", Path: "/api/v3/filesystem", Handler: apiv3.FileSystemHandler()},
 		{Method: "GET", Path: "/api/v3/filesystem/type", Handler: apiv3.FileSystemTypeHandler()},
 		{Method: "GET", Path: "/api/v3/filesystem/mediafiles", Handler: apiv3.FileSystemMediaFilesHandler()},

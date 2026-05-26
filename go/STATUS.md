@@ -10876,3 +10876,94 @@ Routes-by-family in the v3-surface map for reference (per route-audit.md):
 The next 3-5 Wave 3 slices should target ascending C# LOC: FileSystem (63), Metadata (74), Health (82), SeasonPass (99), CustomFilters (100). Each follows the J251 pattern: if v5 wire shape matches v3, pure path-alias; if v5 tightens any status code (DELETE → 204 etc.), add the wrapper handlers per J222-J225.
 
 Wave 1 remaining sub-arcs queued for later: J237 full ReleaseResource projection, image-download subscriber (2-slice), CutoffUnmet handler (2-slice). These can fire after Wave 3 first dozen slices when the per-tick budget is established + the loop is comfortable with multi-tick arcs.
+
+## Phase 5.J252 — v5 FileSystem endpoint family (Wave 3)
+
+### What
+
+`internal/api/v5/filesystem/` package + three new routes at `/api/v5/filesystem*`. Second slice in the Wave 3 v5-family-port arc (J251 was DiskSpace).
+
+The v5 controller `src/Sonarr.Api.V5/FileSystem/FileSystemController.cs` (63 LOC) has three GET endpoints:
+
+| v5 endpoint                       | Status | Body                                      |
+| --------------------------------- | ------ | ----------------------------------------- |
+| `GET /api/v5/filesystem`          | 200    | `FileSystemResult` (parent + dirs + files)|
+| `GET /api/v5/filesystem/type`     | 200    | `{ type: "file" | "folder" }`             |
+| `GET /api/v5/filesystem/mediafiles`| 200   | `[{path, relativePath, name}]`            |
+
+All three mirror v3 verbatim:
+
+- Same wire shapes (the J164/J165 audit-fix close-outs already pinned FileSystemModel byte-equality between Go-port v3 and C# v3; v5 reuses verbatim).
+- Same 200 statuses (v5's `TypedResults.Ok<T>` produces the same on-wire response as v3's `[ApiController]`-defaulted 200).
+- Same OrderBy-Name sort on directories + files.
+- Same `Array.Empty<>()`-equivalent short-circuit when the target folder doesn't exist on disk (the C# `:50-53` comment + the Go-port's `[]MediaFileResult{}` early-return).
+- Same folder-default for the /type endpoint when the path doesn't exist on disk — deliberate per the C# `:35-46` comment ("Return folder even if it doesn't exist on disk to avoid leaking anything from the UI about the underlying system").
+
+### Code
+
+`filesystem.go` (~50 LOC including doc-comment):
+
+```go
+package filesystem
+
+import apiv3 "sonarr.tv/sonarr/internal/api/v3"
+
+type FileSystemModel = apiv3.FileSystemModel
+type FileSystemResult = apiv3.FileSystemResult
+type MediaFileResult = apiv3.MediaFileResult
+
+var ListHandler = apiv3.FileSystemHandler
+var TypeHandler = apiv3.FileSystemTypeHandler
+var MediaFilesHandler = apiv3.FileSystemMediaFilesHandler
+```
+
+`cmd/sonarr/host_wiring.go` gains three route registrations:
+
+```go
+{Method: "GET", Path: "/api/v5/filesystem", Handler: filesystemv5.ListHandler()},
+{Method: "GET", Path: "/api/v5/filesystem/type", Handler: filesystemv5.TypeHandler()},
+{Method: "GET", Path: "/api/v5/filesystem/mediafiles", Handler: filesystemv5.MediaFilesHandler()},
+```
+
+The v3 handlers are zero-dep (`FileSystemHandler() http.Handler` — no arguments) so the v5 wiring just calls them. Same as v3's lines at host_wiring.go:1257-1259.
+
+### Tests (6)
+
+The v3 handler is already tested at `internal/api/v3/filesystem_test.go`; the v5 package adds real-filesystem integration coverage via `t.TempDir()` rather than re-testing the underlying logic:
+
+- `TestListHandler_ServesV3Shape` — creates `<tmp>/sub/` + `<tmp>/x.mkv`; queries `/api/v5/filesystem?path=<tmp>&includeFiles=true&allowFoldersWithoutTrailingSlashes=true`; asserts the response has exactly one Directory (`sub`) + one File (`x.mkv`). Confirms the v3 handler's listFolder logic is reachable via the v5 alias.
+- `TestTypeHandler_FileReturnsFile` — writes a real file; queries `/api/v5/filesystem/type?path=<file>`; asserts body is exactly `{"type":"file"}`.
+- `TestTypeHandler_NonExistentReturnsFolder` — queries a path that definitely doesn't exist on disk; asserts body is `{"type":"folder"}` (NOT 404 — the C# folder-default semantic explicitly says NEVER tell the UI a path doesn't exist).
+- `TestMediaFilesHandler_FiltersVideoExtensions` — drops `.mkv` + `.txt` into a tmpdir; expects only the `.mkv` to surface (the `.txt` is filtered by the `videoExtensions` map).
+- `TestMediaFilesHandler_MissingFolderReturnsEmptyArray` — queries a non-existent path; asserts body is exactly `"[]"` (JSON empty array, NOT `null`). Pins the JS-side `arr.map(...)` non-crash contract.
+- `TestTypeAliasesMatchV3` — compile-time invariant guard per the J251 pattern. Three forward + three reverse nil-assignments verify the type aliases are still byte-compatible with v3. If a future slice forks any of these types away from v3 (adding/removing fields) AND forgets to update the alias, this test fails to compile and the build breaks.
+
+### Why no DriveEnumeration sub-arc here
+
+The v3 handler has a DEFERRED note about Windows drive enumeration (empty-path query branch): "Cross-platform mount enumeration requires per-OS code." The Linux/macOS common case uses `/` when path is empty — preserved verbatim. The v5 surface inherits this deferral because the handler is shared; closing the Drive-enumeration sub-arc lands as a follow-up cross-platform mount-walker slice (likely in Wave 1 or as a J208-style build-tagged split when prioritised).
+
+### Hard gates
+
+```
+$ go build ./...
+(clean)
+
+$ go vet ./internal/api/v5/filesystem/...
+(clean)
+
+$ go test -race -count=1 ./internal/api/v5/filesystem/...
+ok  sonarr.tv/sonarr/internal/api/v5/filesystem  1.730s
+```
+
+### v5 surface progress
+
+5/~50 → 6/~50 families ported. Routes added this slice: 3.
+
+Next Wave 3 candidates by ascending LOC:
+
+- Metadata (74 LOC) — provider family; CRUD shape; expect path-alias if v5 wire matches v3, else new-handler wrappers per J222-J225.
+- Health (82 LOC) — health-check family; mostly read endpoints.
+- SeasonPass (99 LOC) — POST with body (SeasonPassResource).
+- CustomFilters (100), Parse (101), Update (121), and on.
+
+Wave 1 deferred sub-arcs and Wave 2 SignalR mop-up items remain queued for ticks where their precursor work batches into a single-slice scope (or for explicit user redirect).
