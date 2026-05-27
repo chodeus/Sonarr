@@ -15761,3 +15761,105 @@ No new routes. Struct + doc-comment widening only.
 29 wire-shape fields landed across J309-J320.
 
 Next-tick smallest candidate: QueueResource SizeLeft (int64) + TimeLeft (TimeSpan-helper). SizeLeft is trivial (J317-pattern). TimeLeft needs a tiny formatter (`time.Duration` → `"hh:mm:ss"` or `"d.hh:mm:ss"` C# TimeSpan format).
+
+---
+
+## J321 — Post-Wave-3 drain, slice 13: QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper
+
+**Anchor**: post-J320 (QueueResource TrackedDownloadStatus+State landed). Continues the QueueResource sweep with the remaining quantitative/temporal scalar fields.
+
+### C# source
+
+- `src/Sonarr.Api.V5/Queue/QueueResource.cs:29-30` — `public decimal SizeLeft` + `public TimeSpan? TimeLeft`.
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:52-56` — `[Obsolete] Sizeleft` + `[Obsolete] Timeleft` (lowercase 'l'; the new uppercase variants are commented out due to case-insensitive deserialization collision).
+
+### Wire key divergence
+
+- v3 emits `"sizeleft"` (lowercase l) and `"timeleft"`.
+- v5 emits `"sizeLeft"` (camelCase) and `"timeLeft"`.
+
+The Go-port emits the **v5 form** on BOTH surfaces — deliberate forward-compatible v3 divergence. Today the fields don't appear on the wire at all (queue stub returns empty array), so no current v3 client depends on the obsolete lowercase key. When populated rows surface the fields, v3 clients will see the v5-form key as an additive change (existing v3 clients ignore unknown JSON keys).
+
+### Wire format
+
+- SizeLeft: int64 → JSON number (`12345`). C# decimal serializes same way.
+- TimeLeft: string in C# TimeSpan default format `[d.]hh:mm:ss` (the `"c"` constant format pattern):
+  - days==0 → `hh:mm:ss` zero-padded (e.g. `"00:05:23"`).
+  - days>=1 → `d.hh:mm:ss` (no day-pad, hour-pad — e.g. `"3.04:12:00"`).
+
+Both fields use `omitempty` so empty/zero → key absent (matches C# null + WhenWritingNull for TimeLeft; accepts the 0/absent collapse for SizeLeft).
+
+### Port deliverables
+
+**`internal/api/v3/queue.go`** — struct + helper + doc-comment:
+
+- `QueueResource` widened with 2 new fields after Size:
+  - `SizeLeft int64 json:"sizeLeft,omitempty"`.
+  - `TimeLeft string json:"timeLeft,omitempty"`.
+- New exported `FormatTimeLeft(d *time.Duration) string` helper:
+  - nil pointer → `""`.
+  - zero or negative duration → `""` (negative clamped — queue rows never carry negative time-left).
+  - days==0 → `fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)`.
+  - days>=1 → `fmt.Sprintf("%d.%02d:%02d:%02d", days, hours, minutes, seconds)`.
+- Doc comment on QueueResource extended with a J321 paragraph cataloguing both fields' wire contracts + the v5-form-key choice rationale + the FormatTimeLeft helper cite.
+
+No emit-site mapper updates required — production today returns `[]QueueResource{}`. The populated-row mapper port is its own dedicated slice; it will invoke `apiv3.FormatTimeLeft(persistedTimeLeft)` at allocation time.
+
+v5/queue aliases v3 via `type Resource = apiv3.QueueResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (2 new)
+
+`internal/api/v3/queue_test.go`:
+
+- `TestQueueResource_SizeLeftTimeLeftWidening_J321` — 2-row pin covering BOTH branches:
+  - Row 1: populated `SizeLeft=12345, TimeLeft="00:05:23"` → 2 positive substring assertions.
+  - Row 2: zero/empty → 2 negative omitempty assertions confirming both keys drop.
+- `TestFormatTimeLeft_AllBranches_J321` — 5-case table on the helper:
+  - nil → "" (key omitted by omitempty downstream).
+  - zero duration → "".
+  - negative duration → "" (clamped — queue never carries negative).
+  - 5m23s → `"00:05:23"` (no-days form, zero-padded hours).
+  - 3d4h12m → `"3.04:12:00"` (days form, no-day-pad, hour-pad — pinning the C# TimeSpan ToString("c") format quirk).
+
+### Wiring
+
+No new routes. Struct + helper + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/queue/...` ✓
+  - v3: all pass, 1.700s
+  - cmd/sonarr: all pass, 4.727s
+  - v5/queue: all pass, 2.102s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | **DONE this slice (J321)** |
+| B. v5 field divergences | QueueResource StatusMessages typed list | OPEN — typed list DTO |
+| B. v5 field divergences | QueueResource Series? + Episodes? subresources | OPEN — J313-pattern; +pointer subresource pin |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem + ReleaseResource | OPEN — body-decode shape consideration |
+| B. v5 field divergences | Quality typed QualityModel envelope | OPEN — complex DTO |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — alias break, mid-size |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+31 wire-shape fields landed across J309-J321.
+
+Next-tick smallest candidate: QueueResource Series? + Episodes? pointer-subresource widening (J313-pattern — Series is single pointer, Episodes is `[]EpisodeResource?` pointer-to-slice for v5; v3 has a single Episode? — diverge by emitting both? Or just the v5-additive plural). Or StatusMessages typed list DTO (needs a `QueueStatusMessage struct {title string; messages []string}` wire-shape pin).

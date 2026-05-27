@@ -311,6 +311,72 @@ func TestQueueResource_TrackedDownloadStatusState_J320(t *testing.T) {
 	}
 }
 
+// J321 wire-shape pin for the SizeLeft (int64) + TimeLeft (string)
+// widening on QueueResource. SizeLeft uses v5-form camelCase key
+// (`"sizeLeft"`); TimeLeft formats C# TimeSpan default. Both
+// omitempty: 0/empty drops the key.
+//
+// Test covers BOTH branches: row 1 populated with non-zero
+// SizeLeft + non-empty TimeLeft → both keys emit; row 2 zero/
+// empty → omitempty drops both keys.
+func TestQueueResource_SizeLeftTimeLeftWidening_J321(t *testing.T) {
+	t.Parallel()
+	populated := QueueResource{ID: 1, Title: "demo", SizeLeft: 12345, TimeLeft: "00:05:23"}
+	buf, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated: %v", err)
+	}
+	got := string(buf)
+	if !strings.Contains(got, `"sizeLeft":12345`) {
+		t.Errorf("populated sizeLeft missing; got %s", got)
+	}
+	if !strings.Contains(got, `"timeLeft":"00:05:23"`) {
+		t.Errorf("populated timeLeft missing; got %s", got)
+	}
+	// Branch 2: zero/empty → omitempty drops both keys.
+	empty := QueueResource{ID: 2, Title: "demo"}
+	buf2, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	got2 := string(buf2)
+	if strings.Contains(got2, `"sizeLeft":`) {
+		t.Errorf("zero SizeLeft must omit; got %s", got2)
+	}
+	if strings.Contains(got2, `"timeLeft":`) {
+		t.Errorf("empty TimeLeft must omit; got %s", got2)
+	}
+}
+
+// J321 helper-pin: FormatTimeLeft maps *time.Duration to the C#
+// TimeSpan default `[d.]hh:mm:ss` format. nil / zero / negative
+// returns "" so the omitempty json tag drops the key.
+func TestFormatTimeLeft_AllBranches_J321(t *testing.T) {
+	t.Parallel()
+	d5m23s := 5*time.Minute + 23*time.Second
+	d3d4h12m := 3*24*time.Hour + 4*time.Hour + 12*time.Minute
+	zero := time.Duration(0)
+	neg := -1 * time.Second
+	cases := []struct {
+		name string
+		in   *time.Duration
+		want string
+	}{
+		{"nil → empty (omitempty drops key)", nil, ""},
+		{"zero → empty", &zero, ""},
+		{"negative → empty (clamped)", &neg, ""},
+		{"5m23s → 00:05:23 (no-days form)", &d5m23s, "00:05:23"},
+		{"3d4h12m → 3.04:12:00 (days form, no day-pad, hour-pad)", &d3d4h12m, "3.04:12:00"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FormatTimeLeft(tc.in); got != tc.want {
+				t.Errorf("FormatTimeLeft(%v): got %q want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------- 5.I18: /queue/details tests ----------
 
 type fakeQueueDetailsLister struct {

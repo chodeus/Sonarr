@@ -37,6 +37,30 @@ import (
 // semantic — null when unset on the wire, populated when the queue
 // row is tied to a Series/Episode.
 //
+// J321 SizeLeft + TimeLeft widening:
+//   - SizeLeft int64 — non-nullable on v5 (`decimal SizeLeft`),
+//     CAMEL-case key on the wire (`"sizeLeft"`). v3 uses the
+//     obsolete lowercase `Sizeleft` field with key `"sizeleft"`
+//     (the C# v3 declaration at QueueResource.cs:52-53 carries the
+//     `[Obsolete("Will be replaced by SizeLeft")]` attribute; the
+//     new `SizeLeft` field is COMMENTED OUT in C# v3 due to
+//     case-insensitive deserialization collision). The Go-port
+//     emits the v5 form `"sizeLeft"` on BOTH surfaces — this is a
+//     deliberate forward-compatible v3 divergence (additive: today
+//     the field doesn't appear on the wire at all, so no current
+//     v3 client depends on the obsolete `"sizeleft"` key; future
+//     populated rows will surface the v5-form key on both
+//     surfaces). omitempty drops 0 to absent (acceptable: 0
+//     SizeLeft on a queue row carries no semantic).
+//   - TimeLeft string — wire form is the C# TimeSpan default
+//     format `"[d.]hh:mm:ss"` (days suffix omitted when 0). v5 +
+//     v3 wire-key divergence same as SizeLeft (v5 `"timeLeft"`,
+//     v3 obsolete `"timeleft"`); Go-port emits the v5 form. The
+//     populated-mapper invoker formats `*time.Duration` →
+//     wire-string via [FormatTimeLeft] (this slice's helper).
+//     omitempty drops empty to absent (matches C# `TimeSpan?` null
+//     under WhenWritingNull).
+//
 // J320 enum-string widening: TrackedDownloadStatus +
 // TrackedDownloadState (both v3+v5; both nullable on C# —
 // `TrackedDownloadStatus?` / `TrackedDownloadState?` per
@@ -131,6 +155,8 @@ type QueueResource struct {
 	TrackedDownloadStatus               string        `json:"trackedDownloadStatus,omitempty"`
 	TrackedDownloadState                string        `json:"trackedDownloadState,omitempty"`
 	Size                                int64         `json:"size,omitempty"`
+	SizeLeft                            int64         `json:"sizeLeft,omitempty"`
+	TimeLeft                            string        `json:"timeLeft,omitempty"`
 	Indexer                             string        `json:"indexer,omitempty"`
 	DownloadClient                      string        `json:"downloadClient,omitempty"`
 	DownloadClientHasPostImportCategory bool          `json:"downloadClientHasPostImportCategory,omitempty"`
@@ -141,6 +167,35 @@ type QueueResource struct {
 	IsFullSeason                        bool          `json:"isFullSeason,omitempty"`
 	Added                               *time.Time    `json:"added,omitempty"`
 	EstimatedCompletionTime             *time.Time    `json:"estimatedCompletionTime,omitempty"`
+}
+
+// FormatTimeLeft renders a *time.Duration in the C# TimeSpan
+// default `[d.]hh:mm:ss` wire form used by QueueResource.TimeLeft.
+// nil or zero duration returns "" so the omitempty json tag drops
+// the key entirely (matches C# `TimeSpan?` null under STJson
+// WhenWritingNull). Negative durations are clamped to "" since
+// queue rows never carry negative time-left in practice.
+//
+// Format rules mirror C# `TimeSpan.ToString("c")` (the "constant"
+// format pattern):
+//   - days == 0: `hh:mm:ss` (zero-padded, e.g. `"00:05:23"`).
+//   - days >= 1: `d.hh:mm:ss` (no padding on days, e.g.
+//     `"3.04:12:00"`).
+//
+// J321.
+func FormatTimeLeft(d *time.Duration) string {
+	if d == nil || *d <= 0 {
+		return ""
+	}
+	total := int64((*d).Seconds())
+	days := total / 86400
+	hours := (total / 3600) % 24
+	minutes := (total / 60) % 60
+	seconds := total % 60
+	if days > 0 {
+		return fmt.Sprintf("%d.%02d:%02d:%02d", days, hours, minutes, seconds)
+	}
+	return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)
 }
 
 // QueueDetailsLister narrows the queue read for the /queue/details
