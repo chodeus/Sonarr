@@ -1387,6 +1387,20 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// SeriesEditorResource bulk-body byte-identical to v3.
 		{Method: "PUT", Path: "/api/v5/series/editor", Handler: seriesv5.EditorUpdateHandler(seriesWriter, seriesEmitter)},
 		{Method: "DELETE", Path: "/api/v5/series/editor", Handler: seriesv5.EditorDeleteHandler(seriesWriter, seriesEmitter)},
+		// J307 — v5-NEW per-id season-monitor endpoint at
+		// SeriesController.cs:223-246 (the final Series-family residual
+		// sub-slice after J303 CRUD + J304 Editor). No v3 equivalent —
+		// genuinely new code path with a fresh SeasonResource wire
+		// shape. Decodes the persisted Seasons JSON blob via the
+		// []map[string]any preservation contract (matches J214
+		// updateSeasonsJSON pattern) so non-monitored per-season fields
+		// (Statistics snapshot, Images, etc.) round-trip unchanged.
+		// SignalR series/updated broadcast fires with the freshly-
+		// updated full SeriesResource (matches C#
+		// `BroadcastResourceChange(ModelAction.Updated, GetSeriesResource(series, false))`).
+		// Response: 200 + {seasonNumber, monitored} ONLY — Statistics +
+		// Images deferred per C# default includeImages=false.
+		{Method: "PUT", Path: "/api/v5/series/{id}/season", Handler: seriesv5.SeasonMonitorHandler(seriesWriter, seriesEmitter)},
 		// J286 — v5 SeriesFolder endpoint family (1 endpoint; 34 LOC
 		// C# — SeriesFolderController.GetFolder returning the computed
 		// series folder name per the naming config, no disk write).

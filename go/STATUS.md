@@ -14544,3 +14544,87 @@ The v5 body grouping changes the JSON contract on the wire — a genuine *body* 
 
 **Main-controller coverage now complete for all 5 listed LARGE families.** The two residual sub-slices (Series /{id}/season + Release POST) both require *new* v5-specific handler code (no v3 equivalent for the season-monitor + body-shape divergence on the grab endpoint) and are queued for the immediately-following slices.
 
+
+---
+
+## J307 — Wave 3 LARGE-family arc, Series family final residual: v5-NEW per-id season-monitor endpoint
+
+**Anchor**: post-J306 (Queue family main controller complete). Series family had two residual sub-slices: the v5-NEW PUT /{id}/season endpoint (this slice) and the populated-mapper field divergences (post-Wave-3 service-port arc, deferred). This slice closes the surface-coverage gap.
+
+### C# source
+
+`src/Sonarr.Api.V5/Series/SeriesController.cs:223-246` — `UpdateSeasonMonitored([FromRoute] int id, [FromBody] SeasonResource seasonResource)`. Returns `Results<Ok<SeasonResource>, NotFound>`.
+
+C# logic:
+
+1. `_seriesService.GetSeries(id)` (throws ModelNotFoundException on miss → 404).
+2. `series.Seasons.FirstOrDefault(s => s.SeasonNumber == body.SeasonNumber)` (returns `TypedResults.NotFound()` on miss).
+3. `season.Monitored = body.Monitored`.
+4. `_seriesService.UpdateSeries(series)`.
+5. `BroadcastResourceChange(ModelAction.Updated, GetSeriesResource(series, false))` — emits SignalR with the full series resource, NOT the season.
+6. Returns `TypedResults.Ok(season.ToResource())` — wire shape from `SeasonResourceMapper.ToResource(model, includeImages: false)` at SeasonResource.cs:18-25 is `{seasonNumber, monitored}` (Images null → dropped; Statistics never set → dropped).
+
+No v3 equivalent. v3 exposes bulk PUT /api/v3/seasonpass for the same kind of mutation but at a different granularity + with a different body shape.
+
+### Port deliverables
+
+Additions to the existing `internal/api/v5/series/series.go`:
+
+- New `SeasonResource` struct (2 declared fields — `SeasonNumber int` / `Monitored bool`; doc comment notes `Statistics` + `Images` deferred per the J302 pointer-to-slice/struct pattern when populated-mapper service ports land).
+- `SeasonMonitorHandler(svc Writer, emitter Emitter) http.Handler`.
+- `setSeasonMonitoredJSON(existing string, seasonNumber int, monitored bool) (string, bool, error)` — single-season overlay primitive on the persisted Seasons JSON blob. Returns `(updated, found, err)`. Empty/whitespace input short-circuits to `(existing, false, nil)` so the endpoint cleanly surfaces 404 on fresh-imported-series-with-no-seasons.
+
+Additions to imports: `encoding/json`, `errors`, `fmt`, `strconv`, `httperr`, `series` packages.
+
+Logic:
+
+1. Parse path id (400 on invalid).
+2. Decode body via `DisallowUnknownFields` (400 on malformed).
+3. `svc.GetSeries(ctx, id)` (404 on `series.ErrNotFound`; 500 on other errors).
+4. `setSeasonMonitoredJSON(existing.Seasons, body.SeasonNumber, body.Monitored)` (500 on JSON encode errors; 404 on season-miss).
+5. `existing.Seasons = updated`; `svc.Update(ctx, existing)` (500 on persist error).
+6. `emitter.Updated(ctx, apiv3.ToSeriesResource(*existing))` — best-effort SignalR broadcast (matches the Updated/Deleted fan-out pattern in existing v3 handlers).
+7. Emit `{seasonNumber, monitored}` JSON body — explicitly NOT echoing the request body (the C# `season.ToResource()` call re-projects from the mutated season model; today's stub maps to the same shape because the body is the source of truth for both fields).
+
+### Tests (5 new)
+
+- `TestSeasonMonitorHandler_Success_Returns200WithBodyAndUpdatesSeasonsJSON` — comprehensive happy-path pin:
+  - Status 200 + body contains `seasonNumber:2` + `monitored:false`.
+  - Body does NOT contain `images` or `statistics` keys (includeImages:false posture + deferred Statistics).
+  - Persisted JSON has `monitored:false` on season 2 + `monitored:true` count == 2 (seasons 1 + 3 unchanged).
+  - Round-trip preservation: season 1's `images:[{coverType:"poster",url:"a"}]` survives the mutation pass.
+  - SignalR Updated broadcast fires with series id=11.
+- `TestSeasonMonitorHandler_SeriesNotFound_404` — series-miss 404 + SignalR emit-suppression.
+- `TestSeasonMonitorHandler_SeasonNumberNotFound_404` — season-miss 404 + persisted JSON UNCHANGED (no half-mutate).
+- `TestSeasonMonitorHandler_MalformedBody_400` — passthrough.
+- `TestSeasonMonitorHandler_InvalidID_400` — passthrough.
+
+`fakeEmitter` extended to record `Updated` broadcasts (was Deleted-only before).
+
+### Wiring
+
+One new route in `host_wiring.go` v5Routes(): `PUT /api/v5/series/{id}/season` immediately after the J304 SeriesEditor block, with a J307 prefix comment cataloguing the new wire shape + JSON preservation + SignalR posture.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v5/series/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v5/series/... ./internal/api/v3/... ./cmd/sonarr/...` ✓
+  - v5/series: 12 tests (3 CRUD-DELETE + 4 Editor + 5 SeasonMonitor), all pass, 1.521s
+  - v3 (regression): all pass, 1.409s
+  - cmd/sonarr (wiring): all pass, 3.609s
+
+Note: initial test run had a key-ordering assertion failure (Go's `json.Marshal` on `map[string]any` sorts keys alphabetically, so `"seasonNumber":2,"monitored":false` substring search fails — actual output is `"monitored":false,"seasonNumber":2`). Fixed by switching to independent substring + count assertions that don't depend on key order.
+
+### Wave 3 LARGE-family arc progress (updated)
+
+| family | LOC C# | status |
+| --- | --- | --- |
+| EpisodeFiles | 205 | DONE (J301) |
+| CustomFormats | 203 | DONE (J302) |
+| Series | 422 + 116 | **DONE (J303 CRUD + J304 Editor + J307 /{id}/season)** |
+| Release | 343 | DONE (J305 GET + J294 Push); **POST queued** (v5-NEW body-shape divergence) |
+| Queue | 410 | DONE (J306 + J289+J290+J291 subs) |
+
+**Sole residual on the entire Wave 3 LARGE-family arc**: Release POST — v5-NEW body-shape divergence requiring the `ReleaseGrabResource` decode + translate adapter into the v3 dispatcher inputs. Once that lands, the arc fully drains.
+

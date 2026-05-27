@@ -50,10 +50,16 @@
 package series
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/api/v5/internal/v5util"
+	"sonarr.tv/sonarr/internal/httperr"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 // Resource is the v5 SeriesResource — variable-aliased to v3 at the
@@ -151,4 +157,149 @@ func EditorUpdateHandler(svc Writer, emitter Emitter) http.Handler {
 // J304.
 func EditorDeleteHandler(svc Writer, emitter Emitter) http.Handler {
 	return v5util.RewriteSuccessTo204(apiv3.SeriesEditorDeleteHandler(svc, emitter))
+}
+
+// SeasonResource is the v5 SeasonResource wire shape — mirror of
+// `src/Sonarr.Api.V5/Series/SeasonResource.cs:6-12`. v5-specific
+// type with no v3 equivalent on the wire (v3 exposes
+// SeasonPassSeasonOnWrite for write-only bulk PUT /seasonpass; this
+// single-season endpoint is genuinely v5-NEW).
+//
+// Field semantics (matches C# under STJson `WhenWritingNull`):
+//
+//   - SeasonNumber + Monitored: always emitted (non-nullable on C#).
+//   - Statistics: nullable; emit when populated. DEFERRED in the
+//     Go-port — the per-season statistics projection requires the
+//     SeriesStatistics service join (population gate same as the
+//     SeriesResource Statistics field — post-Wave-3 service-port
+//     arc). Today the field stays nil and omitempty drops the key.
+//   - Images: nullable; emit when populated AND the route's
+//     `includeImages` flag is true. C# `SeasonResourceMapper.ToResource`
+//     gates this on the parameter. The v5 single-season-monitor
+//     route always passes `false` (per `SeriesController.cs:223-246`
+//     which does NOT thread `includeImages` through to the response
+//     mapper). Field stays nil; omitempty drops the key.
+type SeasonResource struct {
+	SeasonNumber int  `json:"seasonNumber"`
+	Monitored    bool `json:"monitored"`
+	// Statistics + Images intentionally omitted from the struct
+	// today — adding them later as `*Statistics` + `*[]MediaCover`
+	// pointer-to-slice (J302 pattern) preserves the WhenWritingNull
+	// wire posture without breaking this single-monitor endpoint.
+}
+
+// SeasonMonitorHandler returns PUT /api/v5/series/{id}/season.
+//
+// Mirrors `SeriesController.UpdateSeasonMonitored` at
+// `src/Sonarr.Api.V5/Series/SeriesController.cs:223-246`:
+//
+//	1. Load the series by route-{id}; 404 if missing (matches C#
+//	   `_seriesService.GetSeries(id)` throwing ModelNotFoundException).
+//	2. Walk the persisted Seasons JSON, find the entry whose
+//	   SeasonNumber matches the body's SeasonNumber; 404 if absent
+//	   (matches C# `series.Seasons.FirstOrDefault(...) == null`).
+//	3. Overwrite that entry's Monitored field with the body's value.
+//	   Other Season fields (Statistics snapshot, Images, etc.) are
+//	   preserved via the `[]map[string]any` decode/re-encode pattern
+//	   (matches the J214/seasonpass updateSeasonsJSON contract).
+//	4. Persist via Writer.Update at the repo layer (matches the
+//	   established v3 SeriesEditor + SeasonPass pattern — service-
+//	   layer UpdateSeries cascade is DEFERRED on the v5 surface
+//	   today; the v3 5.D1a deferred-cascade contract carries through).
+//	5. Emit SignalR `series/updated` broadcast with the freshly-
+//	   updated full SeriesResource (matches C#
+//	   `BroadcastResourceChange(ModelAction.Updated, GetSeriesResource(series, false))`).
+//	6. Return 200 + SeasonResource with SeasonNumber + Monitored
+//	   (Statistics + Images NOT emitted — matches C#
+//	   `season.ToResource()` default `includeImages: false`).
+//
+// 400 on invalid id / malformed body / missing seasonNumber field.
+// 500 on Service errors (load / persist).
+//
+// J307 — Wave 3 LARGE-family arc; Series family final residual
+// sub-slice (v5-NEW endpoint — no v3 equivalent).
+func SeasonMonitorHandler(svc Writer, emitter Emitter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "series/season: invalid id")
+			return
+		}
+		var body SeasonResource
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("series/season: malformed body: %v", err))
+			return
+		}
+		ctx := r.Context()
+		existing, err := svc.GetSeries(ctx, id)
+		if err != nil {
+			if errors.Is(err, series.ErrNotFound) {
+				httperr.NotFound(w, fmt.Sprintf("series %d not found", id))
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/season: get %d: %w", id, err), nil)
+			return
+		}
+		updatedSeasons, found, err := setSeasonMonitoredJSON(existing.Seasons, body.SeasonNumber, body.Monitored)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/season: encode seasons: %w", err), nil)
+			return
+		}
+		if !found {
+			httperr.NotFound(w, fmt.Sprintf("series %d season %d not found", id, body.SeasonNumber))
+			return
+		}
+		existing.Seasons = updatedSeasons
+		if err := svc.Update(ctx, existing); err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/season: update %d: %w", id, err), nil)
+			return
+		}
+		// SignalR series/updated broadcast — matches C# at line 242
+		// (`BroadcastResourceChange(ModelAction.Updated, GetSeriesResource(...))`).
+		// Best-effort: failures are logged but don't fail the request.
+		res := apiv3.ToSeriesResource(*existing)
+		_ = emitter.Updated(ctx, res)
+		// Response: 200 + SeasonNumber + Monitored ONLY (matches C#
+		// season.ToResource() default includeImages=false).
+		out := SeasonResource{SeasonNumber: body.SeasonNumber, Monitored: body.Monitored}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(out)
+		_, _ = w.Write(buf)
+	})
+}
+
+// setSeasonMonitoredJSON walks the existing persisted Seasons JSON
+// (a `[]obj` array) and overwrites the Monitored field on the entry
+// whose SeasonNumber matches. Returns the updated JSON + a found
+// bool. Empty / whitespace-only input → (existing, false, nil) — no
+// synthesis (a fresh-imported series has zero seasons; the C# v5
+// endpoint short-circuits to 404 via the season-lookup miss). Mirrors
+// the JSON round-trip strategy in apiv3.updateSeasonsJSON
+// (seasonpass.go:215-252) at the single-season granularity.
+func setSeasonMonitoredJSON(existing string, seasonNumber int, monitored bool) (string, bool, error) {
+	if existing == "" {
+		return existing, false, nil
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(existing), &rows); err != nil {
+		return "", false, err
+	}
+	for _, row := range rows {
+		nf, ok := row["seasonNumber"].(float64)
+		if !ok {
+			continue
+		}
+		if int(nf) == seasonNumber {
+			row["monitored"] = monitored
+			buf, mErr := json.Marshal(rows)
+			if mErr != nil {
+				return "", false, mErr
+			}
+			return string(buf), true, nil
+		}
+	}
+	return existing, false, nil
 }

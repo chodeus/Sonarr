@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -68,10 +69,14 @@ func (f *fakeWriter) Delete(_ context.Context, id int) error {
 
 type fakeEmitter struct {
 	deleted []Resource
+	updated []Resource
 }
 
 func (f *fakeEmitter) Created(_ context.Context, _ Resource) error { return nil }
-func (f *fakeEmitter) Updated(_ context.Context, _ Resource) error { return nil }
+func (f *fakeEmitter) Updated(_ context.Context, r Resource) error {
+	f.updated = append(f.updated, r)
+	return nil
+}
 func (f *fakeEmitter) Deleted(_ context.Context, r Resource) error {
 	f.deleted = append(f.deleted, r)
 	return nil
@@ -184,6 +189,123 @@ func TestEditorDeleteHandler_MalformedBody_PassesThrough400(t *testing.T) {
 	EditorDeleteHandler(w, em).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (passthrough)", rr.Code)
+	}
+}
+
+// ----- PUT /{id}/season — v5-NEW per-id season-monitor endpoint -----
+
+func TestSeasonMonitorHandler_Success_Returns200WithBodyAndUpdatesSeasonsJSON(t *testing.T) {
+	t.Parallel()
+	// Seed a series with a 3-season JSON blob, MIXED monitored states +
+	// a richer per-season `images` payload that must round-trip
+	// unchanged (verifies the []map[string]any preservation contract).
+	seasonsBlob := `[{"seasonNumber":1,"monitored":true,"images":[{"coverType":"poster","url":"a"}]},{"seasonNumber":2,"monitored":true,"images":[]},{"seasonNumber":3,"monitored":true,"images":[]}]`
+	w := &fakeWriter{rows: []series.Series{{ID: 11, Title: "ShowA", Seasons: seasonsBlob}}}
+	em := &fakeEmitter{}
+	body := []byte(`{"seasonNumber":2,"monitored":false}`)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v5/series/11/season", bytesReader(body))
+	req.SetPathValue("id", "11")
+	SeasonMonitorHandler(w, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200; body=%q", rr.Code, rr.Body.String())
+	}
+	// Wire shape: ONLY seasonNumber + monitored (matches C# season.ToResource(false)).
+	got := rr.Body.String()
+	if !strings.Contains(got, `"seasonNumber":2`) || !strings.Contains(got, `"monitored":false`) {
+		t.Errorf("body must contain seasonNumber:2 + monitored:false; got %q", got)
+	}
+	if strings.Contains(got, `"images"`) {
+		t.Errorf("body must NOT contain images key (includeImages=false posture); got %q", got)
+	}
+	if strings.Contains(got, `"statistics"`) {
+		t.Errorf("body must NOT contain statistics key (deferred); got %q", got)
+	}
+	// Persisted Seasons JSON must have season 2 monitored=false; seasons 1+3 unchanged + images[] preserved.
+	if len(w.rows) != 1 {
+		t.Fatalf("rows: %v", w.rows)
+	}
+	persisted := w.rows[0].Seasons
+	// Note: Go's `json.Marshal` on `map[string]any` reorders keys
+	// alphabetically — substring search avoids depending on key order.
+	if !strings.Contains(persisted, `"monitored":false`) || !strings.Contains(persisted, `"seasonNumber":2`) {
+		t.Errorf("season 2 should be monitored:false; got %s", persisted)
+	}
+	// Defensive guard: seasons 1 + 3 must NOT have flipped to monitored:false.
+	// Match the substring for `"seasonNumber":1` adjacent to `"monitored":true`
+	// in any key order.
+	if strings.Count(persisted, `"monitored":true`) != 2 {
+		t.Errorf("seasons 1 + 3 must remain monitored:true; got %s", persisted)
+	}
+	if !strings.Contains(persisted, `"coverType":"poster"`) {
+		t.Errorf("season 1 images must round-trip; got %s", persisted)
+	}
+	// SignalR Updated broadcast fires with the full series resource.
+	if len(em.updated) != 1 || em.updated[0].ID != 11 {
+		t.Errorf("SignalR Updated: got %+v want 1 broadcast for series 11", em.updated)
+	}
+}
+
+func TestSeasonMonitorHandler_SeriesNotFound_404(t *testing.T) {
+	t.Parallel()
+	w := &fakeWriter{}
+	em := &fakeEmitter{}
+	body := []byte(`{"seasonNumber":1,"monitored":true}`)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v5/series/99/season", bytesReader(body))
+	req.SetPathValue("id", "99")
+	SeasonMonitorHandler(w, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: got %d want 404 (series miss)", rr.Code)
+	}
+	if len(em.updated) != 0 {
+		t.Errorf("SignalR Updated must not fire on series-miss; got %v", em.updated)
+	}
+}
+
+func TestSeasonMonitorHandler_SeasonNumberNotFound_404(t *testing.T) {
+	t.Parallel()
+	// Series exists but the requested seasonNumber isn't in the Seasons
+	// JSON — matches C# `series.Seasons.FirstOrDefault(...) == null`
+	// surface (TypedResults.NotFound at SeriesController.cs:235).
+	seasonsBlob := `[{"seasonNumber":1,"monitored":true}]`
+	w := &fakeWriter{rows: []series.Series{{ID: 11, Title: "X", Seasons: seasonsBlob}}}
+	em := &fakeEmitter{}
+	body := []byte(`{"seasonNumber":99,"monitored":true}`)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v5/series/11/season", bytesReader(body))
+	req.SetPathValue("id", "11")
+	SeasonMonitorHandler(w, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: got %d want 404 (season miss)", rr.Code)
+	}
+	// Persisted Seasons JSON must be UNCHANGED on season-miss (no half-mutate).
+	if w.rows[0].Seasons != seasonsBlob {
+		t.Errorf("Seasons JSON must NOT mutate on season-miss; got %s want %s", w.rows[0].Seasons, seasonsBlob)
+	}
+}
+
+func TestSeasonMonitorHandler_MalformedBody_400(t *testing.T) {
+	t.Parallel()
+	w := &fakeWriter{rows: []series.Series{{ID: 11, Title: "X"}}}
+	em := &fakeEmitter{}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v5/series/11/season", bytesReader([]byte(`{not`)))
+	req.SetPathValue("id", "11")
+	SeasonMonitorHandler(w, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d want 400 (malformed body)", rr.Code)
+	}
+}
+
+func TestSeasonMonitorHandler_InvalidID_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v5/series/abc/season", bytesReader([]byte(`{"seasonNumber":1,"monitored":true}`)))
+	req.SetPathValue("id", "abc")
+	SeasonMonitorHandler(&fakeWriter{}, &fakeEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d want 400 (invalid id)", rr.Code)
 	}
 }
 
