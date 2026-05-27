@@ -12931,3 +12931,59 @@ Pattern observation: this is the first Wave 3 slice that is GENUINELY v5-NEW (no
 - Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
 - Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J280 — Wave 3 twenty-ninth slice: v5 IndexerSettings family port (57 LOC C# source)
+
+Pure path-alias slice — same J224 importlistsettings pattern. v3 already has an IndexerConfigController with a byte-identical wire shape mounted at /api/v3/config/indexer; the v5 family just re-exposes the v3 handlers at the new path prefix.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :3309-3398):
+
+| endpoint                                  | v5 status   | v3 Go-port                              | strategy   |
+|-------------------------------------------|-------------|------------------------------------------|------------|
+| GET    /api/v5/settings/indexer           | 200         | 200 (apiv3.IndexerConfigHandler)        | alias      |
+| GET    /api/v5/settings/indexer/{id}      | 200         | 200 (same handler, ignores path id)     | alias      |
+| PUT    /api/v5/settings/indexer/{id}      | 202 Accepted| 202 (apiv3.IndexerConfigUpdateHandler)  | alias      |
+
+**Resource shape** byte-identical between v3 and v5 (per `src/Sonarr.Api.V5/Settings/IndexerSettingsResource.cs` vs v3 `apiv3.IndexerConfigResource`):
+
+| field            | type  | source                            |
+|------------------|-------|-----------------------------------|
+| id               | int   | constant 1 (singleton)            |
+| minimumAge       | int   | config.Provider.MinimumAge        |
+| retention        | int   | config.Provider.Retention         |
+| maximumSize      | int   | config.Provider.MaximumSize       |
+| rssSyncInterval  | int   | config.Provider.RssSyncInterval   |
+
+Type aliases are wire-safe — same JSON tags, same int field types, same defaults.
+
+**Validation chain** (preserved via path-alias from `internal/api/v3/config_indexer.go:133-145`):
+- MinimumAge ≥ 0 / Retention ≥ 0 / MaximumSize ≥ 0 (non-negative)
+- RssSyncInterval ∈ {0} ∪ [10, 120] — 0 is the "disable RSS" sentinel per the C# `.Between(10, 120)` validator with `.When(c => c.RssSyncInterval > 0)` exception
+- DisallowUnknownFields rejects unknown body keys
+
+**SettingsController<T> reflection vs typed setters**: the C# v5 SettingsController.SaveSettings (per SettingsController.cs:38-51) uses reflection-based `SaveConfigDictionary` to project the resource properties into a Dictionary<string, object?> and writes via `IConfigService.SaveConfigDictionary`. v3 Go-port writes through the typed setters (SetMinimumAge / SetRetention / SetMaximumSize / SetRssSyncInterval) which produce byte-identical results — the reflection trip is a C# host implementation detail that doesn't affect the wire.
+
+**Slice scope** — 199 lines (50 source + 149 test) + 1 import + 3 routes:
+
+- New `internal/api/v5/indexersettings/indexersettings.go` (50 LOC) — 3 type aliases (Resource = apiv3.IndexerConfigResource, Getter = apiv3.IndexerConfigGetter, Writer = apiv3.IndexerConfigWriter) + 2 variable aliases (GetHandler = apiv3.IndexerConfigHandler, UpdateHandler = apiv3.IndexerConfigUpdateHandler). NO new handler code.
+- New `internal/api/v5/indexersettings/indexersettings_test.go` (149 LOC) — 7 tests: GetHandler-emits-singleton-resource (id=1 + RssSyncInterval=15 default), UpdateHandler-put-accepted-202 (round-trip + 4 setter calls counted via mutex-protected fake), UpdateHandler-rss-interval-zero-allowed (disable-sentinel pin), UpdateHandler-rss-interval-out-of-range-400 (RssSyncInterval=5 < 10), UpdateHandler-negative-rejected-400 (MinimumAge=-1), variable-aliases-non-nil, type-aliases compile-time pin. Test fake satisfies the full apiv3.IndexerConfigWriter interface (4 getters + 4 setters).
+- `cmd/sonarr/host_wiring.go` — 1 new import (`indexersettingsv5`) + 3 new routes alongside the existing /api/v3/config/indexer routes. Re-uses configProv (the typed *config.Provider) verbatim — same dep v3 uses.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/indexersettings/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/indexersettings/... ./cmd/sonarr/...` ✓ (7 v5/indexersettings tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 32/~50 → 33/~50.
+
+Pattern observation: a small pure path-alias slice between two larger ones — J279 UpdateSettings was v5-NEW (no v3 equivalent), J280 IndexerSettings is the opposite (v3 has identical wire shape) and J281+ MediaManagement / GeneralSettings / NamingSettings will likely re-tread the same path-alias pattern (since v3 Go-port has config_mediamanagement.go / config_host.go / config_naming.go handlers). The Settings/* family clusters into two patterns: (a) path-alias to existing v3 config handler (when v3 has it), or (b) v5-NEW J279-style implementation (when v3 doesn't).
+
+### Next Wave 3 candidates ascending
+
+- Settings/UiSettingsController (31 LOC) — likely path-alias (v3 has config_ui.go)
+- Settings/SettingsController base (already used implicitly via importlistsettings/updatesettings/indexersettings)
+- Settings/MediaManagementSettingsController (70 LOC) — likely path-alias (v3 has config_mediamanagement.go)
+- Settings/GeneralSettingsController (114 LOC) — likely path-alias (v3 has config_host.go)
+- Settings/NamingSettingsController (143 LOC) — likely path-alias (v3 has config_naming.go)
+- Episodes/EpisodeController (85 LOC) + RenameEpisodeController (48 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
+- Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
+- Release/ReleasePushController (120 LOC)

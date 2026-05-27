@@ -19,6 +19,7 @@ import (
 	healthv5 "sonarr.tv/sonarr/internal/api/v5/health"
 	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
+	indexersettingsv5 "sonarr.tv/sonarr/internal/api/v5/indexersettings"
 	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
 	qualitydefinitionv5 "sonarr.tv/sonarr/internal/api/v5/qualitydefinition"
@@ -1248,6 +1249,17 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/settings/update", Handler: updatesettingsv5.GetHandler(cfg)},
 		{Method: "GET", Path: "/api/v5/settings/update/{id}", Handler: updatesettingsv5.GetHandler(cfg)},
 		{Method: "PUT", Path: "/api/v5/settings/update/{id}", Handler: updatesettingsv5.UpdateHandler(cfg)},
+		// J280 — v5 IndexerSettings endpoint family (3 endpoints; 57
+		// LOC C# across IndexerSettingsController + IndexerSettingsResource
+		// + shared SettingsController<T> base). Pure path-alias slice
+		// (J224 importlistsettings pattern). Resource shape byte-identical
+		// to v3 IndexerConfigResource (5 fields: id/minimumAge/retention/
+		// maximumSize/rssSyncInterval). Status: GET → 200, PUT → 202
+		// (both match v3). Type aliases + variable aliases — re-export
+		// the v3 handlers under the v5 route prefix.
+		{Method: "GET", Path: "/api/v5/settings/indexer", Handler: indexersettingsv5.GetHandler(configProv)},
+		{Method: "GET", Path: "/api/v5/settings/indexer/{id}", Handler: indexersettingsv5.GetHandler(configProv)},
+		{Method: "PUT", Path: "/api/v5/settings/indexer/{id}", Handler: indexersettingsv5.UpdateHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},
