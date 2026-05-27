@@ -3,12 +3,14 @@ package series
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/series"
@@ -306,6 +308,153 @@ func TestSeasonMonitorHandler_InvalidID_400(t *testing.T) {
 	SeasonMonitorHandler(&fakeWriter{}, &fakeEmitter{}).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (invalid id)", rr.Code)
+	}
+}
+
+// ----- SeasonResource wire-shape pin (J309) -----
+//
+// These tests pin the omitempty/wire posture for the J309 SeasonResource
+// pointer-field widening. Statistics + Images are *struct/*slice
+// pointer fields with omitempty so:
+//   - nil  → key absent (matches C# `JsonIgnoreCondition.WhenWritingNull`)
+//   - non-nil → key present (with the populated value, even for empty
+//     slices via `&[]MediaCover{}` → `"images":[]`)
+//
+// No production caller populates these fields today (population
+// gated on the post-Wave-3 SeriesStatistics service-port arc); the
+// tests guard the wire contract so the populated mapper can light up
+// without re-pinning shapes.
+
+func TestSeasonResource_NilStatisticsAndImages_OmitKeys(t *testing.T) {
+	t.Parallel()
+	// Bare struct with zero values for SeasonNumber + Monitored and
+	// nil pointers for Statistics + Images. Mirrors what
+	// SeasonMonitorHandler emits today via
+	// `SeasonResource{SeasonNumber: …, Monitored: …}`.
+	res := SeasonResource{SeasonNumber: 4, Monitored: true}
+	buf, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(buf)
+	if strings.Contains(got, `"statistics"`) {
+		t.Errorf("nil Statistics must omit the key; got %s", got)
+	}
+	if strings.Contains(got, `"images"`) {
+		t.Errorf("nil Images must omit the key; got %s", got)
+	}
+	if !strings.Contains(got, `"seasonNumber":4`) || !strings.Contains(got, `"monitored":true`) {
+		t.Errorf("required fields missing; got %s", got)
+	}
+}
+
+func TestSeasonResource_PopulatedStatistics_EmitsFullNestedShape(t *testing.T) {
+	t.Parallel()
+	// Pinned date so the JSON output is deterministic — covers both
+	// nullable DateTime pointers (NextAiring + PreviousAiring) and
+	// the scalar/slice mix.
+	when := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	stats := &SeasonStatistics{
+		NextAiring:            &when,
+		PreviousAiring:        nil, // nil pointer omits
+		EpisodeFileCount:      7,
+		EpisodeCount:          10,
+		TotalEpisodeCount:     12,
+		MonitoredEpisodeCount: 8,
+		SizeOnDisk:            12345,
+		ReleaseGroups:         []string{"GrpA"},
+		ReleaseTypes:          []string{"singleEpisode", "multiEpisode"},
+		EpisodeFileQualities:  nil, // nil slice omits
+		PercentOfEpisodes:     70.0,
+	}
+	res := SeasonResource{SeasonNumber: 2, Monitored: true, Statistics: stats}
+	buf, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(buf)
+	// Statistics key present + nested fields pinned (using substring
+	// search so key ordering doesn't matter — encoding/json emits
+	// struct fields in declaration order, but tests stay robust if
+	// that ever changes).
+	mustContain := []string{
+		`"statistics":{`,
+		`"nextAiring":"2026-01-02T03:04:05Z"`,
+		`"episodeFileCount":7`,
+		`"episodeCount":10`,
+		`"totalEpisodeCount":12`,
+		`"monitoredEpisodeCount":8`,
+		`"sizeOnDisk":12345`,
+		`"releaseGroups":["GrpA"]`,
+		`"releaseTypes":["singleEpisode","multiEpisode"]`,
+		`"percentOfEpisodes":70`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %s", want, got)
+		}
+	}
+	// nil sub-fields must drop their keys (omitempty pinned).
+	if strings.Contains(got, `"previousAiring"`) {
+		t.Errorf("nil PreviousAiring must omit the key; got %s", got)
+	}
+	if strings.Contains(got, `"episodeFileQualities"`) {
+		t.Errorf("nil EpisodeFileQualities must omit the key; got %s", got)
+	}
+}
+
+func TestSeasonResource_EmptyImagesSlice_EmitsEmptyArray(t *testing.T) {
+	t.Parallel()
+	// Pointer-to-empty-slice carries the "explicitly empty" semantic
+	// distinct from nil (which omits the key entirely). C#'s
+	// SeasonResourceMapper.ToResource with includeImages=true and
+	// model.Images=null would currently emit null, but with
+	// includeImages=true and model.Images=[] emits []. The Go-port
+	// pointer-to-slice mirrors that 3-state contract.
+	empty := []MediaCover{}
+	res := SeasonResource{SeasonNumber: 1, Monitored: true, Images: &empty}
+	buf, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(buf)
+	if !strings.Contains(got, `"images":[]`) {
+		t.Errorf("&[]MediaCover{} must emit `\"images\":[]`; got %s", got)
+	}
+}
+
+func TestSeasonResource_PopulatedImages_EmitsCoverEntriesWithStringCoverType(t *testing.T) {
+	t.Parallel()
+	// CoverType is a camelCase string on v5's wire shape (matches
+	// STJson's global JsonStringEnumConverter(CamelCase)).
+	imgs := []MediaCover{
+		{CoverType: "poster", Url: "/MediaCover/11/poster.jpg", RemoteUrl: "https://tvdb.example/poster.jpg"},
+		{CoverType: "banner", Url: "/MediaCover/11/banner.jpg"}, // RemoteUrl empty → omitted
+	}
+	res := SeasonResource{SeasonNumber: 1, Monitored: true, Images: &imgs}
+	buf, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(buf)
+	mustContain := []string{
+		`"images":[`,
+		`"coverType":"poster"`,
+		`"url":"/MediaCover/11/poster.jpg"`,
+		`"remoteUrl":"https://tvdb.example/poster.jpg"`,
+		`"coverType":"banner"`,
+		`"url":"/MediaCover/11/banner.jpg"`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %s", want, got)
+		}
+	}
+	// The second entry's empty RemoteUrl must NOT emit (omitempty pin).
+	// Count `"remoteUrl"` occurrences — expect exactly one for the
+	// populated entry.
+	if strings.Count(got, `"remoteUrl"`) != 1 {
+		t.Errorf("remoteUrl key must appear exactly once (omitempty drops empty); got %s", got)
 	}
 }
 

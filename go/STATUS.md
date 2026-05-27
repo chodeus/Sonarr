@@ -14711,3 +14711,79 @@ Two structural deferrals remain (NOT part of this arc):
 1. **Populated-row service ports** — history.Service.PagedHistory rows, blocklist.Service.PagedBlocklist rows, customFormats[] population on EpisodeFile/Episode/Calendar/Wanted/History/Blocklist/ManualImport/Parse/Log carrier resources. The wire-through structural anchors all landed J295-J300; the data-plane population is a separate post-Wave-3 arc.
 2. **v3-side cascade side-effects (5.D1a contract)** — DB-only writes, no disk move / ImportListExclusion / disk cascade. The v3-layer infra for these isn't ported yet; both v3 and v5 surfaces share the same DB-only posture today.
 
+
+---
+
+## J309 — Post-Wave-3 drain, slice 1: v5 SeasonResource Statistics + Images pointer-field widening (J302 pattern)
+
+**Anchor**: post-J308 (Wave 3 LARGE-family arc DRAINED). The orientation's two structural carry-overs were (A) populated-row projection mappers and (B) v5-specific resource field divergences. The smallest-LOC queued item across both: the J307 follow-up cited in `internal/api/v5/series/series.go:185-188` — "Statistics + Images intentionally omitted from the struct today — adding them later as `*Statistics` + `*[]MediaCover` pointer-to-slice (J302 pattern) preserves the WhenWritingNull wire posture without breaking this single-monitor endpoint." This slice closes that.
+
+### C# source
+
+- `src/Sonarr.Api.V5/Series/SeasonResource.cs:6-12` — 4-field shape (SeasonNumber + Monitored + Statistics? + Images?).
+- `src/Sonarr.Api.V5/Series/SeasonStatisticsResource.cs:7-21` — 10 declared fields + 1 computed (PercentOfEpisodes). v5 adds `MonitoredEpisodeCount`, `ReleaseTypes`, `EpisodeFileQualities` over the v3 shape.
+- `src/NzbDrone.Core/MediaCover/MediaCover.cs:16-31` — 3 fields (CoverType + Url + RemoteUrl).
+
+### Wire-shape contract
+
+v5 STJson global serializer config (`src/NzbDrone.Common/Serializer/System.Text.Json/STJson.cs:27-36`):
+- `DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull` — nullable properties with null value omit the key.
+- `JsonStringEnumConverter(JsonNamingPolicy.CamelCase)` — all enums wire as camelCase strings (`ReleaseType.SingleEpisode` → `"singleEpisode"`; `MediaCoverTypes.Poster` → `"poster"`).
+
+Mapped to Go's `encoding/json`:
+- `*SeasonStatistics` / `*[]MediaCover` pointer fields with `omitempty` → nil omits the key (matches WhenWritingNull).
+- Non-nullable scalars on `SeasonStatistics` → always emit (no omitempty).
+- Nullable slices (`ReleaseGroups`, `ReleaseTypes`, `EpisodeFileQualities`) → omitempty so nil drops; non-nil-empty emits `[]`.
+- `MediaCover.CoverType` → string (the v5 wire form); `mediacover.Cover` in the persistence layer keeps the int form (Series.Images JSON blob persists ints). Translation happens at populated-mapper time.
+
+### Port deliverables
+
+Additions to `internal/api/v5/series/series.go`:
+
+- `SeasonStatistics` struct (11 fields — see C# source mapping above + doc-comment cataloguing the WhenWritingNull / enum-string semantics + `EpisodeFileQualities []json.RawMessage` deferral note for the complex Quality DTO).
+- `MediaCover` struct (3 fields — CoverType string + Url string + RemoteUrl string with omitempty).
+- `SeasonResource` extended: `Statistics *SeasonStatistics` + `Images *[]MediaCover`, both with `json:",omitempty"`.
+- Doc comment on `SeasonResource` updated — "POPULATION DEFERRED" replaces "DEFERRED", wire-shape pin cite added, doc cross-references [SeasonStatistics] / [MediaCover].
+- One new import: `"time"` (for `*time.Time` pointers on NextAiring + PreviousAiring).
+
+No production caller populates the new fields. SeasonMonitorHandler still emits `SeasonResource{SeasonNumber, Monitored}` — both pointer fields stay nil, omitempty drops the keys, wire shape unchanged.
+
+### Tests (4 new wire-shape pin tests)
+
+Added to `internal/api/v5/series/series_test.go` (new imports: `encoding/json`, `time`):
+
+- `TestSeasonResource_NilStatisticsAndImages_OmitKeys` — canonical nil-pointer → key-absent pin. Marshal `SeasonResource{SeasonNumber:4, Monitored:true}` and assert NEITHER `"statistics"` NOR `"images"` appears + required fields present.
+- `TestSeasonResource_PopulatedStatistics_EmitsFullNestedShape` — pinned `2026-01-02T03:04:05Z` date (deterministic JSON output for the `*time.Time` field). Populated struct with `NextAiring=&when`, `PreviousAiring=nil`, scalar fields, `ReleaseGroups=[]string{"GrpA"}`, `ReleaseTypes=[]string{"singleEpisode","multiEpisode"}`, `EpisodeFileQualities=nil`. Substring asserts on 10 must-have nested keys (statistics + nextAiring + 5 scalars + 2 slices + percentOfEpisodes) PLUS negative assertions that nil PreviousAiring + nil EpisodeFileQualities drop their keys (defensive omitempty pin for the nested struct).
+- `TestSeasonResource_EmptyImagesSlice_EmitsEmptyArray` — pinned the 3-state pointer-to-slice contract: `&[]MediaCover{}` → `"images":[]` (vs nil → key-absent vs populated → `"images":[{...}]`). Distinguishes "explicitly empty" from "absent" — matches C# `includeImages=true && model.Images=[]` vs `model.Images=null`.
+- `TestSeasonResource_PopulatedImages_EmitsCoverEntriesWithStringCoverType` — 2-entry populated slice with `coverType:"poster"` (string-enum pin matching STJson's CamelCase converter) + `remoteUrl` set on entry 1, empty on entry 2. Asserts `strings.Count(got, "remoteUrl") == 1` — defensive check that omitempty drops the empty RemoteUrl on entry 2 exactly once.
+
+The existing positive-pin test `TestSeasonMonitorHandler_Success_Returns200WithBodyAndUpdatesSeasonsJSON` already asserts `must NOT contain "images"` / `must NOT contain "statistics"` — this test still passes after the widening because the handler doesn't populate the new fields (omitempty drops them). The widening is a wire-shape commitment for the populated-mapper port arc, not a behavior change today.
+
+### Wiring
+
+No new routes. No new handler code paths. No host_wiring.go changes. The widening is struct-only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v5/series/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v5/series/... ./internal/api/v3/... ./cmd/sonarr/...` ✓
+  - v5/series: 16 tests (3 CRUD-DELETE + 4 Editor + 5 SeasonMonitor + 4 wire-shape pin), all pass, 1.637s
+  - v3 (regression): all pass, 1.581s
+  - cmd/sonarr (wiring regression): all pass, 3.692s
+
+### Post-Wave-3 drain backlog status
+
+Queued items at the start of this slice:
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | **DONE this slice (J309)** |
+| B. v5 field divergences | SeriesResource MalIds/AniListIds/OriginalCountry/IsExcluded + LanguageProfileId removal | OPEN — needs alias break on v5/series Resource + per-handler reimpl; mid-size slice |
+| B. v5 field divergences | QueueResource includeSubresources[] enum-array hydration | OPEN — needs Series + Episodes subresource population pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback (C# `ReleaseController.cs:133-159`) | OPEN — gated on future `parsingService.GetEpisodes` port |
+| A. Populated-row mappers | history.Service.PagedHistory rows customFormats[]+score population | OPEN — single-row-per-trigger mapper service slice |
+| A. Populated-row mappers | blocklist.Service.PagedBlocklist rows customFormats[] population | OPEN — same pattern as history |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
+
+Next-tick smallest candidate: between the remaining B-category items and the A-category service ports, the next-smallest-LOC slice is likely the Release POST searchInfo decode arm (already has the wire-shape decode at J308; just needs to populate the fallback branch when parsingService.GetEpisodes lands — but that service port itself is mid-size). Otherwise the SeriesResource v5 field divergences are mid-size and require breaking the `Resource = apiv3.SeriesResource` alias.

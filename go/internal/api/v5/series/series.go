@@ -55,6 +55,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/api/v5/internal/v5util"
@@ -168,24 +169,96 @@ func EditorDeleteHandler(svc Writer, emitter Emitter) http.Handler {
 // Field semantics (matches C# under STJson `WhenWritingNull`):
 //
 //   - SeasonNumber + Monitored: always emitted (non-nullable on C#).
-//   - Statistics: nullable; emit when populated. DEFERRED in the
-//     Go-port — the per-season statistics projection requires the
-//     SeriesStatistics service join (population gate same as the
+//   - Statistics: nullable; emit when populated. POPULATION DEFERRED
+//     in the Go-port — the per-season statistics projection requires
+//     the SeriesStatistics service join (population gate same as the
 //     SeriesResource Statistics field — post-Wave-3 service-port
-//     arc). Today the field stays nil and omitempty drops the key.
-//   - Images: nullable; emit when populated AND the route's
+//     arc). Wire-shape pinned this slice (J309) via pointer-to-struct
+//     so populated mappers can light it up without touching the
+//     wire contract; today the SeasonMonitorHandler leaves it nil
+//     and omitempty drops the key. See [SeasonStatistics].
+//   - Images: nullable; emit when populated AND the caller's
 //     `includeImages` flag is true. C# `SeasonResourceMapper.ToResource`
 //     gates this on the parameter. The v5 single-season-monitor
 //     route always passes `false` (per `SeriesController.cs:223-246`
 //     which does NOT thread `includeImages` through to the response
-//     mapper). Field stays nil; omitempty drops the key.
+//     mapper). Wire-shape pinned this slice (J309) via pointer-to-
+//     slice so populated callers can opt in without breaking
+//     omitempty (nil → key absent; `&[]…{}` → `"images":[]`;
+//     populated → `"images":[{…}]`). Today the SeasonMonitorHandler
+//     leaves it nil. See [MediaCover].
 type SeasonResource struct {
-	SeasonNumber int  `json:"seasonNumber"`
-	Monitored    bool `json:"monitored"`
-	// Statistics + Images intentionally omitted from the struct
-	// today — adding them later as `*Statistics` + `*[]MediaCover`
-	// pointer-to-slice (J302 pattern) preserves the WhenWritingNull
-	// wire posture without breaking this single-monitor endpoint.
+	SeasonNumber int               `json:"seasonNumber"`
+	Monitored    bool              `json:"monitored"`
+	Statistics   *SeasonStatistics `json:"statistics,omitempty"`
+	Images       *[]MediaCover     `json:"images,omitempty"`
+}
+
+// SeasonStatistics is the v5 SeasonStatisticsResource wire shape —
+// mirror of `src/Sonarr.Api.V5/Series/SeasonStatisticsResource.cs:7-21`.
+//
+// v5 adds three fields over the v3 SeasonStatisticsResource:
+// `MonitoredEpisodeCount`, `ReleaseTypes`, `EpisodeFileQualities`.
+// PercentOfEpisodes is a computed property in C# (returns
+// `(decimal)EpisodeFileCount / EpisodeCount * 100`, or 0 when
+// EpisodeCount == 0); the Go-port emits it as a stored field — the
+// populated-mapper that lands this struct's data is responsible for
+// computing it at projection time. The non-nullable scalar fields
+// (`EpisodeFileCount`, `EpisodeCount`, `TotalEpisodeCount`,
+// `MonitoredEpisodeCount`, `SizeOnDisk`, `PercentOfEpisodes`) always
+// emit when the parent Statistics pointer is non-nil; the nullable
+// slice fields use omitempty so nil slices drop the key (matches
+// `JsonIgnoreCondition.WhenWritingNull`).
+//
+// `ReleaseTypes` carries `NzbDrone.Core.Parser.Model.ReleaseType`
+// enum values — wired as camelCase strings per STJson's global
+// `JsonStringEnumConverter(JsonNamingPolicy.CamelCase)` config (e.g.
+// `"singleEpisode"`, `"multiEpisode"`, `"seasonPack"`, `"unknown"`).
+// `EpisodeFileQualities` carries `NzbDrone.Core.Qualities.Quality`
+// DTOs — RawMessage on the Go side because the Quality wire shape
+// is complex (id + name + source + resolution + modifier nested
+// under `quality`/`revision` envelope) and a typed projection is
+// out of scope for this wire-pin slice. The populated-mapper port
+// will replace `[]json.RawMessage` with a proper `[]QualityValue`
+// type when it lands.
+//
+// J309 — wire-shape pin only; no production caller populates this
+// type today. Tests cover the marshal contract.
+type SeasonStatistics struct {
+	NextAiring            *time.Time        `json:"nextAiring,omitempty"`
+	PreviousAiring        *time.Time        `json:"previousAiring,omitempty"`
+	EpisodeFileCount      int               `json:"episodeFileCount"`
+	EpisodeCount          int               `json:"episodeCount"`
+	TotalEpisodeCount     int               `json:"totalEpisodeCount"`
+	MonitoredEpisodeCount int               `json:"monitoredEpisodeCount"`
+	SizeOnDisk            int64             `json:"sizeOnDisk"`
+	ReleaseGroups         []string          `json:"releaseGroups,omitempty"`
+	ReleaseTypes          []string          `json:"releaseTypes,omitempty"`
+	EpisodeFileQualities  []json.RawMessage `json:"episodeFileQualities,omitempty"`
+	PercentOfEpisodes     float64           `json:"percentOfEpisodes"`
+}
+
+// MediaCover is the v5 wire shape for `NzbDrone.Core.MediaCover.MediaCover`
+// (`src/NzbDrone.Core/MediaCover/MediaCover.cs:16-31`). v5-only here
+// because v5's STJson global serializer wires the `MediaCoverTypes`
+// enum as a camelCase string (`"poster"`, `"banner"`, etc.) via
+// `JsonStringEnumConverter(JsonNamingPolicy.CamelCase)`, while the
+// Go-port's persisted `mediacover.Cover` keeps `CoverType` as a
+// typed int (the Series.Images JSON blob persists the legacy int
+// representation). The two types stay decoupled: the populated
+// SeasonResource mapper translates `mediacover.Cover.CoverType.String()`
+// → this struct's `CoverType` string field at projection time.
+//
+// `RemoteUrl` is nullable on C# (`string?`) so omitempty drops it
+// when empty; `Url` is always emitted (matches the C# property's
+// non-nullable default-string posture).
+//
+// J309 — wire-shape pin only; no production caller populates this
+// type today.
+type MediaCover struct {
+	CoverType string `json:"coverType"`
+	Url       string `json:"url"`
+	RemoteUrl string `json:"remoteUrl,omitempty"`
 }
 
 // SeasonMonitorHandler returns PUT /api/v5/series/{id}/season.
