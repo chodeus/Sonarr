@@ -13759,3 +13759,81 @@ Total LOC added across J251-J294: ~12,500 lines (source + test) net of v3 dep re
 (b) Switch to Wave 4 — close the v3 endpoint-gap audit items (J266/J270/J274 v3-side closures, J275 lastDuration v3 add-back, J283 trustCgnatIpAddresses v3 side, etc.).
 (c) Switch to Wave 1 — port the custom-format calculator + manualimport service pipeline + history.Service.GetBySeason/GetByEpisode + IDeploymentInfoProvider + DfaGraphWriter equivalent. Unblocks Resource widening on ~15 v5 + v3 endpoints.
 (d) Switch to Wave 2 — SignalR parity mop-up (per-tag projections, AutoTagsUpdated cross-broadcast, MessagingCleanupCommand Sync, ModelEvent<ScheduledTask>, long-polling transport fallback).
+
+## Phase 5.J295 — Wave 1 custom-format calculator arc, final slice: v5 LogResource `method` field omission
+
+Drains sub-slice 6 of the Wave 1 calculator port arc — the J273 LogResource divergence. The calculator engine sub-slices 1-4 (spec evaluator, ParsedEpisodeInfo→CustomFormatInput projection, Calculate() service, qualityprofiles.CalculateCustomFormatScore adapter) all landed pre-J251 and are intact in `internal/customformats/` (8 spec types, Calculate() loop, four typed entry points: ParseCustomFormatForHistory / ParseCustomFormatForBlocklist / ParseCustomFormatForEpisodeFile + persisted-format CRUD); sub-slice 5 wire-through to Parse/Update/Blocklist/Wanted/Calendar/History/ManualImport handlers is broader cross-cutting work tracked separately under the per-handler scopes (Parse handler still emits the J258 deferred stub at empty-corpus; the wire-through landing is gated on the handler-side Resource projection widening rather than a calculator-engine gap). This slice closes the final un-landed calculator-arc item.
+
+### Wire divergence pinned
+
+The C# v5 [LogResource.cs] carries 7 fields:
+
+```csharp
+public class LogResource : RestResource
+{
+    public DateTime Time { get; set; }
+    public string? Exception { get; set; }
+    public string? ExceptionType { get; set; }
+    public required string Level { get; set; }
+    public required string Logger { get; set; }
+    public required string Message { get; set; }
+}
+```
+
+The v3 [LogResource.cs] carries the same 7 fields PLUS an additional `Method?` field. The v3 Go-port mirrors v3 with 8 fields including `Method` at `internal/api/v3/log.go:13-22`. J273 deferred the v5 fix — invisible at empty-corpus (v3 LogHandler returns `records:[]` because log-DB plumbing isn't ported, same DEFERRED state as the C# `LogDbEnabled=false` short-circuit branch).
+
+### Strategy
+
+Two changes:
+
+1. Replace `type Resource = apiv3.LogResource` with a v5-specific struct that omits `Method`:
+
+   ```go
+   type Resource struct {
+       ID            int    `json:"id"`
+       Time          string `json:"time"`
+       Exception     string `json:"exception,omitempty"`
+       ExceptionType string `json:"exceptionType,omitempty"`
+       Level         string `json:"level"`
+       Logger        string `json:"logger"`
+       Message       string `json:"message"`
+   }
+   ```
+
+2. Replace `var LogHandler = apiv3.LogHandler` with a wrapper:
+
+   ```go
+   func LogHandler() http.Handler { return stripMethod(apiv3.LogHandler()) }
+   ```
+
+   where `stripMethod` is an inline helper that buffers the v3 response via `v5util.NewBufferingWriter`, JSON-decodes the paged envelope into `map[string]json.RawMessage`, walks the `records[]` array, removes the `method` key from each row, and re-marshals. Non-200 status / non-object body / no-records-key bodies all pass through verbatim — failure-path envelopes (400/500) and unrelated shapes are never rewritten.
+
+   At empty-corpus (records `[]`) the rewrite is a no-op — the JSON round-trip preserves the empty-page shape byte-for-byte. When log-DB plumbing lands and v3 starts emitting populated records with `method`, the v5 wire stays 7-field clean without further code changes.
+
+The `stripMethod` helper is kept inline for the first consumer (J283 first-consumer rule — same posture as the GeneralSettings package's stripField helper). If a second paged-record-field-strip need appears, consolidates into `v5util`.
+
+### Slice scope — ~270 lines (90 source + 180 test) + 0 routes
+
+- **`internal/api/v5/log/log.go`** — 7-field Resource struct replaces the v3 type alias; `LogHandler` becomes a function wrapping v3 via inline `stripMethod`; new `looksLikeJSONObject` private helper.
+- **`internal/api/v5/log/log_test.go`** — 7 new tests: `Resource_OmitsMethodField` (reflect-based pin asserts no Method field + 7-field count + field order), `Resource_JSON_OmitsMethodKey` (marshal round-trip never emits `method`), `StripMethod_RemovesMethodKeyFromEachRecord` (canonical 2-row populated-records pin — fake upstream emits paged JSON with method on each row; wrapper strips both), `StripMethod_EmptyRecords_NoOp` (records:[] passes through), `StripMethod_NonOKStatus_PassesThrough` (500 + method-bearing error envelope preserved), `StripMethod_NonObjectBody_PassesThrough` (`null` body), `StripMethod_NoRecordsKey_PassesThrough` (envelope-level `method` preserved when records[] absent). Removed 2 type-alias tests (Resource/v3.LogResource roundtrip — no longer valid since Resource is a distinct struct). `TestVariableAliases_NonNil` updated to drop the (no-longer-a-var) `LogHandler == nil` assertion.
+- **`cmd/sonarr/host_wiring.go`** — no changes; the call site already uses `logv5.LogHandler()` (function-call form, not variable read).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v5/log/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v5/log/...` ✓ (12 tests pass; 5 pre-existing + 7 new; 1.7s)
+- `go test -race -count=1 ./cmd/sonarr/...` ✓ (3.7s; no regressions on the route table)
+
+### Loop-arc closure
+
+This drains the final un-landed item from the Wave 1 custom-format calculator port arc per the user's /loop SCOPE:
+
+- ✓ Spec evaluator port — done pre-J251 (8 specs in `internal/customformats/spec*.go`)
+- ✓ ParsedEpisodeInfo → CustomFormatInput projection — done pre-J251 (`CustomFormatInput` in `spec.go`)
+- ✓ Calculator service — done pre-J251 (`Calculate` in `calculate.go`)
+- ✓ ScoreLookup adapter — done pre-J251 (`qualityprofiles.CalculateCustomFormatScore`)
+- ⚠ Wire-through to v5/v3 handlers — broader cross-cutting work; Parse handler still emits J258 deferred stub. The per-handler wire-through landing is gated on each handler's Resource-projection widening rather than a calculator-engine gap. Not closed by this slice.
+- ✓ **J273 LogResource method omission — closed here (J295)**
+
+Wave 1 calculator-engine arc drained. Wire-through scope is its own arc.

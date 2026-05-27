@@ -50,16 +50,37 @@
 package log
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
+	"sonarr.tv/sonarr/internal/api/v5/internal/v5util"
 )
 
-// Resource is an alias of the v3 LogResource wire shape.
+// Resource ports `src/Sonarr.Api.V5/Logs/LogResource.cs`. v5 carries
+// 7 fields — id, time, exception?, exceptionType?, level, logger,
+// message. v3's [apiv3.LogResource] has an additional `method?`
+// field which v5 omits. Field order and JSON tag spelling are
+// otherwise identical to v3 so a per-record JSON object emitted by
+// v3's LogHandler can be projected onto v5 by stripping a single
+// key.
 //
-// v3 carries 8 fields including `method?` which v5 omits. At empty-
-// corpus this is invisible (records `[]`). When the log-DB port
-// lands, v5 will need a v5-specific Resource that omits `method`;
-// noted in the package doc.
-type Resource = apiv3.LogResource
+// At the current empty-corpus state both surfaces emit
+// `records: []`, making the divergence invisible on the wire. The
+// wrapper applied by [LogHandler] strips `method` from each record
+// as a forward pin — when the log DB plumbing lands and records
+// arrive with the C# `method` field populated, the v5 wire stays
+// 7-field clean without further changes.
+type Resource struct {
+	ID            int    `json:"id"`
+	Time          string `json:"time"`
+	Exception     string `json:"exception,omitempty"`
+	ExceptionType string `json:"exceptionType,omitempty"`
+	Level         string `json:"level"`
+	Logger        string `json:"logger"`
+	Message       string `json:"message"`
+}
 
 // FileResource is an alias of the v3 LogFileResource wire shape
 // (IDENTICAL between v3 and v5 — same 5 fields).
@@ -79,9 +100,77 @@ type UpdateFileLister = apiv3.UpdateLogFileLister
 // ----- handlers (all path-aliases at empty-corpus level) -----
 
 // LogHandler returns GET /api/v5/log. Same paged envelope + status
-// (200) as v3. SortKey rewrite (`id` → `time` on response) preserved
-// via v3 handler.
-var LogHandler = apiv3.LogHandler
+// (200) as v3 with SortKey rewrite (`id` → `time`) preserved via the
+// underlying v3 handler. Wraps v3's response to strip the `method`
+// key from each record so the v5 wire matches the C# v5 7-field
+// LogResource (see [Resource]). At empty-corpus (records `[]`) the
+// strip is a no-op.
+func LogHandler() http.Handler { return stripMethod(apiv3.LogHandler()) }
+
+// stripMethod buffers the wrapped handler's JSON response, removes
+// the `method` key from each entry under `records`, and re-emits.
+// Non-200 responses, bodies that are not a JSON object, or bodies
+// lacking a `records` array pass through verbatim — failure-path
+// envelopes (400/500) and unrelated shapes are never rewritten.
+//
+// Kept inline for the first consumer (v5 LogHandler). Consolidates
+// into v5util if a second `paged-records-field-strip` need appears
+// (J283 first-consumer rule — same posture as the GeneralSettings
+// stripField helper).
+func stripMethod(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := v5util.NewBufferingWriter()
+		h.ServeHTTP(rec, r)
+		body := rec.Body()
+		v5util.CopyHeaders(w.Header(), rec.Header())
+		if rec.Status() != http.StatusOK || !looksLikeJSONObject(body) {
+			w.WriteHeader(rec.Status())
+			_, _ = w.Write(body)
+			return
+		}
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal(body, &envelope); err != nil {
+			w.WriteHeader(rec.Status())
+			_, _ = w.Write(body)
+			return
+		}
+		raw, ok := envelope["records"]
+		if !ok {
+			w.WriteHeader(rec.Status())
+			_, _ = w.Write(body)
+			return
+		}
+		var records []map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &records); err != nil {
+			w.WriteHeader(rec.Status())
+			_, _ = w.Write(body)
+			return
+		}
+		for _, row := range records {
+			delete(row, "method")
+		}
+		updated, err := json.Marshal(records)
+		if err != nil {
+			w.WriteHeader(rec.Status())
+			_, _ = w.Write(body)
+			return
+		}
+		envelope["records"] = updated
+		out, err := json.Marshal(envelope)
+		if err != nil {
+			w.WriteHeader(rec.Status())
+			_, _ = w.Write(body)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(out)
+	})
+}
+
+func looksLikeJSONObject(b []byte) bool {
+	trimmed := bytes.TrimSpace(b)
+	return len(trimmed) > 0 && trimmed[0] == '{'
+}
 
 // FileListHandler returns GET /api/v5/log/file. Same envelope +
 // status (200) as v3. Walks the log folder, sorts by LastWriteTime
