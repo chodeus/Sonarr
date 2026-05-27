@@ -17354,3 +17354,72 @@ No new routes. Adapter struct widening + 2 route registration sites updated.
 58 wire-shape fields + 1 v5-strip behavior + 2 service-port populated-mappers landed across J309-J337.
 
 Next-tick candidate: extend the J336 pattern to `writeHistoryEntries` (the helper used by HistorySinceHandler + HistorySeriesHandler at apiv3/history.go:179). Currently emits empty CustomFormats; would need the HistoryRangeReader interface (or a sibling) to gain access to the same calculator dependency surface as the paged path.
+
+---
+
+## J338 — Post-Wave-3 drain, slice 30 (A-category, slice 3): HistorySinceHandler + HistorySeriesHandler populated CustomFormats + Score via optional-extension type-assertion
+
+**Anchor**: post-J337 (blocklist populated-mapper landed). Closes the populated-row mapper for the remaining 2 history endpoints (/history/since + /history/series).
+
+### Problem
+
+The 2 handlers use a `HistoryRangeReader` interface (Since + GetBySeries). 8+ existing test call sites pass `&fakeHistoryRangeReader{}` — extending the signature with a populator arg would break all of them. Need a backwards-compatible way to wire the populated-mapper.
+
+### Approach: optional-extension type-assertion
+
+Idiomatic Go pattern. The handlers receive a single `svc HistoryRangeReader` parameter; internally they type-assert to the new `HistoryEntryPopulator` interface. Implementers satisfy BOTH (production wraps *history.Service; tests use the simpler fake which doesn't implement the extension).
+
+### Port deliverables
+
+**`internal/api/v3/history.go`** — new interface + signature change on writeHistoryEntries:
+
+- New `HistoryEntryPopulator interface { PopulateHistoryEntry(ctx, *history.Entry) (cf []CustomFormatResource, score int) }` — exported.
+- `writeHistoryEntries` signature: `(ctx, w, rows, populator HistoryEntryPopulator)` — populator nil-safe (nil → empty stub per row).
+- `HistorySinceHandler` + `HistorySeriesHandler`: post-row-fetch, type-assert svc to HistoryEntryPopulator; pass nil or the implementer into writeHistoryEntries.
+
+**`cmd/sonarr/host_wiring.go`** — wrapper + 4 wire-site updates:
+
+- New `historyServiceWithPopulator` struct embeds `*history.Service` (preserves all HistoryRangeReader methods) + adds 3 narrow-interface lookups (re-uses J336 types: historySeriesLookup + historyQualityProfileLookup + historyCustomFormatsLookup).
+- `PopulateHistoryEntry(ctx, *history.Entry)` method: synthesises a historyPagedAdapter from the wrapper's 3 lookups + invokes the J336 computeHistoryCustomFormats helper with fresh per-call caches.
+- 4 wire sites updated: `/api/v3/history/since` + `/api/v3/history/series` + v5 equivalents now construct via `historyServiceWithPopulator{Service: historySvc, seriesSvc, qualityProfilesSvc, customFormatsSvc}`.
+
+### Tests (1 new with 2 sub-tests + 1 helper struct)
+
+`internal/api/v3/history_test.go`:
+
+- `TestHistorySinceHandler_PopulatorOptionalExtension_J338` — 2 sub-tests:
+  - Sub-test 1: stub fake (`fakeHistoryRangeReader{}` — doesn't implement HistoryEntryPopulator) → empty `customFormats:[]` + `customFormatScore:0`. Pre-J338 behavior preserved.
+  - Sub-test 2: wrapper fake (`fakeRangeReaderWithPopulator` — implements BOTH HistoryRangeReader AND HistoryEntryPopulator with a closure-driven populator) → typed `customFormats:[{"id":5,"name":"x265"}]` + `customFormatScore:42`.
+- New helper `fakeRangeReaderWithPopulator` struct (5 lines + 3-method-impl): satisfies HistoryRangeReader via Since/GetBySeries + HistoryEntryPopulator via PopulateHistoryEntry.
+
+All 8+ existing HistorySinceHandler/HistorySeriesHandler test call sites continue to pass — their `fakeHistoryRangeReader` doesn't implement HistoryEntryPopulator, so the type-assertion returns nil and the empty fallback fires (verbatim pre-J338 behavior).
+
+### Wiring
+
+No new routes. Wrapper struct + 4 wire-site updates.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/history/...` ✓
+  - v3: all pass, 1.388s
+  - cmd/sonarr: all pass, 3.454s
+  - v5/history: all pass, 1.544s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | (27 items closed J309-J335) | DONE |
+| A. Populated-row mappers | history.Service paged populated customFormats+score | DONE (J336) |
+| A. Populated-row mappers | blocklist.Service paged populated customFormats | DONE (J337) |
+| A. Populated-row mappers | history.Since + history.Series populated customFormats+score | **DONE this slice (J338)** |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN |
+
+58 wire-shape fields + 1 v5-strip behavior + 3 service-port populated-mappers landed across J309-J338.
+
+All 3 history endpoint surfaces (paged at J336 + since/series at J338) now wire the calculator engine for populated rows; all 3 share the J336 narrow-interface lookups + computeHistoryCustomFormats helper for no duplication.
+
+Next-tick candidate: EpisodeFile populated CustomFormats wire-through (the J298 anchor) on the production episodefile-list paged surface. Or Calendar/Wanted/Episode populated mappers — each carries the EpisodeFile subresource so a single mapper update propagates across.

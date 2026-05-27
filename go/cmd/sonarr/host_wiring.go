@@ -880,6 +880,51 @@ func computeHistoryCustomFormats(ctx context.Context, e *history.Entry, a histor
 	return res, score
 }
 
+// historyServiceWithPopulator embeds *history.Service (satisfies
+// apiv3.HistoryRangeReader via the embedded Since + GetBySeries
+// methods) and adds PopulateHistoryEntry — which the v3 history
+// handlers (HistorySinceHandler + HistorySeriesHandler) discover
+// via optional-extension type-assertion to run the CustomFormat
+// calculator + qualityprofile score lookup per row.
+//
+// J338 — companion to the J336 historyPagedAdapter populated-row
+// mapper. Re-uses the same narrow-interface lookups; the
+// computeHistoryCustomFormats helper does the per-row work. Each
+// PopulateHistoryEntry call allocates fresh caches — the typical
+// since/series payload is a small list (~10-100 entries) so the
+// per-call cost is negligible; cross-request caching is an
+// optimization deferred until a real workload demonstrates it
+// matters.
+type historyServiceWithPopulator struct {
+	*history.Service
+	seriesSvc          historySeriesLookup
+	qualityProfilesSvc historyQualityProfileLookup
+	customFormatsSvc   historyCustomFormatsLookup
+}
+
+// PopulateHistoryEntry satisfies apiv3.HistoryEntryPopulator. Runs
+// the J336 helper with a fresh per-call cache pair + the loaded
+// allFormats slice.
+func (h *historyServiceWithPopulator) PopulateHistoryEntry(ctx context.Context, e *history.Entry) (cf []apiv3.CustomFormatResource, score int) {
+	var allFormats []*customformats.Format
+	if h.customFormatsSvc != nil {
+		if formats, err := h.customFormatsSvc.All(ctx); err == nil {
+			allFormats = formats
+		}
+	}
+	// Wrap into a synthetic historyPagedAdapter so we can re-use
+	// computeHistoryCustomFormats verbatim (the helper signature
+	// reads only the 3 lookup fields off the adapter struct).
+	syntheticAdapter := historyPagedAdapter{
+		seriesSvc:          h.seriesSvc,
+		qualityProfilesSvc: h.qualityProfilesSvc,
+		customFormatsSvc:   h.customFormatsSvc,
+	}
+	seriesCache := map[int]*series.Series{}
+	profileCache := map[int]*qualityprofiles.Profile{}
+	return computeHistoryCustomFormats(ctx, e, syntheticAdapter, allFormats, seriesCache, profileCache)
+}
+
 // computeBlocklistCustomFormats runs the per-row CustomFormat
 // calculator for a blocklist entry — score-less variant of the
 // J336 helper since BlocklistResource doesn't carry
@@ -1395,6 +1440,24 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 	// Stateless service; the main.go-tier instance handles IHandle
 	// subscribers, this instance feeds the HTTP read handlers.
 	historySvc := history.NewService(historyRepo)
+	// J338: wrap historySvc with a PopulateHistoryEntry implementer
+	// so the HistorySinceHandler + HistorySeriesHandler can run the
+	// CustomFormat calculator + score lookup per row via the
+	// optional-extension type-assertion path inside the v3 handlers.
+	// The wrapper embeds *history.Service (preserving all
+	// HistoryRangeReader methods) + adds the populator method using
+	// the same J336 deps as the paged adapter. Caches are per-request
+	// (each PopulateHistoryEntry call is fresh — the request handler
+	// invokes it per row in a tight loop, so the per-row caches are
+	// fine here; for cross-request caching the wrapper could memoize
+	// allFormats, but the recorded-corpus history.Since payloads are
+	// always small lists where the per-call cost is negligible).
+	historySvcPopulated := &historyServiceWithPopulator{
+		Service:            historySvc,
+		seriesSvc:          seriesSvc,
+		qualityProfilesSvc: qualityProfilesSvc,
+		customFormatsSvc:   customFormatsSvc,
+	}
 	// 5.I7: log-file adapter sources LogFolder = <AppData>/logs and
 	// URLBase from configfile.Provider. The folder string + URLBase
 	// are resolved at boot in buildHostServer and snapshot into the
@@ -1952,8 +2015,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// stubs emit `[]` for empty-corpus parity) + 1 status wrapper
 		// (POST /failed/{id} 200+`{}` → 204 via v5util.RewriteSuccessTo204).
 		{Method: "GET", Path: "/api/v5/history", Handler: historyv5.ListHandler(historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc})},
-		{Method: "GET", Path: "/api/v5/history/since", Handler: historyv5.SinceHandler(historySvc)},
-		{Method: "GET", Path: "/api/v5/history/series", Handler: historyv5.SeriesHandler(historySvc)},
+		{Method: "GET", Path: "/api/v5/history/since", Handler: historyv5.SinceHandler(historySvcPopulated)},
+		{Method: "GET", Path: "/api/v5/history/series", Handler: historyv5.SeriesHandler(historySvcPopulated)},
 		{Method: "GET", Path: "/api/v5/history/season", Handler: historyv5.SeasonHandler()},
 		{Method: "GET", Path: "/api/v5/history/episode", Handler: historyv5.EpisodeHandler()},
 		{Method: "POST", Path: "/api/v5/history/failed/{id}", Handler: historyv5.MarkAsFailedHandler(failedDownloadsSvc)},
@@ -2095,8 +2158,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "DELETE", Path: "/api/v3/episodefile/bulk", Handler: apiv3.EpisodeFileBulkDeleteHandler(episodeFilesSvc)},
 		{Method: "GET", Path: "/api/v3/health", Handler: apiv3.HealthHandler(healthSvc)},
 		{Method: "GET", Path: "/api/v3/history", Handler: apiv3.HistoryHandler(historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc})},
-		{Method: "GET", Path: "/api/v3/history/series", Handler: apiv3.HistorySeriesHandler(historySvc)},
-		{Method: "GET", Path: "/api/v3/history/since", Handler: apiv3.HistorySinceHandler(historySvc)},
+		{Method: "GET", Path: "/api/v3/history/series", Handler: apiv3.HistorySeriesHandler(historySvcPopulated)},
+		{Method: "GET", Path: "/api/v3/history/since", Handler: apiv3.HistorySinceHandler(historySvcPopulated)},
 		{Method: "POST", Path: "/api/v3/history/failed/{id}", Handler: apiv3.HistoryMarkAsFailedHandler(failedDownloadsSvc)},
 		{Method: "GET", Path: "/api/v3/importlist", Handler: apiv3.ImportListHandler(importListsRepo)},
 		{Method: "GET", Path: "/api/v3/importlist/schema", Handler: apiv3.ImportListSchemaHandler()},

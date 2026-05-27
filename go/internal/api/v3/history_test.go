@@ -180,6 +180,81 @@ func TestHistorySinceHandler_InvalidDate_400(t *testing.T) {
 	}
 }
 
+// J338 wire-shape pin for the HistoryEntryPopulator optional-
+// extension integration on HistorySinceHandler + HistorySeriesHandler.
+// When the HistoryRangeReader passed in ALSO implements the
+// PopulateHistoryEntry method, the handlers invoke it per row to
+// fill customFormats[] + customFormatScore. When it does NOT
+// implement (the test's fakeHistoryRangeReader case), the handlers
+// fall back to the empty stub.
+//
+// Test covers BOTH branches: a stub fake (no populator) → empty +
+// 0; a wrapper fake (with populator) → populated CustomFormats
+// list + non-zero score.
+func TestHistorySinceHandler_PopulatorOptionalExtension_J338(t *testing.T) {
+	t.Parallel()
+	row := history.Entry{ID: 1, SeriesID: 11, SourceTitle: "Show.S01E01", Date: time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)}
+	one := 1
+	row.EventType = &one
+
+	// Branch 1: stub fake without populator → empty fallback.
+	t.Run("no populator → empty CustomFormats + 0 score", func(t *testing.T) {
+		svc := &fakeHistoryRangeReader{sinceRows: []history.Entry{row}}
+		rr := httptest.NewRecorder()
+		HistorySinceHandler(svc).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/history/since?date=2026-05-18T00:00:00Z", nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status: %d", rr.Code)
+		}
+		body := rr.Body.String()
+		if !strings.Contains(body, `"customFormats":[]`) {
+			t.Errorf("stub fake must emit empty customFormats:[]; got %s", body)
+		}
+		if !strings.Contains(body, `"customFormatScore":0`) {
+			t.Errorf("stub fake must emit customFormatScore:0; got %s", body)
+		}
+	})
+
+	// Branch 2: wrapper fake with populator → typed output.
+	t.Run("populator wired → typed customFormats + score", func(t *testing.T) {
+		svc := &fakeRangeReaderWithPopulator{
+			rows: []history.Entry{row},
+			populator: func(_ context.Context, e *history.Entry) ([]CustomFormatResource, int) {
+				return []CustomFormatResource{{ID: 5, Name: "x265"}}, 42
+			},
+		}
+		rr := httptest.NewRecorder()
+		HistorySinceHandler(svc).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/history/since?date=2026-05-18T00:00:00Z", nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status: %d", rr.Code)
+		}
+		body := rr.Body.String()
+		if !strings.Contains(body, `"customFormats":[{"id":5,"name":"x265"}]`) {
+			t.Errorf("populator must produce typed customFormats entry; got %s", body)
+		}
+		if !strings.Contains(body, `"customFormatScore":42`) {
+			t.Errorf("populator must set customFormatScore:42; got %s", body)
+		}
+	})
+}
+
+// fakeRangeReaderWithPopulator satisfies both HistoryRangeReader
+// AND HistoryEntryPopulator — used to exercise the J338 optional-
+// extension type-assertion branch.
+type fakeRangeReaderWithPopulator struct {
+	rows      []history.Entry
+	populator func(context.Context, *history.Entry) ([]CustomFormatResource, int)
+}
+
+func (f *fakeRangeReaderWithPopulator) Since(_ context.Context, _ time.Time, _ *history.EventType) ([]history.Entry, error) {
+	return f.rows, nil
+}
+func (f *fakeRangeReaderWithPopulator) GetBySeries(_ context.Context, _ int, _ *history.EventType) ([]history.Entry, error) {
+	return f.rows, nil
+}
+func (f *fakeRangeReaderWithPopulator) PopulateHistoryEntry(ctx context.Context, e *history.Entry) ([]CustomFormatResource, int) {
+	return f.populator(ctx, e)
+}
+
 // J310 wire-shape pin: a populated row with stamped Data dict emits
 // the full key set; a nil Data dict drops the `data` key via
 // omitempty (matches STJson's global `JsonIgnoreCondition.WhenWritingNull`).

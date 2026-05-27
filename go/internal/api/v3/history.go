@@ -157,7 +157,17 @@ func HistorySinceHandler(svc HistoryRangeReader) http.Handler {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("history/since: %w", err), nil)
 			return
 		}
-		writeHistoryEntries(w, rows)
+		// J338: optional-extension type-assertion for the populated-
+		// mapper. svc is the production *history.Service composed
+		// with a PopulateHistoryEntry wrapper at the wire site;
+		// test fixtures (fakeHistoryRangeReader) don't implement
+		// HistoryEntryPopulator so populator stays nil → empty
+		// fallback per pre-J338 behavior.
+		var pop HistoryEntryPopulator
+		if p, ok := svc.(HistoryEntryPopulator); ok {
+			pop = p
+		}
+		writeHistoryEntries(r.Context(), w, rows, pop)
 	})
 }
 
@@ -188,7 +198,13 @@ func HistorySeriesHandler(svc HistoryRangeReader) http.Handler {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("history/series: %w", err), nil)
 			return
 		}
-		writeHistoryEntries(w, rows)
+		// J338: optional-extension type-assertion for the populated-
+		// mapper. See HistorySinceHandler for the rationale.
+		var pop HistoryEntryPopulator
+		if p, ok := svc.(HistoryEntryPopulator); ok {
+			pop = p
+		}
+		writeHistoryEntries(r.Context(), w, rows, pop)
 	})
 }
 
@@ -206,27 +222,57 @@ func parseEventTypeQuery(w http.ResponseWriter, r *http.Request) (*history.Event
 	return &v, true
 }
 
-func writeHistoryEntries(w http.ResponseWriter, rows []history.Entry) {
+// HistoryEntryPopulator is the optional-extension interface for the
+// HistorySince + HistorySeries handlers. When the HistoryRangeReader
+// passed in ALSO satisfies this interface (idiomatic Go type-
+// assertion), writeHistoryEntries invokes PopulateHistoryEntry
+// per row to compute the matched customFormats[] + customFormatScore
+// pair. When the passed-in svc does NOT implement this interface,
+// the handlers fall back to the empty stub (CustomFormats: []; score
+// 0) — preserves the pre-J338 wire shape + the existing test
+// fixtures' nil-populator path.
+//
+// Production wiring at cmd/sonarr composes *history.Service with a
+// wrapper that ALSO implements PopulateHistoryEntry — the wrapper
+// re-uses the J336 computeHistoryCustomFormats helper + per-request
+// cache primitives. Empty-DB shadow traffic is unaffected; populated
+// rows surface the matched customFormats list.
+//
+// J338.
+type HistoryEntryPopulator interface {
+	PopulateHistoryEntry(ctx context.Context, e *history.Entry) (customFormats []CustomFormatResource, customFormatScore int)
+}
+
+func writeHistoryEntries(ctx context.Context, w http.ResponseWriter, rows []history.Entry, populator HistoryEntryPopulator) {
 	out := make([]HistoryResource, 0, len(rows))
 	for _, e := range rows {
 		eventTypeName := ""
 		if e.EventType != nil {
 			eventTypeName = history.EventType(*e.EventType).String()
 		}
+		// J338 populated-mapper invocation: if populator non-nil,
+		// invoke per-row; otherwise fall back to empty stub.
+		cf := []CustomFormatResource{}
+		score := 0
+		if populator != nil {
+			entry := e // copy for pointer capture
+			cf, score = populator.PopulateHistoryEntry(ctx, &entry)
+			if cf == nil {
+				cf = []CustomFormatResource{}
+			}
+		}
 		out = append(out, HistoryResource{
-			ID:            e.ID,
-			SeriesID:      e.SeriesID,
-			EpisodeID:     e.EpisodeID,
-			SourceTitle:   e.SourceTitle,
-			Date:          e.Date.UTC().Format("2006-01-02T15:04:05Z"),
-			DownloadID:    e.DownloadID,
-			EventType:     eventTypeName,
-			Languages:     ToLanguageRefs(e.Languages),
-			Data:          e.Data,
-			CustomFormats: []CustomFormatResource{},
-			// CustomFormatScore: 0 — populated-row mapper landing
-			// alongside the calculator wire-through will compute via
-			// ParseCustomFormatForHistory + CalculateCustomFormatScore.
+			ID:                e.ID,
+			SeriesID:          e.SeriesID,
+			EpisodeID:         e.EpisodeID,
+			SourceTitle:       e.SourceTitle,
+			Date:              e.Date.UTC().Format("2006-01-02T15:04:05Z"),
+			DownloadID:        e.DownloadID,
+			EventType:         eventTypeName,
+			Languages:         ToLanguageRefs(e.Languages),
+			Data:              e.Data,
+			CustomFormats:     cf,
+			CustomFormatScore: score,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
