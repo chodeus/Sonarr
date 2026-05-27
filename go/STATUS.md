@@ -14628,3 +14628,86 @@ Note: initial test run had a key-ordering assertion failure (Go's `json.Marshal`
 
 **Sole residual on the entire Wave 3 LARGE-family arc**: Release POST — v5-NEW body-shape divergence requiring the `ReleaseGrabResource` decode + translate adapter into the v3 dispatcher inputs. Once that lands, the arc fully drains.
 
+
+---
+
+## J308 — Wave 3 LARGE-family arc final residual + arc DRAIN: Release POST with ReleaseGrabResource body adapter
+
+**Anchor**: post-J307 (Series family fully complete). The sole remaining sub-slice across the entire Wave 3 LARGE-family arc was Release POST — v5-NEW body shape requiring a fresh decode + translate path. This slice closes it.
+
+### C# source
+
+`src/Sonarr.Api.V5/Release/ReleaseController.cs:86-188` — `DownloadRelease([FromBody] ReleaseGrabResource release)`. Returns `Results<Ok<ReleaseGrabResource>, NotFound>`.
+
+### Body shape divergence
+
+| field | v3 (`ReleaseDownloadBody`) | v5 (`ReleaseGrabResource`) |
+| --- | --- | --- |
+| guid | string (root) | string (root) — same |
+| indexerId | int (root) | int (root) — same |
+| downloadClient | string (root) | absent — DEFERRED |
+| downloadClientId | int (root) | int? (under `override`) |
+| shouldOverride | bool (root) | absent — inferred from `override != nil` |
+| seriesId | int (root) | int? (under `override`) |
+| episodeId | int (root) | absent — DEFERRED |
+| episodeIds | int[] (root) | int[] (under `override`) |
+| quality | rawjson (root) | QualityModel? (under `override`) |
+| languages | rawjson (root) | Language[]? (under `override`) |
+| searchInfo | absent | `{seriesId?, seasonNumber?, episodeId?}` (root, optional) — DEFERRED branch |
+
+### Port deliverables
+
+Additions to `internal/api/v5/release/release.go`:
+
+- New types: `GrabResource`, `OverrideResource`, `SearchInfoResource` — v5-specific wire types with no v3 equivalent.
+- `DownloadHandler(cache, dispatcher, seriesLookup, episodeLookup) http.Handler` — body-translation adapter.
+
+Strategy: decode v5 body → validate at v5 surface (DisallowUnknownFields catches v3-shape leakage) → translate to v3 `ReleaseDownloadBody` (flatten override-info onto root + set `ShouldOverride=true`) → re-encode JSON → invoke v3 `ReleaseDownloadHandler` against a `v5util.BufferingWriter` to capture result → on 200, write v5 body back; on 4xx/5xx, pass v3 envelope through verbatim.
+
+The v5 `searchInfo` fallback branch (C# lines 133-159) is structurally deferred — today's cached Decision always carries populated Series + Episodes via the decision-engine pipeline, so the fallback is unreachable in practice. The field is decoded for wire-shape parity so v5 clients sending `searchInfo` aren't rejected by DisallowUnknownFields. When `parsingService.GetEpisodes` ports in a future slice, the SearchInfo arm will wire through a new handler dependency.
+
+### Tests (7 new)
+
+- `TestDownloadHandler_CacheMissReturns404` — passthrough; v3 cache-miss envelope preserved.
+- `TestDownloadHandler_CacheHit_EchoesV5BodyAndDispatches` — positive comprehensive pin:
+  - 200 + dispatcher fires once.
+  - Response body echoes the v5 input (contains `"guid":"abc"`, `"indexerId":42`).
+  - NEGATIVE pins: response does NOT contain `"shouldOverride"` or top-level `"episodeIds"` — confirms the v3-flat-shape leakage is suppressed.
+- `TestDownloadHandler_ValidatorGuidRequired_PassesThrough400` — v3 PostValidator envelope passthrough on empty Guid.
+- `TestDownloadHandler_ValidatorIndexerIDRequired_PassesThrough400` — same on 0 IndexerId.
+- `TestDownloadHandler_MalformedBody_400` — malformed JSON rejected at v5 decode.
+- `TestDownloadHandler_UnknownField_RejectedAt400` — defends the wire contract: a `shouldOverride` field at the root is rejected by DisallowUnknownFields before any translation.
+- `TestDownloadHandler_OverrideRequiredFieldsValidated_400` — `override` populated but with empty episodeIds[] + null quality/languages → 400 via the v3 applyShouldOverride validation chain.
+
+### Wiring
+
+One new route in `host_wiring.go` v5Routes(): `POST /api/v5/release` immediately after the J305 GET, with a J308 prefix comment cataloguing the body-translation strategy + searchInfo-deferral. Reuses cache + dispatcher + override-lookup deps verbatim from v3 ReleaseDownloadHandler (no new service surface).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v5/release/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v5/release/... ./internal/api/v3/... ./cmd/sonarr/...` ✓
+  - v5/release: 12 tests (5 GET from J305 + 7 POST from J308), all pass, 1.306s
+  - v3 (regression): all pass, 1.857s
+  - cmd/sonarr (wiring): all pass, 3.703s
+
+### Wave 3 LARGE-family arc DRAIN
+
+All 5 listed families covered at the v5 surface:
+
+| family | LOC C# | sub-slices | status |
+| --- | --- | --- | --- |
+| EpisodeFiles | 205 | J301 | DONE |
+| CustomFormats | 203 | J302 (+ J222 surface) | DONE |
+| Series | 422 + 116 | J303 (CRUD) + J304 (Editor) + J307 (/{id}/season) | DONE |
+| Release | 343 | J305 (GET) + J308 (POST) + J294 (Push) | **DONE — final slice this turn** |
+| Queue | 410 | J306 (main) + J289 (Action) + J290 (Details) + J291 (Status) | DONE |
+
+**v5 surface count: ~52 routes wired against ~52 C# v5 endpoints** — full parity for the LARGE families. Pre-Wave-3 family ports already at parity per earlier loop arcs.
+
+Two structural deferrals remain (NOT part of this arc):
+
+1. **Populated-row service ports** — history.Service.PagedHistory rows, blocklist.Service.PagedBlocklist rows, customFormats[] population on EpisodeFile/Episode/Calendar/Wanted/History/Blocklist/ManualImport/Parse/Log carrier resources. The wire-through structural anchors all landed J295-J300; the data-plane population is a separate post-Wave-3 arc.
+2. **v3-side cascade side-effects (5.D1a contract)** — DB-only writes, no disk move / ImportListExclusion / disk cascade. The v3-layer infra for these isn't ported yet; both v3 and v5 surfaces share the same DB-only posture today.
+

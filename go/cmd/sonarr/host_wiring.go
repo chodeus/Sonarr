@@ -1540,6 +1540,24 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// under `searchInfo`; v3 flattens both on the root). New v5-
 		// specific handler code per loop sub-slicing guidance.
 		{Method: "GET", Path: "/api/v5/release", Handler: releasev5.ListHandler(indexerSearchSvc)},
+		// J308 — v5 ReleaseController POST endpoint (the FINAL Wave 3
+		// LARGE-family arc residual). v5 body shape diverges from v3:
+		// v3 ReleaseDownloadBody flattens override-info on the root +
+		// uses shouldOverride bool; v5 ReleaseGrabResource groups under
+		// `override` + adds `searchInfo`. The v5 handler is a body-
+		// translation adapter — decodes the v5 shape, translates to a
+		// v3 ReleaseDownloadBody, runs the v3 handler against a
+		// BufferingWriter, then either echoes the v5 body back on 200
+		// success (matches C# `return TypedResults.Ok(release)` at
+		// ReleaseController.cs:187) or passes the v3 error envelope
+		// through verbatim. DisallowUnknownFields on the v5 decoder
+		// defends against clients sending v3-flat-shape fields by
+		// mistake. The v5 `searchInfo` fallback branch (C# lines
+		// 133-159) is DEFERRED — today's cached Decision always
+		// carries populated Series + Episodes so the fallback is
+		// unreachable. Same cache + dispatcher + override-lookup deps
+		// as v3 ReleaseDownloadHandler.
+		{Method: "POST", Path: "/api/v5/release", Handler: releasev5.DownloadHandler(releaseCache, processDownloadDecisions, seriesSvc, episodesSvc)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},
