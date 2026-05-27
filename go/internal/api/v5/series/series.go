@@ -82,27 +82,135 @@ type Writer = apiv3.SeriesWriter
 // Emitter re-exports v3's SignalR broadcast surface.
 type Emitter = apiv3.SeriesEmitter
 
-// ListHandler aliases v3's GET /api/v3/series. Same wire shape +
-// status (200/500). `tvdbId` + `includeSubresources[]` query params
-// route through unchanged — sub-resource filtering DEFERRED at the
-// v3 layer per the populated-mapper gap.
-var ListHandler = apiv3.SeriesListHandler
+// ListHandler returns GET /api/v5/series. Same wire shape + status
+// (200/500) as v3, with the `languageProfileId` key stripped per
+// the v5 SeriesResource divergence — v5 dropped the field entirely
+// while v3 still emits the hard-coded `=> 1` expression. `tvdbId`
+// + `includeSubresources[]` query params route through unchanged
+// — sub-resource filtering DEFERRED at the v3 layer per the
+// populated-mapper gap.
+//
+// J331 — wraps the v3 handler with `stripLanguageProfileID` post-
+// response middleware that decodes the JSON array, removes the key
+// from each SeriesResource entry, and re-emits. Strip is a no-op
+// on the empty-DB stub (no rows → no field to strip); populated
+// rows lose the `languageProfileId` key.
+func ListHandler(lister Lister) http.Handler {
+	return stripLanguageProfileID(apiv3.SeriesListHandler(lister))
+}
 
-// ByIDHandler aliases v3's GET /api/v3/series/{id}. Same wire shape
-// + status (200/400/404/500).
-var ByIDHandler = apiv3.SeriesByIDHandler
+// ByIDHandler returns GET /api/v5/series/{id}. Same wire shape +
+// status (200/400/404/500) as v3, with the `languageProfileId` key
+// stripped per the v5 SeriesResource divergence.
+//
+// J331.
+func ByIDHandler(svc ByIDGetter) http.Handler {
+	return stripLanguageProfileID(apiv3.SeriesByIDHandler(svc))
+}
 
-// CreateHandler aliases v3's POST /api/v3/series. v3 already emits
-// 201 Created + SeriesResource matching v5's
-// `TypedCreated<SeriesResource>` — no wrapper needed.
-var CreateHandler = apiv3.SeriesCreateHandler
+// CreateHandler returns POST /api/v5/series. v3 already emits 201
+// Created + SeriesResource matching v5's `TypedCreated<SeriesResource>`
+// — wrapper adds the `languageProfileId` strip on response only.
+// The request body still carries `languageProfileId` (v3 accepts
+// it, treats it as 1 hard-coded — clients can send any value or
+// omit; v3 mapping ignores).
+//
+// J331.
+func CreateHandler(svc Writer, emitter Emitter) http.Handler {
+	return stripLanguageProfileID(apiv3.SeriesCreateHandler(svc, emitter))
+}
 
-// UpdateHandler aliases v3's PUT /api/v3/series/{id}. v3 already
-// emits 202 Accepted + SeriesResource matching v5's
-// `TypedResults.Accepted<SeriesResource>` (TypedAccepted helper) —
-// no wrapper needed. `moveFiles` query param routes through
-// unchanged.
-var UpdateHandler = apiv3.SeriesUpdateHandler
+// UpdateHandler returns PUT /api/v5/series/{id}. v3 already emits
+// 202 Accepted + SeriesResource matching v5's
+// `TypedResults.Accepted<SeriesResource>`. Wrapper adds the
+// `languageProfileId` strip on response. `moveFiles` query param
+// routes through unchanged.
+//
+// J331.
+func UpdateHandler(svc Writer, emitter Emitter) http.Handler {
+	return stripLanguageProfileID(apiv3.SeriesUpdateHandler(svc, emitter))
+}
+
+// stripLanguageProfileID wraps an http.Handler whose response body
+// is either a single SeriesResource object or a JSON array of
+// SeriesResource objects. It captures the response, decodes the
+// JSON, removes the `languageProfileId` key from each SeriesResource
+// entry, and re-emits.
+//
+// The v5 SeriesResource (`src/Sonarr.Api.V5/Series/SeriesResource.cs`)
+// drops the `LanguageProfileId` field that v3 carries as a
+// hard-coded computed expression `=> 1`. The Go-port's v3 mapper
+// at apiv3.ToSeriesResource sets `LanguageProfileID: 1` so the v3
+// wire emits `"languageProfileId":1` on every row. The v5 surface
+// needs to suppress this key to match the C# v5 wire shape.
+//
+// Strip behavior:
+//   - 2xx status with parseable JSON: decode → strip → re-encode.
+//   - 4xx/5xx status: pass-through verbatim (error envelopes
+//     preserve their byte shape).
+//   - Empty body or non-JSON body: pass-through verbatim.
+//   - Re-encode failure: pass-through verbatim (defensive — never
+//     emit a half-stripped/corrupt body).
+//
+// J331 — same pattern as the J295 LogResource v5 `method`-key
+// strip. The first-consumer rule keeps the helper inline in v5/
+// series for now; if a second consumer needs the same generic
+// field-strip behavior, it consolidates into v5util.
+func stripLanguageProfileID(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := v5util.NewBufferingWriter()
+		h.ServeHTTP(rec, r)
+		body := rec.Body()
+		status := rec.Status()
+		// Non-2xx → pass-through verbatim.
+		if status < 200 || status >= 300 || len(body) == 0 {
+			v5util.CopyHeaders(w.Header(), rec.Header())
+			w.WriteHeader(status)
+			_, _ = w.Write(body)
+			return
+		}
+		// Decode + strip + re-encode.
+		var decoded any
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			v5util.CopyHeaders(w.Header(), rec.Header())
+			w.WriteHeader(status)
+			_, _ = w.Write(body)
+			return
+		}
+		stripFieldRecursive(decoded, "languageProfileId")
+		buf, err := json.Marshal(decoded)
+		if err != nil {
+			v5util.CopyHeaders(w.Header(), rec.Header())
+			w.WriteHeader(status)
+			_, _ = w.Write(body)
+			return
+		}
+		v5util.CopyHeaders(w.Header(), rec.Header())
+		w.WriteHeader(status)
+		_, _ = w.Write(buf)
+	})
+}
+
+// stripFieldRecursive walks a JSON-decoded `any` tree and deletes
+// the named key from every object encountered. Handles both
+// single-object and array-of-objects top-level shapes (covers
+// SeriesListHandler `[...]` and SeriesByIDHandler `{...}`
+// responses). Mutates in place via map / slice element references.
+//
+// J331.
+func stripFieldRecursive(v any, key string) {
+	switch x := v.(type) {
+	case map[string]any:
+		delete(x, key)
+		for _, child := range x {
+			stripFieldRecursive(child, key)
+		}
+	case []any:
+		for i := range x {
+			stripFieldRecursive(x[i], key)
+		}
+	}
+}
 
 // DeleteHandler returns DELETE /api/v5/series/{id}.
 //

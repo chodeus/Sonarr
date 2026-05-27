@@ -16755,3 +16755,102 @@ No new routes. Struct + new file + doc-comment widening only.
 54 wire-shape fields landed across J309-J330. **EpisodeFileResource wire surface DRAINED** including the MediaInfo typed subresource.
 
 Next-tick smallest candidate: SeriesResource v5 LanguageProfileId removal (alias break with v5-specific wrapper that strips the field — small but a different pattern from prior J-slices). Or ManualImport/Release Languages typed-list widening (body-decode shape change is the main wrinkle). Or pivot to populated-row mapper service-port work (mid-large slice on history/blocklist).
+
+---
+
+## J331 — Post-Wave-3 drain, slice 23: v5 SeriesResource `languageProfileId` strip via response-rewriting middleware
+
+**Anchor**: post-J330 (EpisodeFileResource wire surface DRAINED). Closes the v5/v3 SeriesResource divergence on `languageProfileId` — the field v5 actively REMOVED that v3 still emits.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Series/SeriesResource.cs` — v3 emits `LanguageProfileId` via the hard-coded `=> 1` computed expression.
+- `src/Sonarr.Api.V5/Series/SeriesResource.cs` — v5 declared shape DROPS this field entirely.
+
+The Go-port's apiv3.ToSeriesResource sets `LanguageProfileID: 1` at series.go:213. The v3 wire emits `"languageProfileId":1` on every populated row. v5 needs to suppress this key to match C# v5.
+
+### Approach: response-rewriting middleware
+
+Two options were considered:
+1. **Break the alias** — define `v5/series.Resource` as a distinct struct mirroring v3 minus LanguageProfileId, then re-project per-row in the v5 handlers.
+2. **Strip middleware** — wrap the v3 handlers with a JSON-level post-response middleware that removes the key.
+
+Option 2 is smaller LOC and follows the J295 LogResource `method`-key strip pattern. The trade-off: strip middleware adds JSON-decode + re-encode per response which costs CPU on populated arrays. For the v5 series endpoints (paged list, single-row GET, single-row Create/Update), the cost is negligible vs. the LOC savings.
+
+### Port deliverables
+
+**`internal/api/v5/series/series.go`** — 4 handler aliases converted from `var` to `func` wrappers + new helper functions:
+
+- `ListHandler(lister Lister) http.Handler` — wraps `apiv3.SeriesListHandler` with `stripLanguageProfileID`.
+- `ByIDHandler(svc ByIDGetter) http.Handler` — same pattern.
+- `CreateHandler(svc Writer, emitter Emitter) http.Handler` — same.
+- `UpdateHandler(svc Writer, emitter Emitter) http.Handler` — same.
+- `stripLanguageProfileID(h http.Handler) http.Handler` — captures via v5util.BufferingWriter, decodes JSON, calls stripFieldRecursive, re-encodes, emits. Pass-through for non-2xx / empty / non-JSON / re-encode-failure (defensive — never emit half-stripped/corrupt body).
+- `stripFieldRecursive(v any, key string)` — walks JSON-decoded `any` tree recursively (handles maps + slices); deletes the named key from every map encountered. Handles both array (List) and single-object (ByID/Create/Update) top-level shapes.
+
+The call-site signatures are identical to the previous `var` aliases — `seriesv5.ListHandler(seriesSvc)` at `cmd/sonarr/host_wiring.go:1395-1398` doesn't need to change.
+
+The v3-side request-body posture is unchanged: v5 clients can still send `languageProfileId` in PUT/POST bodies since v3 ignores the value and uses hard-coded `=> 1`.
+
+Doc comments on all 4 handlers + the helper catalogue the v5 divergence + the strip behavior + the first-consumer-rule note (same posture as J295 LogResource `method`-key strip — helper kept inline in v5/series for now; consolidates into v5util only if a second consumer appears).
+
+### Tests (1 new with 3 sub-tests)
+
+`internal/api/v5/series/series_test.go`:
+
+- `TestSeriesV5Handlers_StripLanguageProfileID_J331` — 3 sub-tests:
+  - `ListHandler strips languageProfileId from each row` — populated single-row response. Asserts `!strings.Contains(body, "languageProfileId:")` + positive `"title":"Show"` confirms other fields preserved.
+  - `ByIDHandler strips languageProfileId` — populated single-row GET. Same negative assertion.
+  - `Error responses pass through verbatim` — ByID with missing id → 404 envelope; defensive pin that the strip helper doesn't corrupt the error response.
+
+Existing tests (DeleteHandler / EditorUpdateHandler / SeasonMonitorHandler / Type-Alias) continue to pass — the strip only affects the 4 wrapped handlers, none of those existing tests assert on languageProfileId.
+
+### Wiring
+
+No new routes. Handler-aliasing posture changed (var → func) but call signatures preserved.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/series/...` ✓
+  - v3: all pass, 1.646s
+  - cmd/sonarr: all pass, 3.688s
+  - v5/series: all pass, 1.774s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | DONE (J322) |
+| B. v5 field divergences | QueueResource StatusMessages typed list | DONE (J323) |
+| B. v5 field divergences | QueueResource v5 EpisodeIDs + SeasonNumbers list-form | DONE (J324) |
+| B. v5 field divergences | Quality typed-DTO + History/Blocklist/Queue field widening | DONE (J325) |
+| B. v5 field divergences | SeriesResource v5-additive 4-field widening | DONE (J326) |
+| B. v5 field divergences | EpisodeResource 3-field widening | DONE (J327) |
+| B. v5 field divergences | EpisodeFileResource 5-field scalar widening | DONE (J328) |
+| B. v5 field divergences | SeriesResource AlternateTitles + AlternateTitleResource typed DTO | DONE (J329) |
+| B. v5 field divergences | MediaInfo typed-DTO + EpisodeFileResource.MediaInfo field | DONE (J330) |
+| B. v5 field divergences | SeriesResource v5 LanguageProfileId removal | **DONE this slice (J331)** |
+| B. v5 field divergences | Quality field widening on ManualImport + Release | OPEN — body-decode shape change |
+| B. v5 field divergences | Languages typed-list DTO on ManualImport + Release | OPEN — same body-decode concern |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+54 wire-shape fields + 1 v5-strip behavior landed across J309-J331. **SeriesResource v3↔v5 divergence cluster CLOSED** (J326 additive + J329 AlternateTitles + J331 LanguageProfileId removal).
+
+Next-tick smallest candidate: ManualImport Quality + Languages widening with body-decode shape adjustment (the reprocessOne logic at manual_import.go:205 uses item.Languages[0] == 0 Unknown-check which would need to flip to item.Languages[0].ID == 0). Or pivot to populated-row mapper service-port work on history/blocklist (mid-large slice).
