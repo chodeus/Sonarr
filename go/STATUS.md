@@ -13937,3 +13937,61 @@ Surgical struct widening + constructor defaulting. The underlying calculator eng
 | Wanted         | pending                  |
 | Calendar       | pending                  |
 | ManualImport   | pending                  |
+
+## Phase 5.J298 — Wave 1 calculator wire-through, slice 3 of 7: EpisodeFile `customFormats[]` + `customFormatScore` widening (covers Wanted + Calendar + Episode + EpisodeFile families)
+
+Third handler wire-through slice — strategic widening at the shared subresource layer. The customFormats fields are NOT on `EpisodeResource` directly; they're on `EpisodeFileResource` (the subresource that EpisodeResource embeds via `episodeFile?` per `src/Sonarr.Api.V3/Episodes/EpisodeResource.cs:28`). Widening EpisodeFileResource therefore simultaneously covers four v5/v3 endpoint families that all embed it as a subresource:
+
+- **EpisodeFile** family (GET /episodefile, GET /episodefile/{id}) — direct list of EpisodeFileResource.
+- **Episode** family (GET /episode, GET /episode/{id}, PUT /episode/monitor, PUT /episode/{id}) — EpisodeResource has an optional `episodeFile` subresource.
+- **Wanted** family (GET /wanted/missing, GET /wanted/cutoff) — uses EpisodeResource via the same subresource path.
+- **Calendar** family (GET /calendar) — same as Wanted.
+
+### Wire divergence
+
+The C# v3 + v5 `EpisodeFileResource` carry two calculator-derived fields not present on the Go-port `apiv3.EpisodeFileResource`:
+
+- `customFormats: CustomFormatResource[]`
+- `customFormatScore: int`
+
+C# v3 mapper at `src/Sonarr.Api.V3/EpisodeFiles/EpisodeFileResource.cs:38-67`:
+
+```csharp
+var customFormats = formatCalculationService?.ParseCustomFormat(model, model.Series);
+var customFormatScore = series?.QualityProfile?.Value?.CalculateCustomFormatScore(customFormats) ?? 0;
+// ...
+CustomFormats = customFormats.ToResource(false),
+CustomFormatScore = customFormatScore,
+```
+
+### Strategy
+
+Surgical struct widening + single constructor edit. The underlying calculator engine + per-episodefile entry adapter already exist at `internal/customformats/calculate_episodefile.go:ParseCustomFormatForEpisodeFile` + `internal/qualityprofiles.CalculateCustomFormatScore`. This slice does NOT wire the calculator through into the handlers; the full populated-row mapper landing is gated on the customformats.Service.All() + per-row series QualityProfile resolution snapshot.
+
+### Slice scope — ~55 lines (struct widening + 1 constructor edit + 1 test)
+
+- **`internal/api/v3/episodefile.go`** — EpisodeFileResource grows from 9 fields to 11 (CustomFormats + CustomFormatScore). `ToEpisodeFileResource` constructor allocates `CustomFormats: []CustomFormatResource{}`.
+- **`internal/api/v3/episodefile_test.go`** — new `TestEpisodeFileListHandler_EmitsCustomFormatsAndScore` test pins the wire shape via the EpisodeFileListHandler seriesId branch: body contains `"customFormats":[]` + `"customFormatScore":0`, struct round-trip-decodes to non-nil-empty CustomFormats and zero score. `encoding/json` import added.
+- **No v5 changes** — all v5 packages that reference EpisodeFile (`v5/episode`, `v5/episodefiles` if any, `v5/calendar`, `v5/wanted`, etc.) pick up the new fields via the shared apiv3 type. Verified by running the full v5 test suite (47 packages, all green).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v3/... ./internal/api/v5/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/... ./cmd/sonarr/...` ✓ (v3 2.3s, 47 v5 packages all green, cmd/sonarr 3.8s)
+
+### Sub-slice 5 progress
+
+| handler        | wire-through landed?            |
+|----------------|----------------------------------|
+| **History**    | ✓ J296                           |
+| **Blocklist**  | ✓ J297                           |
+| **Wanted**     | ✓ J298 (via shared EpisodeFile)  |
+| **Calendar**   | ✓ J298 (via shared EpisodeFile)  |
+| **EpisodeFile**| ✓ J298 (direct)                  |
+| **Episode**    | ✓ J298 (via shared EpisodeFile)  |
+| Parse          | pending                          |
+| Update         | pending                          |
+| ManualImport   | pending                          |
+
+The original 7-count under-estimated subresource sharing — 3 of the listed wire-throughs (Wanted, Calendar, plus EpisodeFile-as-a-family-itself) collapse to a single struct widening because they all surface customFormats only through the shared `episodeFile` subresource. Actual remaining work: 3 wire-throughs (Parse, Update, ManualImport) — each has its own dedicated Resource type with its own customFormats projection.

@@ -43,18 +43,35 @@ import (
 //	releaseGroup  → File.ReleaseGroup
 //
 // DEFERRED for the populated-body emit: languages, quality,
-// customFormats, customFormatScore, indexerFlags, releaseType,
-// mediaInfo, episodeHasFile (per-episode rollup).
+// indexerFlags, releaseType, mediaInfo, episodeHasFile
+// (per-episode rollup). The customFormats[] + customFormatScore
+// fields are wired at the struct level here (J298, Wave 1
+// calculator wire-through slice 3) so future populated-row mappers
+// can emit the C# wire shape without re-widening; the underlying
+// calculator engine
+// ([sonarr.tv/sonarr/internal/customformats.Calculate] +
+// [sonarr.tv/sonarr/internal/customformats/calculate_episodefile.go:ParseCustomFormatForEpisodeFile] +
+// [sonarr.tv/sonarr/internal/qualityprofiles.CalculateCustomFormatScore])
+// is already ported. Constructors should default CustomFormats to
+// `[]CustomFormatResource{}` (not nil) so a populated row without
+// matched formats emits `customFormats: []` rather than `null` —
+// matches the C# Newtonsoft default for non-null
+// `List<CustomFormatResource>`. This widening simultaneously
+// covers the Wanted, Calendar, Episode, and EpisodeFile families
+// (their EpisodeFile subresource picks it up via the shared
+// projection).
 type EpisodeFileResource struct {
-	ID           int       `json:"id"`
-	SeriesID     int       `json:"seriesId"`
-	SeasonNumber int       `json:"seasonNumber"`
-	RelativePath string    `json:"relativePath"`
-	Path         string    `json:"path"`
-	Size         int64     `json:"size"`
-	DateAdded    time.Time `json:"dateAdded"`
-	SceneName    string    `json:"sceneName,omitempty"`
-	ReleaseGroup string    `json:"releaseGroup,omitempty"`
+	ID                int                    `json:"id"`
+	SeriesID          int                    `json:"seriesId"`
+	SeasonNumber      int                    `json:"seasonNumber"`
+	RelativePath      string                 `json:"relativePath"`
+	Path              string                 `json:"path"`
+	Size              int64                  `json:"size"`
+	DateAdded         time.Time              `json:"dateAdded"`
+	SceneName         string                 `json:"sceneName,omitempty"`
+	ReleaseGroup      string                 `json:"releaseGroup,omitempty"`
+	CustomFormats     []CustomFormatResource `json:"customFormats"`
+	CustomFormatScore int                    `json:"customFormatScore"`
 }
 
 // EpisodeFileReader is the read surface for GET /api/v3/episodefile.
@@ -472,14 +489,17 @@ func ToEpisodeFileResource(f episodefiles.File, seriesPath string) EpisodeFileRe
 		path = seriesPath + "/" + path
 	}
 	return EpisodeFileResource{
-		ID:           f.ID,
-		SeriesID:     f.SeriesID,
-		SeasonNumber: f.SeasonNumber,
-		RelativePath: f.RelativePath,
-		Path:         path,
-		Size:         f.Size,
-		DateAdded:    f.DateAdded,
-		SceneName:    f.SceneName,
-		ReleaseGroup: f.ReleaseGroup,
+		ID:            f.ID,
+		SeriesID:      f.SeriesID,
+		SeasonNumber:  f.SeasonNumber,
+		RelativePath:  f.RelativePath,
+		Path:          path,
+		Size:          f.Size,
+		DateAdded:     f.DateAdded,
+		SceneName:     f.SceneName,
+		ReleaseGroup:  f.ReleaseGroup,
+		CustomFormats: []CustomFormatResource{},
+		// CustomFormatScore: 0 — populated-row mapper landing
+		// alongside the calculator wire-through (J298+).
 	}
 }

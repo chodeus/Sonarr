@@ -2,6 +2,7 @@ package v3
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -247,6 +248,55 @@ func TestEpisodeFileListHandler_SeriesIDBranch(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), `"id":1`) || !strings.Contains(rr.Body.String(), `"id":2`) {
 		t.Errorf("body should contain both ids: %s", rr.Body.String())
+	}
+}
+
+// J298 wire-shape pin: a populated row must emit `customFormats:[]`
+// (non-nil empty) + `customFormatScore:0` — matches the C# v3
+// EpisodeFileResource mapper at `EpisodeFileResource.cs:46-66`
+// which initialises CustomFormats via
+// `formatCalculator?.ParseCustomFormat(model, model.Series).ToResource(false)`
+// and CustomFormatScore via the QualityProfile lookup. Both fields
+// land on the wire today as empty/zero pending the populated-row
+// calculator wire-through; their presence on the struct is what
+// the future mapper widens into. Same widening simultaneously
+// affects Wanted, Calendar, and Episode families because their
+// EpisodeFile subresource shares this type.
+func TestEpisodeFileListHandler_EmitsCustomFormatsAndScore(t *testing.T) {
+	t.Parallel()
+	svc := &fakeEpisodeFileReader{bySeries: map[int][]episodefiles.File{
+		7: {
+			{ID: 1, SeriesID: 7, RelativePath: "a.mkv"},
+		},
+	}}
+	checker := &stubSeriesExistsChecker{known: map[int]bool{7: true}}
+	rr := httptest.NewRecorder()
+	EpisodeFileListHandler(svc, checker).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?seriesId=7", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"customFormats":[]`) {
+		t.Errorf("body must contain `\"customFormats\":[]`; got %s", body)
+	}
+	if !strings.Contains(body, `"customFormatScore":0`) {
+		t.Errorf("body must contain `\"customFormatScore\":0`; got %s", body)
+	}
+	var got []EpisodeFileResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len: %d", len(got))
+	}
+	if got[0].CustomFormats == nil {
+		t.Errorf("CustomFormats must be non-nil (empty slice, not nil)")
+	}
+	if len(got[0].CustomFormats) != 0 {
+		t.Errorf("CustomFormats must be empty at deferred state; got %d", len(got[0].CustomFormats))
+	}
+	if got[0].CustomFormatScore != 0 {
+		t.Errorf("CustomFormatScore must be 0 at deferred state; got %d", got[0].CustomFormatScore)
 	}
 }
 
