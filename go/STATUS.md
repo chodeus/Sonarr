@@ -14333,3 +14333,66 @@ The Go-port previously only modelled the `includeDetails=true` shape (struct fie
 | Release | 343 | queued |
 | Queue | 410 | queued |
 
+
+---
+
+## J304 — Wave 3 LARGE-family arc, Series family sub-slice 2 of 3: SeriesEditor sub-controller (116 LOC C#)
+
+**Anchor**: post-J303 (Series CRUD landed). Series family residual: SeriesEditor (this slice) + PUT /{id}/season (deferred — needs new single-season monitored-set service surface).
+
+### C# source
+
+`src/Sonarr.Api.V5/Series/SeriesEditorController.cs` (116 LOC) at `[V5ApiController("series/editor")]`. Two endpoints — both routed under /api/v5/series/editor:
+
+| v5 endpoint | C# return shape | v3 equivalent | divergence |
+| --- | --- | --- | --- |
+| PUT    /api/v5/series/editor | `Ok<List<SeriesResource>>` (200 + body) | 202 + body | **202 → 200 demote** via `v5util.RewriteAcceptedToOK` |
+| DELETE /api/v5/series/editor | `NoContent` (204 + empty) | 200 + `{}` | **200+`{}` → 204+empty demote** via `v5util.RewriteSuccessTo204` |
+
+Bulk-body shape: `SeriesEditorResource` — byte-identical between v3 and v5 per `SeriesEditorResource.cs:1-19`. Fields: `seriesIds: int[]` (required), `monitored?: bool`, `monitorNewItems?: enum`, `qualityProfileId?: int`, `seriesType?: enum`, `seasonFolder?: bool`, `rootFolderPath?: string`, `tags?: int[]`, `applyTags?: ApplyTags enum`, `moveFiles: bool`, `deleteFiles: bool`, `addImportListExclusion: bool`.
+
+### Port deliverables
+
+Additions to the existing `internal/api/v5/series/series.go`:
+
+- New type alias `EditorResource = apiv3.SeriesEditorResource`.
+- `EditorUpdateHandler(svc Writer, emitter Emitter) http.Handler` = `v5util.RewriteAcceptedToOK(apiv3.SeriesEditorUpdateHandler(svc, emitter))`.
+- `EditorDeleteHandler(svc Writer, emitter Emitter) http.Handler` = `v5util.RewriteSuccessTo204(apiv3.SeriesEditorDeleteHandler(svc, emitter))`.
+
+Additions to `series_test.go`:
+
+- `TestEditorUpdateHandler_Success_Returns200WithBodyPreserved` — pins 202 → 200 demote AND body byte-preserved (the updated-rows array; `rr.Body.Len() > 0`).
+- `TestEditorUpdateHandler_MalformedBody_PassesThrough400` — wrapper predicate is status-AND-body specific; 400+envelope passes through.
+- `TestEditorDeleteHandler_Success_Returns204EmptyBody` — pins 200+`{}` → 204+empty + 2 SignalR `Deleted` broadcasts fire (one per matched seriesId).
+- `TestEditorDeleteHandler_MalformedBody_PassesThrough400` — passthrough guard.
+- `TestTypeAliasesMatchV3` extended with both directions of the EditorResource alias.
+
+Plus a `bytesReader` test helper for body construction (and `io` + `bytes` imports added to the test file).
+
+**`cmd/sonarr/host_wiring.go` edits**:
+
+- 2 new `host.Route{}` entries in `v5Routes()` immediately after the J303 SeriesController CRUD block, with a J304 prefix comment documenting both wrappers + the SignalR-posture preservation note.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v5/series/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v5/series/... ./internal/api/v3/... ./cmd/sonarr/...` ✓
+  - v5/series: 7 tests (3 CRUD-DELETE from J303 + 4 Editor from J304), all pass, 1.604s
+  - v3 (regression): all pass, 2.157s
+  - cmd/sonarr (wiring integration): all pass, 3.700s
+
+### Wave 3 LARGE-family arc progress (updated)
+
+| family | LOC C# | status |
+| --- | --- | --- |
+| EpisodeFiles | 205 | DONE (J301) |
+| CustomFormats | 203 | DONE (J302) |
+| Series — Controller CRUD | 422 (5/6) | DONE (J303) |
+| Series — Editor | 116 | **DONE (J304)** |
+| Series — /{id}/season | (covered in 422) | queued — v5-NEW endpoint, needs single-season monitored-set on series.Service |
+| Release | 343 | queued |
+| Queue | 410 | queued |
+
+Series family is now functionally complete at the v5 surface MINUS the v5-NEW /{id}/season endpoint. The /{id}/season port is genuinely new code (no v3 equivalent) and needs a single-season monitored-set service method (similar to J291 EpisodeController.SetEpisodeMonitored but at season granularity). After that, 2 LARGE families remain — Release and Queue.
+

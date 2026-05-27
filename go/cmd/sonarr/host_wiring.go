@@ -1371,6 +1371,20 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v5/series", Handler: seriesv5.CreateHandler(seriesWriter, seriesEmitter)},
 		{Method: "PUT", Path: "/api/v5/series/{id}", Handler: seriesv5.UpdateHandler(seriesWriter, seriesEmitter)},
 		{Method: "DELETE", Path: "/api/v5/series/{id}", Handler: seriesv5.DeleteHandler(seriesWriter, seriesEmitter)},
+		// J304 — v5 SeriesEditor endpoint family (2 endpoints; 116 LOC
+		// C# — SeriesEditorController at [V5ApiController("series/editor")]).
+		// Both endpoints are pure status-rewrite wrappers over v3's
+		// SeriesEditorUpdateHandler / SeriesEditorDeleteHandler:
+		//
+		//   PUT    /api/v5/series/editor  202+body → 200+body  via v5util.RewriteAcceptedToOK
+		//   DELETE /api/v5/series/editor  200+`{}` → 204+empty via v5util.RewriteSuccessTo204
+		//
+		// SignalR `series/updated` + `series/deleted` broadcasts still
+		// fire per matched row (the wrapper is body+status-only;
+		// emitter is wired through the v3 handler verbatim).
+		// SeriesEditorResource bulk-body byte-identical to v3.
+		{Method: "PUT", Path: "/api/v5/series/editor", Handler: seriesv5.EditorUpdateHandler(seriesWriter, seriesEmitter)},
+		{Method: "DELETE", Path: "/api/v5/series/editor", Handler: seriesv5.EditorDeleteHandler(seriesWriter, seriesEmitter)},
 		// J286 — v5 SeriesFolder endpoint family (1 endpoint; 34 LOC
 		// C# — SeriesFolderController.GetFolder returning the computed
 		// series folder name per the naming config, no disk write).

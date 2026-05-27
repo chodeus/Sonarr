@@ -112,3 +112,43 @@ var UpdateHandler = apiv3.SeriesUpdateHandler
 func DeleteHandler(svc Writer, emitter Emitter) http.Handler {
 	return v5util.RewriteSuccessTo204(apiv3.SeriesDeleteHandler(svc, emitter))
 }
+
+// EditorResource re-exports the v3 SeriesEditorResource bulk-body
+// shape (same shape on v5; same field set per
+// `SeriesEditorResource.cs:1-19`).
+type EditorResource = apiv3.SeriesEditorResource
+
+// EditorUpdateHandler returns PUT /api/v5/series/editor.
+//
+// Mirrors `SeriesEditorController.SaveAll` at
+// `src/Sonarr.Api.V5/Series/SeriesEditorController.cs:21-109`:
+// `Ok<List<SeriesResource>>` → 200 OK + the updated-rows array. The
+// v3 handler emits 202 Accepted + identical body; v5 demotes the
+// status to 200 via `v5util.RewriteAcceptedToOK`. The body is
+// preserved byte-for-byte (the v3 SignalR `series/updated` broadcast
+// emitter still fires per matched row). 400 (malformed body /
+// empty seriesIds list / validation failures) + 500 (service error)
+// pass through verbatim.
+//
+// J304 — Wave 3 LARGE-family arc; Series family sub-slice 2 of 3
+// (SeriesEditor; the v5-NEW PUT /{id}/season endpoint is the
+// remaining sub-slice).
+func EditorUpdateHandler(svc Writer, emitter Emitter) http.Handler {
+	return v5util.RewriteAcceptedToOK(apiv3.SeriesEditorUpdateHandler(svc, emitter))
+}
+
+// EditorDeleteHandler returns DELETE /api/v5/series/editor.
+//
+// Mirrors `SeriesEditorController.DeleteSeries` at
+// `src/Sonarr.Api.V5/Series/SeriesEditorController.cs:111-116`:
+// `TypedResults.NoContent()` → 204 with empty body. The v3 handler
+// emits 200 + body `{}` on success; v5 strips the placeholder JSON
+// and emits 204 + empty via `v5util.RewriteSuccessTo204`. Per-row
+// missing-id skips silently on BOTH surfaces (matches v3's
+// continue-on-ErrNotFound posture at series.go:430-432). 400 / 500
+// passthroughs preserved verbatim.
+//
+// J304.
+func EditorDeleteHandler(svc Writer, emitter Emitter) http.Handler {
+	return v5util.RewriteSuccessTo204(apiv3.SeriesEditorDeleteHandler(svc, emitter))
+}

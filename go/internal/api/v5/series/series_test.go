@@ -1,7 +1,9 @@
 package series
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -10,6 +12,8 @@ import (
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/series"
 )
+
+func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 
 // fakeWriter implements Writer (alias of apiv3.SeriesWriter) — the
 // minimum surface DeleteHandler needs. Mirrors v3's fakeSeriesWriter
@@ -117,6 +121,72 @@ func TestDeleteHandler_NotFound_PassesThrough404(t *testing.T) {
 	}
 }
 
+// ----- PUT /editor — v5 returns 200+body (v3 returns 202+body) -----
+
+func TestEditorUpdateHandler_Success_Returns200WithBodyPreserved(t *testing.T) {
+	t.Parallel()
+	w := &fakeWriter{rows: []series.Series{
+		{ID: 3, Title: "A", Monitored: false},
+		{ID: 5, Title: "B", Monitored: false},
+	}}
+	em := &fakeEmitter{}
+	body := []byte(`{"seriesIds":[3,5],"monitored":true}`)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v5/series/editor", bytesReader(body))
+	EditorUpdateHandler(w, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200 (v3 202 demoted to v5 200); body=%q", rr.Code, rr.Body.String())
+	}
+	if rr.Body.Len() == 0 {
+		t.Errorf("body must be preserved (updated-rows array); got empty")
+	}
+}
+
+func TestEditorUpdateHandler_MalformedBody_PassesThrough400(t *testing.T) {
+	t.Parallel()
+	w := &fakeWriter{}
+	em := &fakeEmitter{}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v5/series/editor", bytesReader([]byte(`{not-json`)))
+	EditorUpdateHandler(w, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d want 400 (passthrough)", rr.Code)
+	}
+}
+
+// ----- DELETE /editor — v5 returns 204 (v3 returns 200+`{}`) -----
+
+func TestEditorDeleteHandler_Success_Returns204EmptyBody(t *testing.T) {
+	t.Parallel()
+	w := &fakeWriter{rows: []series.Series{{ID: 7, Title: "X"}, {ID: 9, Title: "Y"}}}
+	em := &fakeEmitter{}
+	body := []byte(`{"seriesIds":[7,9]}`)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v5/series/editor", bytesReader(body))
+	EditorDeleteHandler(w, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d want 204; body=%q", rr.Code, rr.Body.String())
+	}
+	if rr.Body.Len() != 0 {
+		t.Errorf("body should be empty for 204; got %q", rr.Body.String())
+	}
+	if len(em.deleted) != 2 {
+		t.Errorf("SignalR Deleted should fire per matched row; got %d emits", len(em.deleted))
+	}
+}
+
+func TestEditorDeleteHandler_MalformedBody_PassesThrough400(t *testing.T) {
+	t.Parallel()
+	w := &fakeWriter{}
+	em := &fakeEmitter{}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v5/series/editor", bytesReader([]byte(`{not`)))
+	EditorDeleteHandler(w, em).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d want 400 (passthrough)", rr.Code)
+	}
+}
+
 // ----- type aliases (compile-time invariant guard) -----
 
 func TestTypeAliasesMatchV3(t *testing.T) {
@@ -127,4 +197,6 @@ func TestTypeAliasesMatchV3(t *testing.T) {
 	var _ ByIDGetter = (apiv3.SeriesByIDGetter)(nil)
 	var _ Writer = (apiv3.SeriesWriter)(nil)
 	var _ Emitter = (apiv3.SeriesEmitter)(nil)
+	var _ EditorResource = apiv3.SeriesEditorResource{}
+	var _ apiv3.SeriesEditorResource = EditorResource{}
 }
