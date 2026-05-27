@@ -15959,3 +15959,96 @@ No new routes. Struct + doc-comment widening only.
 34 wire-shape fields landed across J309-J322.
 
 Next-tick smallest candidate: QueueResource StatusMessages typed list (new `QueueStatusMessage` DTO + field add + 1 test) or QueueResource v5 SeasonNumbers/EpisodeIds list-form (J302 pattern repeat).
+
+---
+
+## J323 — Post-Wave-3 drain, slice 15: QueueResource StatusMessages typed-list widening + new apiv3.QueueStatusMessage wire DTO
+
+**Anchor**: post-J322 (QueueResource Series?+Episode?+Episodes? subresources landed). Continues the QueueResource sweep with the structured typed-list field. Introduces a new wire DTO type that the future populated-mapper allocates per row.
+
+### C# source
+
+- `src/NzbDrone.Core/Download/TrackedDownloads/TrackedDownloadStatusMessage.cs:6-25` — the model: `Title string` + `Messages List<string>`.
+- v3 + v5 QueueResource both declare `public List<TrackedDownloadStatusMessage>? StatusMessages { get; set; }` (nullable list).
+
+### Wire contract
+
+C# under STJson:
+- null → key absent (WhenWritingNull).
+- empty list → `"statusMessages":[]`.
+- populated → `"statusMessages":[{"title":"...","messages":["..."]},...]`.
+
+Inner per-entry: both `Title` + `Messages` are non-nullable; always emit when the parent struct is non-nil.
+
+Go-port mapping:
+- `StatusMessages *[]QueueStatusMessage json:"statusMessages,omitempty"` — pointer-to-slice 3-state (J309 SeasonResource.Images pattern).
+- `QueueStatusMessage { Title string json:"title"; Messages []string json:"messages" }` — both fields no-omitempty, always emit when the entry exists.
+
+### Persistence gap
+
+The current Go-port `queue.Queue` model simplifies StatusMessages to `[]string` (per `internal/queue/queue.go:193`). When the populated mapper lands, the simple-string form will be wrapped as `[]QueueStatusMessage{{Title: "Warning", Messages: [s]}}` per persisted entry (single-element synthesis), OR the persistence layer will be refactored to carry the structured form. This slice pins the wire shape so the populated-mapper port can proceed without re-widening the wire DTO.
+
+### Port deliverables
+
+**`internal/api/v3/queue.go`** — struct + DTO + doc-comment:
+
+- New `QueueStatusMessage` type (2 fields).
+- `QueueResource` widened with `StatusMessages *[]QueueStatusMessage json:"statusMessages,omitempty"` after Episodes.
+- Doc comment on QueueResource extended with a J323 paragraph cataloguing the wire DTO + the pointer-to-slice 3-state distinction + the persistence-gap synthesis note.
+
+No emit-site mapper updates required. The populated-row mapper port is its own dedicated slice; it will allocate `&[]QueueStatusMessage{...}` from the persisted `[]string` (or the refactored structured form).
+
+v5/queue aliases v3 via `type Resource = apiv3.QueueResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (1 new, 3 branches)
+
+`internal/api/v3/queue_test.go`:
+
+- `TestQueueResource_StatusMessagesWidening_J323` — 3-branch pin:
+  - Row 1: nil → `!strings.Contains(buf, "\"statusMessages\":")` confirms omitempty drops.
+  - Row 2: `&[]QueueStatusMessage{}` empty slice → asserts `"statusMessages":[]`.
+  - Row 3: populated 2-element list (`{Title:"Cannot import:", Messages:["Sample file","Missing audio"]}, {Title:"Warning", Messages:["Episode already imported"]}`) → 5 positive substring assertions: key opener + both titles + both messages arrays.
+
+### Wiring
+
+No new routes. Struct + DTO + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/queue/...` ✓
+  - v3: all pass, 2.255s
+  - cmd/sonarr: all pass, 3.846s
+  - v5/queue: all pass, 2.650s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | DONE (J322) |
+| B. v5 field divergences | QueueResource StatusMessages typed list | **DONE this slice (J323)** |
+| B. v5 field divergences | QueueResource v5 SeasonNumbers + EpisodeIds list-form | OPEN — v5 changes singular EpisodeID + adds plural SeasonNumbers |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem + ReleaseResource | OPEN — body-decode shape consideration |
+| B. v5 field divergences | Quality typed QualityModel envelope | OPEN — complex DTO |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — alias break, mid-size |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+35 wire-shape fields landed across J309-J323.
+
+Next-tick smallest candidate: QueueResource v5 SeasonNumbers `[]int` + EpisodeIds `[]int` (v5 plural list form vs v3 singular EpisodeID) — small struct add, additive divergence pattern.

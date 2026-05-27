@@ -37,6 +37,15 @@ import (
 // semantic — null when unset on the wire, populated when the queue
 // row is tied to a Series/Episode.
 //
+// J323 StatusMessages typed-list widening: pointer-to-slice of
+// [QueueStatusMessage] with omitempty (J309 SeasonResource.Images
+// pattern — 3-state distinction: nil → key absent matching C#
+// `List<TrackedDownloadStatusMessage>?` null under WhenWritingNull;
+// non-nil empty → `"statusMessages":[]`; populated → typed list).
+// The QueueStatusMessage struct (defined alongside QueueResource)
+// mirrors C# TrackedDownloadStatusMessage with the 2-field shape
+// `{title, messages[]}`.
+//
 // J322 subresource widening: Series + Episode + Episodes (J302
 // pattern — pointer-to-struct + pointer-to-slice with omitempty).
 //
@@ -196,6 +205,37 @@ type QueueResource struct {
 	Series                              *SeriesResource    `json:"series,omitempty"`
 	Episode                             *EpisodeResource   `json:"episode,omitempty"`
 	Episodes                            *[]EpisodeResource `json:"episodes,omitempty"`
+	StatusMessages                      *[]QueueStatusMessage `json:"statusMessages,omitempty"`
+}
+
+// QueueStatusMessage is the wire-shape mirror of C#
+// `NzbDrone.Core.Download.TrackedDownloads.TrackedDownloadStatusMessage`
+// (`src/NzbDrone.Core/Download/TrackedDownloads/TrackedDownloadStatusMessage.cs`).
+// Surfaced as a typed list on QueueResource.StatusMessages — both
+// v3 and v5 C# declare `List<TrackedDownloadStatusMessage>?
+// StatusMessages` (nullable list of structured warnings).
+//
+// Wire shape: `{"title":"<group>","messages":["<msg1>","<msg2>"]}`.
+// Title carries a group/category label (e.g. "Cannot import:");
+// Messages carries one or more lines under that title. Both fields
+// always emit when the parent struct is non-nil (no omitempty on
+// either) — matches the C# default-non-null property serialization
+// once the parent List<> is populated.
+//
+// Persistence gap: the current Go-port `queue.Queue` model
+// simplifies StatusMessages to `[]string` (per
+// internal/queue/queue.go:193). When the populated mapper lands,
+// the simple-string form will be wrapped as
+// `[]QueueStatusMessage{{Title: "Warning", Messages: [s]}}` per
+// persisted entry (single-element synthesis) OR the persistence
+// layer will be refactored to carry the structured form. This
+// slice pins the wire shape so the populated-mapper port can
+// proceed without re-widening.
+//
+// J323.
+type QueueStatusMessage struct {
+	Title    string   `json:"title"`
+	Messages []string `json:"messages"`
 }
 
 // FormatTimeLeft renders a *time.Duration in the C# TimeSpan

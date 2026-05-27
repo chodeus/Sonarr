@@ -439,6 +439,59 @@ func TestQueueResource_SubresourceWidening_J322(t *testing.T) {
 	}
 }
 
+// J323 wire-shape pin for QueueStatusMessage typed-list +
+// StatusMessages pointer-to-slice 3-state widening on QueueResource.
+//
+// Test covers all 3 branches: row 1 nil → key absent; row 2
+// explicit empty-slice pointer → `"statusMessages":[]`; row 3
+// populated with 2-element list → typed nested shape with `title`
+// + `messages` keys.
+func TestQueueResource_StatusMessagesWidening_J323(t *testing.T) {
+	t.Parallel()
+	// Branch 1: nil → omitempty drops the key.
+	nilCase := QueueResource{ID: 1, Title: "demo"}
+	buf, err := json.Marshal(nilCase)
+	if err != nil {
+		t.Fatalf("marshal nil: %v", err)
+	}
+	if strings.Contains(string(buf), `"statusMessages":`) {
+		t.Errorf("nil StatusMessages must omit the key; got %s", buf)
+	}
+	// Branch 2: explicit empty-slice pointer → emits `[]`.
+	empty := []QueueStatusMessage{}
+	emptyCase := QueueResource{ID: 2, Title: "demo", StatusMessages: &empty}
+	buf2, err := json.Marshal(emptyCase)
+	if err != nil {
+		t.Fatalf("marshal empty-slice: %v", err)
+	}
+	if !strings.Contains(string(buf2), `"statusMessages":[]`) {
+		t.Errorf("&[]QueueStatusMessage{} must emit `\"statusMessages\":[]`; got %s", buf2)
+	}
+	// Branch 3: populated 2-element list.
+	msgs := []QueueStatusMessage{
+		{Title: "Cannot import:", Messages: []string{"Sample file", "Missing audio"}},
+		{Title: "Warning", Messages: []string{"Episode already imported"}},
+	}
+	populated := QueueResource{ID: 3, Title: "demo", StatusMessages: &msgs}
+	buf3, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated: %v", err)
+	}
+	got := string(buf3)
+	mustContain := []string{
+		`"statusMessages":[`,
+		`"title":"Cannot import:"`,
+		`"messages":["Sample file","Missing audio"]`,
+		`"title":"Warning"`,
+		`"messages":["Episode already imported"]`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Errorf("populated missing %q in %s", want, got)
+		}
+	}
+}
+
 // ---------- 5.I18: /queue/details tests ----------
 
 type fakeQueueDetailsLister struct {
