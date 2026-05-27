@@ -11,6 +11,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/indexersearch"
+	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
 )
@@ -105,6 +106,51 @@ func TestReleaseHandler_DispatchesEpisodeSearch(t *testing.T) {
 	}
 	if !got[0].Approved {
 		t.Errorf("Approved should be true for empty rejection slice")
+	}
+}
+
+// J334 wire-shape pin: ReleaseResource.Languages widened from []int
+// to []LanguageRef (J314 typed list form matching C# `List<Language>`
+// wire). Populated rows emit typed `[{id,name}]` entries via the
+// ToLanguageRef registry lookup; empty subject Languages still emits
+// `[]` (not null) via the toReleaseResource fallback at release.go:251.
+func TestReleaseHandler_LanguagesTypedShape_J334(t *testing.T) {
+	t.Parallel()
+	searcher := &fakeReleaseSearcher{
+		decisions: []decisionengine.Decision{
+			decisionengine.NewDecision(&decisionengine.Subject{
+				Release: &parser.ReleaseInfo{Title: "Show.S01E01.HDTV-GROUP", Guid: "g1", Indexer: "X"},
+				ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{
+					Quality:        quality.Model{Quality: quality.HDTV720p, Revision: quality.NewRevision()},
+					EpisodeNumbers: []int{1},
+					SeasonNumber:   1,
+				},
+				Languages: []language.Language{language.English, language.French},
+			}),
+		},
+	}
+	rr := httptest.NewRecorder()
+	ReleaseHandler(searcher).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/release?episodeId=42", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"languages":[{"id":1,"name":"English"},{"id":2,"name":"French"}]`) {
+		t.Errorf("populated Languages typed shape missing in response; got %s", body)
+	}
+	// Decode-through round-trip pin.
+	var got []ReleaseResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Languages) != 2 {
+		t.Fatalf("len: %d / langs: %+v", len(got), got)
+	}
+	if got[0].Languages[0].ID != 1 || got[0].Languages[0].Name != "English" {
+		t.Errorf("Languages[0] round-trip mismatch: %+v", got[0].Languages[0])
+	}
+	if got[0].Languages[1].ID != 2 || got[0].Languages[1].Name != "French" {
+		t.Errorf("Languages[1] round-trip mismatch: %+v", got[0].Languages[1])
 	}
 }
 

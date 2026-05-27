@@ -41,7 +41,7 @@ type ReleaseResource struct {
 	Title                  string          `json:"title"`
 	FullSeason             bool            `json:"fullSeason"`
 	SeasonNumber           int             `json:"seasonNumber"`
-	Languages              []int           `json:"languages"`
+	Languages              []LanguageRef   `json:"languages"`
 	AirDate                string          `json:"airDate,omitempty"`
 	SeriesTitle            string          `json:"seriesTitle,omitempty"`
 	EpisodeNumbers         []int           `json:"episodeNumbers"`
@@ -223,12 +223,14 @@ func toReleaseResource(d decisionengine.Decision) ReleaseResource {
 			r.Quality = q
 		}
 	}
-	// Languages: project to []int IDs only; full Language objects
-	// are deferred (full ReleaseResource has a richer Language
-	// struct).
-	r.Languages = make([]int, 0, len(subj.Languages))
+	// Languages: project to []LanguageRef typed list (J334; was
+	// []int pre-J334, which diverged from the C# `List<Language>`
+	// wire shape — clients receiving int form couldn't read the
+	// language name). Uses the J314 ToLanguageRef helper for id→
+	// name registry lookup.
+	r.Languages = make([]LanguageRef, 0, len(subj.Languages))
 	for _, l := range subj.Languages {
-		r.Languages = append(r.Languages, l.ID)
+		r.Languages = append(r.Languages, ToLanguageRef(l.ID))
 	}
 	// Mapped episodes (when set, the search has resolved the release
 	// to specific episodes — the C# `model.RemoteEpisode.Episodes`).
@@ -249,7 +251,7 @@ func toReleaseResource(d decisionengine.Decision) ReleaseResource {
 		r.AbsoluteEpisodeNumbers = []int{}
 	}
 	if r.Languages == nil {
-		r.Languages = []int{}
+		r.Languages = []LanguageRef{}
 	}
 	if r.Rejections == nil {
 		r.Rejections = []string{}

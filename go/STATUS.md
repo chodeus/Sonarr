@@ -17034,3 +17034,89 @@ No new routes. Struct + logic + doc-comment widening only.
 56 wire-shape fields + 1 v5-strip behavior landed across J309-J333. **ManualImport carrier v3↔v5 divergence cluster CLOSED** (J332 Languages + J333 Quality).
 
 Next-tick smallest candidate: ReleaseResource Languages widening (same J332 pattern — `[]int` to `[]LanguageRef`). Or pivot to populated-row mapper service-port work.
+
+---
+
+## J334 — Post-Wave-3 drain, slice 26: ReleaseResource Languages widening to typed []LanguageRef
+
+**Anchor**: post-J333 (ManualImport carrier v3↔v5 cluster CLOSED). Same J314/J332 pattern applied to the ReleaseResource Languages field.
+
+### Pre-J334 gap
+
+apiv3.ReleaseResource.Languages was declared as `[]int` (just language IDs) at release.go:44. The C# wire shape is `List<Language>` with `{id, name}` per entry. Pre-J334 the Go-port emitted `"languages":[1,2]` — a wire-shape divergence from C# v3+v5.
+
+### Port deliverables
+
+**`internal/api/v3/release.go`** — struct + mapper:
+
+- `ReleaseResource.Languages []LanguageRef json:"languages"` — type changed from `[]int`.
+- `toReleaseResource` populated-mapper at line 226-232 updated:
+  - Allocate `make([]LanguageRef, 0, len(subj.Languages))`.
+  - Build entries via `ToLanguageRef(l.ID)` for each `subj.Languages` entry (the J314 helper for id→name registry lookup).
+- Fallback at line 251-253: `r.Languages = []LanguageRef{}` (not `[]int{}`) — preserves C# default-non-null `List<int>()` posture.
+- Inline doc-comment cites the J334 widening + the C# wire-shape match.
+
+v5/release + v5/releasepush aliases v3 via `type Resource = apiv3.ReleaseResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (1 new)
+
+`internal/api/v3/release_test.go` (+`"sonarr.tv/sonarr/internal/language"` import):
+
+- `TestReleaseHandler_LanguagesTypedShape_J334` — drives a populated decisionengine.Subject with `Languages: [language.English, language.French]` through the production ReleaseHandler path:
+  - Positive substring assertion: response body contains `"languages":[{"id":1,"name":"English"},{"id":2,"name":"French"}]`.
+  - Decode-through round-trip: `got[0].Languages[0].ID == 1`, `got[0].Languages[0].Name == "English"`, and same for entry 2.
+
+Existing positive-pin tests continue to pass — the prior `[]int` shape was Go-port-specific (no client depends on it; v5 alias propagates the new typed form).
+
+### Wiring
+
+No new routes. Struct + mapper + test widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/release/... ./internal/api/v5/releasepush/...` ✓
+  - v3: all pass, 1.971s
+  - cmd/sonarr: all pass, 4.272s
+  - v5/release: all pass, 1.411s
+  - v5/releasepush: all pass, 2.367s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | DONE (J322) |
+| B. v5 field divergences | QueueResource StatusMessages typed list | DONE (J323) |
+| B. v5 field divergences | QueueResource v5 EpisodeIDs + SeasonNumbers list-form | DONE (J324) |
+| B. v5 field divergences | Quality typed-DTO + History/Blocklist/Queue field widening | DONE (J325) |
+| B. v5 field divergences | SeriesResource v5-additive 4-field widening | DONE (J326) |
+| B. v5 field divergences | EpisodeResource 3-field widening | DONE (J327) |
+| B. v5 field divergences | EpisodeFileResource 5-field scalar widening | DONE (J328) |
+| B. v5 field divergences | SeriesResource AlternateTitles + AlternateTitleResource typed DTO | DONE (J329) |
+| B. v5 field divergences | MediaInfo typed-DTO + EpisodeFileResource.MediaInfo field | DONE (J330) |
+| B. v5 field divergences | SeriesResource v5 LanguageProfileId removal | DONE (J331) |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem | DONE (J332) |
+| B. v5 field divergences | Quality field widening on ManualImportReprocessItem | DONE (J333) |
+| B. v5 field divergences | Languages typed-list DTO on ReleaseResource | **DONE this slice (J334)** |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| B. v5 field divergences | ReleaseResource Quality field widening (similar to ManualImport J333) | OPEN — Quality field uses json.RawMessage today |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+57 wire-shape fields + 1 v5-strip behavior landed across J309-J334. **Languages typed-list cluster CLOSED across all known carriers** (J314 History+Blocklist; J315 Queue; J332 ManualImport; J334 Release).
+
+Next-tick smallest candidate: ReleaseResource Quality field — currently `json.RawMessage` (raw passthrough). Switching to `*QualityModelResource` would harmonize the wire shape with the rest of the carriers, but it changes the existing `release_write_test.go` body-decode tests (they send `{"quality":{"quality":1,"revision":{...}}}` reduced form). Or pivot to populated-row mapper service-port work.
