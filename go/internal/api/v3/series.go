@@ -64,9 +64,11 @@ import (
 //	ended           → computed (Status == Ended)
 //	languageProfileId→ hard-coded 1 (C# `=> 1`)
 //
-// DEFERRED (populated-row only): alternateTitles, images, originalLanguage,
+// DEFERRED (populated-row only): images, originalLanguage,
 // remotePoster, seasons, addOptions, ratings, statistics, episodesChanged,
-// genres, folder.
+// genres, folder. AlternateTitles wire-shape pinned at J329 via
+// pointer-to-slice; population is gated on the future scene-mapping
+// service join (see AlternateTitleResource doc-comment).
 //
 // J326 v5-additive widening: 4 fields the C# v5 SeriesResource carries
 // that don't appear on the C# v3 SeriesResource (deliberate v3
@@ -121,10 +123,53 @@ type SeriesResource struct {
 	Tags              []int    `json:"tags"`
 	MonitorNewItems   string   `json:"monitorNewItems"`
 	Ended             bool     `json:"ended"`
-	LanguageProfileID int      `json:"languageProfileId"`
-	Genres            []string `json:"genres"`
-	OriginalCountry   string   `json:"originalCountry,omitempty"`
-	IsExcluded        *bool    `json:"isExcluded,omitempty"`
+	LanguageProfileID int                       `json:"languageProfileId"`
+	Genres            []string                  `json:"genres"`
+	OriginalCountry   string                    `json:"originalCountry,omitempty"`
+	IsExcluded        *bool                     `json:"isExcluded,omitempty"`
+	AlternateTitles   *[]AlternateTitleResource `json:"alternateTitles,omitempty"`
+}
+
+// AlternateTitleResource is the wire-shape mirror of C#
+// `Sonarr.Api.V3.Series.AlternateTitleResource` /
+// `Sonarr.Api.V5.Series.AlternateTitleResource` — both surfaces
+// share the same 5-field DTO sourced from the scene-mapping table
+// (NzbDrone.Core.DataAugmentation.Scene.SceneMapping). Surfaced as
+// the inner type of SeriesResource.AlternateTitles `*[]…` pointer-
+// to-slice 3-state per the J309 pattern.
+//
+// Wire shape:
+//
+//	{
+//	  "title":             "<string?>",     // nullable
+//	  "seasonNumber":      <int?>,          // nullable
+//	  "sceneSeasonNumber": <int?>,          // nullable
+//	  "sceneOrigin":       "<string?>",     // nullable
+//	  "comment":           "<string?>"      // nullable; populated mapper
+//	                                        // substitutes "Limited matching"
+//	                                        // when comment is empty AND
+//	                                        // filter-regex is non-empty per
+//	                                        // C# AlternateTitleResource.cs:24-26
+//	}
+//
+// All 5 fields are nullable on both v3+v5; under STJson
+// WhenWritingNull, null drops the key. Go-port mirrors this via
+// pointer-to-int for the int fields (Go has no native int? in JSON
+// — *int + omitempty matches C# `int?` precisely) + omitempty
+// strings.
+//
+// J329 — wire-shape pin only. Population is gated on the future
+// scene-mapping service join (the C# Series.ToResource mapper calls
+// `_sceneMappingService.FindAlternateTitles(model)` per
+// SeriesResource.cs:108-114; the Go-port's scene-mapping service
+// hasn't ported yet, so the field stays nil today and omitempty
+// drops the key.
+type AlternateTitleResource struct {
+	Title             string `json:"title,omitempty"`
+	SeasonNumber      *int   `json:"seasonNumber,omitempty"`
+	SceneSeasonNumber *int   `json:"sceneSeasonNumber,omitempty"`
+	SceneOrigin       string `json:"sceneOrigin,omitempty"`
+	Comment           string `json:"comment,omitempty"`
 }
 
 // SeriesLister narrows the series.Service surface to the read path

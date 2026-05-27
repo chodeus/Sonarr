@@ -16559,3 +16559,98 @@ No new routes. Struct + mapper + doc-comment widening only.
 50 wire-shape fields landed across J309-J328. **EpisodeFileResource scalar widening closed.**
 
 Next-tick smallest candidate: EpisodeFileResource MediaInfo typed subresource (mid-size — ~12 ffprobe DTO fields + the wrapper), or AlternateTitle subresource on SeriesResource (smaller — 5 fields per entry).
+
+---
+
+## J329 — Post-Wave-3 drain, slice 21: SeriesResource AlternateTitles pointer-to-slice + apiv3.AlternateTitleResource typed DTO
+
+**Anchor**: post-J328 (EpisodeFileResource scalar widening landed). Adds the AlternateTitles subresource list to SeriesResource — both v3 + v5 share the same 5-field DTO sourced from the scene-mapping table.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Series/AlternateTitleResource.cs:8-15` + `src/Sonarr.Api.V5/Series/AlternateTitleResource.cs:6-13` — same 5-field DTO (Title + SeasonNumber + SceneSeasonNumber + SceneOrigin + Comment, all nullable).
+- C# Series.ToResource at `SeriesResource.cs:108-114` populates via `_sceneMappingService.FindAlternateTitles(model)`.
+- Mapper at `AlternateTitleResource.cs:24-26` substitutes "Limited matching" when Comment is empty AND FilterRegex is non-empty.
+
+### Wire contract
+
+Wire shape: `{"title":"...","seasonNumber":N,"sceneSeasonNumber":N,"sceneOrigin":"...","comment":"..."}`. All 5 fields nullable on both v3+v5; under STJson WhenWritingNull, null drops the key.
+
+Parent SeriesResource declares `List<AlternateTitleResource>? AlternateTitles` — nullable list. Pointer-to-slice 3-state matches: nil → key absent; non-nil empty → `"alternateTitles":[]`; populated → typed list.
+
+### Port deliverables
+
+**`internal/api/v3/series.go`** — struct + new typed DTO + doc-comment:
+
+- `SeriesResource.AlternateTitles *[]AlternateTitleResource json:"alternateTitles,omitempty"` field added at the end of the struct.
+- New `AlternateTitleResource` type (5 fields):
+  - `Title string json:"title,omitempty"`.
+  - `SeasonNumber *int json:"seasonNumber,omitempty"` (pointer matches C# `int?`).
+  - `SceneSeasonNumber *int json:"sceneSeasonNumber,omitempty"`.
+  - `SceneOrigin string json:"sceneOrigin,omitempty"`.
+  - `Comment string json:"comment,omitempty"`.
+- Doc comment cites the C# scene-mapping source + the populated-mapper deferral (the Go-port's scene-mapping service hasn't ported yet; the field stays nil and omitempty drops the key today).
+- SeriesResource DEFERRED list trimmed — alternateTitles removed.
+
+No emit-site mapper updates required. `ToSeriesResource` doesn't populate the new field; future populated mapper allocates `*[]AlternateTitleResource` from the scene-mapping service join.
+
+v5/series aliases v3 via `type Resource = apiv3.SeriesResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (1 new, 3 branches)
+
+`internal/api/v3/series_test.go`:
+
+- `TestSeriesResource_AlternateTitlesWiring_J329` — 3-branch pin:
+  - Row 1: nil → `!strings.Contains(buf, "\"alternateTitles\":")` confirms omitempty drops.
+  - Row 2: `&[]AlternateTitleResource{}` empty slice → asserts `"alternateTitles":[]`.
+  - Row 3: populated 2-entry list (entry 1 fully populated; entry 2 minimal Title-only) → 7 positive substring assertions + defensive counts: `"title":` appears 3× (1 parent SeriesResource.Title + 2 alt-titles), the 4 nullable extras each appear exactly 1× (entry 1 only).
+
+### Wiring
+
+No new routes. Struct + new DTO + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/series/...` ✓
+  - v3: all pass, 1.661s
+  - cmd/sonarr: all pass, 3.980s
+  - v5/series: all pass, 2.069s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | DONE (J322) |
+| B. v5 field divergences | QueueResource StatusMessages typed list | DONE (J323) |
+| B. v5 field divergences | QueueResource v5 EpisodeIDs + SeasonNumbers list-form | DONE (J324) |
+| B. v5 field divergences | Quality typed-DTO + History/Blocklist/Queue field widening | DONE (J325) |
+| B. v5 field divergences | SeriesResource v5-additive 4-field widening | DONE (J326) |
+| B. v5 field divergences | EpisodeResource 3-field widening | DONE (J327) |
+| B. v5 field divergences | EpisodeFileResource 5-field scalar widening | DONE (J328) |
+| B. v5 field divergences | SeriesResource AlternateTitles + AlternateTitleResource typed DTO | **DONE this slice (J329)** |
+| B. v5 field divergences | EpisodeFileResource MediaInfo subresource | OPEN — typed DTO with ~12 ffprobe fields |
+| B. v5 field divergences | SeriesResource v5 LanguageProfileId removal | OPEN — needs v5-specific wrapper or alias break |
+| B. v5 field divergences | Quality field widening on ManualImport + Release | OPEN — body-decode shape change |
+| B. v5 field divergences | Languages typed-list DTO on ManualImport + Release | OPEN — same body-decode concern |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+51 wire-shape fields landed across J309-J329. **SeriesResource v3/v5 wire surface DRAINED** (only the v5-specific LanguageProfileId removal remains — needs alias break, deliberate divergence).
+
+Next-tick smallest candidate: EpisodeFileResource MediaInfo typed subresource (~12 ffprobe DTO fields + wrapper — mid-size). Or pivot to populated-row mapper service-port work on history/blocklist (mid-large slice).

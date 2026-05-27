@@ -68,6 +68,75 @@ func TestSeriesListHandler_ScalarProjection(t *testing.T) {
 	}
 }
 
+// J329 wire-shape pin for AlternateTitles pointer-to-slice +
+// AlternateTitleResource typed DTO widening on SeriesResource.
+// 3-state pointer-to-slice: nil → key absent (matches C# null
+// under WhenWritingNull); non-nil empty → `"alternateTitles":[]`;
+// populated → typed list with per-entry omitempty on nullable
+// strings + pointer-to-int on nullable ints.
+func TestSeriesResource_AlternateTitlesWiring_J329(t *testing.T) {
+	t.Parallel()
+	// Branch 1: nil → omitempty drops the key.
+	nilCase := SeriesResource{ID: 1, Title: "x", Tags: []int{}, Genres: []string{}}
+	buf, err := json.Marshal(nilCase)
+	if err != nil {
+		t.Fatalf("marshal nil: %v", err)
+	}
+	if strings.Contains(string(buf), `"alternateTitles":`) {
+		t.Errorf("nil must omit; got %s", buf)
+	}
+	// Branch 2: explicit empty-slice pointer → emits `[]`.
+	empty := []AlternateTitleResource{}
+	emptyCase := SeriesResource{ID: 2, Title: "x", Tags: []int{}, Genres: []string{}, AlternateTitles: &empty}
+	buf2, err := json.Marshal(emptyCase)
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	if !strings.Contains(string(buf2), `"alternateTitles":[]`) {
+		t.Errorf("&[]AlternateTitleResource{} must emit `\"alternateTitles\":[]`; got %s", buf2)
+	}
+	// Branch 3: populated with mixed nullable-handling.
+	season := 2
+	scene := 3
+	titles := []AlternateTitleResource{
+		{Title: "Show JP", SeasonNumber: &season, SceneSeasonNumber: &scene, SceneOrigin: "anidb", Comment: "Anime mapping"},
+		{Title: "Just a title"}, // all other fields nil/empty
+	}
+	populated := SeriesResource{ID: 3, Title: "x", Tags: []int{}, Genres: []string{}, AlternateTitles: &titles}
+	buf3, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated: %v", err)
+	}
+	got := string(buf3)
+	mustContain := []string{
+		`"alternateTitles":[`,
+		`"title":"Show JP"`,
+		`"seasonNumber":2`,
+		`"sceneSeasonNumber":3`,
+		`"sceneOrigin":"anidb"`,
+		`"comment":"Anime mapping"`,
+		`"title":"Just a title"`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Errorf("populated missing %q in %s", want, got)
+		}
+	}
+	// Entry 2 has Title="Just a title" but the OTHER nullable fields
+	// drop. Defensive count: `"title":` appears 3 times total (1 from
+	// the parent SeriesResource.Title + 1 per AlternateTitleResource
+	// entry). The 4 nullable extras (seasonNumber/sceneSeasonNumber/
+	// sceneOrigin/comment) appear exactly once each (entry 1 only).
+	if c := strings.Count(got, `"title":`); c != 3 {
+		t.Errorf("expected 3 `\"title\":` occurrences (1 parent + 2 alt-titles); got %d", c)
+	}
+	for _, key := range []string{`"seasonNumber":`, `"sceneSeasonNumber":`, `"sceneOrigin":`, `"comment":`} {
+		if c := strings.Count(got, key); c != 1 {
+			t.Errorf("expected 1 %q (entry 1 only); got %d", key, c)
+		}
+	}
+}
+
 // J326 wire-shape pin for the v5-additive 4-field widening on
 // SeriesResource (MalIds + AniListIds + OriginalCountry + IsExcluded).
 // All omitempty: nil slices, empty string, nil pointer drop keys;
