@@ -15233,3 +15233,88 @@ No new routes. Struct + helper + mapper widening only.
 14 wire-shape fields landed across J309-J314.
 
 Next-tick smallest candidate: apply the same Languages helper to QueueResource + ManualImportResource (both carriers already have persisted []int Languages; each is a 1-field struct add + 1 emit-site population + 1 wire test). Or finally tackle the Quality typed-DTO port — bigger but unblocks the cluster of QualityModel-bearing resources (History, Blocklist, Queue, ManualImport, Release).
+
+---
+
+## J315 — Post-Wave-3 drain, slice 7: Languages typed-list widening on QueueResource
+
+**Anchor**: post-J314 (Languages helper landed + applied to History + Blocklist). Continues the carrier-sweep — applies the same LanguageRef helper to apiv3.QueueResource.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:21` — `public List<Language> Languages { get; set; }`.
+- `src/Sonarr.Api.V5/Queue/QueueResource.cs:18` — `public List<Language> Languages { get; set; } = []` (v5 adds the constructor default).
+
+### Wire contract
+
+C# under STJson `WhenWritingNull`:
+- null → key absent.
+- empty List<Language> → `"languages":[]`.
+- populated → `"languages":[{"id":N,"name":"X"},...]`.
+
+Go-port mapping with `Languages []LanguageRef json:"languages,omitempty"`:
+- nil → key absent ✓.
+- empty non-nil slice → key absent (Go's `omitempty` on slices collapses nil and empty to the same "absent" output — divergence from C#'s WhenWritingNull behavior).
+- populated → `"languages":[{...}]` ✓.
+
+The empty-vs-nil collapse is documented in the struct doc comment as an acceptable trade-off for the queue path. Clients have no semantic reason to distinguish "no languages reported" from "explicitly empty list" on a download-queue item. If a future requirement to preserve the distinction arrives, switch to `*[]LanguageRef` (J309 SeasonResource.Images pattern: nil pointer → key absent; non-nil pointer to empty slice → `[]`).
+
+The omitempty choice (vs the no-omitempty used on History + Blocklist) is required here because today's empty-DB QueueResource stub never allocates Languages — using no-omitempty would emit `"languages":null` per Go's default nil-slice marshal, which breaks the empty-corpus contract goldens.
+
+### Port deliverables
+
+**`internal/api/v3/queue.go`** — struct + doc-comment:
+
+- `QueueResource.Languages []LanguageRef json:"languages,omitempty"` field added after Protocol (matches the position of other carrier widenings — Languages near the protocol/quality cluster).
+- Doc comment extended with a J315 paragraph cataloguing the omitempty contract, the empty-vs-nil collapse trade-off, and the pointer-to-slice escape hatch citation.
+
+No emit-site mapper updates required — production today returns `[]QueueResource{}` (no rows). The populated-row mapper (gated on queue.Service's paged surface) is its own dedicated slice; this one is purely a wire-shape pin.
+
+v5/queue aliases v3 via `type Resource = apiv3.QueueResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (1 new)
+
+`internal/api/v3/queue_test.go`:
+
+- `TestQueueResource_LanguagesWireShape_J315` — pure-marshal pin covering 2 branches:
+  - Branch 1: `QueueResource{ID:1, Title:"demo"}` (no Languages) → omitempty drops the key. Pinned via `!strings.Contains(buf, "\"languages\":")`.
+  - Branch 2: `QueueResource{ID:2, Title:"demo", Languages: ToLanguageRefs([]int{1,2})}` → typed `[{"id":1,"name":"English"},{"id":2,"name":"French"}]` shape (uses the J314 helper to confirm end-to-end integration).
+
+Empty-slice branch dropped from the test after a failure revealed the omitempty collapse — documented in the test's doc comment with the pointer-to-slice escape hatch citation. The trade-off is acceptable for the queue carrier; if the populated-mapper port needs to preserve the C# `[]` emit, it can switch to `*[]LanguageRef` then.
+
+### Wiring
+
+No new routes. Struct + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/queue/...` ✓
+  - v3: all pass, 1.698s
+  - cmd/sonarr: all pass, 4.011s
+  - v5/queue: all pass, 2.097s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | **DONE this slice (J315)** |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem | OPEN — requires reprocessOne logic refactor (item.Languages[0] == 0 Unknown-check) + body-decode shape consideration; larger than J315 |
+| B. v5 field divergences | Languages typed-list DTO on ReleaseResource | OPEN — pre-existing []int gap; widening is straightforward but the broader ReleaseResource ~50-field projection has many other deferred fields |
+| B. v5 field divergences | Quality typed QualityModel envelope | OPEN — complex DTO; single dedicated slice (Quality is QualityModel with id/name/source/resolution/modifier nested under quality/revision sub-objects) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | OPEN — additive divergence |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — alias break, mid-size |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN — needs deps injection + per-row series lookup |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
+
+15 wire-shape fields landed across J309-J315.
+
+Next-tick smallest candidate: Quality typed-DTO port — bigger but unblocks the cluster of QualityModel-bearing resources (History, Blocklist, Queue, ManualImport, Release). Or pick a different small-LOC item like the v5-only BlocklistResource `Source` field (10 LOC additive divergence).

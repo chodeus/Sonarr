@@ -78,6 +78,48 @@ func TestQueueHandler_RecordsPassthrough(t *testing.T) {
 	}
 }
 
+// J315 wire-shape pin for the Languages typed-list widening on
+// QueueResource. The field uses omitempty (unlike History +
+// Blocklist which use no-omitempty), because today's empty-DB
+// QueueResource stub never allocates Languages — preserving the
+// nil → key-absent contract avoids a wire-shape break for the
+// existing empty-corpus contract goldens. The populated-row
+// mapper (gated on queue.Service's paged surface) will allocate
+// via `apiv3.ToLanguageRefs(model.Languages)` once the paged-
+// projection port lands.
+//
+// Note on the empty-vs-nil collapse: Go's `omitempty` on a slice
+// drops BOTH nil AND empty non-nil to "key absent" — the
+// distinction C# preserves under `WhenWritingNull` (null → absent;
+// empty List → `[]`) is lost. The cost is acceptable for the
+// queue path: clients have no semantic reason to distinguish
+// "no languages reported" from "explicitly empty list" for a
+// download-queue item. If a future need to preserve the
+// distinction arrives, switch to `*[]LanguageRef` (J309
+// SeasonResource.Images pattern).
+//
+// Test covers 2 branches: nil → key omitted; populated → typed
+// `[{"id":N,"name":"X"}]` shape.
+func TestQueueResource_LanguagesWireShape_J315(t *testing.T) {
+	t.Parallel()
+	// Branch 1: nil (today's stub default) — omitempty drops the key.
+	buf, err := json.Marshal(QueueResource{ID: 1, Title: "demo"})
+	if err != nil {
+		t.Fatalf("marshal nil-languages: %v", err)
+	}
+	if strings.Contains(string(buf), `"languages":`) {
+		t.Errorf("nil Languages must omit the key; got %s", buf)
+	}
+	// Branch 2: populated 2-entry via ToLanguageRefs — typed shape.
+	buf2, err := json.Marshal(QueueResource{ID: 2, Title: "demo", Languages: ToLanguageRefs([]int{1, 2})})
+	if err != nil {
+		t.Fatalf("marshal populated-languages: %v", err)
+	}
+	if !strings.Contains(string(buf2), `"languages":[{"id":1,"name":"English"},{"id":2,"name":"French"}]`) {
+		t.Errorf("populated Languages must emit typed shape; got %s", buf2)
+	}
+}
+
 // ---------- 5.I18: /queue/details tests ----------
 
 type fakeQueueDetailsLister struct {

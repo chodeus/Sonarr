@@ -35,14 +35,30 @@ import (
 // Pointers for the nullable int fields preserve the C# `int?`
 // semantic — null when unset on the wire, populated when the queue
 // row is tied to a Series/Episode.
+//
+// J315 widening: Languages ([]LanguageRef with omitempty). C# v3
+// declares `List<Language>` (non-nullable) and v5 marks the same
+// field as `List<Language> Languages = []` with a constructor
+// default. Under STJson `WhenWritingNull`, a null List drops the
+// key — the omitempty Go tag mirrors that posture: nil drops the
+// key (matches today's empty-DB stub where the QueueResource
+// projection never allocates Languages); non-nil empty emits
+// `"languages":[]`; populated emits `"languages":[{...}]`. The
+// populated-row mapper (gated on queue.Service's paged surface +
+// the TrackedDownloads service join the C# tree does) should
+// allocate via apiv3.ToLanguageRefs(model.Languages) to match the
+// C# `model.Languages` passthrough; the empty Go-port queue
+// stub today leaves the field nil so the wire stays unchanged
+// at the empty-DB shape.
 type QueueResource struct {
-	ID         int    `json:"id,omitempty"`
-	SeriesID   *int   `json:"seriesId,omitempty"`
-	EpisodeID  *int   `json:"episodeId,omitempty"`
-	Title      string `json:"title,omitempty"`
-	Status     string `json:"status,omitempty"`
-	DownloadID string `json:"downloadId,omitempty"`
-	Protocol   string `json:"protocol,omitempty"`
+	ID         int           `json:"id,omitempty"`
+	SeriesID   *int          `json:"seriesId,omitempty"`
+	EpisodeID  *int          `json:"episodeId,omitempty"`
+	Title      string        `json:"title,omitempty"`
+	Status     string        `json:"status,omitempty"`
+	DownloadID string        `json:"downloadId,omitempty"`
+	Protocol   string        `json:"protocol,omitempty"`
+	Languages  []LanguageRef `json:"languages,omitempty"`
 }
 
 // QueueDetailsLister narrows the queue read for the /queue/details
