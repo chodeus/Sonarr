@@ -33,6 +33,20 @@ import (
 // than `null` — matches the C# Newtonsoft default for non-null
 // `List<CustomFormatResource>`.
 //
+// J312 widening: QualityCutoffNotMet (always emit, C#
+// non-nullable bool — populated post-mapping by
+// HistoryController.cs:57 via `_upgradableSpecification.QualityCutoffNotMet`;
+// the v3 Go-port defaults to false until the upgradable-spec port
+// is wired through to this handler — separate slice). Episode +
+// Series subresources (pointer-to-existing-Resource with omitempty
+// — C# nullable `EpisodeResource?` + `SeriesResource?`; populated
+// when the `includeEpisode=true` / `includeSeries=true` query
+// params are set, currently DEFERRED on both surfaces). Pointer-
+// to-struct preserves the WhenWritingNull wire posture: nil drops
+// the key entirely; non-nil emits the full nested shape. Future
+// populated-mapper port allocates `&apiv3.ToSeriesResource(s)` etc.
+// to light up the subresources without re-widening.
+//
 // The Data field (J310 widening) is the per-history grab-time
 // metadata dictionary the C# tree stamps onto every row
 // (`releaseGroup`, `indexer`, `downloadClient`, `size`,
@@ -51,16 +65,19 @@ import (
 // J296 customFormats wire-through opened (clients can now read the
 // same fields the matcher reads).
 type HistoryResource struct {
-	ID                int                    `json:"id"`
-	SeriesID          int                    `json:"seriesId"`
-	EpisodeID         int                    `json:"episodeId"`
-	SourceTitle       string                 `json:"sourceTitle"`
-	Date              string                 `json:"date"`
-	DownloadID        string                 `json:"downloadId"`
-	EventType         string                 `json:"eventType"`
-	Data              map[string]string      `json:"data,omitempty"`
-	CustomFormats     []CustomFormatResource `json:"customFormats"`
-	CustomFormatScore int                    `json:"customFormatScore"`
+	ID                  int                    `json:"id"`
+	SeriesID            int                    `json:"seriesId"`
+	EpisodeID           int                    `json:"episodeId"`
+	SourceTitle         string                 `json:"sourceTitle"`
+	Date                string                 `json:"date"`
+	DownloadID          string                 `json:"downloadId"`
+	EventType           string                 `json:"eventType"`
+	Data                map[string]string      `json:"data,omitempty"`
+	QualityCutoffNotMet bool                   `json:"qualityCutoffNotMet"`
+	CustomFormats       []CustomFormatResource `json:"customFormats"`
+	CustomFormatScore   int                    `json:"customFormatScore"`
+	Episode             *EpisodeResource       `json:"episode,omitempty"`
+	Series              *SeriesResource        `json:"series,omitempty"`
 }
 
 // HistoryPagedLister is the read side the handler depends on. Same

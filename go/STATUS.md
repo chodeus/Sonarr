@@ -14975,3 +14975,77 @@ No new routes. Struct + helper + mapper widening only.
 | A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
 
 Next-tick smallest candidate: HistoryResource `Languages` field — `Entry.Languages` is `[]int` of language IDs; the wire form is `List<{id:int, name:string}>` (Language DTO). `internal/language` package likely already has the id-to-name lookup. Mid-tier slice (single typed-list field add + helper). Alternatively, the v5-only BlocklistResource `Source` field is a single-string add (`string?` → omitempty); J311-pattern repeat, even smaller LOC.
+
+---
+
+## J312 — Post-Wave-3 drain, slice 4: v3 HistoryResource 3-field widening (QualityCutoffNotMet + Episode? + Series?)
+
+**Anchor**: post-J311 (BlocklistResource 4-field scalar widening landed). Continues the post-Wave-3 backlog drain with a 3-field widening on `apiv3.HistoryResource` covering the remaining v3/v5 wire-shape gaps not requiring a typed-DTO port.
+
+### C# source
+
+- `src/Sonarr.Api.V3/History/HistoryResource.cs:23` — `public bool QualityCutoffNotMet { get; set; }`.
+- `src/Sonarr.Api.V3/History/HistoryResource.cs:31-32` — `public EpisodeResource Episode { get; set; }` + `public SeriesResource Series { get; set; }`.
+- `src/Sonarr.Api.V5/History/HistoryResource.cs:25-26` — same fields with v5 nullability annotations (`EpisodeResource? Episode` + `SeriesResource? Series`).
+- `src/Sonarr.Api.V3/History/HistoryController.cs:57` — population path: `resource.QualityCutoffNotMet = _upgradableSpecification.QualityCutoffNotMet(model.Series.QualityProfile.Value, model.Quality)`.
+
+### Wire contract
+
+- `QualityCutoffNotMet`: non-nullable bool → always emit. Default false matches the C# `// QualityCutoffNotMet` deferred-comment stub at `HistoryResource.cs:59` (mapper leaves it unset; controller populates post-mapping via upgradable-spec — DEFERRED in the Go-port until that spec port lands).
+- `Episode?` + `Series?`: nullable subresources. Under STJson's `JsonIgnoreCondition.WhenWritingNull`, null drops the key; non-null emits the full nested shape. Pointer-to-struct with omitempty is the Go equivalent.
+
+### Port deliverables
+
+**`internal/api/v3/history.go`** — struct + doc-comment:
+
+- `HistoryResource` widened with 3 new fields in C#-declaration order:
+  - `QualityCutoffNotMet bool json:"qualityCutoffNotMet"` after Data (placed alongside the other always-emit scalars).
+  - `Episode *EpisodeResource json:"episode,omitempty"` after CustomFormatScore.
+  - `Series *SeriesResource json:"series,omitempty"` after Episode.
+- Doc comment extended with a J312 paragraph cataloguing each field's wire contract + the C# population path + the deferral rationale (QualityCutoffNotMet → upgradable-spec port; Episode + Series → `includeEpisode=true`/`includeSeries=true` query-param branches).
+
+No emit-site mapper updates required — Go's zero value for `bool` is `false` and for `*Resource` is `nil`, so the existing `HistoryResource{...}` literals at `writeHistoryEntries` (history.go:179) + `cmd/sonarr/host_wiring.go:historyPagedAdapter.PagedHistory` (line 694) automatically pick up the deferred-state defaults.
+
+v5/history aliases v3 via `type Resource = apiv3.HistoryResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (2 new)
+
+`internal/api/v3/history_test.go` (already has `strings`, `json` imports from J310):
+
+- `TestHistorySinceHandler_EmitsQualityCutoffNotMetAndSubresources_J312` — 2-row pin covering BOTH deferred-state branches:
+  - Both rows leave QualityCutoffNotMet at the zero-value default → positive assertion `strings.Count(body, "\"qualityCutoffNotMet\":false") == 2` pins the always-emit contract for the non-nullable bool.
+  - Both rows have nil Episode + nil Series → negative pins `!strings.Contains(body, "\"episode\":")` + `!strings.Contains(body, "\"series\":")` pin the omitempty drop for the pointer-to-struct subresources.
+- `TestHistoryResource_PopulatedSubresources_EmitFullShape_J312` — pure-marshal pin for the populated-subresource branch. Hand-constructs `HistoryResource` with `&EpisodeResource{ID:101, EpisodeNumber:1, SeasonNumber:1, Title:"Pilot"}` + `&SeriesResource{ID:11, Title:"Show", Tags:[]int{}, Genres:[]string{}}` + flipped `QualityCutoffNotMet=true`. Substring asserts on all 7 must-have keys including the populated `"episode":{`/`"series":{` openers + nested `"title":"Pilot"`/`"title":"Show"` confirmations. The Tags/Genres explicit empty-slice allocations match SeriesResource's `tags:[]` + `genres:[]` always-emit posture (no omitempty on those fields).
+
+The existing positive-pin tests (`TestHistorySinceHandler_EmitsCustomFormatsAndScore`, `TestHistorySinceHandler_EmitsDataDictAndOmitsWhenNil`) continue to pass — their rows have nil Episode + nil Series (omitempty drops the keys) and zero-value QualityCutoffNotMet (emits `:false` which the existing assertions don't check for, so no regression).
+
+### Wiring
+
+No new routes. Struct + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/history/...` ✓
+  - v3: all pass, 1.407s
+  - cmd/sonarr: all pass, 3.679s
+  - v5/history: all pass, 1.993s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | **DONE this slice (J312)** |
+| B. v5 field divergences | HistoryResource Languages + Quality (typed DTOs) | OPEN — each its own slice |
+| B. v5 field divergences | BlocklistResource Languages + Quality + Series subresource | OPEN — same pattern |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | OPEN — additive divergence consideration |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — alias break, mid-size |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN — needs deps injection + per-row series lookup |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
+
+Next-tick smallest candidate: applying the same J312 Episode? + Series? pointer-subresource pattern to BlocklistResource (single-resource embed `Series *SeriesResource` — Blocklist has Series subresource but no Episode). Or v5-only BlocklistResource `Source` field add. Both J311-pattern repeats.

@@ -235,6 +235,92 @@ func TestHistorySinceHandler_EmitsDataDictAndOmitsWhenNil(t *testing.T) {
 	}
 }
 
+// J312 wire-shape pin for the QualityCutoffNotMet + Episode? +
+// Series? widening. QualityCutoffNotMet is non-nullable on the C#
+// wire (bool) so it always emits — default false matches the v3
+// HistoryResourceMapper's `// QualityCutoffNotMet` deferred-comment
+// stub at C# HistoryResource.cs:59 (the value is populated post-
+// mapping by HistoryController.cs:57 via the upgradable-spec
+// service — DEFERRED in the Go-port). Episode + Series are
+// nullable subresources (pointer-to-struct with omitempty):
+//   - nil → key absent (matches STJson WhenWritingNull / C#
+//     `EpisodeResource?` + `SeriesResource?`).
+//   - non-nil → key present with the full nested shape (matches
+//     C# `includeEpisode=true` / `includeSeries=true` query-param
+//     branches — both DEFERRED in the Go-port).
+//
+// Test covers BOTH branches in one pass: row 1 leaves all three
+// at the deferred-state defaults (QualityCutoffNotMet=false +
+// Episode=nil + Series=nil); row 2 explicitly populates Episode +
+// Series + flips QualityCutoffNotMet=true to pin the populated-
+// wire shape.
+func TestHistorySinceHandler_EmitsQualityCutoffNotMetAndSubresources_J312(t *testing.T) {
+	t.Parallel()
+	one := 1
+	svc := &fakeHistoryRangeReader{sinceRows: []history.Entry{
+		{ID: 7, SeriesID: 11, SourceTitle: "Show.S01E01", Date: time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC), EventType: &one},
+		{ID: 8, SeriesID: 11, SourceTitle: "Show.S01E02", Date: time.Date(2026, 5, 18, 13, 0, 0, 0, time.UTC), EventType: &one},
+	}}
+	rr := httptest.NewRecorder()
+	HistorySinceHandler(svc).
+		ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/history/since?date=2026-05-18T00:00:00Z", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	body := rr.Body.String()
+	// Positive: both rows emit `"qualityCutoffNotMet":false` (default
+	// state — the upgradable-spec port hasn't landed so the writer
+	// helper doesn't override the zero value).
+	if c := strings.Count(body, `"qualityCutoffNotMet":false`); c != 2 {
+		t.Errorf("expected 2 `\"qualityCutoffNotMet\":false` occurrences (default state on both rows); got %d in %s", c, body)
+	}
+	// Negative: nil Episode + nil Series must drop their keys
+	// entirely (omitempty pinned on the pointer-to-struct field).
+	if strings.Contains(body, `"episode":`) {
+		t.Errorf("nil Episode must omit the key; got %s", body)
+	}
+	if strings.Contains(body, `"series":`) {
+		t.Errorf("nil Series must omit the key; got %s", body)
+	}
+}
+
+// J312 pure-marshal pin for the populated subresource branch:
+// once the populated-mapper lands (allocating &EpisodeResource{}
+// + &SeriesResource{}), the subresources emit the full nested
+// shape under the `episode` + `series` keys. No service path
+// today populates these; this test pins the contract via direct
+// json.Marshal on a hand-constructed HistoryResource.
+func TestHistoryResource_PopulatedSubresources_EmitFullShape_J312(t *testing.T) {
+	t.Parallel()
+	res := HistoryResource{
+		ID: 7, SeriesID: 11, EpisodeID: 101,
+		SourceTitle: "Show.S01E01", Date: "2026-05-18T12:00:00Z",
+		EventType: "grabbed", QualityCutoffNotMet: true,
+		CustomFormats: []CustomFormatResource{},
+		Episode:       &EpisodeResource{ID: 101, EpisodeNumber: 1, SeasonNumber: 1, Title: "Pilot"},
+		Series:        &SeriesResource{ID: 11, Title: "Show", Tags: []int{}, Genres: []string{}},
+	}
+	buf, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(buf)
+	mustContain := []string{
+		`"qualityCutoffNotMet":true`,
+		`"episode":{`,
+		`"series":{`,
+		`"episodeNumber":1`,
+		`"seasonNumber":1`,
+		`"title":"Pilot"`,
+		`"title":"Show"`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %s", want, got)
+		}
+	}
+}
+
 // J296 wire-shape pin: a populated row must emit
 // `customFormats:[]` (not `null`) and `customFormatScore:0` —
 // matches the C# Newtonsoft default for a non-null
