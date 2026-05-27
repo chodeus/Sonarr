@@ -17565,3 +17565,66 @@ No new routes. Struct + doc-comment widening only.
 59 wire-shape fields + 1 v5-strip behavior + 4 service-port populated-mappers landed across J309-J340.
 
 Next-tick assessment: All struct-widening + the 4 carrier-family populated-mappers that had viable paths (history paged/since/series + blocklist paged + episodefile 5+2 handlers) are landed. The remaining items are all gated on substantial deferred service ports (ImportDecisionMaker, parsingService.Map, Queue paged surface + Episodes pipeline, parsingService.GetEpisodes) OR on bigger handler-side populated-mapper port work (Episode/Calendar/Wanted EpisodeFile subresource population — would need same J339 pattern applied to each handler family). Each remaining item is its own multi-slice arc.
+
+---
+
+## J341 — Post-Wave-3 drain, slice 33 (A-category, slice 5): SignalR EpisodeFile broadcasts routed through J339 populator wrapper
+
+**Anchor**: post-J340 (EpisodeFile subresource pointer widening on EpisodeResource landed). Closes the SignalR side of the J339 wire-through — the React UI's real-time refresh path now sees populated CustomFormats + Score for episodefile.Created/Updated/Deleted events.
+
+### Pre-J341 gap
+
+The 3 SignalR EpisodeFile broadcast subscribers at `cmd/sonarr/signalr_wiring.go:321,332,349` projected `apiv3.ToEpisodeFileResource(*ev.EpisodeFile, seriesPath)` without invoking the J339 populator. The HTTP GET /api/v3/episodefile path emitted populated CustomFormats after J339; the SignalR push channel didn't.
+
+### Port deliverables
+
+**`internal/api/v3/episodefile.go`** — helper export:
+
+- `applyEpisodeFilePopulator` renamed to exported `ApplyEpisodeFilePopulator` (capital-A) so cmd/sonarr can call it cross-package. Same behavior (nil-safe + type-assertion-based).
+
+**`cmd/sonarr/signalr_wiring.go`** — signature + 3 site updates:
+
+- `wireSignalRSubscribers` signature extended with a 6th optional `episodeFilePopulator apiv3.EpisodeFilePopulator` parameter.
+- 3 EpisodeFile broadcast subscribers updated to invoke `apiv3.ApplyEpisodeFilePopulator(ctx, &res, ev.EpisodeFile, episodeFilePopulator)` after building the resource via ToEpisodeFileResource (Created + Deleted + Updated subscribers).
+
+**`cmd/sonarr/main.go`** — production call site:
+
+- Constructs `signalRepFilePop := &episodeFileServiceWithPopulator{Service: episodeFilesSvc, seriesSvc, qualityProfilesSvc, customFormatsSvc}` once at the wireSignalRSubscribers call site (the wrapper is in host_wiring.go same package; all 4 deps already in scope).
+- Passes signalRepFilePop as the new 6th arg.
+
+**`cmd/sonarr/signalr_wiring_test.go`** — 18 test call sites updated to pass nil for the new arg (bulk-sed for 16 single-line sites + 2 manual fixes for multi-line QueueStatusBroadcastDeps spans). Tests stay backwards-compatible — nil populator triggers the no-op helper path verbatim (matches pre-J341 SignalR broadcast behavior).
+
+### Tests
+
+No new tests in this slice — the J339 narrow-interface test fakes already cover the helper's nil + populated branches at the apiv3 layer. The SignalR wiring tests pass `nil` for the new populator arg, exercising the no-op path. A populated-path SignalR integration test would require constructing a full episodefiles.Service stack which is environmental — deferred.
+
+### Wiring
+
+Signature change (1 new param) + 3 broadcast sites + 1 production wire site + 18 test site updates. No new routes.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/episodefile/...` ✓
+  - v3: all pass, 2.749s
+  - cmd/sonarr: all pass, 3.869s
+  - v5/episodefile: all pass, 2.194s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | (28 items closed J309-J335 + J340) | DONE |
+| A. Populated-row mappers | history.Service paged populated customFormats+score | DONE (J336) |
+| A. Populated-row mappers | blocklist.Service paged populated customFormats | DONE (J337) |
+| A. Populated-row mappers | history.Since + history.Series populated customFormats+score | DONE (J338) |
+| A. Populated-row mappers | EpisodeFile HTTP handlers populated CustomFormats + Score | DONE (J339) |
+| A. Populated-row mappers | EpisodeFile SignalR broadcasters populated CustomFormats + Score | **DONE this slice (J341)** |
+| A. Populated-row mappers | Episode/Calendar/Wanted populated EpisodeFile subresource | OPEN — handler-side populated-mapper port; needs episodefile-lookup added to 3 handlers + applying ApplyEpisodeFilePopulator at the inner subresource build |
+| A. Populated-row mappers | Parse + ManualImport populated customFormats | OPEN — gated on parsingService.Map + ImportDecisionMaker ports |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN |
+
+59 wire-shape fields + 1 v5-strip behavior + 4 service-port populated-mappers + 1 SignalR populator wire-through landed across J309-J341. All EpisodeFile emit surfaces (5 v3 + 2 v5 HTTP handlers + 3 SignalR broadcasters) now route through the populator wrapper.
+
+Next-tick candidate: extending populator-wrapper pattern to Episode/Calendar/Wanted handlers to populate the J340-pinned `EpisodeFile` subresource on each Episode (gated on adding an episodefile-lookup dep to those handlers).

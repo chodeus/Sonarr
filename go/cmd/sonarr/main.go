@@ -3217,10 +3217,24 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// its projection in Pause/Resume on this shared instance so
 	// the read doesn't re-arm the broadcaster timer with the
 	// snapshot it already serves.
+	// J341: SignalR EpisodeFile broadcasters route the projected
+	// resource through the J339 populator wrapper so subscribers
+	// (the React UI's real-time refresh path) see the same
+	// populated customFormats[] + customFormatScore as the
+	// /api/v3/episodefile HTTP path. Uses the same wrapper as
+	// v3Routes — constructed once here at the main.go call site
+	// since wireSignalRSubscribers is outside buildHostServer's
+	// scope.
+	signalRepFilePop := &episodeFileServiceWithPopulator{
+		Service:            episodeFilesSvc,
+		seriesSvc:          seriesSvc,
+		qualityProfilesSvc: qualityProfilesSvc,
+		customFormatsSvc:   customFormatsSvc,
+	}
 	queueStatusDebouncer := wireSignalRSubscribers(bus, signalRHub, logger, &QueueStatusBroadcastDeps{
 		Queue:   queueSvc,
 		Pending: pendingCountLister{repo: pendingReleasesRepo},
-	}, seriesSvc)
+	}, seriesSvc, signalRepFilePop)
 	// Lift to apiv3.Pauser only when non-nil — a typed-nil
 	// *signalr.Debouncer wrapped in an interface would survive the
 	// `if pauser != nil` guard inside QueueStatusHandler and panic on

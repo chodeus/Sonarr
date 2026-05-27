@@ -120,7 +120,7 @@ type EpisodeFilePopulator interface {
 	PopulateEpisodeFile(ctx context.Context, f *episodefiles.File) (customFormats []CustomFormatResource, customFormatScore int)
 }
 
-// applyEpisodeFilePopulator post-processes a freshly-built
+// ApplyEpisodeFilePopulator post-processes a freshly-built
 // EpisodeFileResource via the optional-extension type-assertion.
 // svc is the handler's reader/writer interface (typed as `any` so
 // the helper accepts any concrete type the handler holds); if it
@@ -129,7 +129,7 @@ type EpisodeFilePopulator interface {
 // (preserves the empty-stub fallback). nil-safe.
 //
 // J339.
-func applyEpisodeFilePopulator(ctx context.Context, res *EpisodeFileResource, f *episodefiles.File, svc any) {
+func ApplyEpisodeFilePopulator(ctx context.Context, res *EpisodeFileResource, f *episodefiles.File, svc any) {
 	if res == nil || f == nil || svc == nil {
 		return
 	}
@@ -216,7 +216,7 @@ func EpisodeFileListHandler(svc EpisodeFileReader, seriesCheck SeriesExistsCheck
 		for _, f := range files {
 			res := ToEpisodeFileResource(f, "")
 			file := f // copy for pointer capture
-			applyEpisodeFilePopulator(r.Context(), &res, &file, svc)
+			ApplyEpisodeFilePopulator(r.Context(), &res, &file, svc)
 			out = append(out, res)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -246,7 +246,7 @@ func EpisodeFileByIDHandler(svc EpisodeFileReader) http.Handler {
 			return
 		}
 		res := ToEpisodeFileResource(*f, "")
-		applyEpisodeFilePopulator(r.Context(), &res, f, svc)
+		ApplyEpisodeFilePopulator(r.Context(), &res, f, svc)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		buf, _ := json.Marshal(res)
@@ -321,7 +321,7 @@ func EpisodeFileEditorHandler(svc EpisodeFileWriter) http.Handler {
 		out := make([]EpisodeFileResource, 0, len(ptrs))
 		for _, f := range ptrs {
 			res := ToEpisodeFileResource(*f, "")
-			applyEpisodeFilePopulator(r.Context(), &res, f, svc)
+			ApplyEpisodeFilePopulator(r.Context(), &res, f, svc)
 			out = append(out, res)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -388,7 +388,7 @@ func EpisodeFileBulkUpdateHandler(svc EpisodeFileWriter) http.Handler {
 		out := make([]EpisodeFileResource, 0, len(ptrs))
 		for _, f := range ptrs {
 			res := ToEpisodeFileResource(*f, "")
-			applyEpisodeFilePopulator(req.Context(), &res, f, svc)
+			ApplyEpisodeFilePopulator(req.Context(), &res, f, svc)
 			out = append(out, res)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -444,7 +444,7 @@ func EpisodeFileUpdateHandler(svc EpisodeFileWriter) http.Handler {
 			return
 		}
 		res := ToEpisodeFileResource(*f, "")
-		applyEpisodeFilePopulator(r.Context(), &res, f, svc)
+		ApplyEpisodeFilePopulator(r.Context(), &res, f, svc)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusAccepted)
 		buf, _ := json.Marshal(res)

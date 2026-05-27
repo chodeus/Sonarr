@@ -36,7 +36,7 @@ func TestWireSignalRSubscribers_TagsUpdatedEventReachesClient(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub(signalr.WithHostVersion("test-build"))
-	wireSignalRSubscribers(bus, hub, logger, nil, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil, nil)
 
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
@@ -95,7 +95,7 @@ func TestWireSignalRSubscribers_AutoTagsUpdatedAlsoFiresTag(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=autotag-test")
@@ -127,7 +127,7 @@ func TestWireSignalRSubscribers_HealthCompleteFiresSync(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=health-test")
@@ -161,7 +161,7 @@ func TestWireSignalRSubscribers_QueueUpdatedFansBoth(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=queue-test")
@@ -211,7 +211,7 @@ func TestWireSignalRSubscribers_PendingReleasesAlsoFansQueue(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=pending-test")
@@ -260,7 +260,7 @@ func TestWireSignalRSubscribers_QueueStatusDebouncedUpdate(t *testing.T) {
 		Queue:            emptyQueueLister{},
 		Pending:          emptyPendingLister{},
 		DebounceDuration: 30 * time.Millisecond,
-	}, nil)
+	}, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=qs-test")
@@ -327,7 +327,7 @@ func TestWireSignalRSubscribers_SeriesAddedFires_Created(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=series-added")
@@ -365,7 +365,7 @@ func TestWireSignalRSubscribers_SeriesEditedFires_Updated(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=series-edited")
@@ -398,7 +398,7 @@ func TestWireSignalRSubscribers_SeriesDeletedFansPerRow(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=series-deleted")
@@ -444,7 +444,7 @@ func TestWireSignalRSubscribers_EpisodeFileAddedFires_Created(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=ef-added")
@@ -511,7 +511,7 @@ func TestWireSignalRSubscribers_EpisodeFileAddedJoinsSeriesPathViaLookup(t *test
 	lookup := &fakeSeriesPathLookup{rows: map[int]*series.Series{
 		5: {ID: 5, Path: "/tv/Demo"},
 	}}
-	wireSignalRSubscribers(bus, hub, logger, nil, lookup)
+	wireSignalRSubscribers(bus, hub, logger, nil, lookup, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=ef-added-lookup")
@@ -550,7 +550,7 @@ func TestWireSignalRSubscribers_EpisodeFileAddedLookupErrorFallsBack(t *testing.
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
 	lookup := &fakeSeriesPathLookup{err: errors.New("db down")}
-	wireSignalRSubscribers(bus, hub, logger, nil, lookup)
+	wireSignalRSubscribers(bus, hub, logger, nil, lookup, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=ef-added-err")
@@ -587,7 +587,7 @@ func TestWireSignalRSubscribers_EpisodeFileDeletedFallsBackToLookup(t *testing.T
 	lookup := &fakeSeriesPathLookup{rows: map[int]*series.Series{
 		7: {ID: 7, Path: "/tv/Other"},
 	}}
-	wireSignalRSubscribers(bus, hub, logger, nil, lookup)
+	wireSignalRSubscribers(bus, hub, logger, nil, lookup, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=ef-deleted-lookup")
@@ -621,7 +621,7 @@ func TestWireSignalRSubscribers_EpisodeFileDeletedJoinsSeriesPath(t *testing.T) 
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=ef-deleted")
@@ -660,7 +660,7 @@ func TestWireSignalRSubscribers_SystemTaskCommandExecutedSync(t *testing.T) {
 	bus := messaging.New(logger)
 	defer bus.BeginShutdown()
 	hub := signalr.NewHub()
-	wireSignalRSubscribers(bus, hub, logger, nil, nil)
+	wireSignalRSubscribers(bus, hub, logger, nil, nil, nil)
 	ts := httptest.NewServer(signalr.WebSocketHandler(hub, logger))
 	defer ts.Close()
 	c := dialWSToServer(t, ts, "id=systask-test")
@@ -693,13 +693,13 @@ func TestWireSignalRSubscribers_NilDepsSafe(t *testing.T) {
 	// Each early-return path returns a nil *signalr.Debouncer so
 	// main.go's shutdown branch (`if queueStatusDebouncer != nil`)
 	// short-circuits cleanly when wiring was skipped.
-	if d := wireSignalRSubscribers(nil, nil, logger, nil, nil); d != nil {
+	if d := wireSignalRSubscribers(nil, nil, logger, nil, nil, nil); d != nil {
 		t.Errorf("nil bus + hub: got non-nil debouncer")
 	}
-	if d := wireSignalRSubscribers(messaging.New(logger), nil, logger, nil, nil); d != nil {
+	if d := wireSignalRSubscribers(messaging.New(logger), nil, logger, nil, nil, nil); d != nil {
 		t.Errorf("nil hub: got non-nil debouncer")
 	}
-	if d := wireSignalRSubscribers(nil, signalr.NewHub(), logger, nil, nil); d != nil {
+	if d := wireSignalRSubscribers(nil, signalr.NewHub(), logger, nil, nil, nil); d != nil {
 		t.Errorf("nil bus: got non-nil debouncer")
 	}
 }
@@ -720,7 +720,7 @@ func TestWireSignalRSubscribers_QueueStatusStopSilencesFire(t *testing.T) {
 		Queue:            emptyQueueLister{},
 		Pending:          emptyPendingLister{},
 		DebounceDuration: 20 * time.Millisecond,
-	}, nil)
+	}, nil, nil)
 	if debouncer == nil {
 		t.Fatal("expected non-nil queue/status debouncer when QueueStatusBroadcastDeps supplied")
 	}

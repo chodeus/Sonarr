@@ -89,7 +89,7 @@ type SeriesPathLookup interface {
 // read doesn't re-arm the broadcaster (matches the C#
 // QueueStatusController shared-Debouncer pattern at
 // `src/Sonarr.Api.V3/Queue/QueueStatusController.cs:49,65`).
-func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.Logger, queueStatus *QueueStatusBroadcastDeps, seriesPathLookup SeriesPathLookup) *signalr.Debouncer {
+func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.Logger, queueStatus *QueueStatusBroadcastDeps, seriesPathLookup SeriesPathLookup, episodeFilePopulator apiv3.EpisodeFilePopulator) *signalr.Debouncer {
 	if hub == nil || bus == nil {
 		return nil
 	}
@@ -324,6 +324,12 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 				return nil
 			}
 			res := apiv3.ToEpisodeFileResource(*ev.EpisodeFile, seriesPathFor(ctx, ev.EpisodeFile.SeriesID))
+			// J341: route the broadcasted resource through the same J339
+			// populator wrapper so the SignalR subscribers (the React UI's
+			// real-time refresh path) see populated customFormats + score —
+			// same data the HTTP GET /api/v3/episodefile path emits at
+			// J339. nil populator (typical test fixture) → no-op.
+			apiv3.ApplyEpisodeFilePopulator(ctx, &res, ev.EpisodeFile, episodeFilePopulator)
 			if err := episodeFileBroadcaster.Created(ctx, res); err != nil {
 				logger.Warn("signalr: episodefile created broadcast failed", "err", err)
 			}
@@ -341,6 +347,7 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 				seriesPath = seriesPathFor(ctx, ev.EpisodeFile.SeriesID)
 			}
 			res := apiv3.ToEpisodeFileResource(*ev.EpisodeFile, seriesPath)
+			apiv3.ApplyEpisodeFilePopulator(ctx, &res, ev.EpisodeFile, episodeFilePopulator)
 			if err := episodeFileBroadcaster.Deleted(ctx, res); err != nil {
 				logger.Warn("signalr: episodefile deleted broadcast failed", "err", err)
 			}
@@ -358,6 +365,7 @@ func wireSignalRSubscribers(bus *messaging.Bus, hub *signalr.Hub, logger *slog.L
 				seriesPath = seriesPathFor(ctx, ev.EpisodeFile.SeriesID)
 			}
 			res := apiv3.ToEpisodeFileResource(*ev.EpisodeFile, seriesPath)
+			apiv3.ApplyEpisodeFilePopulator(ctx, &res, ev.EpisodeFile, episodeFilePopulator)
 			if err := episodeFileBroadcaster.Updated(ctx, res); err != nil {
 				logger.Warn("signalr: episodefile updated broadcast failed", "err", err)
 			}
