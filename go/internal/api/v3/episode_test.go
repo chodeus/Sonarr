@@ -116,6 +116,43 @@ func TestEpisodeResource_NewPointerFields_J327(t *testing.T) {
 	}
 }
 
+// J340 wire-shape pin for the EpisodeResource.EpisodeFile pointer-
+// to-struct widening (J302 pattern). Test covers both branches:
+// nil → omitempty drops the key; populated → emits the nested
+// envelope.
+func TestEpisodeResource_EpisodeFileField_J340(t *testing.T) {
+	t.Parallel()
+	// Branch 1: nil (today's default) → omitempty drops the key.
+	nilCase := EpisodeResource{ID: 1, SeriesID: 42, SeasonNumber: 1, EpisodeNumber: 1, Title: "Pilot"}
+	buf, err := json.Marshal(nilCase)
+	if err != nil {
+		t.Fatalf("marshal nil: %v", err)
+	}
+	if strings.Contains(string(buf), `"episodeFile":`) {
+		t.Errorf("nil EpisodeFile must omit the key; got %s", buf)
+	}
+	// Branch 2: populated → emits the nested envelope.
+	populated := EpisodeResource{
+		ID: 2, SeriesID: 42, SeasonNumber: 1, EpisodeNumber: 2,
+		EpisodeFile: &EpisodeFileResource{ID: 99, SeriesID: 42, RelativePath: "S01E02.mkv", Languages: []LanguageRef{}, CustomFormats: []CustomFormatResource{}},
+	}
+	buf2, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated: %v", err)
+	}
+	got := string(buf2)
+	mustContain := []string{
+		`"episodeFile":{`,
+		`"id":99`,
+		`"relativePath":"S01E02.mkv"`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Errorf("populated EpisodeFile missing %q in %s", want, got)
+		}
+	}
+}
+
 func TestEpisodeListHandler_ListerError(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()

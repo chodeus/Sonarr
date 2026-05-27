@@ -31,6 +31,19 @@ import (
 // episodeFile (EpisodeFileResource), images ([]MediaCover),
 // finaleType (computed from analytics).
 //
+// J340 widening: EpisodeFile *EpisodeFileResource subresource
+// pointer field (J302 pattern). C# v3 declares
+// `EpisodeFileResource EpisodeFile` (non-nullable) at v3
+// EpisodeResource.cs:25; v5 declares `EpisodeFileResource?
+// EpisodeFile` (nullable) at v5 EpisodeResource.cs:24. Populated
+// in C# when the request's `includeEpisodeFile=true` query branch
+// is set (per the calendar/wanted/episode handlers' joining
+// logic). Go-port handlers DEFERRED that branch — the field stays
+// nil today and omitempty drops the key. When the populated-mapper
+// for the EpisodeResource path lands, it allocates via
+// `apiv3.ToEpisodeFileResource(...)` and routes through the J339
+// populator wrapper for the inner CustomFormats projection.
+//
 // J327 widening: 3 new pointer fields — EndTime + GrabDate (both
 // v5-additive `DateTime?` at v5 EpisodeResource.cs:30-31) +
 // Grabbed (both v3+v5 — `bool` with `[JsonIgnore(Condition =
@@ -63,9 +76,10 @@ type EpisodeResource struct {
 	SceneEpisodeNumber         *int       `json:"sceneEpisodeNumber,omitempty"`
 	SceneSeasonNumber          *int       `json:"sceneSeasonNumber,omitempty"`
 	UnverifiedSceneNumbering   bool       `json:"unverifiedSceneNumbering"`
-	EndTime                    *time.Time `json:"endTime,omitempty"`
-	GrabDate                   *time.Time `json:"grabDate,omitempty"`
-	Grabbed                    *bool      `json:"grabbed,omitempty"`
+	EndTime                    *time.Time           `json:"endTime,omitempty"`
+	GrabDate                   *time.Time           `json:"grabDate,omitempty"`
+	Grabbed                    *bool                `json:"grabbed,omitempty"`
+	EpisodeFile                *EpisodeFileResource `json:"episodeFile,omitempty"`
 }
 
 // EpisodeBySeriesLister narrows the read surface to the

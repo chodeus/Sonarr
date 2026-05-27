@@ -17501,3 +17501,67 @@ No new routes. Wrapper struct + helper + 7 wire-site updates.
 58 wire-shape fields + 1 v5-strip behavior + 4 service-port populated-mappers landed across J309-J339.
 
 Next-tick candidate: Episode/Calendar/Wanted handlers also emit EpisodeFile as a subresource — the J339 populator wiring on the underlying EpisodeFileResource will already activate when those handlers thread the same populator through. Smallest follow-up: ManualImport populated CustomFormats (the reprocessOne path) or Parse populated mapper.
+
+---
+
+## J340 — Post-Wave-3 drain, slice 32 (B-category): EpisodeResource.EpisodeFile subresource pointer-to-struct widening
+
+**Anchor**: post-J339 (EpisodeFile populated-mapper landed). One missing wire-shape pin found on EpisodeResource — the EpisodeFile subresource the C# carriers project when `includeEpisodeFile=true` query-param fires. Same J302 pointer-to-struct + omitempty pattern.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Episodes/EpisodeResource.cs:25` — `EpisodeFileResource EpisodeFile` (non-nullable on v3).
+- `src/Sonarr.Api.V5/Episodes/EpisodeResource.cs:24` — `EpisodeFileResource? EpisodeFile` (nullable on v5).
+
+Both surfaces share the same field set — v5-nullability is a JSON annotation; under STJson `WhenWritingNull` the wire shape is the same: populated → emit; null → key absent.
+
+### Port deliverables
+
+**`internal/api/v3/episode.go`** — struct + doc-comment:
+
+- `EpisodeResource.EpisodeFile *EpisodeFileResource json:"episodeFile,omitempty"` field added at the end of the struct.
+- Doc comment extended with a J340 paragraph cataloguing the wire contract + the populated-mapper deferral note + the J339 populator-wrapper cross-reference (when the populated-mapper for the EpisodeResource path lands, it allocates via apiv3.ToEpisodeFileResource(...) and routes through the J339 populator wrapper for the inner CustomFormats projection).
+
+No emit-site mapper updates required. The handler-side populated-mapper port (where this field would be populated) remains DEFERRED — that's a separate slice gated on either: (a) extending the EpisodeListHandler/CalendarHandler/WantedHandler to honor includeEpisodeFile=true with a service-side join; OR (b) wiring through the EpisodeFile subresource via a similar optional-extension type-assertion pattern as J339 (which would need an EpisodeResourcePopulator interface in v3).
+
+v5/episode + v5/calendar + v5/wanted aliases v3 so the widening propagates to all 6 surfaces (3 v3 + 3 v5) simultaneously.
+
+### Tests (1 new)
+
+`internal/api/v3/episode_test.go`:
+
+- `TestEpisodeResource_EpisodeFileField_J340` — 2-branch pin:
+  - Nil EpisodeFile (today's default) → omitempty drops the key.
+  - Populated `&EpisodeFileResource{ID:99, SeriesID:42, RelativePath:"S01E02.mkv", Languages:[], CustomFormats:[]}` → 3 positive substring assertions on the nested envelope.
+
+### Wiring
+
+No new routes. Struct + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/episode/... ./internal/api/v5/calendar/... ./internal/api/v5/wanted/...` ✓
+  - v3: all pass, 1.710s
+  - cmd/sonarr: all pass, 5.165s
+  - v5/episode: all pass, 2.095s
+  - v5/calendar: all pass, 2.551s
+  - v5/wanted: all pass, 3.512s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | (27 items closed J309-J335 + J340 EpisodeFile subresource on EpisodeResource = 28) | DONE |
+| A. Populated-row mappers | history.Service paged populated customFormats+score | DONE (J336) |
+| A. Populated-row mappers | blocklist.Service paged populated customFormats | DONE (J337) |
+| A. Populated-row mappers | history.Since + history.Series populated customFormats+score | DONE (J338) |
+| A. Populated-row mappers | EpisodeFile handlers populated CustomFormats + Score | DONE (J339) |
+| A. Populated-row mappers | Episode/Calendar/Wanted populated EpisodeFile subresource (calls into J339 populator transitively when handler emit-site routes through) | OPEN — handler-side populated-mapper port; gated on extending each handler with the populator-wrapper pattern OR re-projecting the subresource at emit time |
+| A. Populated-row mappers | Parse + ManualImport populated customFormats | OPEN — gated on parsingService.Map + ImportDecisionMaker ports (both substantial) |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — gated on Queue.Service paged surface + Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes port |
+
+59 wire-shape fields + 1 v5-strip behavior + 4 service-port populated-mappers landed across J309-J340.
+
+Next-tick assessment: All struct-widening + the 4 carrier-family populated-mappers that had viable paths (history paged/since/series + blocklist paged + episodefile 5+2 handlers) are landed. The remaining items are all gated on substantial deferred service ports (ImportDecisionMaker, parsingService.Map, Queue paged surface + Episodes pipeline, parsingService.GetEpisodes) OR on bigger handler-side populated-mapper port work (Episode/Calendar/Wanted EpisodeFile subresource population — would need same J339 pattern applied to each handler family). Each remaining item is its own multi-slice arc.
