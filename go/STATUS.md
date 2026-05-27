@@ -13354,3 +13354,70 @@ Pattern observation: smallest pure-alias slice yet (26 LOC source). Demonstrates
 - Episodes/EpisodeController (85 LOC)
 - ImportLists/ImportListExclusionController (88 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J287 — Wave 3 thirty-sixth slice: v5 RenameEpisode family port (48 LOC C# source)
+
+Pure path-alias slice — same J286 minimum-effort pattern but 2 endpoints instead of 1. Both endpoints share the deferred `[]` stub on v3 and inherit through.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :5617-5695):
+
+| endpoint                                  | v5 status | v3 Go-port                       | strategy |
+|-------------------------------------------|-----------|----------------------------------|----------|
+| GET /api/v5/rename?seriesId=&seasonNumber=| 200 / 400 | 200 + `[]` (apiv3.RenameHandler) | alias    |
+| GET /api/v5/rename/bulk?seriesIds=        | 200 / 400 | 200 + `[]` (apiv3.RenameBulkHandler) | alias |
+
+The C# v5 controller is a direct port of v3:
+
+```csharp
+[HttpGet]
+public Ok<List<RenameEpisodeResource>> GetEpisodes(int seriesId, int? seasonNumber) {
+    if (seasonNumber.HasValue)
+        return TypedResults.Ok(_renameEpisodeFileService.GetRenamePreviews(seriesId, seasonNumber.Value).ToResource());
+    return TypedResults.Ok(_renameEpisodeFileService.GetRenamePreviews(seriesId).ToResource());
+}
+
+[HttpGet("bulk")]
+public Results<Ok<List<RenameEpisodeResource>>, BadRequest> GetEpisodes([FromQuery] List<int> seriesIds) {
+    if (seriesIds is { Count: 0 }) throw new BadRequestException("seriesIds must be provided");
+    if (seriesIds.Any(id => id <= 0)) throw new BadRequestException("seriesIds must be positive integers");
+    return TypedResults.Ok(_renameEpisodeFileService.GetRenamePreviews(seriesIds).ToResource());
+}
+```
+
+v3 Go-port at `internal/api/v3/rename.go` handles the same query-param validation but emits `[]` from a stub because `RenameEpisodeFileService.GetRenamePreviews` isn't ported yet (per the comment at lines 29-36 — has BuildFileName + file builder primitives, missing the comparison driver). v5 inherits the same deferred behaviour via the path-alias. The React UI degrades to "no files to rename" cleanly.
+
+**RenameEpisodeResource shape** byte-identical between v3 and v5 (7 fields per `src/Sonarr.Api.V5/openapi.json` :11070-11108):
+
+| field           | type    |
+|-----------------|---------|
+| id              | int32   |
+| seriesId        | int32   |
+| seasonNumber    | int32   |
+| episodeNumbers  | []int32 |
+| episodeFileId   | int32   |
+| existingPath    | string  |
+| newPath         | string  |
+
+Type alias is wire-safe.
+
+**Slice scope** — 155 lines (45 source + 110 test) + 1 import + 2 routes:
+
+- New `internal/api/v5/renameepisode/renameepisode.go` (45 LOC) — 1 type alias (Resource = apiv3.RenameEpisodeResource) + 2 variable aliases (GetHandler = apiv3.RenameHandler, BulkHandler = apiv3.RenameBulkHandler). NO new handler code.
+- New `internal/api/v5/renameepisode/renameepisode_test.go` (110 LOC) — 8 tests: GetHandler-valid-seriesID-returns-empty-array (canonical deferred-stub pin), GetHandler-missing-seriesID-400, GetHandler-invalid-seriesID-400 (negative rejected), GetHandler-with-seasonNumber-also-returns-empty-array (pins seasonNumber-accepted-but-ignored semantics at the stub level), BulkHandler-valid-seriesIDs-returns-empty-array (multi-value query param `?seriesIds=1&seriesIds=2`), BulkHandler-missing-seriesIDs-400, BulkHandler-invalid-seriesID-400 (zero rejected), variable-aliases-non-nil + Resource type-alias compile-time pin.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`renameepisodev5`) + 2 new routes alongside the existing /api/v3/rename routes. NO new service dep — handlers are zero-arg stubs (the stub state means no underlying service is consulted; when the comparison driver lands, the v3 handler signature will widen and both routes will rewire together).
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/renameepisode/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/renameepisode/... ./cmd/sonarr/...` ✓ (8 v5/renameepisode tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 39/~50 → 40/~50. **Crossed the 80% milestone** (rough estimate).
+
+Pattern observation: this is the second consecutive pure-alias slice (J286 → J287). Both demonstrate the lower-bound complexity of the path-alias template: when v3 already covers the family with byte-identical wire shape AND status codes, the v5 slice collapses to ~45-LOC type/variable aliases. The pattern works equally well for active handlers (v3 has real impl) and for deferred stubs (v3 emits `[]` pending service port — v5 just rides along).
+
+### Next Wave 3 candidates ascending
+
+- Series/SeriesLookupController (58 LOC)
+- Queue/QueueActionController (58 LOC)
+- Queue/QueueDetailsController (77 LOC)
+- Queue/QueueStatusController (80 LOC)
+- Episodes/EpisodeController (85 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Release/ReleasePushController (120 LOC)

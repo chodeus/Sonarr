@@ -28,6 +28,7 @@ import (
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
 	qualitydefinitionv5 "sonarr.tv/sonarr/internal/api/v5/qualitydefinition"
 	qualityprofilev5 "sonarr.tv/sonarr/internal/api/v5/qualityprofile"
+	renameepisodev5 "sonarr.tv/sonarr/internal/api/v5/renameepisode"
 	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
 	seriesfolderv5 "sonarr.tv/sonarr/internal/api/v5/seriesfolder"
 	seriesimportv5 "sonarr.tv/sonarr/internal/api/v5/seriesimport"
@@ -1342,6 +1343,17 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// shape via SeriesFolderHandler. Re-uses seriesSvc +
 		// namingConfigSvc deps verbatim.
 		{Method: "GET", Path: "/api/v5/series/{id}/folder", Handler: seriesfolderv5.GetHandler(seriesSvc, namingConfigSvc)},
+		// J287 — v5 RenameEpisode endpoint family (2 endpoints; 48 LOC
+		// C# — RenameEpisodeController). GET /rename + GET /rename/bulk.
+		// Pure path-alias slice. RenameEpisodeResource byte-identical
+		// to v3 (7 fields). Status: GET → 200 + `[]` (DEFERRED stub —
+		// the underlying RenameEpisodeFileService.GetRenamePreviews
+		// comparison driver isn't ported yet on either surface). 400 on
+		// missing/invalid query params. v5 inherits the same deferred
+		// `[]` shape; both surfaces widen via shared handler when the
+		// comparison driver lands.
+		{Method: "GET", Path: "/api/v5/rename", Handler: renameepisodev5.GetHandler()},
+		{Method: "GET", Path: "/api/v5/rename/bulk", Handler: renameepisodev5.BulkHandler()},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},
