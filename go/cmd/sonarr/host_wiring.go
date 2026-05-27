@@ -22,6 +22,7 @@ import (
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
 	indexersettingsv5 "sonarr.tv/sonarr/internal/api/v5/indexersettings"
 	mediamanagementsettingsv5 "sonarr.tv/sonarr/internal/api/v5/mediamanagementsettings"
+	namingsettingsv5 "sonarr.tv/sonarr/internal/api/v5/namingsettings"
 	uisettingsv5 "sonarr.tv/sonarr/internal/api/v5/uisettings"
 	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
@@ -1304,6 +1305,22 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/settings/general", Handler: generalsettingsv5.GetHandler(hostCfg)},
 		{Method: "GET", Path: "/api/v5/settings/general/{id}", Handler: generalsettingsv5.GetHandler(hostCfg)},
 		{Method: "PUT", Path: "/api/v5/settings/general/{id}", Handler: generalsettingsv5.UpdateHandler(hostCfg)},
+		// J284 — v5 NamingSettings endpoint family (4 endpoints; 161
+		// LOC C# across NamingSettingsController + NamingSettingsResource).
+		// Pure path-alias slice (J224/J280/J281/J282 pattern). Resource
+		// byte-identical to v3 NamingConfigResource (12 fields).
+		// ExampleResource byte-identical to v3 NamingExampleResource (8
+		// fields). Status: GETs → 200, PUT → 202. Validation chain
+		// (MultiEpisodeStyle ∈ [0,5], ColonReplacementFormat ∈ [0,4],
+		// Custom requires non-empty CustomColonReplacementFormat) preserved
+		// verbatim. Per-format token validators (ValidEpisodeFormat /
+		// ValidDailyEpisodeFormat / etc) + IFilenameSampleService DEFERRED
+		// on both surfaces — same J283/J282 pattern; examples handler
+		// returns empty {}.
+		{Method: "GET", Path: "/api/v5/settings/naming", Handler: namingsettingsv5.GetHandler(namingConfigSvc)},
+		{Method: "GET", Path: "/api/v5/settings/naming/{id}", Handler: namingsettingsv5.GetHandler(namingConfigSvc)},
+		{Method: "GET", Path: "/api/v5/settings/naming/examples", Handler: namingsettingsv5.ExamplesHandler(namingConfigSvc)},
+		{Method: "PUT", Path: "/api/v5/settings/naming/{id}", Handler: namingsettingsv5.UpdateHandler(namingConfigSvc)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},

@@ -13166,3 +13166,88 @@ Pattern observation: J283 introduces the field-strip wrapper as a NEW Wave 3 str
 - Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
 - Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J284 — Wave 3 thirty-third slice: v5 NamingSettings family port (161 LOC C# source)
+
+Pure path-alias slice — same J224/J280/J281/J282 template. v3 already has NamingConfigController mounted at /api/v3/config/naming with byte-identical wire shape and matching status codes; the v5 family just re-exposes the v3 handlers at the new path prefix.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :4229-4380+):
+
+| endpoint                                | v5 status   | v3 Go-port                              | strategy   |
+|-----------------------------------------|-------------|------------------------------------------|------------|
+| GET    /api/v5/settings/naming          | 200         | 200 (apiv3.NamingConfigHandler)          | alias      |
+| GET    /api/v5/settings/naming/{id}     | 200         | 200 (same handler, ignores id)           | alias      |
+| GET    /api/v5/settings/naming/examples | 200         | 200 + `{}` deferred (apiv3.NamingConfigExamplesHandler) | alias |
+| PUT    /api/v5/settings/naming/{id}     | 202 Accepted| 202 (apiv3.NamingConfigUpdateHandler)    | alias      |
+
+Note: v5 C# controller inherits from `RestController<T>` directly (NOT `SettingsController<T>`) — manages persistence via `_namingConfigService.GetConfig/Save` without the reflection-based `SaveConfigDictionary` dispatch. The end-to-end wire effect is identical.
+
+**Resource shape** byte-identical between v3 and v5 (12 fields):
+
+| field                          | type   | source                       |
+|--------------------------------|--------|------------------------------|
+| id                             | int    | namingconfig.Config.ID       |
+| renameEpisodes                 | bool   | .RenameEpisodes              |
+| replaceIllegalCharacters       | bool   | .ReplaceIllegalCharacters    |
+| colonReplacementFormat         | int    | .ColonReplacementFormat enum |
+| customColonReplacementFormat   | string | .CustomColonReplacementFormat|
+| multiEpisodeStyle              | int    | .MultiEpisodeStyle           |
+| standardEpisodeFormat          | string | .StandardEpisodeFormat       |
+| dailyEpisodeFormat             | string | .DailyEpisodeFormat          |
+| animeEpisodeFormat             | string | .AnimeEpisodeFormat          |
+| seriesFolderFormat             | string | .SeriesFolderFormat          |
+| seasonFolderFormat             | string | .SeasonFolderFormat          |
+| specialsFolderFormat           | string | .SpecialsFolderFormat        |
+
+**ExampleResource shape** also byte-identical (8 nullable string fields). All `omitempty` per the v3 Go-port convention — matches C# `[JsonIgnore(WhenWritingNull)]` defaults.
+
+**Validation chain** (subset preserved via path-alias from `internal/api/v3/config_naming.go:211-222`):
+- MultiEpisodeStyle ∈ [0, 5]
+- ColonReplacementFormat ∈ [0, 4]
+- When ColonReplacementFormat == 4 (Custom): CustomColonReplacementFormat MUST be non-empty
+- DisallowUnknownFields rejects unknown body keys
+
+**Deferred validators on both surfaces** (same DEFERRED state per config_naming.go:122-130 — pending the IFilenameSampleService + IFilenameValidationService Go ports):
+- ValidEpisodeFormat (standardEpisodeFormat token check)
+- ValidDailyEpisodeFormat
+- ValidAnimeEpisodeFormat
+- ValidSeriesFolderFormat
+- ValidSeasonFolderFormat
+- ValidSpecialsFolderFormat
+- ValidCustomColonReplacement
+
+Each runs the C# IFilenameSampleService against sample data to check required-token presence and absence of invalid path chars. v3 marks DEFERRED; v5 inherits via path-alias.
+
+**Examples endpoint deferral**: v3 returns `{}` (empty NamingExampleResource — all 8 fields omitempty) pending the IFilenameSampleService port. The C# v5 controller renders 8 example filenames via `_filenameSampleService.GetStandardSample` / `GetMultiEpisodeSample` / etc. v3 Go-port can't render these because the organizer package's BuildFileName primitives don't have the pre-built reference Episode/Series/File fixtures yet. v5 inherits the empty `{}` shape; when the rendering chain lands, both surfaces widen via the shared handler.
+
+**Slice scope** — 241 lines (71 source + 170 test) + 1 import + 4 routes:
+
+- New `internal/api/v5/namingsettings/namingsettings.go` (71 LOC) — 4 type aliases (Resource = apiv3.NamingConfigResource, ExampleResource = apiv3.NamingExampleResource, Getter = apiv3.NamingConfigGetter, Writer = apiv3.NamingConfigWriter) + 3 variable aliases (GetHandler = apiv3.NamingConfigHandler, UpdateHandler = apiv3.NamingConfigUpdateHandler, ExamplesHandler = apiv3.NamingConfigExamplesHandler). NO new handler code.
+- New `internal/api/v5/namingsettings/namingsettings_test.go` (170 LOC) — 7 tests: GetHandler-emits-singleton (id=1 + SeriesFolderFormat default), UpdateHandler-put-accepted-202-persists (svc.Save called once with full Config), UpdateHandler-multi-episode-style-out-of-range → 400 (MultiEpisodeStyle=99 rejected), UpdateHandler-custom-colon-requires-value → 400 (ColonReplacementFormat=4 with empty CustomColonReplacementFormat rejected), ExamplesHandler-deferred-empty-shape (pins `{}` deferred state — surface contract that won't change until the IFilenameSampleService port lands), variable-aliases non-nil, type-aliases compile-time pin. fakeSvc satisfies the full apiv3.NamingConfigWriter interface (GetConfig + Save) with mutex-protected counters for -race cleanliness.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`namingsettingsv5`) + 4 new routes alongside the existing /api/v3/config/naming routes. Re-uses namingConfigSvc dep (the *namingconfig.Service) verbatim.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/namingsettings/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/namingsettings/... ./cmd/sonarr/...` ✓ (7 v5/namingsettings tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 36/~50 → 37/~50.
+
+**Settings/* family DRAINED**. All 7 v5 Settings/* sub-controllers ported across the J224/J279-J284 arc:
+
+| family                       | slice  | pattern                                                       |
+|------------------------------|--------|---------------------------------------------------------------|
+| ImportListSettings           | J224   | path-alias to v3 ImportListConfigController                   |
+| UpdateSettings               | J279   | v5-NEW (no v3 equivalent)                                     |
+| IndexerSettings              | J280   | path-alias to v3 IndexerConfigController                      |
+| UiSettings                   | J281   | path-alias to v3 UiConfigController (composite XML+DB writer) |
+| MediaManagementSettings      | J282   | path-alias to v3 MediaManagementConfigController (23 fields)  |
+| GeneralSettings              | J283   | field-strip-wrap (drops v3-only trustCgnatIpAddresses)        |
+| NamingSettings               | J284   | path-alias to v3 NamingConfigController (12 fields + 8 examples)|
+
+The Settings/* family drained as predicted by the J280 dispatch rule: when v3 has a matching Config controller (5 of 7 cases), pure path-alias collapses to ~50-LOC re-export. v5-NEW (1 case) and field-strip-wrap (1 case) each established new templates.
+
+### Next Wave 3 candidates ascending
+
+- Episodes/EpisodeController (85 LOC) + RenameEpisodeController (48 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
+- Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
+- Release/ReleasePushController (120 LOC)
