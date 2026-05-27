@@ -250,16 +250,27 @@ func (p pendingCountLister) PendingCount(ctx context.Context) (int, error) {
 	return p.repo.Count(ctx)
 }
 
-// blocklistPagedAdapter wraps *blocklist.Repo to satisfy
-// apiv3.BlocklistPagedLister. The fresh-DB contract gate is the
-// empty-array shape; for populated DBs the adapter reads All() and
-// slices in-memory by Page/PageSize. SortKey/SortDirection params
-// are honoured at the envelope level but not yet applied to the
-// underlying query — DEFERRED until a richer paged repo method
-// lands (`SELECT ... ORDER BY ... LIMIT N OFFSET M`). Per-record
+// blocklistPagedAdapter wraps *blocklist.Repo + 2 narrow lookups
+// for populated-row CustomFormat calculation (J337 — same pattern
+// as historyPagedAdapter at J336, minus the score lookup since
+// BlocklistResource is score-less per the J297 wire-through note).
+//
+// The fresh-DB contract gate is the empty-array shape; for
+// populated DBs the adapter reads All() and slices in-memory by
+// Page/PageSize. SortKey/SortDirection params are honoured at the
+// envelope level but not yet applied to the underlying query —
+// DEFERRED until a richer paged repo method lands. Per-record
 // fields beyond the skeleton (Title from Episode join, etc.) are
 // also DEFERRED.
-type blocklistPagedAdapter struct{ repo *blocklist.Repo }
+//
+// J337 populated-row mapper wire-through: nil-safe lookups (any
+// missing dep falls back to empty CustomFormats matching pre-J337
+// stub behavior).
+type blocklistPagedAdapter struct {
+	repo             *blocklist.Repo
+	seriesSvc        historySeriesLookup
+	customFormatsSvc historyCustomFormatsLookup
+}
 
 func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.PagingRequest) ([]apiv3.BlocklistResource, int, error) {
 	rows, err := a.repo.All(ctx)
@@ -269,6 +280,17 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 	total := len(rows)
 	page := paginateInMemory(rows, req)
 	out := make([]apiv3.BlocklistResource, 0, len(page))
+
+	// Per-request cache: load allFormats once + memoize series
+	// lookups across rows of the same page.
+	var allFormats []*customformats.Format
+	if a.customFormatsSvc != nil {
+		if formats, err := a.customFormatsSvc.All(ctx); err == nil {
+			allFormats = formats
+		}
+	}
+	seriesCache := map[int]*series.Series{}
+
 	for _, e := range page {
 		episodeIDs := e.EpisodeIDs
 		if episodeIDs == nil {
@@ -277,6 +299,8 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 			// persisted row has no episode-ids.
 			episodeIDs = []int{}
 		}
+		entry := e // copy for pointer capture
+		customFormats := computeBlocklistCustomFormats(ctx, &entry, a, allFormats, seriesCache)
 		out = append(out, apiv3.BlocklistResource{
 			ID:            e.ID,
 			SeriesID:      e.SeriesID,
@@ -288,16 +312,18 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 			Indexer:       e.Indexer,
 			Message:       e.Message,
 			Source:        e.Source,
-			CustomFormats: []apiv3.CustomFormatResource{},
+			CustomFormats: customFormats,
 			// Title is derived from Episode.Title in C# — DEFERRED
-			// until the episode-join wiring lands. customFormats
-			// populated-row mapper lands alongside the calculator
-			// wire-through (J297+). EpisodeIDs/Protocol/Indexer/
-			// Message added at J311. Languages (J314): typed
-			// []LanguageRef projection from the persisted []int
-			// form via apiv3.ToLanguageRefs. Series subresource
-			// pinned at J313 (omitempty pointer). Quality still
-			// DEFERRED (needs typed QualityModel envelope).
+			// until the episode-join wiring lands. EpisodeIDs/
+			// Protocol/Indexer/Message added at J311. Languages
+			// (J314): typed []LanguageRef projection. Series
+			// subresource pinned at J313 (omitempty pointer).
+			// Quality still DEFERRED. CustomFormats (J337):
+			// populated via computeBlocklistCustomFormats; nil
+			// deps fall back to empty slice matching pre-J337 stub.
+			// Note: BlocklistResource is score-less per the J297
+			// wire-through (no CustomFormatScore field; unlike
+			// HistoryResource).
 		})
 	}
 	return out, total, nil
@@ -854,6 +880,44 @@ func computeHistoryCustomFormats(ctx context.Context, e *history.Entry, a histor
 	return res, score
 }
 
+// computeBlocklistCustomFormats runs the per-row CustomFormat
+// calculator for a blocklist entry — score-less variant of the
+// J336 helper since BlocklistResource doesn't carry
+// CustomFormatScore (per the J297 wire-through note). Returns an
+// empty slice on any error or missing dep (preserves the pre-J337
+// stub behavior).
+//
+// J337.
+func computeBlocklistCustomFormats(ctx context.Context, e *blocklist.Entry, a blocklistPagedAdapter, allFormats []*customformats.Format, seriesCache map[int]*series.Series) []apiv3.CustomFormatResource {
+	empty := []apiv3.CustomFormatResource{}
+	if a.seriesSvc == nil || len(allFormats) == 0 || e == nil || e.SeriesID == 0 {
+		return empty
+	}
+	ser, cached := seriesCache[e.SeriesID]
+	if !cached {
+		s, err := a.seriesSvc.GetSeries(ctx, e.SeriesID)
+		if err != nil {
+			seriesCache[e.SeriesID] = nil // negative cache
+			return empty
+		}
+		ser = s
+		seriesCache[e.SeriesID] = ser
+	}
+	if ser == nil {
+		return empty
+	}
+
+	matched := customformats.ParseCustomFormatForBlocklist(e, ser, allFormats)
+	res := make([]apiv3.CustomFormatResource, 0, len(matched))
+	for _, m := range matched {
+		res = append(res, apiv3.CustomFormatResource{ID: m.ID, Name: m.Name})
+	}
+	if len(res) == 0 {
+		return empty
+	}
+	return res
+}
+
 // paginateInMemory clamps the page window to the slice and returns
 // the requested rows. Pure helper; works for any slice type so both
 // adapters share it via Go generics.
@@ -1369,7 +1433,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v5/autotagging", Handler: autotaggingv5.CreateHandler(autoTagsSvc)},
 		{Method: "PUT", Path: "/api/v5/autotagging/{id}", Handler: autotaggingv5.UpdateHandler(autoTagsSvc)},
 		{Method: "DELETE", Path: "/api/v5/autotagging/{id}", Handler: autotaggingv5.DeleteHandler(autoTagsSvc)},
-		{Method: "GET", Path: "/api/v3/blocklist", Handler: apiv3.BlocklistHandler(blocklistPagedAdapter{repo: blocklistRepo})},
+		{Method: "GET", Path: "/api/v3/blocklist", Handler: apiv3.BlocklistHandler(blocklistPagedAdapter{repo: blocklistRepo, seriesSvc: seriesSvc, customFormatsSvc: customFormatsSvc})},
 		{Method: "DELETE", Path: "/api/v3/blocklist/{id}", Handler: apiv3.BlocklistDeleteHandler(blocklistSvc)},
 		{Method: "DELETE", Path: "/api/v3/blocklist/bulk", Handler: apiv3.BlocklistBulkDeleteHandler(blocklistSvc)},
 		{Method: "GET", Path: "/api/v3/calendar", Handler: apiv3.CalendarHandler(episodesSvc)},
@@ -1781,7 +1845,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// J261 — v5 Blocklist endpoint family (3 endpoints; GET paged
 		// is path-alias; both DELETEs demote 200+`{}` → 204 via
 		// v5util.RewriteSuccessTo204).
-		{Method: "GET", Path: "/api/v5/blocklist", Handler: blocklistv5.GetHandler(blocklistPagedAdapter{repo: blocklistRepo})},
+		{Method: "GET", Path: "/api/v5/blocklist", Handler: blocklistv5.GetHandler(blocklistPagedAdapter{repo: blocklistRepo, seriesSvc: seriesSvc, customFormatsSvc: customFormatsSvc})},
 		{Method: "DELETE", Path: "/api/v5/blocklist/{id}", Handler: blocklistv5.DeleteHandler(blocklistSvc)},
 		{Method: "DELETE", Path: "/api/v5/blocklist/bulk", Handler: blocklistv5.BulkDeleteHandler(blocklistSvc)},
 		// J262 — v5 RootFolders endpoint family (4 endpoints; combo:

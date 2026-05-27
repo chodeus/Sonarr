@@ -17281,3 +17281,76 @@ No new routes. Adapter struct widening + 2 route registration sites updated.
 58 wire-shape fields + 1 v5-strip behavior + 1 populated-mapper service-port landed across J309-J336.
 
 Next-tick smallest candidate: blocklist.Service paged populated customFormats wire-through (same J336 pattern applied to blocklistPagedAdapter; calculator engine ParseCustomFormatForBlocklist already ported; BlocklistResource carries CustomFormats but NOT CustomFormatScore — Blocklist is score-less per the J297 wire-through note).
+
+---
+
+## J337 — Post-Wave-3 drain, slice 29 (A-category, slice 2): blocklist.Service paged populated CustomFormats wire-through
+
+**Anchor**: post-J336 (history populated-mapper landed). Applies the J336 pattern to the blocklistPagedAdapter — score-less variant since BlocklistResource doesn't carry CustomFormatScore (per the J297 wire-through note).
+
+### C# source
+
+- `src/Sonarr.Api.V3/Blocklist/BlocklistResource.cs:33-50` — `BlocklistResourceMapper.MapToResource` computes `formatCalculator.ParseCustomFormat(model, model.Series).ToResource(false)`. No score lookup (Blocklist carries CustomFormats only, no CustomFormatScore field).
+
+### Pre-J337 stub
+
+`cmd/sonarr/host_wiring.go:262` declared `blocklistPagedAdapter struct{ repo *blocklist.Repo }`. PagedBlocklist allocated `CustomFormats: []CustomFormatResource{}` (empty). Populated-row mapper was deferred to the "post-Wave-3 service-port arc."
+
+### Port deliverables
+
+**`cmd/sonarr/host_wiring.go`** — adapter widening:
+
+- `blocklistPagedAdapter` struct gains 2 narrow-interface lookups (re-uses J336 interfaces from same package):
+  - `seriesSvc historySeriesLookup` — `GetSeries(ctx, id) (*series.Series, error)`.
+  - `customFormatsSvc historyCustomFormatsLookup` — `All(ctx) ([]*customformats.Format, error)`.
+- PagedBlocklist method updated:
+  - Loads `allFormats` once at request-start (per-page cache).
+  - Per-row invokes new `computeBlocklistCustomFormats` helper.
+  - Per-request series cache memoizes across rows that share a series.
+- New `computeBlocklistCustomFormats(ctx, entry, adapter, allFormats, seriesCache) []apiv3.CustomFormatResource` helper:
+  - nil-safe — any missing dep falls back to empty slice (preserves pre-J337 stub behavior).
+  - Series lookup → `customformats.ParseCustomFormatForBlocklist(entry, series, allFormats)` → matched CustomFormat entries.
+  - Projects matched entries into `apiv3.CustomFormatResource{ID, Name}` (J302 lite-projection shape).
+  - Score-less — no qualityprofile lookup branch (BlocklistResource is score-less per J297).
+  - Negative-caches series-lookup failures.
+
+The 2 route call sites updated:
+- `/api/v3/blocklist` at `host_wiring.go:1372`.
+- `/api/v5/blocklist` at `host_wiring.go:1784`.
+
+### Tests (4 new in new file)
+
+`cmd/sonarr/blocklist_populated_mapper_test.go` (~95 LOC). Re-uses the J336 narrow-interface fakes (`fakeHistorySeriesLookup` + `fakeHistoryCustomFormatsLookup` + `countingSeriesLookup`) from the same package — no new fake types needed.
+
+- `TestComputeBlocklistCustomFormats_NilDeps_J337`.
+- `TestComputeBlocklistCustomFormats_SeriesNotFound_J337`.
+- `TestComputeBlocklistCustomFormats_EmptyFormats_J337`.
+- `TestComputeBlocklistCustomFormats_CachesAcrossRows_J337` — counting wrapper confirms 0 series-lookup calls on the empty-allFormats short-circuit.
+
+### Wiring
+
+No new routes. Adapter struct widening + 2 route registration sites updated.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/blocklist/...` ✓
+  - v3: all pass, 1.674s
+  - cmd/sonarr: all pass, 3.980s
+  - v5/blocklist: all pass, 2.316s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | (27 items closed J309-J335) | DONE |
+| A. Populated-row mappers | history.Service paged populated customFormats+score | DONE (J336) |
+| A. Populated-row mappers | blocklist.Service paged populated customFormats | **DONE this slice (J337)** |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
+| A. Populated-row mappers | history.Since + history.Series populated customFormats+score (uses writeHistoryEntries helper, not the paged adapter) | OPEN — same J336 pattern + extending HistoryRangeReader interface |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN |
+
+58 wire-shape fields + 1 v5-strip behavior + 2 service-port populated-mappers landed across J309-J337.
+
+Next-tick candidate: extend the J336 pattern to `writeHistoryEntries` (the helper used by HistorySinceHandler + HistorySeriesHandler at apiv3/history.go:179). Currently emits empty CustomFormats; would need the HistoryRangeReader interface (or a sibling) to gain access to the same calculator dependency surface as the paged path.
