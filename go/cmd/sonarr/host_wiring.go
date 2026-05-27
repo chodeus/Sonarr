@@ -880,6 +880,61 @@ func computeHistoryCustomFormats(ctx context.Context, e *history.Entry, a histor
 	return res, score
 }
 
+// episodeFileServiceWithPopulator embeds *episodefiles.Service
+// (preserves the full Reader + Writer surface via embedding) and
+// adds PopulateEpisodeFile — which the v3 episodefile handlers
+// (List + ByID + Editor + Bulk* + Update) discover via
+// optional-extension type-assertion to run the CustomFormat
+// calculator (internal/customformats.ParseCustomFormatForFile) +
+// qualityprofile score lookup per row.
+//
+// J339 — companion to the J336/J338 history populated-mappers.
+// Re-uses the same narrow-interface lookups; fresh per-call caches
+// (per-row invocation by the handlers).
+type episodeFileServiceWithPopulator struct {
+	*episodefiles.Service
+	seriesSvc          historySeriesLookup
+	qualityProfilesSvc historyQualityProfileLookup
+	customFormatsSvc   historyCustomFormatsLookup
+}
+
+// PopulateEpisodeFile satisfies apiv3.EpisodeFilePopulator. Runs
+// the calculator + score lookup for a single file. Empty/missing
+// deps return empty + 0 (preserves the pre-J339 stub behavior).
+func (e *episodeFileServiceWithPopulator) PopulateEpisodeFile(ctx context.Context, f *episodefiles.File) ([]apiv3.CustomFormatResource, int) {
+	empty := []apiv3.CustomFormatResource{}
+	if e.seriesSvc == nil || e.customFormatsSvc == nil || f == nil || f.SeriesID == 0 {
+		return empty, 0
+	}
+	allFormats, err := e.customFormatsSvc.All(ctx)
+	if err != nil || len(allFormats) == 0 {
+		return empty, 0
+	}
+	ser, err := e.seriesSvc.GetSeries(ctx, f.SeriesID)
+	if err != nil || ser == nil {
+		return empty, 0
+	}
+	matched := customformats.ParseCustomFormatForFile(f, ser, allFormats)
+	res := make([]apiv3.CustomFormatResource, 0, len(matched))
+	presentIDs := make(map[int]bool, len(matched))
+	for _, m := range matched {
+		res = append(res, apiv3.CustomFormatResource{ID: m.ID, Name: m.Name})
+		presentIDs[m.ID] = true
+	}
+	score := 0
+	if e.qualityProfilesSvc != nil && ser.QualityProfileID > 0 {
+		if p, err := e.qualityProfilesSvc.Get(ctx, ser.QualityProfileID); err == nil && p != nil {
+			if items, perr := p.ParsedFormatItems(); perr == nil {
+				score = qualityprofiles.CalculateCustomFormatScore(items, presentIDs)
+			}
+		}
+	}
+	if len(res) == 0 {
+		return empty, score
+	}
+	return res, score
+}
+
 // historyServiceWithPopulator embeds *history.Service (satisfies
 // apiv3.HistoryRangeReader via the embedded Since + GetBySeries
 // methods) and adds PopulateHistoryEntry — which the v3 history
@@ -1458,6 +1513,17 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		qualityProfilesSvc: qualityProfilesSvc,
 		customFormatsSvc:   customFormatsSvc,
 	}
+	// J339: episodefile populator wrapper — same pattern as the
+	// history populator. Used by every v3+v5 episodefile handler
+	// site so all of them route through the calculator engine for
+	// populated rows. Test fixtures don't implement the populator
+	// extension so the empty fallback fires verbatim.
+	episodeFilesSvcPopulated := &episodeFileServiceWithPopulator{
+		Service:            episodeFilesSvc,
+		seriesSvc:          seriesSvc,
+		qualityProfilesSvc: qualityProfilesSvc,
+		customFormatsSvc:   customFormatsSvc,
+	}
 	// 5.I7: log-file adapter sources LogFolder = <AppData>/logs and
 	// URLBase from configfile.Provider. The folder string + URLBase
 	// are resolved at boot in buildHostServer and snapshot into the
@@ -1761,8 +1827,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// customFormatScore widening unchanged via the alias.
 		{Method: "GET", Path: "/api/v5/episodefile", Handler: episodefilev5.ListHandler(episodeFilesSvc, seriesSvc)},
 		{Method: "GET", Path: "/api/v5/episodefile/{id}", Handler: episodefilev5.ByIDHandler(episodeFilesSvc)},
-		{Method: "PUT", Path: "/api/v5/episodefile/{id}", Handler: episodefilev5.UpdateHandler(episodeFilesSvc)},
-		{Method: "PUT", Path: "/api/v5/episodefile/bulk", Handler: episodefilev5.BulkUpdateHandler(episodeFilesSvc)},
+		{Method: "PUT", Path: "/api/v5/episodefile/{id}", Handler: episodefilev5.UpdateHandler(episodeFilesSvcPopulated)},
+		{Method: "PUT", Path: "/api/v5/episodefile/bulk", Handler: episodefilev5.BulkUpdateHandler(episodeFilesSvcPopulated)},
 		{Method: "DELETE", Path: "/api/v5/episodefile/{id}", Handler: episodefilev5.DeleteHandler(episodeFilesSvc)},
 		{Method: "DELETE", Path: "/api/v5/episodefile/bulk", Handler: episodefilev5.BulkDeleteHandler(episodeFilesSvc)},
 		// J293 — v5 ImportListExclusion endpoint family (6 endpoints;
@@ -2149,11 +2215,11 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v3/episode", Handler: apiv3.EpisodeListHandler(episodesSvc)},
 		{Method: "GET", Path: "/api/v3/episode/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvc)},
 		{Method: "PUT", Path: "/api/v3/episode/monitor", Handler: apiv3.EpisodeMonitorHandler(episodesSvc)},
-		{Method: "GET", Path: "/api/v3/episodefile", Handler: apiv3.EpisodeFileListHandler(episodeFilesSvc, seriesSvc)},
-		{Method: "GET", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileByIDHandler(episodeFilesSvc)},
-		{Method: "PUT", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileUpdateHandler(episodeFilesSvc)},
-		{Method: "PUT", Path: "/api/v3/episodefile/editor", Handler: apiv3.EpisodeFileEditorHandler(episodeFilesSvc)},
-		{Method: "PUT", Path: "/api/v3/episodefile/bulk", Handler: apiv3.EpisodeFileBulkUpdateHandler(episodeFilesSvc)},
+		{Method: "GET", Path: "/api/v3/episodefile", Handler: apiv3.EpisodeFileListHandler(episodeFilesSvcPopulated, seriesSvc)},
+		{Method: "GET", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileByIDHandler(episodeFilesSvcPopulated)},
+		{Method: "PUT", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileUpdateHandler(episodeFilesSvcPopulated)},
+		{Method: "PUT", Path: "/api/v3/episodefile/editor", Handler: apiv3.EpisodeFileEditorHandler(episodeFilesSvcPopulated)},
+		{Method: "PUT", Path: "/api/v3/episodefile/bulk", Handler: apiv3.EpisodeFileBulkUpdateHandler(episodeFilesSvcPopulated)},
 		{Method: "DELETE", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileDeleteHandler(episodeFilesSvc)},
 		{Method: "DELETE", Path: "/api/v3/episodefile/bulk", Handler: apiv3.EpisodeFileBulkDeleteHandler(episodeFilesSvc)},
 		{Method: "GET", Path: "/api/v3/health", Handler: apiv3.HealthHandler(healthSvc)},

@@ -251,6 +251,72 @@ func TestEpisodeFileListHandler_SeriesIDBranch(t *testing.T) {
 	}
 }
 
+// J339 wire-shape pin for the EpisodeFilePopulator optional-
+// extension integration. When the handler's reader/writer parameter
+// implements PopulateEpisodeFile (via type-assertion), the response
+// CustomFormats + CustomFormatScore are populated; otherwise the
+// empty-stub fallback fires (preserves pre-J339 behavior).
+//
+// Test covers BOTH branches: a populator-implementing fake →
+// populated typed entries; the existing fakeEpisodeFileReader
+// (stub) → empty fallback per existing positive-pin tests.
+func TestEpisodeFileListHandler_PopulatorOptionalExtension_J339(t *testing.T) {
+	t.Parallel()
+	svc := &fakeEpisodeFileReaderWithPopulator{
+		bySeries: map[int][]episodefiles.File{7: {{ID: 1, SeriesID: 7, RelativePath: "a.mkv"}}},
+		populator: func(_ context.Context, f *episodefiles.File) ([]CustomFormatResource, int) {
+			return []CustomFormatResource{{ID: 11, Name: "DTS-X"}}, 17
+		},
+	}
+	checker := &stubSeriesExistsChecker{known: map[int]bool{7: true}}
+	rr := httptest.NewRecorder()
+	EpisodeFileListHandler(svc, checker).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?seriesId=7", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"customFormats":[{"id":11,"name":"DTS-X"}]`) {
+		t.Errorf("populator should produce typed CustomFormats; got %s", body)
+	}
+	if !strings.Contains(body, `"customFormatScore":17`) {
+		t.Errorf("populator should set customFormatScore:17; got %s", body)
+	}
+}
+
+// fakeEpisodeFileReaderWithPopulator satisfies EpisodeFileReader
+// AND EpisodeFilePopulator — exercises the J339 optional-extension
+// type-assertion branch.
+type fakeEpisodeFileReaderWithPopulator struct {
+	bySeries  map[int][]episodefiles.File
+	populator func(context.Context, *episodefiles.File) ([]CustomFormatResource, int)
+}
+
+func (f *fakeEpisodeFileReaderWithPopulator) GetFile(_ context.Context, id int) (*episodefiles.File, error) {
+	for _, files := range f.bySeries {
+		for i := range files {
+			if files[i].ID == id {
+				return &files[i], nil
+			}
+		}
+	}
+	return nil, episodefiles.ErrNotFound
+}
+func (f *fakeEpisodeFileReaderWithPopulator) GetFiles(_ context.Context, ids []int) ([]episodefiles.File, error) {
+	var out []episodefiles.File
+	for _, id := range ids {
+		if got, err := f.GetFile(context.Background(), id); err == nil {
+			out = append(out, *got)
+		}
+	}
+	return out, nil
+}
+func (f *fakeEpisodeFileReaderWithPopulator) GetFilesBySeries(_ context.Context, seriesID int) ([]episodefiles.File, error) {
+	return f.bySeries[seriesID], nil
+}
+func (f *fakeEpisodeFileReaderWithPopulator) PopulateEpisodeFile(ctx context.Context, file *episodefiles.File) ([]CustomFormatResource, int) {
+	return f.populator(ctx, file)
+}
+
 // J328 wire-shape pin for EpisodeFileResource scalar widening
 // (Languages + Quality + IndexerFlags + ReleaseType +
 // QualityCutoffNotMet). Tests via the production EpisodeFileListHandler

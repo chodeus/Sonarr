@@ -17423,3 +17423,81 @@ No new routes. Wrapper struct + 4 wire-site updates.
 All 3 history endpoint surfaces (paged at J336 + since/series at J338) now wire the calculator engine for populated rows; all 3 share the J336 narrow-interface lookups + computeHistoryCustomFormats helper for no duplication.
 
 Next-tick candidate: EpisodeFile populated CustomFormats wire-through (the J298 anchor) on the production episodefile-list paged surface. Or Calendar/Wanted/Episode populated mappers — each carries the EpisodeFile subresource so a single mapper update propagates across.
+
+---
+
+## J339 — Post-Wave-3 drain, slice 31 (A-category, slice 4): EpisodeFile handlers populated CustomFormats + Score via optional-extension type-assertion
+
+**Anchor**: post-J338 (history populated-mappers landed for paged + since/series). Same J338 idiom applied to the episodefile family (5 v3 handlers; 2 v5 handlers via existing var-aliases).
+
+### C# source
+
+- `src/Sonarr.Api.V3/EpisodeFiles/EpisodeFileResource.cs:46-66` — `EpisodeFileResourceMapper.ToResource` computes `formatCalculator.ParseCustomFormat(model, model.Series).ToResource(false)` + `series?.QualityProfile?.Value?.CalculateCustomFormatScore(customFormats) ?? 0`.
+
+### Approach: same J338 optional-extension type-assertion
+
+The 5 v3 episodefile handlers use 2 reader/writer interfaces (`EpisodeFileReader` + `EpisodeFileWriter`). Extending either signature would break 20+ test call sites; J339 uses the idiomatic optional-extension pattern. New `EpisodeFilePopulator` interface declares `PopulateEpisodeFile(ctx, *episodefiles.File) (cf, score)`. Each handler post-processes the resource via `applyEpisodeFilePopulator(ctx, &res, &file, svc)` helper that does the type-assertion (svc as `any`) + fills the 2 custom-format fields on hit, or no-ops on miss.
+
+### Port deliverables
+
+**`internal/api/v3/episodefile.go`** — new interface + helper + 5 handler updates:
+
+- New `EpisodeFilePopulator interface` (exported).
+- New `applyEpisodeFilePopulator(ctx, res, file, svc any)` helper — nil-safe + type-assertion-based.
+- 5 handlers updated to invoke the helper after `ToEpisodeFileResource`:
+  - `EpisodeFileListHandler` (line 217 — list branch).
+  - `EpisodeFileByIDHandler` (line 250 — single GET).
+  - `EpisodeFileEditorHandler` (line 323 — editor PUT).
+  - `EpisodeFileBulkUpdateHandler` (line 393 — bulk PUT).
+  - `EpisodeFileUpdateHandler` (line 449 — single PUT).
+
+**`cmd/sonarr/host_wiring.go`** — wrapper + 7 wire-site updates:
+
+- New `episodeFileServiceWithPopulator` struct embeds `*episodefiles.Service` (preserves both Reader + Writer surfaces via embedding) + adds 3 narrow-interface lookups (re-uses J336 types).
+- `PopulateEpisodeFile(ctx, *episodefiles.File)` method: loads allFormats → series lookup → calculator engine → match-projection + presentIDs map → qualityprofile score lookup. Empty/missing deps return empty + 0 (preserves pre-J339 stub behavior).
+- `episodeFilesSvcPopulated := &episodeFileServiceWithPopulator{...}` declared once in v3Routes scope.
+- 7 wire sites updated:
+  - 5 v3: `/api/v3/episodefile` + `/api/v3/episodefile/{id}` + `/api/v3/episodefile/{id}` (PUT) + `/api/v3/episodefile/editor` + `/api/v3/episodefile/bulk`.
+  - 2 v5: `/api/v5/episodefile/{id}` (PUT) + `/api/v5/episodefile/bulk`.
+
+### Tests (1 new with closure-driven populator fake)
+
+`internal/api/v3/episodefile_test.go`:
+
+- `TestEpisodeFileListHandler_PopulatorOptionalExtension_J339` — drives a fake that satisfies BOTH `EpisodeFileReader` AND `EpisodeFilePopulator` (with a closure-driven populator returning `[{"id":11,"name":"DTS-X"}]` + score 17). Asserts the wire body contains the typed CustomFormats entry + the populated score.
+- New helper `fakeEpisodeFileReaderWithPopulator` struct: 4-method-impl (GetFile + GetFiles + GetFilesBySeries + PopulateEpisodeFile).
+
+All existing handler tests continue to pass — their stub fakes don't implement the populator extension, so the empty fallback fires verbatim.
+
+### Wiring
+
+No new routes. Wrapper struct + helper + 7 wire-site updates.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/episodefile/... ./internal/api/v5/wanted/... ./internal/api/v5/calendar/... ./internal/api/v5/episode/...` ✓
+  - v3: all pass, 1.400s
+  - cmd/sonarr: all pass, 3.612s
+  - v5/episodefile: all pass, 1.715s
+  - v5/wanted: all pass, 1.937s
+  - v5/calendar: all pass, 2.160s
+  - v5/episode: all pass, 2.380s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | (27 items closed J309-J335) | DONE |
+| A. Populated-row mappers | history.Service paged populated customFormats+score | DONE (J336) |
+| A. Populated-row mappers | blocklist.Service paged populated customFormats | DONE (J337) |
+| A. Populated-row mappers | history.Since + history.Series populated customFormats+score | DONE (J338) |
+| A. Populated-row mappers | EpisodeFile handlers populated CustomFormats + Score | **DONE this slice (J339)** |
+| A. Populated-row mappers | Episode/Calendar/Wanted populated EpisodeFile subresource — gated on the EpisodeFile populator above (the carrier emits an EpisodeFile subresource; the populated path needs to bubble through) | OPEN |
+| A. Populated-row mappers | Parse + ManualImport populated mappers | OPEN |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN |
+
+58 wire-shape fields + 1 v5-strip behavior + 4 service-port populated-mappers landed across J309-J339.
+
+Next-tick candidate: Episode/Calendar/Wanted handlers also emit EpisodeFile as a subresource — the J339 populator wiring on the underlying EpisodeFileResource will already activate when those handlers thread the same populator through. Smallest follow-up: ManualImport populated CustomFormats (the reprocessOne path) or Parse populated mapper.

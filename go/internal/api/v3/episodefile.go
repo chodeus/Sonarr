@@ -99,6 +99,51 @@ type SeriesExistsChecker interface {
 	SeriesExists(ctx context.Context, id int) (bool, error)
 }
 
+// EpisodeFilePopulator is the optional-extension interface for the
+// episodefile handlers (List + ByID + Editor + Bulk* + Update +
+// Delete). When the handler's reader/writer parameter ALSO
+// implements this interface, each handler invokes
+// PopulateEpisodeFile per file to compute the matched
+// customFormats[] + customFormatScore pair. When NOT implemented
+// (typical test fixtures), the empty stub fallback applies
+// (CustomFormats: []; score 0) — preserves the pre-J339 wire
+// shape.
+//
+// Production wiring at cmd/sonarr composes *episodefiles.Service
+// with a wrapper that ALSO implements PopulateEpisodeFile — the
+// wrapper re-uses narrow-interface lookups + the calculator-engine
+// helper at internal/customformats.ParseCustomFormatForFile. Same
+// J338 optional-extension idiom.
+//
+// J339.
+type EpisodeFilePopulator interface {
+	PopulateEpisodeFile(ctx context.Context, f *episodefiles.File) (customFormats []CustomFormatResource, customFormatScore int)
+}
+
+// applyEpisodeFilePopulator post-processes a freshly-built
+// EpisodeFileResource via the optional-extension type-assertion.
+// svc is the handler's reader/writer interface (typed as `any` so
+// the helper accepts any concrete type the handler holds); if it
+// ALSO implements EpisodeFilePopulator, this helper fills the 2
+// custom-format fields on the resource. Otherwise no-op
+// (preserves the empty-stub fallback). nil-safe.
+//
+// J339.
+func applyEpisodeFilePopulator(ctx context.Context, res *EpisodeFileResource, f *episodefiles.File, svc any) {
+	if res == nil || f == nil || svc == nil {
+		return
+	}
+	pop, ok := svc.(EpisodeFilePopulator)
+	if !ok || pop == nil {
+		return
+	}
+	cf, score := pop.PopulateEpisodeFile(ctx, f)
+	if cf != nil {
+		res.CustomFormats = cf
+	}
+	res.CustomFormatScore = score
+}
+
 // EpisodeFileListHandler returns GET /api/v3/episodefile. Mirrors
 // `EpisodeFileController.GetEpisodeFiles` at `:61-92`. Required:
 // `seriesId` OR `episodeFileIds` (repeated int). Returns the C#-
@@ -169,7 +214,10 @@ func EpisodeFileListHandler(svc EpisodeFileReader, seriesCheck SeriesExistsCheck
 		}
 		out := make([]EpisodeFileResource, 0, len(files))
 		for _, f := range files {
-			out = append(out, ToEpisodeFileResource(f, ""))
+			res := ToEpisodeFileResource(f, "")
+			file := f // copy for pointer capture
+			applyEpisodeFilePopulator(r.Context(), &res, &file, svc)
+			out = append(out, res)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -197,9 +245,11 @@ func EpisodeFileByIDHandler(svc EpisodeFileReader) http.Handler {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile: get %d: %w", id, err), nil)
 			return
 		}
+		res := ToEpisodeFileResource(*f, "")
+		applyEpisodeFilePopulator(r.Context(), &res, f, svc)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		buf, _ := json.Marshal(ToEpisodeFileResource(*f, ""))
+		buf, _ := json.Marshal(res)
 		_, _ = w.Write(buf)
 	})
 }
@@ -270,7 +320,9 @@ func EpisodeFileEditorHandler(svc EpisodeFileWriter) http.Handler {
 		}
 		out := make([]EpisodeFileResource, 0, len(ptrs))
 		for _, f := range ptrs {
-			out = append(out, ToEpisodeFileResource(*f, ""))
+			res := ToEpisodeFileResource(*f, "")
+			applyEpisodeFilePopulator(r.Context(), &res, f, svc)
+			out = append(out, res)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusAccepted)
@@ -335,7 +387,9 @@ func EpisodeFileBulkUpdateHandler(svc EpisodeFileWriter) http.Handler {
 		}
 		out := make([]EpisodeFileResource, 0, len(ptrs))
 		for _, f := range ptrs {
-			out = append(out, ToEpisodeFileResource(*f, ""))
+			res := ToEpisodeFileResource(*f, "")
+			applyEpisodeFilePopulator(req.Context(), &res, f, svc)
+			out = append(out, res)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusAccepted)
@@ -389,9 +443,11 @@ func EpisodeFileUpdateHandler(svc EpisodeFileWriter) http.Handler {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile: update %d: %w", id, err), nil)
 			return
 		}
+		res := ToEpisodeFileResource(*f, "")
+		applyEpisodeFilePopulator(r.Context(), &res, f, svc)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusAccepted)
-		buf, _ := json.Marshal(ToEpisodeFileResource(*f, ""))
+		buf, _ := json.Marshal(res)
 		_, _ = w.Write(buf)
 	})
 }
