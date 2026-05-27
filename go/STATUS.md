@@ -15863,3 +15863,99 @@ No new routes. Struct + helper + doc-comment widening only.
 31 wire-shape fields landed across J309-J321.
 
 Next-tick smallest candidate: QueueResource Series? + Episodes? pointer-subresource widening (J313-pattern — Series is single pointer, Episodes is `[]EpisodeResource?` pointer-to-slice for v5; v3 has a single Episode? — diverge by emitting both? Or just the v5-additive plural). Or StatusMessages typed list DTO (needs a `QueueStatusMessage struct {title string; messages []string}` wire-shape pin).
+
+---
+
+## J322 — Post-Wave-3 drain, slice 14: QueueResource Series? + Episode? + Episodes? subresource widening
+
+**Anchor**: post-J321 (QueueResource SizeLeft+TimeLeft+FormatTimeLeft helper landed). Continues the QueueResource sweep with the 3 subresource pointer fields — J302 pattern (pointer-to-struct + omitempty) for Series + Episode; pointer-to-slice for Episodes (J309 SeasonResource.Images pattern).
+
+### C# source
+
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:14-15` — `EpisodeResource Episode` + `SeriesResource Series` (both nullable; populated when `includeSeries=true`/`includeEpisode=true` per QueueResourceMapper.cs:46-47).
+- `src/Sonarr.Api.V5/Queue/QueueResource.cs:14,18` — `SeriesResource? Series` + `List<EpisodeResource>? Episodes` (v5 dropped the singular Episode in favor of the plural list).
+
+### v3/v5 wire divergence
+
+- v3 wire: `"episode":{...}` (singular).
+- v5 wire: `"episodes":[{...}]` (plural list).
+
+The Go-port emits BOTH forms on the shared apiv3 type as deliberate additive divergence on each surface — v5 clients see an extra `"episode"` key when populated; v3 clients see an extra `"episodes"` key. Both v3 and v5 ignore unknown JSON keys so this is harmless. The pragmatic alternative (forcing one form or breaking the alias) costs more LOC and observability for no semantic gain.
+
+### Wire contract
+
+C# under STJson WhenWritingNull:
+- nullable subresource: null → key absent; non-null → full nested shape.
+- nullable list: null → key absent; empty list → `[]`; populated → `[{...}]`.
+
+Go-port mapping:
+- `Series *SeriesResource json:"series,omitempty"` — J302 pattern.
+- `Episode *EpisodeResource json:"episode,omitempty"` — same.
+- `Episodes *[]EpisodeResource json:"episodes,omitempty"` — pointer-to-slice for 3-state (nil → absent; non-nil empty → `[]`; populated → `[...]`).
+
+### Port deliverables
+
+**`internal/api/v3/queue.go`** — struct + doc-comment:
+
+- `QueueResource` widened with 3 new fields after EstimatedCompletionTime:
+  - `Series *SeriesResource json:"series,omitempty"`.
+  - `Episode *EpisodeResource json:"episode,omitempty"` (v3-only — additive divergence on v5).
+  - `Episodes *[]EpisodeResource json:"episodes,omitempty"` (v5-only — additive divergence on v3).
+- Doc comment extended with a J322 paragraph cataloguing each field + the additive-divergence rationale + the includeSeries/includeEpisode/includeEpisodes population path.
+
+No emit-site mapper updates required — production today returns `[]QueueResource{}` (no rows). The populated-row mapper port is its own dedicated slice.
+
+v5/queue aliases v3 via `type Resource = apiv3.QueueResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (1 new, 3 branches)
+
+`internal/api/v3/queue_test.go`:
+
+- `TestQueueResource_SubresourceWidening_J322` — 3-branch pin:
+  - Row 1: fully populated `Series=&SeriesResource{...}, Episode=&EpisodeResource{...}, Episodes=&[]EpisodeResource{{...}}` → 5 positive substring assertions (3 key openers + 2 nested `"title":` confirmations).
+  - Row 2: all nil pointers → 3 negative omitempty assertions confirming all 3 keys drop.
+  - Row 3: explicit `&[]EpisodeResource{}` empty slice → asserts `"episodes":[]` (pinning the pointer-to-slice 3-state contract).
+
+### Wiring
+
+No new routes. Struct + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/queue/...` ✓
+  - v3: all pass, 2.253s
+  - cmd/sonarr: all pass, 3.834s
+  - v5/queue: all pass, 2.660s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | **DONE this slice (J322)** |
+| B. v5 field divergences | QueueResource StatusMessages typed list | OPEN — needs typed `QueueStatusMessage struct {title string; messages []string}` wire-shape pin |
+| B. v5 field divergences | QueueResource v5 SeasonNumbers list + EpisodeIds list | OPEN — v5 changes the singular EpisodeID + adds plural SeasonNumbers |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem + ReleaseResource | OPEN — body-decode shape consideration |
+| B. v5 field divergences | Quality typed QualityModel envelope | OPEN — complex DTO |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — alias break, mid-size |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+34 wire-shape fields landed across J309-J322.
+
+Next-tick smallest candidate: QueueResource StatusMessages typed list (new `QueueStatusMessage` DTO + field add + 1 test) or QueueResource v5 SeasonNumbers/EpisodeIds list-form (J302 pattern repeat).

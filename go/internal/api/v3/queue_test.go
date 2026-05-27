@@ -377,6 +377,68 @@ func TestFormatTimeLeft_AllBranches_J321(t *testing.T) {
 	}
 }
 
+// J322 wire-shape pin for the Series + Episode + Episodes
+// subresource widening on QueueResource. Series + Episode are
+// pointer-to-Resource with omitempty (J302 pattern: nil → key
+// absent, populated → full nested shape). Episodes is
+// pointer-to-slice for the 3-state distinction (nil → absent;
+// non-nil empty → `[]`; populated → `[{...}]`).
+//
+// Test covers BOTH branches in one pass: row 1 fully populated;
+// row 2 all nil pointers → all 3 keys drop via omitempty.
+func TestQueueResource_SubresourceWidening_J322(t *testing.T) {
+	t.Parallel()
+	// Branch 1: fully populated.
+	episodes := []EpisodeResource{{ID: 101, SeasonNumber: 1, EpisodeNumber: 1, Title: "Pilot"}}
+	populated := QueueResource{
+		ID:       1,
+		Title:    "demo",
+		Series:   &SeriesResource{ID: 11, Title: "Show", Tags: []int{}, Genres: []string{}},
+		Episode:  &EpisodeResource{ID: 101, SeasonNumber: 1, EpisodeNumber: 1, Title: "Pilot"},
+		Episodes: &episodes,
+	}
+	buf, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated: %v", err)
+	}
+	got := string(buf)
+	mustContain := []string{
+		`"series":{`,
+		`"episode":{`,
+		`"episodes":[`,
+		`"title":"Show"`,
+		`"title":"Pilot"`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Errorf("populated missing %q in %s", want, got)
+		}
+	}
+	// Branch 2: all nil pointers → omitempty drops all 3 keys.
+	empty := QueueResource{ID: 2, Title: "demo"}
+	buf2, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	got2 := string(buf2)
+	for _, want := range []string{`"series":`, `"episode":`, `"episodes":`} {
+		if strings.Contains(got2, want) {
+			t.Errorf("nil subresource must omit %q; got %s", want, got2)
+		}
+	}
+	// Branch 3: explicit empty Episodes slice → emits `"episodes":[]`
+	// (pointer-to-slice preserves the 3-state distinction).
+	emptyEps := []EpisodeResource{}
+	row3 := QueueResource{ID: 3, Title: "demo", Episodes: &emptyEps}
+	buf3, err := json.Marshal(row3)
+	if err != nil {
+		t.Fatalf("marshal empty-eps: %v", err)
+	}
+	if !strings.Contains(string(buf3), `"episodes":[]`) {
+		t.Errorf("&[]EpisodeResource{} must emit `\"episodes\":[]`; got %s", buf3)
+	}
+}
+
 // ---------- 5.I18: /queue/details tests ----------
 
 type fakeQueueDetailsLister struct {

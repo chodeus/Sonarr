@@ -37,6 +37,32 @@ import (
 // semantic — null when unset on the wire, populated when the queue
 // row is tied to a Series/Episode.
 //
+// J322 subresource widening: Series + Episode + Episodes (J302
+// pattern — pointer-to-struct + pointer-to-slice with omitempty).
+//
+//   - `Series *SeriesResource json:"series,omitempty"` — both v3
+//     and v5 declare a single nullable Series subresource
+//     (`SeriesResource? Series` at C# v3 :15 / v5 :14). Populated
+//     when the `includeSeries=true` query branch is set on the C#
+//     mapper (`QueueResourceMapper.cs:46-47` /
+//     `QueueResourceMapper.cs:23`). Today's Go-port stub leaves nil
+//     so omitempty drops the key.
+//   - `Episode *EpisodeResource json:"episode,omitempty"` — v3-only.
+//     v3 carries the SINGULAR field `EpisodeResource? Episode` at
+//     QueueResource.cs:14, populated when `includeEpisode=true`.
+//     v5 dropped this field in favor of the plural Episodes list.
+//     The Go-port emits both (additive divergence on v5 — v5
+//     clients see an extra `"episode"` key when populated; v5
+//     ignores unknown JSON keys so harmless). Today nil drops the
+//     key.
+//   - `Episodes *[]EpisodeResource json:"episodes,omitempty"` —
+//     v5-only. v5 carries `List<EpisodeResource>? Episodes` at
+//     QueueResource.cs:18, populated when `includeEpisodes=true`.
+//     Pointer-to-slice for the 3-state distinction (nil → key
+//     absent; non-nil empty → `"episodes":[]`; populated →
+//     `"episodes":[{...}]`). Additive divergence on v3 same as
+//     above (v3 clients ignore unknown JSON keys).
+//
 // J321 SizeLeft + TimeLeft widening:
 //   - SizeLeft int64 — non-nullable on v5 (`decimal SizeLeft`),
 //     CAMEL-case key on the wire (`"sizeLeft"`). v3 uses the
@@ -167,6 +193,9 @@ type QueueResource struct {
 	IsFullSeason                        bool          `json:"isFullSeason,omitempty"`
 	Added                               *time.Time    `json:"added,omitempty"`
 	EstimatedCompletionTime             *time.Time    `json:"estimatedCompletionTime,omitempty"`
+	Series                              *SeriesResource    `json:"series,omitempty"`
+	Episode                             *EpisodeResource   `json:"episode,omitempty"`
+	Episodes                            *[]EpisodeResource `json:"episodes,omitempty"`
 }
 
 // FormatTimeLeft renders a *time.Duration in the C# TimeSpan
