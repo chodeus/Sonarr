@@ -68,6 +68,50 @@ func TestSeriesListHandler_ScalarProjection(t *testing.T) {
 	}
 }
 
+// J326 wire-shape pin for the v5-additive 4-field widening on
+// SeriesResource (MalIds + AniListIds + OriginalCountry + IsExcluded).
+// All omitempty: nil slices, empty string, nil pointer drop keys;
+// populated values emit. Production ToSeriesResource populates 3 of
+// the 4 (MalIds/AniListIds/OriginalCountry) from persistence;
+// IsExcluded stays nil until the importlistexclusion service-join
+// projection lands.
+//
+// Test covers BOTH branches: row 1 populated → all 3 backed fields
+// emit; row 2 empty/nil-defaults → all 4 keys drop via omitempty.
+func TestSeriesListHandler_V5AdditiveFields_J326(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	SeriesListHandler(&fakeSeriesLister{rows: []series.Series{
+		// Row 1: populated v5-additive persistence fields.
+		{ID: 1, Title: "AnimeShow", MalIDs: []int{42, 99}, AniListIDs: []int{101}, OriginalCountry: "JP"},
+		// Row 2: defaults (nil slices, empty country).
+		{ID: 2, Title: "USShow"},
+	}}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/series", nil))
+	body := rr.Body.String()
+	// Row 1 positive substring pins.
+	mustContain := []string{
+		`"malIds":[42,99]`,
+		`"aniListIds":[101]`,
+		`"originalCountry":"JP"`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("populated missing %q in %s", want, body)
+		}
+	}
+	// Row 2: omitempty drops the keys when zero-valued.
+	// Defensive count: each key appears exactly once (row 1 only).
+	for _, key := range []string{`"malIds":`, `"aniListIds":`, `"originalCountry":`} {
+		if c := strings.Count(body, key); c != 1 {
+			t.Errorf("expected exactly 1 %q occurrence (row 1 only); got %d in %s", key, c, body)
+		}
+	}
+	// IsExcluded *bool stays nil on both rows → key absent everywhere.
+	if strings.Contains(body, `"isExcluded":`) {
+		t.Errorf("nil IsExcluded must omit the key; got %s", body)
+	}
+}
+
 func TestSeriesListHandler_NilTagsEmitsEmptyArray(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()

@@ -67,6 +67,30 @@ import (
 // DEFERRED (populated-row only): alternateTitles, images, originalLanguage,
 // remotePoster, seasons, addOptions, ratings, statistics, episodesChanged,
 // genres, folder.
+//
+// J326 v5-additive widening: 4 fields the C# v5 SeriesResource carries
+// that don't appear on the C# v3 SeriesResource (deliberate v3
+// divergence on populated rows — v3 clients ignore unknown JSON keys
+// so additive emission is harmless):
+//   - MalIds []int json:"malIds,omitempty" — v5 `HashSet<int>? MalIds`
+//     at v5 SeriesResource.cs:32. Persisted as `series.Series.MalIDs`
+//     at internal/series/series.go:104. nil/empty drops the key.
+//   - AniListIds []int json:"aniListIds,omitempty" — v5 `HashSet<int>?
+//     AniListIds` at v5 SeriesResource.cs:33. Persisted as
+//     `series.Series.AniListIDs` at series.go:105. nil/empty drops.
+//   - OriginalCountry string json:"originalCountry,omitempty" — v5
+//     `string? OriginalCountry` at v5 SeriesResource.cs:46. Persisted
+//     as `series.Series.OriginalCountry` at series.go:106. Empty
+//     string drops the key (matches C# WhenWritingNull for null + the
+//     Go-typical empty-string collapse).
+//   - IsExcluded *bool json:"isExcluded,omitempty" — v5 `bool?
+//     IsExcluded` at v5 SeriesResource.cs:55-58. Computed at projection
+//     time by joining against the ImportListExclusion table — the
+//     Go-port's importlistexclusion service-join projection is
+//     DEFERRED; the field stays nil and omitempty drops the key. v5
+//     C# tags this with `[JsonIgnore(Condition = JsonIgnoreCondition.
+//     WhenWritingDefault)]` which is equivalent to the Go pointer +
+//     omitempty pattern.
 type SeriesResource struct {
 	ID                int      `json:"id,omitempty"`
 	Title             string   `json:"title"`
@@ -86,6 +110,8 @@ type SeriesResource struct {
 	TvRageID          int      `json:"tvRageId"`
 	TvMazeID          int      `json:"tvMazeId"`
 	TmdbID            int      `json:"tmdbId"`
+	MalIds            []int    `json:"malIds,omitempty"`
+	AniListIds        []int    `json:"aniListIds,omitempty"`
 	SeriesType        string   `json:"seriesType"`
 	CleanTitle        string   `json:"cleanTitle"`
 	ImdbID            string   `json:"imdbId"`
@@ -97,6 +123,8 @@ type SeriesResource struct {
 	Ended             bool     `json:"ended"`
 	LanguageProfileID int      `json:"languageProfileId"`
 	Genres            []string `json:"genres"`
+	OriginalCountry   string   `json:"originalCountry,omitempty"`
+	IsExcluded        *bool    `json:"isExcluded,omitempty"`
 }
 
 // SeriesLister narrows the series.Service surface to the read path
@@ -197,6 +225,8 @@ func ToSeriesResource(s series.Series) SeriesResource {
 		TvRageID:          s.TvRageID,
 		TvMazeID:          s.TvMazeID,
 		TmdbID:            s.TmdbID,
+		MalIds:            s.MalIDs,
+		AniListIds:        s.AniListIDs,
 		SeriesType:        seriesTypeName(s.SeriesType),
 		CleanTitle:        s.CleanTitle,
 		ImdbID:            s.ImdbID,
@@ -208,6 +238,10 @@ func ToSeriesResource(s series.Series) SeriesResource {
 		Ended:             s.Status == seriesStatusEnded,
 		LanguageProfileID: 1,
 		Genres:            []string{},
+		OriginalCountry:   s.OriginalCountry,
+		// IsExcluded *bool stays nil — populated by the future v5
+		// `importlistexclusion.Service`-join projection when that
+		// service-port slice lands. omitempty drops the key today.
 	}
 }
 

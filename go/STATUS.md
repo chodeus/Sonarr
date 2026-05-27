@@ -16251,3 +16251,107 @@ No new routes. Struct + new file + doc-comment widening only.
 38 wire-shape fields landed across J309-J325. **Quality typed-DTO arrives** — the last cross-cutting wire-shape DTO blocker on the History/Blocklist/Queue carriers is now resolved (ManualImport + Release deferred for body-decode shape considerations).
 
 Next-tick candidate: SeriesResource v5 field divergences (MalIds/AniListIds/OriginalCountry/IsExcluded — needs alias break on v5/series Resource, mid-size). Or apply the QualityModelResource pattern to ManualImport (~mid; needs reprocessOne logic adjustment around the existing `*quality.Model` field — body-decode would still accept either shape if we handle both wire forms).
+
+---
+
+## J326 — Post-Wave-3 drain, slice 18: SeriesResource v5-additive 4-field widening
+
+**Anchor**: post-J325 (Quality typed-DTO landed on History/Blocklist/Queue). Pivots family-of-focus to SeriesResource — closes the v5-additive field cluster (MalIds + AniListIds + OriginalCountry + IsExcluded). No alias-break needed; the J316 additive-divergence pattern applies.
+
+### C# source
+
+- `src/Sonarr.Api.V5/Series/SeriesResource.cs:32` — `HashSet<int>? MalIds` (anime MyAnimeList IDs).
+- `src/Sonarr.Api.V5/Series/SeriesResource.cs:33` — `HashSet<int>? AniListIds` (anime AniList IDs).
+- `src/Sonarr.Api.V5/Series/SeriesResource.cs:46` — `string? OriginalCountry` (ISO 3166-1 alpha-2 country code).
+- `src/Sonarr.Api.V5/Series/SeriesResource.cs:55-58` — `bool? IsExcluded` with `[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]`.
+
+v3 C# SeriesResource lacks all 4 fields. C# v3 wire emits only the v3 declared fields; v5 wire emits the v3 set plus these 4.
+
+### Wire contract
+
+C# under STJson `WhenWritingNull`:
+- Nullable list (HashSet<int>?) → null drops key; populated emits `[N,N]`.
+- Nullable string → null drops key; non-null emits.
+- Nullable bool with `WhenWritingDefault` → null/default drops key; populated emits true/false.
+
+Go-port mapping with omitempty:
+- `MalIds []int json:"malIds,omitempty"` — nil/empty slice drops key.
+- `AniListIds []int json:"aniListIds,omitempty"` — same.
+- `OriginalCountry string json:"originalCountry,omitempty"` — empty string drops key (with the Go-typical empty-string collapse vs C# null-only-drop).
+- `IsExcluded *bool json:"isExcluded,omitempty"` — nil pointer drops key (matches WhenWritingDefault).
+
+### Port deliverables
+
+**`internal/api/v3/series.go`** — struct + mapper + doc-comment:
+
+- `SeriesResource` widened with 4 new fields:
+  - `MalIds []int json:"malIds,omitempty"` between TmdbID and SeriesType.
+  - `AniListIds []int json:"aniListIds,omitempty"` after MalIds.
+  - `OriginalCountry string json:"originalCountry,omitempty"` at the end.
+  - `IsExcluded *bool json:"isExcluded,omitempty"` at the end.
+- `ToSeriesResource` populates 3 of the 4 from persistence:
+  - `MalIds: s.MalIDs` (persisted at `internal/series/series.go:104`).
+  - `AniListIds: s.AniListIDs` (persisted at :105).
+  - `OriginalCountry: s.OriginalCountry` (persisted at :106).
+- `IsExcluded` stays nil — deferred until the importlistexclusion service-join projection lands.
+- Doc comment extended with a J326 paragraph cataloguing each field + the v5-additive divergence rationale + the IsExcluded service-join deferral note.
+
+v5/series aliases v3 via `type Resource = apiv3.SeriesResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (1 new)
+
+`internal/api/v3/series_test.go`:
+
+- `TestSeriesListHandler_V5AdditiveFields_J326` — 2-row pin covering BOTH branches:
+  - Row 1: populated `series.Series{MalIDs:[42,99], AniListIDs:[101], OriginalCountry:"JP"}` → 3 positive substring assertions on the wire body.
+  - Row 2: defaults (nil slices, empty country) — relies on the existing fakeSeriesLister fixture pattern.
+  - Defensive `strings.Count(body, "\"malIds\":") == 1` (and same for aniListIds + originalCountry) confirms each key fires exactly once (row 1 only) — omitempty drops on row 2.
+  - Defensive `!strings.Contains(body, "\"isExcluded\":")` confirms the *bool nil-omit applies on both rows.
+
+The existing positive-pin tests (`TestSeriesListHandler_ScalarProjection`, `TestSeriesListHandler_NilTagsEmitsEmptyArray`) continue to pass — their fixtures have nil/empty MalIDs/AniListIDs/OriginalCountry, all dropped by omitempty.
+
+### Wiring
+
+No new routes. Struct + mapper + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/series/...` ✓
+  - v3: all pass, 2.658s
+  - cmd/sonarr: all pass, 3.697s
+  - v5/series: all pass, 2.035s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | DONE (J322) |
+| B. v5 field divergences | QueueResource StatusMessages typed list | DONE (J323) |
+| B. v5 field divergences | QueueResource v5 EpisodeIDs + SeasonNumbers list-form | DONE (J324) |
+| B. v5 field divergences | Quality typed-DTO + History/Blocklist/Queue field widening | DONE (J325) |
+| B. v5 field divergences | SeriesResource v5-additive 4-field widening (MalIds + AniListIds + OriginalCountry + IsExcluded) | **DONE this slice (J326)** |
+| B. v5 field divergences | SeriesResource v5 LanguageProfileId removal | OPEN — v5 strips this field; Go-port emits `=>1` on both surfaces. Would need a v5-specific wrapper or alias break. |
+| B. v5 field divergences | Quality field widening on ManualImportReprocessItem + ReleaseResource | OPEN — body-decode shape change required |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem + ReleaseResource | OPEN — same body-decode concern |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+42 wire-shape fields landed across J309-J326. **SeriesResource scalar v5-additive cluster closed.** Remaining v5/v3 divergence on SeriesResource is the `LanguageProfileId` field (v3 emits `=>1` hard-coded; v5 strips it entirely) — requires a v5-specific projection that omits the field, which means either breaking the alias or adding a v5 wrapper.
+
+Next-tick candidate: SeasonResource v5 surface additions (J309 already added Statistics + Images pointer pin; remaining: integrate AlternateTitle subresource on Series). Or pivot to a smaller v5 widening — the v5 EpisodeResource has additive fields too. Or start the populated-row mapper service-port work for history/blocklist.
