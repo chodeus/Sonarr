@@ -109,6 +109,53 @@ func TestReleaseHandler_DispatchesEpisodeSearch(t *testing.T) {
 	}
 }
 
+// J335 wire-shape pin: ReleaseResource.Quality widened from
+// json.RawMessage (which embedded the persistence-reduced form
+// `{quality:int,revision:{...}}` via the quality.Model custom
+// MarshalJSON) to *QualityModelResource (the J325 expanded wire
+// form `{quality:{id,name,source,resolution},revision:{...}}`
+// matching C# v3+v5 default serialization).
+func TestReleaseHandler_QualityTypedShape_J335(t *testing.T) {
+	t.Parallel()
+	searcher := &fakeReleaseSearcher{
+		decisions: []decisionengine.Decision{
+			decisionengine.NewDecision(&decisionengine.Subject{
+				Release: &parser.ReleaseInfo{Title: "Show.S01E01.HDTV-720p", Guid: "g1", Indexer: "X"},
+				ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{
+					Quality:        quality.Model{Quality: quality.HDTV720p, Revision: quality.NewRevision()},
+					EpisodeNumbers: []int{1},
+					SeasonNumber:   1,
+				},
+			}),
+		},
+	}
+	rr := httptest.NewRecorder()
+	ReleaseHandler(searcher).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/release?episodeId=42", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body)
+	}
+	body := rr.Body.String()
+	// Positive: typed expanded form present.
+	mustContain := []string{
+		`"quality":{`,
+		`"id":4`,
+		`"name":"HDTV-720p"`,
+		`"source":"television"`,
+		`"resolution":720`,
+		`"revision":{`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("populated Quality typed shape missing %q in %s", want, body)
+		}
+	}
+	// Negative: the persistence-reduced form `"quality":4` (bare int)
+	// must NOT appear — would be the pre-J335 shape.
+	if strings.Contains(body, `"quality":4`) {
+		t.Errorf("populated Quality must emit expanded form, not the reduced `\"quality\":4`; got %s", body)
+	}
+}
+
 // J334 wire-shape pin: ReleaseResource.Languages widened from []int
 // to []LanguageRef (J314 typed list form matching C# `List<Language>`
 // wire). Populated rows emit typed `[{id,name}]` entries via the

@@ -29,7 +29,7 @@ import (
 // Audit fix B.4 (initial wiring).
 type ReleaseResource struct {
 	Guid                   string          `json:"guid"`
-	Quality                json.RawMessage `json:"quality"`
+	Quality                *QualityModelResource `json:"quality,omitempty"`
 	Age                    int             `json:"age"`
 	AgeHours               float64         `json:"ageHours"`
 	AgeMinutes             float64         `json:"ageMinutes"`
@@ -219,9 +219,12 @@ func toReleaseResource(d decisionengine.Decision) ReleaseResource {
 		r.IsAbsoluteNumbering = pei.IsAbsoluteNumbering()
 		r.IsPossibleSpecial = pei.IsPossibleSpecialEpisode()
 		r.Special = pei.Special
-		if q, err := json.Marshal(pei.Quality); err == nil {
-			r.Quality = q
-		}
+		// J335: Quality projected via ToQualityModelResource to emit the
+		// expanded `{quality:{id,name,source,resolution},revision:{...}}`
+		// wire shape matching C# default-serialization (vs the
+		// persistence-reduced form quality.Model's custom MarshalJSON
+		// produces). Same widening as J333 ManualImport.Quality.
+		r.Quality = ToQualityModelResource(pei.Quality)
 	}
 	// Languages: project to []LanguageRef typed list (J334; was
 	// []int pre-J334, which diverged from the C# `List<Language>`

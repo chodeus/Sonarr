@@ -17120,3 +17120,86 @@ No new routes. Struct + mapper + test widening only.
 57 wire-shape fields + 1 v5-strip behavior landed across J309-J334. **Languages typed-list cluster CLOSED across all known carriers** (J314 History+Blocklist; J315 Queue; J332 ManualImport; J334 Release).
 
 Next-tick smallest candidate: ReleaseResource Quality field — currently `json.RawMessage` (raw passthrough). Switching to `*QualityModelResource` would harmonize the wire shape with the rest of the carriers, but it changes the existing `release_write_test.go` body-decode tests (they send `{"quality":{"quality":1,"revision":{...}}}` reduced form). Or pivot to populated-row mapper service-port work.
+
+---
+
+## J335 — Post-Wave-3 drain, slice 27: ReleaseResource Quality widening to *QualityModelResource
+
+**Anchor**: post-J334 (Release Languages widening landed). Same J333 pattern applied to the Release Quality field — closes the last per-carrier Quality wire-shape gap.
+
+### Pre-J335 gap
+
+Pre-J335 apiv3.ReleaseResource.Quality was declared as `json.RawMessage` at release.go:32. The populated-mapper at release.go:222-224 did `json.Marshal(pei.Quality)` where `pei.Quality` is `quality.Model` — the custom MarshalJSON at `internal/quality/model.go:76-78` produces the REDUCED `{quality:int,revision:{...}}` form (intended for IEmbeddedDocument storage, NOT the REST wire). C# v3+v5 emit the EXPANDED `{quality:{id,name,source,resolution},revision:{...}}` form via default serialization. The raw-message embedding the reduced form was a wire-shape divergence.
+
+### Port deliverables
+
+**`internal/api/v3/release.go`** — struct + mapper:
+
+- `ReleaseResource.Quality *QualityModelResource json:"quality,omitempty"` — type changed from `json.RawMessage`.
+- `toReleaseResource` populated-mapper at line 222-224 updated: `r.Quality = ToQualityModelResource(pei.Quality)` (the J325 helper for the typed projection).
+- Inline doc-comment cites the J335 widening + the C# expanded-form wire match + the J333 ManualImport parallel.
+
+v5/release + v5/releasepush aliases v3 via `type Resource = apiv3.ReleaseResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (1 new)
+
+`internal/api/v3/release_test.go`:
+
+- `TestReleaseHandler_QualityTypedShape_J335` — drives a populated decisionengine.Subject with HDTV720p quality (Id=4, name="HDTV-720p", source="television", resolution=720) through the production ReleaseHandler path:
+  - 6 positive substring matches on the expanded wire shape: `"quality":{` opener + 4 inner Quality fields + `"revision":{` opener.
+  - 1 negative pin: `!strings.Contains(body, "\"quality\":4")` confirms the pre-J335 reduced form does NOT leak.
+
+Existing positive-pin tests continue to pass — the raw-message embedding of the reduced form is replaced with the typed expanded form; no test asserted on the prior reduced shape.
+
+### Wiring
+
+No new routes. Struct + mapper + test widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/release/... ./internal/api/v5/releasepush/...` ✓
+  - v3: all pass, 2.257s
+  - cmd/sonarr: all pass, 4.577s
+  - v5/release: all pass, 1.561s
+  - v5/releasepush: all pass, 3.344s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | DONE (J322) |
+| B. v5 field divergences | QueueResource StatusMessages typed list | DONE (J323) |
+| B. v5 field divergences | QueueResource v5 EpisodeIDs + SeasonNumbers list-form | DONE (J324) |
+| B. v5 field divergences | Quality typed-DTO + History/Blocklist/Queue field widening | DONE (J325) |
+| B. v5 field divergences | SeriesResource v5-additive 4-field widening | DONE (J326) |
+| B. v5 field divergences | EpisodeResource 3-field widening | DONE (J327) |
+| B. v5 field divergences | EpisodeFileResource 5-field scalar widening | DONE (J328) |
+| B. v5 field divergences | SeriesResource AlternateTitles + AlternateTitleResource typed DTO | DONE (J329) |
+| B. v5 field divergences | MediaInfo typed-DTO + EpisodeFileResource.MediaInfo field | DONE (J330) |
+| B. v5 field divergences | SeriesResource v5 LanguageProfileId removal | DONE (J331) |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem | DONE (J332) |
+| B. v5 field divergences | Quality field widening on ManualImportReprocessItem | DONE (J333) |
+| B. v5 field divergences | Languages typed-list DTO on ReleaseResource | DONE (J334) |
+| B. v5 field divergences | Quality field widening on ReleaseResource | **DONE this slice (J335)** |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+58 wire-shape fields + 1 v5-strip behavior landed across J309-J335. **Quality typed-DTO cluster CLOSED across all 5 carriers** (J325 History+Blocklist+Queue; J333 ManualImport; J335 Release).
+
+Next-tick candidate: The B-category struct-widening pile is essentially drained except for 2 service-port-gated items (Queue includeSubresources hydration; Release POST searchInfo fallback). Pivot to populated-row mapper service-port work — smallest is likely history.Service paged populated customFormats[]+score (single-row-per-trigger mapper with already-ported calculator engine and ParseCustomFormatForHistory helper).
