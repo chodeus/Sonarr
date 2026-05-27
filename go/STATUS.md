@@ -13049,3 +13049,61 @@ Pattern observation: J281 confirms the J280 Settings/* path-alias prediction hol
 - Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
 - Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J282 — Wave 3 thirty-first slice: v5 MediaManagementSettings family port (142 LOC C# source)
+
+Pure path-alias slice — same J280 IndexerSettings + J281 UiSettings + J224 ImportListSettings pattern. v3 already has MediaManagementConfigController mounted at /api/v3/config/mediamanagement with a byte-identical wire shape (24 fields); the v5 family just re-exposes the v3 handlers at the new path prefix.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :3731-3818):
+
+| endpoint                                              | v5 status   | v3 Go-port                                  | strategy   |
+|-------------------------------------------------------|-------------|---------------------------------------------|------------|
+| GET    /api/v5/settings/mediamanagement               | 200         | 200 (apiv3.MediaManagementConfigHandler)    | alias      |
+| GET    /api/v5/settings/mediamanagement/{id}          | 200         | 200 (same handler, ignores id)              | alias      |
+| PUT    /api/v5/settings/mediamanagement/{id}          | 202 Accepted| 202 (apiv3.MediaManagementConfigUpdateHandler) | alias   |
+
+**Resource shape** byte-identical between v3 and v5 — 24 fields (id + 23). All field names + JSON tags + types match. v3 C# declares fields in different order than v5 C# but JSON output normalisation hides the difference.
+
+**Validation chain** (subset preserved via path-alias from `internal/api/v3/config_mediamanagement.go:270-295`):
+- RecycleBinCleanupDays ≥ 0
+- MinimumFreeSpaceWhenImporting ≥ 100
+- RecycleBin (when non-empty) must be absolute path
+- ScriptImportPath (when UseScriptImport=true) must be absolute path
+- UserRejectedExtensions entries must be non-empty after trim
+- DisallowUnknownFields rejects unknown body keys
+
+**Deferred validators** (both surfaces — same DEFERRED state per config_mediamanagement.go:195-201):
+- folderChmodValidator (linux/osx-only ChmodFolder format check)
+- folderWritableValidator (RecycleBin write-test)
+- pathExistsValidator (RecycleBin existence)
+- rootFolderValidator (RecycleBin must not be a configured rootfolder)
+- rootFolderAncestorValidator (RecycleBin must not be ancestor of a rootfolder)
+- startupFolderValidator (RecycleBin must not equal startup folder)
+- systemFolderValidator (RecycleBin must not be a system folder)
+- seriesPathValidator (RecycleBin must not match any series path)
+
+Each runs disk-level checks the Go side needs adapter shims to surface. Service-level Set* methods don't validate; the gap surfaces at filesystem-write time. Follow-up slice once the disk-validator adapters land — widens both v3 and v5 simultaneously.
+
+**v5-only validator rule not yet on either surface**: archive/media-file extension intersect check on UserRejectedExtensions (per MediaManagementSettingsController.cs:43-63). v5 C# rejects extensions that match FileExtensions.ArchiveExtensions (`.zip`, `.tar`, etc.) or MediaFileExtensions.Extensions (`.mp4`, `.mkv`, etc.). v3 Go-port only checks for empty-after-trim entries. Tightening to match v5 requires either v5 fork OR porting the rule back to v3 — same parity argument as the deferred path validators (port to v3, both surfaces widen via shared validator).
+
+**Slice scope** — 399 lines (66 source + 333 test) + 1 import + 3 routes:
+
+- New `internal/api/v5/mediamanagementsettings/mediamanagementsettings.go` (66 LOC) — 3 type aliases (Resource = apiv3.MediaManagementConfigResource, Getter = apiv3.MediaManagementConfigGetter, Writer = apiv3.MediaManagementConfigWriter) + 2 variable aliases (GetHandler = apiv3.MediaManagementConfigHandler, UpdateHandler = apiv3.MediaManagementConfigUpdateHandler). NO new handler code.
+- New `internal/api/v5/mediamanagementsettings/mediamanagementsettings_test.go` (333 LOC) — 8 tests: GetHandler-emits-singleton (id=1 + MinimumFreeSpaceWhenImporting=100 default), UpdateHandler-put-accepted-persists-all-23-fields (round-trip + 23 setter calls counted via mutex-protected fakeProv), UpdateHandler-minimum-free-space-below-100 → 400, UpdateHandler-recycle-bin-relative-path → 400, UpdateHandler-recycle-bin-cleanup-days-negative → 400, UpdateHandler-rejects-unknown-field → 400 (DisallowUnknownFields), variable-aliases-non-nil, type-aliases compile-time pin. fakeProv satisfies the full apiv3.MediaManagementConfigWriter interface (23 getters + 23 setters) with mutex-protected counters for -race cleanliness — the largest fake yet in the v5/settings/ slices.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`mediamanagementsettingsv5`) + 3 new routes alongside the existing /api/v3/config/mediamanagement routes. Re-uses configProv (typed *config.Provider) verbatim.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/mediamanagementsettings/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/mediamanagementsettings/... ./cmd/sonarr/...` ✓ (8 v5/mediamanagementsettings tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 34/~50 → 35/~50.
+
+Pattern observation: 4th consecutive Settings/* slice (J279 UpdateSettings was v5-NEW; J280 IndexerSettings + J281 UiSettings + J282 MediaManagement are path-aliases). The path-alias template scales to large field counts cleanly (J282 has 23 fields, exercises 23-setter pipeline). Same dispatch decision rule from J280 holds: when v3 has a matching Config controller, the v5 slice collapses to a ~50-70 LOC re-export package.
+
+### Next Wave 3 candidates ascending
+
+- Settings/GeneralSettingsController (114 LOC) — likely path-alias (v3 has config_host.go covering HostConfig — likely overlapping fields)
+- Settings/NamingSettingsController (143 LOC) — likely path-alias (v3 has config_naming.go)
+- Episodes/EpisodeController (85 LOC) + RenameEpisodeController (48 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
+- Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
+- Release/ReleasePushController (120 LOC)

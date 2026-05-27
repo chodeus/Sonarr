@@ -20,6 +20,7 @@ import (
 	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
 	indexersettingsv5 "sonarr.tv/sonarr/internal/api/v5/indexersettings"
+	mediamanagementsettingsv5 "sonarr.tv/sonarr/internal/api/v5/mediamanagementsettings"
 	uisettingsv5 "sonarr.tv/sonarr/internal/api/v5/uisettings"
 	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
@@ -1274,6 +1275,19 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/settings/ui", Handler: uisettingsv5.GetHandler(uiCfg)},
 		{Method: "GET", Path: "/api/v5/settings/ui/{id}", Handler: uisettingsv5.GetHandler(uiCfg)},
 		{Method: "PUT", Path: "/api/v5/settings/ui/{id}", Handler: uisettingsv5.UpdateHandler(uiCfg)},
+		// J282 — v5 MediaManagementSettings endpoint family (3 endpoints;
+		// 142 LOC C# across MediaManagementSettingsController +
+		// MediaManagementSettingsResource). Pure path-alias slice (J280/J281
+		// pattern). Resource shape byte-identical to v3
+		// MediaManagementConfigResource (24 fields). Status: GET → 200,
+		// PUT → 202. Validation chain (subset — RecycleBinCleanupDays ≥ 0,
+		// MinimumFreeSpaceWhenImporting ≥ 100, absolute-path checks)
+		// preserved verbatim. Deep filesystem validators (folderChmod /
+		// folderWritable / pathExists / etc) DEFERRED on both surfaces
+		// pending disk-validator adapter shims.
+		{Method: "GET", Path: "/api/v5/settings/mediamanagement", Handler: mediamanagementsettingsv5.GetHandler(configProv)},
+		{Method: "GET", Path: "/api/v5/settings/mediamanagement/{id}", Handler: mediamanagementsettingsv5.GetHandler(configProv)},
+		{Method: "PUT", Path: "/api/v5/settings/mediamanagement/{id}", Handler: mediamanagementsettingsv5.UpdateHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},
