@@ -48,6 +48,46 @@ func TestBlocklistHandler_EmptyDefaults(t *testing.T) {
 	}
 }
 
+// J297 wire-shape pin: a populated row must emit `customFormats:[]`
+// (not `null`) — matches the C# Newtonsoft default for a non-null
+// `List<CustomFormatResource>` initialised via
+// `formatCalculator.ParseCustomFormat(model, model.Series).ToResource(false)`.
+// Blocklist carries `customFormats` only (no `customFormatScore`).
+func TestBlocklistHandler_EmitsCustomFormatsField(t *testing.T) {
+	t.Parallel()
+	svc := &fakeBlocklistLister{
+		records: []BlocklistResource{
+			{ID: 7, SeriesID: 11, SourceTitle: "Show.S01E01", Date: "2026-05-18T12:00:00Z", CustomFormats: []CustomFormatResource{}},
+		},
+		total: 1,
+	}
+	rr := httptest.NewRecorder()
+	BlocklistHandler(svc).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/blocklist", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"customFormats":[]`) {
+		t.Errorf("body must contain `\"customFormats\":[]`; got %s", body)
+	}
+	if strings.Contains(body, `"customFormatScore"`) {
+		t.Errorf("Blocklist must NOT carry customFormatScore (unlike History); got %s", body)
+	}
+	var got PagingResource[BlocklistResource]
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Records) != 1 {
+		t.Fatalf("records len: %d", len(got.Records))
+	}
+	if got.Records[0].CustomFormats == nil {
+		t.Errorf("CustomFormats must be non-nil (empty slice, not nil)")
+	}
+	if len(got.Records[0].CustomFormats) != 0 {
+		t.Errorf("CustomFormats must be empty at deferred state; got %d", len(got.Records[0].CustomFormats))
+	}
+}
+
 func TestBlocklistHandler_Error(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()

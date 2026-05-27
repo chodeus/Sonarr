@@ -16,17 +16,30 @@ import (
 // PagingResource[BlocklistResource] envelope. Mirrors
 // `src/Sonarr.Api.V3/Blocklist/BlocklistResource.cs`.
 //
-// This slice ships the wire-shape skeleton; populated-row mapping
-// awaits a follow-up that lands the paged surface on the Go
-// blocklist.Service. The empty-DB golden has zero records so the
-// gap is unobservable today (DEFERRED — STATUS line 9 carries a
-// note).
+// Reduced wire-shape skeleton — populated-row mapping (languages /
+// quality / protocol / indexer / message / episodeIds / series
+// subresource) lands with the paged surface on the Go
+// blocklist.Service (DEFERRED). The customFormats[] field is wired
+// at the struct level here (J297, Wave 1 calculator wire-through
+// slice 2) so future populated-row mappers can emit the C# wire
+// shape without re-widening; the underlying calculator engine
+// ([sonarr.tv/sonarr/internal/customformats.Calculate] +
+// [sonarr.tv/sonarr/internal/customformats/calculate_blocklist.go:ParseCustomFormatForBlocklist])
+// is already ported. Empty-DB golden has zero records so the gap
+// is unobservable today; constructors should default CustomFormats
+// to `[]CustomFormatResource{}` (not nil) so a future populated
+// row without matched formats still emits `customFormats: []`
+// rather than `null` — matches the C# Newtonsoft default for
+// non-null `List<CustomFormatResource>`. Note: Blocklist carries
+// `customFormats` ONLY (no `customFormatScore` field, unlike
+// HistoryResource).
 type BlocklistResource struct {
-	ID          int    `json:"id"`
-	SeriesID    int    `json:"seriesId"`
-	Title       string `json:"title"`
-	Date        string `json:"date"`
-	SourceTitle string `json:"sourceTitle"`
+	ID            int                    `json:"id"`
+	SeriesID      int                    `json:"seriesId"`
+	Title         string                 `json:"title"`
+	Date          string                 `json:"date"`
+	SourceTitle   string                 `json:"sourceTitle"`
+	CustomFormats []CustomFormatResource `json:"customFormats"`
 }
 
 // BlocklistPagedLister is the read side the handler depends on. The

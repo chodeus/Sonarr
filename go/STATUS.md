@@ -13890,3 +13890,50 @@ The full populated-row mapper landing (computing matched formats per row via `cu
 | ManualImport   | pending                  |
 
 Next tick picks the next smallest-first wire-through. Candidates by current Go-port deferral state: Blocklist (skeleton resource similar shape to History — calculator entry `ParseCustomFormatForBlocklist` already exists at `internal/customformats/calculate_blocklist.go`) → likely smallest next.
+
+## Phase 5.J297 — Wave 1 calculator wire-through, slice 2 of 7: Blocklist `customFormats[]` widening
+
+Second of seven handler wire-through slices. Same shape as J296 but for the Blocklist family.
+
+### Wire divergence
+
+The C# v3 + v5 `BlocklistResource` carry one calculator-derived field not yet present on the Go-port `apiv3.BlocklistResource`:
+
+- `customFormats: CustomFormatResource[]` — the list of formats that matched the row's parsed-release input
+
+Note: Blocklist carries `customFormats` ONLY — no `customFormatScore` field (unlike `HistoryResource`). Confirmed by reading `src/Sonarr.Api.V3/Blocklist/BlocklistResource.cs` (12 fields, no Score) and `src/Sonarr.Api.V5/Blocklist/BlocklistResource.cs` (13 fields including the new v5 `source?` — also no Score).
+
+C# v3 mapper:
+
+```csharp
+CustomFormats = formatCalculator.ParseCustomFormat(model, model.Series).ToResource(false),
+```
+
+### Strategy
+
+Surgical struct widening + constructor defaulting. The underlying calculator engine + per-blocklist entry adapter already exist at `internal/customformats/calculate_blocklist.go:ParseCustomFormatForBlocklist`. This slice does NOT wire the calculator through into the handlers; the full populated-row mapper landing is gated on the `blocklist.Service` paged surface port + per-row series lookup + customformats.Service.All() snapshot per request.
+
+### Slice scope — ~50 lines (struct widening + 1 constructor edit + 1 test)
+
+- **`internal/api/v3/blocklist.go`** — BlocklistResource grows from 5 fields to 6 (CustomFormats added).
+- **`cmd/sonarr/host_wiring.go`** — `blocklistPagedAdapter.PagedBlocklist` constructor allocates `CustomFormats: []apiv3.CustomFormatResource{}`.
+- **`internal/api/v3/blocklist_test.go`** — new `TestBlocklistHandler_EmitsCustomFormatsField` test pins the wire shape: body contains `"customFormats":[]`, does NOT contain `"customFormatScore"` (negative pin — Blocklist is score-less), struct round-trip-decodes to non-nil-empty CustomFormats.
+- **`internal/api/v5/blocklist/`** — no changes (aliases v3 Resource — picks up the new field automatically; existing alias-roundtrip test compiles unchanged).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v3/... ./internal/api/v5/blocklist/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/blocklist/... ./cmd/sonarr/...` ✓ (v3 2.7s, v5/blocklist 2.2s, cmd/sonarr 3.9s)
+
+### Sub-slice 5 progress
+
+| handler        | wire-through landed?    |
+|----------------|--------------------------|
+| **History**    | ✓ J296                   |
+| **Blocklist**  | ✓ J297                   |
+| Parse          | pending                  |
+| Update         | pending                  |
+| Wanted         | pending                  |
+| Calendar       | pending                  |
+| ManualImport   | pending                  |

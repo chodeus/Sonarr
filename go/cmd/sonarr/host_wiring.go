@@ -267,12 +267,15 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 	out := make([]apiv3.BlocklistResource, 0, len(page))
 	for _, e := range page {
 		out = append(out, apiv3.BlocklistResource{
-			ID:          e.ID,
-			SeriesID:    e.SeriesID,
-			SourceTitle: e.SourceTitle,
-			Date:        e.Date.UTC().Format("2006-01-02T15:04:05Z"),
+			ID:            e.ID,
+			SeriesID:      e.SeriesID,
+			SourceTitle:   e.SourceTitle,
+			Date:          e.Date.UTC().Format("2006-01-02T15:04:05Z"),
+			CustomFormats: []apiv3.CustomFormatResource{},
 			// Title is derived from Episode.Title in C# — DEFERRED
-			// until the episode-join wiring lands.
+			// until the episode-join wiring lands. customFormats
+			// populated-row mapper lands alongside the calculator
+			// wire-through (J297+).
 		})
 	}
 	return out, total, nil
