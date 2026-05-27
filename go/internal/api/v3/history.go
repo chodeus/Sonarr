@@ -73,6 +73,7 @@ type HistoryResource struct {
 	DownloadID          string                 `json:"downloadId"`
 	EventType           string                 `json:"eventType"`
 	Languages           []LanguageRef          `json:"languages"`
+	Quality             *QualityModelResource  `json:"quality,omitempty"`
 	Data                map[string]string      `json:"data,omitempty"`
 	QualityCutoffNotMet bool                   `json:"qualityCutoffNotMet"`
 	CustomFormats       []CustomFormatResource `json:"customFormats"`

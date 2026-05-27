@@ -89,6 +89,7 @@ type BlocklistResource struct {
 	Date          string                 `json:"date"`
 	SourceTitle   string                 `json:"sourceTitle"`
 	Languages     []LanguageRef          `json:"languages"`
+	Quality       *QualityModelResource  `json:"quality,omitempty"`
 	Protocol      string                 `json:"protocol"`
 	Indexer       string                 `json:"indexer,omitempty"`
 	Message       string                 `json:"message,omitempty"`

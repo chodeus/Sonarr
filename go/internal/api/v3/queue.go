@@ -207,6 +207,7 @@ type QueueResource struct {
 	DownloadID                          string        `json:"downloadId,omitempty"`
 	Protocol                            string        `json:"protocol,omitempty"`
 	Languages                           []LanguageRef `json:"languages,omitempty"`
+	Quality                             *QualityModelResource `json:"quality,omitempty"`
 	TrackedDownloadStatus               string        `json:"trackedDownloadStatus,omitempty"`
 	TrackedDownloadState                string        `json:"trackedDownloadState,omitempty"`
 	Size                                int64         `json:"size,omitempty"`

@@ -16147,3 +16147,107 @@ No new routes. Struct + doc-comment widening only.
 37 wire-shape fields landed across J309-J324. **QueueResource scalar+subresource sweep DRAINED** — 9 slices (J315 + J317-J324) closing every non-Quality wire-shape gap on the QueueResource family.
 
 Next-tick candidate: family-shift to the next-largest carrier. Quality typed QualityModel envelope (the last remaining wire-shape DTO blocker on History/Blocklist/Queue/ManualImport/Release — significant LOC but unblocks a cluster). Or pivot to the smaller v5 SeriesResource MalIds/AniListIds field divergences (mid-size — needs alias break on v5/series Resource).
+
+---
+
+## J325 — Post-Wave-3 drain, slice 17: Quality typed-DTO port + Quality field widening on History + Blocklist + Queue resources
+
+**Anchor**: post-J324 (QueueResource sweep DRAINED at J324). Pivots to the cross-cutting Quality typed-DTO that the C# tree carries on every carrier resource (History/Blocklist/Queue/ManualImport/Release). This slice ports the DTO + adds the field on the 3 stub-emit carriers (History/Blocklist/Queue); ManualImportReprocessItem (body-decode shape change required) + ReleaseResource (broader projection rework needed) are dedicated follow-up slices.
+
+### C# source
+
+- `src/NzbDrone.Core/Qualities/QualityModel.cs:9-15` — the envelope: Quality + Revision properties.
+- `src/NzbDrone.Core/Qualities/Quality.cs:10-16` — the inner DTO: Id + Name + Source (enum, camelCase string on wire) + Resolution.
+- `src/NzbDrone.Core/Qualities/Revision.cs:6-21` — Version + Real + IsRepack.
+- Parent resources declare `QualityModel? Quality` on History/Blocklist/Queue (nullable subresource).
+
+### Persistence-vs-wire divergence
+
+- Persisted `quality.Model` at `internal/quality/model.go:58-78` has a custom MarshalJSON that emits the REDUCED form: `{"quality":<int-id>,"revision":{...}}`. This matches the C# `QualityIntConverter` posture used for `IEmbeddedDocument` storage.
+- The REST API surface (history/blocklist/queue/manualimport/release) emits the EXPANDED form: `{"quality":{"id":N,"name":"X","source":"television","resolution":N},"revision":{"version":N,"real":N,"isRepack":bool}}`.
+
+The Go-port needs a separate wire-DTO that wraps the persistence model and projects the expanded form. The `QualityModelResource` type serves that role.
+
+### Port deliverables
+
+**`internal/api/v3/quality_model.go`** — new file with 3 types + 1 helper:
+
+- `QualityValue` (4 fields no-omitempty): mirror of C# Quality. Source field is camelCase string per STJson `JsonStringEnumConverter(CamelCase)` applied to QualitySource enum (`"television"` / `"televisionRaw"` / `"web"` / `"webRip"` / `"dvd"` / `"bluray"` / `"blurayRaw"` / `"unknown"`). Reuses the existing `apiv3.QualitySourceName` helper for the conversion.
+- `RevisionValue` (3 fields no-omitempty): mirror of C# Revision.
+- `QualityModelResource` (2 fields no-omitempty): the wrapping envelope.
+- `ToQualityModelResource(quality.Model) *QualityModelResource`: projects the persisted model into the expanded wire DTO. Pointer return so the caller can assign directly to a carrier's `Quality *QualityModelResource` field; nil return would drop the key.
+
+**`internal/api/v3/history.go`** — struct widening:
+- `HistoryResource.Quality *QualityModelResource json:"quality,omitempty"` field added after Languages.
+
+**`internal/api/v3/blocklist.go`** — same:
+- `BlocklistResource.Quality *QualityModelResource json:"quality,omitempty"` field added after Languages.
+
+**`internal/api/v3/queue.go`** — same:
+- `QueueResource.Quality *QualityModelResource json:"quality,omitempty"` field added after Languages.
+
+No emit-site mapper updates required — the populated-row mappers for each family (gated on the per-family paged service ports) will allocate via `apiv3.ToQualityModelResource(persistedRow.Quality)` at projection time.
+
+v5/history + v5/blocklist + v5/queue aliases v3 so the widening propagates to all 6 surfaces (3 v3 + 3 v5) simultaneously.
+
+### Tests (3 new)
+
+`internal/api/v3/quality_model_test.go`:
+
+- `TestQualityModelResource_WireShape_J325` — pure-marshal pin:
+  - Hand-construct `{Quality:HDTV-720p, Revision:{Version:1}}` → 9 must-have substrings (envelope opener + 4 Quality fields + envelope opener + 3 Revision fields).
+  - Zero-value `QualityModelResource{}` → 2 substring assertions confirming all fields emit at zero (no-omitempty verified).
+- `TestToQualityModelResource_PopulatedAndUnknown_J325` — 3-case table:
+  - HDTV-720p with default revision (Version:1, Real:0, IsRepack:false).
+  - WEBDL-1080p with proper revision (Version:2, Real:1, IsRepack:true).
+  - Unknown quality + Version:1 revision → Source camelCase converts to `"unknown"`.
+- `TestCarrierResources_QualityField_J325` — 3 sub-tests (History + Blocklist + Queue):
+  - Each: nil Quality → omitempty drops the key (substring negative assertion).
+  - Each: populated `Quality: qmr` → envelope shape emitted with `"quality":{"quality":{"id":4` opener verifying the nested wire shape.
+
+### Wiring
+
+No new routes. Struct + new file + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/blocklist/... ./internal/api/v5/history/... ./internal/api/v5/queue/...` ✓
+  - v3: all pass, 1.705s
+  - cmd/sonarr: all pass, 5.198s
+  - v5/blocklist: all pass, 2.092s
+  - v5/history: all pass, 2.576s
+  - v5/queue: all pass, 3.521s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | DONE (J322) |
+| B. v5 field divergences | QueueResource StatusMessages typed list | DONE (J323) |
+| B. v5 field divergences | QueueResource v5 EpisodeIDs + SeasonNumbers list-form | DONE (J324) |
+| B. v5 field divergences | Quality typed-DTO + History/Blocklist/Queue field widening | **DONE this slice (J325)** |
+| B. v5 field divergences | Quality field widening on ManualImportReprocessItem + ReleaseResource | OPEN — body-decode shape change required (currently uses *quality.Model with persistence MarshalJSON) |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem + ReleaseResource | OPEN — same body-decode concern |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — alias break, mid-size |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+38 wire-shape fields landed across J309-J325. **Quality typed-DTO arrives** — the last cross-cutting wire-shape DTO blocker on the History/Blocklist/Queue carriers is now resolved (ManualImport + Release deferred for body-decode shape considerations).
+
+Next-tick candidate: SeriesResource v5 field divergences (MalIds/AniListIds/OriginalCountry/IsExcluded — needs alias break on v5/series Resource, mid-size). Or apply the QualityModelResource pattern to ManualImport (~mid; needs reprocessOne logic adjustment around the existing `*quality.Model` field — body-decode would still accept either shape if we handle both wire forms).
