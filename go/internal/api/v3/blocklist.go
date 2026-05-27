@@ -46,7 +46,21 @@ import (
 // v5's `string?` semantic; v3 STJson same posture). Languages,
 // Quality, EpisodeIds-as-subresource, and Series subresource remain
 // DEFERRED — each requires either a typed wire DTO (Quality is
-// complex) or a service join (Series).
+// complex) or a service join (Languages still needs an id-to-name
+// lookup; Quality needs the QualityModel typed envelope).
+//
+// J313 subresource widening: Series (`*SeriesResource` with
+// omitempty — C# `SeriesResource? Series` nullable subresource,
+// populated by `BlocklistResourceMapper.MapToResource` at C#
+// `BlocklistResource.cs:45-46` via `model.Series.ToResource()`).
+// Pointer-to-struct preserves the STJson WhenWritingNull wire
+// posture: nil drops the key entirely; non-nil emits the full
+// nested SeriesResource shape. No service-join wired today (the
+// blocklist.Service paged surface doesn't yet join Series rows);
+// future populated-mapper port allocates `&apiv3.ToSeriesResource(s)`
+// without re-widening the struct. Note: Blocklist has NO `Episode`
+// subresource (unlike HistoryResource — Blocklist carries
+// `EpisodeIds []int` instead, already widened at J311).
 //
 // Note: the Go-port carries a `title` field that does NOT exist on
 // either v3 or v5 C# BlocklistResource. Preserved unmodified to
@@ -64,6 +78,7 @@ type BlocklistResource struct {
 	Indexer       string                 `json:"indexer,omitempty"`
 	Message       string                 `json:"message,omitempty"`
 	CustomFormats []CustomFormatResource `json:"customFormats"`
+	Series        *SeriesResource        `json:"series,omitempty"`
 }
 
 // BlocklistProtocolName returns the camelCase wire form of a

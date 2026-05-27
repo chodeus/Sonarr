@@ -165,6 +165,58 @@ func TestBlocklistHandler_EmitsScalarFieldWidening_J311(t *testing.T) {
 	}
 }
 
+// J313 wire-shape pin for the Series subresource widening. The
+// field is `*SeriesResource` with omitempty so nil drops the key
+// entirely (matches STJson `WhenWritingNull` / C# nullable
+// `SeriesResource?`); non-nil emits the full nested SeriesResource
+// shape (matches the C# `BlocklistResourceMapper.MapToResource`
+// path that always sets `Series = model.Series.ToResource()`).
+//
+// Test covers BOTH branches in one pass via direct json.Marshal on
+// the typed struct: row 1 has nil Series (key absent); row 2 has
+// populated Series (full nested shape with required Tags/Genres
+// empty-slice allocations matching SeriesResource's always-emit
+// posture).
+func TestBlocklistResource_SeriesSubresource_OmitemptyAndPopulated_J313(t *testing.T) {
+	t.Parallel()
+	// Row 1: nil Series — should omit the key entirely.
+	nilSeries := BlocklistResource{
+		ID: 7, SeriesID: 11, EpisodeIDs: []int{}, Title: "", Date: "2026-05-18T12:00:00Z",
+		SourceTitle: "Show.S01E01", Protocol: "unknown", CustomFormats: []CustomFormatResource{},
+		Series: nil,
+	}
+	buf, err := json.Marshal(nilSeries)
+	if err != nil {
+		t.Fatalf("marshal nil-series: %v", err)
+	}
+	if strings.Contains(string(buf), `"series":`) {
+		t.Errorf("nil Series must omit the key; got %s", buf)
+	}
+	// Row 2: populated Series — should emit the full nested shape.
+	populated := BlocklistResource{
+		ID: 8, SeriesID: 11, EpisodeIDs: []int{101}, Date: "2026-05-18T13:00:00Z",
+		SourceTitle: "Show.S01E02", Protocol: "torrent", CustomFormats: []CustomFormatResource{},
+		Series: &SeriesResource{ID: 11, Title: "Show", Tags: []int{}, Genres: []string{}},
+	}
+	buf2, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated-series: %v", err)
+	}
+	got := string(buf2)
+	mustContain := []string{
+		`"series":{`,
+		`"id":11`,
+		`"title":"Show"`,
+		`"tags":[]`,
+		`"genres":[]`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %s", want, got)
+		}
+	}
+}
+
 // J311 helper-pin: BlocklistProtocolName maps the persisted
 // `*int` Protocol value back to the camelCase wire string used by
 // the C# DownloadProtocol enum under JsonStringEnumConverter.

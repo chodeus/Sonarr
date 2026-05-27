@@ -15049,3 +15049,77 @@ No new routes. Struct + doc-comment widening only.
 | A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
 
 Next-tick smallest candidate: applying the same J312 Episode? + Series? pointer-subresource pattern to BlocklistResource (single-resource embed `Series *SeriesResource` — Blocklist has Series subresource but no Episode). Or v5-only BlocklistResource `Source` field add. Both J311-pattern repeats.
+
+---
+
+## J313 — Post-Wave-3 drain, slice 5: v3 BlocklistResource Series? pointer-subresource widening
+
+**Anchor**: post-J312 (HistoryResource Episode? + Series? subresource widening landed). Applies the same J312 Series-subresource pattern to BlocklistResource — single-field widening, J302 pattern repeat.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Blocklist/BlocklistResource.cs:32` — `public SeriesResource Series { get; set; }`.
+- `src/Sonarr.Api.V5/Blocklist/BlocklistResource.cs:27` — `public required SeriesResource Series { get; set; }` (v5 marks it `required` but wire is same nullable-pointer-with-omitempty under STJson's WhenWritingNull).
+- `src/Sonarr.Api.V3/Blocklist/BlocklistResource.cs:45-46` — `Series = model.Series.ToResource()` population path in MapToResource.
+
+### Wire contract
+
+Same as J312 Episode?/Series? on HistoryResource:
+- nil → key absent (matches STJson `WhenWritingNull`).
+- non-nil → key present with the full nested SeriesResource shape.
+
+### Port deliverables
+
+**`internal/api/v3/blocklist.go`** — struct + doc-comment:
+
+- `BlocklistResource` widened: new `Series *SeriesResource json:"series,omitempty"` after CustomFormats.
+- Doc comment on `BlocklistResource` extended with a J313 paragraph cataloguing the wire contract + the C# population path + the no-Episode-subresource note (Blocklist has NO Episode subresource — it carries EpisodeIDs []int already widened at J311).
+- DEFERRED list trimmed: "languages / quality / series subresource" → "languages / quality" (Series closed this slice; Languages still needs id-to-name lookup, Quality still needs typed QualityModel envelope).
+
+No emit-site mapper updates required — Go's zero value for `*SeriesResource` is nil; the existing `BlocklistResource{...}` literals at `cmd/sonarr/host_wiring.go:blocklistPagedAdapter.PagedBlocklist` automatically pick up the deferred-state default (key omitted).
+
+v5/blocklist aliases v3 via `type Resource = apiv3.BlocklistResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (1 new)
+
+`internal/api/v3/blocklist_test.go`:
+
+- `TestBlocklistResource_SeriesSubresource_OmitemptyAndPopulated_J313` — pure-marshal pin covering BOTH branches in one pass:
+  - Row 1: `Series: nil` → assert `!strings.Contains(buf, "\"series\":")` pins the omitempty drop.
+  - Row 2: `Series: &SeriesResource{ID:11, Title:"Show", Tags:[]int{}, Genres:[]string{}}` → assert 5 must-have substrings (`"series":{` opener + `"id":11` + `"title":"Show"` + `"tags":[]` + `"genres":[]`). The Tags + Genres empty-slice allocations match SeriesResource's always-emit (no-omitempty) posture.
+
+Existing positive-pin tests (`TestBlocklistHandler_EmitsCustomFormatsField`, `TestBlocklistHandler_EmitsScalarFieldWidening_J311`) continue to pass — their rows have nil Series (omitempty drops the key cleanly).
+
+### Wiring
+
+No new routes. Struct + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/blocklist/...` ✓
+  - v3: all pass, 1.379s
+  - cmd/sonarr: all pass, 3.685s
+  - v5/blocklist: all pass, 2.006s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | **DONE this slice (J313)** |
+| B. v5 field divergences | HistoryResource Languages + Quality (typed DTOs) | OPEN — each its own slice; Quality is complex envelope, Languages needs id-to-name lookup |
+| B. v5 field divergences | BlocklistResource Languages + Quality | OPEN — same pattern |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | OPEN — additive divergence; addable as 1-line widening |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — alias break, mid-size |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN — needs deps injection + per-row series lookup |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
+
+12 wire-shape fields landed across J309-J313 — Combined coverage on the History/Blocklist/SeasonResource family is now: every wire-shape gap on those families that doesn't require either a typed-DTO port (Quality envelope, Languages list) or a service-side compute (CustomFormats matcher dispatch, upgradable-spec for QualityCutoffNotMet population) is closed.
+
+Next-tick smallest candidate: the v5-only BlocklistResource `Source` field (single-line struct add + 1 test — smallest possible J311-pattern repeat at ~10 LOC) or a Languages typed-DTO port (broader scope — defines a `Language struct {id int; name string}` wire type, threads through history+blocklist with id-to-name lookup via internal/language).
