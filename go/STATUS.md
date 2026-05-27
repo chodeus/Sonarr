@@ -16854,3 +16854,98 @@ No new routes. Handler-aliasing posture changed (var → func) but call signatur
 54 wire-shape fields + 1 v5-strip behavior landed across J309-J331. **SeriesResource v3↔v5 divergence cluster CLOSED** (J326 additive + J329 AlternateTitles + J331 LanguageProfileId removal).
 
 Next-tick smallest candidate: ManualImport Quality + Languages widening with body-decode shape adjustment (the reprocessOne logic at manual_import.go:205 uses item.Languages[0] == 0 Unknown-check which would need to flip to item.Languages[0].ID == 0). Or pivot to populated-row mapper service-port work on history/blocklist (mid-large slice).
+
+---
+
+## J332 — Post-Wave-3 drain, slice 24: ManualImportReprocessItem Languages widening to typed []LanguageRef
+
+**Anchor**: post-J331 (SeriesResource v3↔v5 cluster CLOSED). Closes the ManualImport Languages wire-shape gap that was deferred from J314.
+
+### C# source
+
+- `src/Sonarr.Api.V3/ManualImport/ManualImportReprocessResource.cs:13` — `public List<Language> Languages { get; set; }` (typed list, same shape as v5 `:13`).
+- C# `ManualImportController.cs:60-63` — reassigns `item.Languages` ONLY when `item.Languages.Count <= 1 && (Count == 0 || Languages[0] == Language.Unknown)` AND processedItem returned a non-empty list.
+
+### Pre-J332 Go-port gap
+
+`apiv3.ManualImportReprocessItem.Languages` was declared as `[]int` (wrong wire shape — should be the J314 `[]LanguageRef` typed list). The reprocessOne logic at `manual_import.go:205-214` used the bare int form for the Unknown check (`item.Languages[0] == 0`) which prevented an easy widening at J314 (the J314 slice scope was History + Blocklist + Queue carriers).
+
+### Port deliverables
+
+**`internal/api/v3/manual_import.go`** — struct + logic + doc-comment:
+
+- `ManualImportReprocessItem.Languages []LanguageRef json:"languages"` — type changed from `[]int` (the J314 typed wire form).
+- `reprocessOne` Unknown-check logic at line 205-214 updated:
+  - `item.Languages[0] == 0` → `item.Languages[0].ID == 0`.
+  - Fresh-build `out` from `parser.ParseLanguages(...)` uses `ToLanguageRef(l.ID)` instead of bare `l.ID`.
+- Doc comment on `ManualImportReprocessItem` updated to reflect the typed shape + the count-guard semantic preservation + the body-decode backwards-compatibility note for empty arrays.
+
+Body-decode behavior:
+- Pre-J332 `"languages":[]` → `[]int{}` ≡ Post-J332 `"languages":[]` → `[]LanguageRef{}` (both zero-length; existing tests still pass).
+- Pre-J332 `"languages":[1,2]` → no longer decodes (clients sending int form would fail with type error).
+- Post-J332 `"languages":[{"id":1,"name":"English"}]` → decodes to typed list (matches C# v3+v5).
+
+The wire-shape change for populated bodies is observable — but no current Go-port test exercised the populated case pre-J332, so no test churn from the shape change.
+
+v5/manualimport aliases v3 via the existing `type ReprocessItem = apiv3.ManualImportReprocessItem` alias so the widening propagates to both surfaces simultaneously.
+
+### Tests (1 new)
+
+`internal/api/v3/manual_import_test.go`:
+
+- `TestManualImportReprocessHandler_LanguagesTypedWiring_J332` — 2 sub-cases:
+  - Empty `"languages":[]` body → `out[0].Languages` is non-nil (zero-length or fresh-populated by ParseLanguages fallback if title parses).
+  - Populated `"languages":[{"id":1,"name":"English"},{"id":2,"name":"French"}]` body → response body contains both typed entries verbatim (positive substring assertions); decoded `out[0].Languages` round-trips to 2 entries; C# `:60` count guard verified (populated bodies NOT overwritten by ParseLanguages fallback since len > 1).
+
+Existing tests (empty-array body cases like `TestManualImportReprocessHandler_ParsesPathAndFillsReleaseGroup`) continue to pass — their `"languages":[]` decodes to zero-length `[]LanguageRef` (backwards-compatible).
+
+### Wiring
+
+No new routes. Struct + logic + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/manualimport/...` ✓
+  - v3: all pass, 1.872s
+  - cmd/sonarr: all pass, 4.221s
+  - v5/manualimport: all pass, 2.433s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | DONE (J322) |
+| B. v5 field divergences | QueueResource StatusMessages typed list | DONE (J323) |
+| B. v5 field divergences | QueueResource v5 EpisodeIDs + SeasonNumbers list-form | DONE (J324) |
+| B. v5 field divergences | Quality typed-DTO + History/Blocklist/Queue field widening | DONE (J325) |
+| B. v5 field divergences | SeriesResource v5-additive 4-field widening | DONE (J326) |
+| B. v5 field divergences | EpisodeResource 3-field widening | DONE (J327) |
+| B. v5 field divergences | EpisodeFileResource 5-field scalar widening | DONE (J328) |
+| B. v5 field divergences | SeriesResource AlternateTitles + AlternateTitleResource typed DTO | DONE (J329) |
+| B. v5 field divergences | MediaInfo typed-DTO + EpisodeFileResource.MediaInfo field | DONE (J330) |
+| B. v5 field divergences | SeriesResource v5 LanguageProfileId removal | DONE (J331) |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem | **DONE this slice (J332)** |
+| B. v5 field divergences | Quality field widening on ManualImport (CustomFormats too) | OPEN — already on struct via *quality.Model; needs to switch to QualityModelResource for v5 wire shape match |
+| B. v5 field divergences | Languages typed-list DTO on ReleaseResource | OPEN — pre-existing []int gap on the ~50-field ReleaseResource projection |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+55 wire-shape fields + 1 v5-strip behavior landed across J309-J332.
+
+Next-tick smallest candidate: ManualImport Quality switch from `*quality.Model` (which emits the persistence-reduced form `{quality:int,revision:{...}}`) to `*QualityModelResource` (the J325 typed-DTO that emits the expanded REST form). Same struct-field-type change + logic update pattern as J332.

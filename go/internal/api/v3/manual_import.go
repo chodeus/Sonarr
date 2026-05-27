@@ -58,8 +58,17 @@ func ManualImportHandler() http.Handler {
 // "Quality.Quality == Unknown" check at C# `ManualImportController.cs:65`
 // can distinguish "field absent" from "field present with Unknown
 // quality" — Go's zero-value-vs-nil distinction maps to C#'s null-check.
-// `Languages` is a slice (a nil slice and an empty `[]` array both
-// pass the C# `<= 1` count guard at `:60`).
+// `Languages` is a slice of typed LanguageRef entries (J314 helper
+// type) — wire shape `[{"id":N,"name":"X"}]` matching the C#
+// `List<Language>` projection at C# `ManualImportReprocessResource.cs:13`.
+// J332 widened from []int to []LanguageRef; the C# `:60` count
+// guard maps to len(item.Languages) <= 1 + Languages[0].ID == 0
+// (Unknown) on the Go side. Body-decode of `"languages":[]`
+// (empty array) decodes to a zero-length []LanguageRef; this is
+// backwards-compatible with the prior []int decode. Populated
+// body shape changes from `"languages":[N,N]` to `"languages":
+// [{"id":N,"name":"X"},...]` matching C# v3+v5 — no current Go-
+// port test exercises populated bodies so no test churn.
 type ManualImportReprocessItem struct {
 	Path              string                    `json:"path"`
 	SeriesID          int                       `json:"seriesId"`
@@ -67,7 +76,7 @@ type ManualImportReprocessItem struct {
 	Episodes          []manualImportEpisodeStub `json:"episodes,omitempty"`
 	EpisodeIDs        []int                     `json:"episodeIds,omitempty"`
 	Quality           *quality.Model            `json:"quality,omitempty"`
-	Languages         []int                     `json:"languages"`
+	Languages         []LanguageRef             `json:"languages"`
 	ReleaseGroup      string                    `json:"releaseGroup"`
 	DownloadID        string                    `json:"downloadId,omitempty"`
 	CustomFormats     []CustomFormatResource    `json:"customFormats"`
@@ -201,13 +210,16 @@ func reprocessOne(ctx context.Context, item *ManualImportReprocessItem, seriesLo
 	}
 	// Languages — C# `:60-63` reassigns ONLY when item.Languages has
 	// <= 1 entry AND that single entry is Unknown AND processedItem
-	// returned a non-empty list. Mirror.
-	if len(item.Languages) <= 1 && (len(item.Languages) == 0 || item.Languages[0] == 0 /* Unknown */) {
+	// returned a non-empty list. Mirror. J332: item.Languages widened
+	// from []int to []LanguageRef — Unknown check moves to the .ID
+	// field of the LanguageRef struct; rebuilt list uses ToLanguageRef
+	// per persisted language.Language entry.
+	if len(item.Languages) <= 1 && (len(item.Languages) == 0 || item.Languages[0].ID == 0 /* Unknown */) {
 		fresh := parser.ParseLanguages(parsed.ReleaseTitle)
 		if len(fresh) > 0 {
-			out := make([]int, 0, len(fresh))
+			out := make([]LanguageRef, 0, len(fresh))
 			for _, l := range fresh {
-				out = append(out, l.ID)
+				out = append(out, ToLanguageRef(l.ID))
 			}
 			item.Languages = out
 		}
