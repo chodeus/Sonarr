@@ -10,16 +10,29 @@ import (
 // ParseResource mirrors `src/Sonarr.Api.V3/Parse/ParseResource.cs`.
 // The full populated shape carries Series/Episodes/Languages/
 // CustomFormats joined fields; the Go-port skeleton emits the
-// title-and-parsed-info pair only (DEFERRED: the parsingService.Map
-// pipeline that produces the joined fields - needs metadatasource +
-// custom-format calculator integration not yet ported).
+// title-and-parsed-info pair only — the parsingService.Map pipeline
+// that produces Series + Episodes + Languages joined fields is
+// DEFERRED (needs metadatasource integration not yet ported).
 //
-// `omitempty` semantics match C# `JsonIgnore(WhenWritingNull)` so the
-// empty-result shape doesn't emit nil joined fields.
+// The customFormats[] + customFormatScore fields are wired at the
+// struct level here (J299, Wave 1 calculator wire-through slice 4)
+// so future populated-row mappers can emit the C# wire shape
+// without re-widening; the underlying calculator engine
+// ([sonarr.tv/sonarr/internal/customformats.Calculate] +
+// [sonarr.tv/sonarr/internal/qualityprofiles.CalculateCustomFormatScore])
+// is already ported. CustomFormats uses `omitempty` to match C#
+// `JsonIgnore(WhenWritingNull)` on the nullable `List<CustomFormatResource>?`
+// — at the current deferred state the field is nil and omitted from
+// the wire. CustomFormatScore is plain `int` with no omitempty so
+// the wire always carries `customFormatScore: 0` — matches C# v3's
+// non-nullable `int CustomFormatScore` which serializes the zero
+// value.
 type ParseResource struct {
 	ID                int                       `json:"id,omitempty"`
 	Title             string                    `json:"title"`
 	ParsedEpisodeInfo *parser.ParsedEpisodeInfo `json:"parsedEpisodeInfo,omitempty"`
+	CustomFormats     []CustomFormatResource    `json:"customFormats,omitempty"`
+	CustomFormatScore int                       `json:"customFormatScore"`
 }
 
 // ParseHandler returns GET /api/v3/parse. Mirrors C#

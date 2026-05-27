@@ -13995,3 +13995,67 @@ Surgical struct widening + single constructor edit. The underlying calculator en
 | ManualImport   | pending                          |
 
 The original 7-count under-estimated subresource sharing — 3 of the listed wire-throughs (Wanted, Calendar, plus EpisodeFile-as-a-family-itself) collapse to a single struct widening because they all surface customFormats only through the shared `episodeFile` subresource. Actual remaining work: 3 wire-throughs (Parse, Update, ManualImport) — each has its own dedicated Resource type with its own customFormats projection.
+
+## Phase 5.J299 — Wave 1 calculator wire-through, slice 4 of 7: Parse `customFormats[]` + `customFormatScore` widening
+
+Fourth handler wire-through slice. The C# v3 + v5 `ParseResource` both carry `customFormats: List<CustomFormatResource>?` + `customFormatScore: int` per `src/Sonarr.Api.V3/Parse/ParseResource.cs` and `src/Sonarr.Api.V5/Parse/ParseResource.cs`. The C# ParseController computes both via `parsingService.Map(parsed)` + the format calculator chain when the parse hits an episode info.
+
+### Wire posture differs from prior slices
+
+Unlike History/Blocklist/EpisodeFile which used non-nullable list defaults (always emitted as `[]`), Parse uses nullable lists:
+
+```csharp
+public List<CustomFormatResource>? CustomFormats { get; set; }
+public int CustomFormatScore { get; set; }  // non-nullable int
+```
+
+`JsonIgnore(WhenWritingNull)` semantics on the nullable list ⟹ when the populated-row Map projection isn't running, the list is null and omitted from the wire entirely. The non-nullable int always serializes the default zero. So the deferred wire shape carries:
+
+```json
+{ "title": "...", "parsedEpisodeInfo": {...}, "customFormatScore": 0 }
+```
+
+(no `customFormats` key at all)
+
+When the projection lands, the wire grows to:
+
+```json
+{ "title": "...", "parsedEpisodeInfo": {...}, "series": {...}, "episodes": [...],
+  "languages": [...], "customFormats": [...], "customFormatScore": 42 }
+```
+
+### Strategy
+
+Surgical struct widening — `customFormats` gets the `omitempty` JSON tag to match the C# nullable + WhenWritingNull behavior; `customFormatScore` is plain `int` so it always serializes the zero default. No constructor changes needed because the existing `ParseResource{Title: title, ParsedEpisodeInfo: parsed}` leaves CustomFormats nil (omitted) + CustomFormatScore 0 (emitted) automatically.
+
+### Slice scope — ~30 lines (struct widening + 1 test)
+
+- **`internal/api/v3/parse.go`** — ParseResource grows from 3 fields to 5 (CustomFormats + CustomFormatScore added).
+- **`internal/api/v3/parse_test.go`** — new `TestParseHandler_EmitsCustomFormatScoreOmitsCustomFormats` test pins both behaviours: body contains `"customFormatScore":0` (positive pin), does NOT contain `"customFormats"` (negative pin — omitempty + nil slice).
+- **`internal/api/v5/parse/`** — no changes (aliases v3 Resource); existing test `TestGetHandler_EmptyInput_ReturnsObjectNotNull` still passes (asserts `"title":""` present, doesn't enforce other fields' absence).
+
+### Wire-shape note for v5 empty-input branch
+
+The previous `internal/api/v5/parse/parse.go:17` package doc described the v5 divergence as v3 returning literal `null` vs v5 returning `{"title": <input-or-empty>}`. After this slice, the v5 wire on the empty-input branch is `{"title":"", "customFormatScore":0}`. This matches the C# v5 `new ParseResource { Title = title }` default behavior — `int CustomFormatScore` always serializes 0 even when not explicitly set. The doc-comment doesn't lie (it's still an object, not null), it just doesn't enumerate the new field. Followup: update the package doc on a future slice if a wire-shape audit flags it.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v3/... ./internal/api/v5/parse/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/parse/... ./cmd/sonarr/...` ✓ (v3 2.2s, v5/parse 2.7s, cmd/sonarr 3.8s)
+
+### Sub-slice 5 progress
+
+| handler        | wire-through landed?            |
+|----------------|----------------------------------|
+| **History**    | ✓ J296                           |
+| **Blocklist**  | ✓ J297                           |
+| **Wanted**     | ✓ J298 (via shared EpisodeFile)  |
+| **Calendar**   | ✓ J298 (via shared EpisodeFile)  |
+| **EpisodeFile**| ✓ J298 (direct)                  |
+| **Episode**    | ✓ J298 (via shared EpisodeFile)  |
+| **Parse**      | ✓ J299                           |
+| Update         | pending                          |
+| ManualImport   | pending                          |
+
+Original 7-count + EpisodeFile/Episode bonus coverage: 7 of 7 listed wire-throughs landed, plus 2 bonus subresource carriers. 2 dedicated-Resource families remain to drain the arc: Update + ManualImport.
