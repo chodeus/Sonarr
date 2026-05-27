@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,6 +177,61 @@ func TestHistorySinceHandler_InvalidDate_400(t *testing.T) {
 		ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/history/since?date=not-a-date", nil))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// J310 wire-shape pin: a populated row with stamped Data dict emits
+// the full key set; a nil Data dict drops the `data` key via
+// omitempty (matches STJson's global `JsonIgnoreCondition.WhenWritingNull`).
+// The C# `EpisodeHistory.Data` defaults to `new Dictionary<>()` so
+// C#'s wire emits `"data":{}` for a row with no stamped metadata —
+// the Go-port preserves the same posture by passing the persisted
+// `e.Data` through verbatim. Test covers BOTH branches in one pass:
+// row 1 has populated Data (must emit), row 2 has nil Data (must
+// drop the key).
+func TestHistorySinceHandler_EmitsDataDictAndOmitsWhenNil(t *testing.T) {
+	t.Parallel()
+	one := 1
+	svc := &fakeHistoryRangeReader{sinceRows: []history.Entry{
+		{ID: 1, SeriesID: 11, SourceTitle: "Show.S01E01", Date: time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC), EventType: &one, Data: map[string]string{"indexer": "Newznab", "size": "1234567", "releaseGroup": "GrpA"}},
+		{ID: 2, SeriesID: 11, SourceTitle: "Show.S01E02", Date: time.Date(2026, 5, 18, 13, 0, 0, 0, time.UTC), EventType: &one, Data: nil},
+	}}
+	rr := httptest.NewRecorder()
+	HistorySinceHandler(svc).
+		ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/history/since?date=2026-05-18T00:00:00Z", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	// Decode through the typed shape to verify the dict round-trips
+	// faithfully (string→string).
+	var got []HistoryResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len: %d", len(got))
+	}
+	if got[0].Data["indexer"] != "Newznab" || got[0].Data["size"] != "1234567" || got[0].Data["releaseGroup"] != "GrpA" {
+		t.Errorf("populated Data round-trip: got %+v want map[indexer:Newznab size:1234567 releaseGroup:GrpA]", got[0].Data)
+	}
+	if got[1].Data != nil {
+		t.Errorf("nil Data must decode back to nil (omitempty drops key); got %+v", got[1].Data)
+	}
+	// Substring assertions on the raw body for the omitempty pin —
+	// json.Decode normalises absent vs `null` to the same nil map,
+	// so the raw byte stream is the authoritative source for "key
+	// absent vs key present".
+	body := rr.Body.String()
+	if !contains(body, `"data":{`) {
+		t.Errorf("body must contain populated `\"data\":{...}` for row 1; got %s", body)
+	}
+	if contains(body, `"data":null`) {
+		t.Errorf("nil Data must omit the key entirely (not emit `data:null`); got %s", body)
+	}
+	// strings.Count("data\":") == 1 — exactly one row emitted the
+	// data key. Both rows emitting `"data":{...}` would be 2.
+	if c := strings.Count(body, `"data":`); c != 1 {
+		t.Errorf("expected exactly 1 `\"data\":` occurrence (row 1 only); got %d in %s", c, body)
 	}
 }
 

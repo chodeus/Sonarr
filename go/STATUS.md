@@ -14787,3 +14787,85 @@ Queued items at the start of this slice:
 | A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
 
 Next-tick smallest candidate: between the remaining B-category items and the A-category service ports, the next-smallest-LOC slice is likely the Release POST searchInfo decode arm (already has the wire-shape decode at J308; just needs to populate the fallback branch when parsingService.GetEpisodes lands — but that service port itself is mid-size). Otherwise the SeriesResource v5 field divergences are mid-size and require breaking the `Resource = apiv3.SeriesResource` alias.
+
+---
+
+## J310 — Post-Wave-3 drain, slice 2: v3 HistoryResource `data` field widening + populated wire-through
+
+**Anchor**: post-J309 (SeasonResource Statistics+Images pointer pin landed). Continues the post-Wave-3 backlog drain with the next-smallest-LOC slice — a single-field widening on `apiv3.HistoryResource` that closes a real wire-shape gap.
+
+### C# source
+
+- `src/Sonarr.Api.V3/History/HistoryResource.cs:29` — `public Dictionary<string, string> Data { get; set; }`.
+- `src/Sonarr.Api.V5/History/HistoryResource.cs:25` — `public required Dictionary<string, string> Data { get; set; }` (v5 marks it `required` but the wire shape is identical).
+- `src/NzbDrone.Core/History/EpisodeHistory.cs:21` — constructor initialises `Data = new Dictionary<string, string>()` (default-non-null).
+
+### Wire contract
+
+Both v3 and v5 use STJson with `JsonIgnoreCondition.WhenWritingNull`:
+- null Data → key absent from wire.
+- empty Dict (`{}`) → key present with empty object.
+- populated Dict → key present with `{...}`.
+
+Mapped to Go's `encoding/json`:
+- `json:"data,omitempty"` matches the WhenWritingNull behavior for nil maps.
+- A nil `map[string]string` → key absent (matches null).
+- A non-nil empty `map[string]string{}` → key present with `{}` (matches empty Dict).
+- A populated map → key present with `{...}` (matches populated Dict).
+
+### Port deliverables
+
+**`internal/api/v3/history.go`** — struct + 2 emit-site updates:
+
+- `HistoryResource` widened: new `Data map[string]string json:"data,omitempty"` field positioned after `EventType` and before `CustomFormats` (matches the C# declaration order).
+- Doc comment removed "data dictionary" from the DEFERRED list + added a J310 paragraph cataloguing the omitempty contract + C# default-non-null posture + calculator-symmetry rationale (the CustomFormat calculator already reads `e.Data` via `internal/customformats/calculate_history.go:historyDataFlags` for size/indexerFlags/releaseType extraction — emitting it on the wire closes the symmetry gap that the J296 customFormats wire-through opened).
+- `writeHistoryEntries` at line 179 populates `Data: e.Data` per entry. Used by `HistorySinceHandler` (GET /api/v3/history/since) + `HistorySeriesHandler` (GET /api/v3/history/series).
+
+**`cmd/sonarr/host_wiring.go`** — production paged adapter:
+
+- `historyPagedAdapter.PagedHistory` at line 694 (the `GET /api/v3/history` + `GET /api/v5/history` paged route consumer) populates `Data: e.Data`. Comment block updated with a J310 note.
+
+The Entry.Data round-trips faithfully from the persisted `Data` TEXT column at `internal/history/history.go:92` via `datastore.UnmarshalEmbedded`. No service-port work needed — the Entry already carries the Data dict; this slice just wires it through to the v3/v5 emit sites.
+
+v5/history aliases v3 via `type Resource = apiv3.HistoryResource` at `internal/api/v5/history/history.go:67`, so the widening propagates to both surfaces simultaneously with no v5-side changes.
+
+### Tests (1 new)
+
+`internal/api/v3/history_test.go` gains 1 new test (+`"strings"` import):
+
+- `TestHistorySinceHandler_EmitsDataDictAndOmitsWhenNil` — comprehensive 2-row pin covering BOTH branches in one pass:
+  - Row 1: `Data: map[string]string{"indexer":"Newznab", "size":"1234567", "releaseGroup":"GrpA"}` — typed-decode round-trip pinning all 3 entries + raw-body `strings.Contains(body, "\"data\":{")` positive assertion.
+  - Row 2: `Data: nil` — typed-decode confirms nil + negative pin (`!strings.Contains(body, "\"data\":null")`) — must NOT emit `null`, must drop the key entirely.
+  - Defensive count: `strings.Count(body, "\"data\":") == 1` — the omitempty drop must fire exactly once for the nil row, leaving exactly one `"data":` occurrence for the populated row.
+
+The existing positive-pin test `TestHistorySinceHandler_EmitsCustomFormatsAndScore` continues to pass — its single row has nil Data → omitempty drops the key; the test's existing assertions on `customFormats:[]` + `customFormatScore:0` are unaffected.
+
+### Wiring
+
+No new routes. Struct-and-mapper widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v3/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/...` ✓
+  - v3: all pass, 1.412s
+  - cmd/sonarr: all pass, 3.683s
+  - all 47 v5 packages: green
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | **DONE this slice (J310)** |
+| B. v5 field divergences | HistoryResource Languages + Quality + QualityCutoffNotMet | OPEN — each needs typed wire shape (Quality is a complex DTO) |
+| B. v5 field divergences | HistoryResource Episode? + Series? (joined sub-resources) | OPEN — needs service joins on Series + Episode lookups |
+| B. v5 field divergences | SeriesResource v5 field divergences (MalIds/AniListIds/OriginalCountry/IsExcluded + LanguageProfileId removal) | OPEN — needs alias break on v5/series Resource, mid-size slice |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] enum-array hydration | OPEN — needs Series+Episodes subresource pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service paged populated customFormats[]+score | OPEN — needs customformats+qualityprofiles deps on historyPagedAdapter, plus per-row series lookup |
+| A. Populated-row mappers | blocklist.Service paged populated customFormats[] | OPEN — same pattern as history |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
+
+Next-tick smallest candidate: HistoryResource Languages (the wire shape is `List<Language>` where Language has just `id` + `name` — small typed struct, persisted Entry.Languages is `[]int` of language IDs, name lookup via existing `internal/language` package). Slightly larger than J310 because it needs a lookup, but still in the small-pin tier.

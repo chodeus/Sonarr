@@ -18,12 +18,11 @@ import (
 // `src/Sonarr.Api.V3/History/HistoryResource.cs`.
 //
 // Skeleton shape — populated-row mapping (languages/quality slices,
-// data dictionary, optional series/episode when
-// includeSeries/includeEpisode=true) lands with the paged surface
-// on history.Service (DEFERRED). The customFormats[] +
-// customFormatScore fields are wired at the struct level here
-// (J296, Wave 1 calculator wire-through slice 1) so future
-// populated-row mappers can emit the C# wire shape without
+// optional series/episode when includeSeries/includeEpisode=true)
+// lands with the paged surface on history.Service (DEFERRED). The
+// customFormats[] + customFormatScore fields are wired at the struct
+// level here (J296, Wave 1 calculator wire-through slice 1) so
+// future populated-row mappers can emit the C# wire shape without
 // re-widening; the underlying calculator engine
 // ([sonarr.tv/sonarr/internal/customformats.Calculate] +
 // [sonarr.tv/sonarr/internal/qualityprofiles.CalculateCustomFormatScore])
@@ -33,6 +32,24 @@ import (
 // without matched formats still emits `customFormats: []` rather
 // than `null` — matches the C# Newtonsoft default for non-null
 // `List<CustomFormatResource>`.
+//
+// The Data field (J310 widening) is the per-history grab-time
+// metadata dictionary the C# tree stamps onto every row
+// (`releaseGroup`, `indexer`, `downloadClient`, `size`,
+// `indexerFlags`, `releaseType`, etc.). C# `EpisodeHistory.Data`
+// defaults to `new Dictionary<string,string>()` so the wire emits
+// `"data":{}` for a row with no stamped metadata. Go-port: nil
+// e.Data → omitempty drops the key (matches STJson's global
+// `JsonIgnoreCondition.WhenWritingNull`); populated map →
+// `"data":{...}`. Callers wanting the C# default-emit posture must
+// allocate `map[string]string{}` explicitly. The CustomFormat
+// calculator engine ALREADY reads this dictionary
+// ([sonarr.tv/sonarr/internal/customformats.ParseCustomFormatForHistory]
+// at calculate_history.go:36-84 → historyDataFlags at :101-117 →
+// extracts size + indexerFlags + releaseType for the matcher input)
+// so emitting it on the wire closes the wire-shape gap that the
+// J296 customFormats wire-through opened (clients can now read the
+// same fields the matcher reads).
 type HistoryResource struct {
 	ID                int                    `json:"id"`
 	SeriesID          int                    `json:"seriesId"`
@@ -41,6 +58,7 @@ type HistoryResource struct {
 	Date              string                 `json:"date"`
 	DownloadID        string                 `json:"downloadId"`
 	EventType         string                 `json:"eventType"`
+	Data              map[string]string      `json:"data,omitempty"`
 	CustomFormats     []CustomFormatResource `json:"customFormats"`
 	CustomFormatScore int                    `json:"customFormatScore"`
 }
@@ -184,6 +202,7 @@ func writeHistoryEntries(w http.ResponseWriter, rows []history.Entry) {
 			Date:          e.Date.UTC().Format("2006-01-02T15:04:05Z"),
 			DownloadID:    e.DownloadID,
 			EventType:     eventTypeName,
+			Data:          e.Data,
 			CustomFormats: []CustomFormatResource{},
 			// CustomFormatScore: 0 — populated-row mapper landing
 			// alongside the calculator wire-through will compute via

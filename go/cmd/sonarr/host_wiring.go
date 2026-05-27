@@ -707,12 +707,15 @@ func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingR
 			SourceTitle:   e.SourceTitle,
 			Date:          e.Date.UTC().Format("2006-01-02T15:04:05Z"),
 			DownloadID:    e.DownloadID,
+			Data:          e.Data,
 			CustomFormats: []apiv3.CustomFormatResource{},
 			// EventType in C# is JsonStringEnumConverter+CamelCase
 			// on EpisodeHistoryEventType; the Go-port mapping is
 			// DEFERRED until the event-type-name table lands.
 			// CustomFormatScore: 0 — populated-row mapper lands
 			// alongside the calculator wire-through (J296+).
+			// Data (J310): per-history grab-time metadata dict; nil
+			// drops the key via omitempty, populated emits `"data":{...}`.
 		})
 	}
 	return out, total, nil
