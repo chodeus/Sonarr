@@ -13837,3 +13837,56 @@ This drains the final un-landed item from the Wave 1 custom-format calculator po
 - ✓ **J273 LogResource method omission — closed here (J295)**
 
 Wave 1 calculator-engine arc drained. Wire-through scope is its own arc.
+
+## Phase 5.J296 — Wave 1 calculator wire-through, slice 1 of 7: History `customFormats[]` + `customFormatScore` widening
+
+First of seven handler wire-through slices in sub-slice 5 of the Wave 1 custom-format calculator port arc. The calculator engine itself (sub-slices 1-4 — spec evaluator, ParsedEpisodeInfo→CustomFormatInput projection, Calculate() service, qualityprofiles.CalculateCustomFormatScore adapter) all landed pre-J251. Sub-slice 5 wires the engine's output into the Resource projection of each of seven REST families that today emit deferred skeletons.
+
+### Wire divergence
+
+The C# v3 + v5 `HistoryResource` carry two calculator-derived fields not yet present on the Go-port `apiv3.HistoryResource`:
+
+- `customFormats: CustomFormatResource[]` — the list of formats that matched the row's parsed-release input
+- `customFormatScore: int` — the integer score from the row's series QualityProfile FormatItems summed against the matched list
+
+The C# v3 mapper (`HistoryResource.cs:38-45`) constructs both via:
+
+```csharp
+var customFormats = formatCalculator.ParseCustomFormat(model, model.Series);
+var customFormatScore = model.Series.QualityProfile.Value.CalculateCustomFormatScore(customFormats);
+```
+
+Both v3 and v5 share the same field set (v5 `HistoryResource.cs:32-46` is field-for-field identical apart from C# nullable annotations on the optional joined Series/Episode subresources). Go-port v5 aliases v3 via `internal/api/v5/history/history.go:67 type Resource = apiv3.HistoryResource` — both surfaces widen simultaneously.
+
+### Strategy
+
+Surgical struct widening + constructor defaulting. The calculator engine + score adapter already exist; this slice does NOT wire them through into the handlers. Production paths that build HistoryResource (only `cmd/sonarr/host_wiring.go:historyPagedAdapter` today, plus `writeHistoryEntries` in the v3 since/series handlers) just allocate `CustomFormats: []CustomFormatResource{}` so a future populated row defaults `customFormats:[]` (matching the C# Newtonsoft default for a non-null `List<CustomFormatResource>`) rather than `customFormats:null`. CustomFormatScore defaults to 0.
+
+The full populated-row mapper landing (computing matched formats per row via `customformats.ParseCustomFormatForHistory(entry, series, allFormats)` + the score via `qualityprofiles.CalculateCustomFormatScore(items, presentIDs)`) is a follow-up gated on the `history.Service` paged surface port plus a series lookup per row plus a customformats.Service.All() snapshot per request. Not blocking on this slice; the wire shape is forward-compatible.
+
+### Slice scope — ~50 lines (struct widening + 2 constructor edits + 1 test)
+
+- **`internal/api/v3/history.go`** — HistoryResource grows from 7 fields to 9 (CustomFormats + CustomFormatScore). `writeHistoryEntries` allocates `CustomFormats: []CustomFormatResource{}` on each row.
+- **`cmd/sonarr/host_wiring.go`** — `historyPagedAdapter.PagedHistory` constructor also allocates the empty slice.
+- **`internal/api/v3/history_test.go`** — new `TestHistorySinceHandler_EmitsCustomFormatsAndScore` test pins the wire shape: body contains `"customFormats":[]` + `"customFormatScore":0`, struct round-trip-decodes to non-nil-empty CustomFormats and zero CustomFormatScore.
+- **`internal/api/v5/history/`** — no changes (aliases v3 Resource — picks up the new fields automatically).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v3/... ./internal/api/v5/history/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/history/... ./cmd/sonarr/...` ✓ (v3 1.8s, v5/history 2.2s, cmd/sonarr 4.8s)
+
+### Sub-slice 5 progress
+
+| handler        | wire-through landed?    |
+|----------------|--------------------------|
+| **History**    | ✓ J296                   |
+| Parse          | pending                  |
+| Blocklist      | pending                  |
+| Update         | pending                  |
+| Wanted         | pending                  |
+| Calendar       | pending                  |
+| ManualImport   | pending                  |
+
+Next tick picks the next smallest-first wire-through. Candidates by current Go-port deferral state: Blocklist (skeleton resource similar shape to History — calculator entry `ParseCustomFormatForBlocklist` already exists at `internal/customformats/calculate_blocklist.go`) → likely smallest next.

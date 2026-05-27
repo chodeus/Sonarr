@@ -179,6 +179,49 @@ func TestHistorySinceHandler_InvalidDate_400(t *testing.T) {
 	}
 }
 
+// J296 wire-shape pin: a populated row must emit
+// `customFormats:[]` (not `null`) and `customFormatScore:0` —
+// matches the C# Newtonsoft default for a non-null
+// `List<CustomFormatResource>` initialised via
+// `customFormats.ToResource(false)`.
+func TestHistorySinceHandler_EmitsCustomFormatsAndScore(t *testing.T) {
+	t.Parallel()
+	one := 1
+	svc := &fakeHistoryRangeReader{sinceRows: []history.Entry{
+		{ID: 7, SeriesID: 11, SourceTitle: "Show.S01E01", Date: time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC), EventType: &one},
+	}}
+	rr := httptest.NewRecorder()
+	HistorySinceHandler(svc).
+		ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/history/since?date=2026-05-18T00:00:00Z", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !contains(body, `"customFormats":[]`) {
+		t.Errorf("body must contain `\"customFormats\":[]`; got %s", body)
+	}
+	if !contains(body, `"customFormatScore":0`) {
+		t.Errorf("body must contain `\"customFormatScore\":0`; got %s", body)
+	}
+	// Decode through to confirm the struct fields too.
+	var got []HistoryResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len: %d", len(got))
+	}
+	if got[0].CustomFormats == nil {
+		t.Errorf("CustomFormats must be non-nil (empty slice, not nil)")
+	}
+	if len(got[0].CustomFormats) != 0 {
+		t.Errorf("CustomFormats must be empty at deferred state; got %d", len(got[0].CustomFormats))
+	}
+	if got[0].CustomFormatScore != 0 {
+		t.Errorf("CustomFormatScore must be 0 at deferred state; got %d", got[0].CustomFormatScore)
+	}
+}
+
 func TestHistorySinceHandler_Success(t *testing.T) {
 	t.Parallel()
 	one := 1

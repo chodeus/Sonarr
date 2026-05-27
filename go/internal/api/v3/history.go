@@ -17,19 +17,32 @@ import (
 // PagingResource[HistoryResource] envelope. Mirrors
 // `src/Sonarr.Api.V3/History/HistoryResource.cs`.
 //
-// Skeleton shape only — populated-row mapping (eventType enum,
-// languages/quality slices, data dictionary, optional series/episode
-// when includeSeries/includeEpisode=true) lands with the paged
-// surface on history.Service (DEFERRED). Empty-DB golden has zero
-// records so the gap is unobservable today.
+// Skeleton shape — populated-row mapping (languages/quality slices,
+// data dictionary, optional series/episode when
+// includeSeries/includeEpisode=true) lands with the paged surface
+// on history.Service (DEFERRED). The customFormats[] +
+// customFormatScore fields are wired at the struct level here
+// (J296, Wave 1 calculator wire-through slice 1) so future
+// populated-row mappers can emit the C# wire shape without
+// re-widening; the underlying calculator engine
+// ([sonarr.tv/sonarr/internal/customformats.Calculate] +
+// [sonarr.tv/sonarr/internal/qualityprofiles.CalculateCustomFormatScore])
+// is already ported. Empty-DB golden has zero records so the gap is
+// unobservable today; constructors should default CustomFormats to
+// `[]CustomFormatResource{}` (not nil) so a future populated row
+// without matched formats still emits `customFormats: []` rather
+// than `null` — matches the C# Newtonsoft default for non-null
+// `List<CustomFormatResource>`.
 type HistoryResource struct {
-	ID          int    `json:"id"`
-	SeriesID    int    `json:"seriesId"`
-	EpisodeID   int    `json:"episodeId"`
-	SourceTitle string `json:"sourceTitle"`
-	Date        string `json:"date"`
-	DownloadID  string `json:"downloadId"`
-	EventType   string `json:"eventType"`
+	ID                int                    `json:"id"`
+	SeriesID          int                    `json:"seriesId"`
+	EpisodeID         int                    `json:"episodeId"`
+	SourceTitle       string                 `json:"sourceTitle"`
+	Date              string                 `json:"date"`
+	DownloadID        string                 `json:"downloadId"`
+	EventType         string                 `json:"eventType"`
+	CustomFormats     []CustomFormatResource `json:"customFormats"`
+	CustomFormatScore int                    `json:"customFormatScore"`
 }
 
 // HistoryPagedLister is the read side the handler depends on. Same
@@ -164,13 +177,17 @@ func writeHistoryEntries(w http.ResponseWriter, rows []history.Entry) {
 			eventTypeName = history.EventType(*e.EventType).String()
 		}
 		out = append(out, HistoryResource{
-			ID:          e.ID,
-			SeriesID:    e.SeriesID,
-			EpisodeID:   e.EpisodeID,
-			SourceTitle: e.SourceTitle,
-			Date:        e.Date.UTC().Format("2006-01-02T15:04:05Z"),
-			DownloadID:  e.DownloadID,
-			EventType:   eventTypeName,
+			ID:            e.ID,
+			SeriesID:      e.SeriesID,
+			EpisodeID:     e.EpisodeID,
+			SourceTitle:   e.SourceTitle,
+			Date:          e.Date.UTC().Format("2006-01-02T15:04:05Z"),
+			DownloadID:    e.DownloadID,
+			EventType:     eventTypeName,
+			CustomFormats: []CustomFormatResource{},
+			// CustomFormatScore: 0 — populated-row mapper landing
+			// alongside the calculator wire-through will compute via
+			// ParseCustomFormatForHistory + CalculateCustomFormatScore.
 		})
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

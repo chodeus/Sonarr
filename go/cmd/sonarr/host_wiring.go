@@ -694,15 +694,18 @@ func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingR
 	out := make([]apiv3.HistoryResource, 0, len(page))
 	for _, e := range page {
 		out = append(out, apiv3.HistoryResource{
-			ID:          e.ID,
-			SeriesID:    e.SeriesID,
-			EpisodeID:   e.EpisodeID,
-			SourceTitle: e.SourceTitle,
-			Date:        e.Date.UTC().Format("2006-01-02T15:04:05Z"),
-			DownloadID:  e.DownloadID,
+			ID:            e.ID,
+			SeriesID:      e.SeriesID,
+			EpisodeID:     e.EpisodeID,
+			SourceTitle:   e.SourceTitle,
+			Date:          e.Date.UTC().Format("2006-01-02T15:04:05Z"),
+			DownloadID:    e.DownloadID,
+			CustomFormats: []apiv3.CustomFormatResource{},
 			// EventType in C# is JsonStringEnumConverter+CamelCase
 			// on EpisodeHistoryEventType; the Go-port mapping is
 			// DEFERRED until the event-type-name table lands.
+			// CustomFormatScore: 0 — populated-row mapper lands
+			// alongside the calculator wire-through (J296+).
 		})
 	}
 	return out, total, nil
