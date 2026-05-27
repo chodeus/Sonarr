@@ -28,6 +28,7 @@ import (
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
 	qualitydefinitionv5 "sonarr.tv/sonarr/internal/api/v5/qualitydefinition"
 	qualityprofilev5 "sonarr.tv/sonarr/internal/api/v5/qualityprofile"
+	queueactionv5 "sonarr.tv/sonarr/internal/api/v5/queueaction"
 	renameepisodev5 "sonarr.tv/sonarr/internal/api/v5/renameepisode"
 	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
 	seriesfolderv5 "sonarr.tv/sonarr/internal/api/v5/seriesfolder"
@@ -1364,6 +1365,18 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// on missing/empty term. Re-uses no service dep — zero-arg
 		// stub.
 		{Method: "GET", Path: "/api/v5/series/lookup", Handler: serieslookupv5.GetHandler()},
+		// J289 — v5 QueueAction endpoint family (2 endpoints; 58 LOC
+		// C# — QueueActionController.Grab single + bulk). ONE
+		// status-only divergence: v5 returns 204 NoContent on success
+		// where v3 emits 200+`{}` — wrapped via v5util.RewriteSuccessTo204.
+		// Body shape on /grab/bulk: QueueBulkResource{Ids:int[]} —
+		// identical to v3 QueueBulkGrabResource. 404 on missing
+		// pending release / 400 on malformed body or invalid id /
+		// 500 on dispatcher error all pass through unchanged because
+		// the wrapper predicate only matches 200. First-failure-aborts-batch
+		// semantics on /bulk inherited from v3 verbatim.
+		{Method: "POST", Path: "/api/v5/queue/grab/{id}", Handler: queueactionv5.GrabHandler(pendingReleasesRepo, seriesSvc, processDownloadDecisions)},
+		{Method: "POST", Path: "/api/v5/queue/grab/bulk", Handler: queueactionv5.GrabBulkHandler(pendingReleasesRepo, seriesSvc, processDownloadDecisions)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},

@@ -13458,3 +13458,47 @@ Pattern observation: third consecutive pure-alias slice (J286 → J287 → J288)
 - Episodes/EpisodeController (85 LOC)
 - ImportLists/ImportListExclusionController (88 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J289 — Wave 3 thirty-eighth slice: v5 QueueAction family port (58 LOC C# source)
+
+Status-wrapper slice. Same J253/J269/J272/J277 pattern: wrap v3 handlers with v5util.RewriteSuccessTo204 to demote 200+`{}` → 204+empty.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :5053-5100):
+
+| endpoint                              | v5 status        | v3 Go-port                              | strategy                |
+|---------------------------------------|------------------|------------------------------------------|--------------------------|
+| POST /api/v5/queue/grab/{id}          | **204** / 404    | 200+`{}` / 404 (apiv3.QueueGrabHandler)  | v5util.RewriteSuccessTo204 |
+| POST /api/v5/queue/grab/bulk          | **204** / 404    | 200+`{}` / 404 (apiv3.QueueGrabBulkHandler) | v5util.RewriteSuccessTo204 |
+
+Body shape on /grab/bulk: QueueBulkResource{Ids:int[]} on v5 — structurally identical to v3's QueueBulkGrabResource (per `internal/api/v3/queue_grab.go:44-50`). Type aliases re-export the v3 service interfaces (PendingReleaseLookup, QueueGrabSeriesLookup, QueueGrabDispatcher).
+
+**Wrapper invariants**:
+- The wrapper predicate matches `status == 200 && body in {"", "{}"}`; v3's writeGrabOK at queue_grab.go:200-204 emits exactly that shape on success → demotes cleanly.
+- 404 (missing pending release per writeGrabErr:191-194), 400 (invalid id or malformed body), 500 (dispatcher error) all pass through unchanged.
+
+**First-failure-aborts-batch on /grab/bulk** — v3 inherits the C# foreach-throw-on-first-null semantics: id sequence `[1, 999, 2]` with id 999 absent → id 1 dispatches successfully, then 999 fails with 404 which aborts the batch BEFORE id 2 is processed. Test `TestGrabBulkHandler_FirstMissing_AbortsBatch_404` pins this contract (asserts dispatcher.count == 1 after the abort).
+
+**Service trio** unchanged between v3 and v5:
+- PendingReleaseLookup (*pendingreleases.Repo.Get)
+- QueueGrabSeriesLookup (*series.Service.GetSeries) — nil-tolerant for orphan-series-id rows
+- QueueGrabDispatcher (*download.ProcessDownloadDecisions.ProcessDecisions)
+
+**Slice scope** — 210 lines (55 source + 155 test) + 1 import + 2 routes:
+
+- New `internal/api/v5/queueaction/queueaction.go` (55 LOC) — 3 type aliases (PendingLookup = apiv3.PendingReleaseLookup, SeriesLookup = apiv3.QueueGrabSeriesLookup, Dispatcher = apiv3.QueueGrabDispatcher) + 2 wrapper funcs (GrabHandler + GrabBulkHandler — both wrap v3 via v5util.RewriteSuccessTo204).
+- New `internal/api/v5/queueaction/queueaction_test.go` (155 LOC) — 7 tests: GrabHandler-success-rewrites-to-204 (svc.dispatch called once + body empty), GrabHandler-NotFound-passes-through (404 wrapper-contract pin — canonical), GrabHandler-invalid-id-passes-through-400 (path-value "abc" rejected), GrabBulkHandler-success-rewrites-to-204 (2 dispatches counted via mutex-protected fakeDispatcher), GrabBulkHandler-first-missing-aborts-batch-404 (canonical first-failure-aborts pin — sequence [1,999,2] with 999 absent → dispatcher called 1 time before abort), GrabBulkHandler-malformed-body-400, handler-constructors-return-non-nil. fakePending + fakeSeries + fakeDispatcher cover the full apiv3 service interface trio with mutex-protected counters.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`queueactionv5`) + 2 new routes alongside the existing /api/v3/queue/grab routes. Re-uses pendingReleasesRepo + seriesSvc + processDownloadDecisions deps verbatim.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/queueaction/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/queueaction/... ./cmd/sonarr/...` ✓ (7 v5/queueaction tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 41/~50 → 42/~50.
+
+Pattern observation: returns to the v5util status-wrapper template after 3 consecutive pure-alias slices (J286/J287/J288). The dispatch decision flow: v3 emits 200+`{}` exactly where v5 emits 204 NoContent → RewriteSuccessTo204 wrapper. Same pattern that's wrapped 13 v5 endpoints across the prior slices; remains the dominant status-divergence template.
+
+### Next Wave 3 candidates ascending
+
+- Queue/QueueDetailsController (77 LOC)
+- Queue/QueueStatusController (80 LOC)
+- Episodes/EpisodeController (85 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Release/ReleasePushController (120 LOC)
