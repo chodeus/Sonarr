@@ -20,6 +20,7 @@ import (
 	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
 	indexersettingsv5 "sonarr.tv/sonarr/internal/api/v5/indexersettings"
+	uisettingsv5 "sonarr.tv/sonarr/internal/api/v5/uisettings"
 	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
 	qualitydefinitionv5 "sonarr.tv/sonarr/internal/api/v5/qualitydefinition"
@@ -1260,6 +1261,19 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/settings/indexer", Handler: indexersettingsv5.GetHandler(configProv)},
 		{Method: "GET", Path: "/api/v5/settings/indexer/{id}", Handler: indexersettingsv5.GetHandler(configProv)},
 		{Method: "PUT", Path: "/api/v5/settings/indexer/{id}", Handler: indexersettingsv5.UpdateHandler(configProv)},
+		// J281 — v5 UiSettings endpoint family (3 endpoints; 75 LOC
+		// C# across UiSettingsController + UiSettingsResource + shared
+		// SettingsController<T> base). Pure path-alias slice (J280
+		// pattern). Resource shape byte-identical to v3
+		// UIConfigResource (11 fields). Status: GET → 200, PUT → 202.
+		// SharedValidator (UiLanguage ≥ 1 + must exist in Language.All)
+		// preserved verbatim via path-alias. Re-uses uiCfg adapter
+		// declared at host_wiring.go:1030 (composite *config.Provider +
+		// *configfile.Provider satisfying UIConfigWriter for theme
+		// XML + 9 DB-backed fields).
+		{Method: "GET", Path: "/api/v5/settings/ui", Handler: uisettingsv5.GetHandler(uiCfg)},
+		{Method: "GET", Path: "/api/v5/settings/ui/{id}", Handler: uisettingsv5.GetHandler(uiCfg)},
+		{Method: "PUT", Path: "/api/v5/settings/ui/{id}", Handler: uisettingsv5.UpdateHandler(uiCfg)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},

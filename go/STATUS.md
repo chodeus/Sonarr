@@ -12987,3 +12987,65 @@ Pattern observation: a small pure path-alias slice between two larger ones — J
 - Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
 - Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J281 — Wave 3 thirtieth slice: v5 UiSettings family port (75 LOC C# source)
+
+Pure path-alias slice — same J280 IndexerSettings + J224 ImportListSettings pattern. v3 already has UiConfigController mounted at /api/v3/config/ui with a byte-identical wire shape; the v5 family just re-exposes the v3 handlers at the new path prefix.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :6639-6727):
+
+| endpoint                                  | v5 status   | v3 Go-port                       | strategy   |
+|-------------------------------------------|-------------|----------------------------------|------------|
+| GET    /api/v5/settings/ui                | 200         | 200 (apiv3.UIConfigHandler)      | alias      |
+| GET    /api/v5/settings/ui/{id}           | 200         | 200 (same handler, ignores id)   | alias      |
+| PUT    /api/v5/settings/ui/{id}           | 202 Accepted| 202 (apiv3.UIConfigUpdateHandler)| alias      |
+
+**Resource shape** byte-identical between v3 and v5 (per `src/Sonarr.Api.V5/Settings/UiSettingsResource.cs` vs v3 `apiv3.UIConfigResource`):
+
+| field                          | type  | source                                              |
+|--------------------------------|-------|-----------------------------------------------------|
+| id                             | int   | constant 1 (singleton)                              |
+| firstDayOfWeek                 | int   | config.Provider.FirstDayOfWeek                      |
+| calendarWeekColumnHeader       | string| config.Provider.CalendarWeekColumnHeader            |
+| shortDateFormat                | string| config.Provider.ShortDateFormat                     |
+| longDateFormat                 | string| config.Provider.LongDateFormat                      |
+| timeFormat                     | string| config.Provider.TimeFormat                          |
+| timeZone                       | string| config.Provider.TimeZone                            |
+| showRelativeDates              | bool  | config.Provider.ShowRelativeDates                   |
+| enableColorImpairedMode        | bool  | config.Provider.EnableColorImpairedMode             |
+| uiLanguage                     | int   | config.Provider.UILanguage                          |
+| theme                          | string| configfile.Provider.Theme (XML-backed, NOT DB)      |
+
+11 fields total. Type aliases (Resource = apiv3.UIConfigResource, etc.) are wire-safe.
+
+**Composite write surface**: the `theme` field is XML-backed (configfile.Provider — the Sonarr.config file), the other 9 are DB-backed (config.Provider — the Configs table). The existing `uiConfigGetter` adapter at `cmd/sonarr/host_wiring.go:770-820` composes both providers behind the apiv3.UIConfigWriter interface; the v5 routes reuse it verbatim. The C# `IConfigFileProvider` + `IConfigService` split is collapsed into a single Go interface — same pattern v3 already uses.
+
+**Validation chain** (preserved via path-alias from `internal/api/v3/config_ui.go:185-195`):
+- UILanguage ≥ 1 (else 400 with "The UI Language value cannot be less than 1")
+- UILanguage must exist in Language.All via `language.FindByID(id)` (else 400 with "Invalid UI Language value")
+- DisallowUnknownFields rejects unknown body keys
+
+**Theme error path** — tested. If `configfile.Provider.Theme(ctx)` returns an error (e.g. XML read failure), the GET handler surfaces 500 rather than emitting a half-populated body with empty theme.
+
+**Slice scope** — 291 lines (51 source + 240 test) + 1 import + 3 routes:
+
+- New `internal/api/v5/uisettings/uisettings.go` (51 LOC) — 3 type aliases (Resource = apiv3.UIConfigResource, Getter = apiv3.UIConfigGetter, Writer = apiv3.UIConfigWriter) + 2 variable aliases (GetHandler = apiv3.UIConfigHandler, UpdateHandler = apiv3.UIConfigUpdateHandler). NO new handler code.
+- New `internal/api/v5/uisettings/uisettings_test.go` (240 LOC) — 8 tests: GetHandler-emits-singleton (id=1 + theme=auto + UILanguage=1 default), GetHandler-theme-error-500 (verifies Theme() error path surfaces 500), UpdateHandler-put-accepted-persists-all-10-fields (round-trip + 10 setter calls counted via mutex-protected fakeUI), UpdateHandler-uiLanguage-zero-400 (< 1 rejected), UpdateHandler-uiLanguage-unknown-400 (99999 not in Language.All), UpdateHandler-rejects-unknown-field-400 (DisallowUnknownFields), variable-aliases-non-nil, type-aliases compile-time pin. fakeUI satisfies the full apiv3.UIConfigWriter interface (10 getters + 10 setters + Theme err path) with mutex-protected setCalls counter for -race cleanliness.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`uisettingsv5`) + 3 new routes alongside the existing /api/v3/config/ui routes. Re-uses `uiCfg` adapter (declared at line 1030) — same composite-provider adapter that backs v3.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/uisettings/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/uisettings/... ./cmd/sonarr/...` ✓ (8 v5/uisettings tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 33/~50 → 34/~50.
+
+Pattern observation: J281 confirms the J280 Settings/* path-alias prediction holds — when v3 has a Config controller equivalent (UiConfig, IndexerConfig, ImportListConfig), the v5 Settings/* slice collapses to a ~50-LOC re-export package. MediaManagement / GeneralSettings / NamingSettings will likely follow the same template if v3 has matching Config controllers (config_mediamanagement.go / config_host.go / config_naming.go — all present per earlier survey).
+
+### Next Wave 3 candidates ascending
+
+- Settings/MediaManagementSettingsController (70 LOC) — likely path-alias (v3 has config_mediamanagement.go)
+- Settings/GeneralSettingsController (114 LOC) — likely path-alias (v3 has config_host.go)
+- Settings/NamingSettingsController (143 LOC) — likely path-alias (v3 has config_naming.go)
+- Episodes/EpisodeController (85 LOC) + RenameEpisodeController (48 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
+- Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
+- Release/ReleasePushController (120 LOC)
