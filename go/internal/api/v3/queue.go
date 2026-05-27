@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"sonarr.tv/sonarr/internal/httperr"
 )
@@ -35,6 +36,19 @@ import (
 // Pointers for the nullable int fields preserve the C# `int?`
 // semantic — null when unset on the wire, populated when the queue
 // row is tied to a Series/Episode.
+//
+// J319 *time.Time widening: Added + EstimatedCompletionTime (both
+// v3+v5; both C# `DateTime?` nullable). Wired here on the shared
+// apiv3.QueueResource with omitempty pointer-to-time (J302 pattern
+// — nil pointer drops the key matching C# WhenWritingNull; non-nil
+// pointer emits the RFC3339 timestamp the encoding/json default
+// `time.Time` marshal produces, which matches C#'s ISO-8601 format
+// modulo timezone offset formatting). Both fields are already on
+// the persisted queue.Queue model (internal/queue/queue.go:184
+// Added, :182 EstimatedCompletionTime); when populated-mapper
+// lands it allocates `Added: e.Added, EstimatedCompletionTime:
+// e.EstimatedCompletionTime` verbatim without re-widening the
+// struct.
 //
 // J318 bool/int widening: DownloadClientHasPostImportCategory bool
 // (both v3+v5) + CustomFormatScore int (both v3+v5) +
@@ -104,6 +118,8 @@ type QueueResource struct {
 	CustomFormatScore                   int           `json:"customFormatScore,omitempty"`
 	EpisodesWithFilesCount              int           `json:"episodesWithFilesCount,omitempty"`
 	IsFullSeason                        bool          `json:"isFullSeason,omitempty"`
+	Added                               *time.Time    `json:"added,omitempty"`
+	EstimatedCompletionTime             *time.Time    `json:"estimatedCompletionTime,omitempty"`
 }
 
 // QueueDetailsLister narrows the queue read for the /queue/details

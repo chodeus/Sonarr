@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeQueuePagedLister struct {
@@ -224,6 +225,49 @@ func TestQueueResource_BoolIntFieldWidening_J318(t *testing.T) {
 		if strings.Contains(got2, want) {
 			t.Errorf("empty must omit %q (omitempty); got %s", want, got2)
 		}
+	}
+}
+
+// J319 wire-shape pin for the *time.Time pointer-field widening on
+// QueueResource (Added + EstimatedCompletionTime). Both fields
+// omitempty pointer-to-struct (J302 pattern): nil → key absent
+// (matches C# WhenWritingNull / `DateTime?`); non-nil → emit the
+// RFC3339 timestamp (Go's encoding/json default time.Time marshal,
+// matches C# ISO-8601).
+//
+// Test covers BOTH branches: row 1 populated with pinned
+// 2026-01-02T03:04:05Z timestamps → both keys emit; row 2 nil
+// pointers → omitempty drops both keys.
+func TestQueueResource_TimePointerFieldWidening_J319(t *testing.T) {
+	t.Parallel()
+	when := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	populated := QueueResource{ID: 1, Title: "demo", Added: &when, EstimatedCompletionTime: &when}
+	buf, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated: %v", err)
+	}
+	got := string(buf)
+	mustContain := []string{
+		`"added":"2026-01-02T03:04:05Z"`,
+		`"estimatedCompletionTime":"2026-01-02T03:04:05Z"`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Errorf("populated missing %q in %s", want, got)
+		}
+	}
+	// Branch 2: nil pointers → omitempty drops both keys.
+	empty := QueueResource{ID: 2, Title: "demo"}
+	buf2, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	got2 := string(buf2)
+	if strings.Contains(got2, `"added":`) {
+		t.Errorf("nil Added must omit the key; got %s", got2)
+	}
+	if strings.Contains(got2, `"estimatedCompletionTime":`) {
+		t.Errorf("nil EstimatedCompletionTime must omit the key; got %s", got2)
 	}
 }
 

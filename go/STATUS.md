@@ -15585,3 +15585,89 @@ No new routes. Struct + doc-comment widening only.
 25 wire-shape fields landed across J309-J318.
 
 Next-tick smallest candidate: QueueResource Added + EstimatedCompletionTime (2 `*time.Time` pointer fields — J302 pattern; ~5 LOC + 1 test). Or TrackedDownloadStatus + State (need enum-string conversion via existing trackeddownloads.Status.String() / State.String() — slightly bigger but uses existing helpers).
+
+---
+
+## J319 — Post-Wave-3 drain, slice 11: QueueResource 2-field `*time.Time` pointer widening (Added + EstimatedCompletionTime)
+
+**Anchor**: post-J318 (QueueResource 4-field bool/int widening landed). Continues the QueueResource scalar-widening sweep with the 2 `*time.Time` pointer fields — J302 pattern, smallest tier on the QueueResource remaining backlog.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:36` — `public DateTime? EstimatedCompletionTime { get; set; }`.
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:37` — `public DateTime? Added { get; set; }`.
+- `src/Sonarr.Api.V5/Queue/QueueResource.cs:33-34` — same fields with same wire shape.
+
+### Wire contract
+
+C# under STJson `WhenWritingNull`:
+- null → key absent.
+- non-null → ISO-8601 timestamp (`2026-01-02T03:04:05Z`).
+
+Go-port with `*time.Time` pointer + omitempty:
+- nil pointer → key absent.
+- non-nil pointer → RFC3339 timestamp (Go encoding/json default time.Time marshal — matches C# ISO-8601).
+
+### Port deliverables
+
+**`internal/api/v3/queue.go`** — struct + import + doc-comment:
+
+- New `"time"` import.
+- `QueueResource` widened with 2 new fields at the end:
+  - `Added *time.Time json:"added,omitempty"`.
+  - `EstimatedCompletionTime *time.Time json:"estimatedCompletionTime,omitempty"`.
+- Doc comment extended with a J319 paragraph cataloguing the wire contract + the persisted-column reuse (`queue.Queue.Added` + `EstimatedCompletionTime`) + the populated-mapper-future allocator note.
+
+No emit-site mapper updates required — production today returns `[]QueueResource{}`. The populated-row mapper port is its own dedicated slice.
+
+v5/queue aliases v3 via `type Resource = apiv3.QueueResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (1 new)
+
+`internal/api/v3/queue_test.go` (+`"time"` import):
+
+- `TestQueueResource_TimePointerFieldWidening_J319` — 2-row pin covering BOTH branches:
+  - Row 1: populated with pinned `time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)` for both fields → positive substring asserts `"added":"2026-01-02T03:04:05Z"` + `"estimatedCompletionTime":"2026-01-02T03:04:05Z"`.
+  - Row 2: nil pointers → negative omitempty assertions `!strings.Contains(body, "\"added\":")` + same for estimatedCompletionTime.
+
+### Wiring
+
+No new routes. Struct + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/queue/...` ✓
+  - v3: all pass, 2.680s
+  - cmd/sonarr: all pass, 4.274s
+  - v5/queue: all pass, 1.639s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | **DONE this slice (J319)** |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State | OPEN — needs enum-string conversion via existing trackeddownloads types |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft | OPEN — needs TimeSpan wire-format helper |
+| B. v5 field divergences | QueueResource StatusMessages | OPEN — typed list DTO |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem + ReleaseResource | OPEN — body-decode shape consideration |
+| B. v5 field divergences | Quality typed QualityModel envelope | OPEN — complex DTO |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — alias break, mid-size |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+27 wire-shape fields landed across J309-J319.
+
+Next-tick smallest candidate: QueueResource TrackedDownloadStatus + State (2 enum-string fields, needs `trackeddownloads.Status.String()` + `State.String()` helper invocations — slightly bigger than J319 but uses existing helpers). Or QueueResource SizeLeft int64 + TimeLeft helper (TimeSpan wire format is C# `"hh:mm:ss"` or `"d.hh:mm:ss"` — needs a small formatter).
