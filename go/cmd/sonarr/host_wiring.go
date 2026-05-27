@@ -29,6 +29,7 @@ import (
 	qualitydefinitionv5 "sonarr.tv/sonarr/internal/api/v5/qualitydefinition"
 	qualityprofilev5 "sonarr.tv/sonarr/internal/api/v5/qualityprofile"
 	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
+	seriesimportv5 "sonarr.tv/sonarr/internal/api/v5/seriesimport"
 	updatesettingsv5 "sonarr.tv/sonarr/internal/api/v5/updatesettings"
 	remotepathmappingv5 "sonarr.tv/sonarr/internal/api/v5/remotepathmapping"
 	rootfolderv5 "sonarr.tv/sonarr/internal/api/v5/rootfolder"
@@ -1321,6 +1322,18 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/settings/naming/{id}", Handler: namingsettingsv5.GetHandler(namingConfigSvc)},
 		{Method: "GET", Path: "/api/v5/settings/naming/examples", Handler: namingsettingsv5.ExamplesHandler(namingConfigSvc)},
 		{Method: "PUT", Path: "/api/v5/settings/naming/{id}", Handler: namingsettingsv5.UpdateHandler(namingConfigSvc)},
+		// J285 — v5 SeriesImport endpoint family (1 endpoint; 29 LOC
+		// C# — single POST /series/import that bulk-adds Series). v5
+		// returns 200 OK (Ok<List<SeriesResource>>) where v3 emits 201
+		// Created on non-empty success — status-only divergence. Wraps
+		// v3 SeriesImportHandler with a new inline `rewriteCreatedToOK`
+		// (analogous to v5util.RewriteAcceptedToOK but for 201→200).
+		// Empty input → 200 + `[]` (both v3 and v5 already match).
+		// Validation failures (400) and 500-class errors pass through
+		// unchanged. SeriesResource shape shared with v3 (full Series
+		// family port DEFERRED per loop contract — Resource widens for
+		// both surfaces simultaneously when the v5 Series family lands).
+		{Method: "POST", Path: "/api/v5/series/import", Handler: seriesimportv5.PostHandler(seriesWriter, seriesEmitter)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},

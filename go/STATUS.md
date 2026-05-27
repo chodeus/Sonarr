@@ -13251,3 +13251,63 @@ The Settings/* family drained as predicted by the J280 dispatch rule: when v3 ha
 - Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
 - Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J285 — Wave 3 thirty-fourth slice: v5 SeriesImport family port (29 LOC C# source)
+
+Single-endpoint slice. SeriesImport is the bulk Add-Series endpoint that the React UI's "Import series" wizard hits after a rootfolder pick scans the disk for existing folders. Wraps v3's SeriesImportHandler with a NEW 201→200 status-rewrite wrapper.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :6162-6196):
+
+| endpoint                       | v5 status     | v3 Go-port                | strategy                |
+|--------------------------------|---------------|----------------------------|--------------------------|
+| POST /api/v5/series/import     | 200 OK        | 200 (empty) / 201 (non-empty) | wrap + 201→200 demote |
+
+The v5 C# controller uses `Ok<List<SeriesResource>>` unconditionally (no 201 path). The v3 Go-port branches: empty input → 200 + `[]` (matches v5); non-empty success → 201 + body (needs demote).
+
+**Resource shape** — shared with v3 SeriesResource. The full Series family port (SeriesController.cs 422 LOC) is DEFERRED per the loop contract; both v3 and v5 emit the current v3 Resource projection until the v5 Series family lands. When that happens, the shared service/mapper port will widen both surfaces simultaneously.
+
+**Wrapper introduction** — `rewriteCreatedToOK` is NEW Wave 3 helper:
+
+```go
+func rewriteCreatedToOK(h http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        rec := v5util.NewBufferingWriter()
+        h.ServeHTTP(rec, r)
+        v5util.CopyHeaders(w.Header(), rec.Header())
+        status := rec.Status()
+        if status == http.StatusCreated {
+            status = http.StatusOK
+        }
+        w.WriteHeader(status)
+        _, _ = w.Write(rec.Body())
+    })
+}
+```
+
+Analogous to v5util.RewriteAcceptedToOK (which handles 202→200 with body preserved); this version handles 201→200. Kept inline for the first consumer per the J283 first-consumer rule. If a second 201→200 case appears, will consolidate into v5util as `RewriteCreatedToOK` (matching the existing helper naming).
+
+**Validation pass-through invariant**: the wrapper predicate is strictly `status == 201`. v3 emits 400 on validation failure (per validateSeriesResource + the [i]. prefix logic at series.go:263-274), 500 on Insert error. Both pass through unchanged. Test `TestPostHandler_InvalidRow_PassesValidationErrorThrough400` pins this contract.
+
+**Slice scope** — 235 lines (70 source + 165 test) + 1 import + 1 route:
+
+- New `internal/api/v5/seriesimport/seriesimport.go` (70 LOC) — 2 type aliases (Writer = apiv3.SeriesWriter, Emitter = apiv3.SeriesEmitter) + 1 wrapper func (PostHandler wrapping apiv3.SeriesImportHandler via rewriteCreatedToOK) + 1 private inline helper (rewriteCreatedToOK — buffers via v5util.BufferingWriter, demotes 201→200 status keeping body intact, copies all headers).
+- New `internal/api/v5/seriesimport/seriesimport_test.go` (165 LOC) — 6 tests: PostHandler-empty-array-returns-200 (existing v3 200+`[]` behaviour passes through), PostHandler-non-empty-demotes-Created-201-to-200 (canonical wrapper pin — asserts svc.Insert called once + emitter.Created called once + body round-trip + status downgrade), PostHandler-multi-row-demotes-and-persists-all (2-row batch), PostHandler-invalid-row-passes-validation-error-through-400 (wrapper must NOT swallow 400 — pins success-only predicate), PostHandler-malformed-body-400. fakeWriter satisfies apiv3.SeriesWriter (GetSeries/GetAllSeries/Insert/Update/Delete) and fakeEmitter satisfies apiv3.SeriesEmitter (Created/Updated/Deleted) with mutex-protected counters for -race cleanliness.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`seriesimportv5`) + 1 new route alongside the existing /api/v3/series/import route. Re-uses seriesWriter + seriesEmitter deps that already back v3.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/seriesimport/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/seriesimport/... ./cmd/sonarr/...` ✓ (6 v5/seriesimport tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 37/~50 → 38/~50.
+
+Pattern observation: J285 establishes the 201→200 wrapper as the third status-demote variant (alongside the existing 200→204, 202→204, 202→200 wrappers in v5util). Series's POST endpoint emits Created where v5 emits Ok — likely repeated by other create-shaped POST endpoints in the deferred Series/Queue/Release families. When the second 201→200 consumer appears, consolidate into v5util.RewriteCreatedToOK.
+
+### Next Wave 3 candidates ascending
+
+- Series/SeriesFolderController (34 LOC)
+- Episodes/RenameEpisodeController (48 LOC)
+- Series/SeriesLookupController (58 LOC)
+- Queue/QueueActionController (58 LOC)
+- Queue/QueueDetailsController (77 LOC)
+- Queue/QueueStatusController (80 LOC)
+- Episodes/EpisodeController (85 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Release/ReleasePushController (120 LOC)
