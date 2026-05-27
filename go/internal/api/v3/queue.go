@@ -37,6 +37,25 @@ import (
 // semantic — null when unset on the wire, populated when the queue
 // row is tied to a Series/Episode.
 //
+// J320 enum-string widening: TrackedDownloadStatus +
+// TrackedDownloadState (both v3+v5; both nullable on C# —
+// `TrackedDownloadStatus?` / `TrackedDownloadState?` per
+// `QueueResource.cs:39-40`). Wired as `string` with omitempty so
+// nil/empty drops the key (matches C# WhenWritingNull). Values are
+// the camelCase form per STJson's global
+// `JsonStringEnumConverter(CamelCase)` applied to the C# enum
+// names: `"downloading"` / `"importBlocked"` / `"importPending"` /
+// `"importing"` / `"imported"` / `"failedPending"` / `"failed"` /
+// `"ignored"` for State; `"ok"` / `"warning"` / `"error"` for
+// Status. The populated-mapper invoker (cmd/sonarr — gated on
+// queue.Service's paged surface) computes via
+// `CamelCaseEnumName(trackeddownloads.Status(*persisted).String())`
+// — both enums already have `.String()` methods returning the C#
+// PascalCase form at internal/trackeddownloads/trackeddownloads.go.
+// Today's empty-DB stub leaves both fields empty → omitempty drops
+// the keys; no wire-shape change at the empty-DB shadow-traffic
+// level.
+//
 // J319 *time.Time widening: Added + EstimatedCompletionTime (both
 // v3+v5; both C# `DateTime?` nullable). Wired here on the shared
 // apiv3.QueueResource with omitempty pointer-to-time (J302 pattern
@@ -109,6 +128,8 @@ type QueueResource struct {
 	DownloadID                          string        `json:"downloadId,omitempty"`
 	Protocol                            string        `json:"protocol,omitempty"`
 	Languages                           []LanguageRef `json:"languages,omitempty"`
+	TrackedDownloadStatus               string        `json:"trackedDownloadStatus,omitempty"`
+	TrackedDownloadState                string        `json:"trackedDownloadState,omitempty"`
 	Size                                int64         `json:"size,omitempty"`
 	Indexer                             string        `json:"indexer,omitempty"`
 	DownloadClient                      string        `json:"downloadClient,omitempty"`

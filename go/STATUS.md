@@ -15671,3 +15671,93 @@ No new routes. Struct + doc-comment widening only.
 27 wire-shape fields landed across J309-J319.
 
 Next-tick smallest candidate: QueueResource TrackedDownloadStatus + State (2 enum-string fields, needs `trackeddownloads.Status.String()` + `State.String()` helper invocations — slightly bigger than J319 but uses existing helpers). Or QueueResource SizeLeft int64 + TimeLeft helper (TimeSpan wire format is C# `"hh:mm:ss"` or `"d.hh:mm:ss"` — needs a small formatter).
+
+---
+
+## J320 — Post-Wave-3 drain, slice 12: QueueResource TrackedDownloadStatus + TrackedDownloadState enum-string widening
+
+**Anchor**: post-J319 (QueueResource *time.Time pointer widening landed). Continues the QueueResource scalar-widening sweep with the 2 nullable enum-string fields.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:39-40` — `public TrackedDownloadStatus? TrackedDownloadStatus { get; set; }` + `public TrackedDownloadState? TrackedDownloadState { get; set; }`.
+- `src/Sonarr.Api.V5/Queue/QueueResource.cs:35-36` — same.
+
+Underlying enums on the Go-port at `internal/trackeddownloads/trackeddownloads.go`:
+- `State` (8 values: Downloading=0, ImportBlocked=1, ImportPending=2, Importing=3, Imported=4, FailedPending=5, Failed=6, Ignored=7). `.String()` returns C# PascalCase.
+- `Status` (3 values: Ok=0, Warning=1, Error=2). `.String()` returns C# PascalCase.
+
+### Wire contract
+
+C# under STJson `JsonStringEnumConverter(JsonNamingPolicy.CamelCase)` + `JsonIgnoreCondition.WhenWritingNull`:
+- null → key absent.
+- non-null → camelCase enum string (`"downloading"` / `"importPending"` / `"ok"` / `"warning"` / etc.).
+
+Go-port mapping with plain `string` + omitempty:
+- empty string → key absent (matches C# null).
+- populated → camelCase string.
+
+Populated-mapper computes via `CamelCaseEnumName(trackeddownloads.Status(*persisted).String())` — the existing `apiv3.CamelCaseEnumName` helper at `internal/api/v3/enum_naming.go:29` handles the lowercase-first-letter transform on the existing PascalCase `.String()` outputs.
+
+### Port deliverables
+
+**`internal/api/v3/queue.go`** — struct + doc-comment:
+
+- `QueueResource` widened with 2 new fields after Languages:
+  - `TrackedDownloadStatus string json:"trackedDownloadStatus,omitempty"`.
+  - `TrackedDownloadState string json:"trackedDownloadState,omitempty"`.
+- Doc comment extended with a J320 paragraph cataloguing the enum values + populated-mapper computation pattern + persistence-layer cites (`internal/trackeddownloads/trackeddownloads.go:80,120` for the existing `.String()` methods).
+
+No emit-site mapper updates required — production today returns `[]QueueResource{}`. The populated-row mapper port is its own dedicated slice; it will invoke the camelCase conversion at allocation time.
+
+v5/queue aliases v3 via `type Resource = apiv3.QueueResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (1 new)
+
+`internal/api/v3/queue_test.go`:
+
+- `TestQueueResource_TrackedDownloadStatusState_J320` — 2-row pin covering BOTH branches:
+  - Row 1: populated `TrackedDownloadStatus="warning"` + `TrackedDownloadState="downloading"` → 2 positive substring assertions.
+  - Row 2: empty strings (defaults) → 2 negative omitempty assertions confirming both keys drop.
+
+### Wiring
+
+No new routes. Struct + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/queue/...` ✓
+  - v3: all pass, 1.725s
+  - cmd/sonarr: all pass, 4.287s
+  - v5/queue: all pass, 2.601s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | **DONE this slice (J320)** |
+| B. v5 field divergences | QueueResource SizeLeft int64 + TimeLeft TimeSpan-helper | OPEN — TimeSpan wire format `"hh:mm:ss"` needs small formatter |
+| B. v5 field divergences | QueueResource StatusMessages typed list | OPEN — typed list DTO |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem + ReleaseResource | OPEN — body-decode shape consideration |
+| B. v5 field divergences | Quality typed QualityModel envelope | OPEN — complex DTO |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — alias break, mid-size |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+29 wire-shape fields landed across J309-J320.
+
+Next-tick smallest candidate: QueueResource SizeLeft (int64) + TimeLeft (TimeSpan-helper). SizeLeft is trivial (J317-pattern). TimeLeft needs a tiny formatter (`time.Duration` → `"hh:mm:ss"` or `"d.hh:mm:ss"` C# TimeSpan format).

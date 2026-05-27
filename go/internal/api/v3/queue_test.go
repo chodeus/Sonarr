@@ -271,6 +271,46 @@ func TestQueueResource_TimePointerFieldWidening_J319(t *testing.T) {
 	}
 }
 
+// J320 wire-shape pin for the TrackedDownloadStatus +
+// TrackedDownloadState enum-string widening on QueueResource. Both
+// fields are nullable on C# (`TrackedDownloadStatus?` /
+// `TrackedDownloadState?`); wire values are the camelCase form per
+// STJson's `JsonStringEnumConverter(CamelCase)` applied to the C#
+// enum names. Go-port uses plain `string` with omitempty (empty →
+// key absent matching C# null).
+//
+// Test covers BOTH branches: row 1 populated with "downloading" +
+// "warning" → both keys emit; row 2 empty strings → omitempty
+// drops both keys.
+func TestQueueResource_TrackedDownloadStatusState_J320(t *testing.T) {
+	t.Parallel()
+	populated := QueueResource{ID: 1, Title: "demo", TrackedDownloadStatus: "warning", TrackedDownloadState: "downloading"}
+	buf, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated: %v", err)
+	}
+	got := string(buf)
+	if !strings.Contains(got, `"trackedDownloadStatus":"warning"`) {
+		t.Errorf("populated trackedDownloadStatus missing; got %s", got)
+	}
+	if !strings.Contains(got, `"trackedDownloadState":"downloading"`) {
+		t.Errorf("populated trackedDownloadState missing; got %s", got)
+	}
+	// Branch 2: empty strings → omitempty drops both keys.
+	empty := QueueResource{ID: 2, Title: "demo"}
+	buf2, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	got2 := string(buf2)
+	if strings.Contains(got2, `"trackedDownloadStatus":`) {
+		t.Errorf("empty TrackedDownloadStatus must omit; got %s", got2)
+	}
+	if strings.Contains(got2, `"trackedDownloadState":`) {
+		t.Errorf("empty TrackedDownloadState must omit; got %s", got2)
+	}
+}
+
 // ---------- 5.I18: /queue/details tests ----------
 
 type fakeQueueDetailsLister struct {
