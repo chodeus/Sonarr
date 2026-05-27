@@ -61,20 +61,20 @@ func ManualImportHandler() http.Handler {
 // `Languages` is a slice (a nil slice and an empty `[]` array both
 // pass the C# `<= 1` count guard at `:60`).
 type ManualImportReprocessItem struct {
-	Path              string         `json:"path"`
-	SeriesID          int            `json:"seriesId"`
-	SeasonNumber      *int           `json:"seasonNumber,omitempty"`
+	Path              string                    `json:"path"`
+	SeriesID          int                       `json:"seriesId"`
+	SeasonNumber      *int                      `json:"seasonNumber,omitempty"`
 	Episodes          []manualImportEpisodeStub `json:"episodes,omitempty"`
-	EpisodeIDs        []int          `json:"episodeIds,omitempty"`
-	Quality           *quality.Model `json:"quality,omitempty"`
-	Languages         []int          `json:"languages"`
-	ReleaseGroup      string         `json:"releaseGroup"`
-	DownloadID        string         `json:"downloadId,omitempty"`
-	CustomFormats     []any          `json:"customFormats"`
-	CustomFormatScore int            `json:"customFormatScore"`
-	IndexerFlags      int            `json:"indexerFlags"`
-	ReleaseType       string         `json:"releaseType"`
-	Rejections        []any          `json:"rejections"`
+	EpisodeIDs        []int                     `json:"episodeIds,omitempty"`
+	Quality           *quality.Model            `json:"quality,omitempty"`
+	Languages         []int                     `json:"languages"`
+	ReleaseGroup      string                    `json:"releaseGroup"`
+	DownloadID        string                    `json:"downloadId,omitempty"`
+	CustomFormats     []CustomFormatResource    `json:"customFormats"`
+	CustomFormatScore int                       `json:"customFormatScore"`
+	IndexerFlags      int                       `json:"indexerFlags"`
+	ReleaseType       string                    `json:"releaseType"`
+	Rejections        []any                     `json:"rejections"`
 }
 
 // manualImportEpisodeStub mirrors the EpisodeResource fields the C#
@@ -185,6 +185,9 @@ func reprocessOne(ctx context.Context, item *ManualImportReprocessItem, seriesLo
 		if item.Rejections == nil {
 			item.Rejections = []any{}
 		}
+		if item.CustomFormats == nil {
+			item.CustomFormats = []CustomFormatResource{}
+		}
 		return
 	}
 	// ReleaseType — C# `:51` reads from `processedItem.ReleaseType`
@@ -237,7 +240,7 @@ func reprocessOne(ctx context.Context, item *ManualImportReprocessItem, seriesLo
 		item.Rejections = []any{}
 	}
 	if item.CustomFormats == nil {
-		item.CustomFormats = []any{}
+		item.CustomFormats = []CustomFormatResource{}
 	}
 }
 

@@ -280,6 +280,61 @@ func TestManualImportReprocessHandler_RejectionsAlwaysArray(t *testing.T) {
 	}
 }
 
+// J300 wire-shape pin: ManualImportReprocessItem.CustomFormats is
+// typed `[]CustomFormatResource` (NOT `[]any`) so the wire shape
+// matches the C# `List<CustomFormatResource>` projection at
+// `ManualImportReprocessResource.cs`. The reprocess flow already
+// defaults the field to `[]CustomFormatResource{}` on both the
+// successful-parse and parse==nil branches (J300). When the
+// calculator wire-through lands populated rows, the typed shape
+// allows downstream code to consume the slice without reflection.
+func TestManualImportReprocessHandler_CustomFormatsTyped(t *testing.T) {
+	t.Parallel()
+	body := `[{"path":"/tv/Show.S01E01.720p.mkv","languages":[]}]`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	// Decode through the typed shape — Go's strict decode would fail
+	// if the wire emitted something incompatible with []CustomFormatResource.
+	var out []ManualImportReprocessItem
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, rr.Body.String())
+	}
+	if len(out) != 1 {
+		t.Fatalf("len: %d", len(out))
+	}
+	if out[0].CustomFormats == nil {
+		t.Errorf("CustomFormats must be non-nil (empty slice, not nil)")
+	}
+	if len(out[0].CustomFormats) != 0 {
+		t.Errorf("CustomFormats must be empty at deferred state; got %d", len(out[0].CustomFormats))
+	}
+	if !strings.Contains(rr.Body.String(), `"customFormatScore":0`) {
+		t.Errorf("body must contain `\"customFormatScore\":0`; got %s", rr.Body.String())
+	}
+}
+
+// J300: parse-failure branch (path that won't ParsePath) must still
+// default CustomFormats to `[]` so the wire is consistent across
+// both parse-success and parse-failure paths.
+func TestManualImportReprocessHandler_CustomFormatsDefaultsOnParseFailure(t *testing.T) {
+	t.Parallel()
+	// Use a path so opaque that ParsePath will fall through entirely.
+	body := `[{"path":"random/gibberish/nothing/to/see.txt","languages":[]}]`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"customFormats":[]`) {
+		t.Errorf("body should emit customFormats:[] on parse-failure too; got %s", rr.Body.String())
+	}
+}
+
 func TestManualImportReprocessHandler_BatchOfMultipleItems(t *testing.T) {
 	t.Parallel()
 	body := `[

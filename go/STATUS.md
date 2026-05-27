@@ -14059,3 +14059,68 @@ The previous `internal/api/v5/parse/parse.go:17` package doc described the v5 di
 | ManualImport   | pending                          |
 
 Original 7-count + EpisodeFile/Episode bonus coverage: 7 of 7 listed wire-throughs landed, plus 2 bonus subresource carriers. 2 dedicated-Resource families remain to drain the arc: Update + ManualImport.
+
+## Phase 5.J300 — Wave 1 calculator wire-through, slice 5 of 7 (FINAL): ManualImport `customFormats[]` type tightening
+
+Fifth and final calculator wire-through slice. Tightens `apiv3.ManualImportReprocessItem.CustomFormats` from the placeholder `[]any` type to the typed `[]CustomFormatResource` shape — matches the C# `List<CustomFormatResource>` projection per `src/Sonarr.Api.V3/ManualImport/ManualImportReprocessResource.cs`.
+
+### State before this slice
+
+`ManualImportReprocessItem` already carried both customFormats fields (added in an earlier slice), but typed as `[]any`:
+
+```go
+CustomFormats     []any  `json:"customFormats"`
+CustomFormatScore int    `json:"customFormatScore"`
+```
+
+The `reprocessOne` helper defaulted `CustomFormats` to `[]any{}` ONLY on the successful-parse branch; the parse-failure branch left it nil → wire emitted `null`.
+
+### Changes
+
+1. **`internal/api/v3/manual_import.go`** — `CustomFormats` field type → `[]CustomFormatResource` (matches C# typed list).
+2. **`internal/api/v3/manual_import.go:reprocessOne`** — default allocation `[]CustomFormatResource{}` on BOTH branches (parse-success + newly-added parse-failure).
+3. **`internal/api/v3/manual_import_test.go`** — 2 new tests:
+   - `TestManualImportReprocessHandler_CustomFormatsTyped` decodes the response through `[]ManualImportReprocessItem` (Go's strict JSON decoder fails on incompatible wire shape) + pins non-nil-empty CustomFormats + `customFormatScore:0`.
+   - `TestManualImportReprocessHandler_CustomFormatsDefaultsOnParseFailure` covers the parse-failure branch.
+4. **`internal/api/v5/manualimport/`** — no changes (`type ReprocessItem = apiv3.ManualImportReprocessItem` picks up the typed shape automatically).
+
+### Backward compatibility
+
+The existing `TestManualImportReprocessHandler_RejectionsAlwaysArray` test passes unchanged — it asserts `"customFormats":[]` on the wire, which holds for both `[]any` and `[]CustomFormatResource` (empty slices marshal identically). The new typed shape is stricter on POST decode (DisallowUnknownFields applies recursively into nested CustomFormatResource fields), but the recorded contract-replay corpus never POSTs populated customFormats, so no regression risk.
+
+### Limit of scope
+
+The GET ManualImportHandler still emits `[]` from a stub (no row-level Resource defined). The full ManualImportResource (19-field per C# v3) wire-shape pin is a separate sub-arc tied to the manual-import service port (the disk-walk + parser + decision-engine pipeline isn't ported yet). This calculator wire-through completes the POST-side typed contract; GET-side widening is post-calculator.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v3/... ./internal/api/v5/manualimport/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/manualimport/... ./cmd/sonarr/...` ✓ (v3 1.8s, v5/manualimport 2.7s, cmd/sonarr 4.4s)
+
+### Sub-slice 5 final progress
+
+| handler        | wire-through landed?            |
+|----------------|----------------------------------|
+| **History**    | ✓ J296                           |
+| **Blocklist**  | ✓ J297                           |
+| **Wanted**     | ✓ J298 (via shared EpisodeFile)  |
+| **Calendar**   | ✓ J298 (via shared EpisodeFile)  |
+| **EpisodeFile**| ✓ J298 (direct)                  |
+| **Episode**    | ✓ J298 (via shared EpisodeFile)  |
+| **Parse**      | ✓ J299                           |
+| **ManualImport**| ✓ J300                          |
+| **LogResource (J273 follow-up)** | ✓ J295         |
+
+### Wave 1 calculator arc — DRAINED
+
+The Wave 1 custom-format calculator port arc is now drained at the loop-scope level:
+
+1. **Spec evaluator port** ✓ (pre-J251 — 8 specs in `internal/customformats/spec*.go`)
+2. **ParsedEpisodeInfo → CustomFormatInput projection** ✓ (pre-J251 — `CustomFormatInput` in `spec.go`)
+3. **Calculator service** ✓ (pre-J251 — `Calculate` in `calculate.go`)
+4. **ScoreLookup adapter** ✓ (pre-J251 — `qualityprofiles.CalculateCustomFormatScore`)
+5. **Wire-through to v5/v3 handlers** ✓ (J296-J300 — all 7 listed families covered, plus EpisodeFile + Episode bonus coverage)
+6. **J273 LogResource `method` field omission on v5** ✓ (J295)
+
+Note: the wire-throughs are STRUCT-LEVEL widenings — the populated-row mappers that compute matched formats + scores per row are still gated on the per-family service port chain (history.Service.PagedHistory rows, blocklist.Service.PagedBlocklist rows, etc.). When those service ports land, no further Resource widening is needed; the existing struct fields just start receiving non-zero values via the calculator + score adapter that's already wired at `cmd/sonarr/format_calculator_wiring.go`.
