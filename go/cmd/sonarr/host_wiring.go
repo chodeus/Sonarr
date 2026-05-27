@@ -30,6 +30,7 @@ import (
 	qualityprofilev5 "sonarr.tv/sonarr/internal/api/v5/qualityprofile"
 	queueactionv5 "sonarr.tv/sonarr/internal/api/v5/queueaction"
 	queuedetailsv5 "sonarr.tv/sonarr/internal/api/v5/queuedetails"
+	queuestatusv5 "sonarr.tv/sonarr/internal/api/v5/queuestatus"
 	renameepisodev5 "sonarr.tv/sonarr/internal/api/v5/renameepisode"
 	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
 	seriesfolderv5 "sonarr.tv/sonarr/internal/api/v5/seriesfolder"
@@ -1387,6 +1388,14 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// the stub level (same as v3's includeSeries/includeEpisode
 		// bools). Re-uses emptyQueueDetailsLister stub adapter.
 		{Method: "GET", Path: "/api/v5/queue/details", Handler: queuedetailsv5.GetHandler(emptyQueueDetailsLister{})},
+		// J291 — v5 QueueStatus endpoint family (1 endpoint; 80 LOC C#
+		// — QueueStatusController only). Pure path-alias slice. v3
+		// already exposes /api/v3/queue/status via apiv3.QueueStatusHandler
+		// with matching 7-field wire shape (totalCount, count,
+		// unknownCount, errors, warnings, unknownErrors, unknownWarnings).
+		// Re-uses queueSvc + pendingCountLister + queueStatusPauser
+		// deps verbatim — same Pauser bracket pattern.
+		{Method: "GET", Path: "/api/v5/queue/status", Handler: queuestatusv5.GetHandler(queueSvc, pendingCountLister{repo: pendingReleasesRepo}, queueStatusPauser)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},

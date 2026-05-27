@@ -13544,3 +13544,51 @@ Pattern observation: a clean instance of the "query-param-shift invisible at stu
 - Episodes/EpisodeController (85 LOC)
 - ImportLists/ImportListExclusionController (88 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J291 — Wave 3 fortieth slice: v5 QueueStatus family port (80 LOC C# source)
+
+Pure path-alias slice. Same J224/J280/J290 template. v3 already exposes /api/v3/queue/status via apiv3.QueueStatusHandler with matching wire shape (7 fields), status (200), and SignalR Pauser debouncer-bracket pattern.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :5156+):
+
+| endpoint                           | v5 status | v3 Go-port                              | strategy |
+|------------------------------------|-----------|------------------------------------------|----------|
+| GET /api/v5/queue/status           | 200       | 200 (apiv3.QueueStatusHandler)           | alias    |
+
+**Resource shape** — 7 fields shared:
+
+| field           | type |
+|-----------------|------|
+| totalCount      | int  |
+| count           | int  |
+| unknownCount    | int  |
+| errors          | bool |
+| warnings        | bool |
+| unknownErrors   | bool |
+| unknownWarnings | bool |
+
+**Potential id field divergence**: v5 openapi schema lists `id` as a property (inherited RestResource.Id), `additionalProperties:false`. If C# RestResource uses [JsonIgnore(WhenWritingDefault)] on Id, the v5 wire emits 7 fields just like v3. If not, v5 emits `"id":0` and v3 doesn't. Not confirmed against v5 reference corpus in this slice; logged as a v3-side audit follow-up. Real-world divergence (if any) is small — clients typically ignore unknown fields. If a real client fails on missing id, the inverse of J283 field-strip (field-add wrap that injects `id:0` into the v3 response) would patch it.
+
+**SignalR**: v5 controller declares `IHandle<QueueUpdatedEvent>` + `IHandle<PendingReleasesUpdatedEvent>` with a 5-second Debouncer driving Updated broadcasts (per QueueStatusController.cs:29 + :63-66). v3 Go-port wires equivalent broadcasts via the bus subscription in cmd/sonarr/signalr_wiring.go — carries through unchanged.
+
+**Pauser debouncer-bracket**: v5 controller calls `_broadcastDebounce.Pause()` + `.Resume()` around the GET projection (per QueueStatusController.cs:42,58) to prevent the GET handler's own projection from re-arming the broadcaster debouncer when a producer fires mid-read. v3 Go-port ports this via the optional `Pauser` interface — nil-tolerant when no SignalR debouncer is wired (tests). Test `TestGetHandler_PauserBracketed` pins that Pause + Resume are both called exactly once per request.
+
+**Defensive read**: v3 handler treats `pending.PendingCount(ctx)` errors as 0 rather than propagating — matches the C# defensive posture (the pending service caches in-process and never fails over a network). Test `TestGetHandler_PendingErrorTreatedAsZero` pins this — pending err returns 200 + zeros, NOT 500.
+
+**Slice scope** — 195 lines (60 source + 135 test) + 1 import + 1 route:
+
+- New `internal/api/v5/queuestatus/queuestatus.go` (60 LOC) — 4 type aliases (Resource = apiv3.QueueStatusResource, QueueLister = apiv3.QueueLister, PendingLister = apiv3.PendingLister, Pauser = apiv3.Pauser) + 1 variable alias (GetHandler = apiv3.QueueStatusHandler). NO new handler code.
+- New `internal/api/v5/queuestatus/queuestatus_test.go` (135 LOC) — 6 tests: GetHandler-empty-queue-all-zeroes (canonical empty-corpus pin), GetHandler-with-pending-count (TotalCount=5 + Count=5 when pending lister returns 5), GetHandler-pending-error-treated-as-zero (defensive — 200 + zeros, NOT 500), GetHandler-pauser-bracketed (Pause+Resume both 1; mutex-protected fake), GetHandler-nil-pauser-tolerated (nil-safe), Resource-type-alias compile-time pin. fakeQueue + fakePending + fakePauser cover the full apiv3 service interface trio.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`queuestatusv5`) + 1 new route alongside the existing /api/v3/queue/status route. Re-uses queueSvc + pendingCountLister + queueStatusPauser deps verbatim — same Pauser bracket.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/queuestatus/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/queuestatus/... ./cmd/sonarr/...` ✓ (6 v5/queuestatus tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 43/~50 → 44/~50.
+
+Pattern observation: cleanest pure-alias slice yet for an endpoint that has substantive backing logic (queue projection + SignalR debounce + pending pass-through). Demonstrates that the path-alias template scales to mid-complexity endpoints when v3 already implements the full chain — the v5 slice collapses to ~60 LOC of re-exports. The "potential id field divergence" is the first time we've flagged an unconfirmed wire-shape concern without immediately resolving it — appropriate scope discipline given the J283 field-strip wrap establishes a clean inverse pattern if it does turn out to matter.
+
+### Next Wave 3 candidates ascending
+
+- Episodes/EpisodeController (85 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Release/ReleasePushController (120 LOC)
