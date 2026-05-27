@@ -19,6 +19,7 @@ import (
 	healthv5 "sonarr.tv/sonarr/internal/api/v5/health"
 	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	generalsettingsv5 "sonarr.tv/sonarr/internal/api/v5/generalsettings"
+	importlistexclusionv5 "sonarr.tv/sonarr/internal/api/v5/importlistexclusion"
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
 	indexersettingsv5 "sonarr.tv/sonarr/internal/api/v5/indexersettings"
 	mediamanagementsettingsv5 "sonarr.tv/sonarr/internal/api/v5/mediamanagementsettings"
@@ -1409,6 +1410,21 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/episode/{id}", Handler: episodev5.ByIDHandler(episodesSvc)},
 		{Method: "PUT", Path: "/api/v5/episode/monitor", Handler: episodev5.MonitorHandler(episodesSvc)},
 		{Method: "PUT", Path: "/api/v5/episode/{id}", Handler: episodev5.ByIDPutHandler(episodesSvc)},
+		// J293 — v5 ImportListExclusion endpoint family (6 endpoints;
+		// 88 LOC C# — ImportListExclusionController). PATH MAP CHANGE
+		// from v3: v5 root GET /importlistexclusion IS paged (no
+		// non-paged variant); v3 has both /importlistexclusion (full)
+		// AND /importlistexclusion/paged. v5 root aliases v3's
+		// PagedHandler. TWO status divergences: DELETE /{id} + DELETE
+		// /bulk both demote 200+empty → 204 via v5util.RewriteSuccessTo204.
+		// Other 4 endpoints path-alias (POST→201, PUT→202, GETs→200).
+		// Resource shape byte-identical (3 fields).
+		{Method: "GET", Path: "/api/v5/importlistexclusion", Handler: importlistexclusionv5.GetHandler(importListExclusionsRepo)},
+		{Method: "GET", Path: "/api/v5/importlistexclusion/{id}", Handler: importlistexclusionv5.ByIDHandler(importListExclusionsRepo)},
+		{Method: "POST", Path: "/api/v5/importlistexclusion", Handler: importlistexclusionv5.CreateHandler(importListExclusionsRepo)},
+		{Method: "PUT", Path: "/api/v5/importlistexclusion/{id}", Handler: importlistexclusionv5.UpdateHandler(importListExclusionsRepo)},
+		{Method: "DELETE", Path: "/api/v5/importlistexclusion/{id}", Handler: importlistexclusionv5.DeleteHandler(importListExclusionsRepo)},
+		{Method: "DELETE", Path: "/api/v5/importlistexclusion/bulk", Handler: importlistexclusionv5.BulkDeleteHandler(importListExclusionsRepo)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},

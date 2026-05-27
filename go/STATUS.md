@@ -13646,3 +13646,50 @@ Pattern observation: first slice that combines THREE patterns in one family — 
 
 - ImportLists/ImportListExclusionController (88 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J293 — Wave 3 forty-second slice: v5 ImportListExclusion family port (88 LOC C# source)
+
+Combo slice — combines path-map change (J263 pattern) with 2-DELETE status wrappers (J253/J269/J272 pattern).
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :2652-2870):
+
+| endpoint                                         | v5 status        | v3 Go-port                              | strategy                     |
+|--------------------------------------------------|------------------|------------------------------------------|-------------------------------|
+| GET    /api/v5/importlistexclusion (paged)       | 200              | 200 (apiv3.ImportListExclusionPagedHandler)  | path-alias (path-map change) |
+| GET    /api/v5/importlistexclusion/{id}          | 200 / 404        | 200 / 404 (apiv3.ImportListExclusionByIDHandler) | path-alias              |
+| POST   /api/v5/importlistexclusion               | 201 Created      | 201 Created                              | path-alias                   |
+| PUT    /api/v5/importlistexclusion/{id}          | 202 Accepted     | 202 Accepted                             | path-alias                   |
+| DELETE /api/v5/importlistexclusion/{id}          | **204**          | 200 + empty                              | v5util.RewriteSuccessTo204   |
+| DELETE /api/v5/importlistexclusion/bulk          | **204**          | 200 + empty                              | v5util.RewriteSuccessTo204   |
+
+**PATH MAP CHANGE** (J263 pattern reapplied): v3 has TWO list endpoints — GET /importlistexclusion (full non-paged list) AND GET /importlistexclusion/paged (paged variant). v5 collapses these — GET /importlistexclusion IS the paged variant; the non-paged list endpoint is REMOVED from v5. The v5 root aliases v3's PagedHandler (NOT the non-paged ListHandler). A v3 client hitting GET /api/v3/importlistexclusion still gets the non-paged shape; a v5 client hitting GET /api/v5/importlistexclusion gets the paged shape.
+
+**Resource shape** byte-identical between v3 and v5 (per `src/Sonarr.Api.V5/openapi.json` :8635-8651):
+
+| field   | type    |
+|---------|---------|
+| id      | int32   |
+| tvdbId  | int32   |
+| title   | string  |
+
+BulkResource also identical (`{ids: int[]}`).
+
+**Validation chain**: v5 C# adds `ImportListExclusionExistsValidator` (per controller :24-26) that checks tvdbId uniqueness server-side before insert. v3 Go-port enforces the same uniqueness check at the service-layer Insert (returns ErrAlreadyExists → handler maps to 409). Same wire-level enforcement, just enforced at a different code-path layer — both surfaces emit 409 for a duplicate tvdbId POST.
+
+**Slice scope** — 300 lines (90 source + 210 test) + 1 import + 6 routes:
+
+- New `internal/api/v5/importlistexclusion/importlistexclusion.go` (90 LOC) — 3 type aliases (Resource = apiv3.ImportListExclusionResource, BulkResource = apiv3.ImportListExclusionBulkResource, Store = apiv3.ImportListExclusionStore) + 4 variable aliases (GetHandler = apiv3.ImportListExclusionPagedHandler — KEY decision: v5 root → v3 paged not non-paged; ByIDHandler / CreateHandler / UpdateHandler — pure v3 re-exports) + 2 wrapper funcs (DeleteHandler + BulkDeleteHandler via v5util.RewriteSuccessTo204).
+- New `internal/api/v5/importlistexclusion/importlistexclusion_test.go` (210 LOC) — 9 tests: GetHandler-empty-paged-shape (canonical paged-list pin — asserts `records` key present in body), ByIDHandler-NotFound, CreateHandler-Created-201, UpdateHandler-Accepted-202, DeleteHandler-rewrites-to-204 (svc.Delete called once + body empty), BulkDeleteHandler-rewrites-to-204 (multi-id body), variable-aliases non-nil (4 handlers), type-aliases compile-time pin (Resource + BulkResource addressable). fakeStore satisfies the full apiv3.ImportListExclusionStore interface (All + Get + Insert + Update + Delete + GetByTvdbID) with mutex-protected counters for -race cleanliness.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`importlistexclusionv5`) + 6 new routes alongside the existing /api/v3/importlistexclusion routes. Re-uses importListExclusionsRepo dep verbatim.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/importlistexclusion/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/importlistexclusion/... ./cmd/sonarr/...` ✓ (9 v5/importlistexclusion tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 45/~50 → 46/~50.
+
+Pattern observation: this slice demonstrates that path-map-change (v5 collapses two v3 endpoints into one) can coexist cleanly with the path-alias template — the v5 root just picks a DIFFERENT v3 handler than the v3 root does. The two surfaces remain wire-disjoint (v3 keeps both endpoints; v5 keeps just one) but share the same backing handlers.
+
+### Next Wave 3 candidates ascending
+
+- Release/ReleasePushController (120 LOC)
+
+After Release/ReleasePushController, the next-tier list drains down to the LARGE families deferred per loop contract (Series 422, Release 343, Queue 410). Wave 3 nears completion.
