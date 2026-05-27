@@ -14396,3 +14396,91 @@ Plus a `bytesReader` test helper for body construction (and `io` + `bytes` impor
 
 Series family is now functionally complete at the v5 surface MINUS the v5-NEW /{id}/season endpoint. The /{id}/season port is genuinely new code (no v3 equivalent) and needs a single-season monitored-set service method (similar to J291 EpisodeController.SetEpisodeMonitored but at season granularity). After that, 2 LARGE families remain — Release and Queue.
 
+
+---
+
+## J305 — Wave 3 LARGE-family arc, Release family sub-slice 1 of 2: ReleaseController GET endpoint (343 LOC C#)
+
+**Anchor**: post-J304 (Series Editor sub-controller landed). Release family — ReleasePush sub-family already wired at J294 under /api/v5/release/push; the main ReleaseController endpoints (GET + POST) at /api/v5/release have not been routed on v5 until now.
+
+### C# source
+
+`src/Sonarr.Api.V5/Release/ReleaseController.cs` (343 LOC). Two routed endpoints on the main ReleaseController:
+
+| v5 endpoint | C# return shape | v3 equivalent | divergence | slice |
+| --- | --- | --- | --- | --- |
+| GET    /api/v5/release | `Ok<List<ReleaseResource>>` (200 + array) | 200 + array (same) | NONE — variable-alias | **J305 (this slice)** |
+| POST   /api/v5/release | `Ok<ReleaseGrabResource>` (200 + body) | 200 + body but **body shape diverges** | **WIRE-SHAPE — body** | J306 (queued) |
+
+### Why GET is a clean variable-alias
+
+The C# v5 `GetReleases` switch at lines 192-205 dispatches by query-param triple to one of three branches:
+
+1. `episodeId.HasValue` → `_releaseSearchService.EpisodeSearch(episodeId, true, true)` + prioritise + map.
+2. `seriesId.HasValue && seasonNumber.HasValue` → `_releaseSearchService.SeasonSearch(seriesId, seasonNumber, false, false, true, true)` + prioritise + map.
+3. Else → `_rssFetcherAndParser.Fetch()` + `_downloadDecisionMaker.GetRssDecision(reports)` + prioritise + map.
+
+The v3 Go-port `ReleaseHandler` at internal/api/v3/release.go:98 implements branches 1 + 2 against the live `IndexerSearchService`; branch 3 (RSS fetch) is DEFERRED on both surfaces — the v3 handler short-circuits to `[]` per the J255-era handler doc-comment. v5 inherits the same shape (`[]` on the deferred branch) via the alias — the empty-DB shadow-traffic golden is unaffected.
+
+### Why POST is deferred to J306
+
+v3 `ReleaseDownloadBody` (internal/api/v3/release_write.go:128) is a flattened struct:
+
+```
+{guid, indexerId, downloadClient, downloadClientId, shouldOverride,
+ seriesId, episodeId, episodeIds, quality, languages}
+```
+
+v5 `ReleaseGrabResource` (src/Sonarr.Api.V5/Release/ReleaseGrabResource.cs:6-12) is grouped:
+
+```
+{guid, indexerId,
+ override?: {seriesId?, episodeIds[], downloadClientId?, quality?, languages[]},
+ searchInfo?: {seriesId?, seasonNumber?, episodeId?}}
+```
+
+The v5 body grouping changes the JSON contract on the wire — a genuine *body* divergence, not a status divergence. Per loop-scope guidance ("New v5-specific handler code last"), the POST sub-slice gets its own slice with the ReleaseGrabResource struct + decode-and-translate adapter into the v3 dispatcher inputs.
+
+### Port deliverables
+
+**New package** `internal/api/v5/release/`:
+
+- `release.go` (~60 LOC):
+  - Type aliases: `Resource = apiv3.ReleaseResource`, `Searcher = apiv3.ReleaseSearcher`.
+  - Variable-alias handler: `ListHandler = apiv3.ReleaseHandler`.
+  - Package doc-comment catalogues both GET (this slice) and POST (deferred to J306) + the ReleasePush split.
+
+- `release_test.go` (5 tests):
+  - `TestListHandler_EpisodeID_Returns200EmptyArray` — episode-search branch with a stub searcher returning nil decisions → 200 + `[]`.
+  - `TestListHandler_SeriesIDAndSeasonNumber_Returns200EmptyArray` — season-search branch.
+  - `TestListHandler_NoQueryParams_Returns200EmptyArray` — RSS-fetch fallback (DEFERRED branch on both surfaces).
+  - `TestListHandler_InvalidEpisodeID_Returns400` — passthrough from v3 `parseOptionalInt` for malformed query params.
+  - `TestTypeAliasesMatchV3` — compile-time invariant guard.
+
+**`cmd/sonarr/host_wiring.go` edits**:
+
+- New import alias `releasev5 "sonarr.tv/sonarr/internal/api/v5/release"` placed alphabetically before `releasepushv5`.
+- 1 new `host.Route{}` entry for GET /api/v5/release in `v5Routes()` immediately after the J294 ReleasePush block, with a J305 prefix comment documenting the GET alias + the deferred POST.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v5/release/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v5/release/... ./internal/api/v3/... ./cmd/sonarr/...` ✓
+  - v5/release: 5 tests, all pass, 1.623s
+  - v3 (regression): all pass, 2.182s
+  - cmd/sonarr (wiring integration): all pass, 3.684s
+
+### Wave 3 LARGE-family arc progress (updated)
+
+| family | LOC C# | status |
+| --- | --- | --- |
+| EpisodeFiles | 205 | DONE (J301) |
+| CustomFormats | 203 | DONE (J302) |
+| Series — Controller CRUD | 422 (5/6) | DONE (J303) |
+| Series — Editor | 116 | DONE (J304) |
+| Series — /{id}/season | (covered in 422) | queued — v5-NEW endpoint |
+| Release — GET | 343 (1/2 main endpoints; +ReleasePush at J294) | **DONE (J305)** |
+| Release — POST | (covered in 343) | queued (J306) — body shape divergent |
+| Queue | 410 | queued |
+

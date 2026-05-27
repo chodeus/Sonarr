@@ -34,6 +34,7 @@ import (
 	queuestatusv5 "sonarr.tv/sonarr/internal/api/v5/queuestatus"
 	renameepisodev5 "sonarr.tv/sonarr/internal/api/v5/renameepisode"
 	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
+	releasev5 "sonarr.tv/sonarr/internal/api/v5/release"
 	releasepushv5 "sonarr.tv/sonarr/internal/api/v5/releasepush"
 	seriesv5 "sonarr.tv/sonarr/internal/api/v5/series"
 	seriesfolderv5 "sonarr.tv/sonarr/internal/api/v5/seriesfolder"
@@ -1497,6 +1498,16 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// gap → v5 ByID stub" pattern.
 		{Method: "POST", Path: "/api/v5/release/push", Handler: releasepushv5.PostHandler(downloadDecider, processDownloadDecisions, releaseCache, indexersRepo, downloadClientsRepo)},
 		{Method: "GET", Path: "/api/v5/release/push/{id}", Handler: releasepushv5.ByIDHandler()},
+		// J305 — v5 ReleaseController GET sub-slice (1 of 2 main
+		// endpoints; 343 LOC C# — ReleaseController). GET /api/v5/release
+		// is a pure variable-alias to v3 — same `Ok<List<ReleaseResource>>`
+		// shape + same `seriesId? + episodeId? + seasonNumber?` query
+		// triple at ReleaseController.cs:190-205. POST /api/v5/release
+		// DEFERRED to J306 — body shape diverges from v3 (v5 groups
+		// override-info under a nested `override` object + search-info
+		// under `searchInfo`; v3 flattens both on the root). New v5-
+		// specific handler code per loop sub-slicing guidance.
+		{Method: "GET", Path: "/api/v5/release", Handler: releasev5.ListHandler(indexerSearchSvc)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},
