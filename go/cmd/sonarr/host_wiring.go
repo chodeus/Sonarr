@@ -705,9 +705,41 @@ func (a diskSpaceFromRootFolders) GetFreeSpace(ctx context.Context) ([]apiv3.Dis
 	return out, nil
 }
 
-// historyPagedAdapter wraps *history.Repo. Same caveats as blocklist:
-// in-memory paging, skeleton fields only, sort params unused.
-type historyPagedAdapter struct{ repo *history.Repo }
+// historyPagedAdapter wraps *history.Repo + 3 narrow lookups for
+// populated-row CustomFormat + score calculation. In-memory paging,
+// sort params unused — same posture as blocklistPagedAdapter.
+//
+// J336 populated-row mapper wire-through: the 3 lookups
+// (seriesSvc/qualityProfilesSvc/customFormatsSvc) are nil-safe;
+// when any is nil the adapter falls back to the empty
+// CustomFormats slice + 0 score (matches the pre-J336 stub
+// behavior). Production wiring injects all 3.
+type historyPagedAdapter struct {
+	repo               *history.Repo
+	seriesSvc          historySeriesLookup
+	qualityProfilesSvc historyQualityProfileLookup
+	customFormatsSvc   historyCustomFormatsLookup
+}
+
+// Narrow lookup interfaces for historyPagedAdapter. Production
+// wires *series.Service / *qualityprofiles.Service /
+// *customformats.Service — each satisfies the corresponding
+// interface via the same-named methods. Decoupled so the adapter
+// is testable with fakes without dragging the full service ctors
+// + their persistence DBs into the test.
+//
+// J336.
+type historySeriesLookup interface {
+	GetSeries(ctx context.Context, id int) (*series.Series, error)
+}
+
+type historyQualityProfileLookup interface {
+	Get(ctx context.Context, id int) (*qualityprofiles.Profile, error)
+}
+
+type historyCustomFormatsLookup interface {
+	All(ctx context.Context) ([]*customformats.Format, error)
+}
 
 func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingRequest) ([]apiv3.HistoryResource, int, error) {
 	rows, err := a.repo.All(ctx)
@@ -717,29 +749,109 @@ func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingR
 	total := len(rows)
 	page := paginateInMemory(rows, req)
 	out := make([]apiv3.HistoryResource, 0, len(page))
+
+	// Per-request caches: load allFormats once + memoize series +
+	// quality-profile lookups across rows of the same page.
+	var allFormats []*customformats.Format
+	if a.customFormatsSvc != nil {
+		if formats, err := a.customFormatsSvc.All(ctx); err == nil {
+			allFormats = formats
+		}
+	}
+	seriesCache := map[int]*series.Series{}
+	profileCache := map[int]*qualityprofiles.Profile{}
+
 	for _, e := range page {
+		entry := e // copy for pointer capture
+		customFormats, customFormatScore := computeHistoryCustomFormats(ctx, &entry, a, allFormats, seriesCache, profileCache)
 		out = append(out, apiv3.HistoryResource{
-			ID:            e.ID,
-			SeriesID:      e.SeriesID,
-			EpisodeID:     e.EpisodeID,
-			SourceTitle:   e.SourceTitle,
-			Date:          e.Date.UTC().Format("2006-01-02T15:04:05Z"),
-			DownloadID:    e.DownloadID,
-			Languages:     apiv3.ToLanguageRefs(e.Languages),
-			Data:          e.Data,
-			CustomFormats: []apiv3.CustomFormatResource{},
+			ID:                e.ID,
+			SeriesID:          e.SeriesID,
+			EpisodeID:         e.EpisodeID,
+			SourceTitle:       e.SourceTitle,
+			Date:              e.Date.UTC().Format("2006-01-02T15:04:05Z"),
+			DownloadID:        e.DownloadID,
+			Languages:         apiv3.ToLanguageRefs(e.Languages),
+			Data:              e.Data,
+			CustomFormats:     customFormats,
+			CustomFormatScore: customFormatScore,
 			// EventType in C# is JsonStringEnumConverter+CamelCase
 			// on EpisodeHistoryEventType; the Go-port mapping is
 			// DEFERRED until the event-type-name table lands.
-			// CustomFormatScore: 0 — populated-row mapper lands
-			// alongside the calculator wire-through (J296+).
 			// Data (J310): per-history grab-time metadata dict; nil
 			// drops the key via omitempty, populated emits `"data":{...}`.
 			// Languages (J314): typed []LanguageRef projection from
 			// the persisted []int form via apiv3.ToLanguageRefs.
+			// CustomFormats + CustomFormatScore (J336): populated via
+			// computeHistoryCustomFormats using the calculator engine
+			// (internal/customformats.ParseCustomFormatForHistory) +
+			// qualityprofile score lookup (qualityprofiles.
+			// CalculateCustomFormatScore). nil deps fall back to
+			// empty slice + 0 score matching the pre-J336 stub.
 		})
 	}
 	return out, total, nil
+}
+
+// computeHistoryCustomFormats runs the per-row CustomFormat
+// calculator + score lookup, with per-request caches for series +
+// qualityprofile. Returns empty slice + 0 score on any error or
+// missing dep — preserves the pre-J336 stub behavior for failure
+// paths.
+//
+// J336.
+func computeHistoryCustomFormats(ctx context.Context, e *history.Entry, a historyPagedAdapter, allFormats []*customformats.Format, seriesCache map[int]*series.Series, profileCache map[int]*qualityprofiles.Profile) ([]apiv3.CustomFormatResource, int) {
+	empty := []apiv3.CustomFormatResource{}
+	if a.seriesSvc == nil || len(allFormats) == 0 || e == nil || e.SeriesID == 0 {
+		return empty, 0
+	}
+	ser, cached := seriesCache[e.SeriesID]
+	if !cached {
+		s, err := a.seriesSvc.GetSeries(ctx, e.SeriesID)
+		if err != nil {
+			// Negative cache the failure so subsequent rows from
+			// the same series don't re-hit the service.
+			seriesCache[e.SeriesID] = nil
+			return empty, 0
+		}
+		ser = s
+		seriesCache[e.SeriesID] = ser
+	}
+	if ser == nil {
+		return empty, 0
+	}
+
+	matched := customformats.ParseCustomFormatForHistory(e, ser, allFormats)
+	res := make([]apiv3.CustomFormatResource, 0, len(matched))
+	presentIDs := make(map[int]bool, len(matched))
+	for _, m := range matched {
+		res = append(res, apiv3.CustomFormatResource{ID: m.ID, Name: m.Name})
+		presentIDs[m.ID] = true
+	}
+	if len(res) == 0 {
+		res = empty
+	}
+
+	// Score lookup is optional — gated on having both a profile
+	// service AND a non-zero QualityProfileID on the series row.
+	score := 0
+	if a.qualityProfilesSvc != nil && ser.QualityProfileID > 0 {
+		profile, ok := profileCache[ser.QualityProfileID]
+		if !ok {
+			p, err := a.qualityProfilesSvc.Get(ctx, ser.QualityProfileID)
+			if err == nil {
+				profile = p
+			}
+			profileCache[ser.QualityProfileID] = profile
+		}
+		if profile != nil {
+			if items, err := profile.ParsedFormatItems(); err == nil {
+				score = qualityprofiles.CalculateCustomFormatScore(items, presentIDs)
+			}
+		}
+	}
+
+	return res, score
 }
 
 // paginateInMemory clamps the page window to the slice and returns
@@ -1775,7 +1887,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// GetBySeason/GetByEpisode service methods are deferred —
 		// stubs emit `[]` for empty-corpus parity) + 1 status wrapper
 		// (POST /failed/{id} 200+`{}` → 204 via v5util.RewriteSuccessTo204).
-		{Method: "GET", Path: "/api/v5/history", Handler: historyv5.ListHandler(historyPagedAdapter{repo: historyRepo})},
+		{Method: "GET", Path: "/api/v5/history", Handler: historyv5.ListHandler(historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc})},
 		{Method: "GET", Path: "/api/v5/history/since", Handler: historyv5.SinceHandler(historySvc)},
 		{Method: "GET", Path: "/api/v5/history/series", Handler: historyv5.SeriesHandler(historySvc)},
 		{Method: "GET", Path: "/api/v5/history/season", Handler: historyv5.SeasonHandler()},
@@ -1918,7 +2030,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "DELETE", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileDeleteHandler(episodeFilesSvc)},
 		{Method: "DELETE", Path: "/api/v3/episodefile/bulk", Handler: apiv3.EpisodeFileBulkDeleteHandler(episodeFilesSvc)},
 		{Method: "GET", Path: "/api/v3/health", Handler: apiv3.HealthHandler(healthSvc)},
-		{Method: "GET", Path: "/api/v3/history", Handler: apiv3.HistoryHandler(historyPagedAdapter{repo: historyRepo})},
+		{Method: "GET", Path: "/api/v3/history", Handler: apiv3.HistoryHandler(historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc})},
 		{Method: "GET", Path: "/api/v3/history/series", Handler: apiv3.HistorySeriesHandler(historySvc)},
 		{Method: "GET", Path: "/api/v3/history/since", Handler: apiv3.HistorySinceHandler(historySvc)},
 		{Method: "POST", Path: "/api/v3/history/failed/{id}", Handler: apiv3.HistoryMarkAsFailedHandler(failedDownloadsSvc)},

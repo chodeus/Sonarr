@@ -17203,3 +17203,81 @@ No new routes. Struct + mapper + test widening only.
 58 wire-shape fields + 1 v5-strip behavior landed across J309-J335. **Quality typed-DTO cluster CLOSED across all 5 carriers** (J325 History+Blocklist+Queue; J333 ManualImport; J335 Release).
 
 Next-tick candidate: The B-category struct-widening pile is essentially drained except for 2 service-port-gated items (Queue includeSubresources hydration; Release POST searchInfo fallback). Pivot to populated-row mapper service-port work — smallest is likely history.Service paged populated customFormats[]+score (single-row-per-trigger mapper with already-ported calculator engine and ParseCustomFormatForHistory helper).
+
+---
+
+## J336 — Post-Wave-3 drain, slice 28 (A-category, slice 1): history.Service paged populated CustomFormats + Score wire-through
+
+**Anchor**: post-J335 (B-category struct-widening pile drained). First A-category slice — service-port populated-row mapper for the history paged adapter. The calculator engine (`internal/customformats.ParseCustomFormatForHistory` + `qualityprofiles.CalculateCustomFormatScore`) was already ported in pre-J251 work; this slice wires it into the production paged consumer.
+
+### C# source
+
+- `src/Sonarr.Api.V3/History/HistoryResource.cs:34-46` — `HistoryResourceMapper.ToResource` computes `formatCalculator.ParseCustomFormat(model, model.Series)` + `model.Series.QualityProfile.Value.CalculateCustomFormatScore(customFormats)`.
+
+### Pre-J336 stub
+
+`cmd/sonarr/host_wiring.go:710` declared `historyPagedAdapter struct{ repo *history.Repo }`. The PagedHistory method allocated `CustomFormats: []CustomFormatResource{}` (empty) + left CustomFormatScore as the zero int — same posture as the empty-DB contract goldens. Populated-row mapper was deferred to "post-Wave-3 service-port arc."
+
+### Port deliverables
+
+**`cmd/sonarr/host_wiring.go`** — adapter widening:
+
+- `historyPagedAdapter` struct gains 3 narrow-interface lookups:
+  - `seriesSvc historySeriesLookup` — `GetSeries(ctx, id) (*series.Series, error)`.
+  - `qualityProfilesSvc historyQualityProfileLookup` — `Get(ctx, id) (*qualityprofiles.Profile, error)`.
+  - `customFormatsSvc historyCustomFormatsLookup` — `All(ctx) ([]*customformats.Format, error)`.
+- Each interface declares the single method the adapter reaches for; production wires *series.Service / *qualityprofiles.Service / *customformats.Service which satisfy via same-named methods. Decouples the adapter from concrete service types — enables narrow-interface fakes for testing.
+- `PagedHistory` method updated:
+  - Loads `allFormats` once at request-start (per-page cache).
+  - Per-row: invokes new `computeHistoryCustomFormats` helper.
+  - Per-request caches for series + qualityprofile lookups (memoize across rows that share a series — typical paged-history shape).
+- New `computeHistoryCustomFormats(ctx, entry, adapter, allFormats, seriesCache, profileCache) (cf []apiv3.CustomFormatResource, score int)` helper:
+  - nil-safe — any missing dep falls back to empty slice + 0 score (preserves pre-J336 stub behavior on failure paths).
+  - Series lookup → `customformats.ParseCustomFormatForHistory(entry, series, allFormats)` → matched CustomFormat entries.
+  - Projects matched entries into `apiv3.CustomFormatResource{ID, Name}` (J302 lite-projection shape).
+  - Builds presentFormatIDs map → `qualityprofiles.CalculateCustomFormatScore(items, presentIDs)` for the final score.
+  - Negative-caches series-lookup failures so subsequent rows from the same series don't re-hit the service.
+
+The 2 route call sites updated to pass the new deps:
+- `/api/v3/history` at `host_wiring.go:1921`.
+- `/api/v5/history` at `host_wiring.go:1778`.
+
+Both now construct `historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc}` — all 4 deps are already in scope at the v3Routes() call site, no new wiring threads.
+
+### Tests (4 new in new file)
+
+`cmd/sonarr/history_populated_mapper_test.go` (~165 LOC, new file). 3 narrow-interface fake types (`fakeHistorySeriesLookup` + `fakeHistoryQualityProfileLookup` + `fakeHistoryCustomFormatsLookup`) + 2 counting wrappers for cache-call assertions.
+
+- `TestComputeHistoryCustomFormats_NilDeps_J336` — nil-services adapter → empty CustomFormats + 0 score (preserves pre-J336 stub behavior).
+- `TestComputeHistoryCustomFormats_SeriesNotFound_J336` — series-miss returns ErrNotFound → empty + 0 fallback.
+- `TestComputeHistoryCustomFormats_EmptyFormats_J336` — empty allFormats → short-circuit empty + 0.
+- `TestComputeHistoryCustomFormats_CachesAcrossRows_J336` — verifies the short-circuit gate (empty allFormats means the series + profile services are never called; counting wrappers confirm 0 calls across 2 rows).
+
+The full populated-path test (series found + allFormats non-empty + profile lookup + score computation) is integration-tier and gated on a populated-DB fixture — deferred to a follow-up slice that adds it via the contract-replay corpus. The current test suite validates the narrow-interface contracts + the fallback short-circuit paths.
+
+### Wiring
+
+No new routes. Adapter struct widening + 2 route registration sites updated.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/history/...` ✓
+  - v3: all pass, 1.507s
+  - cmd/sonarr: all pass, 4.498s
+  - v5/history: all pass, 1.789s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | (27 items closed at J309-J335; struct-widening pile drained) | DONE |
+| A. Populated-row mappers | history.Service paged populated customFormats[]+score | **DONE this slice (J336)** |
+| A. Populated-row mappers | blocklist.Service paged populated customFormats[]+score | OPEN — same J336 pattern applied to blocklistPagedAdapter |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+
+58 wire-shape fields + 1 v5-strip behavior + 1 populated-mapper service-port landed across J309-J336.
+
+Next-tick smallest candidate: blocklist.Service paged populated customFormats wire-through (same J336 pattern applied to blocklistPagedAdapter; calculator engine ParseCustomFormatForBlocklist already ported; BlocklistResource carries CustomFormats but NOT CustomFormatScore — Blocklist is score-less per the J297 wire-through note).
