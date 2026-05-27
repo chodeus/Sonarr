@@ -270,16 +270,30 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 	page := paginateInMemory(rows, req)
 	out := make([]apiv3.BlocklistResource, 0, len(page))
 	for _, e := range page {
+		episodeIDs := e.EpisodeIDs
+		if episodeIDs == nil {
+			// Match C# `required List<int> EpisodeIds` non-null
+			// semantic — emit `[]` rather than `null` when the
+			// persisted row has no episode-ids.
+			episodeIDs = []int{}
+		}
 		out = append(out, apiv3.BlocklistResource{
 			ID:            e.ID,
 			SeriesID:      e.SeriesID,
+			EpisodeIDs:    episodeIDs,
 			SourceTitle:   e.SourceTitle,
 			Date:          e.Date.UTC().Format("2006-01-02T15:04:05Z"),
+			Protocol:      apiv3.BlocklistProtocolName(e.Protocol),
+			Indexer:       e.Indexer,
+			Message:       e.Message,
 			CustomFormats: []apiv3.CustomFormatResource{},
 			// Title is derived from Episode.Title in C# — DEFERRED
 			// until the episode-join wiring lands. customFormats
 			// populated-row mapper lands alongside the calculator
-			// wire-through (J297+).
+			// wire-through (J297+). EpisodeIDs/Protocol/Indexer/
+			// Message added at J311 — Languages/Quality/Series
+			// subresource still DEFERRED (each needs a typed wire
+			// DTO or service join).
 		})
 	}
 	return out, total, nil

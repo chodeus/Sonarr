@@ -10,6 +10,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/blocklist"
 	"sonarr.tv/sonarr/internal/httperr"
+	"sonarr.tv/sonarr/internal/indexers"
 )
 
 // BlocklistResource is the per-record shape in the
@@ -17,9 +18,8 @@ import (
 // `src/Sonarr.Api.V3/Blocklist/BlocklistResource.cs`.
 //
 // Reduced wire-shape skeleton — populated-row mapping (languages /
-// quality / protocol / indexer / message / episodeIds / series
-// subresource) lands with the paged surface on the Go
-// blocklist.Service (DEFERRED). The customFormats[] field is wired
+// quality / series subresource) lands with the paged surface on the
+// Go blocklist.Service (DEFERRED). The customFormats[] field is wired
 // at the struct level here (J297, Wave 1 calculator wire-through
 // slice 2) so future populated-row mappers can emit the C# wire
 // shape without re-widening; the underlying calculator engine
@@ -33,13 +33,54 @@ import (
 // non-null `List<CustomFormatResource>`. Note: Blocklist carries
 // `customFormats` ONLY (no `customFormatScore` field, unlike
 // HistoryResource).
+//
+// Scalar-field widening (J311) covers four C# fields that are
+// already available on the persisted `blocklist.Entry` row but
+// weren't projected to the wire: EpisodeIDs ([]int — always emit
+// per C# `required List<int>` on v5 / non-nullable on v3); Protocol
+// (DownloadProtocol enum wired as camelCase string per STJson's
+// global `JsonStringEnumConverter(CamelCase)` — "usenet" / "torrent"
+// / "unknown"; always emit, default "unknown" when persisted
+// Protocol is nil/0); Indexer + Message (nullable strings — use
+// omitempty to match `JsonIgnoreCondition.WhenWritingNull` for
+// v5's `string?` semantic; v3 STJson same posture). Languages,
+// Quality, EpisodeIds-as-subresource, and Series subresource remain
+// DEFERRED — each requires either a typed wire DTO (Quality is
+// complex) or a service join (Series).
+//
+// Note: the Go-port carries a `title` field that does NOT exist on
+// either v3 or v5 C# BlocklistResource. Preserved unmodified to
+// avoid a wire-break for any third-party client that already reads
+// it; future contract-replay re-baseline (per C.1.i-full) can
+// decide whether to drop it.
 type BlocklistResource struct {
 	ID            int                    `json:"id"`
 	SeriesID      int                    `json:"seriesId"`
+	EpisodeIDs    []int                  `json:"episodeIds"`
 	Title         string                 `json:"title"`
 	Date          string                 `json:"date"`
 	SourceTitle   string                 `json:"sourceTitle"`
+	Protocol      string                 `json:"protocol"`
+	Indexer       string                 `json:"indexer,omitempty"`
+	Message       string                 `json:"message,omitempty"`
 	CustomFormats []CustomFormatResource `json:"customFormats"`
+}
+
+// BlocklistProtocolName returns the camelCase wire form of a
+// persisted DownloadProtocol value matching C#'s
+// `JsonStringEnumConverter(CamelCase)` projection. Nil or unknown
+// values surface as `"unknown"` (matches C# enum default-zero name
+// under `Enum.GetName(DownloadProtocol.Unknown)`).
+//
+// Exported so cmd/sonarr's blocklistPagedAdapter (the production
+// paged consumer) can share the same mapping rather than duplicate
+// it. The history+queue adapters can reuse it when their paged
+// surfaces start emitting protocol too.
+func BlocklistProtocolName(persistedProtocol *int) string {
+	if persistedProtocol == nil {
+		return "unknown"
+	}
+	return indexers.DownloadProtocol(*persistedProtocol).String()
 }
 
 // BlocklistPagedLister is the read side the handler depends on. The

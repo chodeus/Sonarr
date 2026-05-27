@@ -88,6 +88,110 @@ func TestBlocklistHandler_EmitsCustomFormatsField(t *testing.T) {
 	}
 }
 
+// J311 wire-shape pin: a populated row emits the four newly-wired
+// scalar fields (EpisodeIDs / Protocol / Indexer / Message) with
+// the correct nil-handling per field:
+//   - EpisodeIDs: always emit (matches C# `required List<int>` on v5);
+//     nil decodes back to nil (omitempty NOT set on this field, but the
+//     constructor must default to [] for the empty case — that's the
+//     production-adapter responsibility, verified via host_wiring.go).
+//   - Protocol: always emit (matches C# `DownloadProtocol` non-nullable
+//     enum). Wired as camelCase string per STJson's global
+//     `JsonStringEnumConverter(CamelCase)` — "usenet"/"torrent"/"unknown".
+//   - Indexer / Message: omitempty (matches C# `string?` semantic
+//     under `JsonIgnoreCondition.WhenWritingNull`).
+//
+// 2 rows in the table cover both branches:
+//   - Row 1: populated indexer + message + episodeIds + protocol=torrent.
+//   - Row 2: empty indexer + empty message + nil episodeIds (decoded
+//     back to nil — adapter-allocated empty slice is the production
+//     concern) + protocol=unknown.
+func TestBlocklistHandler_EmitsScalarFieldWidening_J311(t *testing.T) {
+	t.Parallel()
+	svc := &fakeBlocklistLister{
+		records: []BlocklistResource{
+			{ID: 7, SeriesID: 11, EpisodeIDs: []int{101, 102}, SourceTitle: "Show.S01E01-E02", Date: "2026-05-18T12:00:00Z", Protocol: "torrent", Indexer: "Newznab", Message: "rejected by user", CustomFormats: []CustomFormatResource{}},
+			{ID: 8, SeriesID: 11, EpisodeIDs: nil, SourceTitle: "Show.S01E03", Date: "2026-05-18T13:00:00Z", Protocol: "unknown", Indexer: "", Message: "", CustomFormats: []CustomFormatResource{}},
+		},
+		total: 2,
+	}
+	rr := httptest.NewRecorder()
+	BlocklistHandler(svc).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/blocklist", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	body := rr.Body.String()
+	// Row 1 positive substring pins.
+	mustContain := []string{
+		`"episodeIds":[101,102]`,
+		`"protocol":"torrent"`,
+		`"indexer":"Newznab"`,
+		`"message":"rejected by user"`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q; got %s", want, body)
+		}
+	}
+	// Row 2 negative pin: empty Indexer + Message must drop their keys
+	// (omitempty pinned). Use strings.Count to confirm the keys
+	// appear exactly once (row 1 only).
+	if c := strings.Count(body, `"indexer":`); c != 1 {
+		t.Errorf("expected exactly 1 `\"indexer\":` occurrence (row 1 only); got %d in %s", c, body)
+	}
+	if c := strings.Count(body, `"message":`); c != 1 {
+		t.Errorf("expected exactly 1 `\"message\":` occurrence (row 1 only); got %d in %s", c, body)
+	}
+	// Row 2 protocol must still emit (non-nullable; default "unknown").
+	if !strings.Contains(body, `"protocol":"unknown"`) {
+		t.Errorf("body missing row 2 `\"protocol\":\"unknown\"`; got %s", body)
+	}
+	// Decode through to confirm typed shape.
+	var got PagingResource[BlocklistResource]
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Records) != 2 {
+		t.Fatalf("records len: %d", len(got.Records))
+	}
+	if got.Records[0].EpisodeIDs[0] != 101 || got.Records[0].EpisodeIDs[1] != 102 {
+		t.Errorf("row 0 EpisodeIDs: %+v", got.Records[0].EpisodeIDs)
+	}
+	if got.Records[0].Protocol != "torrent" {
+		t.Errorf("row 0 Protocol: %q", got.Records[0].Protocol)
+	}
+	if got.Records[1].EpisodeIDs != nil {
+		t.Errorf("row 1 EpisodeIDs must decode back to nil (no omitempty on field but the test fixture set nil); got %+v", got.Records[1].EpisodeIDs)
+	}
+}
+
+// J311 helper-pin: BlocklistProtocolName maps the persisted
+// `*int` Protocol value back to the camelCase wire string used by
+// the C# DownloadProtocol enum under JsonStringEnumConverter.
+func TestBlocklistProtocolName_Mapping(t *testing.T) {
+	t.Parallel()
+	usenet := 1
+	torrent := 2
+	bogus := 99
+	cases := []struct {
+		name string
+		in   *int
+		want string
+	}{
+		{"nil → unknown (matches C# enum default)", nil, "unknown"},
+		{"usenet (1)", &usenet, "usenet"},
+		{"torrent (2)", &torrent, "torrent"},
+		{"unrecognised int falls through to enum.String() default", &bogus, "unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := BlocklistProtocolName(tc.in); got != tc.want {
+				t.Errorf("BlocklistProtocolName(%v): got %q want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBlocklistHandler_Error(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()

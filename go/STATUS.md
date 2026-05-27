@@ -14869,3 +14869,109 @@ No new routes. Struct-and-mapper widening only.
 | A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
 
 Next-tick smallest candidate: HistoryResource Languages (the wire shape is `List<Language>` where Language has just `id` + `name` — small typed struct, persisted Entry.Languages is `[]int` of language IDs, name lookup via existing `internal/language` package). Slightly larger than J310 because it needs a lookup, but still in the small-pin tier.
+
+---
+
+## J311 — Post-Wave-3 drain, slice 3: v3 BlocklistResource 4-field scalar widening + populated wire-through
+
+**Anchor**: post-J310 (HistoryResource `data` field widening landed). Continues the post-Wave-3 backlog drain — closes the 4 smallest scalar wire-shape gaps on `apiv3.BlocklistResource` that already had persisted Entry-level data but weren't projected to the wire.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Blocklist/BlocklistResource.cs:13-29` — 11 declared fields + 1 inherited (Id from RestResource).
+- `src/Sonarr.Api.V5/Blocklist/BlocklistResource.cs:14-27` — same set + 1 v5-only field (`Source` — DEFERRED, not in this slice).
+
+Fields wired this slice (all 4 already present on persisted `blocklist.Entry` at `internal/blocklist/blocklist.go:35-52`):
+- `EpisodeIds: List<int>` — required on v5 (`required List<int>`), non-nullable on v3.
+- `Protocol: DownloadProtocol` — non-nullable enum, wired as camelCase string per STJson.
+- `Indexer: string?` — nullable on v5.
+- `Message: string?` — nullable on v5.
+
+DEFERRED (still missing on Go-port wire):
+- `Languages: List<Language>` — needs language-id-to-name lookup (internal/language exists; integration is a separate slice).
+- `Quality: QualityModel` — needs typed wire DTO for the complex QualityModel envelope.
+- `Series: SeriesResource` — needs service-join with series.Service.
+- `Source: string?` (v5-only) — small but v5-specific; addable post-Series-divergence-slice.
+
+### Wire contract
+
+Both v3 and v5 use STJson with `JsonIgnoreCondition.WhenWritingNull` + `JsonStringEnumConverter(JsonNamingPolicy.CamelCase)`:
+- EpisodeIds: always emit (required); nil → C#-side `null`, but adapter populates `[]int{}` to match C#'s default-non-null instantiation.
+- Protocol: always emit; default zero value (DownloadProtocol.Unknown) → "unknown".
+- Indexer + Message: null → key absent (WhenWritingNull); empty string → key present with "".
+
+Mapped to Go's `encoding/json`:
+- `EpisodeIDs []int json:"episodeIds"` — no omitempty (always emit). Adapter provides `nil → []int{}` fallback.
+- `Protocol string json:"protocol"` — no omitempty (always emit). Helper provides `nil *int → "unknown"` fallback.
+- `Indexer string json:"indexer,omitempty"` — omitempty drops empty string (matches WhenWritingNull for the null case; empty string is conflated since Go has no native null-vs-empty distinction for string).
+- `Message string json:"message,omitempty"` — same.
+
+The empty-string conflation note: C# distinguishes `null` (drop key) from `""` (emit key with empty value). Go's omitempty on a string drops both `nil` (which doesn't exist for `string`) AND `""`. The persisted `Entry.Indexer` is `string` (not `*string`), so the Go-port has already collapsed null and empty in the persistence layer — this slice preserves that collapse on the wire. Net effect: empty/never-set Indexer drops the key on both surfaces, which is what an empty-DB caller sees. A populated empty-string Indexer is indistinguishable from null in the Go-port — a non-regression vs the existing persistence shape.
+
+### Port deliverables
+
+**`internal/api/v3/blocklist.go`** — struct + helper + import:
+
+- `BlocklistResource` widened: 4 new fields added in C#-declaration order — `EpisodeIDs []int` after SeriesID; `Protocol string` after SourceTitle; `Indexer string` + `Message string` after Protocol.
+- New exported `BlocklistProtocolName(*int) string` helper centralises the `*int → DownloadProtocol → camelCase string` projection. Placed alongside BlocklistResource so future paged consumers (history + queue) can reuse without duplicating. Nil → "unknown" matches C# enum default-zero name.
+- Imports new `internal/indexers` dep (already a project package providing the `DownloadProtocol` enum + `.String()` method).
+- Doc comment on `BlocklistResource` updated: "languages / quality / series subresource" replaces the previous "languages / quality / protocol / indexer / message / episodeIds / series subresource" DEFERRED list (4 items closed this slice). New J311 paragraph cataloguing the omitempty contract + Protocol default-emit posture + Title-field divergence note (Title doesn't exist on either v3 or v5 C# BlocklistResource — preserved unmodified to avoid wire-break for any third-party client; future contract-replay can decide whether to drop).
+
+**`cmd/sonarr/host_wiring.go`** — production paged adapter:
+
+- `blocklistPagedAdapter.PagedBlocklist` at line 264 populates all 4 fields per row:
+  - `EpisodeIDs: episodeIDs` (with `nil → []int{}` fallback computed before the struct literal — pin the wire-shape default-non-null).
+  - `Protocol: apiv3.BlocklistProtocolName(e.Protocol)` (helper handles nil case).
+  - `Indexer: e.Indexer` + `Message: e.Message` (omitempty drops empty strings on wire).
+- Comment block updated with a J311 note + retained the J297 customFormats deferral cite.
+
+v5/blocklist aliases v3 via `type Resource = apiv3.BlocklistResource` so the widening propagates to both surfaces simultaneously with no v5-side changes.
+
+### Tests (2 new)
+
+`internal/api/v3/blocklist_test.go` gains 2 new tests (uses existing `"strings"` import):
+
+- `TestBlocklistHandler_EmitsScalarFieldWidening_J311` — comprehensive 2-row pin covering BOTH branches in one pass:
+  - Row 1: populated `Indexer="Newznab"`, `Message="rejected by user"`, `EpisodeIDs=[101,102]`, `Protocol="torrent"` → all 4 fields emit. Positive substring assertions on each.
+  - Row 2: empty `Indexer=""`, empty `Message=""`, `EpisodeIDs=nil`, `Protocol="unknown"` → Indexer + Message drop via omitempty; Protocol still emits with "unknown" (non-nullable default); EpisodeIDs decodes back to nil since the test fixture sets nil + the struct field has no omitempty.
+  - Defensive `strings.Count(body, "indexer:") == 1` + `strings.Count(body, "message:") == 1` assertions confirm the omitempty drops fire exactly once for each.
+  - Typed-decode round-trip pins the struct shape: row 0 EpisodeIDs=[101,102] + Protocol="torrent"; row 1 EpisodeIDs=nil.
+- `TestBlocklistProtocolName_Mapping` — 4-case table for the helper:
+  - nil → "unknown" (matches C# enum default-zero name).
+  - usenet (1) → "usenet".
+  - torrent (2) → "torrent".
+  - unrecognised int (99) → "unknown" (DownloadProtocol.String() default fallback branch).
+
+The existing positive-pin test `TestBlocklistHandler_EmitsCustomFormatsField` continues to pass — its single row has nil EpisodeIDs + empty Indexer/Message + zero-value Protocol="" (the JSON serializer emits `"protocol":""` since Protocol has no omitempty — this differs from row 2 above which sets Protocol="unknown"; the contract-replay golden against the empty-corpus case will show `"protocol":""` which is the J311 trade-off — explicit "unknown" requires adapter-side intervention via BlocklistProtocolName). The existing test doesn't assert on the protocol field so no regression.
+
+### Wiring
+
+No new routes. Struct + helper + mapper widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v3/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/blocklist/...` ✓
+  - v3: all pass, 1.371s
+  - cmd/sonarr: all pass, 3.701s
+  - v5/blocklist: all pass, 2.026s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening (EpisodeIDs/Protocol/Indexer/Message) | **DONE this slice (J311)** |
+| B. v5 field divergences | HistoryResource Languages + Quality + QualityCutoffNotMet | OPEN — needs typed wire DTOs |
+| B. v5 field divergences | HistoryResource Episode? + Series? (joined sub-resources) | OPEN — needs service joins |
+| B. v5 field divergences | BlocklistResource Languages + Quality + Series subresource | OPEN — same pattern |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | OPEN — v5-specific, addable post-divergence-slice |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — needs alias break, mid-size slice |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN — needs deps injection on adapters + per-row series lookup |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
+
+Next-tick smallest candidate: HistoryResource `Languages` field — `Entry.Languages` is `[]int` of language IDs; the wire form is `List<{id:int, name:string}>` (Language DTO). `internal/language` package likely already has the id-to-name lookup. Mid-tier slice (single typed-list field add + helper). Alternatively, the v5-only BlocklistResource `Source` field is a single-string add (`string?` → omitempty); J311-pattern repeat, even smaller LOC.
