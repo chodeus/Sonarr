@@ -16459,3 +16459,103 @@ No new routes. Struct + doc-comment widening only.
 45 wire-shape fields landed across J309-J327.
 
 Next-tick smallest candidate: EpisodeFileResource v5-additive fields (if any) or the AlternateTitle subresource on Series (Series.AlternateTitles list — v3+v5 both have it).
+
+---
+
+## J328 — Post-Wave-3 drain, slice 20: EpisodeFileResource 5-field scalar widening + populated wire-through
+
+**Anchor**: post-J327 (EpisodeResource 3-field widening landed). Closes the EpisodeFileResource wire-shape gaps versus C# v3+v5. Only nullability annotations differ between the surfaces; field set is identical.
+
+### C# source
+
+- `src/Sonarr.Api.V3/EpisodeFiles/EpisodeFileResource.cs:15-33` — declares Languages (List<Language>), Quality (QualityModel), IndexerFlags (int?), ReleaseType (ReleaseType?), MediaInfo (MediaInfoResource), QualityCutoffNotMet (bool).
+- v5 same shape with `?` nullability annotations on Languages/Quality/MediaInfo etc.
+
+Persisted `episodefiles.File` at `internal/episodefiles/episodefiles.go:43-59` carries:
+- `Languages []int` (id list)
+- `Quality string` (opaque JSON of quality.Model)
+- `IndexerFlags int` (0-default)
+- `ReleaseType int` (0-default)
+
+### Port deliverables
+
+**`internal/api/v3/episodefile.go`** — struct + mapper + import:
+
+- New `"sonarr.tv/sonarr/internal/parser"` import.
+- `EpisodeFileResource` widened with 5 new fields after ReleaseGroup:
+  - `Languages []LanguageRef json:"languages"` — no omitempty; matches C# non-null contract.
+  - `Quality *QualityModelResource json:"quality,omitempty"` — J325 pattern; pointer + omitempty.
+  - `IndexerFlags *int json:"indexerFlags,omitempty"` — pointer matches C# `int?`.
+  - `ReleaseType string json:"releaseType,omitempty"` — camelCase enum.
+  - `QualityCutoffNotMet bool json:"qualityCutoffNotMet,omitempty"` — false-default drops via omitempty.
+- `ToEpisodeFileResource` populates 3 of the 5:
+  - `Languages: ToLanguageRefs(f.Languages)` — empty slice when nil/empty (matches C# default-non-null).
+  - `IndexerFlags: indexerFlagsPtr` — pointer-to-int only when persisted non-zero (0-default → key absent).
+  - `ReleaseType: releaseType` — `CamelCaseEnumName(parser.ReleaseType(f.ReleaseType).String())` when non-Unknown; Unknown → empty → key absent.
+- Quality stays nil — populated mapper needs decode of opaque JSON string into quality.Model first.
+- QualityCutoffNotMet stays false — upgradable-spec service-port deferred (same path as HistoryResource.QualityCutoffNotMet at J312).
+
+Doc comments + inline notes catalogue each field's wire contract + the per-field deferral rationale.
+
+v5/episodefile + v5/wanted + v5/calendar + v5/episode aliases all propagate the widening (EpisodeFileResource is the carrier subresource shared by multiple v5 surfaces).
+
+### Tests (1 new)
+
+`internal/api/v3/episodefile_test.go`:
+
+- `TestEpisodeFileListHandler_EmitsScalarWidening_J328` — 2-row pin via the production EpisodeFileListHandler path:
+  - Row 1: populated `Languages:[1,2], IndexerFlags:42, ReleaseType:3` (SeasonPack) → 3 positive substring assertions:
+    - `"languages":[{"id":1,"name":"English"},{"id":2,"name":"French"}]` (typed wire shape via J314 helper).
+    - `"indexerFlags":42`.
+    - `"releaseType":"seasonPack"` (camelCase enum form).
+  - Row 2: defaults → `"languages":[]` (J314 non-null default emit); IndexerFlags + ReleaseType drop via omitempty; defensive `strings.Count == 1` for each key confirming row 1 only.
+  - Negative pin: Quality + QualityCutoffNotMet remain absent from both rows (deferred fields stay omitempty-dropped).
+
+### Wiring
+
+No new routes. Struct + mapper + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/episodefile/...` ✓
+  - v3: all pass, 1.704s
+  - cmd/sonarr: all pass, 4.272s
+  - v5/episodefile: all pass, 2.590s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | DONE (J322) |
+| B. v5 field divergences | QueueResource StatusMessages typed list | DONE (J323) |
+| B. v5 field divergences | QueueResource v5 EpisodeIDs + SeasonNumbers list-form | DONE (J324) |
+| B. v5 field divergences | Quality typed-DTO + History/Blocklist/Queue field widening | DONE (J325) |
+| B. v5 field divergences | SeriesResource v5-additive 4-field widening | DONE (J326) |
+| B. v5 field divergences | EpisodeResource 3-field widening | DONE (J327) |
+| B. v5 field divergences | EpisodeFileResource 5-field scalar widening | **DONE this slice (J328)** |
+| B. v5 field divergences | EpisodeFileResource MediaInfo subresource | OPEN — typed DTO with ~12 ffprobe fields |
+| B. v5 field divergences | SeriesResource v5 LanguageProfileId removal | OPEN — needs v5-specific wrapper or alias break |
+| B. v5 field divergences | Quality field widening on ManualImport + Release | OPEN — body-decode shape change |
+| B. v5 field divergences | Languages typed-list DTO on ManualImport + Release | OPEN — same body-decode concern |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+50 wire-shape fields landed across J309-J328. **EpisodeFileResource scalar widening closed.**
+
+Next-tick smallest candidate: EpisodeFileResource MediaInfo typed subresource (mid-size — ~12 ffprobe DTO fields + the wrapper), or AlternateTitle subresource on SeriesResource (smaller — 5 fields per entry).

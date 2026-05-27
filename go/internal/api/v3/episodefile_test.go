@@ -251,6 +251,59 @@ func TestEpisodeFileListHandler_SeriesIDBranch(t *testing.T) {
 	}
 }
 
+// J328 wire-shape pin for EpisodeFileResource scalar widening
+// (Languages + Quality + IndexerFlags + ReleaseType +
+// QualityCutoffNotMet). Tests via the production EpisodeFileListHandler
+// path (covers ToEpisodeFileResource adapter behavior).
+//
+// 2 rows: row 1 populated with Languages=[1,2], IndexerFlags=42,
+// ReleaseType=3 (SeasonPack); row 2 defaults (no IndexerFlags, no
+// ReleaseType set → both omitempty drop, Languages emits `[]`).
+func TestEpisodeFileListHandler_EmitsScalarWidening_J328(t *testing.T) {
+	t.Parallel()
+	svc := &fakeEpisodeFileReader{bySeries: map[int][]episodefiles.File{
+		7: {
+			{ID: 1, SeriesID: 7, RelativePath: "a.mkv", Languages: []int{1, 2}, IndexerFlags: 42, ReleaseType: 3},
+			{ID: 2, SeriesID: 7, RelativePath: "b.mkv"},
+		},
+	}}
+	checker := &stubSeriesExistsChecker{known: map[int]bool{7: true}}
+	rr := httptest.NewRecorder()
+	EpisodeFileListHandler(svc, checker).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episodefile?seriesId=7", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	body := rr.Body.String()
+	// Row 1 positive substring assertions.
+	mustContain := []string{
+		`"languages":[{"id":1,"name":"English"},{"id":2,"name":"French"}]`,
+		`"indexerFlags":42`,
+		`"releaseType":"seasonPack"`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("row 1 missing %q in %s", want, body)
+		}
+	}
+	// Row 2: defaults — Languages emits empty `[]`, IndexerFlags omits, ReleaseType omits.
+	if !strings.Contains(body, `"languages":[]`) {
+		t.Errorf("row 2 default Languages must emit `\"languages\":[]`; got %s", body)
+	}
+	// indexerFlags + releaseType each appear exactly once (row 1 only).
+	for _, key := range []string{`"indexerFlags":`, `"releaseType":`} {
+		if c := strings.Count(body, key); c != 1 {
+			t.Errorf("expected exactly 1 %q occurrence (row 1 only); got %d", key, c)
+		}
+	}
+	// Quality + QualityCutoffNotMet remain DEFERRED — neither key should appear.
+	if strings.Contains(body, `"quality":`) {
+		t.Errorf("Quality must remain nil today; got %s", body)
+	}
+	if strings.Contains(body, `"qualityCutoffNotMet":`) {
+		t.Errorf("QualityCutoffNotMet false default must omit; got %s", body)
+	}
+}
+
 // J298 wire-shape pin: a populated row must emit `customFormats:[]`
 // (non-nil empty) + `customFormatScore:0` — matches the C# v3
 // EpisodeFileResource mapper at `EpisodeFileResource.cs:46-66`

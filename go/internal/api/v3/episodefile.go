@@ -11,6 +11,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/httperr"
+	"sonarr.tv/sonarr/internal/parser"
 )
 
 // EpisodeFileResource is the JSON shape produced by
@@ -61,17 +62,22 @@ import (
 // (their EpisodeFile subresource picks it up via the shared
 // projection).
 type EpisodeFileResource struct {
-	ID                int                    `json:"id"`
-	SeriesID          int                    `json:"seriesId"`
-	SeasonNumber      int                    `json:"seasonNumber"`
-	RelativePath      string                 `json:"relativePath"`
-	Path              string                 `json:"path"`
-	Size              int64                  `json:"size"`
-	DateAdded         time.Time              `json:"dateAdded"`
-	SceneName         string                 `json:"sceneName,omitempty"`
-	ReleaseGroup      string                 `json:"releaseGroup,omitempty"`
-	CustomFormats     []CustomFormatResource `json:"customFormats"`
-	CustomFormatScore int                    `json:"customFormatScore"`
+	ID                  int                    `json:"id"`
+	SeriesID            int                    `json:"seriesId"`
+	SeasonNumber        int                    `json:"seasonNumber"`
+	RelativePath        string                 `json:"relativePath"`
+	Path                string                 `json:"path"`
+	Size                int64                  `json:"size"`
+	DateAdded           time.Time              `json:"dateAdded"`
+	SceneName           string                 `json:"sceneName,omitempty"`
+	ReleaseGroup        string                 `json:"releaseGroup,omitempty"`
+	Languages           []LanguageRef          `json:"languages"`
+	Quality             *QualityModelResource  `json:"quality,omitempty"`
+	IndexerFlags        *int                   `json:"indexerFlags,omitempty"`
+	ReleaseType         string                 `json:"releaseType,omitempty"`
+	QualityCutoffNotMet bool                   `json:"qualityCutoffNotMet,omitempty"`
+	CustomFormats       []CustomFormatResource `json:"customFormats"`
+	CustomFormatScore   int                    `json:"customFormatScore"`
 }
 
 // EpisodeFileReader is the read surface for GET /api/v3/episodefile.
@@ -488,6 +494,26 @@ func ToEpisodeFileResource(f episodefiles.File, seriesPath string) EpisodeFileRe
 	if seriesPath != "" && path != "" {
 		path = seriesPath + "/" + path
 	}
+	// J328 IndexerFlags: pointer-to-int matches C# `int? IndexerFlags`
+	// nullable wire under WhenWritingNull. Persistence stores int with
+	// 0 default; emit only when non-zero (matches the C# null-when-
+	// default semantic — clients distinguishing 0-flags from no-flags
+	// reported isn't a real use case).
+	var indexerFlagsPtr *int
+	if f.IndexerFlags != 0 {
+		v := f.IndexerFlags
+		indexerFlagsPtr = &v
+	}
+	// J328 ReleaseType: camelCase enum name when non-Unknown. Persistence
+	// stores int with 0 = Unknown default; the camelCase form (`unknown`,
+	// `singleEpisode`, `multiEpisode`, `seasonPack`) matches C#
+	// JsonStringEnumConverter(CamelCase) on the ReleaseType enum.
+	// omitempty drops empty string so Unknown → key absent (matches C#
+	// `ReleaseType?` nullable null under WhenWritingNull).
+	releaseType := ""
+	if f.ReleaseType != 0 {
+		releaseType = CamelCaseEnumName(parser.ReleaseType(f.ReleaseType).String())
+	}
 	return EpisodeFileResource{
 		ID:            f.ID,
 		SeriesID:      f.SeriesID,
@@ -498,7 +524,19 @@ func ToEpisodeFileResource(f episodefiles.File, seriesPath string) EpisodeFileRe
 		DateAdded:     f.DateAdded,
 		SceneName:     f.SceneName,
 		ReleaseGroup:  f.ReleaseGroup,
+		Languages:     ToLanguageRefs(f.Languages),
+		IndexerFlags:  indexerFlagsPtr,
+		ReleaseType:   releaseType,
 		CustomFormats: []CustomFormatResource{},
+		// Quality (*QualityModelResource): populated-row mapper needs
+		// to decode the persisted f.Quality opaque JSON string into a
+		// quality.Model first, then call ToQualityModelResource. The
+		// J298 wire-through pinned the field; J325 typed-DTO pinned
+		// the shape; this slice leaves it nil at the projection until
+		// the decode step lands.
+		// QualityCutoffNotMet: computed via upgradable-spec service
+		// — DEFERRED (same path as HistoryResource.QualityCutoffNotMet
+		// per J312). false default + omitempty drops the key today.
 		// CustomFormatScore: 0 — populated-row mapper landing
 		// alongside the calculator wire-through (J298+).
 	}
