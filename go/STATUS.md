@@ -13502,3 +13502,45 @@ Pattern observation: returns to the v5util status-wrapper template after 3 conse
 - Episodes/EpisodeController (85 LOC)
 - ImportLists/ImportListExclusionController (88 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J290 — Wave 3 thirty-ninth slice: v5 QueueDetails family port (77 LOC C# source)
+
+Pure path-alias slice. Same J224/J280/J284 template. v3 already exposes /api/v3/queue/details with byte-identical wire shape (200 + `[]` at the deferred-empty level). v5 introduces a query-param shift that's invisible at the stub level.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :5103-5157):
+
+| endpoint                            | v5 status | v3 Go-port                              | strategy |
+|-------------------------------------|-----------|------------------------------------------|----------|
+| GET /api/v5/queue/details           | 200 / 400 | 200 + `[]` (apiv3.QueueDetailsHandler)   | alias    |
+
+**Query-param shift** — invisible at deferred-stub level:
+
+| v3 wire flag        | v5 wire flag                                       |
+|---------------------|-----------------------------------------------------|
+| `?includeSeries=true`  | `?includeSubresources=series`                   |
+| `?includeEpisode=true` | `?includeSubresources=episodes`                 |
+
+v5 collapses the two v3 bools into a single enum-array query param. v3 Go-port handler ignores both bools at the deferred state (the projection chain isn't ported yet); v5 handler ignores `includeSubresources` for the same reason. When the populated-row projection lands, both surfaces parse their respective wire params into the same internal include-bitmap — service-impl widens for both.
+
+**Resource shape** — byte-identical alias to v3 QueueResource (`additionalProperties: false` on both openapi specs).
+
+**SignalR**: v5 controller declares `IHandle<QueueUpdatedEvent>` + `IHandle<PendingReleasesUpdatedEvent>` with Sync broadcasts. v3 Go-port wires equivalent broadcasts via the bus subscription in cmd/sonarr/signalr_wiring.go — carries through unchanged via the shared backing emitter channel.
+
+**Slice scope** — 148 lines (48 source + 100 test) + 1 import + 1 route:
+
+- New `internal/api/v5/queuedetails/queuedetails.go` (48 LOC) — 2 type aliases (Resource = apiv3.QueueResource, Lister = apiv3.QueueDetailsLister) + 1 variable alias (GetHandler = apiv3.QueueDetailsHandler). NO new handler code.
+- New `internal/api/v5/queuedetails/queuedetails_test.go` (100 LOC) — 7 tests: GetHandler-empty-returns-array (canonical deferred-stub pin), GetHandler-with-seriesID-filter-passes-through, GetHandler-with-episodeIDs-filter-passes-through (multi-value query), GetHandler-invalid-seriesID-400 (-1 rejected), GetHandler-invalid-episodeID-400 ("abc"), GetHandler-lister-error-500 (passthrough), GetHandler-with-includeSubresources-accepted-but-ignored (canonical v5-only-param no-op pin — sends `?includeSubresources=series&includeSubresources=episodes` and asserts response is still `[]`), Resource-type-alias compile-time pin.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`queuedetailsv5`) + 1 new route alongside the existing /api/v3/queue/details route. Re-uses emptyQueueDetailsLister stub adapter at line 225 — same v3-side service-fake.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/queuedetails/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/queuedetails/... ./cmd/sonarr/...` ✓ (7 v5/queuedetails tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 42/~50 → 43/~50.
+
+Pattern observation: a clean instance of the "query-param-shift invisible at stub level" sub-pattern — v5 introduces a single enum-array param that REPLACES two v3 bools. At the deferred-stub level both shapes are no-ops; the eventual projection lands a shared include-bitmap behind both wire conventions. Test `TestGetHandler_WithIncludeSubresources_AccepetedButIgnored` pins the contract.
+
+### Next Wave 3 candidates ascending
+
+- Queue/QueueStatusController (80 LOC)
+- Episodes/EpisodeController (85 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Release/ReleasePushController (120 LOC)

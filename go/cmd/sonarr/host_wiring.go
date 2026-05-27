@@ -29,6 +29,7 @@ import (
 	qualitydefinitionv5 "sonarr.tv/sonarr/internal/api/v5/qualitydefinition"
 	qualityprofilev5 "sonarr.tv/sonarr/internal/api/v5/qualityprofile"
 	queueactionv5 "sonarr.tv/sonarr/internal/api/v5/queueaction"
+	queuedetailsv5 "sonarr.tv/sonarr/internal/api/v5/queuedetails"
 	renameepisodev5 "sonarr.tv/sonarr/internal/api/v5/renameepisode"
 	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
 	seriesfolderv5 "sonarr.tv/sonarr/internal/api/v5/seriesfolder"
@@ -1377,6 +1378,15 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// semantics on /bulk inherited from v3 verbatim.
 		{Method: "POST", Path: "/api/v5/queue/grab/{id}", Handler: queueactionv5.GrabHandler(pendingReleasesRepo, seriesSvc, processDownloadDecisions)},
 		{Method: "POST", Path: "/api/v5/queue/grab/bulk", Handler: queueactionv5.GrabBulkHandler(pendingReleasesRepo, seriesSvc, processDownloadDecisions)},
+		// J290 — v5 QueueDetails endpoint family (1 endpoint; 77 LOC
+		// C# — QueueDetailsController). Pure path-alias slice. v3
+		// emits the same 200+`[]` stub at /api/v3/queue/details (the
+		// queue + pending-release projection chain is DEFERRED on
+		// both surfaces per `internal/api/v3/queue.go:46-57`). v5-only
+		// `includeSubresources` query param accepted but ignored at
+		// the stub level (same as v3's includeSeries/includeEpisode
+		// bools). Re-uses emptyQueueDetailsLister stub adapter.
+		{Method: "GET", Path: "/api/v5/queue/details", Handler: queuedetailsv5.GetHandler(emptyQueueDetailsLister{})},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},
