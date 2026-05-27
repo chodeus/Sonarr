@@ -76,6 +76,7 @@ type EpisodeFileResource struct {
 	IndexerFlags        *int                   `json:"indexerFlags,omitempty"`
 	ReleaseType         string                 `json:"releaseType,omitempty"`
 	QualityCutoffNotMet bool                   `json:"qualityCutoffNotMet,omitempty"`
+	MediaInfo           *MediaInfoResource     `json:"mediaInfo,omitempty"`
 	CustomFormats       []CustomFormatResource `json:"customFormats"`
 	CustomFormatScore   int                    `json:"customFormatScore"`
 }

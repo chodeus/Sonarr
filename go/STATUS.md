@@ -16654,3 +16654,104 @@ No new routes. Struct + new DTO + doc-comment widening only.
 51 wire-shape fields landed across J309-J329. **SeriesResource v3/v5 wire surface DRAINED** (only the v5-specific LanguageProfileId removal remains — needs alias break, deliberate divergence).
 
 Next-tick smallest candidate: EpisodeFileResource MediaInfo typed subresource (~12 ffprobe DTO fields + wrapper — mid-size). Or pivot to populated-row mapper service-port work on history/blocklist (mid-large slice).
+
+---
+
+## J330 — Post-Wave-3 drain, slice 22: MediaInfo typed-DTO cluster + EpisodeFileResource.MediaInfo field
+
+**Anchor**: post-J329 (SeriesResource AlternateTitles + DTO landed). Closes the EpisodeFileResource MediaInfo wire-shape gap with a 3-DTO cluster handling the v3/v5 union of two distinct projections.
+
+### C# source
+
+- `src/Sonarr.Api.V3/EpisodeFiles/MediaInfoResource.cs:9-23` — v3 flat projection: 5 audio summary fields (AudioBitrate/Channels/Codec/Languages/StreamCount) + 9 video/runtime fields + slash-joined Subtitles string.
+- `src/Sonarr.Api.V5/EpisodeFiles/MediaInfoResource.cs:6-19` — v5 typed-stream projection: drops v3 flat audio+subtitles, adds AudioStreams (List<MediaInfoAudioStreamResource>?) + SubtitleStreams (List<MediaInfoSubtitleStreamResource>?).
+- `src/Sonarr.Api.V5/EpisodeFiles/MediaInfoStreamResource.cs:10-26` — typed stream DTOs (8 audio fields + 5 subtitle fields).
+
+### Wire contract — union approach
+
+The v3 and v5 wire shapes SHAPE-DIVERGE (not just add fields — v5 actively REMOVES some v3 fields). The Go-port emits the UNION of both shapes on the shared apiv3.MediaInfoResource type. Every field uses omitempty so the v3-only and v5-only subsets drop their keys when only the populated-mapper allocates the relevant fields for each surface. Deliberate additive divergence on each surface:
+
+- v3 clients see extra `audioStreams` / `subtitleStreams` keys when the populated-mapper allocates them (in practice the v3 populated path would skip those fields; today the field stays nil so no leakage).
+- v5 clients see extra `audioBitrate` / `audioCodec` / etc. keys when the populated-mapper allocates them (similar — v5 path would skip).
+
+Both v3 and v5 ignore unknown JSON keys so this is harmless. The pragmatic alternative (breaking the EpisodeFileResource alias on v5 with a distinct v5 MediaInfo type) costs ~80 LOC + duplicates the per-DTO definitions for no semantic gain.
+
+### Port deliverables
+
+**`internal/api/v3/mediainfo_resource.go`** — new file (~110 LOC):
+
+- `MediaInfoResource` — 17 fields in the union:
+  - 5 v3-flat audio (`AudioBitrate int64`, `AudioChannels float64`, `AudioCodec string`, `AudioLanguages string`, `AudioStreamCount int`).
+  - 9 shared video/runtime (`VideoBitDepth int`, `VideoBitrate int64`, `VideoCodec string`, `VideoFps float64`, `VideoDynamicRange string`, `VideoDynamicRangeType string`, `Resolution string`, `RunTime string`, `ScanType string`).
+  - 1 v3-flat subtitles (`Subtitles string`).
+  - 2 v5-typed lists (`AudioStreams *[]MediaInfoAudioStreamResource`, `SubtitleStreams *[]MediaInfoSubtitleStreamResource` — pointer-to-slice 3-state per J309).
+  - All omitempty.
+- `MediaInfoAudioStreamResource` — 8 fields (Language/Codec/CodecID/Profile/Bitrate/Channels/ChannelPositions/Title). Channels is float64 (matches C# `decimal` for fractional surround layouts like 5.1).
+- `MediaInfoSubtitleStreamResource` — 5 fields (Language/Format/Title/Forced */bool/HearingImpaired */bool). Pointer-to-bool matches C# `bool?` precisely.
+
+**`internal/api/v3/episodefile.go`** — single field add:
+
+- `EpisodeFileResource.MediaInfo *MediaInfoResource json:"mediaInfo,omitempty"` after QualityCutoffNotMet.
+
+Population is gated on the populated-row episodefile mapper — needs to decode the persisted `mediainfo.Model` (internal/mediainfo/mediainfo.go:187 — the full 16-field rich blob with audio/subtitle stream slices) into both projections at projection time. Today the field stays nil and omitempty drops the key.
+
+v5/episodefile + v5/wanted + v5/calendar + v5/episode aliases all propagate the widening.
+
+### Tests (3 new in mediainfo_resource_test.go)
+
+- `TestMediaInfoResource_UnionWireShape_J330` — 3-branch pin:
+  - Zero-value MediaInfoResource → marshal to `{}` (all omitempty drops).
+  - v3-flat populated → 13 must-have substrings (all 5 audio + 9 video/runtime + Subtitles).
+  - v5-typed populated → 8 must-have substrings (audio/subtitle stream key-openers + nested per-stream fields). Defensive negative pin: zero v3-flat field leakage. Defensive nullable-pointer pin: `nil Forced` drops; `&true HearingImpaired` emits.
+- `TestMediaInfoResource_AudioStreamsEmptySlice_J330` — pointer-to-slice 3-state pin (non-nil empty → emits `[]`).
+- `TestEpisodeFileResource_MediaInfoField_J330` — carrier pin (nil MediaInfo → omit; populated → emit nested envelope).
+
+### Wiring
+
+No new routes. Struct + new file + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/episodefile/...` ✓
+  - v3: all pass, 1.706s
+  - cmd/sonarr: all pass, 4.287s
+  - v5/episodefile: all pass, 2.616s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | DONE (J322) |
+| B. v5 field divergences | QueueResource StatusMessages typed list | DONE (J323) |
+| B. v5 field divergences | QueueResource v5 EpisodeIDs + SeasonNumbers list-form | DONE (J324) |
+| B. v5 field divergences | Quality typed-DTO + History/Blocklist/Queue field widening | DONE (J325) |
+| B. v5 field divergences | SeriesResource v5-additive 4-field widening | DONE (J326) |
+| B. v5 field divergences | EpisodeResource 3-field widening | DONE (J327) |
+| B. v5 field divergences | EpisodeFileResource 5-field scalar widening | DONE (J328) |
+| B. v5 field divergences | SeriesResource AlternateTitles + AlternateTitleResource typed DTO | DONE (J329) |
+| B. v5 field divergences | MediaInfo typed-DTO + EpisodeFileResource.MediaInfo field | **DONE this slice (J330)** |
+| B. v5 field divergences | SeriesResource v5 LanguageProfileId removal | OPEN — needs v5-specific wrapper or alias break |
+| B. v5 field divergences | Quality field widening on ManualImport + Release | OPEN — body-decode shape change |
+| B. v5 field divergences | Languages typed-list DTO on ManualImport + Release | OPEN — same body-decode concern |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+54 wire-shape fields landed across J309-J330. **EpisodeFileResource wire surface DRAINED** including the MediaInfo typed subresource.
+
+Next-tick smallest candidate: SeriesResource v5 LanguageProfileId removal (alias break with v5-specific wrapper that strips the field — small but a different pattern from prior J-slices). Or ManualImport/Release Languages typed-list widening (body-decode shape change is the main wrinkle). Or pivot to populated-row mapper service-port work (mid-large slice on history/blocklist).
