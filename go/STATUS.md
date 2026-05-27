@@ -16355,3 +16355,107 @@ No new routes. Struct + mapper + doc-comment widening only.
 42 wire-shape fields landed across J309-J326. **SeriesResource scalar v5-additive cluster closed.** Remaining v5/v3 divergence on SeriesResource is the `LanguageProfileId` field (v3 emits `=>1` hard-coded; v5 strips it entirely) — requires a v5-specific projection that omits the field, which means either breaking the alias or adding a v5 wrapper.
 
 Next-tick candidate: SeasonResource v5 surface additions (J309 already added Statistics + Images pointer pin; remaining: integrate AlternateTitle subresource on Series). Or pivot to a smaller v5 widening — the v5 EpisodeResource has additive fields too. Or start the populated-row mapper service-port work for history/blocklist.
+
+---
+
+## J327 — Post-Wave-3 drain, slice 19: EpisodeResource 3-field widening (EndTime + GrabDate + Grabbed)
+
+**Anchor**: post-J326 (SeriesResource v5-additive 4-field widening landed). Continues the carrier-resource sweep with EpisodeResource — 3 missing pointer fields that surface across all 3 v5-aliasing surfaces (episode + calendar + wanted).
+
+### C# source
+
+- `src/Sonarr.Api.V5/Episodes/EpisodeResource.cs:30` — `DateTime? EndTime` (v5-only; computed = airDateUtc + runtime).
+- `src/Sonarr.Api.V5/Episodes/EpisodeResource.cs:31` — `DateTime? GrabDate` (v5-only; set by grab-event handler).
+- `src/Sonarr.Api.V3/Episodes/EpisodeResource.cs:41` + `src/Sonarr.Api.V5/Episodes/EpisodeResource.cs:40` — `bool Grabbed` with `[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]` (shared v3+v5).
+
+EndTime + GrabDate are v5-additive; Grabbed is shared but the Go-port currently lacks it (pre-existing gap).
+
+### Wire contract
+
+C# under STJson:
+- nullable `DateTime?` → null drops key (WhenWritingNull); non-null emits ISO-8601.
+- `bool` with `WhenWritingDefault` → false drops key; true emits.
+
+Go-port mapping:
+- `EndTime *time.Time json:"endTime,omitempty"` — pointer nil drops; non-nil emits RFC3339.
+- `GrabDate *time.Time json:"grabDate,omitempty"` — same.
+- `Grabbed *bool json:"grabbed,omitempty"` — pointer nil drops; pointer-to-true emits `true`.
+
+Pointer + omitempty matches WhenWritingDefault precisely (nil ≡ default-suppressed).
+
+### Persistence-gap deferral
+
+The Go-port persisted Episode model (`internal/episodes/episodes.go:36-70`) doesn't carry EndTime (computed value in C#), GrabDate (set by grab event), or Grabbed (event-derived flag). The populated-mapper port will populate the pointers when those C# Episode model fields land in the persistence layer. omitempty drops all 3 keys today.
+
+### Port deliverables
+
+**`internal/api/v3/episode.go`** — struct + doc-comment:
+
+- `EpisodeResource` widened with 3 new fields at the end:
+  - `EndTime *time.Time json:"endTime,omitempty"`.
+  - `GrabDate *time.Time json:"grabDate,omitempty"`.
+  - `Grabbed *bool json:"grabbed,omitempty"`.
+- Doc comment extended with a J327 paragraph cataloguing each field + the C# computation/event-handler source + the persistence-gap defer note.
+
+No emit-site mapper updates required — `ToEpisodeResource` doesn't populate the new fields today; future populated mapper allocates pointers.
+
+v5/episode + v5/calendar + v5/wanted aliases v3 so the widening propagates to all 6 surfaces (3 v3 + 3 v5) simultaneously.
+
+### Tests (1 new)
+
+`internal/api/v3/episode_test.go` (+`"time"` import):
+
+- `TestEpisodeResource_NewPointerFields_J327` — 2-row pin covering BOTH branches:
+  - Row 1: nil pointers (today's default) → 3 negative omitempty assertions (`!strings.Contains(body, "endTime:")` and same for grabDate + grabbed).
+  - Row 2: populated `EndTime=&when, GrabDate=&when, Grabbed=&true` → 3 positive substring assertions on the pinned `2026-01-02T03:04:05Z` timestamps + `"grabbed":true`.
+
+Existing positive-pin tests (`TestEpisodeListHandler_PopulatedShape`, etc.) continue to pass — their fixtures have nil pointers, all dropped by omitempty.
+
+### Wiring
+
+No new routes. Struct + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/episode/... ./internal/api/v5/calendar/... ./internal/api/v5/wanted/...` ✓
+  - v3: all pass, 3.563s
+  - cmd/sonarr: all pass, 4.773s
+  - v5/episode: all pass, 1.591s
+  - v5/calendar: all pass, 2.062s
+  - v5/wanted: all pass, 3.004s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | DONE (J322) |
+| B. v5 field divergences | QueueResource StatusMessages typed list | DONE (J323) |
+| B. v5 field divergences | QueueResource v5 EpisodeIDs + SeasonNumbers list-form | DONE (J324) |
+| B. v5 field divergences | Quality typed-DTO + History/Blocklist/Queue field widening | DONE (J325) |
+| B. v5 field divergences | SeriesResource v5-additive 4-field widening | DONE (J326) |
+| B. v5 field divergences | EpisodeResource 3-field widening (EndTime + GrabDate + Grabbed) | **DONE this slice (J327)** |
+| B. v5 field divergences | SeriesResource v5 LanguageProfileId removal | OPEN — needs v5-specific wrapper or alias break |
+| B. v5 field divergences | Quality field widening on ManualImportReprocessItem + ReleaseResource | OPEN — body-decode shape change |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem + ReleaseResource | OPEN — same body-decode concern |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+45 wire-shape fields landed across J309-J327.
+
+Next-tick smallest candidate: EpisodeFileResource v5-additive fields (if any) or the AlternateTitle subresource on Series (Series.AlternateTitles list — v3+v5 both have it).

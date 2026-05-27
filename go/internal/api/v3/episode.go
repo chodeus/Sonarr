@@ -30,6 +30,18 @@ import (
 // DEFERRED (populated-row only): series (full SeriesResource),
 // episodeFile (EpisodeFileResource), images ([]MediaCover),
 // finaleType (computed from analytics).
+//
+// J327 widening: 3 new pointer fields — EndTime + GrabDate (both
+// v5-additive `DateTime?` at v5 EpisodeResource.cs:30-31) +
+// Grabbed (both v3+v5 — `bool` with `[JsonIgnore(Condition =
+// JsonIgnoreCondition.WhenWritingDefault)]` at v3 :41 / v5 :40,
+// equivalent to Go `*bool` + omitempty). All 3 use omitempty:
+// nil/empty drops the key. The Go-port persisted Episode model
+// (internal/episodes/episodes.go:36-70) doesn't carry EndTime
+// (computed = airDateUtc + runtime in C#) or GrabDate (set by
+// the grab-event handler when an episode is grabbed). Both stay
+// nil today; the populated-mapper port will allocate when those
+// computations land.
 type EpisodeResource struct {
 	ID                         int        `json:"id"`
 	SeriesID                   int        `json:"seriesId"`
@@ -51,6 +63,9 @@ type EpisodeResource struct {
 	SceneEpisodeNumber         *int       `json:"sceneEpisodeNumber,omitempty"`
 	SceneSeasonNumber          *int       `json:"sceneSeasonNumber,omitempty"`
 	UnverifiedSceneNumbering   bool       `json:"unverifiedSceneNumbering"`
+	EndTime                    *time.Time `json:"endTime,omitempty"`
+	GrabDate                   *time.Time `json:"grabDate,omitempty"`
+	Grabbed                    *bool      `json:"grabbed,omitempty"`
 }
 
 // EpisodeBySeriesLister narrows the read surface to the

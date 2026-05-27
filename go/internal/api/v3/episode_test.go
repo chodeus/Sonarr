@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"sonarr.tv/sonarr/internal/episodes"
 )
@@ -69,6 +70,48 @@ func TestEpisodeListHandler_PopulatedShape(t *testing.T) {
 	} {
 		if !contains(body, want) {
 			t.Errorf("body missing %s: %s", want, body)
+		}
+	}
+}
+
+// J327 wire-shape pin for the 3 new pointer fields on EpisodeResource
+// (EndTime + GrabDate + Grabbed). All omitempty pointers: nil drops
+// the key; populated emits the value. ToEpisodeResource doesn't
+// populate them yet (persisted Episode model has no fields backing
+// them — the populated-mapper port will allocate when the C# Episode
+// model fields land), so the test validates via direct struct
+// construction.
+func TestEpisodeResource_NewPointerFields_J327(t *testing.T) {
+	t.Parallel()
+	// Branch 1: nil pointers (default state today) → omitempty drops all 3 keys.
+	nilCase := EpisodeResource{ID: 1, SeriesID: 42, SeasonNumber: 1, EpisodeNumber: 1, Title: "Pilot"}
+	buf, err := json.Marshal(nilCase)
+	if err != nil {
+		t.Fatalf("marshal nil: %v", err)
+	}
+	got := string(buf)
+	for _, want := range []string{`"endTime":`, `"grabDate":`, `"grabbed":`} {
+		if strings.Contains(got, want) {
+			t.Errorf("nil pointer must omit %q; got %s", want, got)
+		}
+	}
+	// Branch 2: populated → all 3 fields emit.
+	when := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	grabbed := true
+	populated := EpisodeResource{ID: 2, SeriesID: 42, SeasonNumber: 1, EpisodeNumber: 2, EndTime: &when, GrabDate: &when, Grabbed: &grabbed}
+	buf2, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated: %v", err)
+	}
+	got2 := string(buf2)
+	mustContain := []string{
+		`"endTime":"2026-01-02T03:04:05Z"`,
+		`"grabDate":"2026-01-02T03:04:05Z"`,
+		`"grabbed":true`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got2, want) {
+			t.Errorf("populated missing %q in %s", want, got2)
 		}
 	}
 }
