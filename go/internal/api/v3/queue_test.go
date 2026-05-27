@@ -492,6 +492,56 @@ func TestQueueResource_StatusMessagesWidening_J323(t *testing.T) {
 	}
 }
 
+// J324 wire-shape pin for v5-additive list-form widening on
+// QueueResource (EpisodeIDs + SeasonNumbers — both pointer-to-
+// []int with omitempty per J309 pointer-to-slice 3-state).
+//
+// Test covers all 3 branches: nil → key absent; non-nil empty →
+// `[]`; populated → `[N,N]`.
+func TestQueueResource_EpisodeIdsSeasonNumbersWidening_J324(t *testing.T) {
+	t.Parallel()
+	// Branch 1: nil pointers → omitempty drops both keys.
+	nilCase := QueueResource{ID: 1, Title: "demo"}
+	buf, err := json.Marshal(nilCase)
+	if err != nil {
+		t.Fatalf("marshal nil: %v", err)
+	}
+	got := string(buf)
+	for _, want := range []string{`"episodeIds":`, `"seasonNumbers":`} {
+		if strings.Contains(got, want) {
+			t.Errorf("nil pointer must omit %q; got %s", want, got)
+		}
+	}
+	// Branch 2: explicit empty slices → emit `[]`.
+	emptyIDs := []int{}
+	emptyNums := []int{}
+	emptyCase := QueueResource{ID: 2, Title: "demo", EpisodeIDs: &emptyIDs, SeasonNumbers: &emptyNums}
+	buf2, err := json.Marshal(emptyCase)
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	got2 := string(buf2)
+	for _, want := range []string{`"episodeIds":[]`, `"seasonNumbers":[]`} {
+		if !strings.Contains(got2, want) {
+			t.Errorf("empty non-nil slice must emit %q; got %s", want, got2)
+		}
+	}
+	// Branch 3: populated.
+	ids := []int{101, 102}
+	nums := []int{1, 2}
+	populated := QueueResource{ID: 3, Title: "demo", EpisodeIDs: &ids, SeasonNumbers: &nums}
+	buf3, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated: %v", err)
+	}
+	got3 := string(buf3)
+	for _, want := range []string{`"episodeIds":[101,102]`, `"seasonNumbers":[1,2]`} {
+		if !strings.Contains(got3, want) {
+			t.Errorf("populated must emit %q; got %s", want, got3)
+		}
+	}
+}
+
 // ---------- 5.I18: /queue/details tests ----------
 
 type fakeQueueDetailsLister struct {

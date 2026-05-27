@@ -37,6 +37,26 @@ import (
 // semantic — null when unset on the wire, populated when the queue
 // row is tied to a Series/Episode.
 //
+// J324 v5-additive list-form widening: EpisodeIDs + SeasonNumbers
+// (both pointer-to-`[]int` with omitempty per J309 pointer-to-slice
+// 3-state).
+//
+//   - `EpisodeIDs *[]int json:"episodeIds,omitempty"` — v5-only.
+//     v5 declares `IEnumerable<int> EpisodeIds = []` at
+//     QueueResource.cs:15 (replaces v3's singular `EpisodeId int?`
+//     which the Go-port already carries at `EpisodeID *int`). The
+//     Go-port emits BOTH (`episodeId` singular for v3 wire +
+//     `episodeIds` plural for v5 wire) on the shared apiv3 type as
+//     deliberate additive divergence on each surface (same posture
+//     as J322 Episode/Episodes). 3-state: nil → key absent;
+//     non-nil empty → `"episodeIds":[]`; populated → `[1,2]`.
+//   - `SeasonNumbers *[]int json:"seasonNumbers,omitempty"` —
+//     v5-only. v5 declares `List<int> SeasonNumbers = []` at
+//     QueueResource.cs:16 (no v3 equivalent — v3's singular
+//     SeasonNumber sits on the model not the wire). Additive
+//     divergence on v3 (v3 clients ignore unknown JSON keys). Same
+//     3-state distinction.
+//
 // J323 StatusMessages typed-list widening: pointer-to-slice of
 // [QueueStatusMessage] with omitempty (J309 SeasonResource.Images
 // pattern — 3-state distinction: nil → key absent matching C#
@@ -205,6 +225,8 @@ type QueueResource struct {
 	Series                              *SeriesResource    `json:"series,omitempty"`
 	Episode                             *EpisodeResource   `json:"episode,omitempty"`
 	Episodes                            *[]EpisodeResource `json:"episodes,omitempty"`
+	EpisodeIDs                          *[]int             `json:"episodeIds,omitempty"`
+	SeasonNumbers                       *[]int             `json:"seasonNumbers,omitempty"`
 	StatusMessages                      *[]QueueStatusMessage `json:"statusMessages,omitempty"`
 }
 

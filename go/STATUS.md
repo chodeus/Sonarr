@@ -16052,3 +16052,98 @@ No new routes. Struct + DTO + doc-comment widening only.
 35 wire-shape fields landed across J309-J323.
 
 Next-tick smallest candidate: QueueResource v5 SeasonNumbers `[]int` + EpisodeIds `[]int` (v5 plural list form vs v3 singular EpisodeID) — small struct add, additive divergence pattern.
+
+---
+
+## J324 — Post-Wave-3 drain, slice 16: QueueResource v5-additive EpisodeIDs + SeasonNumbers list-form widening
+
+**Anchor**: post-J323 (QueueResource StatusMessages typed list landed). Continues the QueueResource sweep with the 2 v5-additive list-form fields.
+
+### C# source
+
+- `src/Sonarr.Api.V5/Queue/QueueResource.cs:15` — `public IEnumerable<int> EpisodeIds { get; set; } = []` (v5 plural; replaces v3's singular `EpisodeId int?`).
+- `src/Sonarr.Api.V5/Queue/QueueResource.cs:16` — `public List<int> SeasonNumbers { get; set; } = []` (v5-only; no v3 equivalent on the wire — v3's singular SeasonNumber sits on the Queue model but is not surfaced via QueueResource).
+
+### Wire contract
+
+Both v5 fields under STJson:
+- null → key absent (WhenWritingNull; the `= []` constructor default keeps it from being null normally).
+- empty list → `"episodeIds":[]` / `"seasonNumbers":[]`.
+- populated → `"episodeIds":[101,102]` / `"seasonNumbers":[1,2]`.
+
+Go-port mapping with `*[]int` + omitempty (J309 pointer-to-slice 3-state):
+- nil pointer → key absent.
+- non-nil empty slice → emit `[]`.
+- populated → emit `[N,N]`.
+
+### Additive divergence
+
+The Go-port shared apiv3 type already carries v3's singular `EpisodeID *int` (from the initial port). v5's plural `EpisodeIds` is the replacement. The Go-port emits BOTH forms on the shared type — v3 wire sees the singular `episodeId` (populated when the singular field is set), v5 wire sees the plural `episodeIds` (populated when the plural field is set). Each surface sees an extra key from the other surface's form when populated; both v3 and v5 ignore unknown JSON keys so harmless.
+
+SeasonNumbers has no v3 wire equivalent — populated-row emits show up as a clean v5-additive divergence on v3 clients (additive, harmless).
+
+### Port deliverables
+
+**`internal/api/v3/queue.go`** — struct + doc-comment:
+
+- `QueueResource` widened with 2 new fields after Episodes:
+  - `EpisodeIDs *[]int json:"episodeIds,omitempty"`.
+  - `SeasonNumbers *[]int json:"seasonNumbers,omitempty"`.
+- Doc comment extended with a J324 paragraph cataloguing each field + the additive-divergence rationale + the 3-state distinction.
+
+No emit-site mapper updates required — production today returns `[]QueueResource{}` (no rows). The populated-row mapper port allocates `&[]int{...}` per row.
+
+v5/queue aliases v3 via `type Resource = apiv3.QueueResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (1 new, 3 branches)
+
+`internal/api/v3/queue_test.go`:
+
+- `TestQueueResource_EpisodeIdsSeasonNumbersWidening_J324` — 3-branch pin:
+  - Row 1: nil pointers → 2 negative omitempty assertions on both keys.
+  - Row 2: explicit `&[]int{}` empty slices → asserts `"episodeIds":[]` + `"seasonNumbers":[]`.
+  - Row 3: populated `&[]int{101,102}` + `&[]int{1,2}` → asserts `"episodeIds":[101,102]` + `"seasonNumbers":[1,2]`.
+
+### Wiring
+
+No new routes. Struct + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/queue/...` ✓
+  - v3: all pass, 2.210s
+  - cmd/sonarr: all pass, 4.767s
+  - v5/queue: all pass, 1.593s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | DONE (J322) |
+| B. v5 field divergences | QueueResource StatusMessages typed list | DONE (J323) |
+| B. v5 field divergences | QueueResource v5 EpisodeIDs + SeasonNumbers list-form | **DONE this slice (J324)** |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem + ReleaseResource | OPEN — body-decode shape consideration |
+| B. v5 field divergences | Quality typed QualityModel envelope | OPEN — complex DTO |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — alias break, mid-size |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+37 wire-shape fields landed across J309-J324. **QueueResource scalar+subresource sweep DRAINED** — 9 slices (J315 + J317-J324) closing every non-Quality wire-shape gap on the QueueResource family.
+
+Next-tick candidate: family-shift to the next-largest carrier. Quality typed QualityModel envelope (the last remaining wire-shape DTO blocker on History/Blocklist/Queue/ManualImport/Release — significant LOC but unblocks a cluster). Or pivot to the smaller v5 SeriesResource MalIds/AniListIds field divergences (mid-size — needs alias break on v5/series Resource).
