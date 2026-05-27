@@ -29,6 +29,7 @@ import (
 	qualitydefinitionv5 "sonarr.tv/sonarr/internal/api/v5/qualitydefinition"
 	qualityprofilev5 "sonarr.tv/sonarr/internal/api/v5/qualityprofile"
 	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
+	seriesfolderv5 "sonarr.tv/sonarr/internal/api/v5/seriesfolder"
 	seriesimportv5 "sonarr.tv/sonarr/internal/api/v5/seriesimport"
 	updatesettingsv5 "sonarr.tv/sonarr/internal/api/v5/updatesettings"
 	remotepathmappingv5 "sonarr.tv/sonarr/internal/api/v5/remotepathmapping"
@@ -1334,6 +1335,13 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// family port DEFERRED per loop contract — Resource widens for
 		// both surfaces simultaneously when the v5 Series family lands).
 		{Method: "POST", Path: "/api/v5/series/import", Handler: seriesimportv5.PostHandler(seriesWriter, seriesEmitter)},
+		// J286 — v5 SeriesFolder endpoint family (1 endpoint; 34 LOC
+		// C# — SeriesFolderController.GetFolder returning the computed
+		// series folder name per the naming config, no disk write).
+		// Pure path-alias slice — v3 emits the same 200+`{folder:"..."}`
+		// shape via SeriesFolderHandler. Re-uses seriesSvc +
+		// namingConfigSvc deps verbatim.
+		{Method: "GET", Path: "/api/v5/series/{id}/folder", Handler: seriesfolderv5.GetHandler(seriesSvc, namingConfigSvc)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},

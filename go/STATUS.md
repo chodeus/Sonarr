@@ -13311,3 +13311,46 @@ Pattern observation: J285 establishes the 201→200 wrapper as the third status-
 - Episodes/EpisodeController (85 LOC)
 - ImportLists/ImportListExclusionController (88 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J286 — Wave 3 thirty-fifth slice: v5 SeriesFolder family port (34 LOC C# source)
+
+Smallest possible v5 family port — single GET endpoint that returns the computed series folder name (per the naming config) without writing anything to disk. Pure path-alias to v3.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :6134-6161):
+
+| endpoint                              | v5 status | v3 Go-port                              | strategy |
+|---------------------------------------|-----------|------------------------------------------|----------|
+| GET /api/v5/series/{id}/folder        | 200 / 404 | 200 / 404 (apiv3.SeriesFolderHandler)    | alias    |
+
+The C# v5 controller is a direct port of v3 (no new validation, no new fields):
+
+```csharp
+var series = _seriesService.GetSeries(id);
+var folder = _fileNameBuilder.GetSeriesFolder(series);
+return TypedResults.Ok<object>(new { folder });
+```
+
+v3 Go-port at `internal/api/v3/series_folder.go:38-76` does the same: GetSeries → look up naming config → call `organizer.GetSeriesFolder` → emit `{folder:"..."}`. Status codes match: 200 success, 400 on invalid id, 404 on missing series, 500 on naming config read failure.
+
+**Slice scope** — 126 lines (26 source + 100 test) + 1 import + 1 route:
+
+- New `internal/api/v5/seriesfolder/seriesfolder.go` (26 LOC) — 2 type aliases (SeriesGetter = apiv3.SeriesFolderGetter, NamingReader = apiv3.NamingConfigReader) + 1 variable alias (GetHandler = apiv3.SeriesFolderHandler). NO new handler code.
+- New `internal/api/v5/seriesfolder/seriesfolder_test.go` (100 LOC) — 5 tests: GetHandler-success-emits-folder-field (200 + non-empty folder for valid series + SeriesFolderFormat="{Series Title}"), GetHandler-series-not-found-404 (svc returns series.ErrNotFound), GetHandler-invalid-id-400 (non-numeric path-param "abc"), GetHandler-naming-config-error-500 (separate errNaming fake that returns error from GetConfig), variable-alias-non-nil. Two small fakes (fakeSeries and fakeNaming/errNaming) cover the SeriesFolderGetter + NamingConfigReader interfaces.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`seriesfolderv5`) + 1 new route alongside the existing /api/v3/series/{id}/folder route. Re-uses seriesSvc + namingConfigSvc deps verbatim.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/seriesfolder/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/seriesfolder/... ./cmd/sonarr/...` ✓ (5 v5/seriesfolder tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 38/~50 → 39/~50.
+
+Pattern observation: smallest pure-alias slice yet (26 LOC source). Demonstrates the lower bound of the path-alias template when the v3 family is already byte-equivalent. The slice exists primarily to mount the route at the v5 URL prefix; no transformation logic.
+
+### Next Wave 3 candidates ascending
+
+- Episodes/RenameEpisodeController (48 LOC)
+- Series/SeriesLookupController (58 LOC)
+- Queue/QueueActionController (58 LOC)
+- Queue/QueueDetailsController (77 LOC)
+- Queue/QueueStatusController (80 LOC)
+- Episodes/EpisodeController (85 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Release/ReleasePushController (120 LOC)
