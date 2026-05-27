@@ -16949,3 +16949,88 @@ No new routes. Struct + logic + doc-comment widening only.
 55 wire-shape fields + 1 v5-strip behavior landed across J309-J332.
 
 Next-tick smallest candidate: ManualImport Quality switch from `*quality.Model` (which emits the persistence-reduced form `{quality:int,revision:{...}}`) to `*QualityModelResource` (the J325 typed-DTO that emits the expanded REST form). Same struct-field-type change + logic update pattern as J332.
+
+---
+
+## J333 — Post-Wave-3 drain, slice 25: ManualImportReprocessItem Quality widening to *QualityModelResource
+
+**Anchor**: post-J332 (ManualImport Languages widening landed). Same J332 pattern applied to the sibling Quality field — closes the ManualImport Quality wire-shape gap.
+
+### C# vs Go-port pre-J333 divergence
+
+Pre-J333 the Go-port emitted Quality via the persisted `quality.Model` custom MarshalJSON at `internal/quality/model.go:76-78`, which produces the REDUCED form `{quality:int,revision:{...}}` — used for IEmbeddedDocument storage. C# v3+v5 emit `QualityModel` with default serialization producing the EXPANDED form `{quality:{id,name,source,resolution},revision:{version,real,isRepack}}` (per the J325 typed-DTO mapping).
+
+Reduced form is correct for persistence (the DB column); expanded form is correct for the REST wire. Pre-J333 the Go-port's ManualImportReprocessItem.Quality leaked the reduced persistence form onto the wire — a v3+v5 divergence.
+
+### Port deliverables
+
+**`internal/api/v3/manual_import.go`** — struct + logic + doc-comment:
+
+- `ManualImportReprocessItem.Quality *QualityModelResource json:"quality,omitempty"` — type changed from `*quality.Model`.
+- `reprocessOne` Quality-check logic at line 217-228 updated:
+  - `item.Quality.Quality == quality.Unknown` → `item.Quality.Quality.ID == quality.Unknown.ID` (Unknown check moves from the embedded `quality.Quality` value to the inner `QualityValue.ID` field on the new typed DTO).
+  - Reassignment chain: `item.Quality = ToQualityModelResource(quality.Model{Quality: parsed.Quality.Quality, Revision: parsed.Quality.Revision})` (re-uses the J325 helper for the typed projection from the parsed persistence model).
+- Inline doc-comment on the reprocessOne Quality branch explains the type change + the C# expanded-form wire match.
+
+Body-decode shape change is observable for populated bodies (reduced → expanded). Existing populated-Quality tests (2 of them) updated to use the expanded shape; substantive assertions retained.
+
+v5/manualimport aliases v3 via the existing alias so the widening propagates to both surfaces simultaneously.
+
+### Tests (2 updated)
+
+`internal/api/v3/manual_import_test.go`:
+
+- `TestManualImportReprocessHandler_QualityFilledWhenUnknown` — body shape updated from `"quality":{"quality":0,"revision":{...}}` (reduced) to `"quality":{"quality":{"id":0,"name":"Unknown","source":"unknown","resolution":0},"revision":{...}}` (expanded). Assertion changed from `out[0].Quality.Quality == quality.Unknown` (the embedded value comparison) to `out[0].Quality.Quality.ID == quality.Unknown.ID` (the inner QualityValue.ID field). Substantive behavior verified: Unknown input gets overwritten with parsed `1080p WEB-DL` quality.
+- `TestManualImportReprocessHandler_QualityPreservedWhenSet` — same body-shape update for the non-Unknown input (Id=5 = HDTV-720p). Substantive assertion `out[0].Quality.Quality.ID != 5` retained.
+
+### Wiring
+
+No new routes. Struct + logic + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/manualimport/...` ✓
+  - v3: all pass, 2.025s
+  - cmd/sonarr: all pass, 4.565s
+  - v5/manualimport: all pass, 2.160s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | DONE (J318) |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime *time.Time | DONE (J319) |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State enum-string | DONE (J320) |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft + FormatTimeLeft helper | DONE (J321) |
+| B. v5 field divergences | QueueResource Series? + Episode? + Episodes? subresources | DONE (J322) |
+| B. v5 field divergences | QueueResource StatusMessages typed list | DONE (J323) |
+| B. v5 field divergences | QueueResource v5 EpisodeIDs + SeasonNumbers list-form | DONE (J324) |
+| B. v5 field divergences | Quality typed-DTO + History/Blocklist/Queue field widening | DONE (J325) |
+| B. v5 field divergences | SeriesResource v5-additive 4-field widening | DONE (J326) |
+| B. v5 field divergences | EpisodeResource 3-field widening | DONE (J327) |
+| B. v5 field divergences | EpisodeFileResource 5-field scalar widening | DONE (J328) |
+| B. v5 field divergences | SeriesResource AlternateTitles + AlternateTitleResource typed DTO | DONE (J329) |
+| B. v5 field divergences | MediaInfo typed-DTO + EpisodeFileResource.MediaInfo field | DONE (J330) |
+| B. v5 field divergences | SeriesResource v5 LanguageProfileId removal | DONE (J331) |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem | DONE (J332) |
+| B. v5 field divergences | Quality field widening on ManualImportReprocessItem | **DONE this slice (J333)** |
+| B. v5 field divergences | Languages typed-list DTO on ReleaseResource | OPEN — pre-existing []int gap on the ~50-field ReleaseResource projection |
+| B. v5 field divergences | Quality field widening on ReleaseResource | OPEN — same ~50-field projection scope |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+56 wire-shape fields + 1 v5-strip behavior landed across J309-J333. **ManualImport carrier v3↔v5 divergence cluster CLOSED** (J332 Languages + J333 Quality).
+
+Next-tick smallest candidate: ReleaseResource Languages widening (same J332 pattern — `[]int` to `[]LanguageRef`). Or pivot to populated-row mapper service-port work.

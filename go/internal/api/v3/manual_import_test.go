@@ -254,9 +254,11 @@ func TestManualImportReprocessHandler_ReleaseTypeForMultiEpisode(t *testing.T) {
 func TestManualImportReprocessHandler_QualityFilledWhenUnknown(t *testing.T) {
 	t.Parallel()
 	// Quality with .Quality=Unknown gets overwritten from parsed.
+	// J333: body shape uses the C# expanded form
+	// {quality:{id,name,source,resolution},revision:{...}}.
 	body := `[{
 		"path":"/tv/Show.S01E01.1080p.WEB-DL.mkv",
-		"quality":{"quality":0,"revision":{"version":1,"real":0,"isRepack":false}},
+		"quality":{"quality":{"id":0,"name":"Unknown","source":"unknown","resolution":0},"revision":{"version":1,"real":0,"isRepack":false}},
 		"languages":[]
 	}]`
 	rr := httptest.NewRecorder()
@@ -270,8 +272,10 @@ func TestManualImportReprocessHandler_QualityFilledWhenUnknown(t *testing.T) {
 	if out[0].Quality == nil {
 		t.Fatalf("Quality should be populated from parsed")
 	}
-	if out[0].Quality.Quality == quality.Unknown {
-		t.Errorf("Quality should be filled with parsed value (1080p WEB-DL ≠ Unknown), got Unknown")
+	// J333: Quality field is now *QualityModelResource (expanded wire
+	// form); the Unknown check moves to the inner .Quality.ID field.
+	if out[0].Quality.Quality.ID == quality.Unknown.ID {
+		t.Errorf("Quality should be filled with parsed value (1080p WEB-DL ≠ Unknown), got Unknown id=0")
 	}
 }
 
@@ -279,9 +283,10 @@ func TestManualImportReprocessHandler_QualityPreservedWhenSet(t *testing.T) {
 	t.Parallel()
 	// Non-Unknown user-supplied Quality is NOT overwritten.
 	// Quality.Id=5 = HDTV-720p in the Sonarr quality registry.
+	// J333: body shape uses the C# expanded form.
 	body := `[{
 		"path":"/tv/Show.S01E01.1080p.WEB-DL.mkv",
-		"quality":{"quality":5,"revision":{"version":1,"real":0,"isRepack":false}},
+		"quality":{"quality":{"id":5,"name":"HDTV-720p","source":"television","resolution":720},"revision":{"version":1,"real":0,"isRepack":false}},
 		"languages":[]
 	}]`
 	rr := httptest.NewRecorder()

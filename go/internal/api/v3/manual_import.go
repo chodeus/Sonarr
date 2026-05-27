@@ -75,7 +75,7 @@ type ManualImportReprocessItem struct {
 	SeasonNumber      *int                      `json:"seasonNumber,omitempty"`
 	Episodes          []manualImportEpisodeStub `json:"episodes,omitempty"`
 	EpisodeIDs        []int                     `json:"episodeIds,omitempty"`
-	Quality           *quality.Model            `json:"quality,omitempty"`
+	Quality           *QualityModelResource     `json:"quality,omitempty"`
 	Languages         []LanguageRef             `json:"languages"`
 	ReleaseGroup      string                    `json:"releaseGroup"`
 	DownloadID        string                    `json:"downloadId,omitempty"`
@@ -225,13 +225,22 @@ func reprocessOne(ctx context.Context, item *ManualImportReprocessItem, seriesLo
 		}
 	}
 	// Quality — C# `:65-68` reassigns ONLY when item.Quality is non-
-	// nil but its .Quality == Unknown. Mirror.
-	if item.Quality != nil && item.Quality.Quality == quality.Unknown {
-		// Take the parsed Quality verbatim (Quality + Revision).
-		item.Quality = &quality.Model{
+	// nil but its inner .Quality.ID == Unknown.ID (0). Mirror. J333:
+	// item.Quality widened from *quality.Model (persistence-reduced
+	// wire form `{quality:int,revision:{...}}`) to
+	// *QualityModelResource (expanded wire form `{quality:{id,name,
+	// source,resolution},revision:{...}}` matching C# default
+	// serialization). Unknown check moves from .Quality (the embedded
+	// quality.Quality) to .Quality.ID (the inner QualityValue.ID
+	// field on the new typed DTO); reassigned via
+	// ToQualityModelResource from the parsed persistence model.
+	if item.Quality != nil && item.Quality.Quality.ID == quality.Unknown.ID {
+		// Take the parsed Quality verbatim (Quality + Revision)
+		// via the typed projection.
+		item.Quality = ToQualityModelResource(quality.Model{
 			Quality:  parsed.Quality.Quality,
 			Revision: parsed.Quality.Revision,
-		}
+		})
 	}
 	// ReleaseGroup — C# `:70-72` falls back to processedItem.ReleaseGroup
 	// only when item.ReleaseGroup IsNullOrWhiteSpace. Mirror.
