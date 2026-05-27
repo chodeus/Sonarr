@@ -29,6 +29,7 @@ import (
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
 	qualitydefinitionv5 "sonarr.tv/sonarr/internal/api/v5/qualitydefinition"
 	qualityprofilev5 "sonarr.tv/sonarr/internal/api/v5/qualityprofile"
+	queuev5 "sonarr.tv/sonarr/internal/api/v5/queue"
 	queueactionv5 "sonarr.tv/sonarr/internal/api/v5/queueaction"
 	queuedetailsv5 "sonarr.tv/sonarr/internal/api/v5/queuedetails"
 	queuestatusv5 "sonarr.tv/sonarr/internal/api/v5/queuestatus"
@@ -1442,6 +1443,23 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// Re-uses queueSvc + pendingCountLister + queueStatusPauser
 		// deps verbatim — same Pauser bracket pattern.
 		{Method: "GET", Path: "/api/v5/queue/status", Handler: queuestatusv5.GetHandler(queueSvc, pendingCountLister{repo: pendingReleasesRepo}, queueStatusPauser)},
+		// J306 — v5 QueueController main endpoints (3 endpoints; 410 LOC
+		// C# — QueueController; sibling sub-controllers wired at J289 +
+		// J290 + J291). GET /api/v5/queue is a pure variable-alias to
+		// v3 (PagedQueue stub adapter — populated-row branch is a
+		// post-Wave-3 service-port arc). DELETE /api/v5/queue/{id} +
+		// DELETE /api/v5/queue/bulk both wrap v3 via
+		// v5util.RewriteSuccessTo204 to demote 200+`{}` -> 204+empty
+		// matching TypedResults.NoContent() at QueueController.cs:81
+		// + :136. Six side-effect query params (message,
+		// removeFromClient, blocklist, skipRedownload, changeCategory)
+		// PARSED-AND-IGNORED on BOTH surfaces today (v3 5.E2a deferred
+		// upstream-client side-effects; v5 inherits via the wrapper).
+		// SignalR queue/deleted broadcast fires only on actual remove
+		// (silent-skip on missing id matches v3 queue_write.go:109-117).
+		{Method: "GET", Path: "/api/v5/queue", Handler: queuev5.ListHandler(emptyQueuePagedLister{})},
+		{Method: "DELETE", Path: "/api/v5/queue/{id}", Handler: queuev5.DeleteHandler(queueSvc, nil)},
+		{Method: "DELETE", Path: "/api/v5/queue/bulk", Handler: queuev5.BulkDeleteHandler(queueSvc, nil)},
 		// J292 — v5 Episode endpoint family (4 endpoints; 85 LOC C#).
 		// GET /episode + GET /episode/{id} are pure path-aliases. PUT
 		// /episode/monitor wraps v3 via v5util.RewriteAcceptedToOK

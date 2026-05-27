@@ -14484,3 +14484,63 @@ The v5 body grouping changes the JSON contract on the wire — a genuine *body* 
 | Release — POST | (covered in 343) | queued (J306) — body shape divergent |
 | Queue | 410 | queued |
 
+
+---
+
+## J306 — Wave 3 LARGE-family arc, Queue family main QueueController endpoints (410 LOC C#)
+
+**Anchor**: post-J305 (Release-GET sub-slice landed). Queue family — sub-controllers already wired at J289 (QueueAction), J290 (QueueDetails), J291 (QueueStatus); the main QueueController endpoints at /api/v5/queue have not been routed on v5 until now.
+
+### C# source
+
+`src/Sonarr.Api.V5/Queue/QueueController.cs` (410 LOC). Three routed endpoints on the main QueueController:
+
+| v5 endpoint | C# return shape | v3 equivalent | divergence |
+| --- | --- | --- | --- |
+| GET    /api/v5/queue      | `Ok<PagingResource<QueueResource>>` | 200 + same shape (empty-DB stub) | NONE — variable-alias |
+| DELETE /api/v5/queue/{id} | `Results<NoContent, NotFound>` (204 / 404) | 200+`{}` / 404 | **200+`{}` → 204+empty demote** via `v5util.RewriteSuccessTo204` |
+| DELETE /api/v5/queue/bulk | `NoContent` (204) | 200+`{}` | **200+`{}` → 204+empty demote** via `v5util.RewriteSuccessTo204` |
+
+### Port deliverables
+
+**New package** `internal/api/v5/queue/`:
+
+- `queue.go` (~95 LOC):
+  - Type aliases: `Resource = apiv3.QueueResource`, `PagedLister = apiv3.QueuePagedLister`, `Writer = apiv3.QueueWriter`, `BulkDeleteResource = apiv3.QueueBulkDeleteResource`.
+  - Variable-alias handler: `ListHandler = apiv3.QueueHandler`.
+  - Wrapper handlers: `DeleteHandler(svc Writer, broadcast func(int)) http.Handler` = `v5util.RewriteSuccessTo204(apiv3.QueueDeleteHandler(svc, broadcast))`; `BulkDeleteHandler(svc Writer, broadcast func(int)) http.Handler` = `v5util.RewriteSuccessTo204(apiv3.QueueBulkDeleteHandler(svc, broadcast))`.
+  - Package doc-comment catalogues all three endpoints + the three sibling sub-controllers (J289/J290/J291) + the side-effect-query-param-PARSED-AND-IGNORED contract.
+
+- `queue_test.go` (7 focused tests + 1 type-alias guard):
+  - **DELETE /{id}** — 3 tests: success → 204+empty+Content-Type stripped + SignalR `queue/deleted` broadcast fires with id=7; 404 passthrough + SignalR emit-suppression on missing id (J232 contract); 400 on invalid id (passthrough).
+  - **DELETE /bulk** — 4 tests: multi-id success → 204 + 2 broadcasts for `{ids:[1,3]}`; silent-skip-on-missing → 204 + 1 broadcast for the actual remove (matches v3 queue_write.go:109-117); empty `ids[]` → 400 passthrough; malformed body → 400 passthrough.
+  - `TestTypeAliasesMatchV3` — compile-time invariant for Resource (both directions), PagedLister, Writer, BulkDeleteResource (both directions).
+
+- `fakeWriter` test helper implements both `Find` + `Remove` from `apiv3.QueueWriter` against an in-memory list (independent of v3's `fakeQueueWriter` so the v5 package is self-contained at test level).
+
+**`cmd/sonarr/host_wiring.go` edits**:
+
+- New import alias `queuev5 "sonarr.tv/sonarr/internal/api/v5/queue"` placed alphabetically before `queueactionv5`.
+- 3 new `host.Route{}` entries in `v5Routes()` immediately after the J291 QueueStatus route, with a J306 prefix comment documenting the wrappers + side-effect-query-param posture + SignalR contract.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v5/queue/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v5/queue/... ./internal/api/v3/... ./cmd/sonarr/...` ✓
+  - v5/queue: 8 tests, all pass, 2.077s
+  - v3 (regression): all pass, 1.718s
+  - cmd/sonarr (wiring integration): all pass, 3.689s
+
+### Wave 3 LARGE-family arc progress (updated)
+
+| family | LOC C# | main-controller status | residual sub-slices |
+| --- | --- | --- | --- |
+| EpisodeFiles | 205 | DONE (J301) | — |
+| CustomFormats | 203 | DONE (J302 — surface at J222; projection alignment at J302) | — |
+| Series | 422 + 116 | DONE (J303 CRUD + J304 Editor) | /{id}/season — v5-NEW endpoint queued |
+| Release | 343 | DONE (J305 GET + J294 Push sub-family) | POST — divergent body queued |
+| Queue | 410 | **DONE (J306 main; J289+J290+J291 subs)** | — |
+
+**Main-controller coverage now complete for all 5 listed LARGE families.** The two residual sub-slices (Series /{id}/season + Release POST) both require *new* v5-specific handler code (no v3 equivalent for the season-monitor + body-shape divergence on the grab endpoint) and are queued for the immediately-following slices.
+
