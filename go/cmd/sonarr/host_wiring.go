@@ -880,6 +880,39 @@ func computeHistoryCustomFormats(ctx context.Context, e *history.Entry, a histor
 	return res, score
 }
 
+// episodesWithEpisodeFileLookup composes *episodes.Service with
+// the episodeFileServiceWithPopulator wrapper so the v3 Episode
+// handlers (List + ByID) can discover the EpisodeFileLookupForEpisode
+// AND EpisodeFilePopulator interfaces via the J342 optional-
+// extension type-assertion path. Used to populate the J340-pinned
+// EpisodeResource.EpisodeFile subresource when the
+// `includeEpisodeFile=true` query-param fires.
+//
+// J342.
+type episodesWithEpisodeFileLookup struct {
+	*episodes.Service
+	epFilePop *episodeFileServiceWithPopulator
+}
+
+// GetFile satisfies apiv3.EpisodeFileLookupForEpisode by forwarding
+// to the inner episodeFileServiceWithPopulator (which embeds
+// *episodefiles.Service).
+func (e *episodesWithEpisodeFileLookup) GetFile(ctx context.Context, id int) (*episodefiles.File, error) {
+	if e.epFilePop == nil {
+		return nil, episodefiles.ErrNotFound
+	}
+	return e.epFilePop.GetFile(ctx, id)
+}
+
+// PopulateEpisodeFile satisfies apiv3.EpisodeFilePopulator by
+// forwarding to the inner wrapper's calculator-engine path.
+func (e *episodesWithEpisodeFileLookup) PopulateEpisodeFile(ctx context.Context, f *episodefiles.File) ([]apiv3.CustomFormatResource, int) {
+	if e.epFilePop == nil {
+		return []apiv3.CustomFormatResource{}, 0
+	}
+	return e.epFilePop.PopulateEpisodeFile(ctx, f)
+}
+
 // episodeFileServiceWithPopulator embeds *episodefiles.Service
 // (preserves the full Reader + Writer surface via embedding) and
 // adds PopulateEpisodeFile — which the v3 episodefile handlers
@@ -1524,6 +1557,16 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		qualityProfilesSvc: qualityProfilesSvc,
 		customFormatsSvc:   customFormatsSvc,
 	}
+	// J342: composite wrapper for the v3 Episode handlers — embeds
+	// *episodes.Service (preserves the full GetEpisode +
+	// GetEpisodesBySeries surface) + composes the J339 populator
+	// wrapper so the J340-pinned EpisodeResource.EpisodeFile
+	// subresource lights up when `includeEpisodeFile=true` query
+	// param fires.
+	episodesSvcWithEpisodeFile := &episodesWithEpisodeFileLookup{
+		Service:   episodesSvc,
+		epFilePop: episodeFilesSvcPopulated,
+	}
 	// 5.I7: log-file adapter sources LogFolder = <AppData>/logs and
 	// URLBase from configfile.Provider. The folder string + URLBase
 	// are resolved at boot in buildHostServer and snapshot into the
@@ -1566,7 +1609,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "DELETE", Path: "/api/v3/blocklist/{id}", Handler: apiv3.BlocklistDeleteHandler(blocklistSvc)},
 		{Method: "DELETE", Path: "/api/v3/blocklist/bulk", Handler: apiv3.BlocklistBulkDeleteHandler(blocklistSvc)},
 		{Method: "GET", Path: "/api/v3/calendar", Handler: apiv3.CalendarHandler(episodesSvc)},
-		{Method: "GET", Path: "/api/v3/calendar/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvc)},
+		{Method: "GET", Path: "/api/v3/calendar/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvcWithEpisodeFile)},
 		{Method: "GET", Path: "/feed/v3/calendar/Sonarr.ics", Handler: apiv3.CalendarFeedHandler(episodesSvc, seriesSvc)},
 		{Method: "GET", Path: "/api/v3/command", Handler: apiv3.CommandListHandler(cmdSvc)},
 		{Method: "GET", Path: "/api/v3/command/{id}", Handler: apiv3.CommandByIDHandler(cmdSvc)},
@@ -2212,8 +2255,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "DELETE", Path: "/api/v3/downloadclient/bulk", Handler: apiv3.DownloadClientBulkDeleteHandler(downloadClientsRepo, downloadClientEmitter)},
 		{Method: "PUT", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientUpdateHandler(downloadClientsRepo, downloadClientEmitter)},
 		{Method: "DELETE", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientDeleteHandler(downloadClientsRepo, downloadClientEmitter)},
-		{Method: "GET", Path: "/api/v3/episode", Handler: apiv3.EpisodeListHandler(episodesSvc)},
-		{Method: "GET", Path: "/api/v3/episode/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvc)},
+		{Method: "GET", Path: "/api/v3/episode", Handler: apiv3.EpisodeListHandler(episodesSvcWithEpisodeFile)},
+		{Method: "GET", Path: "/api/v3/episode/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvcWithEpisodeFile)},
 		{Method: "PUT", Path: "/api/v3/episode/monitor", Handler: apiv3.EpisodeMonitorHandler(episodesSvc)},
 		{Method: "GET", Path: "/api/v3/episodefile", Handler: apiv3.EpisodeFileListHandler(episodeFilesSvcPopulated, seriesSvc)},
 		{Method: "GET", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileByIDHandler(episodeFilesSvcPopulated)},
@@ -2382,9 +2425,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v3/tag/detail/{id}", Handler: apiv3.TagDetailByIDHandler(emptyTagDetailLister{})},
 		{Method: "GET", Path: "/api/v3/update", Handler: apiv3.UpdateHandler(emptyUpdateLister{})},
 		{Method: "GET", Path: "/api/v3/wanted/cutoff", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedCutoff)},
-		{Method: "GET", Path: "/api/v3/wanted/cutoff/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvc)},
+		{Method: "GET", Path: "/api/v3/wanted/cutoff/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvcWithEpisodeFile)},
 		{Method: "GET", Path: "/api/v3/wanted/missing", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedMissing)},
-		{Method: "GET", Path: "/api/v3/wanted/missing/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvc)},
+		{Method: "GET", Path: "/api/v3/wanted/missing/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvcWithEpisodeFile)},
 		// SignalR negotiate endpoint — the JS client posts here
 		// first to discover the per-connection id and the available
 		// transports before opening the WebSocket. Auth is the

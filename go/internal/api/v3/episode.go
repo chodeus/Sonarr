@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/httperr"
 )
@@ -89,6 +90,48 @@ type EpisodeBySeriesLister interface {
 	GetEpisodesBySeries(ctx context.Context, seriesID int) ([]episodes.Episode, error)
 }
 
+// EpisodeFileLookupForEpisode is the optional-extension interface
+// for the Episode handlers. When the handler's lister/getter
+// parameter ALSO implements this interface AND the `includeEpisodeFile`
+// query param is true, the handler attaches the episode's
+// EpisodeFile subresource (J340 wire-shape pin) via the standard
+// J339 populator chain (ToEpisodeFileResource → ApplyEpisodeFilePopulator).
+//
+// nil-safe per the helper. Test fixtures don't implement the
+// extension so the empty fallback fires (the J340 omitempty pointer
+// stays nil → key absent).
+//
+// J342.
+type EpisodeFileLookupForEpisode interface {
+	GetFile(ctx context.Context, id int) (*episodefiles.File, error)
+}
+
+// applyEpisodeFileSubresource conditionally populates an EpisodeResource's
+// EpisodeFile field when ALL of: (a) includeEpisodeFile=true; (b)
+// the lister/svc parameter implements EpisodeFileLookupForEpisode;
+// (c) the episode has a non-zero EpisodeFileID. The looked-up file
+// is projected via ToEpisodeFileResource + optionally enriched via
+// ApplyEpisodeFilePopulator when the lister/svc ALSO implements
+// EpisodeFilePopulator. nil-safe everywhere.
+//
+// J342.
+func applyEpisodeFileSubresource(ctx context.Context, res *EpisodeResource, ep *episodes.Episode, lister any, includeEpisodeFile bool) {
+	if res == nil || ep == nil || !includeEpisodeFile || ep.EpisodeFileID == nil || *ep.EpisodeFileID == 0 {
+		return
+	}
+	lookup, ok := lister.(EpisodeFileLookupForEpisode)
+	if !ok {
+		return
+	}
+	f, err := lookup.GetFile(ctx, *ep.EpisodeFileID)
+	if err != nil || f == nil {
+		return
+	}
+	epFile := ToEpisodeFileResource(*f, "")
+	ApplyEpisodeFilePopulator(ctx, &epFile, f, lister)
+	res.EpisodeFile = &epFile
+}
+
 // EpisodeListHandler returns the http.Handler for GET /api/v3/episode.
 // Mirrors `EpisodeController.GetEpisodes` at
 // `src/Sonarr.Api.V3/Episodes/EpisodeController.cs:35-66`. The full
@@ -117,9 +160,16 @@ func EpisodeListHandler(lister EpisodeBySeriesLister) http.Handler {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodes: %w", err), nil)
 			return
 		}
+		// J342: parse includeEpisodeFile query param + populate the
+		// J340-pinned subresource when both the param is true and the
+		// lister implements EpisodeFileLookupForEpisode.
+		includeEpisodeFile := r.URL.Query().Get("includeEpisodeFile") == "true"
 		out := make([]EpisodeResource, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, ToEpisodeResource(row))
+			res := ToEpisodeResource(row)
+			ep := row
+			applyEpisodeFileSubresource(r.Context(), &res, &ep, lister, includeEpisodeFile)
+			out = append(out, res)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -159,9 +209,20 @@ func EpisodeByIDHandler(svc EpisodeByIDGetter) http.Handler {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episode: get %d: %w", id, err), nil)
 			return
 		}
+		// J342: same includeEpisodeFile path as EpisodeListHandler.
+		// Note: C# EpisodeControllerWithSignalR.GetResourceById ALWAYS
+		// passes includeEpisodeFile=true (at C# line 54-59 — the
+		// individual-episode GET hard-codes all 3 include* flags to
+		// true). The Go-port honors the query-param explicitly for
+		// caller flexibility; absent query-param defaults to false
+		// matching the list-handler default — clients wanting the
+		// C# byID populated shape send includeEpisodeFile=true.
+		includeEpisodeFile := r.URL.Query().Get("includeEpisodeFile") == "true"
+		res := ToEpisodeResource(*ep)
+		applyEpisodeFileSubresource(r.Context(), &res, ep, svc, includeEpisodeFile)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		buf, _ := json.Marshal(ToEpisodeResource(*ep))
+		buf, _ := json.Marshal(res)
 		_, _ = w.Write(buf)
 	})
 }

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
 )
 
@@ -114,6 +115,91 @@ func TestEpisodeResource_NewPointerFields_J327(t *testing.T) {
 			t.Errorf("populated missing %q in %s", want, got2)
 		}
 	}
+}
+
+// J342 wire-shape pin for the includeEpisodeFile query-param + the
+// EpisodeFileLookupForEpisode optional-extension type-assertion
+// integration on EpisodeListHandler + EpisodeByIDHandler. When BOTH
+// the query-param is true AND the lister/svc implements
+// EpisodeFileLookupForEpisode, the handler populates the J340-pinned
+// EpisodeResource.EpisodeFile subresource via ToEpisodeFileResource
+// + ApplyEpisodeFilePopulator. When either condition is false
+// (default or non-implementing lister), the subresource stays nil
+// and omitempty drops the key.
+//
+// Test covers 3 branches: (a) no includeEpisodeFile param → no
+// populate; (b) includeEpisodeFile=true + non-implementing lister
+// (default fake) → no populate; (c) includeEpisodeFile=true +
+// implementing lister → populated subresource.
+func TestEpisodeListHandler_IncludeEpisodeFileSubresource_J342(t *testing.T) {
+	t.Parallel()
+	tvdb := 12345
+	fileID := 99
+	rows := []episodes.Episode{{ID: 1, SeriesID: 42, SeasonNumber: 1, EpisodeNumber: 1, Title: "Pilot", TvdbID: &tvdb, EpisodeFileID: &fileID, Runtime: 60, Monitored: true}}
+
+	t.Run("no includeEpisodeFile param → subresource omitted", func(t *testing.T) {
+		lister := &fakeEpisodeBySeriesWithFileLookup{
+			rows:       rows,
+			fileLookup: map[int]*episodefiles.File{99: {ID: 99, SeriesID: 42, RelativePath: "Show.S01E01.mkv"}},
+		}
+		rr := httptest.NewRecorder()
+		EpisodeListHandler(lister).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episode?seriesId=42", nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status: %d", rr.Code)
+		}
+		if strings.Contains(rr.Body.String(), `"episodeFile":`) {
+			t.Errorf("absent includeEpisodeFile must keep the subresource omitted; got %s", rr.Body.String())
+		}
+	})
+
+	t.Run("includeEpisodeFile=true with non-implementing lister → subresource omitted", func(t *testing.T) {
+		lister := &fakeEpisodeBySeries{rows: rows}
+		rr := httptest.NewRecorder()
+		EpisodeListHandler(lister).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episode?seriesId=42&includeEpisodeFile=true", nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status: %d", rr.Code)
+		}
+		if strings.Contains(rr.Body.String(), `"episodeFile":`) {
+			t.Errorf("non-implementing lister must skip the subresource; got %s", rr.Body.String())
+		}
+	})
+
+	t.Run("includeEpisodeFile=true with implementing lister → populated subresource", func(t *testing.T) {
+		lister := &fakeEpisodeBySeriesWithFileLookup{
+			rows:       rows,
+			fileLookup: map[int]*episodefiles.File{99: {ID: 99, SeriesID: 42, RelativePath: "Show.S01E01.mkv"}},
+		}
+		rr := httptest.NewRecorder()
+		EpisodeListHandler(lister).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episode?seriesId=42&includeEpisodeFile=true", nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+		}
+		body := rr.Body.String()
+		if !strings.Contains(body, `"episodeFile":{`) {
+			t.Errorf("implementing lister must populate the subresource; got %s", body)
+		}
+		if !strings.Contains(body, `"relativePath":"Show.S01E01.mkv"`) {
+			t.Errorf("inner file's relativePath missing; got %s", body)
+		}
+	})
+}
+
+// fakeEpisodeBySeriesWithFileLookup satisfies BOTH EpisodeBySeriesLister
+// AND EpisodeFileLookupForEpisode — exercises the J342 type-assertion
+// branch.
+type fakeEpisodeBySeriesWithFileLookup struct {
+	rows       []episodes.Episode
+	fileLookup map[int]*episodefiles.File
+}
+
+func (f *fakeEpisodeBySeriesWithFileLookup) GetEpisodesBySeries(_ context.Context, _ int) ([]episodes.Episode, error) {
+	return f.rows, nil
+}
+func (f *fakeEpisodeBySeriesWithFileLookup) GetFile(_ context.Context, id int) (*episodefiles.File, error) {
+	if file, ok := f.fileLookup[id]; ok {
+		return file, nil
+	}
+	return nil, episodefiles.ErrNotFound
 }
 
 // J340 wire-shape pin for the EpisodeResource.EpisodeFile pointer-
