@@ -12871,3 +12871,63 @@ Pattern observation: this slice combines TWO classic Wave-3 patterns — Resourc
 - Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
 - Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J279 — Wave 3 twenty-eighth slice: v5 UpdateSettings family port (51 LOC C# source)
+
+v5-NEW family — v3 has no `UpdateConfigController` equivalent (the closest v3 sibling is HostConfigController which carries UpdateMechanism among ~30 other fields). v5 introduces UpdateSettings as its own focused resource. The v3 Go-port's host-config handlers cover the same persistence fields but on a different wire shape; this slice exposes them on the v5 wire as a standalone settings resource.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :6797-6884):
+
+| endpoint                                       | v5 status   | v3 Go-port      | strategy            |
+|------------------------------------------------|-------------|-----------------|---------------------|
+| GET    /api/v5/settings/update                 | 200         | NO equivalent   | v5-NEW              |
+| GET    /api/v5/settings/update/{id}            | 200         | NO equivalent   | v5-NEW (shared)     |
+| PUT    /api/v5/settings/update/{id}            | 202 Accepted| NO equivalent   | v5-NEW              |
+
+**Resource shape** (per `src/Sonarr.Api.V5/Settings/UpdateSettingsResource.cs`):
+
+| field                  | type                            | source                                  |
+|------------------------|---------------------------------|------------------------------------------|
+| id                     | int (inherited RestResource)   | singleton — 1 default, path-param override |
+| branch                 | string                          | configfile.Provider.Branch (default "main") |
+| updateAutomatically    | bool                            | configfile.Provider.UpdateAutomatically (default false) |
+| updateMechanism        | string (camelCase enum)        | configfile.Provider.UpdateMechanism — round-tripped via apiv3.CamelCaseEnumName for the wire; apiv3.UpdateMechanismFromName for inbound PascalCase normalization (builtIn/script/external/apt/docker) |
+| updateScriptPath       | string                          | configfile.Provider.UpdateScriptPath (default "") |
+
+**Validation** — ports the C# SharedValidator chain at UpdateSettingsController.cs:15-17 (`.IsValidPath().When(c => c.UpdateMechanism == UpdateMechanism.Script)`):
+
+- UpdateMechanism MUST be one of the 5 known camelCase values → 400 via httperr.WriteValidation on `UpdateMechanismFromName` failure.
+- When UpdateMechanism == "script": UpdateScriptPath must be non-empty AND must be an absolute path (filepath.IsAbs). Either failure → 400 validation envelope.
+- Other mechanisms: UpdateScriptPath is unrestricted (per the C# `.When(...)` predicate).
+
+**Decoder** — `dec.DisallowUnknownFields()` per the v5 strict-shape pattern. Test `TestUpdateHandler_RejectsUnknownField` pins this contract.
+
+**Persistence** — writes through 4 sequential `configfile.Provider` typed setters: SetBranch, SetUpdateAutomatically, SetUpdateMechanism (normalised to PascalCase), SetUpdateScriptPath. The C# SettingsController.SaveSettings uses reflection-based SaveConfigDictionary against BOTH IConfigFileProvider AND IConfigService — for this resource all 4 fields live on IConfigFileProvider so the IConfigService pass is a no-op. The Go-port skips the reflection trip and writes through the typed setters directly — byte-equivalent wire effect.
+
+**Singleton id semantics** — both GET endpoints accept an optional {id} path-param. Missing/invalid → defaults to 1 (the C# RestController convention for singleton resources). The returned Resource always echoes the requested id (or 1) — matches `SettingsController<TResource>.GetResourceById(id)` at SettingsController.cs:23-29 which assigns `resource.Id = id` after building the body.
+
+**Slice scope** — 370 lines (180 source + 190 test) + 1 import + 3 routes:
+
+- New `internal/api/v5/updatesettings/updatesettings.go` (180 LOC) — local Provider interface (8 methods — 4 typed getters + 4 typed setters; *configfile.Provider satisfies it via wellknown.go's existing typed accessors) + Resource struct (4 wire fields + id, omitempty for id) + GetHandler (shared between / and /{id} routes — defaults id=1, honours path-param via `r.PathValue("id")`) + UpdateHandler (decode + validate + UpdateMechanismFromName roundtrip + 4 sequential setter calls + re-read for response body) + private readResource / validate / write helpers.
+- New `internal/api/v5/updatesettings/updatesettings_test.go` (190 LOC) — 8 tests: GetHandler-defaults-ID-1 (asserts branch=main, updateMechanism=builtIn camelCase), GetHandler-byID-honors-path-param (id=7 echoed), UpdateHandler-accepted-persists (script mechanism + absolute path → 202 + body round-trip + persisted UpdateMechanism="Script" PascalCase, fakeProv records all 4 setter calls), UpdateHandler-script-mechanism-requires-absolute-path (400 on relative path), UpdateHandler-script-mechanism-requires-non-empty-path (400 on empty path with script), UpdateHandler-invalid-mechanism (400 validation envelope mentions UpdateMechanism), UpdateHandler-non-script-mechanism-path-not-validated (builtIn + empty path → 202; only script triggers validation), UpdateHandler-rejects-unknown-field (DisallowUnknownFields pin → 400). fakeProv uses mutex-protected counters for `-race` cleanliness.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`updatesettingsv5`) + 3 new routes alongside the existing /api/v5/settings/importlist routes. Uses `cfg` (the boot-time *configfile.Provider that already satisfies the Provider interface via the typed wellknown.go accessors) — NOT `configProv` which is the typed *config.Provider for the unrelated Configs DB table.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/updatesettings/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/updatesettings/... ./cmd/sonarr/...` ✓ (8 v5/updatesettings tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 31/~50 → 32/~50.
+
+Pattern observation: this is the first Wave 3 slice that is GENUINELY v5-NEW (no v3 controller to alias, not even partially — UpdateSettings groups what v3 spreads across HostConfig and the broader settings UX). The v5 SettingsController<T> reflection-based SaveConfigDictionary pattern maps cleanly to typed setter calls; the Go-port doesn't need reflection because the field set is fixed and small. When future Settings/* slices land (UiSettings 31, GeneralSettings 114, NamingSettings 143, MediaManagementSettings 70, IndexerSettings 30), each will follow this same pattern: local Provider interface + Resource struct + GetHandler+UpdateHandler pair + per-field setter calls. The reflection-based dispatch isn't needed because each settings resource has a fixed compile-time-known field list.
+
+### Next Wave 3 candidates ascending
+
+- Settings/IndexerSettingsController (30 LOC) — next-smallest Settings/*
+- Settings/UiSettingsController (31 LOC)
+- Settings/SettingsController (55 LOC base — already used implicitly)
+- Settings/MediaManagementSettingsController (70 LOC)
+- Settings/GeneralSettingsController (114 LOC)
+- Settings/NamingSettingsController (143 LOC)
+- Episodes/EpisodeController (85 LOC) + RenameEpisodeController (48 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
+- Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
+- Release/ReleasePushController (120 LOC)

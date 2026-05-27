@@ -24,6 +24,7 @@ import (
 	qualitydefinitionv5 "sonarr.tv/sonarr/internal/api/v5/qualitydefinition"
 	qualityprofilev5 "sonarr.tv/sonarr/internal/api/v5/qualityprofile"
 	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
+	updatesettingsv5 "sonarr.tv/sonarr/internal/api/v5/updatesettings"
 	remotepathmappingv5 "sonarr.tv/sonarr/internal/api/v5/remotepathmapping"
 	rootfolderv5 "sonarr.tv/sonarr/internal/api/v5/rootfolder"
 	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
@@ -1232,6 +1233,21 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/settings/importlist", Handler: importlistsettingsv5.GetHandler(configProv)},
 		{Method: "GET", Path: "/api/v5/settings/importlist/{id}", Handler: importlistsettingsv5.GetHandler(configProv)},
 		{Method: "PUT", Path: "/api/v5/settings/importlist/{id}", Handler: importlistsettingsv5.UpdateHandler(configProv)},
+		// J279 — v5 UpdateSettings endpoint family (3 endpoints; 51
+		// LOC C# across UpdateSettingsController + UpdateSettingsResource
+		// + shared SettingsController<T> base 55 LOC). v5-NEW family
+		// (v3 has no UpdateConfigController). Resource has 4 fields:
+		// branch, updateAutomatically, updateMechanism (camelCase
+		// enum), updateScriptPath. Status: GET → 200, PUT → 202
+		// Accepted (matches SettingsController.SaveSettings
+		// TypedAccepted). Validation: UpdateScriptPath must be an
+		// absolute path when UpdateMechanism == script. Persists via
+		// configfile.Provider typed setters (SetBranch /
+		// SetUpdateAutomatically / SetUpdateMechanism /
+		// SetUpdateScriptPath).
+		{Method: "GET", Path: "/api/v5/settings/update", Handler: updatesettingsv5.GetHandler(cfg)},
+		{Method: "GET", Path: "/api/v5/settings/update/{id}", Handler: updatesettingsv5.GetHandler(cfg)},
+		{Method: "PUT", Path: "/api/v5/settings/update/{id}", Handler: updatesettingsv5.UpdateHandler(cfg)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},
