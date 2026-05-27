@@ -15123,3 +15123,113 @@ No new routes. Struct + doc-comment widening only.
 12 wire-shape fields landed across J309-J313 — Combined coverage on the History/Blocklist/SeasonResource family is now: every wire-shape gap on those families that doesn't require either a typed-DTO port (Quality envelope, Languages list) or a service-side compute (CustomFormats matcher dispatch, upgradable-spec for QualityCutoffNotMet population) is closed.
 
 Next-tick smallest candidate: the v5-only BlocklistResource `Source` field (single-line struct add + 1 test — smallest possible J311-pattern repeat at ~10 LOC) or a Languages typed-DTO port (broader scope — defines a `Language struct {id int; name string}` wire type, threads through history+blocklist with id-to-name lookup via internal/language).
+
+---
+
+## J314 — Post-Wave-3 drain, slice 6: typed Languages list-DTO port + History + Blocklist widening
+
+**Anchor**: post-J313 (BlocklistResource Series? subresource pin landed). First mid-tier slice in the post-Wave-3 drain — ports the typed `Language` list DTO that the C# tree carries on History/Blocklist/Queue/ManualImport/Release resources. This slice wires it to History + Blocklist; other carriers (Queue, ManualImport, Release ReleaseResource) follow in dedicated sub-slices.
+
+### C# source
+
+- `src/Sonarr.Api.V3/History/HistoryResource.cs:19` — `public List<Language> Languages { get; set; }`.
+- `src/Sonarr.Api.V5/History/HistoryResource.cs:17` — `public required List<Language> Languages { get; set; }` (v5 marks required; wire identical).
+- `src/Sonarr.Api.V3/Blocklist/BlocklistResource.cs:19` — `public List<Language> Languages { get; set; }`.
+- `src/Sonarr.Api.V5/Blocklist/BlocklistResource.cs:17` — `public required List<Language> Languages { get; set; }`.
+- `src/NzbDrone.Core/Languages/Language.cs` — model with Id + Name; serialized directly (no Resource wrapper) when carried as `List<Language>` on a parent resource.
+
+### Wire contract
+
+C# model `Language` under STJson serializes to `{"id":<int>,"name":"<string>"}`. Both fields always emit (Id=0 = Unknown still has Name; the `JsonStringEnumConverter` doesn't apply since Language is a class with int Id + string Name, not an enum).
+
+Parent resources carry `List<Language>` as required on v5 (`required List<Language>`) and non-nullable on v3. Wire always emits `"languages":[...]` — empty list emits `[]`, never `null`. C# `EpisodeHistory.Languages` defaults to `new List<Language>()` in the constructor; same on `Blocklist.Languages`.
+
+### Port deliverables
+
+**`internal/api/v3/language.go`** — new types + helpers (added alongside existing LanguageResource which serves the GET /api/v3/language listing endpoint with 3-field shape including NameLower):
+
+- `LanguageRef` struct: 2 fields (`ID int json:"id"` + `Name string json:"name"`) — both no-omitempty (always emit). Distinct from `LanguageResource` because the C# Language model wire shape differs from the LanguageResource projection (no NameLower).
+- `ToLanguageRef(id int) LanguageRef`: persisted int → registry lookup via `language.FindByID`. Unrecognised ids preserve the persisted int with name="Unknown" (matches C# `Language.FindById(id) ?? Language.Unknown`).
+- `ToLanguageRefs(ids []int) []LanguageRef`: projects the persisted []int form. Allocates `make([]LanguageRef, 0, len(ids))` — never returns nil so the wire emits `"languages":[]` rather than `null` for the empty case.
+
+**`internal/api/v3/history.go`** — struct + 1 emit-site:
+
+- `HistoryResource.Languages []LanguageRef json:"languages"` field added after EventType (matches C# declaration order — Languages comes right after the scalars in the C# tree).
+- `writeHistoryEntries` populates `Languages: ToLanguageRefs(e.Languages)` per row.
+
+**`internal/api/v3/blocklist.go`** — struct + 1 emit-site (via host_wiring.go):
+
+- `BlocklistResource.Languages []LanguageRef json:"languages"` field added after SourceTitle (matches C# declaration order).
+
+**`cmd/sonarr/host_wiring.go`** — 2 production paged adapters:
+
+- `historyPagedAdapter.PagedHistory` populates `Languages: apiv3.ToLanguageRefs(e.Languages)`.
+- `blocklistPagedAdapter.PagedBlocklist` populates `Languages: apiv3.ToLanguageRefs(e.Languages)`.
+
+Both have J314 comments cataloguing the typed-projection + non-null default.
+
+v5/history + v5/blocklist alias v3 so the widening propagates to both surfaces simultaneously.
+
+### Tests (4 new)
+
+**`internal/api/v3/language_test.go`** (existing `json` + `strings` imports):
+
+- `TestToLanguageRefs_HandlesNilEmptyAndUnknown_J314` — 7-case table on the helper:
+  - nil → non-nil empty slice (the production-side wire-default contract).
+  - empty []int → non-nil empty slice.
+  - single English → `[{ID:1, Name:"English"}]`.
+  - mixed English+French → preserves order.
+  - unknown id (99999) → `[{ID:99999, Name:"Unknown"}]` (int preserved for round-trip, name flagged Unknown).
+  - id 0 → `[{ID:0, Name:"Unknown"}]` (registry's FindByID treats 0 as Unknown).
+  - Original id -2 → `[{ID:-2, Name:"Original"}]` (registry lookup confirms the special Original entry).
+- `TestLanguageRef_WireShape_J314` — pure-marshal pin: `LanguageRef{ID:1, Name:"English"}` → `{"id":1,"name":"English"}`; zero-value LanguageRef{} → `{"id":0,"name":""}` (pins the no-omitempty contract).
+
+**`internal/api/v3/history_test.go`**:
+
+- `TestHistorySinceHandler_EmitsLanguagesField_J314` — 2-row pin covering BOTH branches:
+  - Row 1: populated `Languages: []int{1, 2}` → wire `"languages":[{"id":1,"name":"English"},{"id":2,"name":"French"}]`.
+  - Row 2: `Languages: nil` → adapter allocates non-nil empty slice → wire `"languages":[]`.
+  - Defensive: `!strings.Contains(body, "\"languages\":null")` confirms `null` never appears.
+  - Decode-through round-trip: row 0 Languages len=2 + name="English"; row 1 Languages non-nil.
+
+**`internal/api/v3/blocklist_test.go`**:
+
+- `TestBlocklistHandler_EmitsLanguagesField_J314` — same shape as the History test, applied to BlocklistResource. Constructs the fixture via `ToLanguageRefs([]int{1,2})` + `ToLanguageRefs(nil)` so the test exercises the same adapter path the production wiring uses.
+
+Existing positive-pin tests (`TestHistorySinceHandler_EmitsCustomFormatsAndScore`, `TestHistorySinceHandler_EmitsDataDictAndOmitsWhenNil`, `TestBlocklistHandler_EmitsCustomFormatsField`, `TestBlocklistHandler_EmitsScalarFieldWidening_J311`) continue to pass — their fixtures have nil persisted Languages; the wire shape gains a `"languages":[]` key but the existing substring assertions don't conflict with it.
+
+### Wiring
+
+No new routes. Struct + helper + mapper widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/blocklist/... ./internal/api/v5/history/...` ✓
+  - v3: all pass, 2.697s
+  - cmd/sonarr: all pass, 4.290s
+  - v5/blocklist: all pass, 3.086s
+  - v5/history: all pass, 1.661s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | **DONE this slice (J314)** |
+| B. v5 field divergences | Languages typed-list DTO on Queue + ManualImport + Release | OPEN — same J314 helper applies; each is a 1-field add per carrier resource |
+| B. v5 field divergences | Quality typed QualityModel envelope | OPEN — complex DTO; single dedicated slice |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | OPEN — additive divergence |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — alias break, mid-size |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN — needs deps injection + per-row series lookup |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
+
+14 wire-shape fields landed across J309-J314.
+
+Next-tick smallest candidate: apply the same Languages helper to QueueResource + ManualImportResource (both carriers already have persisted []int Languages; each is a 1-field struct add + 1 emit-site population + 1 wire test). Or finally tackle the Quality typed-DTO port — bigger but unblocks the cluster of QualityModel-bearing resources (History, Blocklist, Queue, ManualImport, Release).

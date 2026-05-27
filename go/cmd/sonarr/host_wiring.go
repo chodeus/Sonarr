@@ -283,6 +283,7 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 			EpisodeIDs:    episodeIDs,
 			SourceTitle:   e.SourceTitle,
 			Date:          e.Date.UTC().Format("2006-01-02T15:04:05Z"),
+			Languages:     apiv3.ToLanguageRefs(e.Languages),
 			Protocol:      apiv3.BlocklistProtocolName(e.Protocol),
 			Indexer:       e.Indexer,
 			Message:       e.Message,
@@ -291,9 +292,11 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 			// until the episode-join wiring lands. customFormats
 			// populated-row mapper lands alongside the calculator
 			// wire-through (J297+). EpisodeIDs/Protocol/Indexer/
-			// Message added at J311 — Languages/Quality/Series
-			// subresource still DEFERRED (each needs a typed wire
-			// DTO or service join).
+			// Message added at J311. Languages (J314): typed
+			// []LanguageRef projection from the persisted []int
+			// form via apiv3.ToLanguageRefs. Series subresource
+			// pinned at J313 (omitempty pointer). Quality still
+			// DEFERRED (needs typed QualityModel envelope).
 		})
 	}
 	return out, total, nil
@@ -721,6 +724,7 @@ func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingR
 			SourceTitle:   e.SourceTitle,
 			Date:          e.Date.UTC().Format("2006-01-02T15:04:05Z"),
 			DownloadID:    e.DownloadID,
+			Languages:     apiv3.ToLanguageRefs(e.Languages),
 			Data:          e.Data,
 			CustomFormats: []apiv3.CustomFormatResource{},
 			// EventType in C# is JsonStringEnumConverter+CamelCase
@@ -730,6 +734,8 @@ func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingR
 			// alongside the calculator wire-through (J296+).
 			// Data (J310): per-history grab-time metadata dict; nil
 			// drops the key via omitempty, populated emits `"data":{...}`.
+			// Languages (J314): typed []LanguageRef projection from
+			// the persisted []int form via apiv3.ToLanguageRefs.
 		})
 	}
 	return out, total, nil

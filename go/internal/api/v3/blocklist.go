@@ -74,6 +74,7 @@ type BlocklistResource struct {
 	Title         string                 `json:"title"`
 	Date          string                 `json:"date"`
 	SourceTitle   string                 `json:"sourceTitle"`
+	Languages     []LanguageRef          `json:"languages"`
 	Protocol      string                 `json:"protocol"`
 	Indexer       string                 `json:"indexer,omitempty"`
 	Message       string                 `json:"message,omitempty"`

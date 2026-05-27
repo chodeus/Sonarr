@@ -72,6 +72,7 @@ type HistoryResource struct {
 	Date                string                 `json:"date"`
 	DownloadID          string                 `json:"downloadId"`
 	EventType           string                 `json:"eventType"`
+	Languages           []LanguageRef          `json:"languages"`
 	Data                map[string]string      `json:"data,omitempty"`
 	QualityCutoffNotMet bool                   `json:"qualityCutoffNotMet"`
 	CustomFormats       []CustomFormatResource `json:"customFormats"`
@@ -219,6 +220,7 @@ func writeHistoryEntries(w http.ResponseWriter, rows []history.Entry) {
 			Date:          e.Date.UTC().Format("2006-01-02T15:04:05Z"),
 			DownloadID:    e.DownloadID,
 			EventType:     eventTypeName,
+			Languages:     ToLanguageRefs(e.Languages),
 			Data:          e.Data,
 			CustomFormats: []CustomFormatResource{},
 			// CustomFormatScore: 0 — populated-row mapper landing

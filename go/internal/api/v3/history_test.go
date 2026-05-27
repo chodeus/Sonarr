@@ -321,6 +321,52 @@ func TestHistoryResource_PopulatedSubresources_EmitFullShape_J312(t *testing.T) 
 	}
 }
 
+// J314 wire-shape pin for the Languages typed-list widening on
+// HistoryResource. Populated row emits the typed list per the
+// C# `required List<Language>` non-null contract; empty/nil
+// persisted Languages still emits `"languages":[]` (non-null
+// default — adapter allocates via ToLanguageRefs which never
+// returns nil). Pinned via writeHistoryEntries (used by
+// HistorySinceHandler).
+func TestHistorySinceHandler_EmitsLanguagesField_J314(t *testing.T) {
+	t.Parallel()
+	one := 1
+	svc := &fakeHistoryRangeReader{sinceRows: []history.Entry{
+		{ID: 1, SeriesID: 11, SourceTitle: "Show.S01E01", Date: time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC), EventType: &one, Languages: []int{1, 2}},
+		{ID: 2, SeriesID: 11, SourceTitle: "Show.S01E02", Date: time.Date(2026, 5, 18, 13, 0, 0, 0, time.UTC), EventType: &one, Languages: nil},
+	}}
+	rr := httptest.NewRecorder()
+	HistorySinceHandler(svc).
+		ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/history/since?date=2026-05-18T00:00:00Z", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	body := rr.Body.String()
+	// Row 1: populated 2-language list → typed wire shape on both entries.
+	if !strings.Contains(body, `"languages":[{"id":1,"name":"English"},{"id":2,"name":"French"}]`) {
+		t.Errorf("row 1 must emit typed Languages list; got %s", body)
+	}
+	// Row 2: nil persisted → adapter allocates empty slice, wire `"languages":[]`.
+	if !strings.Contains(body, `"languages":[]`) {
+		t.Errorf("row 2 nil Languages must emit `\"languages\":[]` (not omitted, not null); got %s", body)
+	}
+	// Defensive: no `"languages":null` anywhere.
+	if strings.Contains(body, `"languages":null`) {
+		t.Errorf("languages must never emit `null` — adapter allocates non-nil empty slice; got %s", body)
+	}
+	// Decode-through round-trip pin.
+	var got []HistoryResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 2 || len(got[0].Languages) != 2 || got[0].Languages[0].Name != "English" {
+		t.Errorf("decoded shape: %+v", got)
+	}
+	if got[1].Languages == nil {
+		t.Errorf("row 1 Languages must decode as non-nil empty (got nil)")
+	}
+}
+
 // J296 wire-shape pin: a populated row must emit
 // `customFormats:[]` (not `null`) and `customFormatScore:0` —
 // matches the C# Newtonsoft default for a non-null

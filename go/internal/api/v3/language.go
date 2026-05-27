@@ -65,6 +65,54 @@ func bucket(id int) int {
 	return 0
 }
 
+// LanguageRef is the 2-field carrier-embedded wire shape used by
+// HistoryResource.Languages, BlocklistResource.Languages, and the
+// other resources that surface a `List<Language>` in the C# tree
+// (history/blocklist/queue/manualimport/release). The distinct
+// type vs LanguageResource (3-field with NameLower) matches the C#
+// distinction between `NzbDrone.Core.Languages.Language` (the model
+// — id + name only, used as a List<Language> in carrier resources)
+// and `Sonarr.Api.V3.Profiles.Languages.LanguageResource` (the
+// listing Resource exposed by GET /api/v3/language with the
+// nameLower field added).
+//
+// Wire shape: `{"id":<int>, "name":"<string>"}` — both fields
+// always emit (matches the C# default-non-nullable Language model
+// projection under STJson's JsonStringEnumConverter; Id=0
+// resolves to "Unknown" via the registry lookup so neither field
+// is ever absent at the populated row).
+type LanguageRef struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// ToLanguageRef projects a persisted language id (the int form
+// stored in History.Languages, Blocklist.Languages, etc.) into the
+// carrier wire shape. Unrecognised ids resolve to `{<id>, "Unknown"}`
+// — matches the C# `Language.FindById(id) ?? Language.Unknown`
+// posture and keeps the persisted int id intact for round-tripping.
+func ToLanguageRef(id int) LanguageRef {
+	if l, ok := language.FindByID(id); ok {
+		return LanguageRef{ID: l.ID, Name: l.Name}
+	}
+	// Preserve the unrecognised id but flag the name as Unknown so
+	// the wire still carries the persisted value (a future
+	// registry update can resolve it without a DB migration).
+	return LanguageRef{ID: id, Name: language.Unknown.Name}
+}
+
+// ToLanguageRefs maps the persisted []int form to the carrier wire
+// shape, allocating a non-nil empty slice when ids is empty/nil so
+// the wire emits `"languages":[]` rather than `null` — matches the
+// C# `required List<Language>` non-null default.
+func ToLanguageRefs(ids []int) []LanguageRef {
+	out := make([]LanguageRef, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, ToLanguageRef(id))
+	}
+	return out
+}
+
 // LanguageHandler returns the http.Handler for GET /api/v3/language.
 // langs is captured by closure so callers can inject a fixed registry
 // for tests; production passes language.All().

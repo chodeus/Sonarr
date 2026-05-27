@@ -165,6 +165,38 @@ func TestBlocklistHandler_EmitsScalarFieldWidening_J311(t *testing.T) {
 	}
 }
 
+// J314 wire-shape pin for the Languages typed-list widening on
+// BlocklistResource. Same contract as J314 on HistoryResource:
+// populated row emits the typed list, nil persisted → adapter
+// allocates non-nil empty slice → wire emits `"languages":[]`
+// (not null, not omitted — matches C# `required List<Language>`
+// non-null default).
+func TestBlocklistHandler_EmitsLanguagesField_J314(t *testing.T) {
+	t.Parallel()
+	svc := &fakeBlocklistLister{
+		records: []BlocklistResource{
+			{ID: 7, SeriesID: 11, EpisodeIDs: []int{}, Date: "2026-05-18T12:00:00Z", SourceTitle: "Show.S01E01", Protocol: "torrent", Languages: ToLanguageRefs([]int{1, 2}), CustomFormats: []CustomFormatResource{}},
+			{ID: 8, SeriesID: 11, EpisodeIDs: []int{}, Date: "2026-05-18T13:00:00Z", SourceTitle: "Show.S01E02", Protocol: "unknown", Languages: ToLanguageRefs(nil), CustomFormats: []CustomFormatResource{}},
+		},
+		total: 2,
+	}
+	rr := httptest.NewRecorder()
+	BlocklistHandler(svc).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/blocklist", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"languages":[{"id":1,"name":"English"},{"id":2,"name":"French"}]`) {
+		t.Errorf("row 1 must emit typed Languages list; got %s", body)
+	}
+	if !strings.Contains(body, `"languages":[]`) {
+		t.Errorf("row 2 nil Languages must emit `\"languages\":[]`; got %s", body)
+	}
+	if strings.Contains(body, `"languages":null`) {
+		t.Errorf("languages must never emit null; got %s", body)
+	}
+}
+
 // J313 wire-shape pin for the Series subresource widening. The
 // field is `*SeriesResource` with omitempty so nil drops the key
 // entirely (matches STJson `WhenWritingNull` / C# nullable
