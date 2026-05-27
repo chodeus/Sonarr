@@ -165,6 +165,41 @@ func TestBlocklistHandler_EmitsScalarFieldWidening_J311(t *testing.T) {
 	}
 }
 
+// J316 wire-shape pin for the v5-additive `source` field on
+// BlocklistResource. C# v5 declares `string? Source` (nullable);
+// C# v3 lacks the field entirely. The Go-port wires it on the
+// shared apiv3.BlocklistResource with omitempty so the field is
+// invisible at the v3 empty-DB shadow-traffic level — populated
+// rows surface the field on BOTH surfaces (deliberate v3
+// divergence; the persisted column exists on both surfaces
+// already, exposing on v3 wire is harmless since v3 clients
+// ignore unknown JSON keys).
+//
+// Test covers BOTH branches in one pass via direct json.Marshal:
+// populated Source → wire emits the key; empty Source → omitempty
+// drops the key.
+func TestBlocklistResource_SourceField_J316(t *testing.T) {
+	t.Parallel()
+	// Branch 1: populated Source → key emitted.
+	populated := BlocklistResource{ID: 7, SeriesID: 11, EpisodeIDs: []int{}, Date: "2026-05-18T12:00:00Z", SourceTitle: "Show.S01E01", Protocol: "torrent", Source: "rss", CustomFormats: []CustomFormatResource{}}
+	buf, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated-source: %v", err)
+	}
+	if !strings.Contains(string(buf), `"source":"rss"`) {
+		t.Errorf("populated Source must emit `\"source\":\"rss\"`; got %s", buf)
+	}
+	// Branch 2: empty Source → key omitted (omitempty pin).
+	empty := BlocklistResource{ID: 8, SeriesID: 11, EpisodeIDs: []int{}, Date: "2026-05-18T13:00:00Z", SourceTitle: "Show.S01E02", Protocol: "torrent", Source: "", CustomFormats: []CustomFormatResource{}}
+	buf2, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty-source: %v", err)
+	}
+	if strings.Contains(string(buf2), `"source":`) {
+		t.Errorf("empty Source must omit the key (omitempty); got %s", buf2)
+	}
+}
+
 // J314 wire-shape pin for the Languages typed-list widening on
 // BlocklistResource. Same contract as J314 on HistoryResource:
 // populated row emits the typed list, nil persisted → adapter

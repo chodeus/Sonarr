@@ -15318,3 +15318,84 @@ No new routes. Struct + doc-comment widening only.
 15 wire-shape fields landed across J309-J315.
 
 Next-tick smallest candidate: Quality typed-DTO port — bigger but unblocks the cluster of QualityModel-bearing resources (History, Blocklist, Queue, ManualImport, Release). Or pick a different small-LOC item like the v5-only BlocklistResource `Source` field (10 LOC additive divergence).
+
+---
+
+## J316 — Post-Wave-3 drain, slice 8: v5-additive `source` field on BlocklistResource
+
+**Anchor**: post-J315 (Languages widening on QueueResource landed). Continues the post-Wave-3 drain with the smallest possible J311-pattern repeat — a single string-field add that closes the last simple wire-shape gap on BlocklistResource before the Quality typed-DTO port.
+
+### C# source
+
+- `src/Sonarr.Api.V5/Blocklist/BlocklistResource.cs:25` — `public string? Source { get; set; }` (v5-only; v3 C# BlocklistResource doesn't declare this field).
+
+### Wire contract
+
+C# v5 wire under STJson `WhenWritingNull`:
+- null → key absent.
+- empty string `""` → `"source":""` (WhenWritingNull only handles null, not empty-string).
+- populated → `"source":"rss"`.
+
+Go-port mapping with `Source string json:"source,omitempty"`:
+- empty string → key absent (Go's omitempty drops "" — collapses with null).
+- populated → `"source":"rss"`.
+
+The empty-string-vs-null collapse is documented as acceptable — Source is a free-form indexer/origin tag whose empty value carries no semantic. Clients distinguishing "no source recorded" from "explicitly empty source" is not a real-world concern.
+
+### Port deliverables
+
+**`internal/api/v3/blocklist.go`** — struct + doc-comment:
+
+- `BlocklistResource.Source string json:"source,omitempty"` field added after Message (matches the C# declaration position near the source-tagging cluster).
+- Doc comment extended with a J316 paragraph cataloguing the additive-divergence rationale, the persisted-column reuse (`blocklist.Entry.Source` already exists), and the v3-client compatibility note (existing v3 clients ignore unknown JSON keys, so the additive divergence is harmless).
+
+**`cmd/sonarr/host_wiring.go`** — production paged adapter:
+
+- `blocklistPagedAdapter.PagedBlocklist` gets a single-line `Source: e.Source` add alongside the other field-population assignments.
+
+v5/blocklist aliases v3 via `type Resource = apiv3.BlocklistResource` so the widening propagates to both surfaces simultaneously. v3 contract goldens stay byte-equal at the empty-DB shadow-traffic level (omitempty drops the empty Source from the wire) — the field only surfaces on populated rows.
+
+### Tests (1 new)
+
+`internal/api/v3/blocklist_test.go`:
+
+- `TestBlocklistResource_SourceField_J316` — pure-marshal pin covering 2 branches:
+  - Populated `Source: "rss"` → wire emits `"source":"rss"`.
+  - Empty `Source: ""` → omitempty drops the key (defensive substring negative pin).
+
+### Wiring
+
+No new routes. Struct + adapter widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/blocklist/...` ✓
+  - v3: all pass, 2.220s
+  - cmd/sonarr: all pass, 3.812s
+  - v5/blocklist: all pass, 2.603s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | **DONE this slice (J316)** |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem | OPEN — requires reprocessOne logic refactor; mid-size slice |
+| B. v5 field divergences | Languages typed-list DTO on ReleaseResource | OPEN — pre-existing []int gap |
+| B. v5 field divergences | Quality typed QualityModel envelope | OPEN — complex DTO; single dedicated slice |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — alias break, mid-size |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN — needs deps injection + per-row series lookup |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN — depends on per-family service ports |
+
+16 wire-shape fields landed across J309-J316.
+
+Next-tick smallest candidate: ManualImportReprocessItem Languages widening (requires the J314 helper + a logic refactor to convert `item.Languages[0] == 0` Unknown-check to `item.Languages[0].ID == 0` + body-decode shape change consideration — mid-size). Or start the Quality typed-DTO port (bigger but unblocks the cluster of QualityModel-bearing resources: History, Blocklist, Queue, ManualImport, Release).

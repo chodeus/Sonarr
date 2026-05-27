@@ -49,6 +49,20 @@ import (
 // complex) or a service join (Languages still needs an id-to-name
 // lookup; Quality needs the QualityModel typed envelope).
 //
+// J316 v5-additive widening: Source (`string?` on v5 only; absent
+// from v3 C# `BlocklistResource.cs`). Persisted as
+// `blocklist.Entry.Source` already. Wired here on the shared
+// apiv3.BlocklistResource (which v5/blocklist aliases) with
+// omitempty so the field is invisible at the v3 empty-DB shadow-
+// traffic level — when populated rows surface the field, v3
+// clients see an additive `"source"` key, which is a deliberate
+// Go-port divergence from C# v3 (the persisted column exists on
+// both surfaces today; exposing it on v3 wire is harmless because
+// existing v3 clients ignore unknown JSON keys). v5 clients get
+// the C# v5 wire shape match. The empty-string-vs-null collapse
+// (Go omitempty drops "") is acceptable — Source is a free-form
+// indexer/origin tag whose empty value carries no semantic.
+//
 // J313 subresource widening: Series (`*SeriesResource` with
 // omitempty — C# `SeriesResource? Series` nullable subresource,
 // populated by `BlocklistResourceMapper.MapToResource` at C#
@@ -78,6 +92,7 @@ type BlocklistResource struct {
 	Protocol      string                 `json:"protocol"`
 	Indexer       string                 `json:"indexer,omitempty"`
 	Message       string                 `json:"message,omitempty"`
+	Source        string                 `json:"source,omitempty"`
 	CustomFormats []CustomFormatResource `json:"customFormats"`
 	Series        *SeriesResource        `json:"series,omitempty"`
 }

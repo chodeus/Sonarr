@@ -287,6 +287,7 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 			Protocol:      apiv3.BlocklistProtocolName(e.Protocol),
 			Indexer:       e.Indexer,
 			Message:       e.Message,
+			Source:        e.Source,
 			CustomFormats: []apiv3.CustomFormatResource{},
 			// Title is derived from Episode.Title in C# — DEFERRED
 			// until the episode-join wiring lands. customFormats
