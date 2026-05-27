@@ -44,6 +44,7 @@ import (
 	calendarv5 "sonarr.tv/sonarr/internal/api/v5/calendar"
 	commandv5 "sonarr.tv/sonarr/internal/api/v5/command"
 	connectionv5 "sonarr.tv/sonarr/internal/api/v5/connection"
+	episodev5 "sonarr.tv/sonarr/internal/api/v5/episode"
 	historyv5 "sonarr.tv/sonarr/internal/api/v5/history"
 	indexerv5 "sonarr.tv/sonarr/internal/api/v5/indexer"
 	localizationv5 "sonarr.tv/sonarr/internal/api/v5/localization"
@@ -1396,6 +1397,18 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// Re-uses queueSvc + pendingCountLister + queueStatusPauser
 		// deps verbatim — same Pauser bracket pattern.
 		{Method: "GET", Path: "/api/v5/queue/status", Handler: queuestatusv5.GetHandler(queueSvc, pendingCountLister{repo: pendingReleasesRepo}, queueStatusPauser)},
+		// J292 — v5 Episode endpoint family (4 endpoints; 85 LOC C#).
+		// GET /episode + GET /episode/{id} are pure path-aliases. PUT
+		// /episode/monitor wraps v3 via v5util.RewriteAcceptedToOK
+		// (v5 demotes v3's 202 to 200, body preserved). PUT /episode/{id}
+		// is v5-NEW (v3 has no per-id PUT — only the bulk /monitor)
+		// — new v5-specific handler that calls SetEpisodeMonitored +
+		// re-fetches + emits 200+EpisodeResource. v5 `includeSubresources`
+		// query param invisible at stub level (J290 pattern).
+		{Method: "GET", Path: "/api/v5/episode", Handler: episodev5.ListHandler(episodesSvc)},
+		{Method: "GET", Path: "/api/v5/episode/{id}", Handler: episodev5.ByIDHandler(episodesSvc)},
+		{Method: "PUT", Path: "/api/v5/episode/monitor", Handler: episodev5.MonitorHandler(episodesSvc)},
+		{Method: "PUT", Path: "/api/v5/episode/{id}", Handler: episodev5.ByIDPutHandler(episodesSvc)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},

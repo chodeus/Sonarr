@@ -13592,3 +13592,57 @@ Pattern observation: cleanest pure-alias slice yet for an endpoint that has subs
 - Episodes/EpisodeController (85 LOC)
 - ImportLists/ImportListExclusionController (88 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J292 — Wave 3 forty-first slice: v5 Episode family port (85 LOC C# source)
+
+Combo slice — mixes 2 path-aliases + 1 v5util wrapper + 1 v5-NEW handler in a single family. **Crosses the 90% milestone** (45/~50 v5 surface coverage).
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :1363-1545):
+
+| endpoint                          | v5 status     | v3 Go-port                              | strategy                  |
+|-----------------------------------|---------------|------------------------------------------|----------------------------|
+| GET  /api/v5/episode              | 200 / 400     | 200 / 400 (apiv3.EpisodeListHandler)     | path-alias                 |
+| GET  /api/v5/episode/{id}         | 200 / 404     | 200 / 404 (apiv3.EpisodeByIDHandler)     | path-alias                 |
+| PUT  /api/v5/episode/monitor      | **200**       | 202 + body (apiv3.EpisodeMonitorHandler) | v5util.RewriteAcceptedToOK |
+| PUT  /api/v5/episode/{id}         | **200** (NEW) | — no v3 equivalent                       | v5-NEW handler             |
+
+**Divergence #1** — PUT /episode/monitor 202→200: v5 controller uses `Ok<List<EpisodeResource>>` while v3 emits 202+body. Wrapped via v5util.RewriteAcceptedToOK (J253/J265 pattern); body preserved byte-for-byte. Failure codes (400 on malformed body / missing episodeIds, 500 on service error) pass through unchanged because the wrapper predicate only matches 202.
+
+**Divergence #2** — PUT /episode/{id} is v5-NEW. v3 only has the bulk /monitor endpoint. The C# v5 implementation at EpisodeController.cs:55-64:
+
+```csharp
+[RestPutById]
+public Ok<EpisodeResource> SetEpisodeMonitored([FromRoute] int id, [FromBody] EpisodeResource resource) {
+    _episodeService.SetEpisodeMonitored(id, resource.Monitored);
+    resource = MapToResource(_episodeService.GetEpisode(id), false, false, false);
+    return TypedResults.Ok(resource);
+}
+```
+
+New v5-specific handler (`ByIDPutHandler`) ports the C# semantics directly:
+1. Parse id from path (400 on invalid)
+2. Decode EpisodeResource body (400 on malformed)
+3. Call SetEpisodeMonitored(ctx, id, body.Monitored) (500 on service error)
+4. Re-fetch via GetEpisodes batch (size-1) (500 on reload error; 404 if empty result)
+5. Emit 200 + first row projected via apiv3.ToEpisodeResource
+
+Uses the existing apiv3.EpisodeMonitorWriter interface — no new interface surface (the writer already has GetEpisodes batch + SetEpisodeMonitored).
+
+**GET endpoints — invisible query-param shift** (J290 pattern): v5 collapses v3's `includeSeries` + `includeEpisodeFile` + `includeImages` bools into a single `includeSubresources` enum array. v3 Go-port handlers ignore all sub-resource flags at the deferred state; v5 handlers ignore `includeSubresources` for the same reason. When the populated-row sub-resource hydration lands (custom-format calculator + series/episodefile join), both surfaces parse their respective wire params into the same internal include-bitmap. SignalR: v5 controller inherits from EpisodeControllerWithSignalR — Updated event broadcast emitter shared with v3 via bus subscription, carries through unchanged.
+
+**Slice scope** — 315 lines (140 source + 175 test) + 1 import + 4 routes:
+
+- New `internal/api/v5/episode/episode.go` (140 LOC) — 4 type aliases (Resource = apiv3.EpisodeResource, Lister = apiv3.EpisodeBySeriesLister, ByIDGetter = apiv3.EpisodeByIDGetter, Writer = apiv3.EpisodeMonitorWriter) + 2 variable aliases (ListHandler / ByIDHandler) + 1 wrapper func (MonitorHandler via v5util.RewriteAcceptedToOK) + 1 new v5-specific handler (ByIDPutHandler).
+- New `internal/api/v5/episode/episode_test.go` (175 LOC) — 7 tests: ListHandlerAlias-empty (200 + `[]`), ByIDHandlerAlias-NotFound, MonitorHandler-demotes-Accepted-to-200 (canonical wrapper pin — body match + SetEpisodeMonitored called once), MonitorHandler-malformed-body-400 (wrapper passes 400 through), ByIDPutHandler-success-200 (round-trip + SetEpisodeMonitored called once + body Monitored=true after update), ByIDPutHandler-invalid-id-400 (non-numeric path), ByIDPutHandler-malformed-body-400, ByIDPutHandler-missing-after-update-404 (id 999 doesn't exist → GetEpisodes returns empty → 404). fakeWriter satisfies the full apiv3.EpisodeMonitorWriter interface (GetEpisodesBySeries + GetEpisodes + GetEpisode + SetEpisodeMonitored + SetMonitored) with mutex-protected counters for -race cleanliness.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`episodev5`) + 4 new routes alongside the existing /api/v3/episode routes. Re-uses episodesSvc dep verbatim.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/episode/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/episode/... ./cmd/sonarr/...` ✓ (7 v5/episode tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 44/~50 → 45/~50. **Crossed the 90% milestone** (rough estimate).
+
+Pattern observation: first slice that combines THREE patterns in one family — path-alias + v5util status wrapper + v5-NEW handler. The mix-and-match dispatch is per-endpoint; the v5 package decides each endpoint's strategy independently. Mirrors the J270/J274/J276 MIXED-slice template applied at a smaller scale.
+
+### Next Wave 3 candidates ascending
+
+- ImportLists/ImportListExclusionController (88 LOC)
+- Release/ReleasePushController (120 LOC)
