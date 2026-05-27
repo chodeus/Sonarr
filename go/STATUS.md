@@ -14124,3 +14124,75 @@ The Wave 1 custom-format calculator port arc is now drained at the loop-scope le
 6. **J273 LogResource `method` field omission on v5** ✓ (J295)
 
 Note: the wire-throughs are STRUCT-LEVEL widenings — the populated-row mappers that compute matched formats + scores per row are still gated on the per-family service port chain (history.Service.PagedHistory rows, blocklist.Service.PagedBlocklist rows, etc.). When those service ports land, no further Resource widening is needed; the existing struct fields just start receiving non-zero values via the calculator + score adapter that's already wired at `cmd/sonarr/format_calculator_wiring.go`.
+
+---
+
+## J301 — Wave 3 LARGE-family arc, slice 1 of 5: EpisodeFile family (205 LOC C# — smallest queued)
+
+**Anchor**: post-J300 (Wave 1 calculator wire-through arc drained). Loop scope's Wave 3 LARGE family list: EpisodeFiles (205) → CustomFormats (203) → Series (422+116) → Release (343) → Queue (410). Smallest-LOC-first prioritisation picks EpisodeFiles for slice 1.
+
+### C# source
+
+`src/Sonarr.Api.V5/EpisodeFiles/EpisodeFileController.cs` (205 LOC). Six endpoints with explicit `TypedResults` posture:
+
+| v5 endpoint | C# return shape | v3 equivalent | divergence |
+| --- | --- | --- | --- |
+| GET    /api/v5/episodefile         | `Ok<List<EpisodeFileResource>>`   | 200 + array | NONE — variable-alias |
+| GET    /api/v5/episodefile/{id}    | implicit 200 (RestController base) | 200 + body  | NONE — variable-alias |
+| PUT    /api/v5/episodefile/{id}    | `Accepted<EpisodeFileResource>`    | 202 + body  | NONE — variable-alias (v3 emits 202) |
+| PUT    /api/v5/episodefile/bulk    | `Ok<List<EpisodeFileResource>>`    | 202 + body  | **202 → 200 demote** via `v5util.RewriteAcceptedToOK` |
+| DELETE /api/v5/episodefile/{id}    | `NoContent` (204 + empty)          | 200 + `{}`  | **200+`{}` → 204+empty demote** via `v5util.RewriteSuccessTo204` |
+| DELETE /api/v5/episodefile/bulk    | `NoContent` (204 + empty)          | 200 + `{}`  | **200+`{}` → 204+empty demote** via `v5util.RewriteSuccessTo204` |
+
+`PUT /api/v3/episodefile/editor` (marked `[Obsolete]` in v3) is **dropped entirely** in C# v5 — no `[HttpPut("editor")]` action on the controller. v5 surface intentionally NOT routing it.
+
+### Port deliverables
+
+**New package** `internal/api/v5/episodefile/`:
+
+- `episodefile.go` (~110 LOC including package doc)
+  - Type aliases: `Resource = apiv3.EpisodeFileResource`, `Reader = apiv3.EpisodeFileReader`, `Writer = apiv3.EpisodeFileWriter`, `SeriesExistsChecker = apiv3.SeriesExistsChecker`.
+  - Variable-alias handlers: `ListHandler`, `ByIDHandler`, `UpdateHandler` (re-export apiv3 funcs).
+  - Wrapper handlers: `BulkUpdateHandler(svc Writer) http.Handler` = `v5util.RewriteAcceptedToOK(apiv3.EpisodeFileBulkUpdateHandler(svc))`; `DeleteHandler(svc Writer) http.Handler` = `v5util.RewriteSuccessTo204(apiv3.EpisodeFileDeleteHandler(svc))`; `BulkDeleteHandler(svc Writer) http.Handler` = `v5util.RewriteSuccessTo204(apiv3.EpisodeFileBulkDeleteHandler(svc))`.
+
+- `episodefile_test.go` (9 tests, ~200 LOC):
+  - **DELETE /{id}**:
+    - `TestDeleteHandler_Success_Returns204EmptyBody` — pins 204 + zero-length body + Content-Type stripped + 1-id dispatch.
+    - `TestDeleteHandler_NotFound_PassesThrough404` — pins 404 passthrough (episodefile DELETE is NOT in the J232 idempotency-aligned set; C# `NzbDroneClientException(HttpStatusCode.NotFound)` at controller.cs:120 explicit-throws).
+  - **DELETE /bulk**:
+    - `TestBulkDeleteHandler_Success_Returns204EmptyBody` — pins 204 + both files dispatched.
+    - `TestBulkDeleteHandler_EmptyList_Returns204EmptyBody` — pins the empty-list short-circuit: v3 emits 200+`{}` without dispatching any deletes; v5 rewrites to 204+empty (still no dispatch).
+    - `TestBulkDeleteHandler_MalformedBody_PassesThrough400` — pins 400+envelope NOT rewritten.
+  - **PUT /bulk**:
+    - `TestBulkUpdateHandler_Success_Returns200WithBodyPreserved` — pins 202 → 200 demote AND body byte-preserved (decodable as `[]Resource`).
+    - `TestBulkUpdateHandler_MalformedBody_PassesThrough400` — 400 passthrough.
+    - `TestBulkUpdateHandler_ServiceError_PassesThrough500` — pins that 500 (with no body) does NOT match the rewrite predicate; passes through unchanged. Defends against future predicate-loosening regressions.
+  - **Type aliases**: `TestTypeAliasesMatchV3` — compile-time invariant (both directions of struct alias + nil-typed interface alias for Reader/Writer/SeriesExistsChecker).
+
+- `fakeWriter` test helper implements both `Reader` and `Writer` (one struct satisfies both interfaces) — covers `GetFile`, `GetFiles`, `Delete`, `Update`, `UpdateMany`. `getManyErr` + `updateErr` knobs let the malformed/error tests exercise their respective branches without touching real `episodefiles.Service`.
+
+**`cmd/sonarr/host_wiring.go` edits**:
+
+- New import alias `episodefilev5 "sonarr.tv/sonarr/internal/api/v5/episodefile"` after `episodev5`.
+- Six new `host.Route{}` entries in `v5Routes()` immediately after the v5 episode block (line 1419), with a J301 prefix comment explaining the divergence map + the dropped `/editor` overload.
+- Service deps wired: `episodeFilesSvc` (read+write) for all 6 handlers; `seriesSvc` (read-side `SeriesExists`) for the list handler's seriesId-arm 404 precondition.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v5/episodefile/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v5/episodefile/... ./internal/api/v3/... ./cmd/sonarr/...` ✓
+  - v5/episodefile: 9 tests, all pass, 1.616s
+  - internal/api/v3 (regression check): all existing tests pass, 2.159s
+  - cmd/sonarr (wiring integration): all tests pass, 3.704s
+
+### Wave 3 LARGE-family arc progress
+
+| family | LOC C# | status |
+| --- | --- | --- |
+| EpisodeFiles | 205 | **DONE (J301)** |
+| CustomFormats | 203 | queued (partial port at J222 — Resource projection alignment with calculator output still pending) |
+| Series | 422 + 116 | queued (multi-slice — SeriesController CRUD + SeriesEditor) |
+| Release | 343 | queued (ReleaseController main; ReleasePush sub-family done at J294) |
+| Queue | 410 | queued (paged GET + DELETE + bulk; QueueAction/Details/Status subs done at J289-J291) |
+

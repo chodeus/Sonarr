@@ -47,6 +47,7 @@ import (
 	commandv5 "sonarr.tv/sonarr/internal/api/v5/command"
 	connectionv5 "sonarr.tv/sonarr/internal/api/v5/connection"
 	episodev5 "sonarr.tv/sonarr/internal/api/v5/episode"
+	episodefilev5 "sonarr.tv/sonarr/internal/api/v5/episodefile"
 	historyv5 "sonarr.tv/sonarr/internal/api/v5/history"
 	indexerv5 "sonarr.tv/sonarr/internal/api/v5/indexer"
 	localizationv5 "sonarr.tv/sonarr/internal/api/v5/localization"
@@ -1417,6 +1418,22 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/episode/{id}", Handler: episodev5.ByIDHandler(episodesSvc)},
 		{Method: "PUT", Path: "/api/v5/episode/monitor", Handler: episodev5.MonitorHandler(episodesSvc)},
 		{Method: "PUT", Path: "/api/v5/episode/{id}", Handler: episodev5.ByIDPutHandler(episodesSvc)},
+		// J301 — v5 EpisodeFile endpoint family (6 endpoints; 205 LOC
+		// C# — EpisodeFileController). First slice of the Wave 3 LARGE-
+		// family arc (post-calculator). Three pure variable-aliases to
+		// v3 (GET list / GET /{id} / PUT /{id}) + three v5util status-
+		// rewrite wrappers (PUT /bulk demotes 202→200; DELETE /{id} +
+		// DELETE /bulk demote 200+`{}` → 204+empty). The v3-only
+		// `[HttpPut("editor")]` overload is NOT routed on v5 — C# v5
+		// controller has no editor action (operators use PUT /bulk).
+		// EpisodeFileResource carries the J298 customFormats[] +
+		// customFormatScore widening unchanged via the alias.
+		{Method: "GET", Path: "/api/v5/episodefile", Handler: episodefilev5.ListHandler(episodeFilesSvc, seriesSvc)},
+		{Method: "GET", Path: "/api/v5/episodefile/{id}", Handler: episodefilev5.ByIDHandler(episodeFilesSvc)},
+		{Method: "PUT", Path: "/api/v5/episodefile/{id}", Handler: episodefilev5.UpdateHandler(episodeFilesSvc)},
+		{Method: "PUT", Path: "/api/v5/episodefile/bulk", Handler: episodefilev5.BulkUpdateHandler(episodeFilesSvc)},
+		{Method: "DELETE", Path: "/api/v5/episodefile/{id}", Handler: episodefilev5.DeleteHandler(episodeFilesSvc)},
+		{Method: "DELETE", Path: "/api/v5/episodefile/bulk", Handler: episodefilev5.BulkDeleteHandler(episodeFilesSvc)},
 		// J293 — v5 ImportListExclusion endpoint family (6 endpoints;
 		// 88 LOC C# — ImportListExclusionController). PATH MAP CHANGE
 		// from v3: v5 root GET /importlistexclusion IS paged (no
