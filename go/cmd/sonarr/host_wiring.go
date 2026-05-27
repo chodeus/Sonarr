@@ -18,6 +18,7 @@ import (
 	filesystemv5 "sonarr.tv/sonarr/internal/api/v5/filesystem"
 	healthv5 "sonarr.tv/sonarr/internal/api/v5/health"
 	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
+	generalsettingsv5 "sonarr.tv/sonarr/internal/api/v5/generalsettings"
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
 	indexersettingsv5 "sonarr.tv/sonarr/internal/api/v5/indexersettings"
 	mediamanagementsettingsv5 "sonarr.tv/sonarr/internal/api/v5/mediamanagementsettings"
@@ -1288,6 +1289,21 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/settings/mediamanagement", Handler: mediamanagementsettingsv5.GetHandler(configProv)},
 		{Method: "GET", Path: "/api/v5/settings/mediamanagement/{id}", Handler: mediamanagementsettingsv5.GetHandler(configProv)},
 		{Method: "PUT", Path: "/api/v5/settings/mediamanagement/{id}", Handler: mediamanagementsettingsv5.UpdateHandler(configProv)},
+		// J283 — v5 GeneralSettings endpoint family (3 endpoints; 207
+		// LOC C# across GeneralSettingsController + GeneralSettingsResource).
+		// ONE wire-shape divergence: v5 omits the v3-only
+		// `trustCgnatIpAddresses` field (newer than the v5 fork). Other
+		// 37 fields byte-identical. v5 handlers wrap v3's HostConfig
+		// handlers with a field-strip middleware that removes the key
+		// from the JSON response body; v3's DisallowUnknownFields
+		// decoder accepts v5-shaped POST bodies (missing field defaults
+		// to false). User-upsert SaveSettings override + richer
+		// validation chain (FileExistsValidator, IsValidCertificate,
+		// IUserService.Upsert) DEFERRED on the v5 surface — same gap
+		// as v3 today, pending the user-account service port.
+		{Method: "GET", Path: "/api/v5/settings/general", Handler: generalsettingsv5.GetHandler(hostCfg)},
+		{Method: "GET", Path: "/api/v5/settings/general/{id}", Handler: generalsettingsv5.GetHandler(hostCfg)},
+		{Method: "PUT", Path: "/api/v5/settings/general/{id}", Handler: generalsettingsv5.UpdateHandler(hostCfg)},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},

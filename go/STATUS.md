@@ -13107,3 +13107,62 @@ Pattern observation: 4th consecutive Settings/* slice (J279 UpdateSettings was v
 - Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
 - Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J283 — Wave 3 thirty-second slice: v5 GeneralSettings family port (207 LOC C# source)
+
+Field-strip slice — introduces a NEW pattern: wrap v3 handler with a JSON-key strip middleware to drop a v3-only field from the v5 wire. v3's HostConfigController carries `trustCgnatIpAddresses` (added post-v5-fork); v5's GeneralSettings omits it. All other 37 fields are byte-identical.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :1842-1932):
+
+| endpoint                                | v5 status   | v3 Go-port                          | strategy                |
+|-----------------------------------------|-------------|--------------------------------------|--------------------------|
+| GET    /api/v5/settings/general         | 200         | 200 (apiv3.HostConfigHandler)        | wrap + strip field       |
+| GET    /api/v5/settings/general/{id}    | 200         | 200 (same handler, ignores id)       | wrap + strip field       |
+| PUT    /api/v5/settings/general/{id}    | 202 Accepted| 202 (apiv3.HostConfigUpdateHandler)  | wrap + strip field       |
+
+**Resource diff** — single field omitted on v5:
+
+| field                    | v3 Go-port | v5 C# | notes                              |
+|--------------------------|------------|-------|------------------------------------|
+| trustCgnatIpAddresses    | ✓ bool     | —     | v3-only (post-fork); v5 strips     |
+
+All other 37 fields share name + type + JSON tag spelling between v3 HostConfigResource and v5 GeneralSettingsResource.
+
+**Field-strip middleware** (`stripField` in the v5 generalsettings package):
+- Buffers v3 handler output via v5util.BufferingWriter
+- On success status (200 / 202) AND JSON-object body (first byte `{`): unmarshal into map, delete named key, re-marshal
+- Error bodies (400/404/500), non-JSON bodies, arrays/scalars: pass through verbatim
+- Headers preserved via v5util.CopyHeaders
+
+Reusable shape — if a second field-strip use case appears, will consolidate into v5util per the J243 four-duplication trigger. For now keep scope tight, single consumer.
+
+**v3 PUT decoder compatibility**: v3 uses `dec.DisallowUnknownFields()` per config_host.go pattern. v5-shaped POST bodies (missing trustCgnatIpAddresses) still parse cleanly because the missing field is KNOWN to v3's struct and just defaults to false (zero value). No 400 from missing-field — only from genuinely unknown fields. The wire contract works bidirectionally.
+
+**v5-only deferrals** (NOT carried by either v3 or v5 Go-port):
+- User-upsert SaveSettings override (UpdateScriptPath user creation flow per GeneralSettingsController.cs:105-113) — pending IUserService Go port
+- FileExistsValidator + IsValidCertificate validators on SslCertPath/SslKeyPath when EnableSsl — same disk-validator-adapter gap as J282 mediamanagement
+- PasswordConfirmation cross-field match-against-stored — pending IUserService
+- AuthenticationMethod NotEqual(Basic) custom error message — minor; could port to v3 trivially
+
+Tracked under v5-side audit follow-ups in AUDIT_FIX_BACKLOG.md (forthcoming entry).
+
+**Slice scope** — 260 lines (125 source + 135 test) + 1 import + 3 routes:
+
+- New `internal/api/v5/generalsettings/generalsettings.go` (125 LOC) — 2 type aliases (Getter = apiv3.HostConfigGetter, Writer = apiv3.HostConfigWriter; NO Resource alias because v5 wire shape differs by one field) + 2 handler funcs (GetHandler/UpdateHandler wrapping v3 via stripField) + 1 private helper (stripField — buffers via v5util.BufferingWriter, strips named JSON object key on 200/202 responses with JSON-object body, passes through everything else).
+- New `internal/api/v5/generalsettings/generalsettings_test.go` (135 LOC) — uses internal-test package style (same `generalsettings` namespace) to access the unexported stripField helper directly. 5 tests: stripWrapper-strips-trustCgnatIpAddresses-on-GET-200 (canonical strip pin — asserts field absent from response body, "port":8989 preserved), stripWrapper-strips-trustCgnatIpAddresses-on-PUT-202 (same strip on Accepted), stripWrapper-passes-through-on-error-400 (error envelope preserved verbatim, NOT stripped — validates the success-only predicate), stripWrapper-passes-through-non-JSON-body (500 + "internal server error" plain text passes through with body byte-equal), stripWrapper-preserves-other-keys (8-field spot-check after strip; asserts all non-trustCgnat fields survive).
+- `cmd/sonarr/host_wiring.go` — 1 new import (`generalsettingsv5`) + 3 new routes alongside the existing /api/v3/config/host routes. Re-uses `hostCfg` adapter (declared at host_wiring.go:1033) — same composite-provider that backs v3.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/generalsettings/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/generalsettings/... ./cmd/sonarr/...` ✓ (5 v5/generalsettings tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 35/~50 → 36/~50.
+
+Pattern observation: J283 introduces the field-strip wrapper as a NEW Wave 3 strategy variant — sits alongside the existing v5util status-rewrite wrappers but operates on body content (not status). Useful whenever a v3-side field appears post-fork and v5 hasn't picked it up. Same composition pattern as v5util.RewriteSuccessTo204 (buffer + inspect + transform + forward); could be hoisted into v5util as `StripField(name string, h http.Handler)` if a second consumer appears.
+
+### Next Wave 3 candidates ascending
+
+- Settings/NamingSettingsController (143 LOC) — likely path-alias (v3 has config_naming.go); needs field-by-field diff
+- Episodes/EpisodeController (85 LOC) + RenameEpisodeController (48 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Series/SeriesLookupController (58 LOC) + SeriesFolderController (34 LOC) + SeriesImportController (29 LOC)
+- Queue/QueueDetailsController (77 LOC) + QueueStatusController (80 LOC) + QueueActionController (58 LOC)
+- Release/ReleasePushController (120 LOC)
