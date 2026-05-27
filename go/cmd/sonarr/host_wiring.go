@@ -35,6 +35,7 @@ import (
 	renameepisodev5 "sonarr.tv/sonarr/internal/api/v5/renameepisode"
 	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
 	releasepushv5 "sonarr.tv/sonarr/internal/api/v5/releasepush"
+	seriesv5 "sonarr.tv/sonarr/internal/api/v5/series"
 	seriesfolderv5 "sonarr.tv/sonarr/internal/api/v5/seriesfolder"
 	seriesimportv5 "sonarr.tv/sonarr/internal/api/v5/seriesimport"
 	serieslookupv5 "sonarr.tv/sonarr/internal/api/v5/serieslookup"
@@ -1350,6 +1351,26 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// family port DEFERRED per loop contract — Resource widens for
 		// both surfaces simultaneously when the v5 Series family lands).
 		{Method: "POST", Path: "/api/v5/series/import", Handler: seriesimportv5.PostHandler(seriesWriter, seriesEmitter)},
+		// J303 — v5 Series endpoint family CRUD sub-slice (5 endpoints
+		// of 6; 422 LOC C# — SeriesController). Four pure variable-
+		// aliases to v3 (GET list / GET /{id} / POST / PUT) — statuses
+		// already match (200 / 200 / 201 / 202). DELETE wrapped via
+		// v5util.RewriteSuccessTo204 to demote v3's 200+`{}` → v5's
+		// 204+empty matching `TypedResults.NoContent()` at
+		// SeriesController.cs:248-254. SeriesResource v5-field
+		// divergences (MalIds, AniListIds, OriginalCountry, IsExcluded,
+		// LanguageProfileId-removal) DEFERRED — empty-DB Go-port emits
+		// zero rows so the divergence is unobservable at shadow-traffic
+		// level until populated-mapper service ports land. PUT
+		// /{id}/season (v5-NEW per-id season-monitor endpoint at
+		// SeriesController.cs:223-246) DEFERRED to a follow-up sub-slice
+		// — needs single-season monitored-set on series.Service (new
+		// code, no v3 equivalent).
+		{Method: "GET", Path: "/api/v5/series", Handler: seriesv5.ListHandler(seriesSvc)},
+		{Method: "GET", Path: "/api/v5/series/{id}", Handler: seriesv5.ByIDHandler(seriesSvc)},
+		{Method: "POST", Path: "/api/v5/series", Handler: seriesv5.CreateHandler(seriesWriter, seriesEmitter)},
+		{Method: "PUT", Path: "/api/v5/series/{id}", Handler: seriesv5.UpdateHandler(seriesWriter, seriesEmitter)},
+		{Method: "DELETE", Path: "/api/v5/series/{id}", Handler: seriesv5.DeleteHandler(seriesWriter, seriesEmitter)},
 		// J286 — v5 SeriesFolder endpoint family (1 endpoint; 34 LOC
 		// C# — SeriesFolderController.GetFolder returning the computed
 		// series folder name per the naming config, no disk write).

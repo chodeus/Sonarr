@@ -14263,3 +14263,73 @@ The Go-port previously only modelled the `includeDetails=true` shape (struct fie
 
 3 LARGE families remain. Series is next at multi-slice scale (422 main + 116 editor) — will sub-slice per CRUD/editor split per the loop scope guidance.
 
+
+---
+
+## J303 — Wave 3 LARGE-family arc, slice 3 of 5: Series family — SeriesController CRUD sub-slice (5 of 6 endpoints)
+
+**Anchor**: post-J302 (CustomFormats projection alignment landed). Series family is the largest LARGE entry (422 LOC main + 116 LOC SeriesEditor) — sub-slicing per the loop scope guidance ("Series family … Multi-slice arc — split into sub-slices: SeriesController CRUD (GET list/by-id/POST/PUT/DELETE), SeriesEditor (bulk operations), per-endpoint divergences").
+
+### C# source
+
+`src/Sonarr.Api.V5/Series/SeriesController.cs` (422 LOC). Six routed endpoints:
+
+| v5 endpoint | C# return shape | v3 equivalent | divergence |
+| --- | --- | --- | --- |
+| GET    /api/v5/series         | `Ok<List<SeriesResource>>` | 200 + array | NONE — variable-alias |
+| GET    /api/v5/series/{id}    | `Ok<SeriesResource>` / `NotFound` | 200 / 404 | NONE — variable-alias |
+| POST   /api/v5/series         | `Created<SeriesResource>` (RestPostById + TypedCreated) | 201 + body | NONE — variable-alias |
+| PUT    /api/v5/series/{id}    | `Accepted<SeriesResource>` (RestPutById + TypedAccepted) | 202 + body | NONE — variable-alias (`moveFiles` query routes through) |
+| **PUT  /api/v5/series/{id}/season** | `Ok<SeasonResource>` (200 + SeasonResource) | NONE (v5-NEW) | DEFERRED — needs single-season monitored-set on series.Service |
+| DELETE /api/v5/series/{id}    | `NoContent` (204 + empty) | 200 + `{}` | **200+`{}` → 204+empty demote** via `v5util.RewriteSuccessTo204` |
+
+### Port deliverables
+
+**New package** `internal/api/v5/series/`:
+
+- `series.go` (~110 LOC including package doc + deferred-work catalogue)
+  - Type aliases: `Resource = apiv3.SeriesResource`, `Lister = apiv3.SeriesLister`, `ByIDGetter = apiv3.SeriesByIDGetter`, `Writer = apiv3.SeriesWriter`, `Emitter = apiv3.SeriesEmitter`.
+  - Variable-alias handlers: `ListHandler`, `ByIDHandler`, `CreateHandler`, `UpdateHandler` (re-export v3 funcs).
+  - Wrapper handler: `DeleteHandler(svc Writer, emitter Emitter) http.Handler` = `v5util.RewriteSuccessTo204(apiv3.SeriesDeleteHandler(svc, emitter))`.
+
+- `series_test.go` (3 tests):
+  - `TestDeleteHandler_Success_Returns204EmptyBody` — pins 204 + zero-length body + Content-Type stripped + SignalR Deleted broadcast fires with the correct id (emitter receives `Resource{ID: 7}`).
+  - `TestDeleteHandler_NotFound_PassesThrough404` — pins 404 passthrough (series DELETE is non-idempotent per C# `_seriesService.DeleteSeries` throwing `ModelNotFoundException`) + SignalR Deleted emit-suppression on missing id (J232 contract).
+  - `TestTypeAliasesMatchV3` — compile-time invariant: both struct alias directions + 4 interface-typed-nil aliases (Lister, ByIDGetter, Writer, Emitter).
+
+- `fakeWriter` (mirror of v3's `fakeSeriesWriter`) and `fakeEmitter` (records Deleted broadcasts only — Created/Updated unused in this slice).
+
+**`cmd/sonarr/host_wiring.go` edits**:
+
+- New import alias `seriesv5 "sonarr.tv/sonarr/internal/api/v5/series"` placed alphabetically between `seriesfolderv5` and `seriesimportv5`.
+- Five new `host.Route{}` entries in `v5Routes()` immediately after the existing `/api/v5/series/import` POST route, with a J303 prefix comment cataloguing the divergence map + the four DEFERRED items.
+- Service deps wired: `seriesSvc` (read-side for list + by-id); `seriesWriter` + `seriesEmitter` (the existing shared cascade-adapter + SignalR-broadcast instances).
+
+### Deferred to follow-up sub-slices
+
+1. **PUT /api/v5/series/{id}/season** — v5-NEW per-id season-monitor endpoint at SeriesController.cs:223-246. Returns `Ok<SeasonResource>` (200 + SeasonResource); 404 when the SeasonNumber doesn't match. Genuinely new wire shape with no v3 equivalent + needs single-season monitored-set on `series.Service` (similar to the J291 EpisodeController `SetEpisodeMonitored` port but at the season granularity).
+2. **SeriesEditor family** — separate C# controller at `SeriesEditorController.cs` (116 LOC) — bulk PUT/DELETE on `/api/v5/series/editor`. v3 already has SeriesEditorUpdateHandler + SeriesEditorDeleteHandler at lines 357 + 405 of v3 series.go. Likely also a status-rewrite-wrapper slice.
+3. **SeriesResource v5-specific field divergences**: `MalIds` (HashSet<int>?), `AniListIds` (HashSet<int>?), `OriginalCountry` (string?), `IsExcluded` (bool?) — added in v5; `LanguageProfileId` (`=> 1` computed expr) — present in v3 only. All v3 `string`/`List` fields made `nullable` in v5 but indistinguishable on wire under STJson `DefaultIgnoreCondition.WhenWritingNull`. Empty-DB Go-port emits zero rows so divergences are unobservable at shadow-traffic level today; widening is a populated-mapper-port-arc slice (post-Wave-3).
+4. **`includeSubresources[]` query-param filtering** — C# `SeriesSubresource` enum at `SeriesSubresource.cs`. Today the v3 Go-port handlers ignore all sub-resource flags. Same J290 "query-param-shift invisible at stub level" sub-pattern as v5/episode. Routes through populated-mapper port chain when that lands.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v5/series/... ./cmd/sonarr/...` ✓
+- `go test -race -count=1 ./internal/api/v5/series/... ./internal/api/v3/... ./cmd/sonarr/...` ✓
+  - v5/series: 3 tests, all pass, 1.655s
+  - v3 (regression check): all tests pass, 2.202s
+  - cmd/sonarr (wiring integration): all tests pass, 3.675s
+
+### Wave 3 LARGE-family arc progress (updated)
+
+| family | LOC C# | status |
+| --- | --- | --- |
+| EpisodeFiles | 205 | DONE (J301) |
+| CustomFormats | 203 | DONE (J302) — surface at J222 + projection alignment at J302 |
+| Series — Controller CRUD | 422 (5/6 endpoints) | **DONE (J303)** |
+| Series — /{id}/season | (covered in 422) | queued — v5-NEW endpoint, needs single-season monitored-set service |
+| Series — Editor | 116 | queued (bulk PUT/DELETE on /editor; similar status-rewrite-wrapper slice) |
+| Release | 343 | queued |
+| Queue | 410 | queued |
+
