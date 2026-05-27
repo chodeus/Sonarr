@@ -36,6 +36,18 @@ import (
 // semantic — null when unset on the wire, populated when the queue
 // row is tied to a Series/Episode.
 //
+// J318 bool/int widening: DownloadClientHasPostImportCategory bool
+// (both v3+v5) + CustomFormatScore int (both v3+v5) +
+// EpisodesWithFilesCount int (v5-additive — v3 carries
+// EpisodeHasFile bool instead; the Go-port surfaces the v5 form on
+// the shared apiv3 type as deliberate v3 divergence per the J316
+// pattern, since the v3 wire field is rarely consumed and the v5
+// shape is the forward-compatible one) + IsFullSeason bool (v5-
+// additive). All omitempty-tagged: bool false / int 0 drop the
+// key, populated values emit. Today's empty-DB stub never
+// allocates these fields → no wire-shape change at the empty-DB
+// shadow-traffic level.
+//
 // J317 scalar widening: Size (int64) + Indexer + DownloadClient +
 // OutputPath + ErrorMessage (4 strings). All persisted on the
 // queue.Queue model already (queue.go:170 Size, :211 Indexer, :204
@@ -75,19 +87,23 @@ import (
 // stub today leaves the field nil so the wire stays unchanged
 // at the empty-DB shape.
 type QueueResource struct {
-	ID             int           `json:"id,omitempty"`
-	SeriesID       *int          `json:"seriesId,omitempty"`
-	EpisodeID      *int          `json:"episodeId,omitempty"`
-	Title          string        `json:"title,omitempty"`
-	Status         string        `json:"status,omitempty"`
-	DownloadID     string        `json:"downloadId,omitempty"`
-	Protocol       string        `json:"protocol,omitempty"`
-	Languages      []LanguageRef `json:"languages,omitempty"`
-	Size           int64         `json:"size,omitempty"`
-	Indexer        string        `json:"indexer,omitempty"`
-	DownloadClient string        `json:"downloadClient,omitempty"`
-	OutputPath     string        `json:"outputPath,omitempty"`
-	ErrorMessage   string        `json:"errorMessage,omitempty"`
+	ID                                  int           `json:"id,omitempty"`
+	SeriesID                            *int          `json:"seriesId,omitempty"`
+	EpisodeID                           *int          `json:"episodeId,omitempty"`
+	Title                               string        `json:"title,omitempty"`
+	Status                              string        `json:"status,omitempty"`
+	DownloadID                          string        `json:"downloadId,omitempty"`
+	Protocol                            string        `json:"protocol,omitempty"`
+	Languages                           []LanguageRef `json:"languages,omitempty"`
+	Size                                int64         `json:"size,omitempty"`
+	Indexer                             string        `json:"indexer,omitempty"`
+	DownloadClient                      string        `json:"downloadClient,omitempty"`
+	DownloadClientHasPostImportCategory bool          `json:"downloadClientHasPostImportCategory,omitempty"`
+	OutputPath                          string        `json:"outputPath,omitempty"`
+	ErrorMessage                        string        `json:"errorMessage,omitempty"`
+	CustomFormatScore                   int           `json:"customFormatScore,omitempty"`
+	EpisodesWithFilesCount              int           `json:"episodesWithFilesCount,omitempty"`
+	IsFullSeason                        bool          `json:"isFullSeason,omitempty"`
 }
 
 // QueueDetailsLister narrows the queue read for the /queue/details

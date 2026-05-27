@@ -171,6 +171,62 @@ func TestQueueResource_ScalarFieldWidening_J317(t *testing.T) {
 	}
 }
 
+// J318 wire-shape pin for the 4-field bool/int widening on
+// QueueResource (DownloadClientHasPostImportCategory bool +
+// CustomFormatScore int + EpisodesWithFilesCount int +
+// IsFullSeason bool). All omitempty-tagged: bool false / int 0
+// drop the key; populated values emit.
+//
+// Test covers BOTH branches: row 1 populated with non-default
+// values → all 4 fields emit; row 2 zero/false-value scalars →
+// omitempty drops all 4 keys.
+func TestQueueResource_BoolIntFieldWidening_J318(t *testing.T) {
+	t.Parallel()
+	// Branch 1: populated → all 4 fields emit.
+	populated := QueueResource{
+		ID:                                  1,
+		Title:                               "demo",
+		DownloadClientHasPostImportCategory: true,
+		CustomFormatScore:                   42,
+		EpisodesWithFilesCount:              3,
+		IsFullSeason:                        true,
+	}
+	buf, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated: %v", err)
+	}
+	got := string(buf)
+	mustContain := []string{
+		`"downloadClientHasPostImportCategory":true`,
+		`"customFormatScore":42`,
+		`"episodesWithFilesCount":3`,
+		`"isFullSeason":true`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Errorf("populated missing %q in %s", want, got)
+		}
+	}
+	// Branch 2: zero-value bool/int → omitempty drops all 4 keys.
+	empty := QueueResource{ID: 2, Title: "demo"}
+	buf2, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	got2 := string(buf2)
+	mustNotContain := []string{
+		`"downloadClientHasPostImportCategory":`,
+		`"customFormatScore":`,
+		`"episodesWithFilesCount":`,
+		`"isFullSeason":`,
+	}
+	for _, want := range mustNotContain {
+		if strings.Contains(got2, want) {
+			t.Errorf("empty must omit %q (omitempty); got %s", want, got2)
+		}
+	}
+}
+
 // ---------- 5.I18: /queue/details tests ----------
 
 type fakeQueueDetailsLister struct {

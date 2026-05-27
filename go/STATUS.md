@@ -15492,3 +15492,96 @@ No new routes. Struct + doc-comment widening only.
 21 wire-shape fields landed across J309-J317.
 
 Next-tick smallest candidate: J317-pattern follow-up on QueueResource (4 more scalar fields — DownloadClientHasPostImportCategory bool + IsFullSeason bool + EpisodesWithFilesCount int + CustomFormatScore int). Or pick a different family for breadth — SeriesResource alias-break for the v5-specific MalIds/AniListIds/OriginalCountry divergence cluster.
+
+---
+
+## J318 — Post-Wave-3 drain, slice 10: QueueResource 4-field bool/int widening
+
+**Anchor**: post-J317 (QueueResource 5-field scalar widening landed). J317-pattern follow-up adds 4 more scalar fields on apiv3.QueueResource — the bool/int companions to the J317 string/int batch.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:33` — `public int CustomFormatScore { get; set; }`.
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:48` — `public bool DownloadClientHasPostImportCategory { get; set; }`.
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:51` — `public bool EpisodeHasFile { get; set; }` (v3-only; the Go-port surfaces the v5 form instead).
+- `src/Sonarr.Api.V5/Queue/QueueResource.cs:30` — `public int CustomFormatScore { get; set; }`.
+- `src/Sonarr.Api.V5/Queue/QueueResource.cs:39` — `public bool DownloadClientHasPostImportCategory { get; set; }`.
+- `src/Sonarr.Api.V5/Queue/QueueResource.cs:42` — `public int EpisodesWithFilesCount { get; set; }` (v5-only; replaces v3's `EpisodeHasFile bool`).
+- `src/Sonarr.Api.V5/Queue/QueueResource.cs:43` — `public bool IsFullSeason { get; set; }` (v5-only — exposes the parsed-info `FullSeason` flag).
+
+### Wire contract
+
+C# under STJson:
+- DownloadClientHasPostImportCategory, IsFullSeason: non-nullable bool — always emit; default false serializes as `:false`.
+- CustomFormatScore, EpisodesWithFilesCount: non-nullable int — always emit; default 0 serializes as `:0`.
+
+Go-port mapping with all 4 fields `omitempty`-tagged:
+- bool false → key absent (Go omitempty drops false; divergence from C# always-emit).
+- int 0 → key absent (Go omitempty drops 0; divergence).
+
+The omitempty choice (vs no-omitempty) preserves today's empty-DB stub behavior — no allocations means no wire-shape change. The populated-row mapper (gated on queue.Service paged surface) can flip to no-omitempty later if it needs the C# always-emit posture.
+
+### Port deliverables
+
+**`internal/api/v3/queue.go`** — struct + doc-comment:
+
+- `QueueResource` widened with 4 new fields:
+  - `DownloadClientHasPostImportCategory bool json:"downloadClientHasPostImportCategory,omitempty"` after DownloadClient.
+  - `CustomFormatScore int json:"customFormatScore,omitempty"` after ErrorMessage.
+  - `EpisodesWithFilesCount int json:"episodesWithFilesCount,omitempty"` after CustomFormatScore.
+  - `IsFullSeason bool json:"isFullSeason,omitempty"` after EpisodesWithFilesCount.
+- Doc comment extended with a J318 paragraph cataloguing the bool/int widening + the v5-additive divergence rationale (EpisodesWithFilesCount + IsFullSeason are v5-only; the Go-port surfaces them on the shared apiv3 type as deliberate v3 divergence per the J316 pattern, since the v3 wire form (EpisodeHasFile) is rarely consumed and the v5 shape is forward-compatible).
+
+No emit-site mapper updates required — production today returns `[]QueueResource{}`. The populated-row mapper port is its own dedicated slice.
+
+v5/queue aliases v3 via `type Resource = apiv3.QueueResource` so the widening propagates to both surfaces simultaneously.
+
+### Tests (1 new)
+
+`internal/api/v3/queue_test.go`:
+
+- `TestQueueResource_BoolIntFieldWidening_J318` — comprehensive 2-row pin covering BOTH branches in one pass:
+  - Row 1: populated `DownloadClientHasPostImportCategory=true, CustomFormatScore=42, EpisodesWithFilesCount=3, IsFullSeason=true` → 4 positive substring assertions (one per field).
+  - Row 2: zero/false-value scalars (defaults) → 4 negative omitempty assertions confirming all 4 keys drop.
+
+### Wiring
+
+No new routes. Struct + doc-comment widening only.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./cmd/sonarr/... ./internal/api/v5/queue/...` ✓
+  - v3: all pass, 2.287s
+  - cmd/sonarr: all pass, 3.861s
+  - v5/queue: all pass, 2.687s
+
+### Post-Wave-3 drain backlog status
+
+| Category | Item | Status |
+| --- | --- | --- |
+| B. v5 field divergences | SeasonResource Statistics + Images | DONE (J309) |
+| B. v5 field divergences | HistoryResource `data` dict | DONE (J310) |
+| B. v5 field divergences | BlocklistResource 4-field scalar widening | DONE (J311) |
+| B. v5 field divergences | HistoryResource QualityCutoffNotMet + Episode? + Series? | DONE (J312) |
+| B. v5 field divergences | BlocklistResource Series? subresource | DONE (J313) |
+| B. v5 field divergences | Languages typed-list DTO on History + Blocklist | DONE (J314) |
+| B. v5 field divergences | Languages typed-list DTO on QueueResource | DONE (J315) |
+| B. v5 field divergences | BlocklistResource v5-only `Source` field | DONE (J316) |
+| B. v5 field divergences | QueueResource 5-field scalar widening | DONE (J317) |
+| B. v5 field divergences | QueueResource 4-field bool/int widening | **DONE this slice (J318)** |
+| B. v5 field divergences | QueueResource SizeLeft + TimeLeft | OPEN — needs TimeSpan wire-format helper |
+| B. v5 field divergences | QueueResource TrackedDownloadStatus + State | OPEN — needs enum-string conversion via existing trackeddownloads types |
+| B. v5 field divergences | QueueResource StatusMessages | OPEN — typed list DTO |
+| B. v5 field divergences | QueueResource Added + EstimatedCompletionTime | OPEN — both `*time.Time` (J302 pattern) |
+| B. v5 field divergences | Languages typed-list DTO on ManualImportReprocessItem + ReleaseResource | OPEN — body-decode shape consideration |
+| B. v5 field divergences | Quality typed QualityModel envelope | OPEN — complex DTO |
+| B. v5 field divergences | SeriesResource v5 field divergences | OPEN — alias break, mid-size |
+| B. v5 field divergences | QueueResource v5 includeSubresources[] hydration | OPEN — needs Series+Episodes pipeline |
+| B. v5 field divergences | Release POST searchInfo fallback | OPEN — gated on parsingService.GetEpisodes |
+| A. Populated-row mappers | history.Service + blocklist.Service paged populated customFormats[]+score | OPEN |
+| A. Populated-row mappers | EpisodeFile/Episode/Calendar/Wanted/Parse/ManualImport carrier population | OPEN |
+
+25 wire-shape fields landed across J309-J318.
+
+Next-tick smallest candidate: QueueResource Added + EstimatedCompletionTime (2 `*time.Time` pointer fields — J302 pattern; ~5 LOC + 1 test). Or TrackedDownloadStatus + State (need enum-string conversion via existing trackeddownloads.Status.String() / State.String() — slightly bigger but uses existing helpers).
