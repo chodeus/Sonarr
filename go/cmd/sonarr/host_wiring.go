@@ -34,6 +34,7 @@ import (
 	queuestatusv5 "sonarr.tv/sonarr/internal/api/v5/queuestatus"
 	renameepisodev5 "sonarr.tv/sonarr/internal/api/v5/renameepisode"
 	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
+	releasepushv5 "sonarr.tv/sonarr/internal/api/v5/releasepush"
 	seriesfolderv5 "sonarr.tv/sonarr/internal/api/v5/seriesfolder"
 	seriesimportv5 "sonarr.tv/sonarr/internal/api/v5/seriesimport"
 	serieslookupv5 "sonarr.tv/sonarr/internal/api/v5/serieslookup"
@@ -1425,6 +1426,19 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "PUT", Path: "/api/v5/importlistexclusion/{id}", Handler: importlistexclusionv5.UpdateHandler(importListExclusionsRepo)},
 		{Method: "DELETE", Path: "/api/v5/importlistexclusion/{id}", Handler: importlistexclusionv5.DeleteHandler(importListExclusionsRepo)},
 		{Method: "DELETE", Path: "/api/v5/importlistexclusion/bulk", Handler: importlistexclusionv5.BulkDeleteHandler(importListExclusionsRepo)},
+		// J294 — v5 ReleasePush endpoint family (2 endpoints; 120 LOC C#
+		// — ReleasePushController). POST /release/push is a pure
+		// path-alias to v3's ReleasePushHandler (same 200+ReleaseResource
+		// shape on success; 400+envelope on validation failure;
+		// ReleaseResource projection inherits the J237 deferred chain).
+		// GET /release/push/{id} is the inherited RestController endpoint
+		// that the C# v5 controller does NOT override — push operations
+		// aren't persisted so there's no underlying lookup. Always 404
+		// (matching the C# inherited behaviour). New v5-specific stub
+		// returns 404 directly. J266/J270/J274/J292 "v3-port-has-no-handler
+		// gap → v5 ByID stub" pattern.
+		{Method: "POST", Path: "/api/v5/release/push", Handler: releasepushv5.PostHandler(downloadDecider, processDownloadDecisions, releaseCache, indexersRepo, downloadClientsRepo)},
+		{Method: "GET", Path: "/api/v5/release/push/{id}", Handler: releasepushv5.ByIDHandler()},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},

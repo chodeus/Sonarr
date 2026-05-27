@@ -13693,3 +13693,69 @@ Pattern observation: this slice demonstrates that path-map-change (v5 collapses 
 - Release/ReleasePushController (120 LOC)
 
 After Release/ReleasePushController, the next-tier list drains down to the LARGE families deferred per loop contract (Series 422, Release 343, Queue 410). Wave 3 nears completion.
+
+## Phase 5.J294 — Wave 3 forty-third slice: v5 ReleasePush family port (120 LOC C# source)
+
+The last small-tier v5 family. Combo slice — pure path-alias for POST + v3-port-gap-stub for GET.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :5399-5460):
+
+| endpoint                              | v5 status     | v3 Go-port                              | strategy                |
+|---------------------------------------|---------------|------------------------------------------|--------------------------|
+| POST /api/v5/release/push             | 200 / 400     | 200 / 400 (apiv3.ReleasePushHandler)     | path-alias               |
+| GET  /api/v5/release/push/{id}        | 200 / 404     | — no v3 equivalent (inherited RestController) | v5-specific 404 stub |
+
+**POST /release/push** — pure path-alias. v3 and v5 both emit 200 + ReleaseResource on success. Validation chain (Title NotEmpty / DownloadUrl-or-MagnetUrl required / Protocol NotEmpty / PublishDate NotEmpty) preserved verbatim via the path-alias. ReleaseResource projection inherits the J237 deferred chain — current v3 Go-port emits a stub projection; full ReleaseResource widening is multi-slice and remains pending. v5 inherits the same shape.
+
+**GET /release/push/{id}** — v5 inherits this endpoint from `RestController<ReleasePushResource>` but the C# v5 controller does NOT override `GetResourceById`. Push operations are NOT persisted — there's no underlying lookup that makes sense. The C# RestController base returns null which propagates to 404 NotFound. v5 Go-port emits 404 directly to match the wire contract — same J266/J270/J274/J292 "v3-port-has-no-handler gap → v5 ByID stub" pattern. 400 on invalid id (non-positive int).
+
+**SignalR**: ReleasePushController does NOT declare any IHandle<> interfaces — push operations don't broadcast their own events. The underlying dispatcher's grab event flows through the existing command-bus subscription, carries through unchanged on the v5 side via the shared emitter channel.
+
+**Slice scope** — 170 lines (85 source + 85 test) + 1 import + 2 routes:
+
+- New `internal/api/v5/releasepush/releasepush.go` (85 LOC) — 5 type aliases (PushBody = apiv3.ReleasePushBody, DecisionMaker = apiv3.ReleaseDecisionMaker, Dispatcher = apiv3.ReleaseDispatcher, IndexerLookup = apiv3.ReleasePushIndexerLookup, DownloadClientLookup = apiv3.ReleasePushDownloadClientLookup) + 1 variable alias (PostHandler = apiv3.ReleasePushHandler) + 1 new v5-specific handler (ByIDHandler — always 404).
+- New `internal/api/v5/releasepush/releasepush_test.go` (85 LOC) — 5 tests: ByIDHandler-always-404 (canonical no-lookup pin), ByIDHandler-any-valid-id-404 (id=12345 still 404), ByIDHandler-invalid-id-400 (non-numeric), ByIDHandler-negative-id-400 (non-positive rejected), PostHandlerAlias-handler-type (compile-time pin via blank-identifier reference), PushBody-type-alias compile-time pin.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`releasepushv5`) + 2 new routes alongside the existing /api/v3/release/push route. Re-uses downloadDecider + processDownloadDecisions + releaseCache + indexersRepo + downloadClientsRepo deps verbatim — same 5-arg constructor signature as v3.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/releasepush/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/releasepush/... ./cmd/sonarr/...` ✓ (5 v5/releasepush tests + cmd/sonarr suite, 1.4s + 3.7s).
+
+**v5 surface coverage**: 46/~50 → 47/~50.
+
+## **WAVE 3 SMALL-TIER DRAINED.**
+
+All v5 endpoint families ≤120 LOC have been ported across the J251-J294 arc (44 slices). The Wave 3 contract's small-tier survey is complete. Remaining unported v5 families are the LARGE ones explicitly deferred per loop contract:
+
+| family                          | LOC  | status                                |
+|---------------------------------|------|---------------------------------------|
+| Series/SeriesController         | 422  | DEFERRED                              |
+| Series/SeriesEditorController   | 116  | DEFERRED (sub of Series family arc)   |
+| Release/ReleaseController       | 343  | DEFERRED                              |
+| Queue/QueueController           | 410  | DEFERRED                              |
+| EpisodeFiles/EpisodeFileController | 205 | DEFERRED                            |
+| CustomFormats/CustomFormatController | 203 partial | partially ported in J222    |
+
+The deferral rationale (per the loop contract): these controllers each represent a multi-slice arc — they share large Resource shapes with v3 Go-port equivalents that need multi-pattern composition (Resource field widening + multiple status-code shifts + service-side projection deferrals chained through Wave 1 sub-arcs). They're better landed as a focused Phase 5.J3xx arc once the Wave 1 service-port chain (custom-format calculator, manualimport pipeline, log DB plumbing, etc.) lands to unblock the populated-row Resource projections.
+
+Loop will signal "Wave 3 small-tier drained" on next tick and pause for user direction on whether to advance to LARGE-family Wave 3 OR to switch focus to Wave 4 (v3 endpoint-gap audit) OR a Wave 1 sub-arc (custom-format calculator port). The autonomous loop has been running 44 consecutive successful slices since J251 — a natural pause point.
+
+### Wave 3 small-tier summary (J251-J294)
+
+44 slices ported (J251-J294) over the autonomous run. v5 surface coverage 10/~50 → 47/~50 (37 nett additions, ~94% of estimated v5 wire surface). Patterns established:
+
+- 17 pure-alias slices (re-export v3 verbatim)
+- 13 v5util-wrapper slices (status code demote)
+- 6 Resource-divergence slices (v5-specific Resource + mapper)
+- 4 MIXED slices (per-endpoint strategy dispatch)
+- 2 v5-NEW family slices (no v3 equivalent)
+- 1 field-strip-wrap slice (J283 inverse pattern)
+- 1 path-map-change slice (v5 collapses two v3 endpoints)
+- 1 family group fully drained (Settings/*: 7 sub-controllers across J224/J279-J284)
+
+Total LOC added across J251-J294: ~12,500 lines (source + test) net of v3 dep re-exports; ~95% of new code is test scaffolding + status-quo wire-shape pins rather than novel logic. Hard gates clean throughout. Zero v3 regressions introduced.
+
+### Next strategy options (for user direction)
+
+(a) Continue Wave 3 LARGE — open the Series/Release/Queue arc. Each is multi-slice; estimate 8-15 slices per family to fully drain.
+(b) Switch to Wave 4 — close the v3 endpoint-gap audit items (J266/J270/J274 v3-side closures, J275 lastDuration v3 add-back, J283 trustCgnatIpAddresses v3 side, etc.).
+(c) Switch to Wave 1 — port the custom-format calculator + manualimport service pipeline + history.Service.GetBySeason/GetByEpisode + IDeploymentInfoProvider + DfaGraphWriter equivalent. Unblocks Resource widening on ~15 v5 + v3 endpoints.
+(d) Switch to Wave 2 — SignalR parity mop-up (per-tag projections, AutoTagsUpdated cross-broadcast, MessagingCleanupCommand Sync, ModelEvent<ScheduledTask>, long-polling transport fallback).
