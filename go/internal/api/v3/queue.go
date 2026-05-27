@@ -36,6 +36,30 @@ import (
 // semantic — null when unset on the wire, populated when the queue
 // row is tied to a Series/Episode.
 //
+// J317 scalar widening: Size (int64) + Indexer + DownloadClient +
+// OutputPath + ErrorMessage (4 strings). All persisted on the
+// queue.Queue model already (queue.go:170 Size, :211 Indexer, :204
+// DownloadClient, :214 OutputPath, :217 ErrorMessage); wired here
+// on the wire shape with omitempty so today's empty-DB stub (no
+// rows) emits no change. C# v3+v5 have all 5 fields — Size is
+// non-nullable `decimal` (always emits as `size:0` on populated
+// rows under no-omitempty in C#; Go-port collapses 0 to absent
+// via omitempty as an acceptable trade-off for the queue carrier
+// where 0-size on a queue row would mean "no size reported" which
+// is semantically equivalent to "size key absent"). The 4 string
+// fields are nullable in C# v5 (`string?`) — omitempty matches
+// WhenWritingNull for the null case with the Go-typical empty-
+// string-collapse caveat (acceptable: empty Indexer / OutputPath
+// / DownloadClient / ErrorMessage carry no semantic).
+//
+// DEFERRED on the QueueResource scalar tier: SizeLeft + TimeLeft
+// (need TimeSpan wire format), TrackedDownloadStatus + State
+// (need enum-string conversion via existing trackeddownloads
+// types), StatusMessages (typed list DTO), Quality + CustomFormats
+// (typed DTOs), DownloadClientHasPostImportCategory + IsFullSeason
+// + EpisodesWithFilesCount (bool/int — addable in a J317-pattern
+// follow-up).
+//
 // J315 widening: Languages ([]LanguageRef with omitempty). C# v3
 // declares `List<Language>` (non-nullable) and v5 marks the same
 // field as `List<Language> Languages = []` with a constructor
@@ -51,14 +75,19 @@ import (
 // stub today leaves the field nil so the wire stays unchanged
 // at the empty-DB shape.
 type QueueResource struct {
-	ID         int           `json:"id,omitempty"`
-	SeriesID   *int          `json:"seriesId,omitempty"`
-	EpisodeID  *int          `json:"episodeId,omitempty"`
-	Title      string        `json:"title,omitempty"`
-	Status     string        `json:"status,omitempty"`
-	DownloadID string        `json:"downloadId,omitempty"`
-	Protocol   string        `json:"protocol,omitempty"`
-	Languages  []LanguageRef `json:"languages,omitempty"`
+	ID             int           `json:"id,omitempty"`
+	SeriesID       *int          `json:"seriesId,omitempty"`
+	EpisodeID      *int          `json:"episodeId,omitempty"`
+	Title          string        `json:"title,omitempty"`
+	Status         string        `json:"status,omitempty"`
+	DownloadID     string        `json:"downloadId,omitempty"`
+	Protocol       string        `json:"protocol,omitempty"`
+	Languages      []LanguageRef `json:"languages,omitempty"`
+	Size           int64         `json:"size,omitempty"`
+	Indexer        string        `json:"indexer,omitempty"`
+	DownloadClient string        `json:"downloadClient,omitempty"`
+	OutputPath     string        `json:"outputPath,omitempty"`
+	ErrorMessage   string        `json:"errorMessage,omitempty"`
 }
 
 // QueueDetailsLister narrows the queue read for the /queue/details

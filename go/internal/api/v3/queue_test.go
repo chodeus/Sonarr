@@ -120,6 +120,57 @@ func TestQueueResource_LanguagesWireShape_J315(t *testing.T) {
 	}
 }
 
+// J317 wire-shape pin for the 5-field scalar widening on
+// QueueResource (Size + Indexer + DownloadClient + OutputPath +
+// ErrorMessage). All omitempty-tagged so the empty-DB stub still
+// emits no change; populated values flow through verbatim.
+//
+// Test covers BOTH branches in one pass via direct json.Marshal:
+// row 1 populated with non-zero Size + all 4 strings → all 5
+// fields emit; row 2 zero Size + empty strings → omitempty drops
+// all 5 keys.
+func TestQueueResource_ScalarFieldWidening_J317(t *testing.T) {
+	t.Parallel()
+	// Branch 1: populated → all 5 fields emit.
+	populated := QueueResource{ID: 1, Title: "demo", Size: 1234567, Indexer: "Newznab", DownloadClient: "SABnzbd", OutputPath: "/downloads/Show.S01E01", ErrorMessage: "Permission denied"}
+	buf, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated: %v", err)
+	}
+	got := string(buf)
+	mustContain := []string{
+		`"size":1234567`,
+		`"indexer":"Newznab"`,
+		`"downloadClient":"SABnzbd"`,
+		`"outputPath":"/downloads/Show.S01E01"`,
+		`"errorMessage":"Permission denied"`,
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Errorf("populated missing %q in %s", want, got)
+		}
+	}
+	// Branch 2: zero-value scalars → omitempty drops all 5 keys.
+	empty := QueueResource{ID: 2, Title: "demo"}
+	buf2, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	got2 := string(buf2)
+	mustNotContain := []string{
+		`"size":`,
+		`"indexer":`,
+		`"downloadClient":`,
+		`"outputPath":`,
+		`"errorMessage":`,
+	}
+	for _, want := range mustNotContain {
+		if strings.Contains(got2, want) {
+			t.Errorf("empty must omit %q (omitempty); got %s", want, got2)
+		}
+	}
+}
+
 // ---------- 5.I18: /queue/details tests ----------
 
 type fakeQueueDetailsLister struct {
