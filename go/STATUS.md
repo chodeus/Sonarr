@@ -13421,3 +13421,40 @@ Pattern observation: this is the second consecutive pure-alias slice (J286 → J
 - Episodes/EpisodeController (85 LOC)
 - ImportLists/ImportListExclusionController (88 LOC)
 - Release/ReleasePushController (120 LOC)
+
+## Phase 5.J288 — Wave 3 thirty-seventh slice: v5 SeriesLookup family port (58 LOC C# source)
+
+Smallest-effort pure-alias slice — single GET endpoint, deferred-stub pattern. Same J286/J287 minimum-effort template.
+
+**Endpoint table** (per `src/Sonarr.Api.V5/openapi.json` :6196+):
+
+| endpoint                               | v5 status | v3 Go-port                          | strategy |
+|----------------------------------------|-----------|--------------------------------------|----------|
+| GET /api/v5/series/lookup?term=        | 200 / 400 | 200 + `[]` (apiv3.SeriesLookupHandler) | alias  |
+
+**Wire shape contract**: 200 + `[]` (empty SeriesResource list) for valid term; 400 on missing/empty term query param. The C# v5 controller calls `_searchProxy.SearchForNewSeries(term)` + maps the metadata-source results to SeriesResource with cover-URL rewrites (via IMapCoversToLocal), folder-name preview (via IBuildFileNames.GetSeriesFolder), and IsExcluded check (via IImportListExclusionService.FindByTvdbId). v3 Go-port emits `[]` from a stub because the search-proxy result-pipeline integration hasn't ported (per `internal/api/v3/series_lookup.go:16-22`):
+
+> the metadatasource.Proxy ports (slice 4.AS - 4.AW) wired SearchForNewSeries but the cover-URL rewrite + folder-name builder integration with the SearchForNewSeries result pipeline hasn't ported. Today returns `[]` matching the "no results" wire shape so the React UI's "add new series" search box gets 200 instead of 404.
+
+v5 inherits the same deferred `[]` via path-alias. When the projection pipeline lands, both v3 and v5 surfaces widen via the shared handler.
+
+**Slice scope** — 87 lines (32 source + 55 test) + 1 import + 1 route:
+
+- New `internal/api/v5/serieslookup/serieslookup.go` (32 LOC) — 1 variable alias (GetHandler = apiv3.SeriesLookupHandler). NO type alias (the underlying result-shape is the deferred-empty contract; when the projection lands, the v3 surface will declare the SeriesResource-list shape and the v5 surface picks it up automatically — no source-of-truth change in either codebase).
+- New `internal/api/v5/serieslookup/serieslookup_test.go` (55 LOC) — 4 tests: GetHandler-with-term-returns-empty-array (canonical deferred-stub pin + `application/json; charset=utf-8` Content-Type pin), GetHandler-missing-term-400, GetHandler-empty-term-400 (pins `?term=` rejection — different from `?term` absent but same response), variable-alias-non-nil.
+- `cmd/sonarr/host_wiring.go` — 1 new import (`serieslookupv5`) + 1 new route alongside the existing /api/v3/series/lookup route. Zero-arg handler — no service dep at the stub level. When the search-proxy integration lands, both v3 and v5 routes will rewire together to take the new handler-builder signature.
+
+**Hard gates** — `go build ./...` ✓; `go vet ./internal/api/v5/serieslookup/... ./cmd/sonarr/...` ✓; `go test -race -count=1 ./internal/api/v5/serieslookup/... ./cmd/sonarr/...` ✓ (4 v5/serieslookup tests + cmd/sonarr suite, 1.3s + 3.7s).
+
+**v5 surface coverage**: 40/~50 → 41/~50.
+
+Pattern observation: third consecutive pure-alias slice (J286 → J287 → J288). Each one ~30-45 LOC source + 50-110 LOC test. The Wave-3 endgame is mostly these small re-export packages — the heavy-lifting C# controllers have all landed; what remains is mostly mounting v5 routes onto already-ported v3 handlers.
+
+### Next Wave 3 candidates ascending
+
+- Queue/QueueActionController (58 LOC)
+- Queue/QueueDetailsController (77 LOC)
+- Queue/QueueStatusController (80 LOC)
+- Episodes/EpisodeController (85 LOC)
+- ImportLists/ImportListExclusionController (88 LOC)
+- Release/ReleasePushController (120 LOC)

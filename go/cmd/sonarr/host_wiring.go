@@ -32,6 +32,7 @@ import (
 	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
 	seriesfolderv5 "sonarr.tv/sonarr/internal/api/v5/seriesfolder"
 	seriesimportv5 "sonarr.tv/sonarr/internal/api/v5/seriesimport"
+	serieslookupv5 "sonarr.tv/sonarr/internal/api/v5/serieslookup"
 	updatesettingsv5 "sonarr.tv/sonarr/internal/api/v5/updatesettings"
 	remotepathmappingv5 "sonarr.tv/sonarr/internal/api/v5/remotepathmapping"
 	rootfolderv5 "sonarr.tv/sonarr/internal/api/v5/rootfolder"
@@ -1354,6 +1355,15 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// comparison driver lands.
 		{Method: "GET", Path: "/api/v5/rename", Handler: renameepisodev5.GetHandler()},
 		{Method: "GET", Path: "/api/v5/rename/bulk", Handler: renameepisodev5.BulkHandler()},
+		// J288 — v5 SeriesLookup endpoint family (1 endpoint; 58 LOC
+		// C# — SeriesLookupController.Search GET /series/lookup?term=).
+		// Pure path-alias slice — v3 emits the same 200+`[]` stub
+		// (search-proxy integration DEFERRED on both surfaces:
+		// SearchForNewSeries pipeline wired but cover-URL rewrite +
+		// folder-name preview + IsExcluded check still pending). 400
+		// on missing/empty term. Re-uses no service dep — zero-arg
+		// stub.
+		{Method: "GET", Path: "/api/v5/series/lookup", Handler: serieslookupv5.GetHandler()},
 		{Method: "GET", Path: "/api/v3/config/indexer", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "GET", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigHandler(configProv)},
 		{Method: "PUT", Path: "/api/v3/config/indexer/{id}", Handler: apiv3.IndexerConfigUpdateHandler(configProv)},
