@@ -14196,3 +14196,70 @@ Note: the wire-throughs are STRUCT-LEVEL widenings — the populated-row mappers
 | Release | 343 | queued (ReleaseController main; ReleasePush sub-family done at J294) |
 | Queue | 410 | queued (paged GET + DELETE + bulk; QueueAction/Details/Status subs done at J289-J291) |
 
+
+---
+
+## J302 — Wave 3 LARGE-family arc, slice 2 of 5: CustomFormats family — Resource projection alignment
+
+**Anchor**: post-J301 (Wave 3 EpisodeFile family landed). CustomFormats v5 endpoint surface is already fully wired at J222 (8 routes); the remaining post-calculator work was "Resource projection alignment with the calculator-engine output that's now wired (J295-J300)" per the autonomous-loop scope.
+
+### Divergence to close
+
+The C# `CustomFormatResource` carries a dual-projection contract:
+
+| projection | C# caller | wire shape |
+| --- | --- | --- |
+| `includeDetails=true`  | GET list / by-id / POST / PUT / PUT-bulk (single-format CRUD) | all 4 fields (`id`, `name`, `includeCustomFormatWhenRenaming`, `specifications:[]` or populated) |
+| `includeDetails=false` | calculator-engine output — `ParseCustomFormat(model, model.Series).ToResource(false)` (carrier `customFormats[]` slices on EpisodeFile/Episode/Calendar/Wanted/History/Blocklist/ManualImport/Parse/Log resources) | ONLY `id` + `name` — other 2 fields stay null and STJson's `DefaultIgnoreCondition.WhenWritingNull` drops them |
+
+The Go-port previously only modelled the `includeDetails=true` shape (struct field `Specifications []CustomFormatSpecificationSchema` with no omitempty — emitted `"specifications":[]` or populated, never omitted). For populated-row mappers (post-Wave-3 service ports) to produce the C# wire shape for embedded `customFormats[]` entries, the struct must support nil-vs-empty distinction.
+
+### Port deliverables
+
+**Struct widening** (`internal/api/v3/customformat.go:35-40`):
+
+- `Specifications` type: `[]CustomFormatSpecificationSchema` → `*[]CustomFormatSpecificationSchema`
+- JSON tag: `json:"specifications"` → `json:"specifications,omitempty"`
+- nil pointer → omitempty drops the key (calculator projection)
+- non-nil pointer → Go follows pointer + marshals slice (full projection; empty → `[]`, populated → array)
+
+**New exported constructor** `ToCustomFormatResourceLite(f *customformats.Format) CustomFormatResource`:
+
+- Emits only `ID` + `Name` populated; `IncludeCustomFormatWhenRenaming` + `Specifications` both stay nil.
+- Wire shape: `{"id": N, "name": "X"}` — matches C# `new CustomFormatResource { Id = model.Id, Name = model.Name }` (lines 21-25 of CustomFormatResource.cs) under STJson global `DefaultIgnoreCondition.WhenWritingNull` (confirmed at `src/NzbDrone.Common/Serializer/System.Text.Json/STJson.cs:27`).
+- nil-Format defensive branch returns zero-value struct (still emits `"id":0`/`"name":""` per non-omitempty tags on those fields, matching C# `[JsonIgnore(Condition = JsonIgnoreCondition.Never)]` on `Id` + always-emit on `Name`).
+
+**Call-site adaptations**:
+
+- `validateCustomFormat` (line ~381): nil check + deref for the empty-list rule + the per-element name check.
+- `customFormatToModel` (line ~426): nil check + deref for the Marshal target on the persisted column round-trip.
+- `toCustomFormatResource` (line ~488): allocate `Specifications: &specs` where `specs := []CustomFormatSpecificationSchema{}` — preserves the GET-list `"specifications":[]` wire byte-shape.
+
+**Tests** (4 new in `customformat_test.go`):
+
+- `TestToCustomFormatResourceLite_EmitsIDAndNameOnly` — positive `id:N` / `name:"X"` pins + negative pins that NEITHER `"specifications"` NOR `"includeCustomFormatWhenRenaming"` appears.
+- `TestToCustomFormatResourceLite_NilFormat_EmitsZeroValues` — defensive: nil source still emits `"id":0` (C# `[JsonIgnore(Never)]` posture) but optional fields stay omitted.
+- `TestToCustomFormatResource_FullProjection_StillEmitsEmptySpecsArray` — regression guard: full projection wire shape unchanged (`"specifications":[]` AND `"includeCustomFormatWhenRenaming"` both emitted).
+- `TestCustomFormatResource_RoundTrip_NilSpecsDecodesAsNilPointer` — three input shapes (missing key, `null` value, `[]` value) all collapse to nil-or-empty under the pointer-to-slice JSON decode; ensures the validator's "Must contain at least one Condition" rule fires uniformly for all three (matches C# `.NotEmpty()` semantics).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go vet ./internal/api/v3/... ./internal/api/v5/customformat/...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/customformat/... ./cmd/sonarr/...` ✓
+  - v3: all existing + 4 new tests pass, 1.686s
+  - v5/customformat: all tests pass via shared apiv3 alias, 2.332s
+  - cmd/sonarr: all wiring/integration tests pass, 4.256s
+
+### Wave 3 LARGE-family arc progress (updated)
+
+| family | LOC C# | status |
+| --- | --- | --- |
+| EpisodeFiles | 205 | DONE (J301) |
+| CustomFormats | 203 | **DONE (J302)** — surface at J222 + projection alignment at J302 |
+| Series | 422 + 116 | queued (multi-slice: SeriesController CRUD + SeriesEditor) |
+| Release | 343 | queued (ReleaseController main; ReleasePush sub-family at J294) |
+| Queue | 410 | queued (paged GET + DELETE + bulk + grab variants; QueueAction/Details/Status at J289/J290/J291) |
+
+3 LARGE families remain. Series is next at multi-slice scale (422 main + 116 editor) — will sub-slice per CRUD/editor split per the loop scope guidance.
+

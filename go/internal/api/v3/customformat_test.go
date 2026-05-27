@@ -2,6 +2,7 @@ package v3
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -326,5 +327,107 @@ func TestCustomFormatBulkDeleteHandler_AnyMissingIs404(t *testing.T) {
 	CustomFormatBulkDeleteHandler(w).ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status: %d want 404", rr.Code)
+	}
+}
+
+// ----- J302: Resource projection alignment with calculator-engine output -----
+//
+// Pins the dual-projection contract of CustomFormatResource:
+//   - includeDetails=true (the [toCustomFormatResource] constructor used
+//     by GET / by-id / POST / PUT / PUT-bulk): emits all 4 fields,
+//     including `"specifications":[]` for an empty list — matches C#
+//     `model.Specifications.Select(...).ToList()` behaviour at
+//     `CustomFormatResource.cs:30`.
+//   - includeDetails=false (the [ToCustomFormatResourceLite]
+//     constructor): emits ONLY `id` + `name`, dropping the optional
+//     fields via omitempty — matches C# `new CustomFormatResource {
+//     Id = model.Id, Name = model.Name }` at
+//     `CustomFormatResource.cs:21-25` under STJson's
+//     `DefaultIgnoreCondition.WhenWritingNull`.
+//
+// The lite projection is the wire shape produced by the calculator
+// engine chain (`formatCalculator.ParseCustomFormat(model, model.Series)
+// .ToResource(false)`) at `EpisodeFileResource.cs:46-66` — when
+// populated-row service mappers land post-Wave-3, their per-row
+// CustomFormats[] entries will use this constructor.
+
+func TestToCustomFormatResourceLite_EmitsIDAndNameOnly(t *testing.T) {
+	t.Parallel()
+	f := &customformats.Format{ID: 7, Name: "x265", IncludeCustomFormatWhenRenaming: true}
+	res := ToCustomFormatResourceLite(f)
+	buf, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	body := string(buf)
+	// Positive pins.
+	if !strings.Contains(body, `"id":7`) {
+		t.Errorf("missing id: %s", body)
+	}
+	if !strings.Contains(body, `"name":"x265"`) {
+		t.Errorf("missing name: %s", body)
+	}
+	// Negative pins — omitempty drops the optional fields.
+	if strings.Contains(body, `"specifications"`) {
+		t.Errorf("specifications must be omitted (lite projection): %s", body)
+	}
+	if strings.Contains(body, `"includeCustomFormatWhenRenaming"`) {
+		t.Errorf("includeCustomFormatWhenRenaming must be omitted (lite projection): %s", body)
+	}
+}
+
+func TestToCustomFormatResourceLite_NilFormat_EmitsZeroValues(t *testing.T) {
+	t.Parallel()
+	res := ToCustomFormatResourceLite(nil)
+	buf, _ := json.Marshal(res)
+	body := string(buf)
+	// Zero-value Format: id=0 (always emitted via JsonIgnore(Never) on C#);
+	// name="" (still emitted — non-omitempty); no optional fields.
+	if !strings.Contains(body, `"id":0`) {
+		t.Errorf("nil Format should still emit id:0; got %s", body)
+	}
+	if strings.Contains(body, `"specifications"`) {
+		t.Errorf("nil Format should not emit specifications: %s", body)
+	}
+}
+
+func TestToCustomFormatResource_FullProjection_StillEmitsEmptySpecsArray(t *testing.T) {
+	t.Parallel()
+	// Regression guard: the J302 pointer-to-slice switch must NOT alter
+	// the full-projection wire shape — `"specifications":[]` is required
+	// for the GET list / by-id / POST / PUT / PUT-bulk responses (the
+	// J302 PROGRESS row + the existing TestCustomFormatHandler_OK test
+	// at line 44 both depend on this).
+	f := &customformats.Format{ID: 1, Name: "x264"}
+	res := ToCustomFormatResource(f)
+	buf, _ := json.Marshal(res)
+	body := string(buf)
+	if !strings.Contains(body, `"specifications":[]`) {
+		t.Errorf("full projection must emit specifications:[]; got %s", body)
+	}
+	if !strings.Contains(body, `"includeCustomFormatWhenRenaming"`) {
+		t.Errorf("full projection must emit includeCustomFormatWhenRenaming; got %s", body)
+	}
+}
+
+func TestCustomFormatResource_RoundTrip_NilSpecsDecodesAsNilPointer(t *testing.T) {
+	t.Parallel()
+	// Validation contract: a POST body missing the `specifications` key
+	// OR sending `"specifications": null` should fail with the same
+	// "Must contain at least one Condition" error as an empty array.
+	// All three cases collapse to nil-or-empty under the pointer-to-
+	// slice tag.
+	for _, body := range []string{
+		`{"name":"x"}`,
+		`{"name":"x","specifications":null}`,
+		`{"name":"x","specifications":[]}`,
+	} {
+		var res CustomFormatResource
+		if err := json.Unmarshal([]byte(body), &res); err != nil {
+			t.Fatalf("unmarshal %s: %v", body, err)
+		}
+		if res.Specifications != nil && len(*res.Specifications) > 0 {
+			t.Errorf("body %s should decode as nil-or-empty Specifications; got %v", body, res.Specifications)
+		}
 	}
 }

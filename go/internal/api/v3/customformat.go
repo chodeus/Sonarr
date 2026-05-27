@@ -33,10 +33,10 @@ import (
 // to *bool to preserve the C# null-vs-false distinction (DEFERRED;
 // recorded in STATUS line 9 as a follow-up).
 type CustomFormatResource struct {
-	ID                              int                               `json:"id"`
-	Name                            string                            `json:"name"`
-	IncludeCustomFormatWhenRenaming *bool                             `json:"includeCustomFormatWhenRenaming,omitempty"`
-	Specifications                  []CustomFormatSpecificationSchema `json:"specifications"`
+	ID                              int                                `json:"id"`
+	Name                            string                             `json:"name"`
+	IncludeCustomFormatWhenRenaming *bool                              `json:"includeCustomFormatWhenRenaming,omitempty"`
+	Specifications                  *[]CustomFormatSpecificationSchema `json:"specifications,omitempty"`
 }
 
 // CustomFormatSpecificationSchema mirrors the C# wire shape for one
@@ -378,11 +378,11 @@ func validateCustomFormat(ctx context.Context, svc CustomFormatWriter, res *Cust
 	if !errs.Required("Name", res.Name) {
 		return errs
 	}
-	if len(res.Specifications) == 0 {
+	if res.Specifications == nil || len(*res.Specifications) == 0 {
 		errs.Add("Specifications", "Must contain at least one Condition")
 		return errs
 	}
-	for _, s := range res.Specifications {
+	for _, s := range *res.Specifications {
 		if s.Name == "" {
 			errs.Add("Specifications", "Condition name(s) cannot be empty or consist of only spaces")
 			break
@@ -423,8 +423,8 @@ func validateCustomFormat(ctx context.Context, svc CustomFormatWriter, res *Cust
 // the on-wire structure verbatim).
 func customFormatToModel(res CustomFormatResource) (customformats.CustomFormat, error) {
 	specJSON := "[]"
-	if len(res.Specifications) > 0 {
-		buf, err := json.Marshal(res.Specifications)
+	if res.Specifications != nil && len(*res.Specifications) > 0 {
+		buf, err := json.Marshal(*res.Specifications)
 		if err != nil {
 			return customformats.CustomFormat{}, err
 		}
@@ -494,13 +494,65 @@ func toCustomFormatResource(f *customformats.Format) CustomFormatResource {
 	// upstream Format gains true nullability, this becomes a direct
 	// passthrough.
 	include := f.IncludeCustomFormatWhenRenaming
+	// Specifications uses a pointer-to-slice with omitempty so the
+	// includeDetails=true projection (this constructor — used by the
+	// list / by-id / POST / PUT / PUT-bulk paths) ALWAYS emits the key
+	// (`"specifications":[]` for an empty list, matching the C#
+	// `model.Specifications.Select(...).ToList()` posture which yields
+	// an empty `List<CustomFormatSpecificationSchema>` even when no
+	// conditions exist), while the includeDetails=false projection
+	// ([ToCustomFormatResourceLite], used by the calculator wire-through
+	// per `EpisodeFileResource.cs:46-66`) emits a nil pointer that
+	// omitempty drops — matching the C# `Specifications` field staying
+	// null under STJson's `DefaultIgnoreCondition.WhenWritingNull`
+	// (`src/NzbDrone.Common/Serializer/System.Text.Json/STJson.cs:27`).
+	specs := []CustomFormatSpecificationSchema{}
 	return CustomFormatResource{
 		ID:                              f.ID,
 		Name:                            f.Name,
 		IncludeCustomFormatWhenRenaming: &include,
-		// TODO (DEFERRED): populate Specifications from f.Specifications
-		// once the schema-builder port lands. Empty slice keeps the wire
-		// shape stable until then.
-		Specifications: []CustomFormatSpecificationSchema{},
+		// TODO (DEFERRED): populate *specs from f.Specifications once the
+		// schema-builder port lands. Empty slice keeps the wire shape
+		// stable until then.
+		Specifications: &specs,
+	}
+}
+
+// ToCustomFormatResourceLite is the `includeDetails=false` projection
+// of a customformats.Format — emits ONLY `id` + `name` on the wire,
+// matching the C# `CustomFormatResourceMapper.ToResource(false)` shape
+// at `src/Sonarr.Api.V5/CustomFormats/CustomFormatResource.cs:19-34`.
+// Both `IncludeCustomFormatWhenRenaming` and `Specifications` stay
+// nil so the omitempty JSON tags drop them entirely (matching STJson's
+// `DefaultIgnoreCondition.WhenWritingNull` for the C# null source
+// values).
+//
+// Wire shape: `{"id": N, "name": "X"}`. Used by the calculator wire-
+// through chain — `customFormats[]` slices on `EpisodeFileResource`,
+// `EpisodeResource`, `CalendarResource`, `WantedResource`,
+// `HistoryResource`, `BlocklistResource`, `ManualImportResource`,
+// `ParseResource`, `LogResource` all populate their per-row entries
+// via this constructor once the populated-row service mappers land
+// (post-Wave-3 service-port arc per the autonomous-loop scope).
+//
+// Today the empty-DB Go-port has zero populated rows so no callers
+// invoke this constructor at request time, but its existence pins the
+// wire-shape alignment with the C# `ParseCustomFormat(model,
+// model.Series).ToResource(false)` call chain at `EpisodeFileResource
+// .cs:46-66` (J298 widening, Wave 1 calculator wire-through arc) so
+// future service-port slices can drop populated CustomFormatResource
+// instances into the carrier slices without further struct or
+// constructor surgery. J302 — Wave 3 LARGE-family arc, slice 2 of 5
+// (CustomFormats family — Resource projection alignment with the
+// calculator-engine output that landed in J295-J300).
+func ToCustomFormatResourceLite(f *customformats.Format) CustomFormatResource {
+	if f == nil {
+		return CustomFormatResource{}
+	}
+	return CustomFormatResource{
+		ID:   f.ID,
+		Name: f.Name,
+		// IncludeCustomFormatWhenRenaming + Specifications stay nil.
+		// omitempty drops both keys on the wire.
 	}
 }
