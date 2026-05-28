@@ -18571,3 +18571,43 @@ The queue paged list now honours the client's sort key + direction AND the full 
 | CutoffUnmetEpisodeSearchCommand handler | OPEN — blocked on the cutoff-unmet enumerator port (larger SQL sub-arc; also fixes the empty wanted/cutoff endpoint) |
 
 The queue paged list now reflects live profile CF-score edits on both v3 + v5. Next Arc 3 candidates: the image-download subscriber, then the cutoff-unmet enumerator (the meatiest remaining residual).
+
+---
+
+## J360 — Post-J352 residual-arc, Arc 3 (smaller residuals) slice 2: cutoff-unmet enumerator core (qualityprofiles below-cutoff + episodes cutoff-unmet repo query)
+
+**Anchor**: post-J359. First flesh of the cutoff-unmet enumerator — the meatiest remaining Arc 3 residual. J359 found the CutoffUnmetEpisodeSearchCommand handler + the empty `/api/v3/wanted/cutoff` endpoint are both blocked on this unported query. The other Arc 3 item (image-download subscriber off SeriesAddedEvent) needs a whole new HTTP-download MediaCover subsystem (no `internal/mediacover` exists) and is deferred as external-I/O-heavy. This slice lands the two correctness-sensitive core functions; wiring follows in J361.
+
+### C# source
+
+- `src/NzbDrone.Core/Tv/EpisodeCutoffService.cs:26-50` — per-profile below-cutoff quality-id computation.
+- `src/NzbDrone.Core/Profiles/Qualities/QualityProfile.cs:25-37` — `FirststAllowedQuality()`.
+- `src/NzbDrone.Core/Tv/EpisodeRepository.cs:126-256` — `EpisodesWhereCutoffUnmet` + `EpisodesWhereCutoffUnmetBuilder` + `BuildQualityCutoffWhereClause` (the `Series.QualityProfileId = P AND EpisodeFiles.Quality LIKE '%_quality_: Q,%'` predicate, includeSpecials=false).
+
+### Port deliverables
+
+- **`internal/qualityprofiles/cutoff.go`** (new) — `QualitiesBelowCutoff(p) ([]int, error)`: effective cutoff = `UpgradeAllowed ? Cutoff : firstAllowedQuality().ID`; `LookupIndexByID(items, cutoff, false)`; flatten `Items[:idx.Index]` via `GetQualities`. `firstAllowedQuality(items)` ports `FirststAllowedQuality` (first Allowed item's quality, or its first group member). Empty (not panic) on no-allowed / cutoff-not-found / lowest-cutoff.
+- **`internal/episodes/wanted.go`** — `WantedCutoffUnmet(ctx, belowByProfile map[int][]int, monitoredOnly) ([]Episode, error)`: Episodes+Series+EpisodeFiles join; `EpisodeFileId IS NOT NULL`; `SeasonNumber >= 1`; OR-predicate `("Series"."QualityProfileId" = P AND "EpisodeFiles"."Quality" LIKE '%"quality":Q,%')`. The LIKE pattern adjusted for the Go `quality.Model` serialisation (no colon-space; trailing-comma id boundary). Empty map → empty. Full set for in-memory paging.
+
+### Tests
+
+- `internal/qualityprofiles/cutoff_test.go` (7): UpgradeAllowed; lowest-cutoff→empty; upgrade-disabled-uses-first-allowed; group-cutoff; below-group-flattens; cutoff-not-found→empty; no-allowed-when-upgrade-disabled→empty.
+- `internal/episodes/cutoff_test.go` (2-engine suite): below-cutoff IN; above-cutoff OUT; special (season 0) OUT; no-file OUT; unmonitored gated by monitoredOnly; empty-map short-circuit.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/qualityprofiles/ ./internal/episodes/` ✓ (qualityprofiles 32.4s, episodes 33.1s — engine suites dominate)
+- `go vet` + gofmt ✓
+
+### Arc 3 progress
+
+| Item | Status |
+| --- | --- |
+| Queue CustomFormatScore recompute | DONE (J359) |
+| Cutoff-unmet enumerator core (below-cutoff compute + repo query) | **DONE this slice (J360)** |
+| Cutoff-unmet wiring into wanted/cutoff endpoint (v3+v5) | OPEN — J361 |
+| CutoffUnmetEpisodeSearchCommand handler | OPEN — needs the enumerator (J360/J361) + indexersearch dispatch |
+| image-download subscriber off SeriesAddedEvent | OPEN — needs a new HTTP-download MediaCover subsystem (external I/O) |
+
+The cutoff-unmet predicate is now ported + tested. J361 wires it into the (currently-empty) wanted/cutoff endpoint by computing belowByProfile from `qualityProfilesSvc.All`.

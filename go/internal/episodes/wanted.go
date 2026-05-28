@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"strings"
+
 	"sonarr.tv/sonarr/internal/datastore"
 )
 
@@ -73,6 +75,78 @@ func (r *Repo) WantedMissing(ctx context.Context, currentTime time.Time, monitor
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("episodes: wantedMissing rows: %w", err)
+	}
+	return out, nil
+}
+
+// WantedCutoffUnmet returns every Episode that HAS a file whose quality
+// ranks below its series' quality-profile cutoff — the predicate behind
+// `/api/v3/wanted/cutoff`. Mirrors `EpisodeRepository
+// .EpisodesWhereCutoffUnmet` at
+// `src/NzbDrone.Core/Tv/EpisodeRepository.cs:126-256` with
+// `includeSpecials=false` (the EpisodeCutoffService call shape, so
+// SeasonNumber >= 1).
+//
+// belowByProfile maps each quality-profile ID to the set of quality IDs
+// ranked below that profile's cutoff (computed by
+// `qualityprofiles.QualitiesBelowCutoff`). The SQL OR-predicate keeps an
+// episode when its series uses profile P AND its EpisodeFile's embedded
+// Quality JSON carries a below-cutoff quality id — matching the C#
+// `("Series"."QualityProfileId" = P AND "EpisodeFiles"."Quality" LIKE
+// '%_quality_: Q,%')` clause at `:251`, adjusted for the Go
+// `quality.Model` serialisation `{"quality":<id>,"revision":{...}}`
+// (no space after the colon; the trailing comma before `"revision"`
+// makes `"quality":Q,` an exact id-boundary match, so id 2 never
+// matches id 20).
+//
+// Empty belowByProfile → empty result (no profile has anything below
+// its cutoff; mirrors the C# `qualitiesBelowCutoff.Empty()` short-circuit
+// at `EpisodeCutoffService.cs:45-49`). The caller pages the full set in
+// memory, same posture as [Repo.WantedMissing].
+func (r *Repo) WantedCutoffUnmet(ctx context.Context, belowByProfile map[int][]int, monitoredOnly bool) ([]Episode, error) {
+	clauses := make([]string, 0)
+	for profileID, qualityIDs := range belowByProfile {
+		for _, qid := range qualityIDs {
+			clauses = append(clauses, fmt.Sprintf(
+				`("Series"."QualityProfileId" = %d AND "EpisodeFiles"."Quality" LIKE '%%"quality":%d,%%')`,
+				profileID, qid))
+		}
+	}
+	if len(clauses) == 0 {
+		return nil, nil
+	}
+
+	db := r.DB()
+	whereMonitored := ""
+	if monitoredOnly {
+		t := sqlBoolTrue(db.Engine)
+		whereMonitored = fmt.Sprintf(` AND "Episodes"."Monitored" = %s AND "Series"."Monitored" = %s `, t, t)
+	}
+	q := fmt.Sprintf(
+		`SELECT %s FROM "Episodes" `+
+			`INNER JOIN "Series" ON "Series"."Id" = "Episodes"."SeriesId" `+
+			`INNER JOIN "EpisodeFiles" ON "EpisodeFiles"."Id" = "Episodes"."EpisodeFileId" `+
+			`WHERE "Episodes"."EpisodeFileId" IS NOT NULL `+
+			`AND "Episodes"."SeasonNumber" >= 1 `+
+			`AND (%s) `+
+			`%s `+
+			`ORDER BY "Episodes"."AirDateUtc" DESC, "Episodes"."Id" ASC`,
+		qualifiedSelectColumnList(), strings.Join(clauses, " OR "), whereMonitored)
+	rows, err := db.SQL.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("episodes: wantedCutoffUnmet: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Episode
+	for rows.Next() {
+		var e Episode
+		if err := mapper.Scan(&e, rows); err != nil {
+			return nil, fmt.Errorf("episodes: wantedCutoffUnmet scan: %w", err)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("episodes: wantedCutoffUnmet rows: %w", err)
 	}
 	return out, nil
 }
