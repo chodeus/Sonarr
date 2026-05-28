@@ -90,6 +90,7 @@ import (
 	"sonarr.tv/sonarr/internal/indexerstatus"
 	"sonarr.tv/sonarr/internal/instrumentation"
 	"sonarr.tv/sonarr/internal/lifecycle"
+	"sonarr.tv/sonarr/internal/mediacover"
 	"sonarr.tv/sonarr/internal/mediafileattributes"
 	"sonarr.tv/sonarr/internal/mediafiles"
 	"sonarr.tv/sonarr/internal/mediainfoupdater"
@@ -2588,6 +2589,41 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("http client: %w", err)
 	}
+	// J364 — MediaCover cover-download subscriber. Construct the
+	// mediacover.Service (URL-rewrite surface ported in 3.BO; download
+	// arm in J363) against the real disk + http + config adapters, then
+	// subscribe its IHandleAsync<SeriesUpdatedEvent> + <SeriesDeletedEvent>
+	// arms to the bus (C# MediaCoverService.HandleAsync). SeriesUpdated
+	// fires after a RefreshSeries metadata sync — the moment C# fetches
+	// covers; SeriesDeleted wipes the per-series cover folder. The
+	// CoversUpdatedEvent is republished with the download `updated` flag
+	// (mirrors C# :237) for the SignalR / UI-refresh consumers.
+	mediaCoverSvc, err := mediacover.NewService(
+		mediaCoverFS{disk: diskProv},
+		mediaCoverFolders{appData: folder.AppData},
+		mediaCoverURLBase{cfg: cfg},
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("mediacover service: %w", err)
+	}
+	mediaCoverSvc.SetDownloader(mediaCoverDownloader{client: httpClient})
+	messaging.Subscribe(bus, "mediacover.HandleSeriesUpdated",
+		func(ctx context.Context, ev series.SeriesUpdatedEvent) error {
+			updated, err := mediaCoverSvc.HandleSeriesUpdated(ctx, ev.Series)
+			if err != nil {
+				return err
+			}
+			return messaging.Publish(ctx, bus, mediacover.CoversUpdatedEvent{Series: ev.Series, Updated: updated})
+		})
+	messaging.Subscribe(bus, "mediacover.HandleSeriesDeleted",
+		func(ctx context.Context, ev series.SeriesDeletedEvent) error {
+			ids := make([]int, 0, len(ev.Series))
+			for i := range ev.Series {
+				ids = append(ids, ev.Series[i].ID)
+			}
+			return mediaCoverSvc.HandleSeriesDeleted(ctx, ids)
+		})
 	// Slice 4.O (queue [7] sub-arc 7c, FINAL) + 4.P (queue [8]):
 	// wire indexersearch.Service. The dispatcher's typed deps
 	// (series.Service / episodes.Service / scenemappings.Service)

@@ -18727,3 +18727,39 @@ Two of Arc 3's three named residuals are fully drained (CustomFormatScore + the 
 | MediaCover SeriesUpdated/Deleted subscriber wiring | OPEN — J364 (construct Service + httpClient adapter + bus subscriptions) |
 
 The download arm is ported + tested. J364 wires it into the event bus, closing the last Arc 3 residual.
+
+---
+
+## J364 — Post-J352 residual-arc, Arc 3 (smaller residuals) slice 6: wire the MediaCover cover-download subscriber (DRAINS Arc 3 + COMPLETES the Post-J352 residual-arc)
+
+**Anchor**: post-J363 (download surface ported). Wires it into the event bus + production services. The `mediacover.Service` had no production caller before this slice.
+
+### Port deliverables
+
+- **`cmd/sonarr/mediacover_wiring.go`** (new) — adapters bridging production services to the `internal/mediacover` narrow interfaces:
+  - `mediaCoverFS` (wraps `*disk.Provider`): `FileExists` via `os.Stat`; `FolderExists`/`DeleteFolder`/`GetFileSize` passthrough; `FileGetLastWrite` converts `time.Time` → .NET ticks (`UnixNano()/100 + 621355968000000000`).
+  - `mediaCoverFolders`: `MediaCoverPath = <AppData>/MediaCover`.
+  - `mediaCoverURLBase`: configfile `UrlBase` (error → "").
+  - `mediaCoverDownloader` (wraps `*httpclient.Client`): `ContentLength` via HEAD → `Headers.ContentLength()`; `DownloadFile` passthrough.
+  - Compile-time guards for all four.
+- **`cmd/sonarr/main.go`** — constructs `mediacover.NewService(...)` after the httpClient block, `SetDownloader(mediaCoverDownloader{httpClient})`, and subscribes: `SeriesUpdatedEvent` → `HandleSeriesUpdated` (+ republish `CoversUpdatedEvent{Series, updated}`) and `SeriesDeletedEvent` → `HandleSeriesDeleted` (series IDs extracted from the event's `[]Series`). New `mediacover` import.
+
+### Behaviour
+
+A refreshed/added series now fetches its covers to `<AppData>/MediaCover/<id>/<type>.ext`; deleting a series removes the folder. Previously the mediacover.Service was never instantiated in production. Resize variants stay deferred (full-size only).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/mediacover/ ./cmd/sonarr/...` ✓ (mediacover 1.41s, cmd/sonarr 3.69s)
+- `go vet` + gofmt ✓
+
+### Arc 3 — COMPLETE / Post-J352 residual-arc — COMPLETE
+
+| Arc | Items | Status |
+| --- | --- | --- |
+| 1 — ImportDecisionMaker spec pipeline | 14 specs + orchestrator + ManualImport rejections (NoEpisodes + GetDecision) | DONE (J353-J356) |
+| 2 — Queue paging SORT + filter params | ~18 sort keys + comparers + the seriesIds/protocol/languages/quality/status filters | DONE (J357-J358) |
+| 3 — smaller residuals | Queue CustomFormatScore recompute; cutoff-unmet enumerator + wanted/cutoff wiring + CutoffUnmetEpisodeSearch handler; MediaCover download subscriber | DONE (J359-J364) |
+
+**All three Post-J352 residual arcs are drained.** Remaining documented deferral: the MediaCover ImageSharp resize tier (needs a deliberate Go image-resize dependency decision).
