@@ -218,18 +218,86 @@ func (emptyUpdateLister) RecentUpdates(context.Context) ([]apiv3.UpdateResource,
 	return nil, nil
 }
 
-// emptyQueuePagedLister stands in for the future queue.Service paged
-// projection. /api/v3/queue's empty-DB recording shows 0 records, so
-// an honest zero result matches byte-eq today; populated-row mapping
-// awaits the queue.Service's paged surface — DEFERRED in STATUS.
-type emptyQueuePagedLister struct{}
+// queuePagedAdapter satisfies apiv3.QueuePagedLister by projecting the
+// in-memory queue.Service cache into the paged QueueResource shape.
+// Mirrors C# `QueueController.GetQueue` → `QueueResourceMapper.ToResource`
+// at `src/Sonarr.Api.V3/Queue/QueueResource.cs:58-107`.
+//
+// J347 — Arc 3 slice 1. Projects the scalar field set; Series /
+// Episode / Episodes subresources + CustomFormats are DEFERRED to the
+// next sub-slice (the queue.Queue row already carries the Series +
+// Episodes domain objects, so hydration is a projection-only follow-up
+// — no new lookups needed). Pagination follows the historyPagedAdapter
+// convention (paginateInMemory in cache order); SQL/in-mem sorting is
+// the same DEFERRED posture the history + blocklist adapters carry.
+type queuePagedAdapter struct{ svc *queue.Service }
 
-func (emptyQueuePagedLister) PagedQueue(context.Context, apiv3.PagingRequest) ([]apiv3.QueueResource, int, error) {
-	return nil, 0, nil
+func (a queuePagedAdapter) PagedQueue(_ context.Context, req apiv3.PagingRequest) ([]apiv3.QueueResource, int, error) {
+	rows := a.svc.GetQueue()
+	total := len(rows)
+	page := paginateInMemory(rows, req)
+	out := make([]apiv3.QueueResource, 0, len(page))
+	for _, q := range page {
+		out = append(out, projectQueueResource(q))
+	}
+	return out, total, nil
 }
 
-// emptyQueueDetailsLister mirrors the emptyQueuePagedLister pattern
-// for /queue/details. Empty-DB recording shows zero records; the
+// projectQueueResource maps a single queue.Queue domain row to the
+// scalar apiv3.QueueResource wire shape (J347). Subresources (Series /
+// Episode / Episodes / EpisodeIDs / SeasonNumbers / StatusMessages) +
+// CustomFormats + CustomFormatScore are left nil/zero — DEFERRED to the
+// J348+ hydration slices. Enum fields route through CamelCaseEnumName
+// to match the C# JsonStringEnumConverter + camelCase policy; Protocol
+// uses the lowercase String() form the C# DownloadProtocol enum emits.
+func projectQueueResource(q queue.Queue) apiv3.QueueResource {
+	res := apiv3.QueueResource{
+		ID:                                  q.ID,
+		Title:                               q.Title,
+		Status:                              apiv3.CamelCaseEnumName(q.Status.String()),
+		DownloadID:                          q.DownloadID,
+		Protocol:                            q.Protocol.String(),
+		Quality:                             apiv3.ToQualityModelResource(q.Quality),
+		Size:                                q.Size,
+		SizeLeft:                            q.SizeLeft,
+		TimeLeft:                            apiv3.FormatTimeLeft(q.TimeLeft),
+		Indexer:                             q.Indexer,
+		DownloadClient:                      q.DownloadClient,
+		DownloadClientHasPostImportCategory: q.DownloadClientHasPostImportCategory,
+		OutputPath:                          q.OutputPath,
+		ErrorMessage:                        q.ErrorMessage,
+		Added:                               q.Added,
+		EstimatedCompletionTime:             q.EstimatedCompletionTime,
+	}
+	if q.Series != nil {
+		sid := q.Series.ID
+		res.SeriesID = &sid
+	}
+	// C# maps EpisodeId / SeasonNumber from the singular model.Episode;
+	// the Go domain carries Episodes[] — use the first entry.
+	if len(q.Episodes) > 0 {
+		eid := q.Episodes[0].ID
+		res.EpisodeID = &eid
+	}
+	// Languages — extract persisted IDs then project via ToLanguageRefs.
+	if len(q.Languages) > 0 {
+		ids := make([]int, 0, len(q.Languages))
+		for _, l := range q.Languages {
+			ids = append(ids, l.ID)
+		}
+		res.Languages = apiv3.ToLanguageRefs(ids)
+	}
+	if q.TrackedDownloadStatus != nil {
+		res.TrackedDownloadStatus = apiv3.CamelCaseEnumName(q.TrackedDownloadStatus.String())
+	}
+	if q.TrackedDownloadState != nil {
+		res.TrackedDownloadState = apiv3.CamelCaseEnumName(q.TrackedDownloadState.String())
+	}
+	return res
+}
+
+// emptyQueueDetailsLister is the empty-result stand-in for
+// /queue/details. Empty-DB recording shows zero records; the
 // production wiring substitutes the empty implementation today.
 // Populated-row projection lands when the tracked-downloads /
 // pending-release join surface ports.
@@ -1981,7 +2049,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// upstream-client side-effects; v5 inherits via the wrapper).
 		// SignalR queue/deleted broadcast fires only on actual remove
 		// (silent-skip on missing id matches v3 queue_write.go:109-117).
-		{Method: "GET", Path: "/api/v5/queue", Handler: queuev5.ListHandler(emptyQueuePagedLister{})},
+		{Method: "GET", Path: "/api/v5/queue", Handler: queuev5.ListHandler(queuePagedAdapter{queueSvc})},
 		{Method: "DELETE", Path: "/api/v5/queue/{id}", Handler: queuev5.DeleteHandler(queueSvc, nil)},
 		{Method: "DELETE", Path: "/api/v5/queue/bulk", Handler: queuev5.BulkDeleteHandler(queueSvc, nil)},
 		// J292 — v5 Episode endpoint family (4 endpoints; 85 LOC C#).
@@ -2504,7 +2572,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v3/qualityprofile", Handler: apiv3.QualityProfileCreateHandler(qualityProfilesSvc, customFormatsSvc)},
 		{Method: "PUT", Path: "/api/v3/qualityprofile/{id}", Handler: apiv3.QualityProfileUpdateHandler(qualityProfilesSvc, customFormatsSvc)},
 		{Method: "DELETE", Path: "/api/v3/qualityprofile/{id}", Handler: apiv3.QualityProfileDeleteHandler(qualityProfilesSvc)},
-		{Method: "GET", Path: "/api/v3/queue", Handler: apiv3.QueueHandler(emptyQueuePagedLister{})},
+		{Method: "GET", Path: "/api/v3/queue", Handler: apiv3.QueueHandler(queuePagedAdapter{queueSvc})},
 		{Method: "GET", Path: "/api/v3/queue/details", Handler: apiv3.QueueDetailsHandler(emptyQueueDetailsLister{})},
 		{Method: "GET", Path: "/api/v3/queue/status", Handler: apiv3.QueueStatusHandler(queueSvc, pendingCountLister{repo: pendingReleasesRepo}, queueStatusPauser)},
 		{Method: "DELETE", Path: "/api/v3/queue/bulk", Handler: apiv3.QueueBulkDeleteHandler(queueSvc, nil)},

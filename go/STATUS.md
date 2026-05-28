@@ -18016,3 +18016,54 @@ Arc 2 progress: 2 of 3 sub-slices landed; ManualImport (which has its own deferr
 | 3 (B-cat) | QueueResource v5 includeSubresources[] hydration (Queue.Service paged surface + Series+Episodes pipeline) | OPEN — only remaining arc |
 
 **Arc 2 (parsingService.Map + ImportDecisionMaker) DRAINS at J346.** The full ImportDecisionMaker spec pipeline (Rejections list + file-size/mediainfo CF specs) is a separate future arc, not part of the populated-mapper backlog. Arc 3 (Queue.Service paged surface) is the only remaining arc — it's the largest of the three (paged query surface + Series+Episodes join pipeline) and is the next-tick candidate.
+
+---
+
+## J347 — Post-J342 service-port arc, slice 5 (Arc 3 slice 1, B-category): Queue.Service paged surface — scalar QueueResource projection + paging adapter
+
+**Anchor**: post-J346 (Arc 2 drained). Opens Arc 3, the largest arc. Smallest-first slice: a real `queuePagedAdapter` replacing the `emptyQueuePagedLister{}` stub on both /api/v3/queue + /api/v5/queue. Reads the in-memory queue.Service cache, paginates, and projects each row to a scalar QueueResource. Subresource hydration (Series/Episode/Episodes) + CustomFormats + StatusMessages + the v5 includeSubresources[] gating are deferred to follow-up Arc 3 slices.
+
+**Key discovery**: the `queue.Queue` domain model already carries `Series *series.Series` + `Episodes []episodes.Episode` directly on the row (populated by the TrackedDownloadRefreshedEvent handler). So the "Series+Episodes pipeline" the arc prompt mentioned is NOT a separate lookup join — it's projection-only off the already-attached domain objects. This makes the remaining Arc 3 hydration slices much smaller than anticipated.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:58-107` — `QueueResourceMapper.ToResource(model, includeSeries, includeEpisode)`. Scalar fields map directly; SeriesId = `model.Series?.Id`, EpisodeId = `model.Episode?.Id`, SeasonNumber = `model.Episode?.SeasonNumber`. Series/Episode subresources gate on the include flags. CustomFormats from `model.RemoteEpisode?.CustomFormats`; score via `model.Series?.QualityProfile?.Value?.CalculateCustomFormatScore`.
+- `src/Sonarr.Api.V3/Queue/QueueController.cs:139-171` — GetQueue paging (default sortKey "timeleft").
+
+### Port deliverables
+
+**`go/cmd/sonarr/host_wiring.go`**:
+
+- New `queuePagedAdapter struct { svc *queue.Service }` implementing `apiv3.QueuePagedLister.PagedQueue` — GetQueue() snapshot → total = len → paginateInMemory (cache order; sorting DEFERRED per the history/blocklist adapter convention) → project each row.
+- New `projectQueueResource(q queue.Queue) apiv3.QueueResource` helper mapping the scalar field set (enum fields via CamelCaseEnumName except Protocol which uses the lowercase String() form; Languages via ID-extract + ToLanguageRefs; Quality via ToQualityModelResource; TimeLeft via FormatTimeLeft). SeriesID from q.Series.ID; EpisodeID from q.Episodes[0].ID (Go domain carries Episodes[] vs C# singular model.Episode). Subresources + CustomFormats + StatusMessages left nil/zero (DEFERRED).
+- Removed the now-dead `emptyQueuePagedLister` type + fixed the dangling doc reference on emptyQueueDetailsLister.
+- 2 wire-site updates: `/api/v3/queue` (apiv3.QueueHandler) + `/api/v5/queue` (queuev5.ListHandler) now pass `queuePagedAdapter{queueSvc}`.
+
+### Tests
+
+**`go/cmd/sonarr/queue_paged_adapter_test.go`** (new file) — 3 tests:
+
+- `TestQueuePagedAdapter_EmptyQueue_ReturnsEmptyPage` — zero rows → empty page + total 0.
+- `TestQueuePagedAdapter_ScalarProjection_J347` — populated row pins Status="downloading" (camelCase), Protocol="torrent", TimeLeft="01:30:00", SeriesID=7, EpisodeID=11, Languages=[{1 English}] + the subresources-must-be-nil guard.
+- `TestQueuePagedAdapter_Pagination_J347` — 25 rows, page 2 of size 10 → 10 records, total 25, first ID 11.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./cmd/sonarr/... ./internal/api/v5/queue/... ./internal/api/v3/...` ✓ (cmd/sonarr 3.841s, v5/queue 2.649s, v3 2.264s)
+- `go vet ./cmd/sonarr/... ./internal/api/v5/queue/...` ✓
+
+### Post-J342 service-port arc backlog
+
+| Sub-arc | Item | Status |
+| --- | --- | --- |
+| 1 (B-cat) | Release POST searchInfo fallback | DONE (J343) |
+| 2 (A-cat) | Parse handler Series/Episodes/Languages | DONE (J344) |
+| 2 (A-cat) | Parse handler CustomFormats + Score | DONE (J345) |
+| 2 (A-cat) | ManualImport handler CustomFormats + Score | DONE (J346) |
+| 3 (B-cat) | Queue paged surface — scalar projection + paging | **DONE this slice (J347)** |
+| 3 (B-cat) | Queue Series + Episode/Episodes subresource hydration | OPEN — next sub-slice (projection-only, rows already carry the domain objects) |
+| 3 (B-cat) | Queue CustomFormats + Score + StatusMessages projection | OPEN |
+| 3 (B-cat) | v5 includeSubresources[] enum-array query-param gating | OPEN |
+
+Arc 3 progress: 1 of ~4 sub-slices landed. Next-tick candidate: Series + Episode/Episodes subresource hydration (the rows already carry Series + Episodes, so it's a pure projection follow-up gated on the include flags).
