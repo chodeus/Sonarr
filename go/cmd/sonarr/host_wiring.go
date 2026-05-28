@@ -12,20 +12,29 @@ import (
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	autotaggingv5 "sonarr.tv/sonarr/internal/api/v5/autotagging"
 	blocklistv5 "sonarr.tv/sonarr/internal/api/v5/blocklist"
+	calendarv5 "sonarr.tv/sonarr/internal/api/v5/calendar"
+	commandv5 "sonarr.tv/sonarr/internal/api/v5/command"
+	connectionv5 "sonarr.tv/sonarr/internal/api/v5/connection"
 	customfilterv5 "sonarr.tv/sonarr/internal/api/v5/customfilter"
 	customformatv5 "sonarr.tv/sonarr/internal/api/v5/customformat"
 	diskspacev5 "sonarr.tv/sonarr/internal/api/v5/diskspace"
+	episodev5 "sonarr.tv/sonarr/internal/api/v5/episode"
+	episodefilev5 "sonarr.tv/sonarr/internal/api/v5/episodefile"
 	filesystemv5 "sonarr.tv/sonarr/internal/api/v5/filesystem"
-	healthv5 "sonarr.tv/sonarr/internal/api/v5/health"
-	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	generalsettingsv5 "sonarr.tv/sonarr/internal/api/v5/generalsettings"
+	healthv5 "sonarr.tv/sonarr/internal/api/v5/health"
+	historyv5 "sonarr.tv/sonarr/internal/api/v5/history"
+	importlistv5 "sonarr.tv/sonarr/internal/api/v5/importlist"
 	importlistexclusionv5 "sonarr.tv/sonarr/internal/api/v5/importlistexclusion"
 	importlistsettingsv5 "sonarr.tv/sonarr/internal/api/v5/importlistsettings"
+	indexerv5 "sonarr.tv/sonarr/internal/api/v5/indexer"
 	indexersettingsv5 "sonarr.tv/sonarr/internal/api/v5/indexersettings"
+	localizationv5 "sonarr.tv/sonarr/internal/api/v5/localization"
+	logv5 "sonarr.tv/sonarr/internal/api/v5/log"
+	manualimportv5 "sonarr.tv/sonarr/internal/api/v5/manualimport"
 	mediamanagementsettingsv5 "sonarr.tv/sonarr/internal/api/v5/mediamanagementsettings"
-	namingsettingsv5 "sonarr.tv/sonarr/internal/api/v5/namingsettings"
-	uisettingsv5 "sonarr.tv/sonarr/internal/api/v5/uisettings"
 	metadatav5 "sonarr.tv/sonarr/internal/api/v5/metadata"
+	namingsettingsv5 "sonarr.tv/sonarr/internal/api/v5/namingsettings"
 	parsev5 "sonarr.tv/sonarr/internal/api/v5/parse"
 	qualitydefinitionv5 "sonarr.tv/sonarr/internal/api/v5/qualitydefinition"
 	qualityprofilev5 "sonarr.tv/sonarr/internal/api/v5/qualityprofile"
@@ -33,33 +42,24 @@ import (
 	queueactionv5 "sonarr.tv/sonarr/internal/api/v5/queueaction"
 	queuedetailsv5 "sonarr.tv/sonarr/internal/api/v5/queuedetails"
 	queuestatusv5 "sonarr.tv/sonarr/internal/api/v5/queuestatus"
-	renameepisodev5 "sonarr.tv/sonarr/internal/api/v5/renameepisode"
-	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
 	releasev5 "sonarr.tv/sonarr/internal/api/v5/release"
+	releaseprofilev5 "sonarr.tv/sonarr/internal/api/v5/releaseprofile"
 	releasepushv5 "sonarr.tv/sonarr/internal/api/v5/releasepush"
+	remotepathmappingv5 "sonarr.tv/sonarr/internal/api/v5/remotepathmapping"
+	renameepisodev5 "sonarr.tv/sonarr/internal/api/v5/renameepisode"
+	rootfolderv5 "sonarr.tv/sonarr/internal/api/v5/rootfolder"
+	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
 	seriesv5 "sonarr.tv/sonarr/internal/api/v5/series"
 	seriesfolderv5 "sonarr.tv/sonarr/internal/api/v5/seriesfolder"
 	seriesimportv5 "sonarr.tv/sonarr/internal/api/v5/seriesimport"
 	serieslookupv5 "sonarr.tv/sonarr/internal/api/v5/serieslookup"
-	updatesettingsv5 "sonarr.tv/sonarr/internal/api/v5/updatesettings"
-	remotepathmappingv5 "sonarr.tv/sonarr/internal/api/v5/remotepathmapping"
-	rootfolderv5 "sonarr.tv/sonarr/internal/api/v5/rootfolder"
-	seasonpassv5 "sonarr.tv/sonarr/internal/api/v5/seasonpass"
-	updatev5 "sonarr.tv/sonarr/internal/api/v5/update"
-	calendarv5 "sonarr.tv/sonarr/internal/api/v5/calendar"
-	commandv5 "sonarr.tv/sonarr/internal/api/v5/command"
-	connectionv5 "sonarr.tv/sonarr/internal/api/v5/connection"
-	episodev5 "sonarr.tv/sonarr/internal/api/v5/episode"
-	episodefilev5 "sonarr.tv/sonarr/internal/api/v5/episodefile"
-	historyv5 "sonarr.tv/sonarr/internal/api/v5/history"
-	indexerv5 "sonarr.tv/sonarr/internal/api/v5/indexer"
-	localizationv5 "sonarr.tv/sonarr/internal/api/v5/localization"
-	logv5 "sonarr.tv/sonarr/internal/api/v5/log"
-	manualimportv5 "sonarr.tv/sonarr/internal/api/v5/manualimport"
 	systemv5 "sonarr.tv/sonarr/internal/api/v5/system"
 	systembackupv5 "sonarr.tv/sonarr/internal/api/v5/systembackup"
 	systemtaskv5 "sonarr.tv/sonarr/internal/api/v5/systemtask"
 	tagv5 "sonarr.tv/sonarr/internal/api/v5/tag"
+	uisettingsv5 "sonarr.tv/sonarr/internal/api/v5/uisettings"
+	updatev5 "sonarr.tv/sonarr/internal/api/v5/update"
+	updatesettingsv5 "sonarr.tv/sonarr/internal/api/v5/updatesettings"
 	wantedv5 "sonarr.tv/sonarr/internal/api/v5/wanted"
 	"sonarr.tv/sonarr/internal/auth"
 	"sonarr.tv/sonarr/internal/autotagging"
@@ -305,6 +305,23 @@ func projectQueueResource(q queue.Queue) apiv3.QueueResource {
 	}
 	if q.TrackedDownloadState != nil {
 		res.TrackedDownloadState = apiv3.CamelCaseEnumName(q.TrackedDownloadState.String())
+	}
+	// J349 — CustomFormats + CustomFormatScore from the row's
+	// RemoteEpisode Subject. C# QueueResource.cs:75 sets
+	// CustomFormats = model.RemoteEpisode?.CustomFormats?.ToResource(false)
+	// + CustomFormatScore = Series.QualityProfile.CalculateCustomFormatScore.
+	// The Go Subject carries both the matched CustomFormats slice and the
+	// decision-time-precomputed score, so we project both directly (no
+	// QP recompute — see the QueueResource doc-comment rationale).
+	if q.RemoteEpisode != nil {
+		if len(q.RemoteEpisode.CustomFormats) > 0 {
+			cf := make([]apiv3.CustomFormatResource, 0, len(q.RemoteEpisode.CustomFormats))
+			for _, m := range q.RemoteEpisode.CustomFormats {
+				cf = append(cf, apiv3.CustomFormatResource{ID: m.ID, Name: m.Name})
+			}
+			res.CustomFormats = cf
+		}
+		res.CustomFormatScore = q.RemoteEpisode.CustomFormatScore
 	}
 	return res
 }

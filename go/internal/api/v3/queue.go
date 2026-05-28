@@ -148,6 +148,24 @@ import (
 // e.EstimatedCompletionTime` verbatim without re-widening the
 // struct.
 //
+// J349 CustomFormats list widening: CustomFormats
+// ([]CustomFormatResource with omitempty). C# v3+v5 declare
+// `List<CustomFormatResource> CustomFormats` (QueueResource.cs:26),
+// always set via `model.RemoteEpisode?.CustomFormats?.ToResource(false)`
+// (QueueResource.cs:75). The Go-port projects from the queue row's
+// `RemoteEpisode *decisionengine.Subject` — the Subject carries the
+// decision-time-matched CustomFormats slice. omitempty drops the key
+// when the queue row has no RemoteEpisode (or no matched formats),
+// matching the C# null-list-absent posture. Paired with the existing
+// CustomFormatScore int: the Go-port uses the Subject's precomputed
+// CustomFormatScore (computed at decision time via
+// qualityprofiles.CalculateCustomFormatScore against the series QP)
+// rather than recomputing at resource-mapping time as C# does — the
+// two are equivalent unless the QP changed between grab and display,
+// and reusing the precomputed score avoids threading the
+// customFormatsSvc + qualityProfilesSvc lookups into the queue paged
+// adapter.
+//
 // J318 bool/int widening: DownloadClientHasPostImportCategory bool
 // (both v3+v5) + CustomFormatScore int (both v3+v5) +
 // EpisodesWithFilesCount int (v5-additive — v3 carries
@@ -199,36 +217,37 @@ import (
 // stub today leaves the field nil so the wire stays unchanged
 // at the empty-DB shape.
 type QueueResource struct {
-	ID                                  int           `json:"id,omitempty"`
-	SeriesID                            *int          `json:"seriesId,omitempty"`
-	EpisodeID                           *int          `json:"episodeId,omitempty"`
-	Title                               string        `json:"title,omitempty"`
-	Status                              string        `json:"status,omitempty"`
-	DownloadID                          string        `json:"downloadId,omitempty"`
-	Protocol                            string        `json:"protocol,omitempty"`
-	Languages                           []LanguageRef `json:"languages,omitempty"`
-	Quality                             *QualityModelResource `json:"quality,omitempty"`
-	TrackedDownloadStatus               string        `json:"trackedDownloadStatus,omitempty"`
-	TrackedDownloadState                string        `json:"trackedDownloadState,omitempty"`
-	Size                                int64         `json:"size,omitempty"`
-	SizeLeft                            int64         `json:"sizeLeft,omitempty"`
-	TimeLeft                            string        `json:"timeLeft,omitempty"`
-	Indexer                             string        `json:"indexer,omitempty"`
-	DownloadClient                      string        `json:"downloadClient,omitempty"`
-	DownloadClientHasPostImportCategory bool          `json:"downloadClientHasPostImportCategory,omitempty"`
-	OutputPath                          string        `json:"outputPath,omitempty"`
-	ErrorMessage                        string        `json:"errorMessage,omitempty"`
-	CustomFormatScore                   int           `json:"customFormatScore,omitempty"`
-	EpisodesWithFilesCount              int           `json:"episodesWithFilesCount,omitempty"`
-	IsFullSeason                        bool          `json:"isFullSeason,omitempty"`
-	Added                               *time.Time    `json:"added,omitempty"`
-	EstimatedCompletionTime             *time.Time    `json:"estimatedCompletionTime,omitempty"`
-	Series                              *SeriesResource    `json:"series,omitempty"`
-	Episode                             *EpisodeResource   `json:"episode,omitempty"`
-	Episodes                            *[]EpisodeResource `json:"episodes,omitempty"`
-	EpisodeIDs                          *[]int             `json:"episodeIds,omitempty"`
-	SeasonNumbers                       *[]int             `json:"seasonNumbers,omitempty"`
-	StatusMessages                      *[]QueueStatusMessage `json:"statusMessages,omitempty"`
+	ID                                  int                    `json:"id,omitempty"`
+	SeriesID                            *int                   `json:"seriesId,omitempty"`
+	EpisodeID                           *int                   `json:"episodeId,omitempty"`
+	Title                               string                 `json:"title,omitempty"`
+	Status                              string                 `json:"status,omitempty"`
+	DownloadID                          string                 `json:"downloadId,omitempty"`
+	Protocol                            string                 `json:"protocol,omitempty"`
+	Languages                           []LanguageRef          `json:"languages,omitempty"`
+	Quality                             *QualityModelResource  `json:"quality,omitempty"`
+	TrackedDownloadStatus               string                 `json:"trackedDownloadStatus,omitempty"`
+	TrackedDownloadState                string                 `json:"trackedDownloadState,omitempty"`
+	Size                                int64                  `json:"size,omitempty"`
+	SizeLeft                            int64                  `json:"sizeLeft,omitempty"`
+	TimeLeft                            string                 `json:"timeLeft,omitempty"`
+	Indexer                             string                 `json:"indexer,omitempty"`
+	DownloadClient                      string                 `json:"downloadClient,omitempty"`
+	DownloadClientHasPostImportCategory bool                   `json:"downloadClientHasPostImportCategory,omitempty"`
+	OutputPath                          string                 `json:"outputPath,omitempty"`
+	ErrorMessage                        string                 `json:"errorMessage,omitempty"`
+	CustomFormats                       []CustomFormatResource `json:"customFormats,omitempty"`
+	CustomFormatScore                   int                    `json:"customFormatScore,omitempty"`
+	EpisodesWithFilesCount              int                    `json:"episodesWithFilesCount,omitempty"`
+	IsFullSeason                        bool                   `json:"isFullSeason,omitempty"`
+	Added                               *time.Time             `json:"added,omitempty"`
+	EstimatedCompletionTime             *time.Time             `json:"estimatedCompletionTime,omitempty"`
+	Series                              *SeriesResource        `json:"series,omitempty"`
+	Episode                             *EpisodeResource       `json:"episode,omitempty"`
+	Episodes                            *[]EpisodeResource     `json:"episodes,omitempty"`
+	EpisodeIDs                          *[]int                 `json:"episodeIds,omitempty"`
+	SeasonNumbers                       *[]int                 `json:"seasonNumbers,omitempty"`
+	StatusMessages                      *[]QueueStatusMessage  `json:"statusMessages,omitempty"`
 }
 
 // QueueStatusMessage is the wire-shape mirror of C#

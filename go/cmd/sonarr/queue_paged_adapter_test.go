@@ -6,6 +6,8 @@ import (
 	"time"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
+	"sonarr.tv/sonarr/internal/customformats"
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/language"
@@ -92,6 +94,49 @@ func TestQueuePagedAdapter_ScalarProjection_J347(t *testing.T) {
 	}
 	if r.Episodes != nil {
 		t.Errorf("v5-only Episodes plural must stay nil at adapter level; got %v", r.Episodes)
+	}
+}
+
+func TestQueuePagedAdapter_CustomFormatsAndScore_J349(t *testing.T) {
+	t.Parallel()
+	svc := queue.NewService()
+	svc.SetQueue([]queue.Queue{{
+		ID:     1,
+		Title:  "row",
+		Status: queue.QueueStatusDownloading,
+		RemoteEpisode: &decisionengine.Subject{
+			CustomFormats:     []customformats.CustomFormat{{ID: 5, Name: "x265"}, {ID: 6, Name: "HDR"}},
+			CustomFormatScore: 37,
+		},
+	}})
+	adapter := queuePagedAdapter{svc}
+	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	r := records[0]
+	if len(r.CustomFormats) != 2 || r.CustomFormats[0].ID != 5 || r.CustomFormats[1].Name != "HDR" {
+		t.Errorf("CustomFormats projection: got %+v", r.CustomFormats)
+	}
+	if r.CustomFormatScore != 37 {
+		t.Errorf("CustomFormatScore: got %d want 37", r.CustomFormatScore)
+	}
+}
+
+func TestQueuePagedAdapter_NoRemoteEpisode_OmitsCustomFormats_J349(t *testing.T) {
+	t.Parallel()
+	svc := queue.NewService()
+	svc.SetQueue([]queue.Queue{{ID: 1, Title: "row", Status: queue.QueueStatusQueued}})
+	adapter := queuePagedAdapter{svc}
+	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if records[0].CustomFormats != nil {
+		t.Errorf("no RemoteEpisode → CustomFormats must be nil (omitempty drops key); got %+v", records[0].CustomFormats)
+	}
+	if records[0].CustomFormatScore != 0 {
+		t.Errorf("no RemoteEpisode → CustomFormatScore must be 0; got %d", records[0].CustomFormatScore)
 	}
 }
 

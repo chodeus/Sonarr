@@ -18109,3 +18109,45 @@ Arc 3 progress: 1 of ~4 sub-slices landed. Next-tick candidate: Series + Episode
 | 3 (B-cat) | v5 Episodes-plural + EpisodeIDs + SeasonNumbers + includeSubresources[] gating | OPEN |
 
 Arc 3 progress: 2 of ~4 sub-slices landed. Next-tick candidate: Queue CustomFormats + Score + StatusMessages projection (the row carries RemoteEpisode.CustomFormats + StatusMessages []string; the C# score uses Series.QualityProfile.CalculateCustomFormatScore).
+
+---
+
+## J349 — Post-J342 service-port arc, slice 7 (Arc 3 slice 3, B-category): Queue CustomFormats list field + CustomFormats/CustomFormatScore projection from the row's RemoteEpisode Subject
+
+**Anchor**: post-J348 (Series/Episode hydration). Discovered the Go-port QueueResource was MISSING the `CustomFormats` list field entirely — the J318 doc-comment listed it as DEFERRED; only `CustomFormatScore int` had been pinned. This slice adds the field + projects both off the queue row's RemoteEpisode Subject.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:26` — `public List<CustomFormatResource> CustomFormats`.
+- `QueueResource.cs:67` — `var customFormats = model.RemoteEpisode?.CustomFormats;` + `:68` `customFormatScore = model.Series?.QualityProfile?.Value?.CalculateCustomFormatScore(customFormats) ?? 0`.
+- `QueueResource.cs:75-76` — `CustomFormats = customFormats?.ToResource(false), CustomFormatScore = customFormatScore`. Always set (no include-flag gate).
+
+### Port deliverables
+
+- **`apiv3.QueueResource`**: new field `CustomFormats []CustomFormatResource json:"customFormats,omitempty"` (omitempty drops the key when no formats — matches C# null-list-absent under WhenWritingNull). Doc-comment J349 paragraph explaining the field + the precomputed-score-reuse rationale.
+- **`projectQueueResource`** (cmd/sonarr): when `q.RemoteEpisode != nil`, project `CustomFormats` from `q.RemoteEpisode.CustomFormats` ([]customformats.CustomFormat → []apiv3.CustomFormatResource{ID,Name}) + set `CustomFormatScore = q.RemoteEpisode.CustomFormatScore`. Reuses the Subject's decision-time-precomputed score rather than recomputing against the current series QP (C# recomputes; the two are equivalent unless the QP changed mid-flight, and reusing avoids threading customFormatsSvc + qualityProfilesSvc into the adapter). Not gated by an include flag.
+
+### Tests
+
+- `TestQueuePagedAdapter_CustomFormatsAndScore_J349` — Subject with 2 matched formats + score 37 → both projected.
+- `TestQueuePagedAdapter_NoRemoteEpisode_OmitsCustomFormats_J349` — no RemoteEpisode → CustomFormats nil (omitempty) + Score 0.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/queue/... ./cmd/sonarr/...` ✓ (v3 2.688s, v5/queue 2.137s, cmd/sonarr 3.831s)
+- `go vet` + gofmt ✓
+
+### Post-J342 service-port arc backlog
+
+| Sub-arc | Item | Status |
+| --- | --- | --- |
+| 1 (B-cat) | Release POST searchInfo fallback | DONE (J343) |
+| 2 (A-cat) | Parse handler full hydration + ManualImport CustomFormats | DONE (J344-J346) |
+| 3 (B-cat) | Queue paged surface — scalar projection + paging | DONE (J347) |
+| 3 (B-cat) | Queue Series + Episode hydration + v3 gating | DONE (J348) |
+| 3 (B-cat) | Queue CustomFormats list field + CustomFormats/Score projection | **DONE this slice (J349)** |
+| 3 (B-cat) | Queue StatusMessages projection ([]string → []QueueStatusMessage) | OPEN |
+| 3 (B-cat) | v5 Episodes-plural + EpisodeIDs + SeasonNumbers + includeSubresources[] gating | OPEN |
+
+Arc 3 progress: 3 of ~4 sub-slices landed. Next-tick candidate: StatusMessages projection (the row carries StatusMessages []string; the wire wants []QueueStatusMessage — a lossy synthesis design question to resolve in that slice).
