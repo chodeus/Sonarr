@@ -309,3 +309,32 @@ func TestQueuePagedAdapter_Filter_J358(t *testing.T) {
 		t.Errorf("status filter: got total=%d recs=%+v", total, recs)
 	}
 }
+
+// TestQueuePagedAdapter_CustomFormatScoreFallback_J359 pins the
+// defensive fallback: when the adapter has no qualityProfiles service
+// wired (or the profile can't be resolved), the decision-time
+// precomputed CustomFormatScore is preserved rather than zeroed.
+func TestQueuePagedAdapter_CustomFormatScoreFallback_J359(t *testing.T) {
+	t.Parallel()
+	svc := queue.NewService()
+	svc.SetQueue([]queue.Queue{{
+		ID:     1,
+		Title:  "row",
+		Status: queue.QueueStatusDownloading,
+		Series: &series.Series{ID: 7, QualityProfileID: 3},
+		RemoteEpisode: &decisionengine.Subject{
+			CustomFormats:     []customformats.CustomFormat{{ID: 5, Name: "x265"}},
+			CustomFormatScore: 37,
+		},
+	}})
+	// qualityProfiles intentionally nil → recompute returns (0,false) →
+	// precomputed 37 is kept.
+	adapter := queuePagedAdapter{svc: svc}
+	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10}, apiv3.QueueFilter{IncludeUnknownSeriesItems: true})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if records[0].CustomFormatScore != 37 {
+		t.Errorf("fallback must preserve precomputed score; got %d want 37", records[0].CustomFormatScore)
+	}
+}

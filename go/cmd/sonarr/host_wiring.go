@@ -235,6 +235,11 @@ func (emptyUpdateLister) RecentUpdates(context.Context) ([]apiv3.UpdateResource,
 type queuePagedAdapter struct {
 	svc         *queue.Service
 	qualityDefs *qualitydefinitions.Service
+	// qualityProfiles backs the J359 CustomFormatScore recompute (C#
+	// QueueResource.cs:75 recomputes against the CURRENT series quality
+	// profile rather than the decision-time precomputed score). nil →
+	// the precomputed score is kept (defensive fallback).
+	qualityProfiles *qualityprofiles.Service
 }
 
 func (a queuePagedAdapter) PagedQueue(ctx context.Context, req apiv3.PagingRequest, filter apiv3.QueueFilter) ([]apiv3.QueueResource, int, error) {
@@ -254,9 +259,46 @@ func (a queuePagedAdapter) PagedQueue(ctx context.Context, req apiv3.PagingReque
 	page := paginateInMemory(rows, req)
 	out := make([]apiv3.QueueResource, 0, len(page))
 	for _, q := range page {
-		out = append(out, projectQueueResource(q))
+		res := projectQueueResource(q)
+		// J359 — recompute CustomFormatScore against the CURRENT series
+		// quality profile (C# QueueResource.cs:75
+		// `Series.QualityProfile.CalculateCustomFormatScore(...)`). The
+		// J349 projection reused q.RemoteEpisode's decision-time score,
+		// which goes stale after a profile CF-score edit. Recompute from
+		// the matched CustomFormats + the live profile; keep the
+		// precomputed score on any lookup failure (defensive).
+		if q.Series != nil && q.RemoteEpisode != nil {
+			if score, ok := a.recomputeCustomFormatScore(ctx, q.Series.QualityProfileID, q.RemoteEpisode.CustomFormats); ok {
+				res.CustomFormatScore = score
+			}
+		}
+		out = append(out, res)
 	}
 	return out, total, nil
+}
+
+// recomputeCustomFormatScore resolves the series' current quality
+// profile and scores the matched CustomFormats against it (C#
+// `QualityProfile.CalculateCustomFormatScore`). Returns (score, true) on
+// success; (0, false) when the profile can't be resolved so the caller
+// keeps the decision-time precomputed score.
+func (a queuePagedAdapter) recomputeCustomFormatScore(ctx context.Context, profileID int, formats []customformats.CustomFormat) (int, bool) {
+	if a.qualityProfiles == nil || profileID == 0 {
+		return 0, false
+	}
+	prof, err := a.qualityProfiles.Get(ctx, profileID)
+	if err != nil || prof == nil {
+		return 0, false
+	}
+	items, err := prof.ParsedFormatItems()
+	if err != nil {
+		return 0, false
+	}
+	present := make(map[int]bool, len(formats))
+	for _, f := range formats {
+		present[f.ID] = true
+	}
+	return qualityprofiles.CalculateCustomFormatScore(items, present), true
 }
 
 // queueFilterCriteria maps the wire-level apiv3.QueueFilter to the
@@ -2245,7 +2287,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// upstream-client side-effects; v5 inherits via the wrapper).
 		// SignalR queue/deleted broadcast fires only on actual remove
 		// (silent-skip on missing id matches v3 queue_write.go:109-117).
-		{Method: "GET", Path: "/api/v5/queue", Handler: queuev5.ListHandler(queuePagedAdapter{svc: queueSvc, qualityDefs: qualityDefSvc})},
+		{Method: "GET", Path: "/api/v5/queue", Handler: queuev5.ListHandler(queuePagedAdapter{svc: queueSvc, qualityDefs: qualityDefSvc, qualityProfiles: qualityProfilesSvc})},
 		{Method: "DELETE", Path: "/api/v5/queue/{id}", Handler: queuev5.DeleteHandler(queueSvc, nil)},
 		{Method: "DELETE", Path: "/api/v5/queue/bulk", Handler: queuev5.BulkDeleteHandler(queueSvc, nil)},
 		// J292 — v5 Episode endpoint family (4 endpoints; 85 LOC C#).
@@ -2768,7 +2810,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v3/qualityprofile", Handler: apiv3.QualityProfileCreateHandler(qualityProfilesSvc, customFormatsSvc)},
 		{Method: "PUT", Path: "/api/v3/qualityprofile/{id}", Handler: apiv3.QualityProfileUpdateHandler(qualityProfilesSvc, customFormatsSvc)},
 		{Method: "DELETE", Path: "/api/v3/qualityprofile/{id}", Handler: apiv3.QualityProfileDeleteHandler(qualityProfilesSvc)},
-		{Method: "GET", Path: "/api/v3/queue", Handler: apiv3.QueueHandler(queuePagedAdapter{svc: queueSvc, qualityDefs: qualityDefSvc})},
+		{Method: "GET", Path: "/api/v3/queue", Handler: apiv3.QueueHandler(queuePagedAdapter{svc: queueSvc, qualityDefs: qualityDefSvc, qualityProfiles: qualityProfilesSvc})},
 		{Method: "GET", Path: "/api/v3/queue/details", Handler: apiv3.QueueDetailsHandler(emptyQueueDetailsLister{})},
 		{Method: "GET", Path: "/api/v3/queue/status", Handler: apiv3.QueueStatusHandler(queueSvc, pendingCountLister{repo: pendingReleasesRepo}, queueStatusPauser)},
 		{Method: "DELETE", Path: "/api/v3/queue/bulk", Handler: apiv3.QueueBulkDeleteHandler(queueSvc, nil)},

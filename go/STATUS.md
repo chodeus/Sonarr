@@ -18535,3 +18535,39 @@ The queue paged list now honours the client's sort key + direction on both v3 + 
 | Queue filter params (seriesIds / protocol / languages / quality / status + includeUnknownSeriesItems) | **DONE this slice (J358)** |
 
 The queue paged list now honours the client's sort key + direction AND the full filter surface on both v3 + v5. Next: Arc 3 (CutoffUnmetEpisodeSearchCommand handler; image-download subscriber off SeriesAddedEvent; Queue CustomFormatScore recompute-vs-precomputed).
+
+---
+
+## J359 — Post-J352 residual-arc, Arc 3 (smaller residuals) slice 1: Queue CustomFormatScore recompute against the current quality profile
+
+**Anchor**: post-J358 (Arc 2 complete). Advances to Arc 3. The J352 residual-items table listed "Queue CustomFormatScore recompute-vs-precomputed (the Go-port reuses the Subject's decision-time score; C# recomputes against the current series QP)".
+
+**Orientation note**: the CutoffUnmetEpisodeSearchCommand handler (also Arc 3) is NOT small — it depends on the unported cutoff-unmet enumerator (`EpisodeCutoffService.EpisodesWhereCutoffUnmet` + `EpisodeRepository.EpisodesWhereCutoffUnmetBuilder`: quality-below-cutoff computation + a multi-table SQL predicate with embedded-JSON quality LIKE matching), which also backs the currently-empty wanted/cutoff endpoint. Deferred to its own larger sub-arc. This slice takes the genuinely-small residual.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:75` — `CustomFormatScore = Series.QualityProfile.CalculateCustomFormatScore(model.RemoteEpisode.CustomFormats)` (recompute against the current profile).
+
+### Port deliverables
+
+- **`cmd/sonarr/host_wiring.go`** — `queuePagedAdapter` gains `qualityProfiles *qualityprofiles.Service`. The PagedQueue projection loop recomputes `res.CustomFormatScore` per row (when `q.Series != nil && q.RemoteEpisode != nil`) via new `recomputeCustomFormatScore(ctx, profileID, formats)`: `qualityProfiles.Get(profileID)` → `ParsedFormatItems()` → present-set from the matched CustomFormats → `qualityprofiles.CalculateCustomFormatScore(items, present)`. Returns `(0, false)` on any failure (nil service / profileID 0 / missing profile / parse error) so the caller keeps the J349 decision-time precomputed score. Wired at both v3 + v5 queue route sites with `qualityProfilesSvc`. The CustomFormats LIST projection (J349) is unchanged.
+
+### Tests
+
+- `cmd/sonarr/queue_paged_adapter_test.go` — `TestQueuePagedAdapter_CustomFormatScoreFallback_J359`: Series + RemoteEpisode set but nil qualityProfiles → recompute returns (0,false) → precomputed score 37 preserved. The positive recompute path delegates to the already-tested `CalculateCustomFormatScore` + `ParsedFormatItems`.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/queue/... ./cmd/sonarr/...` ✓ (v3 1.64s, v5/queue 2.03s, cmd/sonarr 4.34s)
+- `go vet` + gofmt ✓
+
+### Arc 3 progress
+
+| Item | Status |
+| --- | --- |
+| Queue CustomFormatScore recompute-vs-precomputed | **DONE this slice (J359)** |
+| image-download subscriber off SeriesAddedEvent | OPEN |
+| CutoffUnmetEpisodeSearchCommand handler | OPEN — blocked on the cutoff-unmet enumerator port (larger SQL sub-arc; also fixes the empty wanted/cutoff endpoint) |
+
+The queue paged list now reflects live profile CF-score edits on both v3 + v5. Next Arc 3 candidates: the image-download subscriber, then the cutoff-unmet enumerator (the meatiest remaining residual).
