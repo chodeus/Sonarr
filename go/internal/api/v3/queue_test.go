@@ -12,14 +12,16 @@ import (
 )
 
 type fakeQueuePagedLister struct {
-	records []QueueResource
-	total   int
-	err     error
-	gotReq  PagingRequest
+	records   []QueueResource
+	total     int
+	err       error
+	gotReq    PagingRequest
+	gotFilter QueueFilter
 }
 
-func (f *fakeQueuePagedLister) PagedQueue(_ context.Context, req PagingRequest) ([]QueueResource, int, error) {
+func (f *fakeQueuePagedLister) PagedQueue(_ context.Context, req PagingRequest, filter QueueFilter) ([]QueueResource, int, error) {
 	f.gotReq = req
+	f.gotFilter = filter
 	return f.records, f.total, f.err
 }
 
@@ -691,5 +693,59 @@ func TestQueueDetailsHandler_RecordsPassthrough(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), `"title":"demo"`) {
 		t.Errorf("body should include title; got %s", rr.Body.String())
+	}
+}
+
+// TestQueueHandler_ParsesFilterParams_J358 pins that the v3 handler
+// parses the seriesIds / protocol / languages / quality / status /
+// includeUnknownSeriesItems query params and passes them to the lister.
+func TestQueueHandler_ParsesFilterParams_J358(t *testing.T) {
+	t.Parallel()
+	lister := &fakeQueuePagedLister{}
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v3/queue?seriesIds=10&seriesIds=20&protocol=usenet&languages=1&quality=7&quality=9&status=downloading&status=paused&includeUnknownSeriesItems=true", nil)
+	rr := httptest.NewRecorder()
+	QueueHandler(lister).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	f := lister.gotFilter
+	if len(f.SeriesIDs) != 2 || f.SeriesIDs[0] != 10 || f.SeriesIDs[1] != 20 {
+		t.Errorf("SeriesIDs: got %v", f.SeriesIDs)
+	}
+	if f.Protocol != "usenet" {
+		t.Errorf("Protocol: got %q", f.Protocol)
+	}
+	if len(f.Languages) != 1 || f.Languages[0] != 1 {
+		t.Errorf("Languages: got %v", f.Languages)
+	}
+	if len(f.Quality) != 2 || f.Quality[0] != 7 || f.Quality[1] != 9 {
+		t.Errorf("Quality: got %v", f.Quality)
+	}
+	if len(f.Status) != 2 || f.Status[0] != "downloading" || f.Status[1] != "paused" {
+		t.Errorf("Status: got %v", f.Status)
+	}
+	if !f.IncludeUnknownSeriesItems {
+		t.Errorf("IncludeUnknownSeriesItems: got false")
+	}
+}
+
+// TestQueueHandlerV5_ParsesFilterParams_J358 pins the same for v5.
+func TestQueueHandlerV5_ParsesFilterParams_J358(t *testing.T) {
+	t.Parallel()
+	lister := &fakeQueuePagedLister{}
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v5/queue?seriesIds=5&protocol=torrent&status=completed", nil)
+	rr := httptest.NewRecorder()
+	QueueHandlerV5(lister).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	f := lister.gotFilter
+	if len(f.SeriesIDs) != 1 || f.SeriesIDs[0] != 5 || f.Protocol != "torrent" {
+		t.Errorf("filter: got %+v", f)
+	}
+	if len(f.Status) != 1 || f.Status[0] != "completed" {
+		t.Errorf("Status: got %v", f.Status)
 	}
 }

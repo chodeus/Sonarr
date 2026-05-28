@@ -163,7 +163,7 @@ type fakeV5QueuePagedLister struct {
 	records []apiv3.QueueResource
 }
 
-func (f fakeV5QueuePagedLister) PagedQueue(_ context.Context, _ apiv3.PagingRequest) ([]apiv3.QueueResource, int, error) {
+func (f fakeV5QueuePagedLister) PagedQueue(_ context.Context, _ apiv3.PagingRequest, _ apiv3.QueueFilter) ([]apiv3.QueueResource, int, error) {
 	// Return a deep-ish copy so per-request stripping doesn't mutate
 	// the fixture across sub-tests.
 	out := make([]apiv3.QueueResource, len(f.records))

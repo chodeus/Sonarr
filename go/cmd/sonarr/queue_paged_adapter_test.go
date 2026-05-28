@@ -19,7 +19,7 @@ func TestQueuePagedAdapter_EmptyQueue_ReturnsEmptyPage(t *testing.T) {
 	t.Parallel()
 	svc := queue.NewService()
 	adapter := queuePagedAdapter{svc: svc}
-	records, total, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	records, total, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10}, apiv3.QueueFilter{IncludeUnknownSeriesItems: true})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestQueuePagedAdapter_ScalarProjection_J347(t *testing.T) {
 		Languages:      []language.Language{{ID: 1, Name: "English"}},
 	}})
 	adapter := queuePagedAdapter{svc: svc}
-	records, total, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	records, total, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10}, apiv3.QueueFilter{IncludeUnknownSeriesItems: true})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestQueuePagedAdapter_CustomFormatsAndScore_J349(t *testing.T) {
 		},
 	}})
 	adapter := queuePagedAdapter{svc: svc}
-	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10}, apiv3.QueueFilter{IncludeUnknownSeriesItems: true})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestQueuePagedAdapter_NoRemoteEpisode_OmitsCustomFormats_J349(t *testing.T)
 	svc := queue.NewService()
 	svc.SetQueue([]queue.Queue{{ID: 1, Title: "row", Status: queue.QueueStatusQueued}})
 	adapter := queuePagedAdapter{svc: svc}
-	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10}, apiv3.QueueFilter{IncludeUnknownSeriesItems: true})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestQueuePagedAdapter_V5ListFields_J351(t *testing.T) {
 		},
 	}})
 	adapter := queuePagedAdapter{svc: svc}
-	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10}, apiv3.QueueFilter{IncludeUnknownSeriesItems: true})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestQueuePagedAdapter_V5ListFields_EmptyNonNil_J351(t *testing.T) {
 	// No episodes, no SeasonNumber → C# emits `[]` for both lists.
 	svc.SetQueue([]queue.Queue{{ID: 1, Title: "row", Status: queue.QueueStatusQueued}})
 	adapter := queuePagedAdapter{svc: svc}
-	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10}, apiv3.QueueFilter{IncludeUnknownSeriesItems: true})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestQueuePagedAdapter_StatusMessages_J350(t *testing.T) {
 		StatusMessages: []string{"Episode already imported", "Unable to parse"},
 	}})
 	adapter := queuePagedAdapter{svc: svc}
-	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10}, apiv3.QueueFilter{IncludeUnknownSeriesItems: true})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestQueuePagedAdapter_StatusMessages_EmptyEmitsNonNilList_J350(t *testing.T
 	svc := queue.NewService()
 	svc.SetQueue([]queue.Queue{{ID: 1, Title: "row", Status: queue.QueueStatusQueued}})
 	adapter := queuePagedAdapter{svc: svc}
-	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10}, apiv3.QueueFilter{IncludeUnknownSeriesItems: true})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestQueuePagedAdapter_Pagination_J347(t *testing.T) {
 	svc.SetQueue(rows)
 	adapter := queuePagedAdapter{svc: svc}
 	// Page 2 of size 10 → 10 records, total 25.
-	records, total, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 2, PageSize: 10})
+	records, total, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 2, PageSize: 10}, apiv3.QueueFilter{IncludeUnknownSeriesItems: true})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -264,5 +264,48 @@ func TestQueuePagedAdapter_Pagination_J347(t *testing.T) {
 	}
 	if records[0].ID != 11 {
 		t.Errorf("page 2 first ID: got %d want 11", records[0].ID)
+	}
+}
+
+// TestQueuePagedAdapter_Filter_J358 exercises the wire→domain filter
+// mapping through the adapter: default (no includeUnknownSeriesItems)
+// excludes series-less rows, and the protocol + status string params
+// map to the domain enums.
+func TestQueuePagedAdapter_Filter_J358(t *testing.T) {
+	t.Parallel()
+	svc := queue.NewService()
+	svc.SetQueue([]queue.Queue{
+		{ID: 1, Series: &series.Series{ID: 10}, Protocol: indexers.DownloadProtocolUsenet, Status: queue.QueueStatusDownloading},
+		{ID: 2, Series: &series.Series{ID: 20}, Protocol: indexers.DownloadProtocolTorrent, Status: queue.QueueStatusDownloading},
+		{ID: 3, Series: nil, Protocol: indexers.DownloadProtocolUsenet, Status: queue.QueueStatusCompleted},
+	})
+	adapter := queuePagedAdapter{svc: svc}
+
+	// Default filter (IncludeUnknownSeriesItems=false) drops the
+	// series-less row (ID 3).
+	recs, total, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10}, apiv3.QueueFilter{})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("default filter total: got %d want 2 (series-less excluded)", total)
+	}
+
+	// Protocol=usenet keeps only ID 1 (ID 3 series-less still excluded).
+	recs, total, err = adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10}, apiv3.QueueFilter{Protocol: "usenet"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if total != 1 || len(recs) != 1 || recs[0].ID != 1 {
+		t.Errorf("protocol filter: got total=%d recs=%+v", total, recs)
+	}
+
+	// Status=completed with includeUnknownSeriesItems keeps only ID 3.
+	recs, total, err = adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10}, apiv3.QueueFilter{Status: []string{"completed"}, IncludeUnknownSeriesItems: true})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if total != 1 || len(recs) != 1 || recs[0].ID != 3 {
+		t.Errorf("status filter: got total=%d recs=%+v", total, recs)
 	}
 }

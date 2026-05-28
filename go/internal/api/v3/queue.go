@@ -371,7 +371,59 @@ func QueueDetailsHandler(lister QueueDetailsLister) http.Handler {
 // interface and the production wiring takes effect — same shape
 // the blocklist + history adapters use.
 type QueuePagedLister interface {
-	PagedQueue(ctx context.Context, req PagingRequest) ([]QueueResource, int, error)
+	PagedQueue(ctx context.Context, req PagingRequest, filter QueueFilter) ([]QueueResource, int, error)
+}
+
+// QueueFilter carries the parsed queue filter query params (C#
+// `QueueController.GetQueue` at
+// `src/Sonarr.Api.V3/Queue/QueueController.cs:141,173-217`). The lister
+// implementation translates these wire-level values into the domain
+// filter and applies it before sort + pagination. Every slice is "no
+// filter" when empty; Protocol is "no filter" when "".
+type QueueFilter struct {
+	// SeriesIDs — `seriesIds` repeated int query param.
+	SeriesIDs []int
+	// Protocol — `protocol` single enum query param ("usenet" /
+	// "torrent", case-insensitive). "" = no filter.
+	Protocol string
+	// Languages — `languages` repeated int query param (language ids).
+	Languages []int
+	// Quality — `quality` repeated int query param (quality ids).
+	Quality []int
+	// Status — `status` repeated enum query param (QueueStatus names,
+	// case-insensitive camelCase).
+	Status []string
+	// IncludeUnknownSeriesItems — `includeUnknownSeriesItems` bool query
+	// param (default false → series-less rows are excluded).
+	IncludeUnknownSeriesItems bool
+}
+
+// parseQueueFilter extracts the queue filter query params. Mirrors the
+// C# `[FromQuery]` binding of `int[] seriesIds` / `DownloadProtocol?
+// protocol` / `int[] languages` / `int[] quality` / `QueueStatus[]
+// status` + `bool includeUnknownSeriesItems` at
+// `QueueController.cs:141`. Repeated params (`?seriesIds=1&seriesIds=2`)
+// and unparseable ints are tolerated (skipped) — the controller's model
+// binder behaves the same.
+func parseQueueFilter(r *http.Request) QueueFilter {
+	q := r.URL.Query()
+	parseInts := func(key string) []int {
+		var out []int
+		for _, v := range q[key] {
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	return QueueFilter{
+		SeriesIDs:                 parseInts("seriesIds"),
+		Protocol:                  strings.TrimSpace(q.Get("protocol")),
+		Languages:                 parseInts("languages"),
+		Quality:                   parseInts("quality"),
+		Status:                    q["status"],
+		IncludeUnknownSeriesItems: q.Get("includeUnknownSeriesItems") == "true",
+	}
 }
 
 // QueueHandler returns the http.Handler for GET /api/v3/queue.
@@ -400,7 +452,7 @@ func QueueHandler(lister QueuePagedLister) http.Handler {
 		q := r.URL.Query()
 		includeSeries := q.Get("includeSeries") == "true"
 		includeEpisode := q.Get("includeEpisode") == "true"
-		records, total, err := lister.PagedQueue(r.Context(), req)
+		records, total, err := lister.PagedQueue(r.Context(), req, parseQueueFilter(r))
 		if err != nil {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("queue: %w", err), nil)
 			return
@@ -473,7 +525,7 @@ func QueueHandlerV5(lister QueuePagedLister) http.Handler {
 				includeEpisodes = true
 			}
 		}
-		records, total, err := lister.PagedQueue(r.Context(), req)
+		records, total, err := lister.PagedQueue(r.Context(), req, parseQueueFilter(r))
 		if err != nil {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("queue: %w", err), nil)
 			return

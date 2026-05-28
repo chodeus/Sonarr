@@ -237,13 +237,18 @@ type queuePagedAdapter struct {
 	qualityDefs *qualitydefinitions.Service
 }
 
-func (a queuePagedAdapter) PagedQueue(ctx context.Context, req apiv3.PagingRequest) ([]apiv3.QueueResource, int, error) {
+func (a queuePagedAdapter) PagedQueue(ctx context.Context, req apiv3.PagingRequest, filter apiv3.QueueFilter) ([]apiv3.QueueResource, int, error) {
 	rows := a.svc.GetQueue()
+	// J358 — apply the C# filter surface (seriesIds / protocol /
+	// languages / quality / status + includeUnknownSeriesItems) BEFORE
+	// sort + pagination. TotalRecords reflects the FILTERED count (C#
+	// `pagingSpec.TotalRecords = fullQueue.Count`).
+	rows = queue.FilterQueue(rows, queueFilterCriteria(filter))
 	total := len(rows)
-	// J357 — sort the full queue by the requested key BEFORE paginating
-	// (mirrors C# QueueController.GetQueue MapToPagingSpec). SortDirection
-	// defaults to "descending" (PagingRequest default); only an explicit
-	// "ascending" flips it.
+	// J357 — sort the filtered queue by the requested key BEFORE
+	// paginating (mirrors C# QueueController.GetQueue MapToPagingSpec).
+	// SortDirection defaults to "descending" (PagingRequest default);
+	// only an explicit "ascending" flips it.
 	ascending := strings.EqualFold(req.SortDirection, "ascending")
 	rows = queue.SortQueue(rows, req.SortKey, ascending, a.qualityWeightFunc(ctx))
 	page := paginateInMemory(rows, req)
@@ -252,6 +257,66 @@ func (a queuePagedAdapter) PagedQueue(ctx context.Context, req apiv3.PagingReque
 		out = append(out, projectQueueResource(q))
 	}
 	return out, total, nil
+}
+
+// queueFilterCriteria maps the wire-level apiv3.QueueFilter to the
+// domain queue.FilterCriteria — parsing the protocol + status enum
+// strings (case-insensitive) and building the id sets. Unrecognised
+// protocol / status values drop to "no constraint" for that field
+// (matching the C# nullable-enum binder which leaves an unparsed value
+// null).
+func queueFilterCriteria(f apiv3.QueueFilter) queue.FilterCriteria {
+	c := queue.FilterCriteria{IncludeUnknownSeriesItems: f.IncludeUnknownSeriesItems}
+	if len(f.SeriesIDs) > 0 {
+		c.SeriesIDs = intSet(f.SeriesIDs)
+	}
+	if len(f.Languages) > 0 {
+		c.Languages = intSet(f.Languages)
+	}
+	if len(f.Quality) > 0 {
+		c.Quality = intSet(f.Quality)
+	}
+	switch strings.ToLower(f.Protocol) {
+	case "usenet":
+		p := indexers.DownloadProtocolUsenet
+		c.Protocol = &p
+	case "torrent":
+		p := indexers.DownloadProtocolTorrent
+		c.Protocol = &p
+	}
+	if len(f.Status) > 0 {
+		set := make(map[queue.QueueStatus]bool, len(f.Status))
+		for _, s := range f.Status {
+			if st, ok := parseQueueStatus(s); ok {
+				set[st] = true
+			}
+		}
+		if len(set) > 0 {
+			c.Status = set
+		}
+	}
+	return c
+}
+
+// intSet builds a presence set from an int slice.
+func intSet(in []int) map[int]bool {
+	set := make(map[int]bool, len(in))
+	for _, n := range in {
+		set[n] = true
+	}
+	return set
+}
+
+// parseQueueStatus resolves a wire enum name (case-insensitive, matching
+// the camelCase QueueStatus projection) back to the typed value.
+func parseQueueStatus(s string) (queue.QueueStatus, bool) {
+	want := strings.ToLower(strings.TrimSpace(s))
+	for st := queue.QueueStatusUnknown; st <= queue.QueueStatusFallback; st++ {
+		if strings.ToLower(st.String()) == want {
+			return st, true
+		}
+	}
+	return queue.QueueStatusUnknown, false
 }
 
 // qualityWeightFunc builds the quality→weight lookup the "quality" sort

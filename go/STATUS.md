@@ -18496,3 +18496,42 @@ The ManualImport Rejections list is fully ported (both deterministic + decision-
 | Queue filter params (seriesIds / protocol / languages / quality / status) | OPEN — needs query-param plumbing through QueuePagedLister (next slice) |
 
 The queue paged list now honours the client's sort key + direction on both v3 + v5 surfaces. The remaining Arc 2 work is the filter params the handler currently parse-and-ignores.
+
+---
+
+## J358 — Post-J352 residual-arc, Arc 2 (Queue paging SORT + filter params) slice 2: Queue filter params (DRAINS Arc 2)
+
+**Anchor**: post-J357 (SORT landed). Completes Arc 2 by porting the filter surface the v3+v5 handlers parse-and-ignored.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Queue/QueueController.cs:141` — `[FromQuery]` params: `int[] seriesIds`, `DownloadProtocol? protocol`, `int[] languages`, `int[] quality`, `QueueStatus[] status`, `bool includeUnknownSeriesItems = false`.
+- `:173-217` — the GetQueue filter body: `:179` series-less exclusion; `:191-214` the seriesId/protocol/language/quality/status boolean-AND narrowing; `:279` TotalRecords = filtered count.
+
+### Port deliverables
+
+- **`internal/queue/filter.go`** (new) — `FilterCriteria{IncludeUnknownSeriesItems, SeriesIDs, Protocol *indexers.DownloadProtocol, Languages, Quality, Status}` + `FilterQueue(rows, c) []Queue`: drops `Series==nil` unless IncludeUnknownSeriesItems; narrows by each set/pointer (empty/nil = no filter); `anyLanguageInSet` for the any-of language match. Input not mutated; boolean-AND order matches C#.
+- **`internal/api/v3/queue.go`** — new `QueueFilter` wire struct + `parseQueueFilter(r)` (repeated int params + single protocol + repeated status enum strings + includeUnknownSeriesItems bool; tolerates unparseable ints). `QueuePagedLister.PagedQueue` gains `filter QueueFilter`; `QueueHandler` (v3) + `QueueHandlerV5` parse and pass it.
+- **`cmd/sonarr/host_wiring.go`** — `queuePagedAdapter.PagedQueue(ctx, req, filter)`: `GetQueue → FilterQueue(queueFilterCriteria(filter)) → total=len(filtered) → SortQueue → paginate`. New `queueFilterCriteria` maps wire→domain (protocol string → indexers.DownloadProtocol; status strings → queue.QueueStatus via case-insensitive enum-name match through `parseQueueStatus`; `intSet` builds id sets); unrecognised protocol/status → no-constraint.
+- Signature change propagated to the 3 `PagedQueue` impls (apiv3 fake, v5 fake, queuePagedAdapter) + 9 adapter-test call sites (pass IncludeUnknownSeriesItems: true to keep their projection/sort focus).
+
+### Tests
+
+- `internal/queue/filter_test.go` (9): default series-less exclusion + explicit include; seriesIds; protocol; languages (any-of); quality; status; combined AND; no-mutation.
+- `internal/api/v3/queue_test.go` (2): v3 + v5 handler param-parse (seriesIds/protocol/languages/quality/status/includeUnknownSeriesItems → lister.gotFilter).
+- `cmd/sonarr/queue_paged_adapter_test.go` (1): wire→domain mapping (default excludes series-less; protocol=usenet; status=completed) + filtered TotalRecords.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/queue/... ./internal/api/v3/... ./internal/api/v5/queue/... ./cmd/sonarr/...` ✓ (queue 1.30s, v3 2.01s, v5/queue 1.64s, cmd/sonarr 3.57s)
+- `go vet` + gofmt ✓
+
+### Arc 2 — COMPLETE
+
+| Item | Status |
+| --- | --- |
+| Queue paging SORT (~18 keys + comparers + secondary tiebreak) | DONE (J357) |
+| Queue filter params (seriesIds / protocol / languages / quality / status + includeUnknownSeriesItems) | **DONE this slice (J358)** |
+
+The queue paged list now honours the client's sort key + direction AND the full filter surface on both v3 + v5. Next: Arc 3 (CutoffUnmetEpisodeSearchCommand handler; image-download subscriber off SeriesAddedEvent; Queue CustomFormatScore recompute-vs-precomputed).
