@@ -1,13 +1,13 @@
 // Package mediacover is the Go port of `NzbDrone.Core.MediaCover` —
 // `src/NzbDrone.Core/MediaCover/`. Closes queue [17] (slice 3.BO).
 //
-// Scope of this port: ONLY the local-disk + URL-rewrite surface.
-// The C# tree's HTTP-gated arms (DownloadCover, EnsureCovers,
-// CoverAlreadyExistsSpecification, MediaCoverProxy, the
-// IHandleAsync<SeriesUpdatedEvent> chain that triggers a cover
-// download on every Sonarr-side series mutation) gate on
-// IHttpClient + EnabledIndexers — both Phase-4-forbidden under
-// FAIL-CLOSED #7. Documented at the [Service] doc-comment.
+// Scope: the local-disk + URL-rewrite surface (Phase-3, slice 3.BO)
+// PLUS the cover-download arm (J363) — DownloadCover / EnsureCovers /
+// CoverAlreadyExists / the IHandleAsync<SeriesUpdatedEvent> trigger,
+// now that the IHttpClient surface has ported (the J363
+// [CoverDownloader] optional dep, bound to httpclient.Client in
+// production). MediaCoverProxy (the seriesId==0 pre-add referrer
+// workaround) stays a no-op.
 //
 // Phase-3 production wiring uses [Service.ConvertToLocalUrls] to
 // rewrite series.Images JSON-blob entries' Url fields to local
@@ -127,6 +127,28 @@ type Filesystem interface {
 	FolderExists(path string) bool
 	DeleteFolder(path string, recursive bool) error
 	FileGetLastWrite(path string) (lastWriteTicks int64, err error)
+	// GetFileSize returns the on-disk size in bytes. Used by the
+	// J363 CoverAlreadyExists check (compares to the remote
+	// Content-Length).
+	GetFileSize(path string) (int64, error)
+}
+
+// CoverDownloader narrows the HTTP surface the J363 cover-download arm
+// needs — a HEAD-style content-length probe + a file download. Mirrors
+// the slice of `IHttpClient` the C# `MediaCoverService` +
+// `CoverAlreadyExistsSpecification` reach for (`Head(...).Headers
+// .ContentLength` + `DownloadFile`). Optional: when nil, [Service]
+// skips the download arm entirely (the pre-J363 no-op posture).
+// Production wiring binds an adapter over `*httpclient.Client`.
+type CoverDownloader interface {
+	// ContentLength issues a HEAD request and returns the remote
+	// Content-Length. ok=false when the header is absent/unparseable
+	// (the CoverAlreadyExists check then treats the cover as not
+	// matching → re-download).
+	ContentLength(ctx context.Context, url string) (length int64, ok bool, err error)
+	// DownloadFile fetches url to path (via a temp .part + rename, per
+	// the underlying client). Mirrors `IHttpClient.DownloadFile`.
+	DownloadFile(ctx context.Context, url, path string) error
 }
 
 // AppFolders narrows the path-bundle surface to the one method
@@ -170,6 +192,22 @@ type Service struct {
 	urlBase  URLBaseReader
 	log      *slog.Logger
 	rootPath string
+	// downloader is the optional J363 cover-download dep. nil → the
+	// EnsureCovers download arm is skipped (pre-J363 posture). Set
+	// post-construction via [Service.SetDownloader] so the existing
+	// NewService signature (+ its callers) stay stable.
+	downloader CoverDownloader
+}
+
+// SetDownloader binds the optional [CoverDownloader] that enables the
+// J363 cover-download arm ([Service.EnsureCovers] /
+// [Service.HandleSeriesUpdated]). Kept off the NewService signature so
+// existing callers/tests are unaffected; production wiring calls this
+// with an httpclient-backed adapter.
+func (s *Service) SetDownloader(d CoverDownloader) {
+	if s != nil {
+		s.downloader = d
+	}
 }
 
 // NewService binds the three narrow deps. nil-required-dep returns

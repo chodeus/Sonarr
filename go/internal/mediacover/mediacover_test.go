@@ -16,6 +16,8 @@ type stubFS struct {
 	deleteErr    error
 	lastWrite    map[string]int64
 	lastWriteErr error
+	fileSize     map[string]int64
+	fileSizeErr  error
 }
 
 func (s *stubFS) FileExists(p string) bool { return s.exists[p] }
@@ -34,6 +36,12 @@ func (s *stubFS) FileGetLastWrite(p string) (int64, error) {
 		return 0, s.lastWriteErr
 	}
 	return s.lastWrite[p], nil
+}
+func (s *stubFS) GetFileSize(p string) (int64, error) {
+	if s.fileSizeErr != nil {
+		return 0, s.fileSizeErr
+	}
+	return s.fileSize[p], nil
 }
 
 type stubFolders struct{ root string }

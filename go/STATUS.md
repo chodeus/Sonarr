@@ -18690,3 +18690,40 @@ The wanted/cutoff endpoint is now functional on both surfaces. Next Arc 3 candid
 | image-download subscriber off SeriesAddedEvent | OPEN — needs a new HTTP-download MediaCover subsystem (no internal/mediacover; external I/O) — out of scope for the autonomous loop |
 
 Two of Arc 3's three named residuals are fully drained (CustomFormatScore + the entire cutoff-unmet chain across J360-J362). The remaining image-download subscriber requires a new external-I/O subsystem; the next tick declares the loop's actionable surface complete or assesses that subsystem.
+
+---
+
+## J363 — Post-J352 residual-arc, Arc 3 (smaller residuals) slice 5: MediaCover cover-download surface
+
+**Anchor**: post-J362. User-directed continuation of the last Arc 3 item (image-download subscriber). The `internal/mediacover` package (slice 3.BO) had the local-disk + URL-rewrite surface but deferred the HTTP-gated download arm "until Phase 4 ports IHttpClient" — that blocker is now lifted (`httpclient.Client` real impl with Head + DownloadFile is wired in main.go).
+
+### C# source
+
+- `src/NzbDrone.Core/MediaCover/MediaCoverService.cs:110-174,233-238` — EnsureCovers (download half) + DownloadCover + the IHandleAsync<SeriesUpdatedEvent> trigger.
+- `src/NzbDrone.Core/MediaCover/CoverAlreadyExistsSpecification.cs:21-31` — file-exists AND size == remote Content-Length.
+
+### Port deliverables
+
+- **`internal/mediacover/mediacover.go`** — `Filesystem` gains `GetFileSize`; new `CoverDownloader` interface (`ContentLength(ctx,url) (int64,bool,error)` + `DownloadFile(ctx,url,path) error`); `Service.downloader` optional field + `SetDownloader` (keeps NewService signature stable). Package doc-comment updated (download arm no longer deferred).
+- **`internal/mediacover/download.go`** (new) — `HandleSeriesUpdated` → `EnsureCovers` (decode images, per cover skip Unknown, `coverAlreadyExists` check, else `downloadCover`; per-cover errors absorbed+logged; returns `updated`); `coverAlreadyExists` (FileExists && GetFileSize == remote ContentLength; any probe failure → re-download); `downloadCover`. nil downloader → no-op. ImageSharp resize half stays deferred (download-only is faithful-degraded vs C#'s best-effort resize).
+
+### Tests
+
+- `internal/mediacover/download_test.go` (6): nil-downloader no-op; downloads-missing + skips-Unknown; skips-on-size-match; re-downloads-on-size-mismatch; absorbs-per-cover-download-error (one fails, other succeeds, no error returned); HandleSeriesUpdated-delegates. Fake downloader + extended stubFS (fileSize map).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/mediacover/` ✓ (1.62s)
+- `go vet` + gofmt ✓
+
+### Arc 3 progress
+
+| Item | Status |
+| --- | --- |
+| Queue CustomFormatScore recompute | DONE (J359) |
+| Cutoff-unmet enumerator core + wiring + command handler | DONE (J360-J362) |
+| MediaCover cover-download surface | **DONE this slice (J363)** |
+| MediaCover SeriesUpdated/Deleted subscriber wiring | OPEN — J364 (construct Service + httpClient adapter + bus subscriptions) |
+
+The download arm is ported + tested. J364 wires it into the event bus, closing the last Arc 3 residual.
