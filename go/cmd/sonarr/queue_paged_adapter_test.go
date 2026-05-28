@@ -18,7 +18,7 @@ import (
 func TestQueuePagedAdapter_EmptyQueue_ReturnsEmptyPage(t *testing.T) {
 	t.Parallel()
 	svc := queue.NewService()
-	adapter := queuePagedAdapter{svc}
+	adapter := queuePagedAdapter{svc: svc}
 	records, total, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -53,7 +53,7 @@ func TestQueuePagedAdapter_ScalarProjection_J347(t *testing.T) {
 		Episodes:       []episodes.Episode{{ID: 11, SeasonNumber: 1, EpisodeNumber: 2}},
 		Languages:      []language.Language{{ID: 1, Name: "English"}},
 	}})
-	adapter := queuePagedAdapter{svc}
+	adapter := queuePagedAdapter{svc: svc}
 	records, total, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -108,7 +108,7 @@ func TestQueuePagedAdapter_CustomFormatsAndScore_J349(t *testing.T) {
 			CustomFormatScore: 37,
 		},
 	}})
-	adapter := queuePagedAdapter{svc}
+	adapter := queuePagedAdapter{svc: svc}
 	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -126,7 +126,7 @@ func TestQueuePagedAdapter_NoRemoteEpisode_OmitsCustomFormats_J349(t *testing.T)
 	t.Parallel()
 	svc := queue.NewService()
 	svc.SetQueue([]queue.Queue{{ID: 1, Title: "row", Status: queue.QueueStatusQueued}})
-	adapter := queuePagedAdapter{svc}
+	adapter := queuePagedAdapter{svc: svc}
 	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -154,7 +154,7 @@ func TestQueuePagedAdapter_V5ListFields_J351(t *testing.T) {
 			{ID: 12},                     // no file
 		},
 	}})
-	adapter := queuePagedAdapter{svc}
+	adapter := queuePagedAdapter{svc: svc}
 	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -176,7 +176,7 @@ func TestQueuePagedAdapter_V5ListFields_EmptyNonNil_J351(t *testing.T) {
 	svc := queue.NewService()
 	// No episodes, no SeasonNumber → C# emits `[]` for both lists.
 	svc.SetQueue([]queue.Queue{{ID: 1, Title: "row", Status: queue.QueueStatusQueued}})
-	adapter := queuePagedAdapter{svc}
+	adapter := queuePagedAdapter{svc: svc}
 	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -202,7 +202,7 @@ func TestQueuePagedAdapter_StatusMessages_J350(t *testing.T) {
 		Status:         queue.QueueStatusWarning,
 		StatusMessages: []string{"Episode already imported", "Unable to parse"},
 	}})
-	adapter := queuePagedAdapter{svc}
+	adapter := queuePagedAdapter{svc: svc}
 	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -227,7 +227,7 @@ func TestQueuePagedAdapter_StatusMessages_EmptyEmitsNonNilList_J350(t *testing.T
 	t.Parallel()
 	svc := queue.NewService()
 	svc.SetQueue([]queue.Queue{{ID: 1, Title: "row", Status: queue.QueueStatusQueued}})
-	adapter := queuePagedAdapter{svc}
+	adapter := queuePagedAdapter{svc: svc}
 	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -250,7 +250,7 @@ func TestQueuePagedAdapter_Pagination_J347(t *testing.T) {
 		rows = append(rows, queue.Queue{ID: i, Title: "row", Status: queue.QueueStatusQueued})
 	}
 	svc.SetQueue(rows)
-	adapter := queuePagedAdapter{svc}
+	adapter := queuePagedAdapter{svc: svc}
 	// Page 2 of size 10 → 10 records, total 25.
 	records, total, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 2, PageSize: 10})
 	if err != nil {

@@ -18460,3 +18460,39 @@ The ManualImport Rejections list now surfaces the deterministic NoEpisodes rejec
 | ManualImport Rejections — parsed==nil UnableToParse | OPEN (minor edge; early-return branch) |
 
 The ManualImport Rejections list is fully ported (both deterministic + decision-maker-driven arms). Arc 1's spec pipeline + both consumer surfaces are complete. Next tick: advance to Arc 2 (Queue paging SORT + filter params) unless a cleaner Arc 1 residual surfaces.
+
+---
+
+## J357 — Post-J352 residual-arc, Arc 2 (Queue paging SORT + filter params) slice 1: Queue paging SORT
+
+**Anchor**: post-J356 (Arc 1 substantively complete). Advances to Arc 2. The queue paged adapter previously paginated in cache order, ignoring the sortKey/sortDirection the handler parsed (the DEFERRED posture noted at the J352 residual-items table).
+
+### C# source
+
+- `src/Sonarr.Api.V3/Queue/QueueController.cs:219-285` — explicit SortKey branches (timeleft / estimatedCompletionTime / added / protocol / indexer / downloadClient / quality / languages) + `:276` unconditional `ThenByDescending(progress)` secondary.
+- `:290-321` `GetOrderByFunc` — the remaining keys (status / series.sortTitle / title / episode / episode.airDateUtc / episode.title / language / quality / size / progress / default→timeleft).
+- `src/NzbDrone.Core/Queue/TimeleftComparer.cs`, `DatetimeComparer.cs`, `src/NzbDrone.Core/Languages/LanguagesComparer.cs` — the three comparers (nils/empty last).
+
+### Port deliverables
+
+- **`internal/queue/sort.go`** (new) — `SortQueue(rows []Queue, sortKey string, ascending bool, qualityWeight func(quality.Quality) int) []Queue`: sorts a COPY (no input mutation) of the full queue before pagination. Primary compare per sort key via `queuePrimaryCompare`; ascending negates for descending; ties broken by `queueProgress` DESC (always descending, float-computed). Ported comparers: `compareTimeLeft` (TimeleftComparer), `compareNullableTime` (DatetimeComparer), `compareLanguages` (LanguagesComparer); `compareFoldedString` for indexer/downloadClient (InvariantCultureIgnoreCase); `compareQuality` (injected weight, revision tiebreak). All ~18 keys covered; bare `episode`/unknown → timeleft default.
+- **`cmd/sonarr/host_wiring.go`** — `queuePagedAdapter` gains `qualityDefs *qualitydefinitions.Service`; `PagedQueue` sorts via `SortQueue` with `qualityWeightFunc(ctx)` (builds quality.ID→Weight from the qualitydefinitions catalogue; nil → Quality.ID fallback). `ascending = SortDirection == "ascending"`. Both v3 + v5 queue route wire sites updated to `queuePagedAdapter{svc: queueSvc, qualityDefs: qualityDefSvc}`. New `strings` + `quality` imports. 9 adapter-test construction sites updated to named field.
+
+### Tests
+
+- `internal/queue/sort_test.go` (11 tests): title (asc/desc, ordinal), size, timeleft-nils-last, added (nil last), progress secondary tiebreak (independent of primary direction), quality-weight (asc/desc), languages (single<multi<empty), episode.airDateUtc, default-key→timeleft fallback, no-input-mutation.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/queue/... ./internal/api/v3/... ./internal/api/v5/queue/... ./cmd/sonarr/...` ✓ (queue 1.29s, v3 1.61s, v5/queue 2.02s, cmd/sonarr 4.64s)
+- `go vet` + gofmt ✓
+
+### Arc 2 progress
+
+| Item | Status |
+| --- | --- |
+| Queue paging SORT (~18 keys + comparers + secondary tiebreak) | **DONE this slice (J357)** |
+| Queue filter params (seriesIds / protocol / languages / quality / status) | OPEN — needs query-param plumbing through QueuePagedLister (next slice) |
+
+The queue paged list now honours the client's sort key + direction on both v3 + v5 surfaces. The remaining Arc 2 work is the filter params the handler currently parse-and-ignores.

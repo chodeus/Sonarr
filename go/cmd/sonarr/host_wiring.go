@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
@@ -97,6 +98,7 @@ import (
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/pendingreleases"
+	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/qualitydefinitions"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
@@ -230,17 +232,45 @@ func (emptyUpdateLister) RecentUpdates(context.Context) ([]apiv3.UpdateResource,
 // — no new lookups needed). Pagination follows the historyPagedAdapter
 // convention (paginateInMemory in cache order); SQL/in-mem sorting is
 // the same DEFERRED posture the history + blocklist adapters carry.
-type queuePagedAdapter struct{ svc *queue.Service }
+type queuePagedAdapter struct {
+	svc         *queue.Service
+	qualityDefs *qualitydefinitions.Service
+}
 
-func (a queuePagedAdapter) PagedQueue(_ context.Context, req apiv3.PagingRequest) ([]apiv3.QueueResource, int, error) {
+func (a queuePagedAdapter) PagedQueue(ctx context.Context, req apiv3.PagingRequest) ([]apiv3.QueueResource, int, error) {
 	rows := a.svc.GetQueue()
 	total := len(rows)
+	// J357 — sort the full queue by the requested key BEFORE paginating
+	// (mirrors C# QueueController.GetQueue MapToPagingSpec). SortDirection
+	// defaults to "descending" (PagingRequest default); only an explicit
+	// "ascending" flips it.
+	ascending := strings.EqualFold(req.SortDirection, "ascending")
+	rows = queue.SortQueue(rows, req.SortKey, ascending, a.qualityWeightFunc(ctx))
 	page := paginateInMemory(rows, req)
 	out := make([]apiv3.QueueResource, 0, len(page))
 	for _, q := range page {
 		out = append(out, projectQueueResource(q))
 	}
 	return out, total, nil
+}
+
+// qualityWeightFunc builds the quality→weight lookup the "quality" sort
+// key needs, from the qualitydefinitions catalogue (ordered by Weight
+// ASC; higher weight = higher quality). Returns nil when the catalogue
+// is unavailable — SortQueue then falls back to Quality.ID ordering.
+func (a queuePagedAdapter) qualityWeightFunc(ctx context.Context) func(quality.Quality) int {
+	if a.qualityDefs == nil {
+		return nil
+	}
+	defs, err := a.qualityDefs.All(ctx)
+	if err != nil || len(defs) == 0 {
+		return nil
+	}
+	weights := make(map[int]int, len(defs))
+	for _, d := range defs {
+		weights[d.Quality.ID] = d.Weight
+	}
+	return func(q quality.Quality) int { return weights[q.ID] }
 }
 
 // projectQueueResource maps a single queue.Queue domain row to the
@@ -2150,7 +2180,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// upstream-client side-effects; v5 inherits via the wrapper).
 		// SignalR queue/deleted broadcast fires only on actual remove
 		// (silent-skip on missing id matches v3 queue_write.go:109-117).
-		{Method: "GET", Path: "/api/v5/queue", Handler: queuev5.ListHandler(queuePagedAdapter{queueSvc})},
+		{Method: "GET", Path: "/api/v5/queue", Handler: queuev5.ListHandler(queuePagedAdapter{svc: queueSvc, qualityDefs: qualityDefSvc})},
 		{Method: "DELETE", Path: "/api/v5/queue/{id}", Handler: queuev5.DeleteHandler(queueSvc, nil)},
 		{Method: "DELETE", Path: "/api/v5/queue/bulk", Handler: queuev5.BulkDeleteHandler(queueSvc, nil)},
 		// J292 — v5 Episode endpoint family (4 endpoints; 85 LOC C#).
@@ -2673,7 +2703,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v3/qualityprofile", Handler: apiv3.QualityProfileCreateHandler(qualityProfilesSvc, customFormatsSvc)},
 		{Method: "PUT", Path: "/api/v3/qualityprofile/{id}", Handler: apiv3.QualityProfileUpdateHandler(qualityProfilesSvc, customFormatsSvc)},
 		{Method: "DELETE", Path: "/api/v3/qualityprofile/{id}", Handler: apiv3.QualityProfileDeleteHandler(qualityProfilesSvc)},
-		{Method: "GET", Path: "/api/v3/queue", Handler: apiv3.QueueHandler(queuePagedAdapter{queueSvc})},
+		{Method: "GET", Path: "/api/v3/queue", Handler: apiv3.QueueHandler(queuePagedAdapter{svc: queueSvc, qualityDefs: qualityDefSvc})},
 		{Method: "GET", Path: "/api/v3/queue/details", Handler: apiv3.QueueDetailsHandler(emptyQueueDetailsLister{})},
 		{Method: "GET", Path: "/api/v3/queue/status", Handler: apiv3.QueueStatusHandler(queueSvc, pendingCountLister{repo: pendingReleasesRepo}, queueStatusPauser)},
 		{Method: "DELETE", Path: "/api/v3/queue/bulk", Handler: apiv3.QueueBulkDeleteHandler(queueSvc, nil)},
