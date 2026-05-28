@@ -134,8 +134,9 @@ type HistoryRangeReader interface {
 //
 // Required query: `date` (ISO-8601 / RFC3339). Optional: `eventType`
 // (integer matching history.EventType enum). `includeSeries` /
-// `includeEpisode` flags are accepted but DEFERRED (resource shape
-// doesn't yet model the joined Series/Episode payloads).
+// `includeEpisode` flags hydrate the BASE Series / Episode embeds
+// (J377) when the reader implements the HistorySeriesEmbedder /
+// HistoryEpisodeEmbedder extensions.
 func HistorySinceHandler(svc HistoryRangeReader) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		dateStr := r.URL.Query().Get("date")
@@ -157,17 +158,14 @@ func HistorySinceHandler(svc HistoryRangeReader) http.Handler {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("history/since: %w", err), nil)
 			return
 		}
-		// J338: optional-extension type-assertion for the populated-
-		// mapper. svc is the production *history.Service composed
-		// with a PopulateHistoryEntry wrapper at the wire site;
-		// test fixtures (fakeHistoryRangeReader) don't implement
-		// HistoryEntryPopulator so populator stays nil → empty
-		// fallback per pre-J338 behavior.
-		var pop HistoryEntryPopulator
-		if p, ok := svc.(HistoryEntryPopulator); ok {
-			pop = p
-		}
-		writeHistoryEntries(r.Context(), w, rows, pop)
+		// J338 populator + J377 includeSeries/includeEpisode embeds are
+		// discovered inside writeHistoryEntries via type-assertion on
+		// svc (the production *history.Service is composed with a
+		// wrapper implementing those extensions; test fixtures aren't,
+		// so the empty/nil fallbacks fire).
+		includeSeries := r.URL.Query().Get("includeSeries") == "true"
+		includeEpisode := r.URL.Query().Get("includeEpisode") == "true"
+		writeHistoryEntries(r.Context(), w, rows, svc, includeSeries, includeEpisode)
 	})
 }
 
@@ -198,13 +196,10 @@ func HistorySeriesHandler(svc HistoryRangeReader) http.Handler {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("history/series: %w", err), nil)
 			return
 		}
-		// J338: optional-extension type-assertion for the populated-
-		// mapper. See HistorySinceHandler for the rationale.
-		var pop HistoryEntryPopulator
-		if p, ok := svc.(HistoryEntryPopulator); ok {
-			pop = p
-		}
-		writeHistoryEntries(r.Context(), w, rows, pop)
+		// J338 populator + J377 embeds — see HistorySinceHandler.
+		includeSeries := r.URL.Query().Get("includeSeries") == "true"
+		includeEpisode := r.URL.Query().Get("includeEpisode") == "true"
+		writeHistoryEntries(r.Context(), w, rows, svc, includeSeries, includeEpisode)
 	})
 }
 
@@ -243,7 +238,50 @@ type HistoryEntryPopulator interface {
 	PopulateHistoryEntry(ctx context.Context, e *history.Entry) (customFormats []CustomFormatResource, customFormatScore int)
 }
 
-func writeHistoryEntries(ctx context.Context, w http.ResponseWriter, rows []history.Entry, populator HistoryEntryPopulator) {
+// HistorySeriesEmbedder + HistoryEpisodeEmbedder are the optional-
+// extension interfaces backing the includeSeries / includeEpisode
+// branches on the history since/series endpoints. C#
+// `HistoryController.MapToResource` sets `resource.Series =
+// model.Series.ToResource()` (BASE series ToResource) and
+// `resource.Episode = model.Episode.ToResource()` (BASE episode
+// ToResource) when the respective flags are set. The Go history.Entry
+// carries only SeriesID/EpisodeID ints, so the embed needs a by-id
+// lookup; the production cmd/sonarr wrapper implements these by loading
+// the row and projecting via ToSeriesResource / ToEpisodeResource. Test
+// fixtures don't implement them, so the embeds stay nil (key absent).
+//
+// J377.
+type HistorySeriesEmbedder interface {
+	HistorySeriesResource(ctx context.Context, seriesID int) *SeriesResource
+}
+
+type HistoryEpisodeEmbedder interface {
+	HistoryEpisodeResource(ctx context.Context, episodeID int) *EpisodeResource
+}
+
+// writeHistoryEntries projects history rows to the wire. svc is the
+// handler's reader value (typed `any`): it is type-asserted for the
+// HistoryEntryPopulator (customFormats) + — when includeSeries /
+// includeEpisode are set — the HistorySeriesEmbedder /
+// HistoryEpisodeEmbedder optional extensions. The series embed is
+// deduped per-request (the since/series lists repeat series ids).
+//
+// J377: includeSeries / includeEpisode embeds added (the paged
+// HistoryHandler uses a different lister-projected path and is unaffected).
+func writeHistoryEntries(ctx context.Context, w http.ResponseWriter, rows []history.Entry, svc any, includeSeries, includeEpisode bool) {
+	var populator HistoryEntryPopulator
+	if p, ok := svc.(HistoryEntryPopulator); ok {
+		populator = p
+	}
+	var seriesEmbed HistorySeriesEmbedder
+	if includeSeries {
+		seriesEmbed, _ = svc.(HistorySeriesEmbedder)
+	}
+	var episodeEmbed HistoryEpisodeEmbedder
+	if includeEpisode {
+		episodeEmbed, _ = svc.(HistoryEpisodeEmbedder)
+	}
+	seriesCache := map[int]*SeriesResource{}
 	out := make([]HistoryResource, 0, len(rows))
 	for _, e := range rows {
 		eventTypeName := ""
@@ -261,7 +299,7 @@ func writeHistoryEntries(ctx context.Context, w http.ResponseWriter, rows []hist
 				cf = []CustomFormatResource{}
 			}
 		}
-		out = append(out, HistoryResource{
+		res := HistoryResource{
 			ID:                e.ID,
 			SeriesID:          e.SeriesID,
 			EpisodeID:         e.EpisodeID,
@@ -273,7 +311,21 @@ func writeHistoryEntries(ctx context.Context, w http.ResponseWriter, rows []hist
 			Data:              e.Data,
 			CustomFormats:     cf,
 			CustomFormatScore: score,
-		})
+		}
+		if seriesEmbed != nil && e.SeriesID != 0 {
+			if cached, ok := seriesCache[e.SeriesID]; ok {
+				res.Series = cached
+			} else if sr := seriesEmbed.HistorySeriesResource(ctx, e.SeriesID); sr != nil {
+				res.Series = sr
+				seriesCache[e.SeriesID] = sr
+			}
+		}
+		if episodeEmbed != nil && e.EpisodeID != 0 {
+			if er := episodeEmbed.HistoryEpisodeResource(ctx, e.EpisodeID); er != nil {
+				res.Episode = er
+			}
+		}
+		out = append(out, res)
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)

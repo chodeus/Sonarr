@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/history"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 type fakeHistoryLister struct {
@@ -577,5 +579,73 @@ func TestHistorySeriesHandler_InvalidSeriesID_400(t *testing.T) {
 		ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/history/series?seriesId=abc", nil))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// fakeHistoryReaderWithEmbeds implements HistoryRangeReader plus the
+// J377 HistorySeriesEmbedder / HistoryEpisodeEmbedder optional
+// extensions.
+type fakeHistoryReaderWithEmbeds struct {
+	rows   []history.Entry
+	series map[int]*series.Series
+	eps    map[int]*episodes.Episode
+}
+
+func (f *fakeHistoryReaderWithEmbeds) Since(_ context.Context, _ time.Time, _ *history.EventType) ([]history.Entry, error) {
+	return f.rows, nil
+}
+func (f *fakeHistoryReaderWithEmbeds) GetBySeries(_ context.Context, _ int, _ *history.EventType) ([]history.Entry, error) {
+	return f.rows, nil
+}
+func (f *fakeHistoryReaderWithEmbeds) HistorySeriesResource(_ context.Context, id int) *SeriesResource {
+	if s, ok := f.series[id]; ok {
+		r := ToSeriesResource(*s)
+		return &r
+	}
+	return nil
+}
+func (f *fakeHistoryReaderWithEmbeds) HistoryEpisodeResource(_ context.Context, id int) *EpisodeResource {
+	if e, ok := f.eps[id]; ok {
+		r := ToEpisodeResource(*e)
+		return &r
+	}
+	return nil
+}
+
+// TestHistorySinceHandler_IncludeSeriesEpisode_J377 pins the
+// includeSeries / includeEpisode embeds: absent without the flags,
+// present (base Series / Episode resources) when set true and the
+// reader implements the embedder extensions.
+func TestHistorySinceHandler_IncludeSeriesEpisode_J377(t *testing.T) {
+	t.Parallel()
+	svc := &fakeHistoryReaderWithEmbeds{
+		rows:   []history.Entry{{ID: 1, SeriesID: 7, EpisodeID: 5, Date: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)}},
+		series: map[int]*series.Series{7: {ID: 7, Title: "Breaking Bad"}},
+		eps:    map[int]*episodes.Episode{5: {ID: 5, SeriesID: 7, Title: "Pilot"}},
+	}
+
+	// No flags → no embeds.
+	rr := httptest.NewRecorder()
+	HistorySinceHandler(svc).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/history/since?date=2026-01-01T00:00:00Z", nil))
+	if b := rr.Body.String(); strings.Contains(b, `"series"`) || strings.Contains(b, `"episode"`) {
+		t.Errorf("no embeds expected without flags; got %s", b)
+	}
+
+	// Both flags → embeds present.
+	rr2 := httptest.NewRecorder()
+	HistorySinceHandler(svc).ServeHTTP(rr2, httptest.NewRequest(http.MethodGet,
+		"/api/v3/history/since?date=2026-01-01T00:00:00Z&includeSeries=true&includeEpisode=true", nil))
+	var got []HistoryResource
+	if err := json.Unmarshal(rr2.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 row; got %d", len(got))
+	}
+	if got[0].Series == nil || got[0].Series.ID != 7 || got[0].Series.Title != "Breaking Bad" {
+		t.Errorf("series embed: %+v", got[0].Series)
+	}
+	if got[0].Episode == nil || got[0].Episode.ID != 5 {
+		t.Errorf("episode embed: %+v", got[0].Episode)
 	}
 }

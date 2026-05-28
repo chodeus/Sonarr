@@ -1057,6 +1057,12 @@ type historyCustomFormatsLookup interface {
 	All(ctx context.Context) ([]*customformats.Format, error)
 }
 
+// historyEpisodeLookup is the by-id episode read the J377 history
+// includeEpisode embed needs. *episodes.Service satisfies it.
+type historyEpisodeLookup interface {
+	GetEpisode(ctx context.Context, id int) (*episodes.Episode, error)
+}
+
 func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingRequest) ([]apiv3.HistoryResource, int, error) {
 	rows, err := a.repo.All(ctx)
 	if err != nil {
@@ -1480,6 +1486,38 @@ type historyServiceWithPopulator struct {
 	seriesSvc          historySeriesLookup
 	qualityProfilesSvc historyQualityProfileLookup
 	customFormatsSvc   historyCustomFormatsLookup
+	// episodesSvc backs the J377 includeEpisode embed. nil → no embed.
+	episodesSvc historyEpisodeLookup
+}
+
+// HistorySeriesResource satisfies apiv3.HistorySeriesEmbedder — loads the
+// series by id and projects the BASE SeriesResource (C# model.Series
+// .ToResource()). nil on any miss so the embed key drops. J377.
+func (h *historyServiceWithPopulator) HistorySeriesResource(ctx context.Context, seriesID int) *apiv3.SeriesResource {
+	if h.seriesSvc == nil || seriesID == 0 {
+		return nil
+	}
+	s, err := h.seriesSvc.GetSeries(ctx, seriesID)
+	if err != nil || s == nil {
+		return nil
+	}
+	r := apiv3.ToSeriesResource(*s)
+	return &r
+}
+
+// HistoryEpisodeResource satisfies apiv3.HistoryEpisodeEmbedder — loads
+// the episode by id and projects the BASE EpisodeResource (C#
+// model.Episode.ToResource()). nil on any miss. J377.
+func (h *historyServiceWithPopulator) HistoryEpisodeResource(ctx context.Context, episodeID int) *apiv3.EpisodeResource {
+	if h.episodesSvc == nil || episodeID == 0 {
+		return nil
+	}
+	e, err := h.episodesSvc.GetEpisode(ctx, episodeID)
+	if err != nil || e == nil {
+		return nil
+	}
+	r := apiv3.ToEpisodeResource(*e)
+	return &r
 }
 
 // PopulateHistoryEntry satisfies apiv3.HistoryEntryPopulator. Runs
@@ -2114,6 +2152,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		seriesSvc:          seriesSvc,
 		qualityProfilesSvc: qualityProfilesSvc,
 		customFormatsSvc:   customFormatsSvc,
+		episodesSvc:        episodesSvc,
 	}
 	// J339: episodefile populator wrapper — same pattern as the
 	// history populator. Used by every v3+v5 episodefile handler

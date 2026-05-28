@@ -19214,3 +19214,33 @@ Every C# EpisodeFileResourceMapper.ToResource field ported: scalars + path + dat
 ### Next embedders
 
 Wanted (missing/cutoff) — accepts includeSeries/includeEpisodeFile/includeImages on the same EpisodeResource projection (the natural next slice, same helper reuse). Queue already has includeSeries+includeEpisode (J348). History accepts includeSeries/includeEpisode. Blocklist.
+
+## J377 — Post-J365 resource-projection arc, slice 12: History since/series embedder include-branches (includeSeries / includeEpisode)
+
+**Anchor**: post-J376. Continues priority #3. C# `HistoryController.MapToResource(model, includeSeries, includeEpisode)` embeds the BASE Series + Episode resources; all three history endpoints call it. The Go since/series endpoints use the model-based `writeHistoryEntries` path (the J338 populator idiom over `[]history.Entry`) — the tractable target. The paged HistoryHandler is lister-projected (`[]HistoryResource`), so its embeds stay deferred (lister hydration).
+
+### C# source
+
+- `src/Sonarr.Api.V3/History/HistoryController.cs:40-61` — `MapToResource`: `includeSeries → resource.Series = model.Series.ToResource()`; `includeEpisode → resource.Episode = model.Episode.ToResource()` (both BASE ToResource). Also computes qualityCutoffNotMet unconditionally (DEFERRED here — same mechanism as J375).
+- `:99-129` — GetHistorySince / GetSeriesHistory call the same MapToResource with the two flags (default false).
+
+### Port deliverables
+
+- **`internal/api/v3/history.go`**: new optional-extension interfaces `HistorySeriesEmbedder` + `HistoryEpisodeEmbedder`. `writeHistoryEntries` signature changed to `(ctx, w, rows, svc any, includeSeries, includeEpisode bool)` — type-asserts the populator + (flag-gated) the two embedders off `svc`, with a per-request seriesCache. `HistorySinceHandler` + `HistorySeriesHandler` parse the two params + pass `svc`.
+- **`cmd/sonarr/host_wiring.go`**: `historyServiceWithPopulator` gains an `episodesSvc historyEpisodeLookup` field (new narrow `GetEpisode(ctx,id)` interface) + implements `HistorySeriesResource` (existing seriesSvc → ToSeriesResource) and `HistoryEpisodeResource` (episodesSvc → ToEpisodeResource); construction wires `episodesSvc`.
+
+### Design notes
+
+- **Base embeds**: ToSeriesResource / ToEpisodeResource are the pure base projections — exactly the C# `model.X.ToResource()` (no MapCoversToLocal / stats / nested embeds), matching the J372 episode-series embed precedent.
+- **Additive + flag-gated**: default-false flags + test fixtures not implementing the embedders → nil embeds (key absent) → existing tests + empty-DB contract unaffected.
+- **Paged endpoint deferred**: the paged HistoryHandler uses a lister returning pre-projected resources; matching the embeds there needs lister hydration (Queue J348 strip-pattern) — a separate slice. qualityCutoffNotMet on history is likewise a clean follow-up (J375 mechanism).
+
+### Tests (`internal/api/v3/history_test.go`, 1 new)
+
+`TestHistorySinceHandler_IncludeSeriesEpisode_J377` — a row with seriesId 7 + episodeId 5; absent embeds without flags; base Series (id 7, title) + Episode (id 5) present when both flags set + the reader implements the extensions.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/history/... ./cmd/sonarr/... ./test/contract/...` ✓
+- `go vet` + gofmt ✓; `test/contract/replayer` + `hostbootstrap` ✓.
