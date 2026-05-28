@@ -19479,3 +19479,22 @@ Missing episodes have NO file (`EpisodeFileID==0`), so the EpisodeFile embed hel
 ### Arc status — COMPLETE (pending next-tick confirmation)
 
 The Embedder/Lister Hydration Arc has drained its clean in-scope read-projection/hydration set: paged History (EventType J379, includeSeries/includeEpisode J380, qualityCutoffNotMet J381), Blocklist (Quality+Series J382), Wanted (includeSeries/includeImages J383, includeEpisodeFile J384). Remaining GET-surface DEFERRALs are not clean projections: paged-list Title-from-Episode-join (History+Blocklist), Queue filter params (filter application not field projection), series statistics/images (stats service + MapCoversToLocal), and the mutation/command/cascade DEFERRALs (out of scope). Next tick: final orientation grep, then emit "embedder-hydration arc complete".
+
+---
+
+## J385 — Embedder/Lister Hydration Arc: CONFIRMED COMPLETE (orientation-only, no code)
+
+Final orientation tick. Re-ran the hydration-gap grep across `internal/api/v3` + `cmd/sonarr` and verified every surviving DEFERRED marker is either out of scope or stale:
+
+- **episodefile editor Languages/Quality** (`episodefile.go:304/314/440`) — PUT mutation (write path), out of scope per the GET-only guard.
+- **Queue filter params** (`queue.go:441` — seriesIds/protocol/languages/quality/status) — filter APPLICATION on the result set, not field projection. (And these are in fact already applied via J358 `queueFilterCriteria`; the comment is partly stale.)
+- **series/{id}/season PUT response** (`host_wiring.go:2643`) — mutation response; C# itself defaults includeImages=false, so not a gap.
+- **STALE — host_wiring.go:231** "Series / Episode / Episodes subresources + CustomFormats DEFERRED" — actually completed: J348 (Series+Episode hydrate-then-strip), J349 (CustomFormats), J352 (Episodes plural), J351 (EpisodeIDs/SeasonNumbers), J359 (CF-score recompute). `projectQueueResource` hydrates all of them.
+- **STALE — blocklist.go:48** "typed wire DTO (Quality is complex) DEFERRED" — completed J382 (`blocklistQualityResource` + Series).
+- **STALE — host_wiring.go:2969** v5 calendar "Sub-resource hydration deferred" — hydrated J376 (v5 uses the same episodesSvcWithEpisodeFile composite).
+
+### Outcome
+
+No clean in-scope GET read-projection/hydration gap remains. The Embedder/Lister Hydration Arc (J379–J384, building on the J366–J378 projection arc and the J348-complete Queue) is DRAINED. Loop stopped.
+
+Out-of-scope follow-ups flagged for a future arc (need a service/join, not a projection): paged-list `Title`-from-Episode-join (History+Blocklist), series statistics/images (stats service + MapCoversToLocal), Queue filter coverage tests. The three stale DEFERRED doc comments above are harmless but could be tidied to keep future orientation greps clean.
