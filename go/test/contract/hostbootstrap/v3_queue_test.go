@@ -77,6 +77,6 @@ func TestV3QueueContract(t *testing.T) {
 
 type emptyQueuePagedLister struct{}
 
-func (emptyQueuePagedLister) PagedQueue(context.Context, apiv3.PagingRequest) ([]apiv3.QueueResource, int, error) {
+func (emptyQueuePagedLister) PagedQueue(context.Context, apiv3.PagingRequest, apiv3.QueueFilter) ([]apiv3.QueueResource, int, error) {
 	return nil, 0, nil
 }
