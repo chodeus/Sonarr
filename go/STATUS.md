@@ -17794,3 +17794,81 @@ Next-tick assessment: pause point. The remaining service-port-gated work warrant
 | 3 (B-cat) | QueueResource v5 includeSubresources[] hydration (Queue.Service paged surface + Series+Episodes pipeline) | OPEN |
 
 Service-port arc 1 of 3 closed; arc 2 (parsingService.Map + ImportDecisionMaker) is the next-tick candidate.
+
+---
+
+## J344 — Post-J342 service-port arc, slice 2 (Arc 2 slice 1, A-category): Parse handler populated Series + Episodes + Languages via parsingService.Map wire-through
+
+**Anchor**: post-J343 (Arc 1 closed). Opens Arc 2 by wiring the existing `parsingservice.Service.Map` implementation (at `internal/parsingservice/parsingservice.go:1187`) through the Parse handler. The Map fn was ported in the Phase 3.82-era slices but the Parse handler was emitting only Title + ParsedEpisodeInfo since J299. This slice closes the Series/Episodes/Languages population gap; the CustomFormats projection is deferred to a follow-up slice (J345) because it needs the aggregation.Service.Augment pre-pass + a new `customformats.ParseCustomFormatForRemoteEpisode` helper (mirrors C# `CustomFormatCalculationService.ParseCustomFormat(RemoteEpisode, long)` at `:36-49`). ManualImport — the larger half of the Arc 2 row — is the next-tick candidate after CustomFormats.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Parse/ParseController.cs:31-77` — Parse handler:
+  - `:33-36` empty-title null-return guard.
+  - `:38` parser dispatch (ParsePath vs ParseTitle by path-presence).
+  - `:40-44` parser-returned-null minimal shape.
+  - `:46` `_parsingService.Map(parsedEpisodeInfo, 0, 0, null)` → RemoteEpisode.
+  - `:48-65` populated-shape projection — Title + ParsedEpisodeInfo + Series.ToResource + Episodes.ToResource + Languages + CustomFormats + CustomFormatScore.
+  - `:67-72` Map-returned-null fallback to minimal shape.
+- `src/Sonarr.Api.V3/Parse/ParseResource.cs:1-22` — wire shape.
+- `src/Sonarr.Api.V5/Parse/ParseController.cs` — v5 equivalent (empty-input divergence handled at v5/parse/parse.go:79-87 since J258; other branches match v3 line-for-line).
+
+### Port deliverables
+
+**`go/internal/api/v3/parse.go`** — type widening + interface + handler signature:
+
+- `ParseResource` widened with 3 new fields after `ParsedEpisodeInfo`:
+  - `Series *SeriesResource json:"series,omitempty"`
+  - `Episodes []EpisodeResource json:"episodes,omitempty"`
+  - `Languages []language.Language json:"languages,omitempty"`
+  All `omitempty` to mirror C# `JsonIgnore(WhenWritingNull)` on nullable `List<>` fields — pre-J344 minimal-shape callers stay byte-equivalent (the new keys are absent when nil).
+- New imports: `context`, `sonarr.tv/sonarr/internal/decisionengine`, `sonarr.tv/sonarr/internal/language`.
+- New narrow `ParseMapper interface { Map(ctx, *parser.ParsedEpisodeInfo, int, int, string, *decisionengine.SearchCriteria) (*decisionengine.Subject, error) }`. Satisfied by `*parsingservice.Service` via Go structural typing — the wire site passes parsingSvc directly with no adapter shim.
+- `ParseHandler(mapper ParseMapper) http.Handler` — single new positional optional dep. Handler logic:
+  - If mapper non-nil AND parsing yielded a non-nil ParsedEpisodeInfo → call `mapper.Map(r.Context(), parsed, 0, 0, "", nil)`.
+  - On `err == nil && subject != nil && subject.Series != nil` → project Series via `ToSeriesResource`, Episodes via `ToEpisodeResource` per element, Languages from `subject.Languages` (the parser-set list).
+  - All other branches (mapper nil, parsed nil, Map error, nil subject, nil Series) degrade silently to the pre-J344 minimal shape — preserves backwards compatibility for every existing test fixture.
+
+**`go/internal/api/v5/parse/parse.go`** — same signature change + same population logic against the aliased Resource (`Resource = apiv3.ParseResource`). The v5 empty-input divergence (object-not-literal-null) remains intact; only the populated branch gains the Map wire-through.
+
+**`go/cmd/sonarr/host_wiring.go`**:
+- `/api/v3/parse` GET route: `apiv3.ParseHandler(parsingSvc)`.
+- `/api/v5/parse` GET route: `parsev5.GetHandler(parsingSvc)`.
+
+### Tests
+
+**`go/internal/api/v3/parse_test.go`** — 5 new tests:
+
+- `TestParseHandler_MapperNil_BackwardsCompat_J344` — nil mapper preserves the pre-J344 minimal shape (no `series` / `episodes` / `languages` keys).
+- `TestParseHandler_MapperPopulatesSeriesEpisodesLanguages_J344` — happy path: fake mapper returns a Subject with Series + Episodes + Languages, handler projects all three envelopes onto the wire.
+- `TestParseHandler_MapperReturnsNilSubject_FallsBackToMinimalShape_J344` — Map returns (nil, nil); body must NOT carry `series`.
+- `TestParseHandler_MapperReturnsSubjectWithNilSeries_FallsBackToMinimalShape_J344` — Map returns Subject with nil Series; body must NOT carry `series`.
+- `TestParseHandler_MapperErrors_SilentlyFallsBack_J344` — Map returns an error; handler stays 200 with the minimal shape (parsing-service hiccup mustn't fail the request).
+- Plus `fakeParseMapper` + `parseMapperErr` helpers.
+
+**`go/internal/api/v5/parse/parse_test.go`** — 1 new test:
+
+- `TestGetHandler_MapperPopulatesSeriesEpisodesLanguages_J344` — exercises the v5 handler against the same fake mapper shape (separate fake in the v5 package to avoid cross-package test imports).
+
+**Existing test call sites updated** (8): 4 in v3/parse_test.go + 4 in v5/parse/parse_test.go via `replace_all` — all changed from `ParseHandler()` / `GetHandler()` to `ParseHandler(nil)` / `GetHandler(nil)`.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/parse/... ./cmd/sonarr/...` ✓
+  - v3: all pass, 1.764s
+  - v5/parse: all pass, 2.652s
+  - cmd/sonarr: all pass, 4.331s
+- `go vet ./internal/api/v3/... ./internal/api/v5/parse/... ./cmd/sonarr/...` ✓
+
+### Post-J342 service-port arc backlog
+
+| Sub-arc | Item | Status |
+| --- | --- | --- |
+| 1 (B-cat) | Release POST searchInfo fallback (parsingService.GetEpisodes wire-through) | DONE (J343) |
+| 2 (A-cat) | Parse handler populated Series/Episodes/Languages (parsingService.Map wire-through) | **DONE this slice (J344)** |
+| 2 (A-cat) | Parse handler populated CustomFormats + CustomFormatScore (aggregation.Augment + new RemoteEpisode calculator) | OPEN — next sub-slice |
+| 2 (A-cat) | ManualImport handler populated customFormats | OPEN — gated on the calculator port |
+| 3 (B-cat) | QueueResource v5 includeSubresources[] hydration (Queue.Service paged surface + Series+Episodes pipeline) | OPEN |
+
+Arc 2 progress: 1 of 3 sub-slices landed. Next-tick candidate: Parse-handler CustomFormats projection via aggregation.Service.Augment + a new customformats helper.

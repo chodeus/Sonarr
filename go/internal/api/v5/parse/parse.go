@@ -65,15 +65,13 @@ type Resource = apiv3.ParseResource
 //     empty case; the ParsedEpisodeInfo field stays nil).
 //  4. Parser returns non-nil → 200 + ParseResource{Title, ParsedEpisodeInfo}.
 //
-// Joined fields (Series / Episodes / Languages / CustomFormats /
-// CustomFormatScore in the v5 C# source) are DEFERRED — same
-// rationale as v3 Go-port: needs parsing-service Map + format
-// calculator + metadatasource integration not yet ported. When that
-// pipeline lands, this handler picks up the extra fields by widening
-// the Resource projection.
+// J344 — Series + Episodes + Languages population wired via the
+// optional ParseMapper dep (same shape as v3). CustomFormats remains
+// DEFERRED — needs aggregation.Service.Augment + custom-format
+// calculator chain (next slice in the Arc 2 sub-arc).
 //
-// J258.
-func GetHandler() http.Handler {
+// J258. J344 — Map wire-through.
+func GetHandler(mapper apiv3.ParseMapper) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		title := q.Get("title")
@@ -92,7 +90,25 @@ func GetHandler() http.Handler {
 		} else {
 			parsed = parser.ParseTitle(title)
 		}
-		writeJSON(w, Resource{Title: title, ParsedEpisodeInfo: parsed})
+		out := Resource{Title: title, ParsedEpisodeInfo: parsed}
+		// J344 — Map wire-through. Nil-tolerant + nil-result-tolerant
+		// like the v3 handler.
+		if mapper != nil && parsed != nil {
+			subject, err := mapper.Map(r.Context(), parsed, 0, 0, "", nil)
+			if err == nil && subject != nil && subject.Series != nil {
+				seriesRes := apiv3.ToSeriesResource(*subject.Series)
+				out.Series = &seriesRes
+				if len(subject.Episodes) > 0 {
+					eps := make([]apiv3.EpisodeResource, 0, len(subject.Episodes))
+					for _, e := range subject.Episodes {
+						eps = append(eps, apiv3.ToEpisodeResource(e))
+					}
+					out.Episodes = eps
+				}
+				out.Languages = subject.Languages
+			}
+		}
+		writeJSON(w, out)
 	})
 }
 

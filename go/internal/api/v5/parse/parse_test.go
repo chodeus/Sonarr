@@ -1,6 +1,7 @@
 package parse
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,11 @@ import (
 	"testing"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
+	"sonarr.tv/sonarr/internal/decisionengine"
+	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/language"
+	"sonarr.tv/sonarr/internal/parser"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 // TestGetHandler_EmptyInput_ReturnsObjectNotNull pins the
@@ -21,7 +27,7 @@ func TestGetHandler_EmptyInput_ReturnsObjectNotNull(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v5/parse", nil)
-	GetHandler().ServeHTTP(rr, req)
+	GetHandler(nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200", rr.Code)
 	}
@@ -48,7 +54,7 @@ func TestGetHandler_TitleWithoutEpisodeInfo(t *testing.T) {
 	// Use a title that won't parse to ParsedEpisodeInfo (random words).
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v5/parse?title=random+gibberish+nothing+to+see", nil)
-	GetHandler().ServeHTTP(rr, req)
+	GetHandler(nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d", rr.Code)
 	}
@@ -70,7 +76,7 @@ func TestGetHandler_TitleParses(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v5/parse?title=Breaking.Bad.S01E01.720p.HDTV.x264", nil)
-	GetHandler().ServeHTTP(rr, req)
+	GetHandler(nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d", rr.Code)
 	}
@@ -92,7 +98,7 @@ func TestGetHandler_PathTakesPrecedence(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v5/parse?title=ignored&path=Breaking.Bad.S01E01.720p.HDTV.x264.mkv", nil)
-	GetHandler().ServeHTTP(rr, req)
+	GetHandler(nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d", rr.Code)
 	}
@@ -104,4 +110,43 @@ func TestTypeAliasMatchesV3(t *testing.T) {
 	t.Parallel()
 	var _ Resource = apiv3.ParseResource{}
 	var _ apiv3.ParseResource = Resource{}
+}
+
+// ----- J344 — ParseMapper wire-through (v5 alias) -----
+
+type fakeParseMapper struct {
+	returnSub *decisionengine.Subject
+	calls     int
+}
+
+func (f *fakeParseMapper) Map(_ context.Context, _ *parser.ParsedEpisodeInfo, _ int, _ int, _ string, _ *decisionengine.SearchCriteria) (*decisionengine.Subject, error) {
+	f.calls++
+	return f.returnSub, nil
+}
+
+func TestGetHandler_MapperPopulatesSeriesEpisodesLanguages_J344(t *testing.T) {
+	t.Parallel()
+	mapper := &fakeParseMapper{
+		returnSub: &decisionengine.Subject{
+			Series:    &series.Series{ID: 7, Title: "ResolvedShow"},
+			Episodes:  []episodes.Episode{{ID: 11, SeriesID: 7, SeasonNumber: 1, EpisodeNumber: 2}},
+			Languages: []language.Language{{ID: 1, Name: "English"}},
+		},
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v5/parse?title=The.Show.S01E02.720p.WEB-DL", nil)
+	GetHandler(mapper).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if mapper.calls != 1 {
+		t.Errorf("mapper.Map should fire once; got calls=%d", mapper.calls)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"series":{`) {
+		t.Errorf("body should carry series envelope: %s", body)
+	}
+	if !strings.Contains(body, `"title":"ResolvedShow"`) {
+		t.Errorf("body should carry resolved series title: %s", body)
+	}
 }

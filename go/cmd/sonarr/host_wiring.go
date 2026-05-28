@@ -2003,7 +2003,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// J258 — v5 Parse endpoint family (single GET; v5 differs from
 		// v3 ONLY in the empty-input case — v3 emits literal `null`,
 		// v5 emits a ParseResource object with `title` field).
-		{Method: "GET", Path: "/api/v5/parse", Handler: parsev5.GetHandler()},
+		{Method: "GET", Path: "/api/v5/parse", Handler: parsev5.GetHandler(parsingSvc)},
 		// J259 — v5 Update endpoint family (single GET; pure path-alias
 		// to v3 handler — same wire shape, same 200 status).
 		{Method: "GET", Path: "/api/v5/update", Handler: updatev5.GetHandler(emptyUpdateLister{})},
@@ -2355,7 +2355,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "DELETE", Path: "/api/v3/notification/bulk", Handler: apiv3.NotificationBulkNotSupportedHandler()},
 		{Method: "PUT", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationUpdateHandler(notificationsRepo, notificationRegistry, notificationEmitter)},
 		{Method: "DELETE", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationDeleteHandler(notificationsRepo, notificationEmitter)},
-		{Method: "GET", Path: "/api/v3/parse", Handler: apiv3.ParseHandler()},
+		{Method: "GET", Path: "/api/v3/parse", Handler: apiv3.ParseHandler(parsingSvc)},
 		{Method: "GET", Path: "/api/v3/qualitydefinition", Handler: apiv3.QualityDefinitionHandler(qualityDefSvc)},
 		{Method: "GET", Path: "/api/v3/qualitydefinition/{id}", Handler: apiv3.QualityDefinitionByIDHandler(qualityDefSvc)},
 		{Method: "GET", Path: "/api/v3/qualitydefinition/limits", Handler: apiv3.QualityDefinitionLimitsHandler()},
