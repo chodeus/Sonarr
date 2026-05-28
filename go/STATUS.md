@@ -18935,3 +18935,45 @@ counts (mixed season + specials), airing (min-future-monitored / max-past-monito
 ### Next (J369)
 
 Wire via a `seriesStatsPopulator` (J367 image-populator + C# LinkSeriesStatistics idiom): per-request-cached series→stats lookup filling SeriesResource.Statistics + seasons[].Statistics + nextAiring/previousAiring + the `LastAired ??=` fallback; add the v3 SeriesStatisticsResource/SeasonStatisticsResource wire types (+ seasonCount computed from seasons>0, percentOfEpisodes) and the v5-additive widening. After J369 SeriesResource is effectively complete (only seasons[].images / alternateTitles / isExcluded remain) → arc advances to EpisodeResource.
+
+---
+
+## J369 — Post-J365 resource-projection arc, slice 4: wire statistics into SeriesResource
+
+**Anchor**: post-J368 (statistics core in internal/seriesstats). The wire half of the core-then-wire split (J360→J361 precedent).
+
+### C# source
+
+- `src/Sonarr.Api.V3/Series/SeriesController.cs:125-126,222-271` — MapCoversToLocal + LinkSeriesStatistics run at the controller layer after ToResource. LinkSeriesStatistics: `LastAired ??= stats.LastAired`; PreviousAiring/NextAiring = stats; Statistics = stats.ToResource(seasons); per-season Statistics matched by SeasonNumber.
+- `SeriesStatisticsResource.cs` / `SeasonStatisticsResource.cs` (v3) — the wire shapes (SeasonCount=seasons>0; percentOfEpisodes computed).
+
+### Port deliverables
+
+- **`internal/api/v3/series.go`** (imports seriesstats):
+  - `SeriesStatisticsResource` + `SeasonStatisticsResource` wire types (releaseGroups always-emit []; percentOfEpisodes = 0 when episodeCount==0 else fileCount/episodeCount*100).
+  - SeriesResource += `Statistics`/`NextAiring`/`PreviousAiring` (omitempty); SeasonResource += `Statistics` (omitempty).
+  - `ToSeriesStatisticsResource(st, seasons)` (SeasonCount from seasons>0) + `ToSeasonStatisticsResource(st)`.
+  - `LinkSeriesStatistics(res, st)` — pure projection mirroring C# LinkSeriesStatistics (LastAired ??=, airing, statistics, per-season match-by-number).
+  - `SeriesStatsPopulator interface { PopulateSeriesStats(ctx, res) }` + `ApplySeriesStatsPopulator(ctx, res, svc any)` — ctx-threaded (DB reads); called by List + ByID before the image populator.
+- **`cmd/sonarr/series_image_wiring.go`**: `seriesImagePopulator` → `seriesReadEnricher{*series.Service; mc; eps; files}` — one value implements BOTH populators. `PopulateSeriesStats` loads episodes (episodes.Repo.AllBySeriesID) + files (episodefiles.Service.GetFilesBySeries), runs seriesstats.Compute(now), delegates to apiv3.LinkSeriesStatistics; load error → nil statistics (graceful degrade).
+- **`cmd/sonarr/host_wiring.go`**: seriesImgSvc construction → seriesReadEnricher (reuses in-scope episodesRepo + episodeFilesSvc; no new buildHostServer params). The 4 GET sites already route through it → v5 gets statistics free.
+
+### Deferred (J370 v5-additive widening)
+
+`monitoredEpisodeCount`, `releaseTypes` (enum-name strings), `episodeFileQualities` (Quality DTOs) on the statistics resources — the seriesstats core already computes the values; only the enum/DTO wire mapping remains.
+
+### Tests (`internal/api/v3/series_test.go`, 3)
+
+- `TestLinkSeriesStatistics_J369` — seasonCount (seasons>0), percentOfEpisodes=50, per-season match-by-number (incl. unmatched-stays-nil + a season-0 link), airing set, lastAired fallback fills.
+- `TestLinkSeriesStatistics_LastAiredPreserved_J369` — existing row LastAired not overwritten.
+- `TestSeriesListHandler_StatsPopulator_J369` — populator fills statistics / plain lister leaves nil.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/series/... ./cmd/sonarr/...` ✓ (v3 2.71s, v5/series 1.67s, cmd/sonarr 4.29s)
+- `go vet` + gofmt ✓; `test/contract/replayer` + `hostbootstrap` ✓ (empty-DB statistics unobservable).
+
+### SeriesResource status
+
+Effectively COMPLETE — scalars + model-intrinsic band (J366) + images (J367) + statistics (J368/J369). Remaining: v5-additive statistics trio (J370), seasons[].images (includeSeasonImages), alternateTitles (scene-mapping), isExcluded (importlistexclusion join). Arc next advances to EpisodeResource.

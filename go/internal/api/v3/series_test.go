@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/seriesstats"
 )
 
 type fakeSeriesLister struct {
@@ -1542,5 +1543,144 @@ func TestSeriesListHandler_ImagePopulator_J367(t *testing.T) {
 	}
 	if got2[0].Images[0].Url != "/old" {
 		t.Errorf("url should be untouched without populator: %q", got2[0].Images[0].Url)
+	}
+}
+
+// fakeSeriesStatsLister implements SeriesStatsPopulator with a fixed
+// SeriesStatistics — proves the List handler invokes the optional
+// stats-populator type-assertion path.
+type fakeSeriesStatsLister struct {
+	rows []series.Series
+	st   seriesstats.SeriesStatistics
+}
+
+func (f fakeSeriesStatsLister) GetAllSeries(context.Context) ([]series.Series, error) {
+	return f.rows, nil
+}
+
+func (f fakeSeriesStatsLister) PopulateSeriesStats(_ context.Context, res *SeriesResource) {
+	LinkSeriesStatistics(res, f.st)
+}
+
+func statsFixture() seriesstats.SeriesStatistics {
+	next := mustParse("2030-01-01T00:00:00Z")
+	prev := mustParse("2020-06-01T00:00:00Z")
+	last := mustParse("2020-06-01T00:00:00Z")
+	return seriesstats.SeriesStatistics{
+		SeriesID:          7,
+		NextAiring:        &next,
+		PreviousAiring:    &prev,
+		LastAired:         &last,
+		EpisodeFileCount:  1,
+		EpisodeCount:      2,
+		TotalEpisodeCount: 4,
+		SizeOnDisk:        1500,
+		ReleaseGroups:     []string{"GRP"},
+		SeasonStatistics: []seriesstats.SeasonStatistics{
+			{SeasonNumber: 1, EpisodeFileCount: 1, EpisodeCount: 2, TotalEpisodeCount: 3, SizeOnDisk: 1000, ReleaseGroups: []string{"GRP"}, NextAiring: &next},
+			{SeasonNumber: 0, EpisodeFileCount: 0, EpisodeCount: 0, TotalEpisodeCount: 1, ReleaseGroups: []string{}},
+		},
+	}
+}
+
+func mustParse(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		panic(err)
+	}
+	return t
+}
+
+// TestLinkSeriesStatistics_J369 pins the LinkSeriesStatistics projection:
+// statistics shape (seasonCount from seasons>0, percentOfEpisodes),
+// per-season linking by SeasonNumber, airing fields, and the
+// LastAired ??= fallback.
+func TestLinkSeriesStatistics_J369(t *testing.T) {
+	t.Parallel()
+	res := &SeriesResource{
+		ID: 7,
+		Seasons: []SeasonResource{
+			{SeasonNumber: 1, Monitored: true},
+			{SeasonNumber: 2, Monitored: true},
+			{SeasonNumber: 0, Monitored: false},
+		},
+	}
+	LinkSeriesStatistics(res, statsFixture())
+
+	if res.Statistics == nil {
+		t.Fatal("statistics nil")
+	}
+	// SeasonCount counts seasons > 0 from the resource (1 + 2 = 2).
+	if res.Statistics.SeasonCount != 2 {
+		t.Errorf("seasonCount: %d want 2", res.Statistics.SeasonCount)
+	}
+	if res.Statistics.EpisodeFileCount != 1 || res.Statistics.EpisodeCount != 2 || res.Statistics.TotalEpisodeCount != 4 || res.Statistics.SizeOnDisk != 1500 {
+		t.Errorf("series stat counts: %+v", res.Statistics)
+	}
+	// percentOfEpisodes = 1/2*100 = 50.
+	if res.Statistics.PercentOfEpisodes != 50 {
+		t.Errorf("percentOfEpisodes: %v want 50", res.Statistics.PercentOfEpisodes)
+	}
+	if len(res.Statistics.ReleaseGroups) != 1 || res.Statistics.ReleaseGroups[0] != "GRP" {
+		t.Errorf("releaseGroups: %v", res.Statistics.ReleaseGroups)
+	}
+	// Airing fields set from stats.
+	if res.NextAiring == nil || res.PreviousAiring == nil {
+		t.Errorf("airing not linked: next=%v prev=%v", res.NextAiring, res.PreviousAiring)
+	}
+	// LastAired ??= fallback: was nil → filled from stats.
+	if res.LastAired == nil || !res.LastAired.Equal(mustParse("2020-06-01T00:00:00Z")) {
+		t.Errorf("lastAired fallback: %v", res.LastAired)
+	}
+	// Season 1 statistics linked; season 2 unmatched (nil); season 0 linked.
+	if res.Seasons[0].Statistics == nil || res.Seasons[0].Statistics.EpisodeFileCount != 1 {
+		t.Errorf("season1 stat: %+v", res.Seasons[0].Statistics)
+	}
+	if res.Seasons[1].Statistics != nil {
+		t.Errorf("season2 has no stat fixture; must stay nil: %+v", res.Seasons[1].Statistics)
+	}
+	if res.Seasons[2].Statistics == nil || res.Seasons[2].Statistics.TotalEpisodeCount != 1 {
+		t.Errorf("season0 stat: %+v", res.Seasons[2].Statistics)
+	}
+}
+
+// TestLinkSeriesStatistics_LastAiredPreserved_J369 — when the series row
+// already has LastAired, the stats value must NOT overwrite it (C# ??=).
+func TestLinkSeriesStatistics_LastAiredPreserved_J369(t *testing.T) {
+	t.Parallel()
+	existing := mustParse("2018-01-01T00:00:00Z")
+	res := &SeriesResource{ID: 7, LastAired: &existing}
+	LinkSeriesStatistics(res, statsFixture())
+	if res.LastAired == nil || !res.LastAired.Equal(existing) {
+		t.Errorf("existing lastAired must be preserved: %v want 2018-01-01", res.LastAired)
+	}
+}
+
+// TestSeriesListHandler_StatsPopulator_J369 — the List handler runs the
+// optional stats populator when present, leaves statistics nil otherwise.
+func TestSeriesListHandler_StatsPopulator_J369(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 7, Title: "Demo", Seasons: `[{"seasonNumber":1,"monitored":true}]`}}
+
+	rr := httptest.NewRecorder()
+	SeriesListHandler(fakeSeriesStatsLister{rows: rows, st: statsFixture()}).ServeHTTP(rr,
+		httptest.NewRequest(http.MethodGet, "/api/v3/series", nil))
+	var got []SeriesResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 1 || got[0].Statistics == nil || got[0].Statistics.SeasonCount != 1 {
+		t.Fatalf("stats not populated: %+v", got)
+	}
+
+	rr2 := httptest.NewRecorder()
+	SeriesListHandler(&fakeSeriesLister{rows: rows}).ServeHTTP(rr2,
+		httptest.NewRequest(http.MethodGet, "/api/v3/series", nil))
+	var got2 []SeriesResource
+	if err := json.Unmarshal(rr2.Body.Bytes(), &got2); err != nil {
+		t.Fatalf("unmarshal2: %v", err)
+	}
+	if got2[0].Statistics != nil {
+		t.Errorf("statistics must be nil without populator: %+v", got2[0].Statistics)
 	}
 }

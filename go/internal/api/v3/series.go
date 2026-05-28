@@ -13,6 +13,7 @@ import (
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/mediacover"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/seriesstats"
 	"sonarr.tv/sonarr/internal/signalr"
 )
 
@@ -148,6 +149,9 @@ type SeriesResource struct {
 	Added             time.Time                 `json:"added"`
 	FirstAired        *time.Time                `json:"firstAired,omitempty"`
 	LastAired         *time.Time                `json:"lastAired,omitempty"`
+	NextAiring        *time.Time                `json:"nextAiring,omitempty"`
+	PreviousAiring    *time.Time                `json:"previousAiring,omitempty"`
+	Statistics        *SeriesStatisticsResource `json:"statistics,omitempty"`
 	AddOptions        *json.RawMessage          `json:"addOptions,omitempty"`
 	AlternateTitles   *[]AlternateTitleResource `json:"alternateTitles,omitempty"`
 }
@@ -166,8 +170,9 @@ type SeriesResource struct {
 // today anyway. When those slices land they add the pointer fields
 // additively without disturbing the seasonNumber/monitored contract.
 type SeasonResource struct {
-	SeasonNumber int  `json:"seasonNumber"`
-	Monitored    bool `json:"monitored"`
+	SeasonNumber int                       `json:"seasonNumber"`
+	Monitored    bool                      `json:"monitored"`
+	Statistics   *SeasonStatisticsResource `json:"statistics,omitempty"`
 }
 
 // RatingsResource is the v3 wire shape for `NzbDrone.Core.Tv.Ratings`
@@ -201,6 +206,171 @@ type MediaCoverResource struct {
 	CoverType string `json:"coverType"`
 	Url       string `json:"url"`
 	RemoteUrl string `json:"remoteUrl,omitempty"`
+}
+
+// SeriesStatisticsResource is the v3 wire shape for
+// `Sonarr.Api.V3.Series.SeriesStatisticsResource` — the per-series
+// episode/file rollup. Sourced from the seriesstats aggregation and
+// linked onto SeriesResource at handler time (mirrors C#
+// SeriesController.LinkSeriesStatistics, NOT the mapper).
+//
+// SeasonCount is computed from the resource's Seasons (count where
+// SeasonNumber > 0), not from the stats. PercentOfEpisodes is the C#
+// computed property emitted as a number (EpisodeCount==0 → 0, else
+// EpisodeFileCount/EpisodeCount*100). ReleaseGroups is always emitted
+// as a (possibly empty) array — matches the populated-row C# non-null
+// list.
+//
+// The v5 SeriesStatisticsResource additionally carries
+// MonitoredEpisodeCount, ReleaseTypes ([]ReleaseType), and
+// EpisodeFileQualities ([]Quality). Those v5-additive statistics fields
+// are DEFERRED to a follow-up widening slice (they need the release-type
+// enum-name + quality-DTO projection); the seriesstats core already
+// computes the underlying values.
+type SeriesStatisticsResource struct {
+	SeasonCount       int      `json:"seasonCount"`
+	EpisodeFileCount  int      `json:"episodeFileCount"`
+	EpisodeCount      int      `json:"episodeCount"`
+	TotalEpisodeCount int      `json:"totalEpisodeCount"`
+	SizeOnDisk        int64    `json:"sizeOnDisk"`
+	ReleaseGroups     []string `json:"releaseGroups"`
+	PercentOfEpisodes float64  `json:"percentOfEpisodes"`
+}
+
+// SeasonStatisticsResource is the v3 wire shape for
+// `Sonarr.Api.V3.Series.SeasonStatisticsResource` — the per-season
+// rollup linked onto each SeasonResource.Statistics. Same v5-additive
+// deferral as SeriesStatisticsResource (MonitoredEpisodeCount /
+// ReleaseTypes / EpisodeFileQualities).
+type SeasonStatisticsResource struct {
+	NextAiring        *time.Time `json:"nextAiring,omitempty"`
+	PreviousAiring    *time.Time `json:"previousAiring,omitempty"`
+	EpisodeFileCount  int        `json:"episodeFileCount"`
+	EpisodeCount      int        `json:"episodeCount"`
+	TotalEpisodeCount int        `json:"totalEpisodeCount"`
+	SizeOnDisk        int64      `json:"sizeOnDisk"`
+	ReleaseGroups     []string   `json:"releaseGroups"`
+	PercentOfEpisodes float64    `json:"percentOfEpisodes"`
+}
+
+// percentOfEpisodes mirrors the C# computed property: 0 when
+// episodeCount is 0, else fileCount/episodeCount*100.
+func percentOfEpisodes(fileCount, episodeCount int) float64 {
+	if episodeCount == 0 {
+		return 0
+	}
+	return float64(fileCount) / float64(episodeCount) * 100
+}
+
+// ToSeriesStatisticsResource maps the seriesstats rollup + the
+// resource's seasons (for SeasonCount) to the wire shape. Mirrors C#
+// SeriesStatisticsResourceMapper.ToResource.
+func ToSeriesStatisticsResource(st seriesstats.SeriesStatistics, seasons []SeasonResource) *SeriesStatisticsResource {
+	seasonCount := 0
+	for _, s := range seasons {
+		if s.SeasonNumber > 0 {
+			seasonCount++
+		}
+	}
+	groups := st.ReleaseGroups
+	if groups == nil {
+		groups = []string{}
+	}
+	return &SeriesStatisticsResource{
+		SeasonCount:       seasonCount,
+		EpisodeFileCount:  st.EpisodeFileCount,
+		EpisodeCount:      st.EpisodeCount,
+		TotalEpisodeCount: st.TotalEpisodeCount,
+		SizeOnDisk:        st.SizeOnDisk,
+		ReleaseGroups:     groups,
+		PercentOfEpisodes: percentOfEpisodes(st.EpisodeFileCount, st.EpisodeCount),
+	}
+}
+
+// ToSeasonStatisticsResource maps a per-season seriesstats entry to the
+// wire shape. Mirrors C# SeasonStatisticsResourceMapper.ToResource.
+func ToSeasonStatisticsResource(st seriesstats.SeasonStatistics) *SeasonStatisticsResource {
+	groups := st.ReleaseGroups
+	if groups == nil {
+		groups = []string{}
+	}
+	return &SeasonStatisticsResource{
+		NextAiring:        st.NextAiring,
+		PreviousAiring:    st.PreviousAiring,
+		EpisodeFileCount:  st.EpisodeFileCount,
+		EpisodeCount:      st.EpisodeCount,
+		TotalEpisodeCount: st.TotalEpisodeCount,
+		SizeOnDisk:        st.SizeOnDisk,
+		ReleaseGroups:     groups,
+		PercentOfEpisodes: percentOfEpisodes(st.EpisodeFileCount, st.EpisodeCount),
+	}
+}
+
+// LinkSeriesStatistics fills a SeriesResource's statistics-sourced
+// fields from the seriesstats rollup. Pure projection — mirrors C#
+// SeriesController.LinkSeriesStatistics (`:255-271`):
+//
+//   - LastAired ??= st.LastAired (only when the series row itself has no
+//     LastAired — the C# null-coalescing assignment).
+//   - PreviousAiring / NextAiring = st values (unconditional).
+//   - Statistics = ToSeriesStatisticsResource(st, res.Seasons).
+//   - each res.Seasons[i].Statistics = matching st.SeasonStatistics by
+//     SeasonNumber (unmatched seasons keep nil).
+//
+// J369.
+func LinkSeriesStatistics(res *SeriesResource, st seriesstats.SeriesStatistics) {
+	if res == nil {
+		return
+	}
+	if res.LastAired == nil && st.LastAired != nil {
+		v := *st.LastAired
+		res.LastAired = &v
+	}
+	res.PreviousAiring = st.PreviousAiring
+	res.NextAiring = st.NextAiring
+	res.Statistics = ToSeriesStatisticsResource(st, res.Seasons)
+
+	if len(st.SeasonStatistics) > 0 {
+		bySeason := make(map[int]seriesstats.SeasonStatistics, len(st.SeasonStatistics))
+		for _, s := range st.SeasonStatistics {
+			bySeason[s.SeasonNumber] = s
+		}
+		for i := range res.Seasons {
+			if s, ok := bySeason[res.Seasons[i].SeasonNumber]; ok {
+				res.Seasons[i].Statistics = ToSeasonStatisticsResource(s)
+			}
+		}
+	}
+}
+
+// SeriesStatsPopulator is the optional-extension interface for the
+// series read handlers (List + ByID). When the lister/getter parameter
+// ALSO implements it, the handler invokes PopulateSeriesStats per
+// resource to compute + link the episode/file statistics (the Go-port
+// equivalent of C# SeriesController.LinkSeriesStatistics). Not
+// implemented by test fixtures → no-op (statistics stays nil).
+//
+// J369. Same J339/J345/J367 optional-extension idiom as
+// SeriesImagePopulator; the production wrapper at cmd/sonarr implements
+// BOTH on one value (the handler passes a single lister/getter).
+type SeriesStatsPopulator interface {
+	PopulateSeriesStats(ctx context.Context, res *SeriesResource)
+}
+
+// ApplySeriesStatsPopulator post-processes a SeriesResource via the
+// optional-extension type-assertion. nil-safe; no-op when svc doesn't
+// implement SeriesStatsPopulator.
+//
+// J369.
+func ApplySeriesStatsPopulator(ctx context.Context, res *SeriesResource, svc any) {
+	if res == nil || svc == nil {
+		return
+	}
+	pop, ok := svc.(SeriesStatsPopulator)
+	if !ok || pop == nil {
+		return
+	}
+	pop.PopulateSeriesStats(ctx, res)
 }
 
 // AlternateTitleResource is the wire-shape mirror of C#
@@ -279,6 +449,7 @@ func SeriesByIDHandler(svc SeriesByIDGetter) http.Handler {
 			return
 		}
 		res := ToSeriesResource(*s)
+		ApplySeriesStatsPopulator(r.Context(), &res, svc)
 		ApplySeriesImagePopulator(&res, svc)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -304,6 +475,7 @@ func SeriesListHandler(lister SeriesLister) http.Handler {
 			out = append(out, ToSeriesResource(s))
 		}
 		for i := range out {
+			ApplySeriesStatsPopulator(r.Context(), &out[i], lister)
 			ApplySeriesImagePopulator(&out[i], lister)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")

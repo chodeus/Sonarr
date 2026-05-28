@@ -1889,7 +1889,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 	// with the *mediacover.Service converter; the embedded service keeps
 	// it a drop-in for the handlers' read interfaces. Used ONLY at the
 	// GET list/by-id sites — the write handlers keep the bare seriesSvc.
-	seriesImgSvc := seriesImagePopulator{Service: seriesSvc, mc: mediaCoverConvertSvc}
+	// J369 extends the wrapper to also link episode/file statistics
+	// (PopulateSeriesStats) via the episodes repo + episodefiles service.
+	seriesImgSvc := seriesReadEnricher{Service: seriesSvc, mc: mediaCoverConvertSvc, eps: episodesRepo, files: episodeFilesSvc}
 	uiCfg := uiConfigGetter{cfg: configProv, xmlCfg: cfg}
 	hostCfg := hostConfigGetter{cfg: configProv, xmlCfg: cfg}
 	// 5.B2: per-resource SignalR emitter for the rootfolder writes.
