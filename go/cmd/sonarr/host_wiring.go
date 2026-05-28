@@ -1526,18 +1526,34 @@ func paginateInMemory[T any](all []T, req apiv3.PagingRequest) []T {
 // `DateTime.UtcNow` per invocation).
 type wantedRepoLister struct {
 	episodes *episodes.Repo
+	// profiles backs the J361 cutoff branch — the below-cutoff
+	// quality-id sets are computed from every quality profile. nil →
+	// the cutoff branch returns empty (pre-J361 posture).
+	profiles *qualityprofiles.Service
 	now      func() time.Time
 }
 
 func (w wantedRepoLister) PagedWanted(ctx context.Context, req apiv3.PagingRequest, scope apiv3.WantedScope) ([]apiv3.EpisodeResource, int, error) {
+	// MissingController + CutoffController default — `monitored=true`.
+	// The recorded corpus exercises only the default, so the boolean
+	// toggle stays pinned here until query-string parsing for the
+	// alternate branch lands.
+	var (
+		rows []episodes.Episode
+		err  error
+	)
 	if scope == apiv3.WantedCutoff {
-		return nil, 0, nil
+		// J361 — compute the per-profile below-cutoff quality-id sets,
+		// then enumerate episodes whose file falls below their series'
+		// cutoff. Replaces the pre-J361 empty-result stub.
+		below, berr := w.belowCutoffByProfile(ctx)
+		if berr != nil {
+			return nil, 0, berr
+		}
+		rows, err = w.episodes.WantedCutoffUnmet(ctx, below, true)
+	} else {
+		rows, err = w.episodes.WantedMissing(ctx, w.now(), true)
 	}
-	// MissingController's default — `monitored=true`. The recorded
-	// corpus exercises only the default, so the boolean toggle stays
-	// pinned here until query-string parsing for the alternate branch
-	// lands.
-	rows, err := w.episodes.WantedMissing(ctx, w.now(), true)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1548,6 +1564,32 @@ func (w wantedRepoLister) PagedWanted(ctx context.Context, req apiv3.PagingReque
 		out = append(out, apiv3.ToEpisodeResource(e))
 	}
 	return out, total, nil
+}
+
+// belowCutoffByProfile builds the quality-profile-id → below-cutoff-
+// quality-ids map [episodes.Repo.WantedCutoffUnmet] consumes, by running
+// [qualityprofiles.QualitiesBelowCutoff] over every profile. Mirrors the
+// profile sweep in C# `EpisodeCutoffService.EpisodesWhereCutoffUnmet`.
+// nil profiles service → empty map (cutoff branch then returns no rows).
+func (w wantedRepoLister) belowCutoffByProfile(ctx context.Context) (map[int][]int, error) {
+	if w.profiles == nil {
+		return nil, nil
+	}
+	profs, err := w.profiles.All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int][]int, len(profs))
+	for i := range profs {
+		ids, err := qualityprofiles.QualitiesBelowCutoff(&profs[i])
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) > 0 {
+			out[profs[i].ID] = ids
+		}
+	}
+	return out, nil
 }
 
 // uiConfigGetter composes the two underlying providers
@@ -2486,9 +2528,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// v3, query-param shape divergence is ignored by current stub).
 		// EpisodeResource widening (EndTime/GrabDate) deferred per same
 		// chain as J258/J259/J261.
-		{Method: "GET", Path: "/api/v5/wanted/missing", Handler: wantedv5.ListHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, wantedv5.ScopeMissing)},
+		{Method: "GET", Path: "/api/v5/wanted/missing", Handler: wantedv5.ListHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, now: func() time.Time { return time.Now().UTC() }}, wantedv5.ScopeMissing)},
 		{Method: "GET", Path: "/api/v5/wanted/missing/{id}", Handler: wantedv5.ByIDHandler(episodesSvc)},
-		{Method: "GET", Path: "/api/v5/wanted/cutoff", Handler: wantedv5.ListHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, wantedv5.ScopeCutoff)},
+		{Method: "GET", Path: "/api/v5/wanted/cutoff", Handler: wantedv5.ListHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, now: func() time.Time { return time.Now().UTC() }}, wantedv5.ScopeCutoff)},
 		{Method: "GET", Path: "/api/v5/wanted/cutoff/{id}", Handler: wantedv5.ByIDHandler(episodesSvc)},
 		// J265 — v5 Indexer + IndexerFlag endpoint family (12 endpoints;
 		// Resource shape identical to v3 — 9 fields field-for-field. Four
@@ -2868,9 +2910,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v3/tag/detail", Handler: apiv3.TagDetailHandler(emptyTagDetailLister{})},
 		{Method: "GET", Path: "/api/v3/tag/detail/{id}", Handler: apiv3.TagDetailByIDHandler(emptyTagDetailLister{})},
 		{Method: "GET", Path: "/api/v3/update", Handler: apiv3.UpdateHandler(emptyUpdateLister{})},
-		{Method: "GET", Path: "/api/v3/wanted/cutoff", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedCutoff)},
+		{Method: "GET", Path: "/api/v3/wanted/cutoff", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedCutoff)},
 		{Method: "GET", Path: "/api/v3/wanted/cutoff/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvcWithEpisodeFile)},
-		{Method: "GET", Path: "/api/v3/wanted/missing", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedMissing)},
+		{Method: "GET", Path: "/api/v3/wanted/missing", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedMissing)},
 		{Method: "GET", Path: "/api/v3/wanted/missing/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvcWithEpisodeFile)},
 		// SignalR negotiate endpoint — the JS client posts here
 		// first to discover the per-connection id and the available

@@ -18611,3 +18611,42 @@ The queue paged list now reflects live profile CF-score edits on both v3 + v5. N
 | image-download subscriber off SeriesAddedEvent | OPEN — needs a new HTTP-download MediaCover subsystem (external I/O) |
 
 The cutoff-unmet predicate is now ported + tested. J361 wires it into the (currently-empty) wanted/cutoff endpoint by computing belowByProfile from `qualityProfilesSvc.All`.
+
+---
+
+## J361 — Post-J352 residual-arc, Arc 3 (smaller residuals) slice 3: wire cutoff-unmet enumerator into the wanted/cutoff endpoint (v3+v5)
+
+**Anchor**: post-J360 (enumerator core landed). Consumes `qualityprofiles.QualitiesBelowCutoff` + `episodes.Repo.WantedCutoffUnmet` to close the empty-cutoff-endpoint gap carried since slice 4.DV.
+
+### Port deliverables (`cmd/sonarr/host_wiring.go`)
+
+- `wantedRepoLister` gains `profiles *qualityprofiles.Service`.
+- `PagedWanted` cutoff branch: replaced the `return nil, 0, nil` stub with `below := belowCutoffByProfile(ctx)` → `episodes.WantedCutoffUnmet(ctx, below, true)` → in-memory page + `apiv3.ToEpisodeResource` projection (same shape as the missing branch). monitored=true default (matching the missing branch + recorded corpus).
+- New `belowCutoffByProfile(ctx)` — runs `qualityprofiles.QualitiesBelowCutoff` over `qualityProfilesSvc.All`, building the `map[profileID][]qualityID`; nil profiles service → empty map.
+- All 4 `wantedRepoLister` construction sites (v3+v5 × missing+cutoff) pass `profiles: qualityProfilesSvc`.
+
+### Behaviour
+
+`/api/v3/wanted/cutoff` + `/api/v5/wanted/cutoff` now return episodes whose on-disk file ranks below the series' quality-profile cutoff, instead of always `[]`.
+
+### Tests
+
+No new cmd/sonarr DB test (package main has no datastore-test infra; the wiring is thin glue over the J360-unit-tested `QualitiesBelowCutoff` + `WantedCutoffUnmet`, both 2-engine-covered). Gate = build + existing cmd/sonarr suite.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./cmd/sonarr/...` ✓ (3.82s)
+- `go vet` + gofmt ✓
+
+### Arc 3 progress
+
+| Item | Status |
+| --- | --- |
+| Queue CustomFormatScore recompute | DONE (J359) |
+| Cutoff-unmet enumerator core | DONE (J360) |
+| Cutoff-unmet wired into wanted/cutoff (v3+v5) | **DONE this slice (J361)** |
+| CutoffUnmetEpisodeSearchCommand handler | OPEN — now unblocked (enumerator + MissingEpisodeSearch handler pattern + indexersearch dispatch) |
+| image-download subscriber off SeriesAddedEvent | OPEN — needs a new HTTP-download MediaCover subsystem (external I/O) |
+
+The wanted/cutoff endpoint is now functional on both surfaces. Next Arc 3 candidate: the CutoffUnmetEpisodeSearchCommand handler (mirrors the MissingEpisodeSearch handler, swapping the enumerator).
