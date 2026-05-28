@@ -49,9 +49,11 @@ import (
 // persisted reduced JSON → expanded wire shape via
 // ToQualityModelResource), mediaInfo (J374 — the UNION v3-flat +
 // v5-stream-list projection via ToMediaInfoResource over the typed
-// File.MediaInfo model). Still DEFERRED: qualityCutoffNotMet
-// (upgradable-spec service), episodeHasFile (per-episode rollup). The
-// customFormats[] + customFormatScore
+// File.MediaInfo model), qualityCutoffNotMet (J375 — computed via the
+// EpisodeFileQualityCutoffPopulator optional extension over the ported
+// decisionengine.UpgradableSpecification; always emitted as a bool
+// matching the C# non-nullable field). Still DEFERRED: episodeHasFile
+// (per-episode rollup). The customFormats[] + customFormatScore
 // fields are wired at the struct level here (J298, Wave 1
 // calculator wire-through slice 3) so future populated-row mappers
 // can emit the C# wire shape without re-widening; the underlying
@@ -81,7 +83,7 @@ type EpisodeFileResource struct {
 	Quality             *QualityModelResource  `json:"quality,omitempty"`
 	IndexerFlags        *int                   `json:"indexerFlags,omitempty"`
 	ReleaseType         string                 `json:"releaseType,omitempty"`
-	QualityCutoffNotMet bool                   `json:"qualityCutoffNotMet,omitempty"`
+	QualityCutoffNotMet bool                   `json:"qualityCutoffNotMet"`
 	MediaInfo           *MediaInfoResource     `json:"mediaInfo,omitempty"`
 	CustomFormats       []CustomFormatResource `json:"customFormats"`
 	CustomFormatScore   int                    `json:"customFormatScore"`
@@ -126,6 +128,27 @@ type EpisodeFilePopulator interface {
 	PopulateEpisodeFile(ctx context.Context, f *episodefiles.File) (customFormats []CustomFormatResource, customFormatScore int)
 }
 
+// EpisodeFileQualityCutoffPopulator is a SECOND optional-extension
+// interface for the episodefile handlers (separate from
+// EpisodeFilePopulator so widening one doesn't break the other's
+// implementers — the J367/J369 SeriesImagePopulator-vs-SeriesStatsPopulator
+// precedent). When the handler's reader/writer parameter implements it,
+// ApplyEpisodeFilePopulator computes the qualityCutoffNotMet flag —
+// mirrors C# `EpisodeFileResourceMapper.ToResource`'s
+// `QualityCutoffNotMet = upgradableSpecification.QualityCutoffNotMet(
+// series.QualityProfile.Value, model.Quality)`. When NOT implemented
+// (test fixtures), the flag defaults to false (the upgradable-spec
+// service isn't reachable in those paths).
+//
+// Production wiring at cmd/sonarr composes *episodefiles.Service with a
+// wrapper that loads the series' quality profile + runs the ported
+// decisionengine.UpgradableSpecification.QualityCutoffNotMet.
+//
+// J375.
+type EpisodeFileQualityCutoffPopulator interface {
+	PopulateQualityCutoffNotMet(ctx context.Context, f *episodefiles.File) bool
+}
+
 // ApplyEpisodeFilePopulator post-processes a freshly-built
 // EpisodeFileResource via the optional-extension type-assertion.
 // svc is the handler's reader/writer interface (typed as `any` so
@@ -139,15 +162,20 @@ func ApplyEpisodeFilePopulator(ctx context.Context, res *EpisodeFileResource, f 
 	if res == nil || f == nil || svc == nil {
 		return
 	}
-	pop, ok := svc.(EpisodeFilePopulator)
-	if !ok || pop == nil {
-		return
+	if pop, ok := svc.(EpisodeFilePopulator); ok && pop != nil {
+		cf, score := pop.PopulateEpisodeFile(ctx, f)
+		if cf != nil {
+			res.CustomFormats = cf
+		}
+		res.CustomFormatScore = score
 	}
-	cf, score := pop.PopulateEpisodeFile(ctx, f)
-	if cf != nil {
-		res.CustomFormats = cf
+	// J375: the qualityCutoffNotMet flag is a SEPARATE optional
+	// extension (a wrapper may implement one, both, or neither), so it
+	// is type-asserted independently of EpisodeFilePopulator. When
+	// present, compute it; otherwise it stays false.
+	if cutoff, ok := svc.(EpisodeFileQualityCutoffPopulator); ok && cutoff != nil {
+		res.QualityCutoffNotMet = cutoff.PopulateQualityCutoffNotMet(ctx, f)
 	}
-	res.CustomFormatScore = score
 }
 
 // EpisodeFileListHandler returns GET /api/v3/episodefile. Mirrors
@@ -612,9 +640,11 @@ func ToEpisodeFileResource(f episodefiles.File, seriesPath string) EpisodeFileRe
 		// f.Quality reduced JSON string (quality.Model) → expanded wire
 		// shape via ToQualityModelResource (see qualityPtr above). Empty
 		// column → nil → omitempty drops the key.
-		// QualityCutoffNotMet: computed via upgradable-spec service
-		// — DEFERRED (same path as HistoryResource.QualityCutoffNotMet
-		// per J312). false default + omitempty drops the key today.
+		// QualityCutoffNotMet: J375 computes it post-mapping via the
+		// EpisodeFileQualityCutoffPopulator optional extension (the
+		// ApplyEpisodeFilePopulator helper sets it). The mapper itself
+		// leaves the false default; always-emitted (no omitempty) to
+		// match the C# non-nullable bool + HistoryResource (J312).
 		// CustomFormatScore: 0 — populated-row mapper landing
 		// alongside the calculator wire-through (J298+).
 	}

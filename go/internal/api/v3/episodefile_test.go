@@ -365,15 +365,17 @@ func TestEpisodeFileListHandler_EmitsScalarWidening_J328(t *testing.T) {
 			t.Errorf("expected exactly 1 %q occurrence (row 1 only); got %d", key, c)
 		}
 	}
-	// QualityCutoffNotMet remains DEFERRED (upgradable-spec service) — key absent.
 	// Both fixture rows have an empty Quality column, so the quality
 	// key is absent (the J373 projection only emits when the persisted
 	// string is non-empty — see TestEpisodeFile_QualityProjection_J373).
 	if strings.Contains(body, `"quality":`) {
 		t.Errorf("Quality must be absent for empty-Quality fixtures; got %s", body)
 	}
-	if strings.Contains(body, `"qualityCutoffNotMet":`) {
-		t.Errorf("QualityCutoffNotMet false default must omit; got %s", body)
+	// J375: qualityCutoffNotMet is now ALWAYS emitted (C# non-nullable
+	// bool). The fake lister implements no populator extension, so it
+	// stays the false default — but the key must be present.
+	if !strings.Contains(body, `"qualityCutoffNotMet":false`) {
+		t.Errorf("QualityCutoffNotMet must always emit (false here); got %s", body)
 	}
 }
 
@@ -500,6 +502,44 @@ func TestEpisodeFile_MediaInfoProjection_J374(t *testing.T) {
 	res2 := ToEpisodeFileResource(episodefiles.File{ID: 2, SeriesID: 7, RelativePath: "b.mkv"}, "")
 	if res2.MediaInfo != nil {
 		t.Errorf("nil File.MediaInfo must leave the resource pointer nil; got %+v", res2.MediaInfo)
+	}
+}
+
+// fakeQualityCutoffPopulator implements EpisodeFileQualityCutoffPopulator
+// but NOT EpisodeFilePopulator — exercises the J375 independent
+// type-assertion in ApplyEpisodeFilePopulator.
+type fakeQualityCutoffPopulator struct{ ret bool }
+
+func (f fakeQualityCutoffPopulator) PopulateQualityCutoffNotMet(_ context.Context, _ *episodefiles.File) bool {
+	return f.ret
+}
+
+// TestApplyEpisodeFilePopulator_QualityCutoff_J375 pins the
+// qualityCutoffNotMet optional-extension wiring: an implementing svc
+// sets the flag; a non-implementing svc leaves it false; the field is
+// always emitted (no omitempty).
+func TestApplyEpisodeFilePopulator_QualityCutoff_J375(t *testing.T) {
+	t.Parallel()
+	f := &episodefiles.File{ID: 1, SeriesID: 7}
+
+	// Implementing svc → flag set true (independent of EpisodeFilePopulator).
+	res := &EpisodeFileResource{ID: 1}
+	ApplyEpisodeFilePopulator(context.Background(), res, f, fakeQualityCutoffPopulator{ret: true})
+	if !res.QualityCutoffNotMet {
+		t.Errorf("expected QualityCutoffNotMet=true from the populator")
+	}
+
+	// Non-implementing svc → stays false.
+	res2 := &EpisodeFileResource{ID: 2}
+	ApplyEpisodeFilePopulator(context.Background(), res2, f, struct{}{})
+	if res2.QualityCutoffNotMet {
+		t.Errorf("non-implementing svc must leave QualityCutoffNotMet false")
+	}
+
+	// Always emitted (no omitempty): false still produces the key.
+	buf, _ := json.Marshal(res2)
+	if !strings.Contains(string(buf), `"qualityCutoffNotMet":false`) {
+		t.Errorf("qualityCutoffNotMet must always emit; got %s", buf)
 	}
 }
 

@@ -19147,3 +19147,37 @@ Every C# MapToResource branch ported: scalars + FinaleType + episodeFile (J340/J
 ### Remaining EpisodeFileResource deferral
 
 Only **qualityCutoffNotMet** remains — needs the upgradable-spec service (same DEFERRED path as HistoryResource.QualityCutoffNotMet, J312). It's a service-dependent computed flag rather than a pure projection, so it's a likely arc boundary. After EpisodeFileResource the arc moves to the queue/history/blocklist embedder include-branches.
+
+## J375 — Post-J365 resource-projection arc, slice 10: EpisodeFileResource.qualityCutoffNotMet — COMPLETES EpisodeFileResource
+
+**Anchor**: post-J374. The last EpisodeFileResource field. Scope call: it's a read-time computed flag (the C# mapper computes it inline via the upgradable spec), NOT a mutation/command/cascade — so it's in scope, the same category as the J339 customFormatScore populator. The `decisionengine.UpgradableSpecification.QualityCutoffNotMet` logic was already ported; this slice wires it into the projection.
+
+### C# source
+
+- `src/Sonarr.Api.V3/EpisodeFiles/EpisodeFileResource.cs:62` — `QualityCutoffNotMet = upgradableSpecification.QualityCutoffNotMet(series.QualityProfile.Value, model.Quality)` (newQuality omitted → null). Non-nullable bool → always serialized.
+- `src/NzbDrone.Core/DecisionEngine/Specifications/UpgradableSpecification.cs:124-140` — the cutoff logic (ported at `internal/decisionengine/upgradable.go:266`).
+
+### Port deliverables
+
+- **`internal/api/v3/episodefile.go`**: field tag `qualityCutoffNotMet,omitempty` → `qualityCutoffNotMet` (always emit; mirrors C# non-nullable + HistoryResource J312). New SECOND optional-extension interface `EpisodeFileQualityCutoffPopulator { PopulateQualityCutoffNotMet(ctx, f) bool }`. `ApplyEpisodeFilePopulator` refactored: the EpisodeFilePopulator (customFormats/score) and the cutoff assertions are now INDEPENDENT type-asserts (one/both/neither); sets `res.QualityCutoffNotMet`.
+- **`cmd/sonarr/host_wiring.go`**: `episodeFileServiceWithPopulator` gains `upgradable *decisionengine.UpgradableSpecification` + `PopulateQualityCutoffNotMet` (decode quality → load series → profile → NewProfileView → QualityCutoffNotMet(view, qm, nil); graceful-false on any miss). Spec built in `v3Routes` via `NewUpgradableSpecification(configProv, logger)` — no signature threading (configProv satisfies ConfigReader). `episodesWithEpisodeFileLookup` composite forwards `PopulateQualityCutoffNotMet` so the episode embed's episodeFile carries the flag.
+
+### Design notes
+
+- **Separate populator interface** (not a widening of EpisodeFilePopulator) — keeps the existing implementers/fakes intact; the J367/J369 two-populators precedent. The two asserts are independent so a wrapper implementing only one still works.
+- **In-place spec construction** avoids threading a new dep through the two giant buildHostServer/v3Routes signatures — the spec is stateless (reads config + log), so a second instance is harmless.
+- **All wire sites at once**: standalone episodefile endpoints, SignalR envelopes, the EpisodeResource.episodeFile embed (via the composite forwarder) — all route through ApplyEpisodeFilePopulator.
+
+### Tests (`internal/api/v3/episodefile_test.go`, 1 new + 1 updated)
+
+`TestApplyEpisodeFilePopulator_QualityCutoff_J375` (implementing svc → true; non-implementing → false; always-emit `qualityCutoffNotMet:false` pin). Updated `TestEpisodeFileListHandler_EmitsScalarWidening_J328` — the assertion flipped from "key absent" to "`qualityCutoffNotMet:false` always present" (the fake lister implements no populator, so false default, but the key is now always emitted).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/episodefile/... ./cmd/sonarr/... ./test/contract/...` ✓
+- `go vet` + gofmt ✓; `test/contract/replayer` + `hostbootstrap` ✓.
+
+### EpisodeFileResource — COMPLETE
+
+Every C# EpisodeFileResourceMapper.ToResource field ported: scalars + path + dateAdded + sceneName/releaseGroup + languages (ToLanguageRefs) + quality (J373) + mediaInfo (J374) + indexerFlags/releaseType (J328) + customFormats[]/customFormatScore (J339) + qualityCutoffNotMet (J375). Arc moves to priority #3: the queue/history/blocklist/calendar/wanted embedder include-branches (includeSeries / includeEpisode / includeEpisodeFile sub-resource hydration), which now reuse the complete Episode/EpisodeFile/Series projections.

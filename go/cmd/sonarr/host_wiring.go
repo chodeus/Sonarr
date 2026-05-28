@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1218,6 +1219,17 @@ func (e *episodesWithEpisodeFileLookup) PopulateEpisodeFile(ctx context.Context,
 	return e.epFilePop.PopulateEpisodeFile(ctx, f)
 }
 
+// PopulateQualityCutoffNotMet satisfies apiv3.EpisodeFileQualityCutoffPopulator
+// by forwarding to the inner wrapper so the EpisodeResource.episodeFile
+// embed (includeEpisodeFile branch) carries the same qualityCutoffNotMet
+// flag as the standalone episodefile endpoints. J375.
+func (e *episodesWithEpisodeFileLookup) PopulateQualityCutoffNotMet(ctx context.Context, f *episodefiles.File) bool {
+	if e.epFilePop == nil {
+		return false
+	}
+	return e.epFilePop.PopulateQualityCutoffNotMet(ctx, f)
+}
+
 // episodeFileServiceWithPopulator embeds *episodefiles.Service
 // (preserves the full Reader + Writer surface via embedding) and
 // adds PopulateEpisodeFile — which the v3 episodefile handlers
@@ -1234,6 +1246,39 @@ type episodeFileServiceWithPopulator struct {
 	seriesSvc          historySeriesLookup
 	qualityProfilesSvc historyQualityProfileLookup
 	customFormatsSvc   historyCustomFormatsLookup
+	// upgradable backs the J375 qualityCutoffNotMet flag. nil → the
+	// flag stays false (graceful degrade).
+	upgradable *decisionengine.UpgradableSpecification
+}
+
+// PopulateQualityCutoffNotMet satisfies apiv3.EpisodeFileQualityCutoffPopulator.
+// Decodes the file's persisted quality, loads the owning series' quality
+// profile, and runs the ported UpgradableSpecification.QualityCutoffNotMet
+// (newQuality omitted, matching the C# EpisodeFileResourceMapper call).
+// Any missing dep / lookup failure degrades to false.
+//
+// J375.
+func (e *episodeFileServiceWithPopulator) PopulateQualityCutoffNotMet(ctx context.Context, f *episodefiles.File) bool {
+	if e.upgradable == nil || e.seriesSvc == nil || e.qualityProfilesSvc == nil || f == nil || f.SeriesID == 0 || f.Quality == "" {
+		return false
+	}
+	var qm quality.Model
+	if err := json.Unmarshal([]byte(f.Quality), &qm); err != nil {
+		return false
+	}
+	ser, err := e.seriesSvc.GetSeries(ctx, f.SeriesID)
+	if err != nil || ser == nil || ser.QualityProfileID == 0 {
+		return false
+	}
+	p, err := e.qualityProfilesSvc.Get(ctx, ser.QualityProfileID)
+	if err != nil || p == nil {
+		return false
+	}
+	view, err := decisionengine.NewProfileView(p)
+	if err != nil {
+		return false
+	}
+	return e.upgradable.QualityCutoffNotMet(view, qm, nil)
 }
 
 // PopulateEpisodeFile satisfies apiv3.EpisodeFilePopulator. Runs
@@ -2075,11 +2120,17 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 	// site so all of them route through the calculator engine for
 	// populated rows. Test fixtures don't implement the populator
 	// extension so the empty fallback fires verbatim.
+	// J375: the upgradable-spec instance backs the qualityCutoffNotMet
+	// flag. configProv satisfies decisionengine.ConfigReader (via
+	// DownloadPropersAndRepacks) — same construction as main.go. A
+	// construction error leaves the flag at false (graceful degrade).
+	episodeFileUpgradable, _ := decisionengine.NewUpgradableSpecification(configProv, logger)
 	episodeFilesSvcPopulated := &episodeFileServiceWithPopulator{
 		Service:            episodeFilesSvc,
 		seriesSvc:          seriesSvc,
 		qualityProfilesSvc: qualityProfilesSvc,
 		customFormatsSvc:   customFormatsSvc,
+		upgradable:         episodeFileUpgradable,
 	}
 	// J342: composite wrapper for the v3 Episode handlers — embeds
 	// *episodes.Service (preserves the full GetEpisode +
