@@ -1684,3 +1684,57 @@ func TestSeriesListHandler_StatsPopulator_J369(t *testing.T) {
 		t.Errorf("statistics must be nil without populator: %+v", got2[0].Statistics)
 	}
 }
+
+// TestToSeriesStatisticsResource_V5Additive_J370 pins the v5-additive
+// statistics widening: monitoredEpisodeCount, releaseTypes (camelCase
+// enum strings), and episodeFileQualities (Quality DTOs), plus the
+// omitempty additive-divergence (empty → keys absent).
+func TestToSeriesStatisticsResource_V5Additive_J370(t *testing.T) {
+	t.Parallel()
+	st := seriesstats.SeriesStatistics{
+		EpisodeFileCount:      2,
+		EpisodeCount:          4,
+		MonitoredEpisodeCount: 3,
+		ReleaseTypes:          []int{1, 3},
+		EpisodeFileQualities:  []int{7},
+	}
+	res := ToSeriesStatisticsResource(st, nil)
+	if res.MonitoredEpisodeCount != 3 {
+		t.Errorf("monitoredEpisodeCount: %d want 3", res.MonitoredEpisodeCount)
+	}
+	if len(res.ReleaseTypes) != 2 || res.ReleaseTypes[0] != "singleEpisode" || res.ReleaseTypes[1] != "seasonPack" {
+		t.Errorf("releaseTypes: %v want [singleEpisode seasonPack]", res.ReleaseTypes)
+	}
+	if len(res.EpisodeFileQualities) != 1 || res.EpisodeFileQualities[0].ID != 7 {
+		t.Fatalf("episodeFileQualities: %+v", res.EpisodeFileQualities)
+	}
+	q := res.EpisodeFileQualities[0]
+	if q.Name == "" || q.Source == "" {
+		t.Errorf("quality DTO not resolved: %+v", q)
+	}
+
+	// Marshal: populated → v5-additive keys present.
+	buf, _ := json.Marshal(res)
+	got := string(buf)
+	for _, want := range []string{`"monitoredEpisodeCount":3`, `"releaseTypes":["singleEpisode","seasonPack"]`, `"episodeFileQualities":[{`, `"id":7`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("marshal missing %q in %s", want, got)
+		}
+	}
+
+	// Empty stats → additive keys drop (omitempty), v3 base shape intact.
+	empty := ToSeriesStatisticsResource(seriesstats.SeriesStatistics{}, nil)
+	eb, _ := json.Marshal(empty)
+	eg := string(eb)
+	for _, absent := range []string{`"monitoredEpisodeCount"`, `"releaseTypes"`, `"episodeFileQualities"`} {
+		if strings.Contains(eg, absent) {
+			t.Errorf("empty stats must omit %q; got %s", absent, eg)
+		}
+	}
+	// Base v3 keys still present.
+	for _, want := range []string{`"seasonCount":0`, `"releaseGroups":[]`, `"percentOfEpisodes":0`} {
+		if !strings.Contains(eg, want) {
+			t.Errorf("base v3 shape missing %q in %s", want, eg)
+		}
+	}
+}

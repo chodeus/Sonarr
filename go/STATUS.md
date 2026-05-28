@@ -18977,3 +18977,38 @@ Wire via a `seriesStatsPopulator` (J367 image-populator + C# LinkSeriesStatistic
 ### SeriesResource status
 
 Effectively COMPLETE — scalars + model-intrinsic band (J366) + images (J367) + statistics (J368/J369). Remaining: v5-additive statistics trio (J370), seasons[].images (includeSeasonImages), alternateTitles (scene-mapping), isExcluded (importlistexclusion join). Arc next advances to EpisodeResource.
+
+---
+
+## J370 — Post-J365 resource-projection arc, slice 5: v5-additive statistics widening (COMPLETES SeriesResource)
+
+**Anchor**: post-J369. The micro-slice deferred from J369 — the three statistics fields the C# v5 resources carry but v3 doesn't. The J368 core already computes the values; this is the wire mapping.
+
+### C# source
+
+- `src/Sonarr.Api.V5/Series/SeriesStatisticsResource.cs` + `SeasonStatisticsResource.cs` — add MonitoredEpisodeCount, ReleaseTypes (List<ReleaseType>), EpisodeFileQualities (List<Quality>) over the v3 shape. SeriesStatisticsService.SortQualities orders qualities by profile index.
+
+### Port deliverables (`internal/api/v3/series.go`)
+
+- `SeriesStatisticsResource` + `SeasonStatisticsResource` each gain `MonitoredEpisodeCount int omitempty`, `ReleaseTypes []string omitempty`, `EpisodeFileQualities []QualityValue omitempty` — additive on the shared v3 type (J318/J324 additive-divergence; v5 emits, v3 ignores, zero/empty drops).
+- `ToSeriesStatisticsResource` + `ToSeasonStatisticsResource` populate via `releaseTypeNames([]int)` (camelCase enum strings: singleEpisode/multiEpisode/seasonPack/unknown) + `toQualityValues([]int)` (quality.FindByID → QualityValue{id,name,source,resolution} reusing J325 QualitySourceName).
+
+### Design notes
+
+- **Additive-divergence omitempty**: matches the J318 EpisodesWithFilesCount posture — v5 drops zero/empty (accepted), v3 stays close to its C# shape (extra keys only on populated rows, ignored by v3 clients).
+- **Quality ordering**: faithful-degraded — the C# SortQualities orders by profile index; the Go port keeps the core's ascending-id order (identical set; cosmetic list order; avoids re-adding the qualityprofiles dep dropped in J369).
+- **No wiring change**: the J369 PopulateSeriesStats → LinkSeriesStatistics path already carries these once the mappers fill them; both surfaces get them.
+
+### Tests
+
+`TestToSeriesStatisticsResource_V5Additive_J370` — populated (counts + camelCase releaseTypes + resolved quality DTO + marshal-presence) AND empty (omitempty drops all three additive keys; base v3 seasonCount/releaseGroups[]/percentOfEpisodes intact).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/series/... ./cmd/sonarr/...` ✓ (v3 1.76s, v5/series 2.86s, cmd/sonarr 4.52s)
+- `go vet` + gofmt ✓; `test/contract/replayer` + `hostbootstrap` ✓.
+
+### SeriesResource — COMPLETE
+
+Every C# SeriesResourceMapper + SeriesController-linked field is projected on both surfaces: scalars + model-intrinsic (J366) + images (J367) + statistics (J368/J369) + v5-additive statistics (J370). Remaining gaps are unported subsystems tracked elsewhere: seasons[].images (includeSeasonImages flag), alternateTitles (scene-mapping service, J329-pinned), isExcluded (importlistexclusion join). Arc advances to EpisodeResource.

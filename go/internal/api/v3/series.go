@@ -12,6 +12,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/mediacover"
+	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/seriesstats"
 	"sonarr.tv/sonarr/internal/signalr"
@@ -221,36 +222,44 @@ type MediaCoverResource struct {
 // as a (possibly empty) array — matches the populated-row C# non-null
 // list.
 //
-// The v5 SeriesStatisticsResource additionally carries
-// MonitoredEpisodeCount, ReleaseTypes ([]ReleaseType), and
-// EpisodeFileQualities ([]Quality). Those v5-additive statistics fields
-// are DEFERRED to a follow-up widening slice (they need the release-type
-// enum-name + quality-DTO projection); the seriesstats core already
-// computes the underlying values.
+// J370 v5-additive widening: MonitoredEpisodeCount, ReleaseTypes
+// ([]ReleaseType → camelCase enum strings), and EpisodeFileQualities
+// ([]Quality DTOs) are carried on the C# v5 SeriesStatisticsResource but
+// NOT the v3 one. Emitted additively on this shared type with omitempty
+// (the J318 additive-divergence posture — v5 lights them up on populated
+// rows; v3 clients ignore the extra keys; zero/empty collapses to absent,
+// the accepted v5-drops-zero trade-off). Sourced from the seriesstats
+// core's MonitoredEpisodeCount / ReleaseTypes / EpisodeFileQualities.
 type SeriesStatisticsResource struct {
-	SeasonCount       int      `json:"seasonCount"`
-	EpisodeFileCount  int      `json:"episodeFileCount"`
-	EpisodeCount      int      `json:"episodeCount"`
-	TotalEpisodeCount int      `json:"totalEpisodeCount"`
-	SizeOnDisk        int64    `json:"sizeOnDisk"`
-	ReleaseGroups     []string `json:"releaseGroups"`
-	PercentOfEpisodes float64  `json:"percentOfEpisodes"`
+	SeasonCount           int            `json:"seasonCount"`
+	EpisodeFileCount      int            `json:"episodeFileCount"`
+	EpisodeCount          int            `json:"episodeCount"`
+	TotalEpisodeCount     int            `json:"totalEpisodeCount"`
+	MonitoredEpisodeCount int            `json:"monitoredEpisodeCount,omitempty"`
+	SizeOnDisk            int64          `json:"sizeOnDisk"`
+	ReleaseGroups         []string       `json:"releaseGroups"`
+	ReleaseTypes          []string       `json:"releaseTypes,omitempty"`
+	EpisodeFileQualities  []QualityValue `json:"episodeFileQualities,omitempty"`
+	PercentOfEpisodes     float64        `json:"percentOfEpisodes"`
 }
 
 // SeasonStatisticsResource is the v3 wire shape for
 // `Sonarr.Api.V3.Series.SeasonStatisticsResource` — the per-season
-// rollup linked onto each SeasonResource.Statistics. Same v5-additive
-// deferral as SeriesStatisticsResource (MonitoredEpisodeCount /
-// ReleaseTypes / EpisodeFileQualities).
+// rollup linked onto each SeasonResource.Statistics. Same J370
+// v5-additive widening as SeriesStatisticsResource (MonitoredEpisodeCount
+// / ReleaseTypes / EpisodeFileQualities, omitempty additive).
 type SeasonStatisticsResource struct {
-	NextAiring        *time.Time `json:"nextAiring,omitempty"`
-	PreviousAiring    *time.Time `json:"previousAiring,omitempty"`
-	EpisodeFileCount  int        `json:"episodeFileCount"`
-	EpisodeCount      int        `json:"episodeCount"`
-	TotalEpisodeCount int        `json:"totalEpisodeCount"`
-	SizeOnDisk        int64      `json:"sizeOnDisk"`
-	ReleaseGroups     []string   `json:"releaseGroups"`
-	PercentOfEpisodes float64    `json:"percentOfEpisodes"`
+	NextAiring            *time.Time     `json:"nextAiring,omitempty"`
+	PreviousAiring        *time.Time     `json:"previousAiring,omitempty"`
+	EpisodeFileCount      int            `json:"episodeFileCount"`
+	EpisodeCount          int            `json:"episodeCount"`
+	TotalEpisodeCount     int            `json:"totalEpisodeCount"`
+	MonitoredEpisodeCount int            `json:"monitoredEpisodeCount,omitempty"`
+	SizeOnDisk            int64          `json:"sizeOnDisk"`
+	ReleaseGroups         []string       `json:"releaseGroups"`
+	ReleaseTypes          []string       `json:"releaseTypes,omitempty"`
+	EpisodeFileQualities  []QualityValue `json:"episodeFileQualities,omitempty"`
+	PercentOfEpisodes     float64        `json:"percentOfEpisodes"`
 }
 
 // percentOfEpisodes mirrors the C# computed property: 0 when
@@ -277,13 +286,16 @@ func ToSeriesStatisticsResource(st seriesstats.SeriesStatistics, seasons []Seaso
 		groups = []string{}
 	}
 	return &SeriesStatisticsResource{
-		SeasonCount:       seasonCount,
-		EpisodeFileCount:  st.EpisodeFileCount,
-		EpisodeCount:      st.EpisodeCount,
-		TotalEpisodeCount: st.TotalEpisodeCount,
-		SizeOnDisk:        st.SizeOnDisk,
-		ReleaseGroups:     groups,
-		PercentOfEpisodes: percentOfEpisodes(st.EpisodeFileCount, st.EpisodeCount),
+		SeasonCount:           seasonCount,
+		EpisodeFileCount:      st.EpisodeFileCount,
+		EpisodeCount:          st.EpisodeCount,
+		TotalEpisodeCount:     st.TotalEpisodeCount,
+		MonitoredEpisodeCount: st.MonitoredEpisodeCount,
+		SizeOnDisk:            st.SizeOnDisk,
+		ReleaseGroups:         groups,
+		ReleaseTypes:          releaseTypeNames(st.ReleaseTypes),
+		EpisodeFileQualities:  toQualityValues(st.EpisodeFileQualities),
+		PercentOfEpisodes:     percentOfEpisodes(st.EpisodeFileCount, st.EpisodeCount),
 	}
 }
 
@@ -295,15 +307,73 @@ func ToSeasonStatisticsResource(st seriesstats.SeasonStatistics) *SeasonStatisti
 		groups = []string{}
 	}
 	return &SeasonStatisticsResource{
-		NextAiring:        st.NextAiring,
-		PreviousAiring:    st.PreviousAiring,
-		EpisodeFileCount:  st.EpisodeFileCount,
-		EpisodeCount:      st.EpisodeCount,
-		TotalEpisodeCount: st.TotalEpisodeCount,
-		SizeOnDisk:        st.SizeOnDisk,
-		ReleaseGroups:     groups,
-		PercentOfEpisodes: percentOfEpisodes(st.EpisodeFileCount, st.EpisodeCount),
+		NextAiring:            st.NextAiring,
+		PreviousAiring:        st.PreviousAiring,
+		EpisodeFileCount:      st.EpisodeFileCount,
+		EpisodeCount:          st.EpisodeCount,
+		TotalEpisodeCount:     st.TotalEpisodeCount,
+		MonitoredEpisodeCount: st.MonitoredEpisodeCount,
+		SizeOnDisk:            st.SizeOnDisk,
+		ReleaseGroups:         groups,
+		ReleaseTypes:          releaseTypeNames(st.ReleaseTypes),
+		EpisodeFileQualities:  toQualityValues(st.EpisodeFileQualities),
+		PercentOfEpisodes:     percentOfEpisodes(st.EpisodeFileCount, st.EpisodeCount),
 	}
+}
+
+// releaseTypeNames maps the seriesstats release-type ints to the
+// camelCase enum strings the C# JsonStringEnumConverter(CamelCase)
+// emits for `NzbDrone.Core.Parser.Model.ReleaseType`
+// ("singleEpisode"/"multiEpisode"/"seasonPack"/"unknown"). nil/empty →
+// nil so the omitempty additive key drops. J370.
+func releaseTypeNames(types []int) []string {
+	if len(types) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(types))
+	for _, t := range types {
+		out = append(out, releaseTypeName(t))
+	}
+	return out
+}
+
+// releaseTypeName mirrors the camelCase ReleaseType enum string.
+func releaseTypeName(t int) string {
+	switch t {
+	case 1:
+		return "singleEpisode"
+	case 2:
+		return "multiEpisode"
+	case 3:
+		return "seasonPack"
+	default:
+		return "unknown"
+	}
+}
+
+// toQualityValues maps the seriesstats distinct quality ids to the
+// QualityValue wire DTOs (C# v5 EpisodeFileQualities `List<Quality>`).
+// Each id resolves via quality.FindByID (unknown → Quality.Unknown,
+// matching C# Quality.FindById). nil/empty → nil so the omitempty
+// additive key drops. The seriesstats core returns ids ascending; the
+// C# tree re-sorts by quality-profile index — the Go port keeps the
+// ascending-id order (a faithful-degraded ordering: identical SET, the
+// list order is cosmetic for the UI's quality badges). J370.
+func toQualityValues(ids []int) []QualityValue {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]QualityValue, 0, len(ids))
+	for _, id := range ids {
+		q, _ := quality.FindByID(id)
+		out = append(out, QualityValue{
+			ID:         q.ID,
+			Name:       q.Name,
+			Source:     QualitySourceName(q.Source),
+			Resolution: q.Resolution,
+		})
+	}
+	return out
 }
 
 // LinkSeriesStatistics fills a SeriesResource's statistics-sourced
