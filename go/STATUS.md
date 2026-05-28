@@ -18327,3 +18327,47 @@ Arc 3 progress: 5 of 6 sub-slices landed. The final sub-slice (J352) is the v5-s
 | ManualImport Rejections list + LocalEpisode-driven file-size/mediainfo CF specs (J346-deferred) | OPEN — now unblocked by the complete spec set |
 
 The 14-spec ImportDecisionMaker Specification set is now fully ported. Remaining Arc 1 work: wire UpgradeSpecification's production adapter, then the ManualImport Rejections list + the file-size/mediainfo custom-format specs J346 deferred.
+
+---
+
+## J354 — Post-J352 residual-arc, Arc 1 (ImportDecisionMaker spec pipeline) slice 2: wire UpgradeSpecification into the production import spec pipeline
+
+**Anchor**: post-J353. J353 completed the 14-spec port (12 wired + 2 newly ported); this slice wires the 13th (`UpgradeSpecification`, ported-but-unwired since the slice-5 era).
+
+### C# source
+
+- `src/NzbDrone.Core/MediaFiles/EpisodeImport/Specifications/UpgradeSpecification.cs:13-104` — per existing-EpisodeFile-on-disk veto: quality / revision / custom-format-score comparisons; `:30` `Episode.Series.QualityProfile.Value` lazy-load; `:32` `Episode.EpisodeFile.Value`; `:62` `_formatService.ParseCustomFormat(episodeFile, series)`.
+
+### Port deliverables
+
+- **`cmd/sonarr/import_upgrade_spec_wiring.go`** (new) — three adapters:
+  - `upgradeProfileViewBySeriesAdapter{series, qp}` → `GetProfileViewBySeriesID(ctx, seriesID)`: `GetSeries` → `QualityProfileID` → `qp.Get` → `decisionengine.NewProfileView`. Errors propagate (spec accepts defensively on error).
+  - `upgradeEpisodeFileResolverAdapter{svc}` → `GetByID(ctx, id)`: `episodeFilesSvc.GetFile`, translating `episodefiles.ErrNotFound` → `(nil, nil)` (the spec's nil-row → continue contract at C# `:34-38`).
+  - `upgradeFormatCalculatorAdapter{series, cf}` → `ParseCustomFormat(ctx, file)`: resolves the file's series from `file.SeriesID`, fetches the Format catalogue via `cf.All`, runs `customformats.ParseCustomFormatForFile`. (The episodeimport `CustomFormatCalculator` interface drops the series arg the underlying free fn needs, so the adapter resolves it internally.)
+  - Compile-time guards for all three.
+- **`cmd/sonarr/main.go`** — `episodeimport.NewUpgradeSpecification(configProv, profileResolver, fileResolver, formatCalc, logger)` appended to `importDecisionSpecs`. Placed AFTER the `qualityProfilesSvc` + `customFormatsSvc` construction block (those deps aren't in scope at the earlier spec-list literal) and before `NewImportDecisionMaker`. `configProv` satisfies `UpgradeConfig` (`DownloadPropersAndRepacks`) directly.
+
+### Behaviour
+
+Rejects `NotQualityUpgrade` / `NotRevisionUpgrade` / `NotCustomFormatUpgrade` / `NotCustomFormatUpgradeAfterRename` when a candidate doesn't improve on an existing on-disk EpisodeFile for one of its episodes. Fresh imports (every episode `EpisodeFileID` nil/0) skip every arm → Accept, so wiring affects only upgrade scenarios — C#-faithful since C# registers all specs via IoC. Lookup errors → Accept + Warn-log.
+
+### Tests
+
+No new cmd/sonarr unit tests — matches the J3.92-3.95 wiring-slice posture; the spec logic is already covered by `TestUpgradeSpecification` in `internal/episodeimport/specs_test.go`. Gate = build + existing cmd/sonarr tests.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./cmd/sonarr/...` ✓ (cmd/sonarr 3.86s)
+- `go vet` + gofmt ✓
+
+### Arc 1 progress
+
+| Item | Status |
+| --- | --- |
+| 14 import Specification classes ported | DONE (J353) |
+| ImportDecisionMaker orchestrator | DONE (pre-J353) |
+| Production spec-list wiring | 13 of 14 wired (J354 adds UpgradeSpecification) |
+| ManualImport Rejections list + LocalEpisode-driven file-size/mediainfo CF specs (J346-deferred) | OPEN — separate sub-arc (CustomFormats/Specifications, not ImportDecisionMaker specs) |
+
+The full ImportDecisionMaker spec set is ported and (bar the J346-deferred LocalEpisode CF specs, which are a different subsystem) wired into production. Remaining Arc 1 work narrows to the J346-deferred file-size/mediainfo custom-format Specifications + surfacing decision Rejections on the ManualImport list.

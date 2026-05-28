@@ -1387,6 +1387,41 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("local-episode format calculator: %w", err)
 	}
+	// J354 (Post-J352 residual-arc, Arc 1 slice 2): UpgradeSpecification
+	// production wiring — the spec was ported + unit-tested but its four
+	// narrow-interface deps had no production bindings, so it was absent
+	// from importDecisionSpecs. Wired here (rather than at the spec-list
+	// literal above) because two of its deps — qualityProfilesSvc +
+	// customFormatsSvc — aren't constructed until this block. Three J354
+	// adapters (see import_upgrade_spec_wiring.go) fill the gap:
+	// configProv satisfies UpgradeConfig (DownloadPropersAndRepacks)
+	// directly; upgradeProfileViewBySeriesAdapter resolves series →
+	// QualityProfileID → decisionengine.ProfileView;
+	// upgradeEpisodeFileResolverAdapter wraps episodeFilesSvc.GetFile
+	// (ErrNotFound → nil-row contract); upgradeFormatCalculatorAdapter
+	// resolves the file's series and runs
+	// customformats.ParseCustomFormatForFile. Spec mirrors C#
+	// `Specifications/UpgradeSpecification.cs:13-104`: per existing
+	// EpisodeFile on disk, reject NotQualityUpgrade / NotRevisionUpgrade /
+	// NotCustomFormatUpgrade(AfterRename) when the candidate doesn't
+	// improve on the file already present. Fresh imports (every episode
+	// EpisodeFileID nil/0) skip every arm → Accept, so this only affects
+	// upgrade scenarios. Lookup errors translate to Accept + Warn-log.
+	// Errors out only on nil deps — all four are non-nil here so the
+	// error arm is belt-and-braces. This brings the production spec list
+	// to 13 of 14 wired (only the J346-deferred LocalEpisode-driven
+	// file-size/mediainfo CF specs remain — a separate sub-arc).
+	upgradeSpec, err := episodeimport.NewUpgradeSpecification(
+		configProv,
+		upgradeProfileViewBySeriesAdapter{series: seriesSvc, qp: qualityProfilesSvc},
+		upgradeEpisodeFileResolverAdapter{svc: episodeFilesSvc},
+		upgradeFormatCalculatorAdapter{series: seriesSvc, cf: customFormatsSvc},
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("upgrade spec: %w", err)
+	}
+	importDecisionSpecs = append(importDecisionSpecs, upgradeSpec)
 	importDecisionMaker, err := episodeimport.NewImportDecisionMaker(
 		importDecisionSpecs,   // specs — slice-3.86: 5 zero-dep specs wired
 		episodeFilesSvc,       // filter — FilterExistingFiles
