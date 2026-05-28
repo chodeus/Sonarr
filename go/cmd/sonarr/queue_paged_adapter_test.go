@@ -140,6 +140,55 @@ func TestQueuePagedAdapter_NoRemoteEpisode_OmitsCustomFormats_J349(t *testing.T)
 	}
 }
 
+func TestQueuePagedAdapter_StatusMessages_J350(t *testing.T) {
+	t.Parallel()
+	svc := queue.NewService()
+	svc.SetQueue([]queue.Queue{{
+		ID:             1,
+		Title:          "row",
+		Status:         queue.QueueStatusWarning,
+		StatusMessages: []string{"Episode already imported", "Unable to parse"},
+	}})
+	adapter := queuePagedAdapter{svc}
+	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	r := records[0]
+	if r.StatusMessages == nil {
+		t.Fatalf("StatusMessages pointer must be non-nil")
+	}
+	got := *r.StatusMessages
+	if len(got) != 2 {
+		t.Fatalf("StatusMessages len: got %d want 2", len(got))
+	}
+	if got[0].Title != "Episode already imported" || len(got[0].Messages) != 0 {
+		t.Errorf("entry 0: got %+v want {Title:'Episode already imported', Messages:[]}", got[0])
+	}
+	if got[1].Title != "Unable to parse" {
+		t.Errorf("entry 1 title: got %q", got[1].Title)
+	}
+}
+
+func TestQueuePagedAdapter_StatusMessages_EmptyEmitsNonNilList_J350(t *testing.T) {
+	t.Parallel()
+	svc := queue.NewService()
+	svc.SetQueue([]queue.Queue{{ID: 1, Title: "row", Status: queue.QueueStatusQueued}})
+	adapter := queuePagedAdapter{svc}
+	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	// Mirrors C# non-null list — empty domain slice still emits a
+	// non-nil pointer so the wire carries "statusMessages":[].
+	if records[0].StatusMessages == nil {
+		t.Errorf("empty StatusMessages must still be a non-nil pointer (C# non-null list)")
+	}
+	if len(*records[0].StatusMessages) != 0 {
+		t.Errorf("empty StatusMessages must project to len 0; got %d", len(*records[0].StatusMessages))
+	}
+}
+
 func TestQueuePagedAdapter_Pagination_J347(t *testing.T) {
 	t.Parallel()
 	svc := queue.NewService()

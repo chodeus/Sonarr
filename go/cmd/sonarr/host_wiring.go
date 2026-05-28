@@ -323,6 +323,21 @@ func projectQueueResource(q queue.Queue) apiv3.QueueResource {
 		}
 		res.CustomFormatScore = q.RemoteEpisode.CustomFormatScore
 	}
+	// J350 — StatusMessages projection. C# QueueResource.cs:89 sets
+	// StatusMessages = model.StatusMessages (always a non-null list).
+	// The Go domain simplified the C# TrackedDownloadStatusMessage
+	// {Title, Messages[]} shape to a flat []string at the trackeddownloads
+	// layer; this slice (the "queue / UI integration slice" the
+	// trackeddownloads doc-comment anticipated) synthesises each flat
+	// string into the typed QueueStatusMessage as the Title (header
+	// line) with an empty Messages list — the natural flat-string →
+	// header mapping. The pointer is always set non-nil to mirror C#'s
+	// non-null list (empty domain slice → wire `"statusMessages":[]`).
+	msgs := make([]apiv3.QueueStatusMessage, 0, len(q.StatusMessages))
+	for _, s := range q.StatusMessages {
+		msgs = append(msgs, apiv3.QueueStatusMessage{Title: s, Messages: []string{}})
+	}
+	res.StatusMessages = &msgs
 	return res
 }
 

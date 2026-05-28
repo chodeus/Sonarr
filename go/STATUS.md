@@ -18151,3 +18151,47 @@ Arc 3 progress: 2 of ~4 sub-slices landed. Next-tick candidate: Queue CustomForm
 | 3 (B-cat) | v5 Episodes-plural + EpisodeIDs + SeasonNumbers + includeSubresources[] gating | OPEN |
 
 Arc 3 progress: 3 of ~4 sub-slices landed. Next-tick candidate: StatusMessages projection (the row carries StatusMessages []string; the wire wants []QueueStatusMessage — a lossy synthesis design question to resolve in that slice).
+
+---
+
+## J350 — Post-J342 service-port arc, slice 8 (Arc 3 slice 4, B-category): Queue StatusMessages projection ([]string → []QueueStatusMessage)
+
+**Anchor**: post-J349. Wires the J323-pinned StatusMessages field (previously always nil). With this the v3 QueueResource is fully populated.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:89` — `StatusMessages = model.StatusMessages` (a non-null `List<TrackedDownloadStatusMessage>`).
+- `src/NzbDrone.Core/Download/TrackedDownloads/TrackedDownloadStatusMessage.cs` — `{Title string, Messages List<string>}` with a `(title, message)` single-string ctor.
+
+### Synthesis decision
+
+The Go domain flattened the C# `{Title, Messages[]}` to a flat `[]string` at the trackeddownloads layer (`trackeddownloads.TrackedDownload.StatusMessages []string`, doc-comment: "the typed status-message struct ports alongside the queue / UI integration slice that consumes it" — this slice). Each flat string is synthesised into `apiv3.QueueStatusMessage{Title: s, Messages: []string{}}` (string → header line, empty sub-messages — the natural flat-string mapping). Unconstrained by corpus (empty-DB has no queue rows).
+
+### Port deliverables
+
+- **`projectQueueResource`** (cmd/sonarr): build `[]apiv3.QueueStatusMessage` from `q.StatusMessages` (each string → `{Title: s, Messages: []string{}}`), always set `res.StatusMessages = &msgs` (non-nil pointer mirroring C#'s non-null list; empty domain slice → wire `"statusMessages":[]`). Not include-flag gated.
+
+### Tests
+
+- `TestQueuePagedAdapter_StatusMessages_J350` — 2-string list → 2 entries with strings as titles + empty Messages.
+- `TestQueuePagedAdapter_StatusMessages_EmptyEmitsNonNilList_J350` — empty slice → non-nil pointer to len-0 list.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/queue/... ./cmd/sonarr/...` ✓ (v3 1.549s, v5/queue 2.179s, cmd/sonarr 4.099s)
+- `go vet` + gofmt ✓
+
+### Post-J342 service-port arc backlog
+
+| Sub-arc | Item | Status |
+| --- | --- | --- |
+| 1 (B-cat) | Release POST searchInfo fallback | DONE (J343) |
+| 2 (A-cat) | Parse + ManualImport full hydration | DONE (J344-J346) |
+| 3 (B-cat) | Queue scalar projection + paging | DONE (J347) |
+| 3 (B-cat) | Queue Series + Episode hydration + v3 gating | DONE (J348) |
+| 3 (B-cat) | Queue CustomFormats list field + CustomFormats/Score | DONE (J349) |
+| 3 (B-cat) | Queue StatusMessages projection | **DONE this slice (J350)** |
+| 3 (B-cat) | v5 Episodes-plural + EpisodeIDs + SeasonNumbers + includeSubresources[] gating | OPEN — last Arc 3 sub-slice |
+
+Arc 3 progress: v3 QueueResource FULLY populated (J347-J350). The only remaining sub-slice is the v5-specific surface (Episodes-plural + EpisodeIDs + SeasonNumbers hydration + the includeSubresources[] enum-array query-param gating, which needs a v5-specific QueueHandler instead of the v3 alias). That closes Arc 3 → all three Post-J342 service-port arcs complete.
