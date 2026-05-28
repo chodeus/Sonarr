@@ -140,6 +140,60 @@ func TestQueuePagedAdapter_NoRemoteEpisode_OmitsCustomFormats_J349(t *testing.T)
 	}
 }
 
+func TestQueuePagedAdapter_V5ListFields_J351(t *testing.T) {
+	t.Parallel()
+	sn := 3
+	f1 := 100
+	svc := queue.NewService()
+	svc.SetQueue([]queue.Queue{{
+		ID:           1,
+		Title:        "row",
+		Status:       queue.QueueStatusDownloading,
+		SeasonNumber: &sn,
+		Episodes: []episodes.Episode{
+			{ID: 11, EpisodeFileID: &f1}, // has file
+			{ID: 12},                     // no file
+		},
+	}})
+	adapter := queuePagedAdapter{svc}
+	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	r := records[0]
+	if r.EpisodeIDs == nil || len(*r.EpisodeIDs) != 2 || (*r.EpisodeIDs)[0] != 11 || (*r.EpisodeIDs)[1] != 12 {
+		t.Errorf("EpisodeIDs: got %v want [11 12]", r.EpisodeIDs)
+	}
+	if r.SeasonNumbers == nil || len(*r.SeasonNumbers) != 1 || (*r.SeasonNumbers)[0] != 3 {
+		t.Errorf("SeasonNumbers: got %v want [3]", r.SeasonNumbers)
+	}
+	if r.EpisodesWithFilesCount != 1 {
+		t.Errorf("EpisodesWithFilesCount: got %d want 1", r.EpisodesWithFilesCount)
+	}
+}
+
+func TestQueuePagedAdapter_V5ListFields_EmptyNonNil_J351(t *testing.T) {
+	t.Parallel()
+	svc := queue.NewService()
+	// No episodes, no SeasonNumber → C# emits `[]` for both lists.
+	svc.SetQueue([]queue.Queue{{ID: 1, Title: "row", Status: queue.QueueStatusQueued}})
+	adapter := queuePagedAdapter{svc}
+	records, _, err := adapter.PagedQueue(context.Background(), apiv3.PagingRequest{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	r := records[0]
+	if r.EpisodeIDs == nil || len(*r.EpisodeIDs) != 0 {
+		t.Errorf("empty EpisodeIDs must be non-nil len-0 (C# = []); got %v", r.EpisodeIDs)
+	}
+	if r.SeasonNumbers == nil || len(*r.SeasonNumbers) != 0 {
+		t.Errorf("empty SeasonNumbers must be non-nil len-0 (C# = []); got %v", r.SeasonNumbers)
+	}
+	if r.EpisodesWithFilesCount != 0 {
+		t.Errorf("EpisodesWithFilesCount: got %d want 0", r.EpisodesWithFilesCount)
+	}
+}
+
 func TestQueuePagedAdapter_StatusMessages_J350(t *testing.T) {
 	t.Parallel()
 	svc := queue.NewService()

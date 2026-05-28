@@ -292,6 +292,31 @@ func projectQueueResource(q queue.Queue) apiv3.QueueResource {
 		er := apiv3.ToEpisodeResource(q.Episodes[0])
 		res.Episode = &er
 	}
+	// J351 — v5 always-set list fields. C# v5 QueueResource.cs:56-57 sets
+	// EpisodeIds = model.Episodes?.Select(e => e.Id) (always) +
+	// SeasonNumbers = model.SeasonNumber.HasValue ? [v] : [] (always);
+	// QueueResource.cs:81 sets EpisodesWithFilesCount = model.Episodes
+	// ?.Count(e => e.HasFile). These are ungated v5-additive fields on
+	// the shared apiv3 type — v3 clients ignore the extra keys (the
+	// J324/J318 additive-divergence posture). EpisodeIDs + SeasonNumbers
+	// always emit a non-nil pointer to mirror C#'s `= []` default
+	// (empty → wire `[]`). EpisodesWithFilesCount uses omitempty so 0
+	// collapses to absent (the J318 accepted trade-off).
+	episodeIDs := make([]int, 0, len(q.Episodes))
+	withFiles := 0
+	for _, e := range q.Episodes {
+		episodeIDs = append(episodeIDs, e.ID)
+		if e.EpisodeFileID != nil && *e.EpisodeFileID > 0 {
+			withFiles++
+		}
+	}
+	res.EpisodeIDs = &episodeIDs
+	seasonNumbers := []int{}
+	if q.SeasonNumber != nil {
+		seasonNumbers = []int{*q.SeasonNumber}
+	}
+	res.SeasonNumbers = &seasonNumbers
+	res.EpisodesWithFilesCount = withFiles
 	// Languages — extract persisted IDs then project via ToLanguageRefs.
 	if len(q.Languages) > 0 {
 		ids := make([]int, 0, len(q.Languages))

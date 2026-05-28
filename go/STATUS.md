@@ -18195,3 +18195,45 @@ The Go domain flattened the C# `{Title, Messages[]}` to a flat `[]string` at the
 | 3 (B-cat) | v5 Episodes-plural + EpisodeIDs + SeasonNumbers + includeSubresources[] gating | OPEN — last Arc 3 sub-slice |
 
 Arc 3 progress: v3 QueueResource FULLY populated (J347-J350). The only remaining sub-slice is the v5-specific surface (Episodes-plural + EpisodeIDs + SeasonNumbers hydration + the includeSubresources[] enum-array query-param gating, which needs a v5-specific QueueHandler instead of the v3 alias). That closes Arc 3 → all three Post-J342 service-port arcs complete.
+
+---
+
+## J351 — Post-J342 service-port arc, slice 9 (Arc 3 slice 5, B-category): Queue v5 always-set list fields (EpisodeIDs + SeasonNumbers + EpisodesWithFilesCount)
+
+**Anchor**: post-J350. Projects the three ungated v5-additive QueueResource fields (the gated Episodes-plural + the includeSubresources[] handler is the final J352 slice).
+
+### C# source
+
+- `src/Sonarr.Api.V5/Queue/QueueResource.cs:56` — `EpisodeIds = model.Episodes?.Select(e => e.Id).ToList() ?? []` (always).
+- `:57` — `SeasonNumbers = model.SeasonNumber.HasValue ? [model.SeasonNumber.Value] : []` (always).
+- `:81` — `EpisodesWithFilesCount = model.Episodes?.Count(e => e.HasFile) ?? 0`. C# `Episode.HasFile` ≡ `EpisodeFileId > 0`.
+
+### Port deliverables
+
+- **`projectQueueResource`** (cmd/sonarr): build EpisodeIDs from all q.Episodes IDs (always non-nil `*[]int` → mirrors C# `= []`); SeasonNumbers from q.SeasonNumber (`&[]int{*sn}` when set, else `&[]int{}`); EpisodesWithFilesCount = count of episodes with `EpisodeFileID != nil && *EpisodeFileID > 0`. v5-additive on the shared apiv3 type (v3 clients ignore the extra keys — J324/J318 additive-divergence posture). EpisodesWithFilesCount keeps omitempty (0 → absent, J318 trade-off). None gated.
+
+### Tests
+
+- `TestQueuePagedAdapter_V5ListFields_J351` — EpisodeIDs=[11,12], SeasonNumbers=[3], EpisodesWithFilesCount=1 (one EpisodeFileID-bearing episode).
+- `TestQueuePagedAdapter_V5ListFields_EmptyNonNil_J351` — empty → non-nil len-0 lists (C# `= []`) + count 0.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/queue/... ./cmd/sonarr/...` ✓ (v3 1.674s, v5/queue 2.047s, cmd/sonarr 3.689s)
+- `go vet` + gofmt ✓
+
+### Post-J342 service-port arc backlog
+
+| Sub-arc | Item | Status |
+| --- | --- | --- |
+| 1 (B-cat) | Release POST searchInfo fallback | DONE (J343) |
+| 2 (A-cat) | Parse + ManualImport full hydration | DONE (J344-J346) |
+| 3 (B-cat) | Queue scalar projection + paging | DONE (J347) |
+| 3 (B-cat) | Queue Series + Episode hydration + v3 gating | DONE (J348) |
+| 3 (B-cat) | Queue CustomFormats list field + Score | DONE (J349) |
+| 3 (B-cat) | Queue StatusMessages projection | DONE (J350) |
+| 3 (B-cat) | Queue v5 always-set list fields (EpisodeIDs/SeasonNumbers/EpisodesWithFilesCount) | **DONE this slice (J351)** |
+| 3 (B-cat) | v5 Episodes-plural hydration + includeSubresources[] enum-array gating | OPEN — final Arc 3 sub-slice |
+
+Arc 3 progress: 5 of 6 sub-slices landed. The final sub-slice (J352) is the v5-specific QueueHandler with includeSubresources[] enum-array parsing + Episodes-plural gated hydration — closing it drains Arc 3 and completes all three Post-J342 service-port arcs.
