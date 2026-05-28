@@ -19306,3 +19306,39 @@ This slice is the smallest clean win and is a PURE projection gap (not hydration
 ### Arc next
 
 Priority #1(b): paged History includeSeries/includeEpisode embeds + qualityCutoffNotMet — these need per-row series/episode DB loads with per-request caches. DESIGN DECISION: thread the include flags INTO the `HistoryPagedLister` interface so hydration is conditional (avoid per-request DB cost when the client didn't ask), NOT the Queue J348 always-hydrate-then-strip pattern (which was free only because the in-memory queue row already carried domain objects). Then priority #2 Blocklist.
+
+---
+
+## J380 — Embedder/Lister Hydration Arc, slice 2: paged History includeSeries / includeEpisode BASE embeds
+
+Continues the arc. The paged `historyPagedAdapter.PagedHistory` builds `[]HistoryResource` from DB rows that carry only SeriesID / EpisodeID, so the Series / Episode embeds require per-row hydration (unlike the J377 since/series path, whose model-based rows are hydrated in `writeHistoryEntries`).
+
+### Design decision — conditional flags-in-interface (NOT Queue J348 hydrate-then-strip)
+
+Per the arc guidance, the include flags are threaded INTO the `HistoryPagedLister` interface so hydration is conditional: when the client doesn't pass `includeSeries` / `includeEpisode`, no per-row series/episode DB lookup fires. The Queue J348 always-hydrate-then-strip pattern was free only because the in-memory queue row already carried the domain objects; the history row does not, so always-hydrating would add unconditional per-request DB cost. Conditional hydration avoids that.
+
+### Changes
+
+`internal/api/v3/history.go`:
+- `HistoryPagedLister.PagedHistory` widened to `(ctx, req PagingRequest, includeSeries, includeEpisode bool)`.
+- `HistoryHandler` parses the `includeSeries` / `includeEpisode` query flags (`== "true"`, same as the since/series path) and passes them to the lister.
+
+`cmd/sonarr/host_wiring.go`:
+- `historyPagedAdapter` gains an `episodesSvc historyEpisodeLookup` field.
+- `PagedHistory` hydrates `res.Series` (gated on `includeSeries` + seriesSvc + SeriesID≠0) via new `hydrateSeriesEmbed` (`seriesSvc.GetSeries` → `apiv3.ToSeriesResource`, memoized in a per-request `map[int]*apiv3.SeriesResource` with negative-nil caching) and `res.Episode` (gated on `includeEpisode` + episodesSvc + EpisodeID≠0) via `hydrateEpisodeEmbed` (`episodesSvc.GetEpisode` → `apiv3.ToEpisodeResource`, per-request episode cache). BASE embeds only — mirrors the J377 `historyServiceWithPopulator` embedders.
+- Wired `episodesSvc: episodesSvc` at both registration sites (`/api/v3/history` + `/api/v5/history`). The v5 `ListHandler` / `PagedLister` are aliases of the v3 symbols, so they inherit the new signature automatically.
+
+### Tests
+
+- `cmd/sonarr/history_populated_mapper_test.go`: `TestPagedHistory_IncludeSeriesEpisodeEmbeds_J380` — real SQLite repo via `datastoretest.OpenSQLite` + series/episode fakes, asserts the 4 flag combinations (neither / series-only / episode-only / both) and the embedded Title fields. New `fakeHistoryEpisodeLookup` helper.
+- Updated the `fakeHistoryLister` (v3) + `emptyHistoryLister` (hostbootstrap) fakes to the new 2-bool signature; updated the J379 test's `PagedHistory` call.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./cmd/sonarr/... ./internal/api/v3/... ./internal/api/v5/history/... ./test/contract/...` ✓
+- `go vet` + gofmt ✓; empty-DB contract goldens `[]` (populated-row embeds unobservable there).
+
+### Arc next
+
+Priority #1 remainder: paged History `qualityCutoffNotMet` (C# computes it unconditionally in MapToResource whenever `model.Series != null`; the paged adapter still emits the false default). Reuse the J378 shared `upgradableSpecForReads` mechanism; weigh unconditional series-load (faithful but costly) vs. gating. Then priority #2 Blocklist.

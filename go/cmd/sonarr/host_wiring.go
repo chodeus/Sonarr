@@ -1035,6 +1035,9 @@ type historyPagedAdapter struct {
 	seriesSvc          historySeriesLookup
 	qualityProfilesSvc historyQualityProfileLookup
 	customFormatsSvc   historyCustomFormatsLookup
+	// episodesSvc backs the J380 paged includeEpisode embed. nil-safe —
+	// a missing dep degrades the embed to absent.
+	episodesSvc historyEpisodeLookup
 }
 
 // Narrow lookup interfaces for historyPagedAdapter. Production
@@ -1063,7 +1066,7 @@ type historyEpisodeLookup interface {
 	GetEpisode(ctx context.Context, id int) (*episodes.Episode, error)
 }
 
-func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingRequest) ([]apiv3.HistoryResource, int, error) {
+func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingRequest, includeSeries, includeEpisode bool) ([]apiv3.HistoryResource, int, error) {
 	rows, err := a.repo.All(ctx)
 	if err != nil {
 		return nil, 0, err
@@ -1082,6 +1085,12 @@ func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingR
 	}
 	seriesCache := map[int]*series.Series{}
 	profileCache := map[int]*qualityprofiles.Profile{}
+	// J380 embed caches: BASE Series / Episode resources memoized
+	// across rows of the same page (history lists repeat series ids).
+	// Only populated when the respective include flag is set, so the
+	// per-row DB lookup is skipped entirely when the client didn't ask.
+	seriesEmbedCache := map[int]*apiv3.SeriesResource{}
+	episodeEmbedCache := map[int]*apiv3.EpisodeResource{}
 
 	for _, e := range page {
 		entry := e // copy for pointer capture
@@ -1090,7 +1099,7 @@ func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingR
 		if e.EventType != nil {
 			eventTypeName = history.EventType(*e.EventType).String()
 		}
-		out = append(out, apiv3.HistoryResource{
+		res := apiv3.HistoryResource{
 			ID:                e.ID,
 			SeriesID:          e.SeriesID,
 			EpisodeID:         e.EpisodeID,
@@ -1105,6 +1114,8 @@ func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingR
 			// EventType (J379): name-mapped via history.EventType.String(),
 			// porting the since/series-path mapping (history.go:310-311)
 			// into the paged adapter — was the last clean EventType gap.
+			// Series / Episode (J380): BASE embeds hydrated below, gated
+			// on the includeSeries / includeEpisode flags.
 			// Data (J310): per-history grab-time metadata dict; nil
 			// drops the key via omitempty, populated emits `"data":{...}`.
 			// Languages (J314): typed []LanguageRef projection from
@@ -1115,9 +1126,49 @@ func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingR
 			// qualityprofile score lookup (qualityprofiles.
 			// CalculateCustomFormatScore). nil deps fall back to
 			// empty slice + 0 score matching the pre-J336 stub.
-		})
+		}
+		if includeSeries && a.seriesSvc != nil && e.SeriesID != 0 {
+			res.Series = a.hydrateSeriesEmbed(ctx, e.SeriesID, seriesEmbedCache)
+		}
+		if includeEpisode && a.episodesSvc != nil && e.EpisodeID != 0 {
+			res.Episode = a.hydrateEpisodeEmbed(ctx, e.EpisodeID, episodeEmbedCache)
+		}
+		out = append(out, res)
 	}
 	return out, total, nil
+}
+
+// hydrateSeriesEmbed loads the BASE SeriesResource for the J380 paged
+// includeSeries embed, memoized via the per-request cache (negative
+// results cached as nil so a repeated missing id doesn't re-hit the
+// service). Mirrors historyServiceWithPopulator.HistorySeriesResource.
+func (a historyPagedAdapter) hydrateSeriesEmbed(ctx context.Context, seriesID int, cache map[int]*apiv3.SeriesResource) *apiv3.SeriesResource {
+	if sr, ok := cache[seriesID]; ok {
+		return sr
+	}
+	var sr *apiv3.SeriesResource
+	if s, err := a.seriesSvc.GetSeries(ctx, seriesID); err == nil && s != nil {
+		r := apiv3.ToSeriesResource(*s)
+		sr = &r
+	}
+	cache[seriesID] = sr
+	return sr
+}
+
+// hydrateEpisodeEmbed loads the BASE EpisodeResource for the J380 paged
+// includeEpisode embed, memoized via the per-request cache. Mirrors
+// historyServiceWithPopulator.HistoryEpisodeResource.
+func (a historyPagedAdapter) hydrateEpisodeEmbed(ctx context.Context, episodeID int, cache map[int]*apiv3.EpisodeResource) *apiv3.EpisodeResource {
+	if er, ok := cache[episodeID]; ok {
+		return er
+	}
+	var er *apiv3.EpisodeResource
+	if ep, err := a.episodesSvc.GetEpisode(ctx, episodeID); err == nil && ep != nil {
+		r := apiv3.ToEpisodeResource(*ep)
+		er = &r
+	}
+	cache[episodeID] = er
+	return er
 }
 
 // computeHistoryCustomFormats runs the per-row CustomFormat
@@ -2790,7 +2841,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// GetBySeason/GetByEpisode service methods are deferred —
 		// stubs emit `[]` for empty-corpus parity) + 1 status wrapper
 		// (POST /failed/{id} 200+`{}` → 204 via v5util.RewriteSuccessTo204).
-		{Method: "GET", Path: "/api/v5/history", Handler: historyv5.ListHandler(historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc})},
+		{Method: "GET", Path: "/api/v5/history", Handler: historyv5.ListHandler(historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc, episodesSvc: episodesSvc})},
 		{Method: "GET", Path: "/api/v5/history/since", Handler: historyv5.SinceHandler(historySvcPopulated)},
 		{Method: "GET", Path: "/api/v5/history/series", Handler: historyv5.SeriesHandler(historySvcPopulated)},
 		{Method: "GET", Path: "/api/v5/history/season", Handler: historyv5.SeasonHandler()},
@@ -2933,7 +2984,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "DELETE", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileDeleteHandler(episodeFilesSvc)},
 		{Method: "DELETE", Path: "/api/v3/episodefile/bulk", Handler: apiv3.EpisodeFileBulkDeleteHandler(episodeFilesSvc)},
 		{Method: "GET", Path: "/api/v3/health", Handler: apiv3.HealthHandler(healthSvc)},
-		{Method: "GET", Path: "/api/v3/history", Handler: apiv3.HistoryHandler(historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc})},
+		{Method: "GET", Path: "/api/v3/history", Handler: apiv3.HistoryHandler(historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc, episodesSvc: episodesSvc})},
 		{Method: "GET", Path: "/api/v3/history/series", Handler: apiv3.HistorySeriesHandler(historySvcPopulated)},
 		{Method: "GET", Path: "/api/v3/history/since", Handler: apiv3.HistorySinceHandler(historySvcPopulated)},
 		{Method: "POST", Path: "/api/v3/history/failed/{id}", Handler: apiv3.HistoryMarkAsFailedHandler(failedDownloadsSvc)},

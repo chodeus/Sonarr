@@ -21,7 +21,7 @@ type fakeHistoryLister struct {
 	err     error
 }
 
-func (f *fakeHistoryLister) PagedHistory(context.Context, PagingRequest) ([]HistoryResource, int, error) {
+func (f *fakeHistoryLister) PagedHistory(context.Context, PagingRequest, bool, bool) ([]HistoryResource, int, error) {
 	return f.records, f.total, f.err
 }
 

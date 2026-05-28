@@ -81,6 +81,6 @@ func TestV3HistoryContract(t *testing.T) {
 
 type emptyHistoryLister struct{}
 
-func (emptyHistoryLister) PagedHistory(context.Context, apiv3.PagingRequest) ([]apiv3.HistoryResource, int, error) {
+func (emptyHistoryLister) PagedHistory(context.Context, apiv3.PagingRequest, bool, bool) ([]apiv3.HistoryResource, int, error) {
 	return nil, 0, nil
 }

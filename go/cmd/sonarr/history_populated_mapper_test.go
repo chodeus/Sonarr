@@ -8,6 +8,7 @@ import (
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/series"
@@ -179,7 +180,7 @@ func TestPagedHistory_EventTypeNameMapping_J379(t *testing.T) {
 	idNil := insert("Show.S01E03", nil)
 
 	adapter := historyPagedAdapter{repo: repo}
-	rows, total, err := adapter.PagedHistory(ctx, apiv3.PagingRequest{Page: 1, PageSize: 50})
+	rows, total, err := adapter.PagedHistory(ctx, apiv3.PagingRequest{Page: 1, PageSize: 50}, false, false)
 	if err != nil {
 		t.Fatalf("PagedHistory: %v", err)
 	}
@@ -196,6 +197,85 @@ func TestPagedHistory_EventTypeNameMapping_J379(t *testing.T) {
 			t.Errorf("row %d EventType = %q, want %q", r.ID, got, want[r.ID])
 		}
 	}
+}
+
+// J380: paged adapter hydrates the BASE Series / Episode embeds only
+// when the includeSeries / includeEpisode flags are set, mirroring the
+// since/series path (J377). Verifies the 4 flag combinations on a
+// single populated row.
+func TestPagedHistory_IncludeSeriesEpisodeEmbeds_J380(t *testing.T) {
+	t.Parallel()
+	repo, err := history.NewRepo(datastoretest.OpenSQLite(t))
+	if err != nil {
+		t.Fatalf("NewRepo: %v", err)
+	}
+	ctx := t.Context()
+	grabbed := int(history.EventTypeGrabbed)
+	row := &history.Entry{
+		EpisodeID:   77,
+		SeriesID:    11,
+		SourceTitle: "Show.S01E01",
+		Date:        time.Date(2026, 5, 2, 14, 30, 0, 0, time.UTC),
+		Quality:     `{"quality":{"id":7,"name":"WEBDL-1080p"},"revision":{"version":1}}`,
+		Data:        map[string]string{},
+		EventType:   &grabbed,
+	}
+	if _, err := repo.Insert(ctx, row); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	adapter := historyPagedAdapter{
+		repo:        repo,
+		seriesSvc:   &fakeHistorySeriesLookup{byID: map[int]*series.Series{11: {ID: 11, Title: "Show"}}},
+		episodesSvc: &fakeHistoryEpisodeLookup{byID: map[int]*episodes.Episode{77: {ID: 77, SeriesID: 11, SeasonNumber: 1, EpisodeNumber: 1, Title: "Pilot"}}},
+	}
+
+	cases := []struct {
+		name                          string
+		includeSeries, includeEpisode bool
+		wantSeries, wantEpisode       bool
+	}{
+		{"neither", false, false, false, false},
+		{"series only", true, false, true, false},
+		{"episode only", false, true, false, true},
+		{"both", true, true, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, _, err := adapter.PagedHistory(ctx, apiv3.PagingRequest{Page: 1, PageSize: 50}, tc.includeSeries, tc.includeEpisode)
+			if err != nil {
+				t.Fatalf("PagedHistory: %v", err)
+			}
+			if len(rows) != 1 {
+				t.Fatalf("rows = %d, want 1", len(rows))
+			}
+			r := rows[0]
+			if got := r.Series != nil; got != tc.wantSeries {
+				t.Errorf("Series present = %v, want %v", got, tc.wantSeries)
+			}
+			if tc.wantSeries && r.Series.Title != "Show" {
+				t.Errorf("Series.Title = %q, want %q", r.Series.Title, "Show")
+			}
+			if got := r.Episode != nil; got != tc.wantEpisode {
+				t.Errorf("Episode present = %v, want %v", got, tc.wantEpisode)
+			}
+			if tc.wantEpisode && r.Episode.Title != "Pilot" {
+				t.Errorf("Episode.Title = %q, want %q", r.Episode.Title, "Pilot")
+			}
+		})
+	}
+}
+
+// fakeHistoryEpisodeLookup satisfies historyEpisodeLookup for the
+// J380 paged includeEpisode embed test.
+type fakeHistoryEpisodeLookup struct {
+	byID map[int]*episodes.Episode
+}
+
+func (f *fakeHistoryEpisodeLookup) GetEpisode(_ context.Context, id int) (*episodes.Episode, error) {
+	if e, ok := f.byID[id]; ok {
+		return e, nil
+	}
+	return nil, episodes.ErrNotFound
 }
 
 // ---------- counting wrappers for cache-call assertions ----------

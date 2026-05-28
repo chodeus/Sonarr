@@ -85,8 +85,17 @@ type HistoryResource struct {
 // HistoryPagedLister is the read side the handler depends on. Same
 // shape as BlocklistPagedLister — both endpoints share the paging
 // envelope and only differ in the per-record resource type.
+//
+// J380: the includeSeries / includeEpisode flags are threaded INTO
+// the interface (rather than the Queue J348 always-hydrate-then-strip
+// pattern) so the paged adapter can hydrate the BASE Series / Episode
+// embeds CONDITIONALLY — when the client didn't ask, no per-row
+// series/episode DB lookup is incurred. The model-based since/series
+// path threads the same flags through writeHistoryEntries (J377); the
+// paged path threads them here because the lister is its hydration
+// boundary.
 type HistoryPagedLister interface {
-	PagedHistory(ctx context.Context, req PagingRequest) ([]HistoryResource, int, error)
+	PagedHistory(ctx context.Context, req PagingRequest, includeSeries, includeEpisode bool) ([]HistoryResource, int, error)
 }
 
 // HistoryHandler returns the http.Handler for GET /api/v3/history.
@@ -97,10 +106,17 @@ type HistoryPagedLister interface {
 // The C# version also accepts eventType / episodeId / downloadId /
 // seriesIds / languages / quality filters. Filter handling lands
 // with the paged-service port (DEFERRED).
+//
+// J380: the includeSeries / includeEpisode query flags are parsed
+// here and passed to the lister so the BASE Series / Episode embeds
+// hydrate conditionally (mirrors the C# MapToResource include flags;
+// matches the since/series path's J377 flags).
 func HistoryHandler(lister HistoryPagedLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		req := parsePagingRequest(r, "date")
-		records, total, err := lister.PagedHistory(r.Context(), req)
+		includeSeries := r.URL.Query().Get("includeSeries") == "true"
+		includeEpisode := r.URL.Query().Get("includeEpisode") == "true"
+		records, total, err := lister.PagedHistory(r.Context(), req, includeSeries, includeEpisode)
 		if err != nil {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("history: %w", err), nil)
 			return
