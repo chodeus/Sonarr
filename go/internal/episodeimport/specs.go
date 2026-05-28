@@ -16,6 +16,8 @@ import (
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/history"
+	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/series"
@@ -1225,6 +1227,288 @@ func scoreCustomFormatsForUpgrade(view *decisionengine.ProfileView, formats []cu
 	return qualityprofiles.CalculateCustomFormatScore(view.FormatItems, present)
 }
 
+// ImportHistoryFinder is the slice of `IHistoryService` the
+// [AlreadyImportedSpecification] reaches for at
+// `Specifications/AlreadyImportedSpecification.cs:41` —
+// `FindByEpisodeId(int)`. Pulled out as a narrow interface so the spec
+// is testable without a real `*history.Service`. Production wiring
+// binds `*history.Service.FindByEpisodeId` directly (the lowercase-'d'
+// spelling is preserved verbatim across the Go tree for grep parity
+// with the C# enum).
+type ImportHistoryFinder interface {
+	FindByEpisodeId(ctx context.Context, episodeID int) ([]history.Entry, error)
+}
+
+// AlreadyImportedSpecification ports
+// `Specifications/AlreadyImportedSpecification.cs:11-79`.
+//
+// Rejects a download-client-driven candidate whose episodes already
+// have an on-disk file that was imported from the SAME download id
+// after the last grab of that download id — i.e. the file was already
+// successfully imported once and re-processing it would double-import.
+//
+// Skip arms (ordered, matching C# `:27-52`):
+//
+//   - nil download item → Accept (manual / library-rescan flow has no
+//     download id to correlate history against).
+//   - per-episode: !HasFile → continue (no on-disk file to have been
+//     imported).
+//   - per-episode: no prior DownloadFolderImported event for this
+//     download id → continue.
+//   - per-episode: a later Grabbed event exists for the same download
+//     id (release was re-grabbed after the import) → continue.
+//
+// Reject [ImportRejectionEpisodeAlreadyImported] when a prior import
+// for this download id exists AND (there's no matching grab OR the
+// import post-dates the matching grab).
+//
+// Like the other history/parsing-driven specs, lookup errors translate
+// to Accept + a Warn log so a transient DB outage doesn't bounce every
+// candidate file in a batch (the C# tree lets the exception bubble to
+// the orchestrator's EvaluateSpec catch → DecisionError; the Go port
+// matches the established defensive idiom across SameEpisodes /
+// EpisodeTitle / Upgrade instead).
+type AlreadyImportedSpecification struct {
+	finder ImportHistoryFinder
+	log    *slog.Logger
+}
+
+// NewAlreadyImportedSpecification binds the history finder + logger.
+// Returns an error on nil finder — the spec can't reason about prior
+// imports without the lookup.
+func NewAlreadyImportedSpecification(finder ImportHistoryFinder, log *slog.Logger) (*AlreadyImportedSpecification, error) {
+	if finder == nil {
+		return nil, errors.New("episodeimport: NewAlreadyImportedSpecification: nil ImportHistoryFinder")
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &AlreadyImportedSpecification{finder: finder, log: log}, nil
+}
+
+// Name returns the C# class name verbatim.
+func (s *AlreadyImportedSpecification) Name() string { return "AlreadyImportedSpecification" }
+
+// IsSatisfiedBy mirrors `:25-77`.
+func (s *AlreadyImportedSpecification) IsSatisfiedBy(le *LocalEpisode, item *downloadclients.Item) *ImportSpecDecision {
+	if le == nil || item == nil {
+		// nil download item — the C# `:27-31` debug-and-accept arm.
+		return AcceptImportSpec()
+	}
+	for _, e := range le.Episodes {
+		// C# `episode.HasFile` ≡ `EpisodeFileId > 0`. The Go-port
+		// EpisodeFileID is nullable; nil or 0 means "no on-disk file".
+		if e.EpisodeFileID == nil || *e.EpisodeFileID == 0 {
+			s.log.Debug("episodeimport: skipping already-imported check for episode without file",
+				"episodeId", e.ID)
+			continue
+		}
+		episodeHistory, err := s.finder.FindByEpisodeId(context.Background(), e.ID)
+		if err != nil {
+			s.log.Warn("episodeimport: AlreadyImported history lookup failed; accepting defensively",
+				"path", le.Path, "episodeId", e.ID, "err", err)
+			return AcceptImportSpec()
+		}
+		lastImported := firstHistoryEntry(episodeHistory, item.DownloadID, history.EventTypeDownloadFolderImported)
+		lastGrabbed := firstHistoryEntry(episodeHistory, item.DownloadID, history.EventTypeGrabbed)
+		if lastImported == nil {
+			s.log.Debug("episodeimport: episode file has not been imported", "episodeId", e.ID)
+			continue
+		}
+		if lastGrabbed != nil {
+			// Release was grabbed again after importing → don't reject.
+			if lastGrabbed.Date.After(lastImported.Date) {
+				s.log.Debug("episodeimport: episode file was grabbed again after importing",
+					"episodeId", e.ID)
+				continue
+			}
+			// Imported after the last grab → reject.
+			if lastImported.Date.After(lastGrabbed.Date) {
+				s.log.Debug("episodeimport: episode file previously imported",
+					"path", le.Path, "episodeId", e.ID, "importedAt", lastImported.Date)
+				return RejectImportSpec(ImportRejectionEpisodeAlreadyImported,
+					"Episode file already imported at %s", lastImported.Date.Local())
+			}
+		} else {
+			s.log.Debug("episodeimport: episode file previously imported",
+				"path", le.Path, "episodeId", e.ID, "importedAt", lastImported.Date)
+			return RejectImportSpec(ImportRejectionEpisodeAlreadyImported,
+				"Episode file already imported at %s", lastImported.Date.Local())
+		}
+	}
+	return AcceptImportSpec()
+}
+
+// firstHistoryEntry returns a pointer to the first entry in date-DESC
+// order matching the supplied download id + event type, or nil when
+// none match. Mirrors the C# `episodeHistory.FirstOrDefault(...)`
+// calls at `AlreadyImportedSpecification.cs:42-46`. The history repo
+// guarantees date-DESC ordering (see [history.Service.FindByEpisodeId])
+// so "first" is "most recent".
+func firstHistoryEntry(entries []history.Entry, downloadID string, eventType history.EventType) *history.Entry {
+	want := int(eventType)
+	for i := range entries {
+		e := &entries[i]
+		if e.DownloadID == downloadID && e.EventType != nil && *e.EventType == want {
+			return e
+		}
+	}
+	return nil
+}
+
+// FolderMatchParsingService is the slice of `IParsingService` the
+// [MatchesFolderSpecification] reaches for at
+// `Specifications/MatchesFolderSpecification.cs:35-56` —
+// `ParseSpecialEpisodeTitle` (scene-season-special re-parse) +
+// `GetEpisodes` (parsed-info → matched-episode list). Pulled out as a
+// narrow interface so the spec is testable without a real
+// `*parsingservice.Service`. Production wiring binds
+// `*parsingservice.Service` directly via Go's structural typing.
+//
+// The C# `ParseSpecialEpisodeTitle` overload takes
+// `(fileInfo, releaseTitle, tvdbId, 0, null)`; the Go-port signature
+// takes the resolved `*series.Series` instead of the raw tvdb id (the
+// service resolves the series internally), so the narrow interface
+// forwards the LocalEpisode's Series.
+type FolderMatchParsingService interface {
+	ParseSpecialEpisodeTitle(ctx context.Context, parsedInfo *parser.ParsedEpisodeInfo, releaseTitle string, ser *series.Series) (*parser.ParsedEpisodeInfo, error)
+	GetEpisodes(ctx context.Context, parsedInfo *parser.ParsedEpisodeInfo, ser *series.Series, sceneSource bool) ([]episodes.Episode, error)
+}
+
+// MatchesFolderSpecification ports
+// `Specifications/MatchesFolderSpecification.cs:12-86`.
+//
+// Rejects a candidate whose file-name parse maps to episodes that the
+// containing folder name did NOT promise — a sign the file was
+// misfiled into the wrong release folder. Only meaningful for
+// download-folder imports where both the folder and the file carry
+// parseable episode info.
+//
+// Skip arms (ordered, matching C# `:25-62`):
+//
+//   - LocalEpisode.ExistingFile → Accept (library rescan flow).
+//   - folder info nil (after the optional special-title re-parse) →
+//     Accept.
+//   - file info nil (after the optional special-title re-parse) →
+//     Accept.
+//   - folder maps to zero episodes → Accept (no constraint to check).
+//
+// Otherwise: any file-episode whose ID isn't among the folder's
+// episodes is "unexpected"; reject [ImportRejectionEpisodeUnexpected]
+// with a message naming the unexpected episodes (`SxxEyy`-style via
+// [formatEpisodeShortIDs]) + the folder release title.
+//
+// Lookup / parse errors translate to Accept + a Warn log (defensive
+// posture matching the rest of the dep-bearing specs).
+type MatchesFolderSpecification struct {
+	parsing FolderMatchParsingService
+	log     *slog.Logger
+}
+
+// NewMatchesFolderSpecification binds the parsing service + logger.
+// Returns an error on nil parsing service — the spec can't resolve the
+// folder/file episode lists without it.
+func NewMatchesFolderSpecification(parsing FolderMatchParsingService, log *slog.Logger) (*MatchesFolderSpecification, error) {
+	if parsing == nil {
+		return nil, errors.New("episodeimport: NewMatchesFolderSpecification: nil FolderMatchParsingService")
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &MatchesFolderSpecification{parsing: parsing, log: log}, nil
+}
+
+// Name returns the C# class name verbatim.
+func (s *MatchesFolderSpecification) Name() string { return "MatchesFolderSpecification" }
+
+// IsSatisfiedBy mirrors `:23-79`.
+func (s *MatchesFolderSpecification) IsSatisfiedBy(le *LocalEpisode, _ *downloadclients.Item) *ImportSpecDecision {
+	if le == nil || le.Series == nil {
+		return AcceptImportSpec()
+	}
+	if le.ExistingFile {
+		return AcceptImportSpec()
+	}
+
+	ctx := context.Background()
+	fileInfo := le.FileEpisodeInfo
+	folderInfo := le.FolderEpisodeInfo
+
+	// Scene-season-special re-parse: a "Season N Special" style title
+	// needs the special-episode title resolved against the series
+	// before its episode numbers mean anything (C# `:33-41`).
+	if fileInfo != nil && fileInfo.IsPossibleSceneSeasonSpecial() {
+		reparsed, err := s.parsing.ParseSpecialEpisodeTitle(ctx, fileInfo, fileInfo.ReleaseTitle, le.Series)
+		if err != nil {
+			s.log.Warn("episodeimport: MatchesFolder file special-title parse failed; accepting defensively",
+				"path", le.Path, "err", err)
+			return AcceptImportSpec()
+		}
+		fileInfo = reparsed
+	}
+	if folderInfo != nil && folderInfo.IsPossibleSceneSeasonSpecial() {
+		reparsed, err := s.parsing.ParseSpecialEpisodeTitle(ctx, folderInfo, folderInfo.ReleaseTitle, le.Series)
+		if err != nil {
+			s.log.Warn("episodeimport: MatchesFolder folder special-title parse failed; accepting defensively",
+				"path", le.Path, "err", err)
+			return AcceptImportSpec()
+		}
+		folderInfo = reparsed
+	}
+
+	if folderInfo == nil {
+		s.log.Debug("episodeimport: no folder ParsedEpisodeInfo; skipping matches-folder check",
+			"path", le.Path)
+		return AcceptImportSpec()
+	}
+	if fileInfo == nil {
+		s.log.Debug("episodeimport: no file ParsedEpisodeInfo; skipping matches-folder check",
+			"path", le.Path)
+		return AcceptImportSpec()
+	}
+
+	folderEpisodes, err := s.parsing.GetEpisodes(ctx, folderInfo, le.Series, true)
+	if err != nil {
+		s.log.Warn("episodeimport: MatchesFolder folder GetEpisodes failed; accepting defensively",
+			"path", le.Path, "err", err)
+		return AcceptImportSpec()
+	}
+	if len(folderEpisodes) == 0 {
+		s.log.Debug("episodeimport: no episode numbers in folder ParsedEpisodeInfo; skipping check",
+			"path", le.Path)
+		return AcceptImportSpec()
+	}
+	fileEpisodes, err := s.parsing.GetEpisodes(ctx, fileInfo, le.Series, true)
+	if err != nil {
+		s.log.Warn("episodeimport: MatchesFolder file GetEpisodes failed; accepting defensively",
+			"path", le.Path, "err", err)
+		return AcceptImportSpec()
+	}
+
+	folderIDs := make(map[int]struct{}, len(folderEpisodes))
+	for _, e := range folderEpisodes {
+		folderIDs[e.ID] = struct{}{}
+	}
+	var unexpected []episodes.Episode
+	for _, e := range fileEpisodes {
+		if _, ok := folderIDs[e.ID]; !ok {
+			unexpected = append(unexpected, e)
+		}
+	}
+	if len(unexpected) == 0 {
+		return AcceptImportSpec()
+	}
+	formatted := formatEpisodeShortIDs(unexpected)
+	s.log.Debug("episodeimport: unexpected episode(s) in file considering the folder name",
+		"path", le.Path, "unexpected", formatted)
+	if len(unexpected) == 1 {
+		return RejectImportSpec(ImportRejectionEpisodeUnexpected,
+			"Episode %s was unexpected considering the %s folder name", formatted, folderInfo.ReleaseTitle)
+	}
+	return RejectImportSpec(ImportRejectionEpisodeUnexpected,
+		"Episodes %s were unexpected considering the %s folder name", formatted, folderInfo.ReleaseTitle)
+}
+
 // Compile-time interface satisfaction guards. A signature drift on
 // Specification surfaces here at the package boundary rather than at
 // the orchestrator's per-spec dispatch site.
@@ -1241,4 +1525,6 @@ var (
 	_ Specification = (*MatchesGrabSpecification)(nil)
 	_ Specification = (*NotUnpackingSpecification)(nil)
 	_ Specification = (*UpgradeSpecification)(nil)
+	_ Specification = (*AlreadyImportedSpecification)(nil)
+	_ Specification = (*MatchesFolderSpecification)(nil)
 )

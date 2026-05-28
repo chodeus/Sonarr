@@ -1284,6 +1284,44 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("episode-title spec: %w", err)
 	}
 	importDecisionSpecs = append(importDecisionSpecs, episodeTitleSpec)
+	// J353 (Post-J352 residual-arc, Arc 1 slice 1): AlreadyImportedSpecification
+	// wired via Go's structural typing — *history.Service satisfies the
+	// episodeimport.ImportHistoryFinder narrow interface
+	// (FindByEpisodeId(ctx, id) []history.Entry — the lowercase-'d'
+	// spelling preserved for C# grep parity). Spec mirrors C#
+	// `AlreadyImportedSpecification.cs:11-79`: rejects a
+	// download-client-driven candidate whose episodes already have an
+	// on-disk file imported from the SAME download id after the last
+	// grab of that download id (re-processing would double-import).
+	// Skip arms — nil download item / episode-without-file /
+	// no-prior-import / re-grabbed-after-import → Accept. Lookup errors
+	// translate to Accept + Warn-log (defensive idiom). Errors out only
+	// on nil finder — historySvc is non-nil here so the error arm is
+	// belt-and-braces.
+	alreadyImportedSpec, err := episodeimport.NewAlreadyImportedSpecification(historySvc, logger)
+	if err != nil {
+		return fmt.Errorf("already-imported spec: %w", err)
+	}
+	importDecisionSpecs = append(importDecisionSpecs, alreadyImportedSpec)
+	// J353 (Post-J352 residual-arc, Arc 1 slice 1): MatchesFolderSpecification
+	// wired via Go's structural typing — *parsingservice.Service
+	// satisfies the episodeimport.FolderMatchParsingService narrow
+	// interface (ParseSpecialEpisodeTitle + GetEpisodes). Spec mirrors
+	// C# `MatchesFolderSpecification.cs:12-86`: rejects a candidate whose
+	// file-name parse maps to episodes the containing folder name did
+	// NOT promise (a sign of a misfiled file). Skip arms — ExistingFile /
+	// nil file-or-folder info (after the scene-season-special re-parse) /
+	// folder maps to zero episodes → Accept. Lookup/parse errors
+	// translate to Accept + Warn-log. Errors out only on nil parsing
+	// service — parsingSvc is non-nil here so the error arm is
+	// belt-and-braces. This completes the 14-spec ImportDecisionMaker
+	// Specification set (only UpgradeSpecification remains
+	// ported-but-unwired pending its ProfileView-per-batch caching layer).
+	matchesFolderSpec, err := episodeimport.NewMatchesFolderSpecification(parsingSvc, logger)
+	if err != nil {
+		return fmt.Errorf("matches-folder spec: %w", err)
+	}
+	importDecisionSpecs = append(importDecisionSpecs, matchesFolderSpec)
 	// Slice 3.AI: trackeddownloads.Service constructed here for two
 	// downstream consumers — the ImportDecisionMaker `tracked` arg
 	// (FindIndexerFlags for IndexerFlags enrichment per

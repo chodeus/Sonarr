@@ -10,9 +10,11 @@ import (
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/decisionengine"
+	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/mediainfo"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
@@ -1313,4 +1315,306 @@ func contains(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// --- AlreadyImportedSpecification -----------------------------------
+
+type fakeImportHistoryFinder struct {
+	byEpisode map[int][]history.Entry
+	err       error
+}
+
+func (f *fakeImportHistoryFinder) FindByEpisodeId(_ context.Context, episodeID int) ([]history.Entry, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.byEpisode[episodeID], nil
+}
+
+func histEntry(downloadID string, eventType history.EventType, date time.Time) history.Entry {
+	et := int(eventType)
+	return history.Entry{DownloadID: downloadID, EventType: &et, Date: date}
+}
+
+func TestAlreadyImportedSpecification_NilFinder(t *testing.T) {
+	t.Parallel()
+	if _, err := episodeimport.NewAlreadyImportedSpecification(nil, nil); err == nil {
+		t.Fatal("nil finder: want error")
+	}
+}
+
+func TestAlreadyImportedSpecification(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	earlier := now.Add(-2 * time.Hour)
+	later := now.Add(2 * time.Hour)
+
+	newSpec := func(finder *fakeImportHistoryFinder) *episodeimport.AlreadyImportedSpecification {
+		s, err := episodeimport.NewAlreadyImportedSpecification(finder, nil)
+		if err != nil {
+			t.Fatalf("ctor: %v", err)
+		}
+		return s
+	}
+
+	// Name.
+	if got := newSpec(&fakeImportHistoryFinder{}).Name(); got != "AlreadyImportedSpecification" {
+		t.Errorf("Name() = %q", got)
+	}
+
+	// nil download item → Accept.
+	t.Run("nil download item", func(t *testing.T) {
+		spec := newSpec(&fakeImportHistoryFinder{})
+		le := episodeimport.NewLocalEpisode()
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(100)}}
+		if d := spec.IsSatisfiedBy(le, nil); !d.Accepted() {
+			t.Error("want Accept")
+		}
+	})
+
+	// Episode without a file → continue → Accept.
+	t.Run("episode without file", func(t *testing.T) {
+		spec := newSpec(&fakeImportHistoryFinder{byEpisode: map[int][]history.Entry{
+			1: {histEntry("dl1", history.EventTypeDownloadFolderImported, earlier)},
+		}})
+		le := episodeimport.NewLocalEpisode()
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(0)}}
+		if d := spec.IsSatisfiedBy(le, &downloadclients.Item{DownloadID: "dl1"}); !d.Accepted() {
+			t.Error("want Accept (no file)")
+		}
+	})
+
+	// Imported with no grab → Reject.
+	t.Run("imported no grab", func(t *testing.T) {
+		spec := newSpec(&fakeImportHistoryFinder{byEpisode: map[int][]history.Entry{
+			1: {histEntry("dl1", history.EventTypeDownloadFolderImported, earlier)},
+		}})
+		le := episodeimport.NewLocalEpisode()
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(100)}}
+		d := spec.IsSatisfiedBy(le, &downloadclients.Item{DownloadID: "dl1"})
+		if d.Accepted() || d.Reason() != episodeimport.ImportRejectionEpisodeAlreadyImported {
+			t.Errorf("want EpisodeAlreadyImported reject, got accepted=%v reason=%v", d.Accepted(), d.Reason())
+		}
+	})
+
+	// Imported after grab → Reject.
+	t.Run("imported after grab", func(t *testing.T) {
+		spec := newSpec(&fakeImportHistoryFinder{byEpisode: map[int][]history.Entry{
+			1: {
+				histEntry("dl1", history.EventTypeDownloadFolderImported, later),
+				histEntry("dl1", history.EventTypeGrabbed, earlier),
+			},
+		}})
+		le := episodeimport.NewLocalEpisode()
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(100)}}
+		d := spec.IsSatisfiedBy(le, &downloadclients.Item{DownloadID: "dl1"})
+		if d.Accepted() {
+			t.Error("want reject (imported after grab)")
+		}
+	})
+
+	// Grabbed again after import → Accept.
+	t.Run("grabbed after import", func(t *testing.T) {
+		spec := newSpec(&fakeImportHistoryFinder{byEpisode: map[int][]history.Entry{
+			1: {
+				histEntry("dl1", history.EventTypeGrabbed, later),
+				histEntry("dl1", history.EventTypeDownloadFolderImported, earlier),
+			},
+		}})
+		le := episodeimport.NewLocalEpisode()
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(100)}}
+		if d := spec.IsSatisfiedBy(le, &downloadclients.Item{DownloadID: "dl1"}); !d.Accepted() {
+			t.Error("want Accept (re-grabbed after import)")
+		}
+	})
+
+	// No prior import → Accept.
+	t.Run("not imported", func(t *testing.T) {
+		spec := newSpec(&fakeImportHistoryFinder{byEpisode: map[int][]history.Entry{
+			1: {histEntry("dl1", history.EventTypeGrabbed, earlier)},
+		}})
+		le := episodeimport.NewLocalEpisode()
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(100)}}
+		if d := spec.IsSatisfiedBy(le, &downloadclients.Item{DownloadID: "dl1"}); !d.Accepted() {
+			t.Error("want Accept (never imported)")
+		}
+	})
+
+	// Different download id history → no match → Accept.
+	t.Run("different download id", func(t *testing.T) {
+		spec := newSpec(&fakeImportHistoryFinder{byEpisode: map[int][]history.Entry{
+			1: {histEntry("other", history.EventTypeDownloadFolderImported, earlier)},
+		}})
+		le := episodeimport.NewLocalEpisode()
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(100)}}
+		if d := spec.IsSatisfiedBy(le, &downloadclients.Item{DownloadID: "dl1"}); !d.Accepted() {
+			t.Error("want Accept (different download id)")
+		}
+	})
+
+	// Lookup error → defensive Accept.
+	t.Run("lookup error", func(t *testing.T) {
+		spec := newSpec(&fakeImportHistoryFinder{err: errors.New("db down")})
+		le := episodeimport.NewLocalEpisode()
+		le.Episodes = []episodes.Episode{{ID: 1, EpisodeFileID: ptrInt(100)}}
+		if d := spec.IsSatisfiedBy(le, &downloadclients.Item{DownloadID: "dl1"}); !d.Accepted() {
+			t.Error("want Accept (lookup error)")
+		}
+	})
+}
+
+// --- MatchesFolderSpecification -------------------------------------
+
+type fakeFolderMatchParsing struct {
+	getEpisodes func(*parser.ParsedEpisodeInfo) ([]episodes.Episode, error)
+	special     func(*parser.ParsedEpisodeInfo) (*parser.ParsedEpisodeInfo, error)
+}
+
+func (f *fakeFolderMatchParsing) ParseSpecialEpisodeTitle(_ context.Context, p *parser.ParsedEpisodeInfo, _ string, _ *series.Series) (*parser.ParsedEpisodeInfo, error) {
+	if f.special != nil {
+		return f.special(p)
+	}
+	return p, nil
+}
+
+func (f *fakeFolderMatchParsing) GetEpisodes(_ context.Context, p *parser.ParsedEpisodeInfo, _ *series.Series, _ bool) ([]episodes.Episode, error) {
+	if f.getEpisodes != nil {
+		return f.getEpisodes(p)
+	}
+	return nil, nil
+}
+
+func TestMatchesFolderSpecification_NilParsing(t *testing.T) {
+	t.Parallel()
+	if _, err := episodeimport.NewMatchesFolderSpecification(nil, nil); err == nil {
+		t.Fatal("nil parsing service: want error")
+	}
+}
+
+func TestMatchesFolderSpecification(t *testing.T) {
+	t.Parallel()
+
+	ser := &series.Series{ID: 1, TvdbID: 555}
+	fileInfo := &parser.ParsedEpisodeInfo{SeasonNumber: 1, EpisodeNumbers: []int{2}, ReleaseTitle: "Show.S01E02"}
+	folderInfo := &parser.ParsedEpisodeInfo{SeasonNumber: 1, EpisodeNumbers: []int{1}, ReleaseTitle: "Show.S01"}
+
+	newSpec := func(p *fakeFolderMatchParsing) *episodeimport.MatchesFolderSpecification {
+		s, err := episodeimport.NewMatchesFolderSpecification(p, nil)
+		if err != nil {
+			t.Fatalf("ctor: %v", err)
+		}
+		return s
+	}
+
+	if got := newSpec(&fakeFolderMatchParsing{}).Name(); got != "MatchesFolderSpecification" {
+		t.Errorf("Name() = %q", got)
+	}
+
+	// ExistingFile → Accept.
+	t.Run("existing file", func(t *testing.T) {
+		spec := newSpec(&fakeFolderMatchParsing{})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = ser
+		le.ExistingFile = true
+		le.FileEpisodeInfo = fileInfo
+		le.FolderEpisodeInfo = folderInfo
+		if d := spec.IsSatisfiedBy(le, nil); !d.Accepted() {
+			t.Error("want Accept (existing file)")
+		}
+	})
+
+	// nil folder info → Accept.
+	t.Run("nil folder info", func(t *testing.T) {
+		spec := newSpec(&fakeFolderMatchParsing{})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = ser
+		le.FileEpisodeInfo = fileInfo
+		if d := spec.IsSatisfiedBy(le, nil); !d.Accepted() {
+			t.Error("want Accept (nil folder info)")
+		}
+	})
+
+	// nil file info → Accept.
+	t.Run("nil file info", func(t *testing.T) {
+		spec := newSpec(&fakeFolderMatchParsing{})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = ser
+		le.FolderEpisodeInfo = folderInfo
+		if d := spec.IsSatisfiedBy(le, nil); !d.Accepted() {
+			t.Error("want Accept (nil file info)")
+		}
+	})
+
+	// Folder maps to zero episodes → Accept.
+	t.Run("folder zero episodes", func(t *testing.T) {
+		spec := newSpec(&fakeFolderMatchParsing{
+			getEpisodes: func(p *parser.ParsedEpisodeInfo) ([]episodes.Episode, error) {
+				return nil, nil
+			},
+		})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = ser
+		le.FileEpisodeInfo = fileInfo
+		le.FolderEpisodeInfo = folderInfo
+		if d := spec.IsSatisfiedBy(le, nil); !d.Accepted() {
+			t.Error("want Accept (folder zero episodes)")
+		}
+	})
+
+	// All file episodes covered by folder → Accept.
+	t.Run("all covered", func(t *testing.T) {
+		spec := newSpec(&fakeFolderMatchParsing{
+			getEpisodes: func(p *parser.ParsedEpisodeInfo) ([]episodes.Episode, error) {
+				// Both folder + file resolve to episode id 10.
+				return []episodes.Episode{{ID: 10, SeasonNumber: 1, EpisodeNumber: 1}}, nil
+			},
+		})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = ser
+		le.FileEpisodeInfo = fileInfo
+		le.FolderEpisodeInfo = folderInfo
+		if d := spec.IsSatisfiedBy(le, nil); !d.Accepted() {
+			t.Error("want Accept (all covered)")
+		}
+	})
+
+	// Unexpected file episode → Reject EpisodeUnexpected.
+	t.Run("unexpected episode", func(t *testing.T) {
+		spec := newSpec(&fakeFolderMatchParsing{
+			getEpisodes: func(p *parser.ParsedEpisodeInfo) ([]episodes.Episode, error) {
+				if p == folderInfo {
+					return []episodes.Episode{{ID: 10, SeasonNumber: 1, EpisodeNumber: 1}}, nil
+				}
+				return []episodes.Episode{{ID: 11, SeasonNumber: 1, EpisodeNumber: 2}}, nil
+			},
+		})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = ser
+		le.FileEpisodeInfo = fileInfo
+		le.FolderEpisodeInfo = folderInfo
+		d := spec.IsSatisfiedBy(le, nil)
+		if d.Accepted() || d.Reason() != episodeimport.ImportRejectionEpisodeUnexpected {
+			t.Errorf("want EpisodeUnexpected reject, got accepted=%v reason=%v", d.Accepted(), d.Reason())
+		}
+		if !contains(d.Message(), "1x02") || !contains(d.Message(), "Show.S01") {
+			t.Errorf("message missing episode/folder: %q", d.Message())
+		}
+	})
+
+	// GetEpisodes error → defensive Accept.
+	t.Run("get episodes error", func(t *testing.T) {
+		spec := newSpec(&fakeFolderMatchParsing{
+			getEpisodes: func(p *parser.ParsedEpisodeInfo) ([]episodes.Episode, error) {
+				return nil, errors.New("boom")
+			},
+		})
+		le := episodeimport.NewLocalEpisode()
+		le.Series = ser
+		le.FileEpisodeInfo = fileInfo
+		le.FolderEpisodeInfo = folderInfo
+		if d := spec.IsSatisfiedBy(le, nil); !d.Accepted() {
+			t.Error("want Accept (GetEpisodes error)")
+		}
+	})
 }

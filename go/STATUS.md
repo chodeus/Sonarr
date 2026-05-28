@@ -18284,3 +18284,46 @@ Arc 3 progress: 5 of 6 sub-slices landed. The final sub-slice (J352) is the v5-s
 - Queue filter params (seriesIds / protocol / languages / quality / status) — DEFERRED.
 - ManualImport Rejections list + file-size/mediainfo CF specs — gated on the full ImportDecisionMaker spec pipeline (a separate future arc).
 - Queue CustomFormatScore recompute-vs-precomputed (the Go-port reuses the Subject's decision-time score; C# recomputes against the current series QP).
+
+---
+
+## J353 — Post-J352 residual-arc, Arc 1 (ImportDecisionMaker spec pipeline) slice 1: port the final two import Specifications (AlreadyImported + MatchesFolder), completing the 14-spec set
+
+**Anchor**: post-J352 (Post-J342 service-port arc complete). First slice of the Post-J352 residual-arc run, biggest-port-surface-first. Arc 1 = the ImportDecisionMaker spec pipeline.
+
+**Orientation finding**: the orchestrator (`internal/episodeimport/import_decision_maker.go`) + 12 of the 14 C# `IImportDecisionEngineSpecification` classes were ALREADY ported (`specs.go`, compile-time guards listed FullSeason / SplitEpisode / SameEpisodesImport / UnverifiedSceneNumbering / HasAudioTrack / NotSample / AbsoluteEpisodeNumber / EpisodeTitle / FreeSpace / MatchesGrab / NotUnpacking / Upgrade). The two unported classes were `AlreadyImportedSpecification` + `MatchesFolderSpecification`. The production spec list (`cmd/sonarr/main.go`) wired 11 (Upgrade is ported-but-unwired pending its ProfileView caching layer). Both rejection reasons + both target subsystems already existed.
+
+### C# source
+
+- `src/NzbDrone.Core/MediaFiles/EpisodeImport/Specifications/AlreadyImportedSpecification.cs:11-79` — per-episode history walk; `FindByEpisodeId` → first DownloadFolderImported + first Grabbed entries matching the download id; reject when imported-with-no-grab or imported-after-grab.
+- `src/NzbDrone.Core/MediaFiles/EpisodeImport/Specifications/MatchesFolderSpecification.cs:12-86` — scene-season-special re-parse, then `GetEpisodes(folderInfo)` vs `GetEpisodes(fileInfo)`; reject file-episodes the folder didn't promise.
+
+### Port deliverables
+
+- **`AlreadyImportedSpecification`** (specs.go): new `ImportHistoryFinder` narrow interface (`FindByEpisodeId(ctx, episodeID) ([]history.Entry, error)` — satisfied structurally by `*history.Service`). `IsSatisfiedBy`: nil download item → Accept; per episode, `EpisodeFileID == nil || == 0` → continue (the Go-port `episode.HasFile` ≡ C# `EpisodeFileId > 0`); else `FindByEpisodeId` + new `firstHistoryEntry(entries, downloadID, eventType)` helper (history rows are date-DESC so first-match = most-recent) for DownloadFolderImported(3) + Grabbed(1); reject `EpisodeAlreadyImported` when imported-no-grab OR imported-after-grab; re-grabbed-after-import / not-imported → continue. Lookup error → Accept + Warn (defensive idiom; C# bubbles to EvaluateSpec→DecisionError). Ctor returns `(*Spec, error)`, rejects nil finder.
+- **`MatchesFolderSpecification`** (specs.go): new `FolderMatchParsingService` narrow interface (`ParseSpecialEpisodeTitle` + `GetEpisodes`, satisfied by `*parsingservice.Service`). `IsSatisfiedBy`: nil series / ExistingFile → Accept; `IsPossibleSceneSeasonSpecial()` file/folder info re-parsed via `ParseSpecialEpisodeTitle(info, info.ReleaseTitle, series)`; nil folder/file info → Accept; `GetEpisodes(folderInfo, series, true)` empty → Accept; any `GetEpisodes(fileInfo,…)` episode whose ID isn't in the folder set is unexpected → reject `EpisodeUnexpected` with the existing `formatEpisodeShortIDs` (`%dx%02d`) + `folderInfo.ReleaseTitle` (singular/plural message split mirrors C# `:72`/`:75`). Lookup/parse errors → Accept + Warn. Ctor returns `(*Spec, error)`, rejects nil parsing service.
+- **Compile-time guards**: both added to the `var (_ Specification = …)` block.
+- **Wiring** (`cmd/sonarr/main.go`): both appended to `importDecisionSpecs` after the EpisodeTitle spec — `historySvc` (line 887) + `parsingSvc` (line 783) are both in scope at the assembly site.
+
+### Tests
+
+- `TestAlreadyImportedSpecification_NilFinder` + `TestAlreadyImportedSpecification` (8 sub-tests: Name; nil download item; episode-without-file; imported-no-grab→reject; imported-after-grab→reject; grabbed-after-import→accept; not-imported→accept; different-download-id→accept; lookup-error→accept). New `fakeImportHistoryFinder` + `histEntry` helper.
+- `TestMatchesFolderSpecification_NilParsing` + `TestMatchesFolderSpecification` (7 sub-tests: Name; ExistingFile; nil-folder-info; nil-file-info; folder-zero-episodes; all-covered; unexpected-episode→reject with message assertion; GetEpisodes-error→accept). New `fakeFolderMatchParsing`.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/episodeimport/... ./cmd/sonarr/...` ✓ (episodeimport 1.42s, cmd/sonarr 3.69s)
+- `go vet` + gofmt ✓
+
+### Arc 1 progress
+
+| Item | Status |
+| --- | --- |
+| 12 import Specification classes (FullSeason … Upgrade) | DONE (pre-J353) |
+| ImportDecisionMaker orchestrator | DONE (pre-J353) |
+| AlreadyImportedSpecification + MatchesFolderSpecification | **DONE this slice (J353)** |
+| UpgradeSpecification production wiring (ProfileView-per-batch adapter) | OPEN — ported-but-unwired |
+| ManualImport Rejections list + LocalEpisode-driven file-size/mediainfo CF specs (J346-deferred) | OPEN — now unblocked by the complete spec set |
+
+The 14-spec ImportDecisionMaker Specification set is now fully ported. Remaining Arc 1 work: wire UpgradeSpecification's production adapter, then the ManualImport Rejections list + the file-size/mediainfo custom-format specs J346 deferred.
