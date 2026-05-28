@@ -19012,3 +19012,38 @@ Effectively COMPLETE — scalars + model-intrinsic band (J366) + images (J367) +
 ### SeriesResource — COMPLETE
 
 Every C# SeriesResourceMapper + SeriesController-linked field is projected on both surfaces: scalars + model-intrinsic (J366) + images (J367) + statistics (J368/J369) + v5-additive statistics (J370). Remaining gaps are unported subsystems tracked elsewhere: seasons[].images (includeSeasonImages flag), alternateTitles (scene-mapping service, J329-pinned), isExcluded (importlistexclusion join). Arc advances to EpisodeResource.
+
+---
+
+## J371 — Post-J365 resource-projection arc, slice 6: EpisodeResource.images (includeImages branch)
+
+**Anchor**: post-J370 (SeriesResource complete). Arc advances to EpisodeResource (priority #2). Orientation: the EpisodeResource scalar projection is already complete (incl. the FinaleType passthrough) and EpisodeFile is wired (J340/J342); only the includeSeries + includeImages embeds remained.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Episodes/EpisodeControllerWithSignalR.cs:61-118` — MapToResource gates Series/EpisodeFile/Images on includeSeries/includeEpisodeFile/includeImages. Images is a DIRECT `resource.Images = episode.Images` (no MapCoversToLocal rewrite — differs from the series path).
+- `EpisodeController.cs:28,64-75` — GetEpisodes + SetEpisodesMonitored both accept includeImages.
+
+### Port deliverables
+
+- **`internal/api/v3/series.go`**: generalised the J367 decode into `decodeMediaCovers(raw) []MediaCoverResource` (shared by series + episode); `decodeSeriesImages` delegates.
+- **`internal/api/v3/episode.go`**: `EpisodeResource.Images *[]MediaCoverResource json:"images,omitempty"` (J302 3-state: nil→absent / `&[]`→`[]` / populated→list); `applyEpisodeImages(res, ep, includeImages)` (direct decode, no rewrite); `includeImages` query param wired into EpisodeListHandler + EpisodeByIDHandler + EpisodeMonitorHandler. v5 inherits (List/ByID alias v3; Monitor wraps).
+
+### Design notes
+
+- **No URL rewrite** for episode images — mirrors C# direct assignment (unlike series MapCoversToLocal). So no populator/dep needed; pure model decode.
+- **Embedders unaffected**: queue/wanted/calendar/history reuse the unchanged ToEpisodeResource and don't call applyEpisodeImages.
+
+### Tests (`internal/api/v3/episode_test.go`, 2)
+
+`TestEpisodeImages_J371` (absent without param / screenshot-coverType + persisted url+remoteUrl when includeImages=true), `TestEpisodeImages_EmptyList_J371` (`"images":[]` for includeImages=true + no images).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/episode/... ./internal/api/v5/wanted/... ./internal/api/v5/calendar/... ./cmd/sonarr/...` ✓
+- `go vet` + gofmt ✓; `test/contract/replayer` + `hostbootstrap` ✓.
+
+### Remaining EpisodeResource deferral
+
+The `Series` embed (includeSeries) — needs a series-by-id lookup dep threaded into the episode handlers (+ calendar/wanted embedders); reuses the now-complete ToSeriesResource. Next slice (J372). Then the queue/history embedder include-branches + EpisodeFileResource's deferred mediaInfo/customFormats.

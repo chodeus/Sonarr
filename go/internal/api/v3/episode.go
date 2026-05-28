@@ -15,11 +15,11 @@ import (
 )
 
 // EpisodeResource mirrors
-// `src/Sonarr.Api.V3/Episodes/EpisodeResource.cs`. Skeleton wire
-// shape — populated-row mapping for the optional series / episodeFile
-// / images fields depends on the parsingservice + episodefiles +
-// mediacover ports converging; empty-DB recording has zero records
-// so the deferred mapping is unobservable today.
+// `src/Sonarr.Api.V3/Episodes/EpisodeResource.cs`. The scalar
+// projection + the includeEpisodeFile (J340/J342) + includeImages
+// (J371) sub-resource branches are wired; the includeSeries embed is
+// the only remaining deferral (see below). Empty-DB recording has zero
+// records so the populated-row branches are unobservable today.
 //
 // Field-source mapping (C# → Go), passthrough subset:
 //
@@ -28,9 +28,17 @@ import (
 //	hasFile, monitored, absolute/sceneAbsolute/scene* numbering,
 //	unverifiedSceneNumbering
 //
-// DEFERRED (populated-row only): series (full SeriesResource),
-// episodeFile (EpisodeFileResource), images ([]MediaCover),
-// finaleType (computed from analytics).
+// finaleType is a persisted passthrough column (mapped in
+// ToEpisodeResource). episodeFile is wired via the includeEpisodeFile
+// branch (J340/J342). images is wired via the includeImages branch
+// (J371 — `*[]MediaCoverResource`, pointer-to-slice 3-state: nil when
+// includeImages=false → key absent; `&[]` / populated when true,
+// matching C# `resource.Images = episode.Images` direct assignment,
+// no local-URL rewrite — unlike the series path).
+//
+// DEFERRED (populated-row only): series (full SeriesResource — the
+// includeSeries branch; needs a series-by-id lookup dep threaded into
+// the episode handlers + embedders).
 //
 // J340 widening: EpisodeFile *EpisodeFileResource subresource
 // pointer field (J302 pattern). C# v3 declares
@@ -57,30 +65,31 @@ import (
 // nil today; the populated-mapper port will allocate when those
 // computations land.
 type EpisodeResource struct {
-	ID                         int        `json:"id"`
-	SeriesID                   int        `json:"seriesId"`
-	TvdbID                     int        `json:"tvdbId"`
-	EpisodeFileID              int        `json:"episodeFileId"`
-	SeasonNumber               int        `json:"seasonNumber"`
-	EpisodeNumber              int        `json:"episodeNumber"`
-	Title                      string     `json:"title"`
-	AirDate                    string     `json:"airDate,omitempty"`
-	AirDateUTC                 *time.Time `json:"airDateUtc,omitempty"`
-	LastSearchTime             *time.Time `json:"lastSearchTime,omitempty"`
-	Runtime                    int        `json:"runtime"`
-	FinaleType                 string     `json:"finaleType,omitempty"`
-	Overview                   string     `json:"overview,omitempty"`
-	HasFile                    bool       `json:"hasFile"`
-	Monitored                  bool       `json:"monitored"`
-	AbsoluteEpisodeNumber      *int       `json:"absoluteEpisodeNumber,omitempty"`
-	SceneAbsoluteEpisodeNumber *int       `json:"sceneAbsoluteEpisodeNumber,omitempty"`
-	SceneEpisodeNumber         *int       `json:"sceneEpisodeNumber,omitempty"`
-	SceneSeasonNumber          *int       `json:"sceneSeasonNumber,omitempty"`
-	UnverifiedSceneNumbering   bool       `json:"unverifiedSceneNumbering"`
-	EndTime                    *time.Time           `json:"endTime,omitempty"`
-	GrabDate                   *time.Time           `json:"grabDate,omitempty"`
-	Grabbed                    *bool                `json:"grabbed,omitempty"`
-	EpisodeFile                *EpisodeFileResource `json:"episodeFile,omitempty"`
+	ID                         int                   `json:"id"`
+	SeriesID                   int                   `json:"seriesId"`
+	TvdbID                     int                   `json:"tvdbId"`
+	EpisodeFileID              int                   `json:"episodeFileId"`
+	SeasonNumber               int                   `json:"seasonNumber"`
+	EpisodeNumber              int                   `json:"episodeNumber"`
+	Title                      string                `json:"title"`
+	AirDate                    string                `json:"airDate,omitempty"`
+	AirDateUTC                 *time.Time            `json:"airDateUtc,omitempty"`
+	LastSearchTime             *time.Time            `json:"lastSearchTime,omitempty"`
+	Runtime                    int                   `json:"runtime"`
+	FinaleType                 string                `json:"finaleType,omitempty"`
+	Overview                   string                `json:"overview,omitempty"`
+	HasFile                    bool                  `json:"hasFile"`
+	Monitored                  bool                  `json:"monitored"`
+	AbsoluteEpisodeNumber      *int                  `json:"absoluteEpisodeNumber,omitempty"`
+	SceneAbsoluteEpisodeNumber *int                  `json:"sceneAbsoluteEpisodeNumber,omitempty"`
+	SceneEpisodeNumber         *int                  `json:"sceneEpisodeNumber,omitempty"`
+	SceneSeasonNumber          *int                  `json:"sceneSeasonNumber,omitempty"`
+	UnverifiedSceneNumbering   bool                  `json:"unverifiedSceneNumbering"`
+	EndTime                    *time.Time            `json:"endTime,omitempty"`
+	GrabDate                   *time.Time            `json:"grabDate,omitempty"`
+	Grabbed                    *bool                 `json:"grabbed,omitempty"`
+	EpisodeFile                *EpisodeFileResource  `json:"episodeFile,omitempty"`
+	Images                     *[]MediaCoverResource `json:"images,omitempty"`
 }
 
 // EpisodeBySeriesLister narrows the read surface to the
@@ -132,6 +141,24 @@ func applyEpisodeFileSubresource(ctx context.Context, res *EpisodeResource, ep *
 	res.EpisodeFile = &epFile
 }
 
+// applyEpisodeImages populates an EpisodeResource's Images field from
+// the persisted Episode.Images blob when includeImages is true. Mirrors
+// C# EpisodeControllerWithSignalR.MapToResource `resource.Images =
+// episode.Images` — a direct assignment of the model's MediaCover list
+// with NO local-URL rewrite (the episode path differs from the series
+// path here). Pointer-to-slice 3-state (J302): nil → key absent;
+// `&[]MediaCoverResource{}` → `"images":[]` (includeImages=true, no
+// images, matching the C# non-null List default); populated → the list.
+//
+// J371.
+func applyEpisodeImages(res *EpisodeResource, e episodes.Episode, includeImages bool) {
+	if res == nil || !includeImages {
+		return
+	}
+	imgs := decodeMediaCovers(e.Images)
+	res.Images = &imgs
+}
+
 // EpisodeListHandler returns the http.Handler for GET /api/v3/episode.
 // Mirrors `EpisodeController.GetEpisodes` at
 // `src/Sonarr.Api.V3/Episodes/EpisodeController.cs:35-66`. The full
@@ -164,11 +191,13 @@ func EpisodeListHandler(lister EpisodeBySeriesLister) http.Handler {
 		// J340-pinned subresource when both the param is true and the
 		// lister implements EpisodeFileLookupForEpisode.
 		includeEpisodeFile := r.URL.Query().Get("includeEpisodeFile") == "true"
+		includeImages := r.URL.Query().Get("includeImages") == "true"
 		out := make([]EpisodeResource, 0, len(rows))
 		for _, row := range rows {
 			res := ToEpisodeResource(row)
 			ep := row
 			applyEpisodeFileSubresource(r.Context(), &res, &ep, lister, includeEpisodeFile)
+			applyEpisodeImages(&res, row, includeImages)
 			out = append(out, res)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -190,9 +219,9 @@ type EpisodeByIDGetter interface {
 // MapToResource with includeSeries+includeEpisodeFile+includeImages
 // all true.
 //
-// DEFERRED: the joined Series/EpisodeFile/Images projection (the
-// EpisodeResource skeleton omits these per the resource doc; same
-// gap as GET /episode list).
+// includeEpisodeFile (J340/J342) + includeImages (J371) branches are
+// honoured. DEFERRED: includeSeries (the embedded SeriesResource —
+// needs a series-by-id lookup dep, a follow-up slice).
 func EpisodeByIDHandler(svc EpisodeByIDGetter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.PathValue("id"))
@@ -218,8 +247,10 @@ func EpisodeByIDHandler(svc EpisodeByIDGetter) http.Handler {
 		// matching the list-handler default — clients wanting the
 		// C# byID populated shape send includeEpisodeFile=true.
 		includeEpisodeFile := r.URL.Query().Get("includeEpisodeFile") == "true"
+		includeImages := r.URL.Query().Get("includeImages") == "true"
 		res := ToEpisodeResource(*ep)
 		applyEpisodeFileSubresource(r.Context(), &res, ep, svc, includeEpisodeFile)
+		applyEpisodeImages(&res, *ep, includeImages)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		buf, _ := json.Marshal(res)
@@ -248,8 +279,8 @@ type episodesMonitoredBody struct {
 // monitored flag for a single id or a batch, then returns the
 // updated rows projected to EpisodeResource. C# returns 202 Accepted.
 //
-// DEFERRED: includeImages query param (the EpisodeResource shape
-// doesn't yet model the embedded image set — same gap as the GET).
+// J371: the includeImages query param is honoured (the reloaded rows
+// carry their MediaCover list when includeImages=true).
 func EpisodeMonitorHandler(svc EpisodeMonitorWriter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body episodesMonitoredBody
@@ -279,9 +310,12 @@ func EpisodeMonitorHandler(svc EpisodeMonitorWriter) http.Handler {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episode/monitor: reload: %w", err), nil)
 			return
 		}
+		includeImages := r.URL.Query().Get("includeImages") == "true"
 		out := make([]EpisodeResource, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, ToEpisodeResource(row))
+			res := ToEpisodeResource(row)
+			applyEpisodeImages(&res, row, includeImages)
+			out = append(out, res)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusAccepted)

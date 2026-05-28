@@ -409,3 +409,53 @@ func TestEpisodeMonitorHandler_ServiceError_500(t *testing.T) {
 		t.Errorf("status: %d", rr.Code)
 	}
 }
+
+// TestEpisodeImages_J371 covers the includeImages branch: nil when the
+// param is absent (pointer-to-slice key absent), and a decoded list
+// (int-ordinal coverType → camelCase string; url/remoteUrl passthrough,
+// NO local-URL rewrite) when includeImages=true.
+func TestEpisodeImages_J371(t *testing.T) {
+	t.Parallel()
+	row := episodes.Episode{
+		ID: 5, SeriesID: 1, SeasonNumber: 1, EpisodeNumber: 1,
+		Images: `[{"coverType":4,"url":"/persisted/screenshot","remoteUrl":"https://r/s.jpg"}]`,
+	}
+
+	// includeImages absent → Images pointer nil → key absent.
+	rr := httptest.NewRecorder()
+	EpisodeListHandler(&fakeEpisodeBySeries{rows: []episodes.Episode{row}}).ServeHTTP(rr,
+		httptest.NewRequest(http.MethodGet, "/api/v3/episode?seriesId=1", nil))
+	if strings.Contains(rr.Body.String(), `"images"`) {
+		t.Errorf("images must be absent without includeImages; got %s", rr.Body.String())
+	}
+
+	// includeImages=true → list with screenshot mapping + persisted url.
+	rr2 := httptest.NewRecorder()
+	EpisodeListHandler(&fakeEpisodeBySeries{rows: []episodes.Episode{row}}).ServeHTTP(rr2,
+		httptest.NewRequest(http.MethodGet, "/api/v3/episode?seriesId=1&includeImages=true", nil))
+	var got []EpisodeResource
+	if err := json.Unmarshal(rr2.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 1 || got[0].Images == nil || len(*got[0].Images) != 1 {
+		t.Fatalf("images not populated: %+v", got)
+	}
+	img := (*got[0].Images)[0]
+	if img.CoverType != "screenshot" || img.Url != "/persisted/screenshot" || img.RemoteUrl != "https://r/s.jpg" {
+		t.Errorf("image projection: %+v", img)
+	}
+}
+
+// TestEpisodeImages_EmptyList_J371 — includeImages=true with no images
+// emits "images":[] (pointer-to-non-nil-empty), matching C#'s non-null
+// List default, NOT an absent key.
+func TestEpisodeImages_EmptyList_J371(t *testing.T) {
+	t.Parallel()
+	row := episodes.Episode{ID: 5, SeriesID: 1, SeasonNumber: 1, EpisodeNumber: 1, Images: ""}
+	rr := httptest.NewRecorder()
+	EpisodeListHandler(&fakeEpisodeBySeries{rows: []episodes.Episode{row}}).ServeHTTP(rr,
+		httptest.NewRequest(http.MethodGet, "/api/v3/episode?seriesId=1&includeImages=true", nil))
+	if !strings.Contains(rr.Body.String(), `"images":[]`) {
+		t.Errorf("empty images must emit []; got %s", rr.Body.String())
+	}
+}

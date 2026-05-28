@@ -679,9 +679,26 @@ func decodeSeriesSeasons(raw string) []SeasonResource {
 // `Images = new List<MediaCover>()` non-null ctor default + the
 // always-non-null `model.Images.JsonClone()` in the mapper.
 func decodeSeriesImages(s series.Series) []MediaCoverResource {
+	return decodeMediaCovers(s.Images)
+}
+
+// decodeMediaCovers parses a persisted MediaCover opaque-JSON blob (the
+// shape stored in Series.Images / Episode.Images: a JSON array of
+// `{"coverType":<int>,"url":"…","remoteUrl":"…"}`) into the wire
+// MediaCoverResource shape, mapping the frozen-int coverType ordinal to
+// the camelCase enum string via mediacover.CoverType.String(). Url +
+// RemoteUrl pass through verbatim (the series path rewrites Url to the
+// local form via its handler-tier populator; the episode path emits the
+// persisted Url as C# does — see the per-caller docs). Empty/invalid →
+// non-nil empty slice. J371 generalised this from decodeSeriesImages so
+// the episode images projection can share it.
+func decodeMediaCovers(raw string) []MediaCoverResource {
 	out := []MediaCoverResource{}
-	covers, err := mediacover.DecodeSeriesImages(&s)
-	if err != nil {
+	if strings.TrimSpace(raw) == "" {
+		return out
+	}
+	var covers []mediacover.Cover
+	if err := json.Unmarshal([]byte(raw), &covers); err != nil {
 		return out
 	}
 	for _, c := range covers {
