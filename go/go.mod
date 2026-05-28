@@ -6,7 +6,9 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/pressly/goose/v3 v3.27.1
+	golang.org/x/image v0.41.0
 	golang.org/x/net v0.54.0
+	golang.org/x/sys v0.44.0
 	golang.org/x/text v0.37.0
 	modernc.org/sqlite v1.50.0
 )
@@ -24,7 +26,6 @@ require (
 	github.com/sethvargo/go-retry v0.3.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
 	modernc.org/libc v1.72.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

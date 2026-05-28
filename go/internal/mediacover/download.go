@@ -50,24 +50,69 @@ func (s *Service) EnsureCovers(ctx context.Context, ser *series.Series) (bool, e
 		return false, nil
 	}
 	updated := false
+	// (cover, alreadyExisted) pairs — the resize pass runs over ALL
+	// covers (not just freshly-downloaded ones), forcing a re-resize
+	// only when the master was (re)downloaded this pass. Mirrors C#
+	// `:113,148,155-158`.
+	type pending struct {
+		cover         Cover
+		alreadyExists bool
+	}
+	var toResize []pending
 	for i := range covers {
 		cover := covers[i]
 		if cover.CoverType == CoverTypeUnknown {
 			continue
 		}
 		path := s.GetCoverPath(ser.ID, cover.CoverType, 0)
-		if s.coverAlreadyExists(ctx, cover.RemoteUrl, path) {
-			continue
+		alreadyExists := s.coverAlreadyExists(ctx, cover.RemoteUrl, path)
+		if !alreadyExists {
+			if err := s.downloadCover(ctx, ser, cover, path); err != nil {
+				s.log.Warn("mediacover: couldn't download cover",
+					"seriesId", ser.ID, "coverType", cover.CoverType.String(),
+					"remoteUrl", cover.RemoteUrl, "err", err)
+			} else {
+				updated = true
+			}
 		}
-		if err := s.downloadCover(ctx, ser, cover, path); err != nil {
-			s.log.Warn("mediacover: couldn't download cover",
-				"seriesId", ser.ID, "coverType", cover.CoverType.String(),
-				"remoteUrl", cover.RemoteUrl, "err", err)
-			continue
+		// C# adds to the resize list regardless of the download outcome
+		// (`:148`, outside the try/catch) — a stale master still gets its
+		// variants ensured.
+		toResize = append(toResize, pending{cover: cover, alreadyExists: alreadyExists})
+	}
+
+	// Resize pass (C# `:151-163`). forceResize when the master was just
+	// (re)downloaded. Skipped entirely when no resizer is wired.
+	if s.resizer != nil {
+		for _, p := range toResize {
+			s.ensureResizedCovers(ser, p.cover, !p.alreadyExists)
 		}
-		updated = true
 	}
 	return updated, nil
+}
+
+// ensureResizedCovers ports `MediaCoverService.EnsureResizedCovers` at
+// `:176-219`. For each height tier the cover type defines
+// ([ResizeHeights]), it (re)generates the `<type>-<height>.<ext>`
+// variant when forceResize is set OR the variant is missing/zero-byte.
+// Resize failures are logged + swallowed (the C# `catch` at `:213-216`
+// — "using full size image instead"), so one bad variant doesn't abort
+// the rest.
+func (s *Service) ensureResizedCovers(ser *series.Series, cover Cover, forceResize bool) {
+	mainFile := s.GetCoverPath(ser.ID, cover.CoverType, 0)
+	for _, height := range ResizeHeights(cover.CoverType) {
+		resizeFile := s.GetCoverPath(ser.ID, cover.CoverType, height)
+		if !forceResize && s.fs.FileExists(resizeFile) {
+			if size, err := s.fs.GetFileSize(resizeFile); err == nil && size != 0 {
+				continue
+			}
+		}
+		if err := s.resizer.Resize(mainFile, resizeFile, height); err != nil {
+			s.log.Debug("mediacover: couldn't resize cover, using full size instead",
+				"seriesId", ser.ID, "coverType", cover.CoverType.String(),
+				"height", height, "err", err)
+		}
+	}
 }
 
 // coverAlreadyExists ports `CoverAlreadyExistsSpecification.AlreadyExists`

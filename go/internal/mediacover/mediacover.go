@@ -151,6 +151,20 @@ type CoverDownloader interface {
 	DownloadFile(ctx context.Context, url, path string) error
 }
 
+// Resizer narrows the image-resize surface the J365 EnsureResizedCovers
+// arm needs. Mirrors `IImageResizer.Resize(source, destination, height)`
+// at `MediaCover/ImageResizer.cs:10-13`. Optional: when nil, [Service]
+// skips the resize tier (downloads stay full-size only). Production
+// binds [NewImageResizer].
+type Resizer interface {
+	// Resize reads the source image, scales it to the target height
+	// (width auto, aspect preserved — C# `Resize(0, height)`), and
+	// writes it to destination. On failure the destination is left
+	// absent (the partial file is cleaned up) and the error returned —
+	// the caller logs + falls back to the full-size image.
+	Resize(source, destination string, height int) error
+}
+
 // AppFolders narrows the path-bundle surface to the one method
 // [Service] reaches for. Mirrors the C# `IAppFolderInfo.GetMediaCoverPath()`
 // extension method.
@@ -197,6 +211,10 @@ type Service struct {
 	// post-construction via [Service.SetDownloader] so the existing
 	// NewService signature (+ its callers) stay stable.
 	downloader CoverDownloader
+	// resizer is the optional J365 resize dep. nil → EnsureCovers
+	// downloads full-size only (the J363 posture). Set via
+	// [Service.SetResizer].
+	resizer Resizer
 }
 
 // SetDownloader binds the optional [CoverDownloader] that enables the
@@ -207,6 +225,16 @@ type Service struct {
 func (s *Service) SetDownloader(d CoverDownloader) {
 	if s != nil {
 		s.downloader = d
+	}
+}
+
+// SetResizer binds the optional [Resizer] that enables the J365 resize
+// tier ([Service.EnsureCovers] writes the per-cover-type height
+// variants). Kept off NewService for the same signature-stability
+// reason as [Service.SetDownloader].
+func (s *Service) SetResizer(r Resizer) {
+	if s != nil {
+		s.resizer = r
 	}
 }
 

@@ -2608,6 +2608,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("mediacover service: %w", err)
 	}
 	mediaCoverSvc.SetDownloader(mediaCoverDownloader{client: httpClient})
+	// J365 — bind the resize tier (golang.org/x/image CatmullRom +
+	// jpeg q92 / png), so EnsureCovers writes the per-cover-type height
+	// variants the React UI requests (poster-250.jpg etc.).
+	mediaCoverSvc.SetResizer(mediacover.NewImageResizer())
 	messaging.Subscribe(bus, "mediacover.HandleSeriesUpdated",
 		func(ctx context.Context, ev series.SeriesUpdatedEvent) error {
 			updated, err := mediaCoverSvc.HandleSeriesUpdated(ctx, ev.Series)

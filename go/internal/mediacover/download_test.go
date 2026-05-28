@@ -135,3 +135,123 @@ func TestHandleSeriesUpdated_DelegatesToEnsureCovers(t *testing.T) {
 		t.Errorf("HandleSeriesUpdated: got updated=%v err=%v downloaded=%v", updated, err, dl.downloaded)
 	}
 }
+
+type fakeResizer struct {
+	calls  []resizeCall
+	failOn map[string]bool // dest → return error
+}
+
+type resizeCall struct {
+	source string
+	dest   string
+	height int
+}
+
+func (r *fakeResizer) Resize(source, dest string, height int) error {
+	r.calls = append(r.calls, resizeCall{source, dest, height})
+	if r.failOn[dest] {
+		return errors.New("resize boom")
+	}
+	return nil
+}
+
+func TestEnsureCovers_ResizesFreshDownload(t *testing.T) {
+	t.Parallel()
+	fs := &stubFS{} // master missing → downloads; variants missing → resize
+	svc := newSvc(t, fs, "/covers", "")
+	svc.SetDownloader(&fakeDownloader{})
+	rz := &fakeResizer{}
+	svc.SetResizer(rz)
+	// Poster → resize heights 500, 250.
+	ser := mkSeriesWithImages(t, 7, `[{"coverType":1,"remoteUrl":"http://x/poster.jpg"}]`)
+	if _, err := svc.EnsureCovers(context.Background(), ser); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(rz.calls) != 2 {
+		t.Fatalf("expected 2 resize calls (500,250); got %v", rz.calls)
+	}
+	got := map[int]bool{rz.calls[0].height: true, rz.calls[1].height: true}
+	if !got[500] || !got[250] {
+		t.Errorf("expected heights {500,250}; got %v", rz.calls)
+	}
+	if rz.calls[0].source != "/covers/7/poster.jpg" || rz.calls[0].dest != "/covers/7/poster-500.jpg" {
+		t.Errorf("resize paths: got %+v", rz.calls[0])
+	}
+}
+
+func TestEnsureCovers_SkipsResizeWhenVariantPresent(t *testing.T) {
+	t.Parallel()
+	posterPath := "/covers/7/poster.jpg"
+	v500 := "/covers/7/poster-500.jpg"
+	v250 := "/covers/7/poster-250.jpg"
+	// Master present + size-match → not re-downloaded (not forced); both
+	// variants present + non-zero → skipped.
+	fs := &stubFS{
+		exists:   map[string]bool{posterPath: true, v500: true, v250: true},
+		fileSize: map[string]int64{posterPath: 100, v500: 10, v250: 5},
+	}
+	svc := newSvc(t, fs, "/covers", "")
+	svc.SetDownloader(&fakeDownloader{contentLen: map[string]int64{"http://x/poster.jpg": 100}})
+	rz := &fakeResizer{}
+	svc.SetResizer(rz)
+	ser := mkSeriesWithImages(t, 7, `[{"coverType":1,"remoteUrl":"http://x/poster.jpg"}]`)
+	if _, err := svc.EnsureCovers(context.Background(), ser); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(rz.calls) != 0 {
+		t.Errorf("present non-forced variants must skip resize; got %v", rz.calls)
+	}
+}
+
+func TestEnsureCovers_RegeneratesZeroByteVariant(t *testing.T) {
+	t.Parallel()
+	posterPath := "/covers/7/poster.jpg"
+	v500 := "/covers/7/poster-500.jpg"
+	v250 := "/covers/7/poster-250.jpg"
+	// Master size-match (not forced), but the 500 variant is zero-byte →
+	// regenerated; the 250 variant is healthy → skipped.
+	fs := &stubFS{
+		exists:   map[string]bool{posterPath: true, v500: true, v250: true},
+		fileSize: map[string]int64{posterPath: 100, v500: 0, v250: 5},
+	}
+	svc := newSvc(t, fs, "/covers", "")
+	svc.SetDownloader(&fakeDownloader{contentLen: map[string]int64{"http://x/poster.jpg": 100}})
+	rz := &fakeResizer{}
+	svc.SetResizer(rz)
+	ser := mkSeriesWithImages(t, 7, `[{"coverType":1,"remoteUrl":"http://x/poster.jpg"}]`)
+	if _, err := svc.EnsureCovers(context.Background(), ser); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(rz.calls) != 1 || rz.calls[0].height != 500 {
+		t.Errorf("expected only the zero-byte 500 variant regenerated; got %v", rz.calls)
+	}
+}
+
+func TestEnsureCovers_NilResizerSkipsResize(t *testing.T) {
+	t.Parallel()
+	fs := &stubFS{}
+	svc := newSvc(t, fs, "/covers", "")
+	svc.SetDownloader(&fakeDownloader{})
+	// No resizer set → download only, no panic.
+	ser := mkSeriesWithImages(t, 7, `[{"coverType":1,"remoteUrl":"http://x/poster.jpg"}]`)
+	if _, err := svc.EnsureCovers(context.Background(), ser); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+}
+
+func TestEnsureCovers_AbsorbsResizeError(t *testing.T) {
+	t.Parallel()
+	fs := &stubFS{}
+	svc := newSvc(t, fs, "/covers", "")
+	svc.SetDownloader(&fakeDownloader{})
+	rz := &fakeResizer{failOn: map[string]bool{"/covers/7/poster-500.jpg": true}}
+	svc.SetResizer(rz)
+	ser := mkSeriesWithImages(t, 7, `[{"coverType":1,"remoteUrl":"http://x/poster.jpg"}]`)
+	// 500 fails but 250 still attempted; no error propagates.
+	if _, err := svc.EnsureCovers(context.Background(), ser); err != nil {
+		t.Fatalf("resize error must be absorbed; got %v", err)
+	}
+	if len(rz.calls) != 2 {
+		t.Errorf("both heights attempted despite 500 failing; got %v", rz.calls)
+	}
+}

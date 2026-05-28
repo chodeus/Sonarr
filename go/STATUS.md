@@ -18763,3 +18763,40 @@ A refreshed/added series now fetches its covers to `<AppData>/MediaCover/<id>/<t
 | 3 — smaller residuals | Queue CustomFormatScore recompute; cutoff-unmet enumerator + wanted/cutoff wiring + CutoffUnmetEpisodeSearch handler; MediaCover download subscriber | DONE (J359-J364) |
 
 **All three Post-J352 residual arcs are drained.** Remaining documented deferral: the MediaCover ImageSharp resize tier (needs a deliberate Go image-resize dependency decision).
+
+---
+
+## J365 — Post-J352 residual-arc follow-up: MediaCover resize tier (closes the last documented deferral)
+
+**Anchor**: post-J364 (residual-arc complete). User-directed: take on the deferred ImageSharp resize tier.
+
+### Dependency decision
+
+Added `golang.org/x/image v0.41.0` (Go-team module, minimal transitive deps) for `draw.CatmullRom` high-quality scaling — vs. a hand-written stdlib bilinear (lower quality, more code). stdlib `image/jpeg` (q92) + `image/png` for codec.
+
+### C# source
+
+- `src/NzbDrone.Core/MediaCover/ImageResizer.cs:15-59` — `Image.Load` → `Resize(0, height)` → `Save`; JPEG quality 92; delete-dest-on-failure.
+- `src/NzbDrone.Core/MediaCover/MediaCoverService.cs:176-219` — `EnsureResizedCovers` (per-height tier; forceResize || missing || zero-byte; swallow resize errors).
+
+### Port deliverables
+
+- **`internal/mediacover/resize.go`** (new) — `ImageResizer` implements the new `Resizer` interface (`Resize(source, dest, height)`): decode → `draw.CatmullRom.Scale` to (autoWidth, height) preserving aspect → encode (`.png`→png else jpeg q92) → temp `.part` + rename; failure removes partial + stale dest. `NewImageResizer()` ctor.
+- **`internal/mediacover/mediacover.go`** — `Resizer` interface + optional `Service.resizer` field + `SetResizer`.
+- **`internal/mediacover/download.go`** — `EnsureCovers` restructured to the C# `(cover, alreadyExists)` two-pass shape (download pass, then resize pass over all covers with `forceResize=!alreadyExists`); new `ensureResizedCovers` (`ResizeHeights` tier, skip-when-present+non-zero-unless-forced, swallow resize errors).
+- **`cmd/sonarr/main.go`** — `mediaCoverSvc.SetResizer(mediacover.NewImageResizer())`.
+
+### Tests
+
+- `internal/mediacover/resize_test.go` (3): aspect+height preserved (200x100→100x50), png-for-clearlogo, missing-source-errors.
+- `internal/mediacover/download_test.go` (+5): resizes-fresh-download (poster→500,250), skips-present-variant, regenerates-zero-byte-variant, nil-resizer-skips, absorbs-resize-error.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/mediacover/ ./cmd/sonarr/...` ✓ (mediacover 1.46s, cmd/sonarr 3.70s)
+- `go vet` + gofmt ✓; `go mod tidy` clean.
+
+### MediaCover subsystem — COMPLETE
+
+URL-rewrite (3.BO) + cover-download (J363/J364) + resize (J365). No remaining MediaCover deferrals. A refreshed/added series fetches its covers AND writes the poster-500/250, banner-70/35, fanart-360/180 height variants.
