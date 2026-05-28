@@ -18851,3 +18851,49 @@ URL-rewrite (3.BO) + cover-download (J363/J364) + resize (J365). No remaining Me
 ### Remaining SeriesResource deferrals
 
 images + seasons[].images (MediaCover local-URL rewrite — next slice candidate), statistics + seasons[].statistics + nextAiring/previousAiring/episodesChanged (episode/episodefile statistics join), alternateTitles (scene-mapping), isExcluded (importlistexclusion join), remotePoster/folder (lookup-flow / C#-unset).
+
+---
+
+## J367 — Post-J365 resource-projection arc, slice 2: SeriesResource.images (MediaCover local-URL rewrite via populator)
+
+**Anchor**: post-J366 (SeriesResource model-intrinsic band complete). `images` is the biggest remaining single SeriesResource field and the first service-join projection of the arc.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Series/SeriesResource.cs:109` — `Images = model.Images.JsonClone()` (mapper; always-non-null list).
+- `src/Sonarr.Api.V3/Series/SeriesController.cs:125,223,231-237` — `MapCoversToLocal(...)` runs `_coverMapper.ConvertToLocalUrls(resource.Id, resource.Images)` AFTER `ToResource`, at the controller layer (List + ByID). The persisted Url is empty/stale; the local form is computed at serve time.
+- `src/NzbDrone.Core/MediaCover/MediaCover.cs:16-31` — {CoverType, Url, RemoteUrl}.
+- `openapi.json` MediaCover: coverType `$ref MediaCoverTypes`; url + remoteUrl nullable.
+
+### Port deliverables
+
+- **`internal/api/v3/series.go`** (imports `internal/mediacover`):
+  - `MediaCoverResource{CoverType string json:"coverType", Url string json:"url", RemoteUrl string json:"remoteUrl,omitempty"}`.
+  - `SeriesResource.Images []MediaCoverResource json:"images"` (always-non-null array).
+  - `ToSeriesResource` → `Images: decodeSeriesImages(s)`: `mediacover.DecodeSeriesImages(&s)` (frozen-int coverType) → map via `CoverType.String()`, persisted url, remoteUrl; empty/invalid → `[]`.
+  - `SeriesImagePopulator` interface + `ApplySeriesImagePopulator(res, svc any)` (J339/J345 type-assert idiom). List + ByID handlers call it per resource; rewrites `res.Images[].Url` in place when the lister/getter implements it, else leaves the persisted Url.
+- **`cmd/sonarr/series_image_wiring.go`** (new): `seriesImagePopulator{*series.Service; mc *mediacover.Service}` — embeds the service (drop-in for `SeriesLister`/`SeriesByIDGetter`); `PopulateSeriesImages` rebuilds `[]mediacover.Cover` (via `ParseCoverType`, unknown→CoverTypeUnknown skipped by ConvertToLocalUrls) → `mc.ConvertToLocalUrls(seriesID, covers)` → copies rewritten Url back. 3 compile-time guards.
+- **`cmd/sonarr/host_wiring.go`**: `buildHostServer` + `v3Routes` gain a `*mediacover.Service` param (`mediaCoverConvertSvc` — avoids colliding with the existing `mediaCoverLister` named `mediaCoverSvc`); `seriesImgSvc` wrapper built once, substituted at the 4 GET sites only (write handlers keep bare `seriesSvc`).
+- **`cmd/sonarr/main.go`**: passes the J364 `mediaCoverSvc` (fs+urlBase+resizer) into the call.
+
+### Design notes
+
+- **Controller-layer rewrite, not mapper.** Matches C# exactly — the base mapper produces the persisted Url; the populator (the Go-port equivalent of `IMapCoversToLocal`) rewrites it at handler time.
+- **v5 free.** v5 ListHandler/ByIDHandler wrap the v3 handlers with the same lister, so the populator fires; the languageProfileId-strip middleware runs after and is unaffected.
+- **Frozen-int coverType.** The Go-port contract persists coverType as the int ordinal (per `mediacover.CoverType`); the projection maps int→string. A string-enum blob would fail DecodeSeriesImages → `[]` (documented swallow).
+
+### Tests (`internal/api/v3/series_test.go`)
+
+- `TestToSeriesResource_ImagesProjection_J367` — int-ordinal→camelCase coverType, persisted url, remoteUrl omitempty, clearlogo mapping.
+- `TestToSeriesResource_ImagesProjection_EmptyRow_J367` — non-null `images:[]`.
+- `TestSeriesListHandler_ImagePopulator_J367` — with-populator rewrites Url to the local form; without-populator (plain `fakeSeriesLister`) preserves the persisted Url.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/series/... ./cmd/sonarr/...` ✓ (v3 1.78s, v5/series 2.69s, cmd/sonarr 4.35s)
+- `go vet` + gofmt ✓; `test/contract/replayer` + `hostbootstrap` ✓ (empty-DB `images:[]` unobservable).
+
+### Remaining SeriesResource deferrals
+
+statistics + seasons[].statistics + nextAiring/previousAiring/episodesChanged (episode/episodefile aggregation join — the big next candidate), seasons[].images (includeSeasonImages flag), alternateTitles (scene-mapping), isExcluded (importlistexclusion join). After statistics, SeriesResource is effectively complete → arc advances to EpisodeResource.

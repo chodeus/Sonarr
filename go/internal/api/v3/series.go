@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/httperr"
+	"sonarr.tv/sonarr/internal/mediacover"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/signalr"
 )
@@ -141,6 +142,7 @@ type SeriesResource struct {
 	OriginalCountry   string                    `json:"originalCountry,omitempty"`
 	IsExcluded        *bool                     `json:"isExcluded,omitempty"`
 	Seasons           []SeasonResource          `json:"seasons"`
+	Images            []MediaCoverResource      `json:"images"`
 	OriginalLanguage  LanguageRef               `json:"originalLanguage"`
 	Ratings           *RatingsResource          `json:"ratings,omitempty"`
 	Added             time.Time                 `json:"added"`
@@ -178,6 +180,27 @@ type SeasonResource struct {
 type RatingsResource struct {
 	Votes int     `json:"votes"`
 	Value float64 `json:"value"`
+}
+
+// MediaCoverResource is the v3 wire shape for
+// `NzbDrone.Core.MediaCover.MediaCover` (`src/NzbDrone.Core/MediaCover/
+// MediaCover.cs:16-31`) as surfaced on SeriesResource.Images. Sourced
+// from the persisted Series.Images opaque-JSON column.
+//
+// CoverType is the camelCase enum string ("poster"/"banner"/"fanart"/
+// "screenshot"/"headshot"/"clearlogo"/"unknown") — the persisted blob
+// stores the legacy int ordinal (the Go-port mediacover.CoverType
+// frozen-int representation), so the projection maps it via
+// mediacover.CoverType.String() at read time. Url is the LOCAL cover
+// URL (`<urlBase>/MediaCover/<seriesId>/<type>.<ext>?lastWrite=<ticks>`),
+// which is computed at handler time by the SeriesImagePopulator (the
+// persisted Url is empty/stale — C# likewise recomputes it in the
+// controller's MapCoversToLocal, not in the mapper). RemoteUrl is the
+// upstream metadata-source URL (nullable on C# → omitempty).
+type MediaCoverResource struct {
+	CoverType string `json:"coverType"`
+	Url       string `json:"url"`
+	RemoteUrl string `json:"remoteUrl,omitempty"`
 }
 
 // AlternateTitleResource is the wire-shape mirror of C#
@@ -255,9 +278,11 @@ func SeriesByIDHandler(svc SeriesByIDGetter) http.Handler {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series: get %d: %w", id, err), nil)
 			return
 		}
+		res := ToSeriesResource(*s)
+		ApplySeriesImagePopulator(&res, svc)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		buf, _ := json.Marshal(ToSeriesResource(*s))
+		buf, _ := json.Marshal(res)
 		_, _ = w.Write(buf)
 	})
 }
@@ -277,6 +302,9 @@ func SeriesListHandler(lister SeriesLister) http.Handler {
 		out := make([]SeriesResource, 0, len(rows))
 		for _, s := range rows {
 			out = append(out, ToSeriesResource(s))
+		}
+		for i := range out {
+			ApplySeriesImagePopulator(&out[i], lister)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -341,6 +369,7 @@ func ToSeriesResource(s series.Series) SeriesResource {
 		Genres:            decodeSeriesGenres(s.Genres),
 		OriginalCountry:   s.OriginalCountry,
 		Seasons:           decodeSeriesSeasons(s.Seasons),
+		Images:            decodeSeriesImages(s),
 		OriginalLanguage:  ToLanguageRef(s.OriginalLanguage),
 		Ratings:           decodeSeriesRatings(s.Ratings),
 		Added:             added,
@@ -395,6 +424,74 @@ func decodeSeriesSeasons(raw string) []SeasonResource {
 		out = append(out, SeasonResource{SeasonNumber: r.SeasonNumber, Monitored: r.Monitored})
 	}
 	return out
+}
+
+// decodeSeriesImages parses the persisted Series.Images opaque-JSON
+// column into the wire MediaCoverResource shape. The persisted blob
+// stores coverType as the frozen int ordinal; this maps it to the
+// camelCase enum string via mediacover.CoverType.String(). Url carries
+// the persisted value (empty/stale on a fresh row) — the handler-tier
+// SeriesImagePopulator rewrites it to the local form, mirroring the C#
+// controller's MapCoversToLocal. Empty/invalid input yields a non-nil
+// empty slice so the wire emits `"images":[]` — matches the C#
+// `Images = new List<MediaCover>()` non-null ctor default + the
+// always-non-null `model.Images.JsonClone()` in the mapper.
+func decodeSeriesImages(s series.Series) []MediaCoverResource {
+	out := []MediaCoverResource{}
+	covers, err := mediacover.DecodeSeriesImages(&s)
+	if err != nil {
+		return out
+	}
+	for _, c := range covers {
+		out = append(out, MediaCoverResource{
+			CoverType: c.CoverType.String(),
+			Url:       c.Url,
+			RemoteUrl: c.RemoteUrl,
+		})
+	}
+	return out
+}
+
+// SeriesImagePopulator is the optional-extension interface for the
+// series read handlers (List + ByID). When the handler's
+// lister/getter parameter ALSO implements this interface, each handler
+// invokes PopulateSeriesImages per resource to rewrite the
+// MediaCoverResource.Url fields to the local cover URL
+// (`<urlBase>/MediaCover/<seriesId>/<type>.<ext>?lastWrite=<ticks>`).
+// When NOT implemented (typical test fixtures), the fallback leaves
+// the persisted Url untouched — preserving the pre-J367 wire shape.
+//
+// This mirrors C# `SeriesController.MapCoversToLocal` (`:231-237`),
+// which runs `_coverMapper.ConvertToLocalUrls(resource.Id,
+// resource.Images)` AFTER `ToResource` at the controller layer (not
+// in the mapper). Production wiring at cmd/sonarr composes
+// *series.Service with a wrapper that ALSO implements
+// PopulateSeriesImages via *mediacover.Service.ConvertToLocalUrls.
+// Same J339/J345 optional-extension idiom.
+//
+// J367.
+type SeriesImagePopulator interface {
+	PopulateSeriesImages(seriesID int, images []MediaCoverResource)
+}
+
+// ApplySeriesImagePopulator post-processes a freshly-built
+// SeriesResource via the optional-extension type-assertion. svc is the
+// handler's lister/getter interface (typed as `any` so the helper
+// accepts any concrete type the handler holds); if it ALSO implements
+// SeriesImagePopulator, this helper rewrites the resource's image URLs
+// in place. Otherwise no-op (preserves the persisted-Url fallback).
+// nil-safe.
+//
+// J367.
+func ApplySeriesImagePopulator(res *SeriesResource, svc any) {
+	if res == nil || svc == nil || len(res.Images) == 0 {
+		return
+	}
+	pop, ok := svc.(SeriesImagePopulator)
+	if !ok || pop == nil {
+		return
+	}
+	pop.PopulateSeriesImages(res.ID, res.Images)
 }
 
 // decodeSeriesRatings parses the persisted Series.Ratings opaque-JSON

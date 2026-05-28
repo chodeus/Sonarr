@@ -1446,3 +1446,101 @@ func TestToSeriesResource_ModelIntrinsicProjection_EmptyRow_J366(t *testing.T) {
 		}
 	}
 }
+
+// fakeSeriesImagePopulator implements SeriesImagePopulator by prefixing
+// each image Url with a sentinel — proves the handler/helper invokes the
+// optional-extension type-assertion path.
+type fakeSeriesImagePopulator struct {
+	rows []series.Series
+}
+
+func (f fakeSeriesImagePopulator) GetAllSeries(context.Context) ([]series.Series, error) {
+	return f.rows, nil
+}
+
+func (f fakeSeriesImagePopulator) PopulateSeriesImages(seriesID int, images []MediaCoverResource) {
+	for i := range images {
+		images[i].Url = "/MediaCover/" + itoa(seriesID) + "/" + images[i].CoverType + ".jpg?lastWrite=42"
+	}
+}
+
+// TestToSeriesResource_ImagesProjection_J367 pins the base images decode:
+// the persisted Series.Images int-ordinal coverType maps to the camelCase
+// enum string; url is the persisted value (the handler-tier populator
+// rewrites it); remoteUrl passes through with omitempty.
+func TestToSeriesResource_ImagesProjection_J367(t *testing.T) {
+	t.Parallel()
+	s := series.Series{
+		ID:     5,
+		Title:  "Demo",
+		Images: `[{"coverType":1,"url":"/persisted/poster","remoteUrl":"https://r/poster.jpg"},{"coverType":2,"url":"","remoteUrl":"https://r/banner.jpg"}]`,
+	}
+	r := ToSeriesResource(s)
+	if len(r.Images) != 2 {
+		t.Fatalf("images count: %+v", r.Images)
+	}
+	if r.Images[0].CoverType != "poster" || r.Images[0].Url != "/persisted/poster" || r.Images[0].RemoteUrl != "https://r/poster.jpg" {
+		t.Errorf("image0: %+v", r.Images[0])
+	}
+	if r.Images[1].CoverType != "banner" {
+		t.Errorf("image1 coverType: %+v", r.Images[1])
+	}
+	// remoteUrl omitempty: empty remoteUrl drops the key.
+	buf, _ := json.Marshal(ToSeriesResource(series.Series{ID: 6, Title: "X", Images: `[{"coverType":6,"url":"/p"}]`}))
+	got := string(buf)
+	if !strings.Contains(got, `"coverType":"clearlogo"`) {
+		t.Errorf("clearlogo mapping missing: %s", got)
+	}
+	if strings.Contains(got, `"remoteUrl":`) {
+		t.Errorf("empty remoteUrl must be omitted: %s", got)
+	}
+}
+
+// TestToSeriesResource_ImagesProjection_EmptyRow_J367 pins the empty-row
+// default: images emits non-null [] (C# Images = new List ctor default).
+func TestToSeriesResource_ImagesProjection_EmptyRow_J367(t *testing.T) {
+	t.Parallel()
+	r := ToSeriesResource(series.Series{ID: 1, Title: "X"})
+	if r.Images == nil || len(r.Images) != 0 {
+		t.Errorf("images must be non-nil empty: %+v", r.Images)
+	}
+	buf, _ := json.Marshal(r)
+	if !strings.Contains(string(buf), `"images":[]`) {
+		t.Errorf("empty-row must emit images:[]; got %s", buf)
+	}
+}
+
+// TestSeriesListHandler_ImagePopulator_J367 proves the List handler runs
+// the optional SeriesImagePopulator when the lister implements it, and
+// leaves Urls untouched when it does not.
+func TestSeriesListHandler_ImagePopulator_J367(t *testing.T) {
+	t.Parallel()
+	rows := []series.Series{{ID: 7, Title: "Demo", Images: `[{"coverType":1,"url":"/old","remoteUrl":"https://r/p.jpg"}]`}}
+
+	// With populator → Url rewritten.
+	rr := httptest.NewRecorder()
+	SeriesListHandler(fakeSeriesImagePopulator{rows: rows}).ServeHTTP(rr,
+		httptest.NewRequest(http.MethodGet, "/api/v3/series", nil))
+	var got []SeriesResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Images) != 1 {
+		t.Fatalf("shape: %+v", got)
+	}
+	if got[0].Images[0].Url != "/MediaCover/7/poster.jpg?lastWrite=42" {
+		t.Errorf("url not rewritten by populator: %q", got[0].Images[0].Url)
+	}
+
+	// Without populator (plain lister) → persisted Url preserved.
+	rr2 := httptest.NewRecorder()
+	SeriesListHandler(&fakeSeriesLister{rows: rows}).ServeHTTP(rr2,
+		httptest.NewRequest(http.MethodGet, "/api/v3/series", nil))
+	var got2 []SeriesResource
+	if err := json.Unmarshal(rr2.Body.Bytes(), &got2); err != nil {
+		t.Fatalf("unmarshal2: %v", err)
+	}
+	if got2[0].Images[0].Url != "/old" {
+		t.Errorf("url should be untouched without populator: %q", got2[0].Images[0].Url)
+	}
+}
