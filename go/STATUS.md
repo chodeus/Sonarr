@@ -19342,3 +19342,34 @@ Per the arc guidance, the include flags are threaded INTO the `HistoryPagedListe
 ### Arc next
 
 Priority #1 remainder: paged History `qualityCutoffNotMet` (C# computes it unconditionally in MapToResource whenever `model.Series != null`; the paged adapter still emits the false default). Reuse the J378 shared `upgradableSpecForReads` mechanism; weigh unconditional series-load (faithful but costly) vs. gating. Then priority #2 Blocklist.
+
+---
+
+## J381 — Embedder/Lister Hydration Arc, slice 3: paged History qualityCutoffNotMet
+
+Completes paged History parity with the since/series path. C# `HistoryController.MapToResource` sets `resource.QualityCutoffNotMet` whenever `model.Series != null` — UNCONDITIONAL, not gated by an include flag. The paged `historyPagedAdapter.PagedHistory` was emitting the false default (the field is always-emit, no omitempty, per J312).
+
+### Change (`cmd/sonarr/host_wiring.go`)
+
+- `historyPagedAdapter` gains an `upgradable *decisionengine.UpgradableSpecification` field.
+- New method `qualityCutoffNotMet(ctx, e, seriesCache, profileCache)`: decode the row's persisted bare-int quality (`quality.Model`) → resolve the owning series + its quality profile (REUSING the per-request `seriesCache` / `profileCache` the customFormat path already fills, with negative-nil caching) → `decisionengine.NewProfileView` → `upgradable.QualityCutoffNotMet(view, qm, nil)` (newQuality omitted, matching the C# call). Any missing dep / decode / lookup failure degrades to false. Near-verbatim mirror of the J378 `historyServiceWithPopulator.PopulateHistoryQualityCutoffNotMet`.
+- `PagedHistory` calls it UNCONDITIONALLY per row.
+- Wired `upgradable: upgradableSpecForReads` (the shared J378 instance) at both registration sites (`/api/v3/history` + `/api/v5/history`).
+
+### Design decision — unconditional (not flag-gated)
+
+Unlike the J380 includeSeries/includeEpisode embeds (conditional, to avoid per-request DB cost when the client didn't ask), qualityCutoffNotMet is computed unconditionally: it's faithful to C# (always computed when Series is joined) and to the J378 since/series path, and the field is always-emit so a flag-gate would leave it permanently false. The per-row series/profile loads are bounded by distinct ids per page via the shared caches, so the marginal cost over the existing customFormat hydration is just the profile decode.
+
+### Tests (`cmd/sonarr/history_populated_mapper_test.go`, 1 new)
+
+`TestPagedHistory_QualityCutoffNotMet_J381` — real SQLite repo with an SDTV row (id 1) below an HDTV-720p cutoff (id 4) profile + a real `NewUpgradableSpecification(stubUpgradableConfig)` → asserts `true`; a no-spec adapter → false default. New `stubUpgradableConfig` ConfigReader helper.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./cmd/sonarr/... ./internal/api/v3/... ./internal/api/v5/history/... ./test/contract/...` ✓
+- `go vet` + gofmt ✓; empty-DB contract goldens `[]` (populated-row flag unobservable there).
+
+### Arc status
+
+Paged History is now FULLY hydrated (EventType J379, includeSeries/includeEpisode J380, qualityCutoffNotMet J381) — at parity with the since/series path. Priority #1 COMPLETE. Next: priority #2 Blocklist (series + Languages + Quality typed DTO on `blocklistPagedAdapter`). Priority #3 Wanted BLOCKED (unported lister stub).

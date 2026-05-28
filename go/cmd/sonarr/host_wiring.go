@@ -1038,6 +1038,9 @@ type historyPagedAdapter struct {
 	// episodesSvc backs the J380 paged includeEpisode embed. nil-safe —
 	// a missing dep degrades the embed to absent.
 	episodesSvc historyEpisodeLookup
+	// upgradable backs the J381 paged qualityCutoffNotMet flag. nil →
+	// the flag stays at the false default (graceful degrade).
+	upgradable *decisionengine.UpgradableSpecification
 }
 
 // Narrow lookup interfaces for historyPagedAdapter. Production
@@ -1127,6 +1130,13 @@ func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingR
 			// CalculateCustomFormatScore). nil deps fall back to
 			// empty slice + 0 score matching the pre-J336 stub.
 		}
+		// J381: qualityCutoffNotMet is computed UNCONDITIONALLY (C#
+		// HistoryController.MapToResource sets it whenever model.Series
+		// != null, not gated by an include flag — matches the J378
+		// since/series path). The per-row series + profile loads reuse
+		// the same seriesCache / profileCache the customFormat path
+		// fills, so the cost is bounded by distinct ids per page.
+		res.QualityCutoffNotMet = a.qualityCutoffNotMet(ctx, &entry, seriesCache, profileCache)
 		if includeSeries && a.seriesSvc != nil && e.SeriesID != 0 {
 			res.Series = a.hydrateSeriesEmbed(ctx, e.SeriesID, seriesEmbedCache)
 		}
@@ -1169,6 +1179,53 @@ func (a historyPagedAdapter) hydrateEpisodeEmbed(ctx context.Context, episodeID 
 	}
 	cache[episodeID] = er
 	return er
+}
+
+// qualityCutoffNotMet computes the J381 paged qualityCutoffNotMet flag:
+// decode the row's persisted quality → resolve the owning series'
+// quality profile → run the ported UpgradableSpecification.QualityCutoffNotMet
+// (newQuality omitted, matching C# HistoryController.MapToResource). Reuses
+// the per-request series + profile caches (negative-nil cached) so the
+// loads are shared with the customFormat path. Any missing dep / decode /
+// lookup failure degrades to false. Mirrors the J378
+// historyServiceWithPopulator.PopulateHistoryQualityCutoffNotMet.
+func (a historyPagedAdapter) qualityCutoffNotMet(ctx context.Context, e *history.Entry, seriesCache map[int]*series.Series, profileCache map[int]*qualityprofiles.Profile) bool {
+	if a.upgradable == nil || a.seriesSvc == nil || a.qualityProfilesSvc == nil || e == nil || e.SeriesID == 0 || e.Quality == "" {
+		return false
+	}
+	var qm quality.Model
+	if err := json.Unmarshal([]byte(e.Quality), &qm); err != nil {
+		return false
+	}
+	ser, cached := seriesCache[e.SeriesID]
+	if !cached {
+		s, err := a.seriesSvc.GetSeries(ctx, e.SeriesID)
+		if err != nil {
+			seriesCache[e.SeriesID] = nil
+			return false
+		}
+		ser = s
+		seriesCache[e.SeriesID] = ser
+	}
+	if ser == nil || ser.QualityProfileID == 0 {
+		return false
+	}
+	prof, ok := profileCache[ser.QualityProfileID]
+	if !ok {
+		p, err := a.qualityProfilesSvc.Get(ctx, ser.QualityProfileID)
+		if err == nil {
+			prof = p
+		}
+		profileCache[ser.QualityProfileID] = prof
+	}
+	if prof == nil {
+		return false
+	}
+	view, err := decisionengine.NewProfileView(prof)
+	if err != nil {
+		return false
+	}
+	return a.upgradable.QualityCutoffNotMet(view, qm, nil)
 }
 
 // computeHistoryCustomFormats runs the per-row CustomFormat
@@ -2841,7 +2898,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// GetBySeason/GetByEpisode service methods are deferred —
 		// stubs emit `[]` for empty-corpus parity) + 1 status wrapper
 		// (POST /failed/{id} 200+`{}` → 204 via v5util.RewriteSuccessTo204).
-		{Method: "GET", Path: "/api/v5/history", Handler: historyv5.ListHandler(historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc, episodesSvc: episodesSvc})},
+		{Method: "GET", Path: "/api/v5/history", Handler: historyv5.ListHandler(historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc, episodesSvc: episodesSvc, upgradable: upgradableSpecForReads})},
 		{Method: "GET", Path: "/api/v5/history/since", Handler: historyv5.SinceHandler(historySvcPopulated)},
 		{Method: "GET", Path: "/api/v5/history/series", Handler: historyv5.SeriesHandler(historySvcPopulated)},
 		{Method: "GET", Path: "/api/v5/history/season", Handler: historyv5.SeasonHandler()},
@@ -2984,7 +3041,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "DELETE", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileDeleteHandler(episodeFilesSvc)},
 		{Method: "DELETE", Path: "/api/v3/episodefile/bulk", Handler: apiv3.EpisodeFileBulkDeleteHandler(episodeFilesSvc)},
 		{Method: "GET", Path: "/api/v3/health", Handler: apiv3.HealthHandler(healthSvc)},
-		{Method: "GET", Path: "/api/v3/history", Handler: apiv3.HistoryHandler(historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc, episodesSvc: episodesSvc})},
+		{Method: "GET", Path: "/api/v3/history", Handler: apiv3.HistoryHandler(historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc, episodesSvc: episodesSvc, upgradable: upgradableSpecForReads})},
 		{Method: "GET", Path: "/api/v3/history/series", Handler: apiv3.HistorySeriesHandler(historySvcPopulated)},
 		{Method: "GET", Path: "/api/v3/history/since", Handler: apiv3.HistorySinceHandler(historySvcPopulated)},
 		{Method: "POST", Path: "/api/v3/history/failed/{id}", Handler: apiv3.HistoryMarkAsFailedHandler(failedDownloadsSvc)},

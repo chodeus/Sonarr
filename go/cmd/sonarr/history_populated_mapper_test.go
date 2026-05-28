@@ -2,14 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"log/slog"
 	"testing"
 	"time"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/datastore/datastoretest"
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/history"
+	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -276,6 +280,80 @@ func (f *fakeHistoryEpisodeLookup) GetEpisode(_ context.Context, id int) (*episo
 		return e, nil
 	}
 	return nil, episodes.ErrNotFound
+}
+
+// stubUpgradableConfig satisfies decisionengine.ConfigReader for the
+// J381 paged qualityCutoffNotMet test (default proper mode).
+type stubUpgradableConfig struct{}
+
+func (stubUpgradableConfig) DownloadPropersAndRepacks() quality.ProperDownloadType {
+	return quality.ProperPreferAndUpgrade
+}
+
+// J381: paged adapter computes qualityCutoffNotMet UNCONDITIONALLY via
+// the shared upgradable-spec mechanism. A row whose persisted quality
+// ranks below the owning profile's cutoff → true; with no upgradable
+// spec wired the flag stays at the false default (graceful degrade).
+func TestPagedHistory_QualityCutoffNotMet_J381(t *testing.T) {
+	t.Parallel()
+	repo, err := history.NewRepo(datastoretest.OpenSQLite(t))
+	if err != nil {
+		t.Fatalf("NewRepo: %v", err)
+	}
+	ctx := t.Context()
+	grabbed := int(history.EventTypeGrabbed)
+	// Persisted quality is the bare-int Model shape; SDTV (id 1) ranks
+	// below the profile cutoff HDTV-720p (id 4) → cutoff not met.
+	qjson, err := json.Marshal(quality.NewModel(quality.SDTV))
+	if err != nil {
+		t.Fatalf("marshal quality: %v", err)
+	}
+	row := &history.Entry{
+		SeriesID:    11,
+		EpisodeID:   77,
+		SourceTitle: "Show.S01E01",
+		Date:        time.Date(2026, 5, 2, 14, 30, 0, 0, time.UTC),
+		Quality:     string(qjson),
+		Data:        map[string]string{},
+		EventType:   &grabbed,
+	}
+	if _, err := repo.Insert(ctx, row); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	seriesSvc := &fakeHistorySeriesLookup{byID: map[int]*series.Series{11: {ID: 11, Title: "Show", QualityProfileID: 5}}}
+	profileSvc := &fakeHistoryQualityProfileLookup{byID: map[int]*qualityprofiles.Profile{5: {
+		ID:             5,
+		Name:           "HD",
+		Cutoff:         quality.HDTV720p.ID,
+		UpgradeAllowed: true,
+		Items:          `[{"quality":1,"allowed":true,"items":[]},{"quality":4,"allowed":true,"items":[]}]`,
+		FormatItems:    `[]`,
+	}}}
+	spec, err := decisionengine.NewUpgradableSpecification(stubUpgradableConfig{}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("NewUpgradableSpecification: %v", err)
+	}
+
+	// Positive: spec wired → qualityCutoffNotMet true.
+	withSpec := historyPagedAdapter{repo: repo, seriesSvc: seriesSvc, qualityProfilesSvc: profileSvc, upgradable: spec}
+	rows, _, err := withSpec.PagedHistory(ctx, apiv3.PagingRequest{Page: 1, PageSize: 50}, false, false)
+	if err != nil {
+		t.Fatalf("PagedHistory (with spec): %v", err)
+	}
+	if len(rows) != 1 || !rows[0].QualityCutoffNotMet {
+		t.Fatalf("qualityCutoffNotMet = %v, want true", rows[0].QualityCutoffNotMet)
+	}
+
+	// Graceful: no spec → flag stays at the false default, still emitted.
+	noSpec := historyPagedAdapter{repo: repo, seriesSvc: seriesSvc, qualityProfilesSvc: profileSvc}
+	rows, _, err = noSpec.PagedHistory(ctx, apiv3.PagingRequest{Page: 1, PageSize: 50}, false, false)
+	if err != nil {
+		t.Fatalf("PagedHistory (no spec): %v", err)
+	}
+	if len(rows) != 1 || rows[0].QualityCutoffNotMet {
+		t.Fatalf("qualityCutoffNotMet = %v, want false (no spec)", rows[0].QualityCutoffNotMet)
+	}
 }
 
 // ---------- counting wrappers for cache-call assertions ----------
