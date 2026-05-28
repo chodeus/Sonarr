@@ -259,6 +259,21 @@ type HistoryEpisodeEmbedder interface {
 	HistoryEpisodeResource(ctx context.Context, episodeID int) *EpisodeResource
 }
 
+// HistoryQualityCutoffPopulator computes the qualityCutoffNotMet flag for
+// a history row. C# `HistoryController.MapToResource` sets it whenever
+// `model.Series != null` via
+// `_upgradableSpecification.QualityCutoffNotMet(model.Series.QualityProfile
+// .Value, model.Quality)` — unconditional, NOT gated by includeSeries.
+// The production cmd/sonarr wrapper implements it (decode the row's
+// Quality, load the series' profile, run the ported upgradable spec); a
+// missing dep / lookup failure degrades to false. Test fixtures don't
+// implement it, so the flag stays the false default.
+//
+// J378 — the history counterpart to the J375 EpisodeFile cutoff.
+type HistoryQualityCutoffPopulator interface {
+	PopulateHistoryQualityCutoffNotMet(ctx context.Context, e *history.Entry) bool
+}
+
 // writeHistoryEntries projects history rows to the wire. svc is the
 // handler's reader value (typed `any`): it is type-asserted for the
 // HistoryEntryPopulator (customFormats) + — when includeSeries /
@@ -281,9 +296,16 @@ func writeHistoryEntries(ctx context.Context, w http.ResponseWriter, rows []hist
 	if includeEpisode {
 		episodeEmbed, _ = svc.(HistoryEpisodeEmbedder)
 	}
+	// J378: qualityCutoffNotMet is computed unconditionally (NOT flag-
+	// gated) — C# MapToResource sets it whenever model.Series != null.
+	var cutoffPop HistoryQualityCutoffPopulator
+	if c, ok := svc.(HistoryQualityCutoffPopulator); ok {
+		cutoffPop = c
+	}
 	seriesCache := map[int]*SeriesResource{}
 	out := make([]HistoryResource, 0, len(rows))
 	for _, e := range rows {
+		entry := e // copy for pointer capture
 		eventTypeName := ""
 		if e.EventType != nil {
 			eventTypeName = history.EventType(*e.EventType).String()
@@ -293,7 +315,6 @@ func writeHistoryEntries(ctx context.Context, w http.ResponseWriter, rows []hist
 		cf := []CustomFormatResource{}
 		score := 0
 		if populator != nil {
-			entry := e // copy for pointer capture
 			cf, score = populator.PopulateHistoryEntry(ctx, &entry)
 			if cf == nil {
 				cf = []CustomFormatResource{}
@@ -324,6 +345,9 @@ func writeHistoryEntries(ctx context.Context, w http.ResponseWriter, rows []hist
 			if er := episodeEmbed.HistoryEpisodeResource(ctx, e.EpisodeID); er != nil {
 				res.Episode = er
 			}
+		}
+		if cutoffPop != nil {
+			res.QualityCutoffNotMet = cutoffPop.PopulateHistoryQualityCutoffNotMet(ctx, &entry)
 		}
 		out = append(out, res)
 	}

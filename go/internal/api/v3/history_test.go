@@ -649,3 +649,44 @@ func TestHistorySinceHandler_IncludeSeriesEpisode_J377(t *testing.T) {
 		t.Errorf("episode embed: %+v", got[0].Episode)
 	}
 }
+
+// fakeHistoryReaderWithCutoff implements HistoryRangeReader plus the
+// J378 HistoryQualityCutoffPopulator extension.
+type fakeHistoryReaderWithCutoff struct {
+	rows []history.Entry
+	ret  bool
+}
+
+func (f *fakeHistoryReaderWithCutoff) Since(_ context.Context, _ time.Time, _ *history.EventType) ([]history.Entry, error) {
+	return f.rows, nil
+}
+func (f *fakeHistoryReaderWithCutoff) GetBySeries(_ context.Context, _ int, _ *history.EventType) ([]history.Entry, error) {
+	return f.rows, nil
+}
+func (f *fakeHistoryReaderWithCutoff) PopulateHistoryQualityCutoffNotMet(_ context.Context, _ *history.Entry) bool {
+	return f.ret
+}
+
+// TestHistorySinceHandler_QualityCutoffNotMet_J378 pins the cutoff flag:
+// computed (true) when the reader implements the extension; false default
+// when it doesn't; always emitted either way.
+func TestHistorySinceHandler_QualityCutoffNotMet_J378(t *testing.T) {
+	t.Parallel()
+	rows := []history.Entry{{ID: 1, SeriesID: 7, Date: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)}}
+
+	// Implementing reader returning true → qualityCutoffNotMet:true.
+	rr := httptest.NewRecorder()
+	HistorySinceHandler(&fakeHistoryReaderWithCutoff{rows: rows, ret: true}).
+		ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/history/since?date=2026-01-01T00:00:00Z", nil))
+	if !strings.Contains(rr.Body.String(), `"qualityCutoffNotMet":true`) {
+		t.Errorf("expected qualityCutoffNotMet:true; got %s", rr.Body.String())
+	}
+
+	// Non-implementing reader → false default, still emitted.
+	rr2 := httptest.NewRecorder()
+	HistorySinceHandler(&fakeHistoryRangeReader{sinceRows: rows}).
+		ServeHTTP(rr2, httptest.NewRequest(http.MethodGet, "/api/v3/history/since?date=2026-01-01T00:00:00Z", nil))
+	if !strings.Contains(rr2.Body.String(), `"qualityCutoffNotMet":false`) {
+		t.Errorf("expected qualityCutoffNotMet:false default; got %s", rr2.Body.String())
+	}
+}

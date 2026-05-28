@@ -1488,6 +1488,36 @@ type historyServiceWithPopulator struct {
 	customFormatsSvc   historyCustomFormatsLookup
 	// episodesSvc backs the J377 includeEpisode embed. nil → no embed.
 	episodesSvc historyEpisodeLookup
+	// upgradable backs the J378 qualityCutoffNotMet flag. nil → false.
+	upgradable *decisionengine.UpgradableSpecification
+}
+
+// PopulateHistoryQualityCutoffNotMet satisfies apiv3.HistoryQualityCutoffPopulator.
+// Decodes the row's persisted quality, loads the owning series' quality
+// profile, and runs the ported UpgradableSpecification.QualityCutoffNotMet
+// (newQuality omitted, matching the C# HistoryController.MapToResource
+// call). Any missing dep / lookup failure degrades to false. J378.
+func (h *historyServiceWithPopulator) PopulateHistoryQualityCutoffNotMet(ctx context.Context, e *history.Entry) bool {
+	if h.upgradable == nil || h.seriesSvc == nil || h.qualityProfilesSvc == nil || e == nil || e.SeriesID == 0 || e.Quality == "" {
+		return false
+	}
+	var qm quality.Model
+	if err := json.Unmarshal([]byte(e.Quality), &qm); err != nil {
+		return false
+	}
+	ser, err := h.seriesSvc.GetSeries(ctx, e.SeriesID)
+	if err != nil || ser == nil || ser.QualityProfileID == 0 {
+		return false
+	}
+	p, err := h.qualityProfilesSvc.Get(ctx, ser.QualityProfileID)
+	if err != nil || p == nil {
+		return false
+	}
+	view, err := decisionengine.NewProfileView(p)
+	if err != nil {
+		return false
+	}
+	return h.upgradable.QualityCutoffNotMet(view, qm, nil)
 }
 
 // HistorySeriesResource satisfies apiv3.HistorySeriesEmbedder — loads the
@@ -2147,29 +2177,32 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 	// fine here; for cross-request caching the wrapper could memoize
 	// allFormats, but the recorded-corpus history.Since payloads are
 	// always small lists where the per-call cost is negligible).
+	// J375/J378: one upgradable-spec instance backs the qualityCutoffNotMet
+	// flag on both the episodefile and history populators. configProv
+	// satisfies decisionengine.ConfigReader (via DownloadPropersAndRepacks)
+	// — same construction as main.go. A construction error leaves the
+	// flag at false (graceful degrade). The spec is stateless (config +
+	// log) so sharing one instance is safe.
+	upgradableSpecForReads, _ := decisionengine.NewUpgradableSpecification(configProv, logger)
 	historySvcPopulated := &historyServiceWithPopulator{
 		Service:            historySvc,
 		seriesSvc:          seriesSvc,
 		qualityProfilesSvc: qualityProfilesSvc,
 		customFormatsSvc:   customFormatsSvc,
 		episodesSvc:        episodesSvc,
+		upgradable:         upgradableSpecForReads,
 	}
 	// J339: episodefile populator wrapper — same pattern as the
 	// history populator. Used by every v3+v5 episodefile handler
 	// site so all of them route through the calculator engine for
 	// populated rows. Test fixtures don't implement the populator
 	// extension so the empty fallback fires verbatim.
-	// J375: the upgradable-spec instance backs the qualityCutoffNotMet
-	// flag. configProv satisfies decisionengine.ConfigReader (via
-	// DownloadPropersAndRepacks) — same construction as main.go. A
-	// construction error leaves the flag at false (graceful degrade).
-	episodeFileUpgradable, _ := decisionengine.NewUpgradableSpecification(configProv, logger)
 	episodeFilesSvcPopulated := &episodeFileServiceWithPopulator{
 		Service:            episodeFilesSvc,
 		seriesSvc:          seriesSvc,
 		qualityProfilesSvc: qualityProfilesSvc,
 		customFormatsSvc:   customFormatsSvc,
-		upgradable:         episodeFileUpgradable,
+		upgradable:         upgradableSpecForReads,
 	}
 	// J342: composite wrapper for the v3 Episode handlers — embeds
 	// *episodes.Service (preserves the full GetEpisode +

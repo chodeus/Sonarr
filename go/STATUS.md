@@ -19244,3 +19244,36 @@ Wanted (missing/cutoff) — accepts includeSeries/includeEpisodeFile/includeImag
 - `go build ./...` ✓
 - `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/history/... ./cmd/sonarr/... ./test/contract/...` ✓
 - `go vet` + gofmt ✓; `test/contract/replayer` + `hostbootstrap` ✓.
+
+## J378 — Post-J365 resource-projection arc, slice 13: History qualityCutoffNotMet (upgradable-spec computed flag)
+
+**Anchor**: post-J377. Reuses the J375 EpisodeFile cutoff mechanism for history. C# `HistoryController.MapToResource` computes `QualityCutoffNotMet` whenever `model.Series != null` (unconditional, not flag-gated). The Go HistoryResource.QualityCutoffNotMet already always-emits (J312) but was stuck at false.
+
+### C# source
+
+- `src/Sonarr.Api.V3/History/HistoryController.cs:54-58` — `if (model.Series != null) { resource.QualityCutoffNotMet = _upgradableSpecification.QualityCutoffNotMet(model.Series.QualityProfile.Value, model.Quality); }`.
+
+### Port deliverables
+
+- **`internal/api/v3/history.go`**: new optional-extension interface `HistoryQualityCutoffPopulator { PopulateHistoryQualityCutoffNotMet(ctx, e) bool }`. `writeHistoryEntries` type-asserts it unconditionally + sets `res.QualityCutoffNotMet`; the loop hoists `entry := e` so both the customFormat populator and the cutoff share the pointer.
+- **`cmd/sonarr/host_wiring.go`**: `historyServiceWithPopulator` gains an `upgradable` field + `PopulateHistoryQualityCutoffNotMet` (decode quality → series → profile → NewProfileView → QualityCutoffNotMet(view, qm, nil); graceful-false). Refactored the J375 per-site spec into one shared `upgradableSpecForReads` instance reused by both the history + episodefile populators.
+
+### Design notes
+
+- **Unconditional** (not flag-gated) — matches C#; the populator does the lookup whenever it can resolve series+profile, else false. Mirrors the J375 episodefile method shape exactly.
+- **Shared spec instance** — the UpgradableSpecification is stateless (config + log), so one instance backs both read populators.
+- **Additive** — test fixtures don't implement the extension → false default; the J312 false-assertion test still passes.
+
+### Tests (`internal/api/v3/history_test.go`, 1 new)
+
+`TestHistorySinceHandler_QualityCutoffNotMet_J378` — implementing reader → `qualityCutoffNotMet:true`; non-implementing → `false` default (always emitted).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/history/... ./cmd/sonarr/... ./test/contract/...` ✓
+- `go vet` + gofmt ✓; `test/contract/replayer` + `hostbootstrap` ✓.
+
+### Arc boundary
+
+The history since/series endpoints are now fully projected. The remaining embedder gaps (paged History / Wanted / Blocklist) return lister-projected resources whose embeds need service-tier hydration (Wanted's lister is an unported stub; blocklist/paged-history need lister hydration + the Queue J348 strip-pattern) — out of scope for the projection-only arc. Next tick: re-run the orientation grep; if no pure-projection DEFERRALs remain in scope, emit "resource-projection arc complete".
