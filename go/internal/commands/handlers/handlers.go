@@ -148,6 +148,14 @@ type Deps struct {
 	MissingEpisodeLister   EpisodeMissingLister
 	MissingEpisodeSearcher EpisodeSearcher
 
+	// CutoffUnmetEpisodeLister wires the
+	// IExecute<CutoffUnmetEpisodeSearchCommand> handler (slice 5.J362).
+	// Optional — nil falls back to the stub-log behaviour. The
+	// per-episode dispatcher reuses MissingEpisodeSearcher (the same
+	// indexersearch.Service.EpisodeSearch adapter). Production binds an
+	// adapter around `*episodes.Repo` + `*qualityprofiles.Service`.
+	CutoffUnmetEpisodeLister EpisodeCutoffUnmetLister
+
 	// SeriesSearchLookup / SeriesSearchEpisodes / SeriesSeasonSearcher
 	// wire the IExecute<SeriesSearchCommand> handler (slice 5.J215).
 	// All four (incl. MissingEpisodeSearcher above which doubles as
@@ -266,6 +274,9 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	})
 	registry.Register(MissingEpisodeSearchName, commands.CommandSpec{
 		Handler: NewMissingEpisodeSearch(deps.MissingEpisodeLister, deps.MissingEpisodeSearcher, deps.Log),
+	})
+	registry.Register(CutoffUnmetEpisodeSearchName, commands.CommandSpec{
+		Handler: NewCutoffUnmetEpisodeSearch(deps.CutoffUnmetEpisodeLister, deps.MissingEpisodeSearcher, deps.Log),
 	})
 	registry.Register(SeriesSearchName, commands.CommandSpec{
 		Handler: NewSeriesSearch(deps.SeriesSearchLookup, deps.SeriesSearchEpisodes, deps.MissingEpisodeSearcher, deps.SeriesSeasonSearcher, deps.Log),

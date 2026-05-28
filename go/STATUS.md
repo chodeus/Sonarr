@@ -18650,3 +18650,43 @@ No new cmd/sonarr DB test (package main has no datastore-test infra; the wiring 
 | image-download subscriber off SeriesAddedEvent | OPEN — needs a new HTTP-download MediaCover subsystem (external I/O) |
 
 The wanted/cutoff endpoint is now functional on both surfaces. Next Arc 3 candidate: the CutoffUnmetEpisodeSearchCommand handler (mirrors the MissingEpisodeSearch handler, swapping the enumerator).
+
+---
+
+## J362 — Post-J352 residual-arc, Arc 3 (smaller residuals) slice 4: CutoffUnmetEpisodeSearchCommand handler
+
+**Anchor**: post-J361 (cutoff-unmet enumerator wired into wanted/cutoff). The CutoffUnmetEpisodeSearchCommand handler is now unblocked.
+
+### C# source
+
+- `src/NzbDrone.Core/IndexerSearch/EpisodeSearchService.cs:163-194` — `Execute(CutoffUnmetEpisodeSearchCommand)`: monitored + SeriesId filter → EpisodeCutoffService.EpisodesWhereCutoffUnmet → subtract queued → SearchForBulkEpisodes.
+- `src/NzbDrone.Core/IndexerSearch/CutoffUnmetEpisodeSearchCommand.cs` — `{SeriesId int?, Monitored=true}`.
+
+### Port deliverables
+
+- **`internal/commands/handlers/cutoffunmetepisodesearch.go`** (new) — `CutoffUnmetEpisodeSearch` handler mirroring J39 MissingEpisodeSearch: `CutoffUnmetEpisodeSearchBody{SeriesID?, Monitored?}`; new `EpisodeCutoffUnmetLister` interface (`CutoffUnmetEpisodes(ctx, monitored)`); per-episode `EpisodeSearcher.EpisodeSearch` dispatch with warn-absorb; handler-tier SeriesId filter; stub-when-unwired. `CutoffUnmetEpisodeSearchName = "CutoffUnmetEpisodeSearch"`.
+- **`internal/commands/handlers/handlers.go`** — `Deps.CutoffUnmetEpisodeLister`; `RegisterAll` registers the command (per-episode dispatcher reuses `deps.MissingEpisodeSearcher`).
+- **`cmd/sonarr/host_wiring.go`** — extracted `computeBelowCutoffByProfile(ctx, profiles)` free fn (wantedRepoLister.belowCutoffByProfile now delegates); new `cutoffUnmetSearchLister{episodes, profiles}` adapter (below-cutoff + `episodes.Repo.WantedCutoffUnmet`).
+- **`cmd/sonarr/main.go`** — `Deps.CutoffUnmetEpisodeLister: cutoffUnmetSearchLister{episodes: episodesRepo, profiles: qualityProfilesSvc}`.
+
+### Tests
+
+- `cutoffunmetepisodesearch_test.go` (4): stub-when-unwired; dispatches-per-episode; seriesId-filter (only matching series searched); lister-error-propagates. Reuses the missing-handler `stubEpisodeSearcher`.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/commands/handlers/ ./cmd/sonarr/...` ✓ (handlers 41.3s, cmd/sonarr 3.92s)
+- `go vet` + gofmt ✓
+
+### Arc 3 progress
+
+| Item | Status |
+| --- | --- |
+| Queue CustomFormatScore recompute | DONE (J359) |
+| Cutoff-unmet enumerator core | DONE (J360) |
+| Cutoff-unmet wired into wanted/cutoff (v3+v5) | DONE (J361) |
+| CutoffUnmetEpisodeSearchCommand handler | **DONE this slice (J362)** |
+| image-download subscriber off SeriesAddedEvent | OPEN — needs a new HTTP-download MediaCover subsystem (no internal/mediacover; external I/O) — out of scope for the autonomous loop |
+
+Two of Arc 3's three named residuals are fully drained (CustomFormatScore + the entire cutoff-unmet chain across J360-J362). The remaining image-download subscriber requires a new external-I/O subsystem; the next tick declares the loop's actionable surface complete or assesses that subsystem.

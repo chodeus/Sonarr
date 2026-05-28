@@ -3143,6 +3143,12 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		ApplicationCheckUpdate: updateChecker,
 		MissingEpisodeLister:   episodesSvc,
 		MissingEpisodeSearcher: episodeSearchAdapter,
+		// J362 — CutoffUnmetEpisodeSearch handler. The lister computes
+		// the per-profile below-cutoff sets + enumerates via
+		// episodes.Repo.WantedCutoffUnmet (the J360/J361 surface); the
+		// per-episode dispatcher reuses episodeSearchAdapter
+		// (MissingEpisodeSearcher).
+		CutoffUnmetEpisodeLister: cutoffUnmetSearchLister{episodes: episodesRepo, profiles: qualityProfilesSvc},
 		// J215 — SeriesSearchCommand handler deps. seriesSvc satisfies
 		// SeriesSearchLookup via GetSeries; episodesSvc satisfies
 		// SeriesSearchEpisodesLister via GetEpisodesBySeries;

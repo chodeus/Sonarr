@@ -1566,16 +1566,23 @@ func (w wantedRepoLister) PagedWanted(ctx context.Context, req apiv3.PagingReque
 	return out, total, nil
 }
 
-// belowCutoffByProfile builds the quality-profile-id → below-cutoff-
-// quality-ids map [episodes.Repo.WantedCutoffUnmet] consumes, by running
-// [qualityprofiles.QualitiesBelowCutoff] over every profile. Mirrors the
-// profile sweep in C# `EpisodeCutoffService.EpisodesWhereCutoffUnmet`.
-// nil profiles service → empty map (cutoff branch then returns no rows).
+// belowCutoffByProfile delegates to [computeBelowCutoffByProfile].
 func (w wantedRepoLister) belowCutoffByProfile(ctx context.Context) (map[int][]int, error) {
-	if w.profiles == nil {
+	return computeBelowCutoffByProfile(ctx, w.profiles)
+}
+
+// computeBelowCutoffByProfile builds the quality-profile-id →
+// below-cutoff-quality-ids map [episodes.Repo.WantedCutoffUnmet]
+// consumes, by running [qualityprofiles.QualitiesBelowCutoff] over every
+// profile. Mirrors the profile sweep in C#
+// `EpisodeCutoffService.EpisodesWhereCutoffUnmet`. nil profiles service →
+// empty map. Shared by the wantedRepoLister cutoff branch (J361) + the
+// CutoffUnmetEpisodeSearch command lister (J362).
+func computeBelowCutoffByProfile(ctx context.Context, profiles *qualityprofiles.Service) (map[int][]int, error) {
+	if profiles == nil {
 		return nil, nil
 	}
-	profs, err := w.profiles.All(ctx)
+	profs, err := profiles.All(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1590,6 +1597,24 @@ func (w wantedRepoLister) belowCutoffByProfile(ctx context.Context) (map[int][]i
 		}
 	}
 	return out, nil
+}
+
+// cutoffUnmetSearchLister satisfies [handlers.EpisodeCutoffUnmetLister]
+// for the CutoffUnmetEpisodeSearch command (J362). Computes the
+// per-profile below-cutoff sets then enumerates via
+// [episodes.Repo.WantedCutoffUnmet] — the same surface the wanted/cutoff
+// endpoint uses (J361).
+type cutoffUnmetSearchLister struct {
+	episodes *episodes.Repo
+	profiles *qualityprofiles.Service
+}
+
+func (l cutoffUnmetSearchLister) CutoffUnmetEpisodes(ctx context.Context, monitored bool) ([]episodes.Episode, error) {
+	below, err := computeBelowCutoffByProfile(ctx, l.profiles)
+	if err != nil {
+		return nil, err
+	}
+	return l.episodes.WantedCutoffUnmet(ctx, below, monitored)
 }
 
 // uiConfigGetter composes the two underlying providers
