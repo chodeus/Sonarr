@@ -1,5 +1,14 @@
 package v3
 
+import (
+	"fmt"
+	"math"
+	"strings"
+	"time"
+
+	"sonarr.tv/sonarr/internal/mediainfo"
+)
+
 // MediaInfoResource is the wire-shape DTO that EpisodeFileResource
 // carries on its `mediaInfo` field. v3 and v5 SHAPE-DIVERGE on this
 // resource:
@@ -25,12 +34,12 @@ package v3
 // (breaking the EpisodeFileResource alias on v5) costs more LOC
 // without semantic gain.
 //
-// J330 — wire-shape pin only. Population is gated on the populated-
-// row episodefile mapper, which needs to decode the persisted
-// mediainfo.Model (internal/mediainfo/mediainfo.go:187 — the full
-// 16-field rich blob) into both projections at projection time.
-// Today the EpisodeFileResource.MediaInfo field stays nil and
-// omitempty drops the key.
+// J330 — wire-shape pin. J374 lands the population: ToMediaInfoResource
+// (below) projects the persisted typed mediainfo.Model
+// (internal/mediainfo/mediainfo.go — the full rich blob, already decoded
+// on the File model) into both surfaces' fields, and ToEpisodeFileResource
+// assigns it. A nil model leaves the pointer nil so omitempty drops the
+// key (zero-row contract preserved).
 type MediaInfoResource struct {
 	// v3-flat audio summary fields (additive divergence on v5).
 	AudioBitrate     int64   `json:"audioBitrate,omitempty"`
@@ -98,4 +107,114 @@ type MediaInfoSubtitleStreamResource struct {
 	Title           string `json:"title,omitempty"`
 	Forced          *bool  `json:"forced,omitempty"`
 	HearingImpaired *bool  `json:"hearingImpaired,omitempty"`
+}
+
+// ToMediaInfoResource projects a persisted [mediainfo.Model] into the
+// UNION wire shape — the v3-flat audio/subtitle summary fields + the
+// shared video/runtime fields + the v5-typed AudioStreams/SubtitleStreams
+// lists. The apiv3 type deliberately carries both surfaces' fields (the
+// J330 additive-divergence design), so this mapper populates BOTH the C#
+// v3 `EpisodeFiles/MediaInfoResource.ToResource` flat projection AND the
+// C# v5 `EpisodeFiles/MediaInfoResource.ToResource` stream-list
+// projection; each surface ignores the other's extra keys.
+//
+// sceneName feeds the codec formatters (C# passes `model.SceneName`).
+// A nil model returns nil so the caller's omitempty pointer drops the
+// mediaInfo key (mirrors the C# null guard).
+//
+// J374.
+func ToMediaInfoResource(m *mediainfo.Model, sceneName string) *MediaInfoResource {
+	if m == nil {
+		return nil
+	}
+	primary := m.PrimaryAudioStream()
+	var audioBitrate int64
+	if primary != nil {
+		audioBitrate = primary.Bitrate
+	}
+
+	audioLangs := make([]string, len(m.AudioStreams))
+	for i := range m.AudioStreams {
+		audioLangs[i] = m.AudioStreams[i].Language
+	}
+	subLangs := make([]string, len(m.SubtitleStreams))
+	for i := range m.SubtitleStreams {
+		subLangs[i] = m.SubtitleStreams[i].Language
+	}
+
+	res := &MediaInfoResource{
+		// v3-flat audio summary (FormatAudioChannels/FormatAudioCodec on
+		// the primary stream; languages slash-joined like C#
+		// ConcatToString("/")).
+		AudioBitrate:     audioBitrate,
+		AudioChannels:    mediainfo.FormatAudioChannels(primary),
+		AudioCodec:       mediainfo.FormatAudioCodec(primary, sceneName),
+		AudioLanguages:   strings.Join(audioLangs, "/"),
+		AudioStreamCount: len(m.AudioStreams),
+		// shared video / runtime.
+		VideoBitDepth:         m.VideoBitDepth,
+		VideoBitrate:          m.VideoBitrate,
+		VideoCodec:            mediainfo.FormatVideoCodec(m, sceneName),
+		VideoFps:              math.Round(m.VideoFps*1000) / 1000,
+		VideoDynamicRange:     mediainfo.FormatVideoDynamicRange(m),
+		VideoDynamicRangeType: mediainfo.FormatVideoDynamicRangeType(m),
+		Resolution:            fmt.Sprintf("%dx%d", m.Width, m.Height),
+		RunTime:               formatMediaInfoRuntime(m.RunTime.Duration()),
+		ScanType:              m.ScanType,
+		// v3-flat subtitle summary.
+		Subtitles: strings.Join(subLangs, "/"),
+	}
+
+	// v5-typed stream lists (J309 pointer-to-slice 3-state: a non-nil
+	// model slice → non-nil resource slice so it emits `[]`/list; a nil
+	// model slice leaves the pointer nil → key absent).
+	if m.AudioStreams != nil {
+		streams := make([]MediaInfoAudioStreamResource, 0, len(m.AudioStreams))
+		for i := range m.AudioStreams {
+			s := &m.AudioStreams[i]
+			streams = append(streams, MediaInfoAudioStreamResource{
+				Language:         s.Language,
+				Codec:            mediainfo.FormatAudioCodec(s, sceneName),
+				CodecID:          s.CodecID,
+				Profile:          s.Profile,
+				Bitrate:          s.Bitrate,
+				Channels:         mediainfo.FormatAudioChannels(s),
+				ChannelPositions: s.ChannelPositions,
+				Title:            s.Title,
+			})
+		}
+		res.AudioStreams = &streams
+	}
+	if m.SubtitleStreams != nil {
+		streams := make([]MediaInfoSubtitleStreamResource, 0, len(m.SubtitleStreams))
+		for i := range m.SubtitleStreams {
+			s := &m.SubtitleStreams[i]
+			streams = append(streams, MediaInfoSubtitleStreamResource{
+				Language:        s.Language,
+				Format:          s.Format,
+				Title:           s.Title,
+				Forced:          s.Forced,
+				HearingImpaired: s.HearingImpaired,
+			})
+		}
+		res.SubtitleStreams = &streams
+	}
+	return res
+}
+
+// formatMediaInfoRuntime mirrors the C# `MediaInfoResourceMapper
+// .FormatRuntime` — `H:MM:SS` when there's an hours component, else
+// `M:SS`.
+func formatMediaInfoRuntime(d time.Duration) string {
+	totalSec := int(d.Seconds())
+	if totalSec < 0 {
+		totalSec = 0
+	}
+	h := totalSec / 3600
+	m := (totalSec % 3600) / 60
+	s := totalSec % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
 }

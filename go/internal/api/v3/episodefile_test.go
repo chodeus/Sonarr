@@ -8,8 +8,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/mediainfo"
 	"sonarr.tv/sonarr/internal/quality"
 )
 
@@ -411,6 +414,92 @@ func TestEpisodeFile_QualityProjection_J373(t *testing.T) {
 	res2 := ToEpisodeFileResource(episodefiles.File{ID: 2, SeriesID: 7, RelativePath: "b.mkv"}, "")
 	if res2.Quality != nil {
 		t.Errorf("empty Quality column must leave the pointer nil; got %+v", res2.Quality)
+	}
+}
+
+// TestEpisodeFile_MediaInfoProjection_J374 pins the mediaInfo projection:
+// the UNION shape (v3-flat audio/subtitle summary + shared video/runtime
+// + v5-typed stream lists) from the typed File.MediaInfo model; a nil
+// model omits the key.
+func TestEpisodeFile_MediaInfoProjection_J374(t *testing.T) {
+	t.Parallel()
+	model := &mediainfo.Model{
+		VideoBitDepth: 8,
+		VideoBitrate:  5_000_000,
+		VideoFps:      23.976023, // rounds to 23.976
+		Width:         1920,
+		Height:        1080,
+		ScanType:      "Progressive",
+		RunTime:       datastore.STDuration(22 * time.Minute),
+		AudioStreams: []mediainfo.AudioStream{
+			{Language: "eng", Format: "ac3", Bitrate: 384_000, Channels: 6, CodecID: "a3"},
+			{Language: "fre", Format: "aac", Bitrate: 128_000, Channels: 2},
+		},
+		SubtitleStreams: []mediainfo.SubtitleStream{
+			{Language: "eng", Format: "SRT"},
+		},
+	}
+	res := ToMediaInfoResource(model, "Some.Series.S01E01-Sonarr")
+	if res == nil {
+		t.Fatalf("mediaInfo must be populated for a non-nil model")
+	}
+	// v3-flat audio summary (primary stream = first audio stream).
+	if res.AudioBitrate != 384_000 {
+		t.Errorf("audioBitrate: got %d want 384000", res.AudioBitrate)
+	}
+	if res.AudioChannels != 6 {
+		t.Errorf("audioChannels: got %v want 6", res.AudioChannels)
+	}
+	if res.AudioCodec != "AC3" {
+		t.Errorf("audioCodec: got %q want AC3", res.AudioCodec)
+	}
+	if res.AudioLanguages != "eng/fre" {
+		t.Errorf("audioLanguages: got %q want eng/fre", res.AudioLanguages)
+	}
+	if res.AudioStreamCount != 2 {
+		t.Errorf("audioStreamCount: got %d want 2", res.AudioStreamCount)
+	}
+	// shared video / runtime.
+	if res.VideoFps != 23.976 {
+		t.Errorf("videoFps: got %v want 23.976", res.VideoFps)
+	}
+	if res.Resolution != "1920x1080" {
+		t.Errorf("resolution: got %q want 1920x1080", res.Resolution)
+	}
+	if res.RunTime != "22:00" {
+		t.Errorf("runTime: got %q want 22:00", res.RunTime)
+	}
+	if res.ScanType != "Progressive" {
+		t.Errorf("scanType: got %q want Progressive", res.ScanType)
+	}
+	// v3-flat subtitle summary.
+	if res.Subtitles != "eng" {
+		t.Errorf("subtitles: got %q want eng", res.Subtitles)
+	}
+	// v5-typed stream lists.
+	if res.AudioStreams == nil || len(*res.AudioStreams) != 2 {
+		t.Fatalf("audioStreams must carry 2 entries; got %+v", res.AudioStreams)
+	}
+	if a0 := (*res.AudioStreams)[0]; a0.Language != "eng" || a0.Codec != "AC3" || a0.Bitrate != 384_000 || a0.Channels != 6 {
+		t.Errorf("audioStreams[0]: %+v", a0)
+	}
+	if res.SubtitleStreams == nil || len(*res.SubtitleStreams) != 1 || (*res.SubtitleStreams)[0].Language != "eng" {
+		t.Errorf("subtitleStreams: %+v", res.SubtitleStreams)
+	}
+
+	// Runtime with an hours component → H:MM:SS.
+	hrs := ToMediaInfoResource(&mediainfo.Model{RunTime: datastore.STDuration(time.Hour + 5*time.Minute + 9*time.Second)}, "")
+	if hrs.RunTime != "1:05:09" {
+		t.Errorf("runTime hours form: got %q want 1:05:09", hrs.RunTime)
+	}
+
+	// nil model → nil (via ToEpisodeFileResource the key is dropped).
+	if ToMediaInfoResource(nil, "") != nil {
+		t.Errorf("nil model must project to nil")
+	}
+	res2 := ToEpisodeFileResource(episodefiles.File{ID: 2, SeriesID: 7, RelativePath: "b.mkv"}, "")
+	if res2.MediaInfo != nil {
+		t.Errorf("nil File.MediaInfo must leave the resource pointer nil; got %+v", res2.MediaInfo)
 	}
 }
 

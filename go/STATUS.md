@@ -19113,3 +19113,37 @@ Every C# MapToResource branch ported: scalars + FinaleType + episodeFile (J340/J
 ### Remaining EpisodeFileResource deferrals
 
 **mediaInfo** — the per-stream `MediaInfoResource` codec projection; `File.MediaInfo` is already a typed `*mediainfo.Model`, so J374 is the MediaInfoResource subtype + field mapping. **qualityCutoffNotMet** — needs the upgradable-spec service (same DEFERRED path as HistoryResource.QualityCutoffNotMet, J312). Then the queue/history/blocklist embedder include-branches.
+
+## J374 — Post-J365 resource-projection arc, slice 9: EpisodeFileResource.mediaInfo (populated-row MediaInfo UNION projection)
+
+**Anchor**: post-J373. Lands the second-largest EpisodeFileResource deferred field. The MediaInfoResource + nested stream wire shapes were already pinned (J330), the codec formatters already ported (`internal/mediainfo/formatter.go`), and `File.MediaInfo` is already a typed `*mediainfo.Model` — so this is purely the populated-row mapper + wiring.
+
+### C# source
+
+- `src/Sonarr.Api.V3/EpisodeFiles/MediaInfoResource.cs:31-57` — v3 flat projection (AudioBitrate/AudioChannels/AudioCodec/AudioLanguages/AudioStreamCount + Subtitles + shared video/runtime). `Quality`-style `model.ToResource(sceneName)` with FormatRuntime helper.
+- `src/Sonarr.Api.V5/EpisodeFiles/MediaInfoResource.cs:26-44` + `MediaInfoStreamResource.cs` — v5 projection (shared video/runtime + typed AudioStreams/SubtitleStreams lists; per-stream Codec=FormatAudioCodec, Channels=FormatAudioChannels).
+
+### Port deliverables
+
+- **`internal/api/v3/mediainfo_resource.go`**: new `ToMediaInfoResource(m *mediainfo.Model, sceneName string) *MediaInfoResource` projecting the UNION of both surfaces' fields (the J330 additive-divergence type carries both); new `formatMediaInfoRuntime(time.Duration)` helper mirroring C# FormatRuntime (`H:MM:SS` / `M:SS`). nil model → nil. New imports: fmt, math, strings, time, internal/mediainfo.
+- **`internal/api/v3/episodefile.go`**: `ToEpisodeFileResource` assigns `MediaInfo: ToMediaInfoResource(f.MediaInfo, f.SceneName)`.
+
+### Design notes
+
+- **UNION population is the J330 design**: the shared apiv3 MediaInfoResource carries v3-flat + v5-stream-list fields, all omitempty; populating both means v3 clients get their flat fields (+ ignored stream lists) and v5 clients get their stream lists (+ ignored flat fields). One mapper satisfies both surfaces (the Go v5 episodefile aliases v3).
+- **Pure projection**: File.MediaInfo is already decoded (typed model), and the formatters are ported — no decode/formatter work, just field wiring + the runtime formatter.
+- **All wire sites at once**: standalone list/byID, SignalR envelopes, EpisodeResource.episodeFile embed (J342) — all reuse ToEpisodeFileResource.
+
+### Tests (`internal/api/v3/episodefile_test.go`, 1 new)
+
+`TestEpisodeFile_MediaInfoProjection_J374` — 2 audio + 1 subtitle stream model; asserts flat summary (AudioBitrate/Channels/Codec=AC3/Languages=eng/fre/Count), shared video/runtime (23.976 fps round, 1920x1080, `22:00`, Progressive), Subtitles=eng, typed stream lists (per-stream AC3 + channels), the `1:05:09` hours-form runtime, and nil model → absent key (direct + via ToEpisodeFileResource).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/episodefile/... ./cmd/sonarr/... ./test/contract/...` ✓
+- `go vet` + gofmt ✓; `test/contract/replayer` + `hostbootstrap` ✓.
+
+### Remaining EpisodeFileResource deferral
+
+Only **qualityCutoffNotMet** remains — needs the upgradable-spec service (same DEFERRED path as HistoryResource.QualityCutoffNotMet, J312). It's a service-dependent computed flag rather than a pure projection, so it's a likely arc boundary. After EpisodeFileResource the arc moves to the queue/history/blocklist embedder include-branches.

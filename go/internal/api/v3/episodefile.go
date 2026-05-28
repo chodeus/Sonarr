@@ -47,8 +47,9 @@ import (
 // Wired for the populated-body emit: languages (ToLanguageRefs),
 // indexerFlags + releaseType (J328), quality (J373 — decode the
 // persisted reduced JSON → expanded wire shape via
-// ToQualityModelResource). Still DEFERRED: mediaInfo (per-stream
-// MediaInfoResource codec projection), qualityCutoffNotMet
+// ToQualityModelResource), mediaInfo (J374 — the UNION v3-flat +
+// v5-stream-list projection via ToMediaInfoResource over the typed
+// File.MediaInfo model). Still DEFERRED: qualityCutoffNotMet
 // (upgradable-spec service), episodeHasFile (per-episode rollup). The
 // customFormats[] + customFormatScore
 // fields are wired at the struct level here (J298, Wave 1
@@ -605,6 +606,7 @@ func ToEpisodeFileResource(f episodefiles.File, seriesPath string) EpisodeFileRe
 		IndexerFlags:  indexerFlagsPtr,
 		ReleaseType:   releaseType,
 		Quality:       qualityPtr,
+		MediaInfo:     ToMediaInfoResource(f.MediaInfo, f.SceneName),
 		CustomFormats: []CustomFormatResource{},
 		// Quality (*QualityModelResource): J373 decodes the persisted
 		// f.Quality reduced JSON string (quality.Model) → expanded wire
