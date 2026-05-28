@@ -363,11 +363,23 @@ type QueuePagedLister interface {
 //
 // The full C# controller dispatches on includeSeries /
 // includeEpisode / seriesIds / protocol / languages / quality /
-// status query params; only the default-paging branch is exercised
-// by the recorded corpus today, so the other branches are DEFERRED.
+// status query params. J348 wires the includeSeries + includeEpisode
+// subresource gating (both default false per C#
+// `QueueController.cs:141`); the remaining filter params (seriesIds /
+// protocol / languages / quality / status) are still DEFERRED — only
+// the default-paging branch is exercised by the recorded corpus.
+//
+// Subresource gating posture (J348): the QueuePagedLister always
+// hydrates Series + Episode into each record (the queue row carries
+// the domain objects); this handler strips them back to nil when the
+// corresponding include flag is absent. Keeps the lister interface
+// free of wire-shape concerns.
 func QueueHandler(lister QueuePagedLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		req := parsePagingRequest(r, "timeleft")
+		q := r.URL.Query()
+		includeSeries := q.Get("includeSeries") == "true"
+		includeEpisode := q.Get("includeEpisode") == "true"
 		records, total, err := lister.PagedQueue(r.Context(), req)
 		if err != nil {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("queue: %w", err), nil)
@@ -375,6 +387,18 @@ func QueueHandler(lister QueuePagedLister) http.Handler {
 		}
 		if records == nil {
 			records = []QueueResource{}
+		}
+		// J348 — strip the always-hydrated subresources when the client
+		// didn't request them (C# gates the projection on these flags).
+		if !includeSeries || !includeEpisode {
+			for i := range records {
+				if !includeSeries {
+					records[i].Series = nil
+				}
+				if !includeEpisode {
+					records[i].Episode = nil
+				}
+			}
 		}
 		resp := PagingResource[QueueResource]{
 			Page: req.Page, PageSize: req.PageSize,

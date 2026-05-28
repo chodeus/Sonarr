@@ -81,9 +81,17 @@ func TestQueuePagedAdapter_ScalarProjection_J347(t *testing.T) {
 	if len(r.Languages) != 1 || r.Languages[0].ID != 1 {
 		t.Errorf("Languages: got %+v want [{1 English}]", r.Languages)
 	}
-	// Subresources DEFERRED at J347 — must be nil.
-	if r.Series != nil || r.Episode != nil || r.Episodes != nil {
-		t.Errorf("J347 subresources must be nil; got series=%v episode=%v episodes=%v", r.Series, r.Episode, r.Episodes)
+	// J348 — the adapter now hydrates Series + Episode (singular)
+	// unconditionally; the handler gates them by include flags. The
+	// v5-only Episodes plural stays nil at the adapter level.
+	if r.Series == nil || r.Series.ID != 7 {
+		t.Errorf("Series subresource: got %v want id=7", r.Series)
+	}
+	if r.Episode == nil || r.Episode.ID != 11 {
+		t.Errorf("Episode subresource: got %v want id=11", r.Episode)
+	}
+	if r.Episodes != nil {
+		t.Errorf("v5-only Episodes plural must stay nil at adapter level; got %v", r.Episodes)
 	}
 }
 

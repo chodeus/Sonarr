@@ -18067,3 +18067,45 @@ Arc 2 progress: 2 of 3 sub-slices landed; ManualImport (which has its own deferr
 | 3 (B-cat) | v5 includeSubresources[] enum-array query-param gating | OPEN |
 
 Arc 3 progress: 1 of ~4 sub-slices landed. Next-tick candidate: Series + Episode/Episodes subresource hydration (the rows already carry Series + Episodes, so it's a pure projection follow-up gated on the include flags).
+
+---
+
+## J348 — Post-J342 service-port arc, slice 6 (Arc 3 slice 2, B-category): Queue Series + Episode (singular) subresource hydration with v3 includeSeries/includeEpisode gating
+
+**Anchor**: post-J347 (scalar paged surface). Hydrates the two J322-pinned QueueResource subresources off the domain objects the queue.Queue row already carries — no new lookups.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Queue/QueueResource.cs:73-74` — `Series = includeSeries && model.Series != null ? model.Series.ToResource() : null` + `Episode = includeEpisode && model.Episode != null ? model.Episode.ToResource() : null`.
+- `src/Sonarr.Api.V3/Queue/QueueController.cs:141` — `includeSeries = false, includeEpisode = false` defaults.
+
+### Port deliverables
+
+- **`projectQueueResource`** (cmd/sonarr): hydrate `Series` via `apiv3.ToSeriesResource(*q.Series)` (when q.Series != nil) + `Episode` (singular) via `apiv3.ToEpisodeResource(q.Episodes[0])` (when len > 0). Unconditional — the handler gates. Posture: hydrate-then-strip keeps the QueuePagedLister interface free of wire-shape (include-flag) concerns.
+- **`apiv3.QueueHandler`**: parse `includeSeries` + `includeEpisode` query params (default false); strip each record's Series/Episode back to nil when the flag is absent.
+- v5/queue.ListHandler stays aliased — v5 clients send `includeSubresources[]` (not includeSeries/includeEpisode), so v5 currently always strips → no subresources → no regression. v5 enum-array gating is the J349 slice.
+
+### Tests
+
+- Updated the J347 adapter test's subresources-nil guard → now asserts Series (id=7) + Episode (id=11) hydrated; Episodes plural stays nil at adapter level.
+- New `TestQueueHandler_SubresourceGating_J348` (3 sub-tests): no flags → both stripped; includeSeries=true → series kept + episode stripped; both flags → both kept.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/queue/... ./cmd/sonarr/...` ✓ (v3 2.105s, v5/queue 1.527s, cmd/sonarr 4.672s)
+- `go vet` ✓
+
+### Post-J342 service-port arc backlog
+
+| Sub-arc | Item | Status |
+| --- | --- | --- |
+| 1 (B-cat) | Release POST searchInfo fallback | DONE (J343) |
+| 2 (A-cat) | Parse handler Series/Episodes/Languages + CustomFormats | DONE (J344-J345) |
+| 2 (A-cat) | ManualImport handler CustomFormats + Score | DONE (J346) |
+| 3 (B-cat) | Queue paged surface — scalar projection + paging | DONE (J347) |
+| 3 (B-cat) | Queue Series + Episode (singular) hydration + v3 gating | **DONE this slice (J348)** |
+| 3 (B-cat) | Queue CustomFormats + Score + StatusMessages projection | OPEN |
+| 3 (B-cat) | v5 Episodes-plural + EpisodeIDs + SeasonNumbers + includeSubresources[] gating | OPEN |
+
+Arc 3 progress: 2 of ~4 sub-slices landed. Next-tick candidate: Queue CustomFormats + Score + StatusMessages projection (the row carries RemoteEpisode.CustomFormats + StatusMessages []string; the C# score uses Series.QualityProfile.CalculateCustomFormatScore).

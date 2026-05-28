@@ -79,6 +79,61 @@ func TestQueueHandler_RecordsPassthrough(t *testing.T) {
 	}
 }
 
+// J348 — includeSeries / includeEpisode subresource gating. The
+// lister hydrates Series + Episode into every record; the handler
+// strips them when the corresponding query flag is absent (C# default
+// both false). 3 branches: no flags → both stripped; includeSeries=true
+// → Series kept + Episode stripped; both flags → both kept.
+func TestQueueHandler_SubresourceGating_J348(t *testing.T) {
+	t.Parallel()
+	mkLister := func() *fakeQueuePagedLister {
+		return &fakeQueuePagedLister{
+			records: []QueueResource{{
+				ID:      1,
+				Series:  &SeriesResource{ID: 7, Title: "Show"},
+				Episode: &EpisodeResource{ID: 11},
+			}},
+			total: 1,
+		}
+	}
+	t.Run("no flags strips both", func(t *testing.T) {
+		t.Parallel()
+		rr := httptest.NewRecorder()
+		QueueHandler(mkLister()).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue", nil))
+		var got PagingResource[QueueResource]
+		_ = json.Unmarshal(rr.Body.Bytes(), &got)
+		if got.Records[0].Series != nil {
+			t.Errorf("default must strip Series; got %v", got.Records[0].Series)
+		}
+		if got.Records[0].Episode != nil {
+			t.Errorf("default must strip Episode; got %v", got.Records[0].Episode)
+		}
+	})
+	t.Run("includeSeries keeps series strips episode", func(t *testing.T) {
+		t.Parallel()
+		rr := httptest.NewRecorder()
+		QueueHandler(mkLister()).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue?includeSeries=true", nil))
+		var got PagingResource[QueueResource]
+		_ = json.Unmarshal(rr.Body.Bytes(), &got)
+		if got.Records[0].Series == nil || got.Records[0].Series.ID != 7 {
+			t.Errorf("includeSeries=true must keep Series; got %v", got.Records[0].Series)
+		}
+		if got.Records[0].Episode != nil {
+			t.Errorf("includeEpisode absent must strip Episode; got %v", got.Records[0].Episode)
+		}
+	})
+	t.Run("both flags keep both", func(t *testing.T) {
+		t.Parallel()
+		rr := httptest.NewRecorder()
+		QueueHandler(mkLister()).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/queue?includeSeries=true&includeEpisode=true", nil))
+		var got PagingResource[QueueResource]
+		_ = json.Unmarshal(rr.Body.Bytes(), &got)
+		if got.Records[0].Series == nil || got.Records[0].Episode == nil {
+			t.Errorf("both flags must keep both subresources; got series=%v episode=%v", got.Records[0].Series, got.Records[0].Episode)
+		}
+	})
+}
+
 // J315 wire-shape pin for the Languages typed-list widening on
 // QueueResource. The field uses omitempty (unlike History +
 // Blocklist which use no-omitempty), because today's empty-DB

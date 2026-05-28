@@ -272,12 +272,25 @@ func projectQueueResource(q queue.Queue) apiv3.QueueResource {
 	if q.Series != nil {
 		sid := q.Series.ID
 		res.SeriesID = &sid
+		// J348 — Series subresource hydration. The queue row already
+		// carries the *series.Series domain object; project it
+		// unconditionally here. The QueueHandler strips it back to nil
+		// when the includeSeries query flag is absent (C# gates the
+		// projection on includeSeries; the Go-port hydrates-then-strips
+		// to keep the QueuePagedLister interface free of wire concerns).
+		sr := apiv3.ToSeriesResource(*q.Series)
+		res.Series = &sr
 	}
-	// C# maps EpisodeId / SeasonNumber from the singular model.Episode;
-	// the Go domain carries Episodes[] — use the first entry.
+	// C# maps EpisodeId from the singular model.Episode; the Go domain
+	// carries Episodes[] — use the first entry.
 	if len(q.Episodes) > 0 {
 		eid := q.Episodes[0].ID
 		res.EpisodeID = &eid
+		// J348 — Episode subresource hydration (singular, v3 shape).
+		// Same hydrate-then-strip posture as Series above; gated by the
+		// includeEpisode query flag in QueueHandler.
+		er := apiv3.ToEpisodeResource(q.Episodes[0])
+		res.Episode = &er
 	}
 	// Languages — extract persisted IDs then project via ToLanguageRefs.
 	if len(q.Languages) > 0 {
