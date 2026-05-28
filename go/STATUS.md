@@ -19080,3 +19080,36 @@ The `Series` embed (includeSeries) — needs a series-by-id lookup dep threaded 
 ### EpisodeResource — COMPLETE
 
 Every C# MapToResource branch ported: scalars + FinaleType + episodeFile (J340/J342) + images (J371) + series (J372). Arc moves to priority #2: EpisodeFileResource deferred fields (mediaInfo, quality cutoff flags, customFormats, languages, releaseGroup, dateAdded) in `internal/api/v3/episodefile.go` + the J339 EpisodeFilePopulator; then the queue/history/blocklist embedder include-branches.
+
+## J373 — Post-J365 resource-projection arc, slice 8: EpisodeFileResource.quality (populated-row Quality projection)
+
+**Anchor**: post-J372 (EpisodeResource complete). Arc advances to EpisodeFileResource (priority #2). Of its deferred fields (quality, mediaInfo, qualityCutoffNotMet), quality is the most UI-consumed — the quality badge on every episode-file / episode row.
+
+### C# source
+
+- `src/Sonarr.Api.V3/EpisodeFiles/EpisodeFileResource.cs:60` — `Quality = model.Quality` (always emitted; non-null `QualityModel`).
+- The persisted `episodefiles.File.Quality` is the reduced JSON string `{"quality":<int-id>,"revision":{...}}` (quality.Model.MarshalJSON — matches the C# QualityIntConverter IEmbeddedDocument shape, per the arc gotcha).
+
+### Port deliverables
+
+- **`internal/api/v3/episodefile.go`**: `ToEpisodeFileResource` decodes a non-empty `f.Quality` via the registry-backed `quality.Model.UnmarshalJSON` → projects to the expanded wire shape via the existing `ToQualityModelResource` (J325) → assigns `res.Quality`. Empty column → nil pointer → omitempty drops the key. New import `internal/quality`.
+
+### Design notes
+
+- **Pure projection**: the quality string is already on the persisted model — no service/populator/dep needed (unlike CustomFormats, which needs the calculator engine via the J339 EpisodeFilePopulator). The decode + ToQualityModelResource is self-contained in the mapper.
+- **All wire sites light up at once**: every episodefile emit reuses `ToEpisodeFileResource` — the standalone list/byID, the SignalR episodefile/created+updated+deleted envelopes, AND the EpisodeResource.episodeFile embed (J342). Quality now populates for populated rows on all of them.
+- **Empty/`{}` handling**: a `{}` column decodes to Quality.Unknown (id 0) and emits — matches C# emitting the Unknown model. Empty string (`""`, the unset fixture default) is treated as "no column" → nil.
+
+### Tests (`internal/api/v3/episodefile_test.go`, 1 new + 1 comment fix)
+
+`TestEpisodeFile_QualityProjection_J373` (WEBDL-1080p v2 Real:1 reduced-shape string → expanded nested `{"quality":{"id","name","source","resolution"},"revision":{...}}`; empty column omits key). Updated the J328 scalar-widening test's stale "Quality remains DEFERRED" comment — its fixture rows have empty Quality so the key is still absent there, but now because the column is empty rather than because the field is unimplemented.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/episodefile/... ./cmd/sonarr/... ./test/contract/...` ✓
+- `go vet` + gofmt ✓; `test/contract/replayer` + `hostbootstrap` ✓.
+
+### Remaining EpisodeFileResource deferrals
+
+**mediaInfo** — the per-stream `MediaInfoResource` codec projection; `File.MediaInfo` is already a typed `*mediainfo.Model`, so J374 is the MediaInfoResource subtype + field mapping. **qualityCutoffNotMet** — needs the upgradable-spec service (same DEFERRED path as HistoryResource.QualityCutoffNotMet, J312). Then the queue/history/blocklist embedder include-branches.

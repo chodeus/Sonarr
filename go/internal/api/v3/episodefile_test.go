@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/quality"
 )
 
 type fakeEpisodeFileWriter struct {
@@ -361,12 +362,55 @@ func TestEpisodeFileListHandler_EmitsScalarWidening_J328(t *testing.T) {
 			t.Errorf("expected exactly 1 %q occurrence (row 1 only); got %d", key, c)
 		}
 	}
-	// Quality + QualityCutoffNotMet remain DEFERRED — neither key should appear.
+	// QualityCutoffNotMet remains DEFERRED (upgradable-spec service) — key absent.
+	// Both fixture rows have an empty Quality column, so the quality
+	// key is absent (the J373 projection only emits when the persisted
+	// string is non-empty — see TestEpisodeFile_QualityProjection_J373).
 	if strings.Contains(body, `"quality":`) {
-		t.Errorf("Quality must remain nil today; got %s", body)
+		t.Errorf("Quality must be absent for empty-Quality fixtures; got %s", body)
 	}
 	if strings.Contains(body, `"qualityCutoffNotMet":`) {
 		t.Errorf("QualityCutoffNotMet false default must omit; got %s", body)
+	}
+}
+
+// TestEpisodeFile_QualityProjection_J373 pins the Quality field: a file
+// whose persisted Quality column holds the reduced
+// `{"quality":<id>,"revision":{...}}` JSON decodes + projects to the
+// expanded REST wire shape; an empty Quality column omits the key.
+func TestEpisodeFile_QualityProjection_J373(t *testing.T) {
+	t.Parallel()
+	// Populated: WEBDL-1080p v2 Real:1 persisted in the reduced shape.
+	qm := quality.NewModelWithRevision(quality.WEBDL1080p, quality.Revision{Version: 2, Real: 1})
+	raw, err := json.Marshal(qm)
+	if err != nil {
+		t.Fatalf("marshal persisted quality: %v", err)
+	}
+	res := ToEpisodeFileResource(episodefiles.File{ID: 1, SeriesID: 7, RelativePath: "a.mkv", Quality: string(raw)}, "")
+	if res.Quality == nil {
+		t.Fatalf("quality must be populated for a non-empty Quality column")
+	}
+	if res.Quality.Quality.ID != quality.WEBDL1080p.ID || res.Quality.Quality.Name != quality.WEBDL1080p.Name {
+		t.Errorf("quality value: got id=%d name=%q want id=%d name=%q",
+			res.Quality.Quality.ID, res.Quality.Quality.Name, quality.WEBDL1080p.ID, quality.WEBDL1080p.Name)
+	}
+	if res.Quality.Revision.Version != 2 || res.Quality.Revision.Real != 1 {
+		t.Errorf("revision: got %+v want version=2 real=1", res.Quality.Revision)
+	}
+	// Expanded wire shape: nested quality object + revision (NOT the
+	// reduced bare-int persisted form).
+	buf, _ := json.Marshal(res)
+	body := string(buf)
+	for _, want := range []string{`"quality":{"quality":{"id":`, `"name":`, `"source":`, `"resolution":`, `"revision":{"version":2,"real":1`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expanded quality wire shape missing %q in %s", want, body)
+		}
+	}
+
+	// Empty Quality column → key absent (omitempty drops nil pointer).
+	res2 := ToEpisodeFileResource(episodefiles.File{ID: 2, SeriesID: 7, RelativePath: "b.mkv"}, "")
+	if res2.Quality != nil {
+		t.Errorf("empty Quality column must leave the pointer nil; got %+v", res2.Quality)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/parser"
+	"sonarr.tv/sonarr/internal/quality"
 )
 
 // EpisodeFileResource is the JSON shape produced by
@@ -43,9 +44,13 @@ import (
 //	sceneName     → File.SceneName
 //	releaseGroup  → File.ReleaseGroup
 //
-// DEFERRED for the populated-body emit: languages, quality,
-// indexerFlags, releaseType, mediaInfo, episodeHasFile
-// (per-episode rollup). The customFormats[] + customFormatScore
+// Wired for the populated-body emit: languages (ToLanguageRefs),
+// indexerFlags + releaseType (J328), quality (J373 — decode the
+// persisted reduced JSON → expanded wire shape via
+// ToQualityModelResource). Still DEFERRED: mediaInfo (per-stream
+// MediaInfoResource codec projection), qualityCutoffNotMet
+// (upgradable-spec service), episodeHasFile (per-episode rollup). The
+// customFormats[] + customFormatScore
 // fields are wired at the struct level here (J298, Wave 1
 // calculator wire-through slice 3) so future populated-row mappers
 // can emit the C# wire shape without re-widening; the underlying
@@ -571,6 +576,21 @@ func ToEpisodeFileResource(f episodefiles.File, seriesPath string) EpisodeFileRe
 	if f.ReleaseType != 0 {
 		releaseType = CamelCaseEnumName(parser.ReleaseType(f.ReleaseType).String())
 	}
+	// J373 Quality: the persisted f.Quality is the reduced
+	// `{"quality":<id>,"revision":{...}}` JSON string (quality.Model's
+	// custom MarshalJSON shape). Decode it via the registry-backed
+	// UnmarshalJSON and project to the expanded REST wire shape via
+	// ToQualityModelResource. C# always emits `Quality = model.Quality`
+	// (non-null QualityModel); the Go port emits whenever the column is
+	// non-empty + decodes (an empty string — the unset test-fixture
+	// default — leaves the pointer nil so omitempty drops the key).
+	var qualityPtr *QualityModelResource
+	if f.Quality != "" {
+		var qm quality.Model
+		if err := json.Unmarshal([]byte(f.Quality), &qm); err == nil {
+			qualityPtr = ToQualityModelResource(qm)
+		}
+	}
 	return EpisodeFileResource{
 		ID:            f.ID,
 		SeriesID:      f.SeriesID,
@@ -584,13 +604,12 @@ func ToEpisodeFileResource(f episodefiles.File, seriesPath string) EpisodeFileRe
 		Languages:     ToLanguageRefs(f.Languages),
 		IndexerFlags:  indexerFlagsPtr,
 		ReleaseType:   releaseType,
+		Quality:       qualityPtr,
 		CustomFormats: []CustomFormatResource{},
-		// Quality (*QualityModelResource): populated-row mapper needs
-		// to decode the persisted f.Quality opaque JSON string into a
-		// quality.Model first, then call ToQualityModelResource. The
-		// J298 wire-through pinned the field; J325 typed-DTO pinned
-		// the shape; this slice leaves it nil at the projection until
-		// the decode step lands.
+		// Quality (*QualityModelResource): J373 decodes the persisted
+		// f.Quality reduced JSON string (quality.Model) → expanded wire
+		// shape via ToQualityModelResource (see qualityPtr above). Empty
+		// column → nil → omitempty drops the key.
 		// QualityCutoffNotMet: computed via upgradable-spec service
 		// — DEFERRED (same path as HistoryResource.QualityCutoffNotMet
 		// per J312). false default + omitempty drops the key today.
