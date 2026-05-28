@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -1321,5 +1322,127 @@ func TestSeriesUpdateHandler_NonMoverImpl_FlagSilentlyNoOp(t *testing.T) {
 	}
 	if w.rows[0].Path != "/new" {
 		t.Errorf("Path should still update via DB: %q", w.rows[0].Path)
+	}
+}
+
+// TestToSeriesResource_ModelIntrinsicProjection_J366 pins the J366
+// model-intrinsic field group: seasons, originalLanguage, genres,
+// ratings, added, firstAired, lastAired, addOptions — all sourced
+// directly off the persisted Series row (no service join).
+func TestToSeriesResource_ModelIntrinsicProjection_J366(t *testing.T) {
+	t.Parallel()
+	first := time.Date(2010, 3, 1, 0, 0, 0, 0, time.UTC)
+	last := time.Date(2015, 5, 20, 0, 0, 0, 0, time.UTC)
+	added := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	s := series.Series{
+		ID:               7,
+		Title:            "Demo",
+		OriginalLanguage: 1, // English
+		Genres:           `["Drama","Comedy"]`,
+		Ratings:          `{"votes":1000,"value":8.5}`,
+		Seasons:          `[{"seasonNumber":0,"monitored":false,"images":[{"coverType":"poster","url":"x"}]},{"seasonNumber":1,"monitored":true}]`,
+		AddOptions:       `{"searchForMissingEpisodes":true,"ignoreEpisodesWithFiles":false}`,
+		Added:            &added,
+		FirstAired:       &first,
+		LastAired:        &last,
+	}
+	r := ToSeriesResource(s)
+
+	// originalLanguage always emitted as {id,name}.
+	if r.OriginalLanguage.ID != 1 || r.OriginalLanguage.Name != "English" {
+		t.Errorf("originalLanguage: %+v want {1 English}", r.OriginalLanguage)
+	}
+	// genres decoded.
+	if len(r.Genres) != 2 || r.Genres[0] != "Drama" || r.Genres[1] != "Comedy" {
+		t.Errorf("genres: %v", r.Genres)
+	}
+	// ratings decoded into typed pointer.
+	if r.Ratings == nil || r.Ratings.Votes != 1000 || r.Ratings.Value != 8.5 {
+		t.Errorf("ratings: %+v", r.Ratings)
+	}
+	// seasons projected to seasonNumber+monitored (images dropped).
+	if len(r.Seasons) != 2 {
+		t.Fatalf("seasons count: %+v", r.Seasons)
+	}
+	if r.Seasons[0].SeasonNumber != 0 || r.Seasons[0].Monitored {
+		t.Errorf("season0: %+v", r.Seasons[0])
+	}
+	if r.Seasons[1].SeasonNumber != 1 || !r.Seasons[1].Monitored {
+		t.Errorf("season1: %+v", r.Seasons[1])
+	}
+	// date fields.
+	if !r.Added.Equal(added) {
+		t.Errorf("added: %v want %v", r.Added, added)
+	}
+	if r.FirstAired == nil || !r.FirstAired.Equal(first) {
+		t.Errorf("firstAired: %v", r.FirstAired)
+	}
+	if r.LastAired == nil || !r.LastAired.Equal(last) {
+		t.Errorf("lastAired: %v", r.LastAired)
+	}
+	// addOptions raw passthrough.
+	if r.AddOptions == nil {
+		t.Fatalf("addOptions nil")
+	}
+
+	// Marshal-level contract assertions.
+	buf, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(buf)
+	for _, want := range []string{
+		`"originalLanguage":{"id":1,"name":"English"}`,
+		`"genres":["Drama","Comedy"]`,
+		`"ratings":{"votes":1000,"value":8.5}`,
+		`"seasons":[{"seasonNumber":0,"monitored":false},{"seasonNumber":1,"monitored":true}]`,
+		`"added":"2020-01-02T03:04:05Z"`,
+		`"firstAired":"2010-03-01T00:00:00Z"`,
+		`"lastAired":"2015-05-20T00:00:00Z"`,
+		`"searchForMissingEpisodes":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("marshal missing %q in %s", want, got)
+		}
+	}
+	// seasons[].images must NOT leak through (DEFERRED).
+	if strings.Contains(got, `"coverType"`) {
+		t.Errorf("season images must be dropped (deferred); got %s", got)
+	}
+}
+
+// TestToSeriesResource_ModelIntrinsicProjection_EmptyRow_J366 pins the
+// empty-row defaults: seasons/genres emit non-null `[]`; ratings,
+// addOptions, firstAired, lastAired drop their keys; added emits the
+// zero time; originalLanguage resolves id 0 → Unknown.
+func TestToSeriesResource_ModelIntrinsicProjection_EmptyRow_J366(t *testing.T) {
+	t.Parallel()
+	r := ToSeriesResource(series.Series{ID: 1, Title: "X"})
+	if r.Seasons == nil || len(r.Seasons) != 0 {
+		t.Errorf("seasons must be non-nil empty: %+v", r.Seasons)
+	}
+	if r.Genres == nil || len(r.Genres) != 0 {
+		t.Errorf("genres must be non-nil empty: %+v", r.Genres)
+	}
+	if r.Ratings != nil {
+		t.Errorf("ratings must be nil: %+v", r.Ratings)
+	}
+	if r.AddOptions != nil {
+		t.Errorf("addOptions must be nil: %+v", r.AddOptions)
+	}
+	if r.OriginalLanguage.ID != 0 || r.OriginalLanguage.Name != "Unknown" {
+		t.Errorf("originalLanguage: %+v want {0 Unknown}", r.OriginalLanguage)
+	}
+	buf, _ := json.Marshal(r)
+	got := string(buf)
+	for _, want := range []string{`"seasons":[]`, `"genres":[]`, `"originalLanguage":{"id":0,"name":"Unknown"}`, `"added":"0001-01-01T00:00:00Z"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("empty-row marshal missing %q in %s", want, got)
+		}
+	}
+	for _, absent := range []string{`"ratings":`, `"addOptions":`, `"firstAired":`, `"lastAired":`} {
+		if strings.Contains(got, absent) {
+			t.Errorf("empty-row must omit %q; got %s", absent, got)
+		}
 	}
 }

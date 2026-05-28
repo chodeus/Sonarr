@@ -18800,3 +18800,54 @@ Added `golang.org/x/image v0.41.0` (Go-team module, minimal transitive deps) for
 ### MediaCover subsystem — COMPLETE
 
 URL-rewrite (3.BO) + cover-download (J363/J364) + resize (J365). No remaining MediaCover deferrals. A refreshed/added series fetches its covers AND writes the poster-500/250, banner-70/35, fanart-360/180 height variants.
+
+---
+
+## J366 — Post-J365 resource-projection arc, slice 1: SeriesResource model-intrinsic projection
+
+**Anchor**: post-J365 (MediaCover subsystem complete). New arc per the loop directive — API resource-projection completeness, biggest / most-UI-consumed resource first. SeriesResource carries the densest deferral set, so it leads.
+
+### Orientation
+
+`grep -rniE "DEFERRED|populated-row only" internal/api` enumerated the projection gaps. SeriesResource (`internal/api/v3/series.go`, shared by v5 via `Resource = apiv3.SeriesResource`) had the largest band. The C# `SeriesResourceMapper.ToResource` (`src/Sonarr.Api.V3/Series/SeriesResource.cs:80-145`) splits into two groups: fields set straight off `model` (no service join) and fields the mapper itself leaves to a join/another layer. This slice closes the first group.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Series/SeriesResource.cs:80-145` — the ToResource mapper. Model-intrinsic sets: Seasons (`model.Seasons.ToResource(includeSeasonImages)`), OriginalLanguage, Genres, Ratings, Added, FirstAired, LastAired, AddOptions (+ the already-ported scalars).
+- `src/Sonarr.Api.V3/Series/SeasonResource.cs:8-31` — SeasonResource {seasonNumber, monitored, statistics, images}; `images` only when `includeImages:true` (default false).
+- `src/NzbDrone.Core/Tv/Ratings.cs` — {Votes int, Value decimal}.
+- `src/NzbDrone.Core/Tv/Series.cs:11-21` — ctor initializes Images/Genres/Seasons/OriginalLanguage(=English)/etc. but NOT Ratings (→ nullable) nor AddOptions (→ nullable). Added is non-nullable `DateTime`.
+- `src/Sonarr.Api.V3/openapi.json` SeriesResource: `seasons`/`genres`/`images` nullable arrays; `originalLanguage`/`ratings`/`addOptions` `$ref`; `added` non-nullable date-time; `firstAired`/`lastAired` nullable date-time.
+
+### Port deliverables (`internal/api/v3/series.go`)
+
+- **SeriesResource** gains: `Seasons []SeasonResource json:"seasons"` (always-array), `OriginalLanguage LanguageRef json:"originalLanguage"` (always), `Ratings *RatingsResource json:"ratings,omitempty"`, `Added time.Time json:"added"` (always), `FirstAired/LastAired *time.Time omitempty`, `AddOptions *json.RawMessage json:"addOptions,omitempty"`. `Genres` retained but now populated.
+- **New types**: `SeasonResource{SeasonNumber, Monitored}` (statistics+images DEFERRED — added additively when their slices land), `RatingsResource{Votes int, Value float64}`.
+- **ToSeriesResource** now sets the band: `decodeSeriesSeasons(s.Seasons)`, `ToLanguageRef(s.OriginalLanguage)`, `decodeSeriesGenres(s.Genres)`, `decodeSeriesRatings(s.Ratings)`, `Added` (deref or zero), `s.FirstAired`/`s.LastAired`, `rawJSONOrNil(s.AddOptions)`.
+- **Helpers**: `decodeSeriesGenres` (→ non-nil `[]string`), `decodeSeriesSeasons` (camelCase decode → seasonNumber+monitored, ignores images/statistics; non-nil `[]`), `decodeSeriesRatings` (→ `*RatingsResource`, nil on empty/invalid), `rawJSONOrNil` (verbatim `*json.RawMessage` passthrough, nil on empty).
+
+### Design notes
+
+- **Shared type → both surfaces.** v5 `Resource = apiv3.SeriesResource`, so the band lights up on `/api/v5/series` too; the v5 `stripLanguageProfileID` middleware is unaffected (it only deletes one key).
+- **AddOptions raw passthrough.** The persisted column was written by C# STJson in the camelCase wire shape; verbatim `json.RawMessage` re-emission is byte-faithful and sidesteps re-deriving the AddSeriesOptions/MonitoringOptions DTO (out of arc scope — that's a write-side shape).
+- **Seasons images/statistics DEFERRED** per the same service-join gates as the parent SeriesResource fields; the C# default `includeImages:false` means seasons[].images is absent on the default wire anyway.
+- **Empty-DB contract preserved.** series.list goldens are `[]` (zero rows); populated-row additions are unobservable. `test/contract/replayer` passes.
+
+### Tests (`internal/api/v3/series_test.go`)
+
+- `TestToSeriesResource_ModelIntrinsicProjection_J366` — populated `series.Series` (seasons blob w/ images, genres, ratings, addOptions, OriginalLanguage=1, added/firstAired/lastAired) → field-level + marshal-contract asserts (`originalLanguage:{id:1,name:English}`, `genres`, `ratings:{votes,value}`, `seasons:[{...}]`, the three dates, addOptions passthrough) + a guard that seasons[].images (`coverType`) does NOT leak.
+- `TestToSeriesResource_ModelIntrinsicProjection_EmptyRow_J366` — empty row → `seasons:[]`, `genres:[]`, `originalLanguage:{id:0,name:Unknown}`, `added:"0001-01-01T00:00:00Z"`; ratings/addOptions/firstAired/lastAired keys absent.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/series/...` ✓ (v3 1.94s, v5/series 2.07s)
+- `go vet` + gofmt ✓
+
+### Pre-existing breakage noted (NOT this slice)
+
+`test/contract/hostbootstrap` fails to build: `emptyQueuePagedLister` implements `PagedQueue(ctx, PagingRequest)` but the interface now requires `PagedQueue(ctx, PagingRequest, QueueFilter)` (the J358 queue-filter signature change). Test-fake drift from the queue arc, unrelated to SeriesResource — flagged for a follow-up.
+
+### Remaining SeriesResource deferrals
+
+images + seasons[].images (MediaCover local-URL rewrite — next slice candidate), statistics + seasons[].statistics + nextAiring/previousAiring/episodesChanged (episode/episodefile statistics join), alternateTitles (scene-mapping), isExcluded (importlistexclusion join), remotePoster/folder (lookup-flow / C#-unset).

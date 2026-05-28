@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/series"
@@ -17,18 +18,17 @@ import (
 // SeriesResource is the JSON shape produced by GET /api/v3/series.
 // Mirrors `src/Sonarr.Api.V3/Series/SeriesResource.cs`.
 //
-// This slice ships the wire-shape skeleton with a minimal projection
-// for the scalar columns the persistence layer already carries
-// (Id+Title+SortTitle+Status+Path+Monitored+...). The richer joined
-// fields — Statistics (per-season counts), AlternateTitles (Series
-// AlternateTitles table), Seasons (Series.Seasons opaque JSON
-// decoded), Images (MediaCover list), OriginalLanguage (full
-// Language DTO), Ratings (Ratings JSON), and the various computed
-// flags (Ended, LanguageProfileId, EpisodesChanged) — are DEFERRED
-// until the consumer ports converge. The empty-DB recording has
-// zero records so the gaps are unobservable today; the full
-// projection lands in a follow-up slice keyed to the next
-// populated-row recording.
+// The projection covers the scalar columns the persistence layer
+// carries (Id+Title+SortTitle+Status+Path+Monitored+...) plus the
+// J366 model-intrinsic field group decoded straight off the row
+// (Seasons, OriginalLanguage, Genres, Ratings, Added, FirstAired,
+// LastAired, AddOptions). The fields that still need a service join or
+// an unported subsystem — Statistics (per-season counts),
+// AlternateTitles (scene-mapping table), Images (MediaCover local-URL
+// rewrite), EpisodesChanged, NextAiring/PreviousAiring, IsExcluded —
+// remain DEFERRED until the consumer ports converge. The empty-DB
+// recording has zero records so the remaining gaps are unobservable
+// today; each lands in a follow-up slice keyed to its service port.
 //
 // Field-source mapping (C# → Go), passthrough subset wired here:
 //
@@ -58,17 +58,30 @@ import (
 //	titleSlug       → Series.TitleSlug
 //	rootFolderPath  → Series.RootFolderPath (runtime-only)
 //	certification   → Series.Certification
-//	added           → Series.Added (omitempty)
+//	added           → Series.Added (always; zero-time when unset)
 //	tags            → Series.Tags ([]int → emitted as set; nil → [])
 //	monitorNewItems → Series.MonitorNewItems (int enum → string)
 //	ended           → computed (Status == Ended)
 //	languageProfileId→ hard-coded 1 (C# `=> 1`)
 //
-// DEFERRED (populated-row only): images, originalLanguage,
-// remotePoster, seasons, addOptions, ratings, statistics, episodesChanged,
-// genres, folder. AlternateTitles wire-shape pinned at J329 via
+// J366 model-intrinsic projection: seasons, originalLanguage, genres,
+// ratings, added, firstAired, lastAired, addOptions are now populated
+// directly from the persisted Series row (the fields the C#
+// SeriesResourceMapper.ToResource sets straight off `model` with no
+// cross-row service join). See ToSeriesResource for the per-field
+// source map.
+//
+// DEFERRED (populated-row only — these need a service join or an
+// unported subsystem, so they stay out of the J366 model-intrinsic
+// slice): images + seasons[].images (MediaCover local-URL rewrite via
+// the mediacover service), statistics + seasons[].statistics +
+// nextAiring + previousAiring + episodesChanged (the episode /
+// episodefile statistics join), remotePoster (lookup-flow only),
+// folder (Path-derived display field the C# mapper itself leaves
+// unset). AlternateTitles wire-shape pinned at J329 via
 // pointer-to-slice; population is gated on the future scene-mapping
-// service join (see AlternateTitleResource doc-comment).
+// service join (see AlternateTitleResource doc-comment). IsExcluded
+// is gated on the importlistexclusion service join (see below).
 //
 // J326 v5-additive widening: 4 fields the C# v5 SeriesResource carries
 // that don't appear on the C# v3 SeriesResource (deliberate v3
@@ -94,40 +107,77 @@ import (
 //     WhenWritingDefault)]` which is equivalent to the Go pointer +
 //     omitempty pattern.
 type SeriesResource struct {
-	ID                int      `json:"id,omitempty"`
-	Title             string   `json:"title"`
-	SortTitle         string   `json:"sortTitle"`
-	Status            string   `json:"status"`
-	Overview          string   `json:"overview"`
-	Network           string   `json:"network"`
-	AirTime           string   `json:"airTime"`
-	Year              int      `json:"year"`
-	Path              string   `json:"path"`
-	QualityProfileID  int      `json:"qualityProfileId"`
-	SeasonFolder      bool     `json:"seasonFolder"`
-	Monitored         bool     `json:"monitored"`
-	UseSceneNumbering bool     `json:"useSceneNumbering"`
-	Runtime           int      `json:"runtime"`
-	TvdbID            int      `json:"tvdbId"`
-	TvRageID          int      `json:"tvRageId"`
-	TvMazeID          int      `json:"tvMazeId"`
-	TmdbID            int      `json:"tmdbId"`
-	MalIds            []int    `json:"malIds,omitempty"`
-	AniListIds        []int    `json:"aniListIds,omitempty"`
-	SeriesType        string   `json:"seriesType"`
-	CleanTitle        string   `json:"cleanTitle"`
-	ImdbID            string   `json:"imdbId"`
-	TitleSlug         string   `json:"titleSlug"`
-	RootFolderPath    string   `json:"rootFolderPath"`
-	Certification     string   `json:"certification"`
-	Tags              []int    `json:"tags"`
-	MonitorNewItems   string   `json:"monitorNewItems"`
-	Ended             bool     `json:"ended"`
+	ID                int                       `json:"id,omitempty"`
+	Title             string                    `json:"title"`
+	SortTitle         string                    `json:"sortTitle"`
+	Status            string                    `json:"status"`
+	Overview          string                    `json:"overview"`
+	Network           string                    `json:"network"`
+	AirTime           string                    `json:"airTime"`
+	Year              int                       `json:"year"`
+	Path              string                    `json:"path"`
+	QualityProfileID  int                       `json:"qualityProfileId"`
+	SeasonFolder      bool                      `json:"seasonFolder"`
+	Monitored         bool                      `json:"monitored"`
+	UseSceneNumbering bool                      `json:"useSceneNumbering"`
+	Runtime           int                       `json:"runtime"`
+	TvdbID            int                       `json:"tvdbId"`
+	TvRageID          int                       `json:"tvRageId"`
+	TvMazeID          int                       `json:"tvMazeId"`
+	TmdbID            int                       `json:"tmdbId"`
+	MalIds            []int                     `json:"malIds,omitempty"`
+	AniListIds        []int                     `json:"aniListIds,omitempty"`
+	SeriesType        string                    `json:"seriesType"`
+	CleanTitle        string                    `json:"cleanTitle"`
+	ImdbID            string                    `json:"imdbId"`
+	TitleSlug         string                    `json:"titleSlug"`
+	RootFolderPath    string                    `json:"rootFolderPath"`
+	Certification     string                    `json:"certification"`
+	Tags              []int                     `json:"tags"`
+	MonitorNewItems   string                    `json:"monitorNewItems"`
+	Ended             bool                      `json:"ended"`
 	LanguageProfileID int                       `json:"languageProfileId"`
 	Genres            []string                  `json:"genres"`
 	OriginalCountry   string                    `json:"originalCountry,omitempty"`
 	IsExcluded        *bool                     `json:"isExcluded,omitempty"`
+	Seasons           []SeasonResource          `json:"seasons"`
+	OriginalLanguage  LanguageRef               `json:"originalLanguage"`
+	Ratings           *RatingsResource          `json:"ratings,omitempty"`
+	Added             time.Time                 `json:"added"`
+	FirstAired        *time.Time                `json:"firstAired,omitempty"`
+	LastAired         *time.Time                `json:"lastAired,omitempty"`
+	AddOptions        *json.RawMessage          `json:"addOptions,omitempty"`
 	AlternateTitles   *[]AlternateTitleResource `json:"alternateTitles,omitempty"`
+}
+
+// SeasonResource is the v3 SeasonResource wire shape — mirror of
+// `src/Sonarr.Api.V3/Series/SeasonResource.cs:8-14`. Sourced from the
+// persisted Series.Seasons opaque-JSON column (one entry per season).
+//
+// The C# resource also carries `statistics` (SeasonStatisticsResource)
+// and `images` (List<MediaCover>); both are DEFERRED in the Go port —
+// per-season statistics needs the episode/episodefile statistics join
+// and the season images need the MediaCover local-URL rewrite (same
+// gates as the parent SeriesResource.Statistics / .Images fields). The
+// C# mapper itself only emits `images` when `includeImages: true`
+// (default false), so seasons[].images is absent on the default wire
+// today anyway. When those slices land they add the pointer fields
+// additively without disturbing the seasonNumber/monitored contract.
+type SeasonResource struct {
+	SeasonNumber int  `json:"seasonNumber"`
+	Monitored    bool `json:"monitored"`
+}
+
+// RatingsResource is the v3 wire shape for `NzbDrone.Core.Tv.Ratings`
+// (`src/NzbDrone.Core/Tv/Ratings.cs`): `{votes:int, value:decimal}`.
+// Sourced from the persisted Series.Ratings opaque-JSON column. The
+// C# Series model leaves Ratings uninitialized (not in the ctor), so
+// a null Ratings drops the key under STJson WhenWritingNull — the
+// Go port mirrors this via a pointer + omitempty (empty/absent
+// persisted JSON → nil → key absent).
+type RatingsResource struct {
+	Votes int     `json:"votes"`
+	Value float64 `json:"value"`
 }
 
 // AlternateTitleResource is the wire-shape mirror of C#
@@ -235,9 +285,11 @@ func SeriesListHandler(lister SeriesLister) http.Handler {
 	})
 }
 
-// ToSeriesResource maps the persisted Series to the wire shape's
-// scalar subset. Joined/projected fields (alternateTitles,
-// statistics, seasons, images, original-language full DTO) are
+// ToSeriesResource maps the persisted Series to the wire shape. The
+// J366 model-intrinsic field group (seasons, originalLanguage, genres,
+// ratings, added, firstAired, lastAired, addOptions) is populated
+// directly off the row; the service-join fields (statistics, images,
+// nextAiring/previousAiring, alternateTitles, isExcluded) stay
 // DEFERRED — see the SeriesResource doc comment for the full list.
 //
 // Status + SeriesType + MonitorNewItems are int enums in the
@@ -250,6 +302,10 @@ func ToSeriesResource(s series.Series) SeriesResource {
 	tags := s.Tags
 	if tags == nil {
 		tags = []int{}
+	}
+	added := time.Time{}
+	if s.Added != nil {
+		added = *s.Added
 	}
 	return SeriesResource{
 		ID:                s.ID,
@@ -282,12 +338,93 @@ func ToSeriesResource(s series.Series) SeriesResource {
 		MonitorNewItems:   monitorNewItemsName(s.MonitorNewItems),
 		Ended:             s.Status == seriesStatusEnded,
 		LanguageProfileID: 1,
-		Genres:            []string{},
+		Genres:            decodeSeriesGenres(s.Genres),
 		OriginalCountry:   s.OriginalCountry,
+		Seasons:           decodeSeriesSeasons(s.Seasons),
+		OriginalLanguage:  ToLanguageRef(s.OriginalLanguage),
+		Ratings:           decodeSeriesRatings(s.Ratings),
+		Added:             added,
+		FirstAired:        s.FirstAired,
+		LastAired:         s.LastAired,
+		AddOptions:        rawJSONOrNil(s.AddOptions),
 		// IsExcluded *bool stays nil — populated by the future v5
 		// `importlistexclusion.Service`-join projection when that
 		// service-port slice lands. omitempty drops the key today.
 	}
+}
+
+// decodeSeriesGenres parses the persisted Series.Genres opaque-JSON
+// column (`["Drama","Comedy"]`) into a []string. Empty/invalid input
+// yields a non-nil empty slice so the wire emits `"genres":[]` —
+// matches the C# `Genres = new List<string>()` non-null ctor default.
+func decodeSeriesGenres(raw string) []string {
+	out := []string{}
+	if strings.TrimSpace(raw) == "" {
+		return out
+	}
+	_ = json.Unmarshal([]byte(raw), &out)
+	if out == nil {
+		out = []string{}
+	}
+	return out
+}
+
+// decodeSeriesSeasons parses the persisted Series.Seasons opaque-JSON
+// column into the wire SeasonResource subset (seasonNumber +
+// monitored). The persisted blob carries the same camelCase keys the
+// C# STJson embedded-document serializer wrote (confirmed against the
+// v5 season-monitor handler's `row["seasonNumber"]` read). Per-season
+// statistics + images are intentionally ignored here (DEFERRED — see
+// SeasonResource doc). Empty/invalid input yields a non-nil empty
+// slice so the wire emits `"seasons":[]` — matches the C#
+// `Seasons = new List<Season>()` non-null ctor default + the mapper's
+// always-non-null `model.Seasons.ToResource(...)`.
+func decodeSeriesSeasons(raw string) []SeasonResource {
+	out := []SeasonResource{}
+	if strings.TrimSpace(raw) == "" {
+		return out
+	}
+	var rows []struct {
+		SeasonNumber int  `json:"seasonNumber"`
+		Monitored    bool `json:"monitored"`
+	}
+	if err := json.Unmarshal([]byte(raw), &rows); err != nil {
+		return out
+	}
+	for _, r := range rows {
+		out = append(out, SeasonResource{SeasonNumber: r.SeasonNumber, Monitored: r.Monitored})
+	}
+	return out
+}
+
+// decodeSeriesRatings parses the persisted Series.Ratings opaque-JSON
+// column (`{"votes":1000,"value":8.5}`) into a *RatingsResource.
+// Empty/invalid input yields nil so omitempty drops the key — matches
+// the C# null-Ratings WhenWritingNull behaviour (Ratings is not
+// initialized in the Series ctor).
+func decodeSeriesRatings(raw string) *RatingsResource {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var r RatingsResource
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		return nil
+	}
+	return &r
+}
+
+// rawJSONOrNil returns a *json.RawMessage carrying the persisted
+// opaque-JSON column verbatim, or nil when the column is empty/whitespace
+// (so omitempty drops the key). Used for AddOptions, whose persisted
+// bytes were already written in the camelCase wire shape by the C#
+// STJson serializer — verbatim re-emission is byte-faithful and avoids
+// re-deriving the AddSeriesOptions/MonitoringOptions DTO shape here.
+func rawJSONOrNil(raw string) *json.RawMessage {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	m := json.RawMessage(raw)
+	return &m
 }
 
 // seriesStatusEnded mirrors `SeriesStatusType.Ended = 1`
