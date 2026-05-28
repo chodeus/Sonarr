@@ -71,21 +71,42 @@ func ManualImportHandler() http.Handler {
 // [{"id":N,"name":"X"},...]` matching C# v3+v5 — no current Go-
 // port test exercises populated bodies so no test churn.
 type ManualImportReprocessItem struct {
-	Path              string                    `json:"path"`
-	SeriesID          int                       `json:"seriesId"`
-	SeasonNumber      *int                      `json:"seasonNumber,omitempty"`
-	Episodes          []manualImportEpisodeStub `json:"episodes,omitempty"`
-	EpisodeIDs        []int                     `json:"episodeIds,omitempty"`
-	Quality           *QualityModelResource     `json:"quality,omitempty"`
-	Languages         []LanguageRef             `json:"languages"`
-	ReleaseGroup      string                    `json:"releaseGroup"`
-	DownloadID        string                    `json:"downloadId,omitempty"`
-	CustomFormats     []CustomFormatResource    `json:"customFormats"`
-	CustomFormatScore int                       `json:"customFormatScore"`
-	IndexerFlags      int                       `json:"indexerFlags"`
-	ReleaseType       string                    `json:"releaseType"`
-	Rejections        []any                     `json:"rejections"`
+	Path              string                          `json:"path"`
+	SeriesID          int                             `json:"seriesId"`
+	SeasonNumber      *int                            `json:"seasonNumber,omitempty"`
+	Episodes          []manualImportEpisodeStub       `json:"episodes,omitempty"`
+	EpisodeIDs        []int                           `json:"episodeIds,omitempty"`
+	Quality           *QualityModelResource           `json:"quality,omitempty"`
+	Languages         []LanguageRef                   `json:"languages"`
+	ReleaseGroup      string                          `json:"releaseGroup"`
+	DownloadID        string                          `json:"downloadId,omitempty"`
+	CustomFormats     []CustomFormatResource          `json:"customFormats"`
+	CustomFormatScore int                             `json:"customFormatScore"`
+	IndexerFlags      int                             `json:"indexerFlags"`
+	ReleaseType       string                          `json:"releaseType"`
+	Rejections        []ManualImportRejectionResource `json:"rejections"`
 }
+
+// ManualImportRejectionResource mirrors C#
+// `src/Sonarr.Api.V3/ManualImport/ManualImportResource.cs:84-105`
+// (`ImportRejectionResource`) — the per-item rejection wire shape the
+// reprocess + list endpoints emit. `Reason` carries the human-readable
+// rejection message (C# `ToResource` maps `rejection.Message` → the
+// `reason` field, NOT the categorical reason enum); `Type` is the
+// camelCase RejectionType enum string (`"permanent"` / `"temporary"`,
+// per `openapi.json` `RejectionType: {enum: [permanent, temporary]}`).
+type ManualImportRejectionResource struct {
+	Reason string `json:"reason"`
+	Type   string `json:"type"`
+}
+
+// Rejection-type wire constants for [ManualImportRejectionResource.Type].
+// Mirror the camelCase StringEnumConverter projection of C#
+// `DecisionEngine.RejectionType` (Permanent=0, Temporary=1).
+const (
+	manualImportRejectionTypePermanent = "permanent"
+	manualImportRejectionTypeTemporary = "temporary"
+)
 
 // manualImportEpisodeStub mirrors the EpisodeResource fields the C#
 // pipeline emits in the reprocess response. Initial port emits the
@@ -157,11 +178,15 @@ type ManualImportCustomFormatCalculator interface {
 //
 // DEFERRED sub-arcs:
 //
-//   - Rejections list. C# pulls from `ManualImportService.ReprocessItem`
-//     which runs the full ImportDecisionMaker pipeline (~15 spec
-//     classes). The Go-port hasn't ported ImportDecisionMaker yet
-//     (it's the analogous-to-download.ProcessDecisions surface for
-//     local files). Rejections emit as `[]` for this initial port.
+//   - Rejections list. PARTIAL (J355). The deterministic NoEpisodes
+//     "Episodes not selected" arm (C# `ManualImportService.cs:206-230`,
+//     fired when the user picked a season but no episodes) is ported —
+//     it needs no decision engine. The episodeIds-driven GetDecision
+//     rejections (C# `:157-200`, which runs the full ImportDecisionMaker
+//     spec pipeline over an aggregated LocalEpisode) stay DEFERRED:
+//     surfacing them requires assembling a LocalEpisode + threading the
+//     orchestrator into this handler. The episodeIds branch emits `[]`
+//     until then.
 //   - CustomFormats + CustomFormatScore re-calculation. J346 wires the
 //     title-based subset via the optional ManualImportCustomFormatCalculator
 //     dep (reuses the J345 customformats.ParseCustomFormatForRemoteEpisode
@@ -209,6 +234,14 @@ func ManualImportReprocessHandler(seriesLookup ManualImportSeriesLookup, episode
 // EpisodeIds field (C# `:76`) so the UI re-fetches from item.Episodes
 // instead.
 func reprocessOne(ctx context.Context, item *ManualImportReprocessItem, seriesLookup ManualImportSeriesLookup, episodeLookup ManualImportEpisodeLookup, calc ManualImportCustomFormatCalculator) {
+	// Capture the user's INPUT selection before reprocessing overwrites
+	// item.SeasonNumber (from parsed info, below) and clears
+	// item.EpisodeIDs. C# `ReprocessItem` branches on the input
+	// `episodeIds.Any()` / `seasonNumber.HasValue` (the user's choice),
+	// not the reprocessed values, at `ManualImportService.cs:157,206`.
+	hadEpisodeIDs := len(item.EpisodeIDs) > 0
+	inputSeasonProvided := item.SeasonNumber != nil
+
 	parsed := parser.ParsePath(item.Path)
 	if parsed == nil {
 		// C# `_manualImportService.ReprocessItem` returns a result
@@ -218,7 +251,7 @@ func reprocessOne(ctx context.Context, item *ManualImportReprocessItem, seriesLo
 		item.Episodes = nil
 		item.EpisodeIDs = nil
 		if item.Rejections == nil {
-			item.Rejections = []any{}
+			item.Rejections = []ManualImportRejectionResource{}
 		}
 		if item.CustomFormats == nil {
 			item.CustomFormats = []CustomFormatResource{}
@@ -294,12 +327,32 @@ func reprocessOne(ctx context.Context, item *ManualImportReprocessItem, seriesLo
 		item.CustomFormats = cf
 		item.CustomFormatScore = score
 	}
-	// Rejections — DEFERRED per handler doc-comment (needs the
-	// ImportDecisionMaker spec pipeline). Emit empty slice for wire-
-	// shape completeness. CustomFormats also falls back to an empty
-	// slice when the calculator wasn't wired (pre-J346 behaviour).
+	// Rejections.
+	//
+	// NoEpisodes arm (J355): C# `ManualImportService.cs:206-230` — when
+	// the user selected a season but NOT any episodes within it
+	// (`!episodeIds.Any() && seasonNumber.HasValue`), the item is
+	// rejected with `ImportRejectionReason.NoEpisodes` "Episodes not
+	// selected" rather than silently importing the whole season. The
+	// item's Episodes list is emptied (the user's season selection
+	// persists in SeasonNumber; Episodes stays `[]` so the UI prompts
+	// for an explicit episode pick). This arm needs no decision engine —
+	// it's a pure input-shape check.
+	//
+	// The episodeIds-driven GetDecision rejections (C# `:157-200`, which
+	// runs the full ImportDecisionMaker spec pipeline over an aggregated
+	// LocalEpisode) stay DEFERRED to a follow-up slice — that requires
+	// assembling a LocalEpisode + threading the orchestrator into the
+	// reprocess handler. Until then the episodeIds branch emits `[]`.
+	if !hadEpisodeIDs && inputSeasonProvided {
+		item.Episodes = []manualImportEpisodeStub{}
+		item.Rejections = []ManualImportRejectionResource{{
+			Reason: "Episodes not selected",
+			Type:   manualImportRejectionTypePermanent,
+		}}
+	}
 	if item.Rejections == nil {
-		item.Rejections = []any{}
+		item.Rejections = []ManualImportRejectionResource{}
 	}
 	if item.CustomFormats == nil {
 		item.CustomFormats = []CustomFormatResource{}

@@ -18371,3 +18371,51 @@ No new cmd/sonarr unit tests — matches the J3.92-3.95 wiring-slice posture; th
 | ManualImport Rejections list + LocalEpisode-driven file-size/mediainfo CF specs (J346-deferred) | OPEN — separate sub-arc (CustomFormats/Specifications, not ImportDecisionMaker specs) |
 
 The full ImportDecisionMaker spec set is ported and (bar the J346-deferred LocalEpisode CF specs, which are a different subsystem) wired into production. Remaining Arc 1 work narrows to the J346-deferred file-size/mediainfo custom-format Specifications + surfacing decision Rejections on the ManualImport list.
+
+---
+
+## J355 — Post-J352 residual-arc, Arc 1 (ImportDecisionMaker spec pipeline) slice 3: ManualImport reprocess typed rejection shape + NoEpisodes "Episodes not selected" rejection
+
+**Anchor**: post-J354 (14 specs ported, 13 wired). The remaining Arc 1 consumer item is the J346-deferred ManualImport Rejections list. This slice lands the well-bounded, decision-engine-free first flesh.
+
+### C# source
+
+- `src/Sonarr.Api.V3/ManualImport/ManualImportResource.cs:84-105` — `ImportRejectionResource{Reason (=rejection.Message), Type (RejectionType)}` + `ToResource` mapper.
+- `src/Sonarr.Api.V3/openapi.json` — `RejectionType: {enum:[permanent,temporary], type:string}` (camelCase StringEnumConverter projection of `DecisionEngine.RejectionType` Permanent=0/Temporary=1).
+- `src/NzbDrone.Core/MediaFiles/EpisodeImport/Manual/ManualImportService.cs:206-230` — the seasonNumber-but-no-episodeIds branch: `new ImportDecision(localEpisode, new ImportRejection(NoEpisodes, "Episodes not selected"))` with `Episodes = new List<>()`.
+
+### Port deliverables (`internal/api/v3/manual_import.go`)
+
+- New `ManualImportRejectionResource{Reason string `json:"reason"`, Type string `json:"type"`}` + `manualImportRejectionType{Permanent="permanent",Temporary="temporary"}` constants.
+- `ManualImportReprocessItem.Rejections` retyped `[]any` → `[]ManualImportRejectionResource` (wire-compatible; still emits `[]` empty).
+- `reprocessOne`: capture `hadEpisodeIDs := len(item.EpisodeIDs) > 0` + `inputSeasonProvided := item.SeasonNumber != nil` at the top (before reprocessing overwrites SeasonNumber / clears EpisodeIDs). After episode resolution, when `!hadEpisodeIDs && inputSeasonProvided`: set `item.Episodes = []` + `item.Rejections = [{Reason:"Episodes not selected", Type:permanent}]`. Mirrors C# input-shape branch (C# keys on the user's `episodeIds.Any()`/`seasonNumber.HasValue`, not reprocessed values).
+- Handler doc-comment Rejections sub-arc updated PARTIAL (J355): NoEpisodes ported; episodeIds-driven GetDecision rejections DEFERRED.
+
+### Deferred (next flesh)
+
+- The episodeIds-branch GetDecision rejections (C# `:157-200`) — needs LocalEpisode assembly + threading the ImportDecisionMaker orchestrator (constructed in main.go) into the reprocess handler via an optional-extension interface + passing it through buildHostServer. Larger, higher-touch slice.
+- The parsed==nil UnableToParse rejection (the existing parsed==nil early-return keeps its deferral).
+
+### Tests
+
+- `TestManualImportReprocessHandler_NoEpisodesRejection_J355` — parseable path + input seasonNumber + no episodeIds → 1 rejection `{reason:"Episodes not selected", type:"permanent"}` + empty Episodes + wire-shape assertion.
+- `TestManualImportReprocessHandler_NoNoEpisodesRejectionWithEpisodeIDs_J355` — seasonNumber + episodeIds → no NoEpisodes rejection (episodeIds branch), Episodes resolved, `rejections:[]`.
+- All existing reprocess tests unaffected (none send input seasonNumber without episodeIds).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/manualimport/... ./cmd/sonarr/...` ✓ (v3 1.64s, v5/manualimport 1.30s, cmd/sonarr 3.80s)
+- `go vet` + gofmt ✓
+
+### Arc 1 progress
+
+| Item | Status |
+| --- | --- |
+| 14 import Specification classes ported | DONE (J353) |
+| Production spec-list wiring (13 of 14) | DONE (J354) |
+| ManualImport Rejections — NoEpisodes arm + typed shape | **DONE this slice (J355)** |
+| ManualImport Rejections — episodeIds GetDecision branch | OPEN — decision-maker integration (next flesh) |
+| ManualImport Rejections — parsed==nil UnableToParse | OPEN |
+
+The ManualImport Rejections list now surfaces the deterministic NoEpisodes rejection with the faithful typed wire shape. The decision-maker-driven episodeIds branch is the next, larger flesh.

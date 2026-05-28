@@ -516,3 +516,74 @@ func TestManualImportReprocessHandler_CalcNotCalledWhenNoSeriesID_J346(t *testin
 		t.Errorf("calculator must NOT fire without a seriesId; got calls=%d", calc.calls)
 	}
 }
+
+// TestManualImportReprocessHandler_NoEpisodesRejection_J355 pins the
+// deterministic NoEpisodes "Episodes not selected" arm (C#
+// ManualImportService.cs:206-230): the user selected a season but no
+// episodes within it, so the item is rejected rather than importing the
+// whole season. No decision engine needed.
+func TestManualImportReprocessHandler_NoEpisodesRejection_J355(t *testing.T) {
+	t.Parallel()
+	// Input carries seasonNumber but NO episodeIds → NoEpisodes arm fires.
+	// Parseable path so the parsed!=nil branch (where the arm lives) runs.
+	body := `[{"path":"/tv/Show.Title.S01E01.720p.WEB-DL.mkv","seasonNumber":1,"languages":[]}]`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var out []ManualImportReprocessItem
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out[0].Rejections) != 1 {
+		t.Fatalf("Rejections: got %d want 1; body=%s", len(out[0].Rejections), rr.Body.String())
+	}
+	if out[0].Rejections[0].Reason != "Episodes not selected" {
+		t.Errorf("Reason: got %q want %q", out[0].Rejections[0].Reason, "Episodes not selected")
+	}
+	if out[0].Rejections[0].Type != "permanent" {
+		t.Errorf("Type: got %q want permanent", out[0].Rejections[0].Type)
+	}
+	if len(out[0].Episodes) != 0 {
+		t.Errorf("Episodes should be empty for NoEpisodes arm; got %+v", out[0].Episodes)
+	}
+	// Wire-shape: rejection object carries reason + type.
+	if !strings.Contains(rr.Body.String(), `"reason":"Episodes not selected"`) ||
+		!strings.Contains(rr.Body.String(), `"type":"permanent"`) {
+		t.Errorf("body missing typed rejection: %s", rr.Body.String())
+	}
+}
+
+// TestManualImportReprocessHandler_NoNoEpisodesRejectionWithEpisodeIDs_J355
+// pins that the NoEpisodes arm does NOT fire when episodeIds were
+// provided (the GetDecision branch, whose rejections stay deferred → []).
+func TestManualImportReprocessHandler_NoNoEpisodesRejectionWithEpisodeIDs_J355(t *testing.T) {
+	t.Parallel()
+	epLookup := &fakeManualImportEpisodeLookup{byID: map[int]*episodes.Episode{
+		42: {ID: 42, SeasonNumber: 1, EpisodeNumber: 5, Title: "Pilot"},
+	}}
+	// seasonNumber AND episodeIds present → episodeIds wins; NoEpisodes
+	// arm must NOT fire (C# branches on episodeIds.Any() first).
+	body := `[{"path":"/tv/Show.S01E05.720p.mkv","seasonNumber":1,"episodeIds":[42],"languages":[]}]`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, epLookup, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var out []ManualImportReprocessItem
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out[0].Rejections) != 0 {
+		t.Errorf("Rejections should be empty (episodeIds branch, deferred); got %+v", out[0].Rejections)
+	}
+	if len(out[0].Episodes) != 1 {
+		t.Errorf("Episodes: got %d want 1 (resolved from episodeIds)", len(out[0].Episodes))
+	}
+	if !strings.Contains(rr.Body.String(), `"rejections":[]`) {
+		t.Errorf("body should emit rejections:[] for the episodeIds branch: %s", rr.Body.String())
+	}
+}
