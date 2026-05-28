@@ -155,6 +155,30 @@ type ManualImportCustomFormatCalculator interface {
 	CalculateForManualImport(ctx context.Context, parsedInfo *parser.ParsedEpisodeInfo, seriesID int, languages []language.Language, indexerFlags int) ([]CustomFormatResource, int)
 }
 
+// ManualImportDecisionRejector is the optional-extension surface for
+// the reprocess handler's episodeIds-branch Rejections list (C#
+// `ManualImportService.cs:157-200`). The reprocess handler discovers it
+// via type-assertion on the `calc` dep (J338/J345 idiom) — when the
+// supplied calculator ALSO implements this interface, the episodeIds
+// branch runs the full ImportDecisionMaker pipeline (aggregation + the
+// 13 wired specs) over an assembled LocalEpisode and surfaces its
+// rejections; when it doesn't (nil calc, or a fake that only implements
+// the CustomFormat calculator), the branch emits `[]` as before.
+//
+// The wrapper (cmd/sonarr) resolves the series + full episodes by id,
+// reads the file size, reconstructs Quality / Languages / ReleaseGroup /
+// IndexerFlags / ReleaseType from the (already-reprocessed) item, runs
+// the SAME production AggregationService the real download-import flow
+// uses (so manual-import rejections stay consistent with that path),
+// then ImportDecisionMaker.GetDecision. episodeIDs carries the user's
+// originally-selected episode ids (the handler clears item.EpisodeIDs
+// before this fires, so they're passed explicitly).
+//
+// J356.
+type ManualImportDecisionRejector interface {
+	ReprocessDecisionRejections(ctx context.Context, item *ManualImportReprocessItem, parsed *parser.ParsedEpisodeInfo, episodeIDs []int) []ManualImportRejectionResource
+}
+
 // ManualImportReprocessHandler returns POST /api/v3/manualimport.
 //
 // Mirrors `ManualImportController.ReprocessItems` at C#
@@ -178,15 +202,18 @@ type ManualImportCustomFormatCalculator interface {
 //
 // DEFERRED sub-arcs:
 //
-//   - Rejections list. PARTIAL (J355). The deterministic NoEpisodes
-//     "Episodes not selected" arm (C# `ManualImportService.cs:206-230`,
-//     fired when the user picked a season but no episodes) is ported —
-//     it needs no decision engine. The episodeIds-driven GetDecision
-//     rejections (C# `:157-200`, which runs the full ImportDecisionMaker
-//     spec pipeline over an aggregated LocalEpisode) stay DEFERRED:
-//     surfacing them requires assembling a LocalEpisode + threading the
-//     orchestrator into this handler. The episodeIds branch emits `[]`
-//     until then.
+//   - Rejections list. PORTED (J355 + J356). The deterministic
+//     NoEpisodes "Episodes not selected" arm (C#
+//     `ManualImportService.cs:206-230`, fired when the user picked a
+//     season but no episodes) landed in J355. The episodeIds-driven
+//     GetDecision rejections (C# `:157-200`, which runs the full
+//     ImportDecisionMaker pipeline over an assembled + aggregated
+//     LocalEpisode) land in J356 via the optional-extension
+//     [ManualImportDecisionRejector] discovered on the calc dep — when
+//     the wired calculator also implements it, the episodeIds branch
+//     surfaces the real spec rejections; otherwise the branch emits
+//     `[]`. The parsed==nil UnableToParse rejection remains deferred
+//     (the early-return branch below).
 //   - CustomFormats + CustomFormatScore re-calculation. J346 wires the
 //     title-based subset via the optional ManualImportCustomFormatCalculator
 //     dep (reuses the J345 customformats.ParseCustomFormatForRemoteEpisode
@@ -241,6 +268,10 @@ func reprocessOne(ctx context.Context, item *ManualImportReprocessItem, seriesLo
 	// not the reprocessed values, at `ManualImportService.cs:157,206`.
 	hadEpisodeIDs := len(item.EpisodeIDs) > 0
 	inputSeasonProvided := item.SeasonNumber != nil
+	// Capture the user's originally-selected episode ids before the
+	// reprocess clears item.EpisodeIDs (C# `:76`) — the J356 decision
+	// rejector needs them to resolve the full episodes for GetDecision.
+	originalEpisodeIDs := append([]int(nil), item.EpisodeIDs...)
 
 	parsed := parser.ParsePath(item.Path)
 	if parsed == nil {
@@ -350,6 +381,16 @@ func reprocessOne(ctx context.Context, item *ManualImportReprocessItem, seriesLo
 			Reason: "Episodes not selected",
 			Type:   manualImportRejectionTypePermanent,
 		}}
+	} else if hadEpisodeIDs {
+		// episodeIds GetDecision rejections (J356). Discovered via
+		// optional-extension type-assertion on the calc dep so the
+		// handler signature is unchanged; a nil calc / a fake that only
+		// implements the CustomFormat calculator simply skips this and
+		// leaves the empty-slice fallback. Mirrors C#
+		// `ManualImportService.cs:157-200`.
+		if rej, ok := calc.(ManualImportDecisionRejector); ok && rej != nil {
+			item.Rejections = rej.ReprocessDecisionRejections(ctx, item, parsed, originalEpisodeIDs)
+		}
 	}
 	if item.Rejections == nil {
 		item.Rejections = []ManualImportRejectionResource{}

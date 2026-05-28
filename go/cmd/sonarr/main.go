@@ -3332,7 +3332,21 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		backupTempPath = os.TempDir()
 	}
 	releaseCache := releasecache.New(0) // 30-min default TTL per J237 / C# `ReleaseController.cs:240`.
-	hostSrv, err := buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, parsingSvc, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
+	// J356: the ManualImport reprocess GetDecision rejector — assembles a
+	// LocalEpisode from a reprocessed item, runs the production
+	// AggregationService + ImportDecisionMaker, and projects the
+	// rejections. Threaded into buildHostServer where it's attached to the
+	// parsingServiceWithPopulator (the reprocess handler's calc dep)
+	// and discovered via optional-extension type-assertion.
+	manualImportDecisionRejector := manualImportDecisionAdapter{
+		idm:      importDecisionMaker,
+		agg:      aggregationSvc,
+		series:   seriesSvc,
+		episodes: episodesSvc,
+		disk:     diskProv,
+		log:      logger,
+	}
+	hostSrv, err := buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, parsingSvc, manualImportDecisionRejector, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
 	if err != nil {
 		return err
 	}

@@ -117,7 +117,7 @@ import (
 // Mirrors `src/NzbDrone.Host/Bootstrap.cs:CreateConsoleHostBuilder`
 // where BindAddress + Port are pulled from the configuration before
 // the URL list is handed to Kestrel.
-func buildHostServer(ctx context.Context, cfg *configfile.Provider, authSvc *auth.Service, indexerSearchSvc *indexersearch.Service, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, diskProv *disk.Provider, bus *messaging.Bus, processDownloadDecisions *download.ProcessDownloadDecisions, downloadDecider *decisionengine.DownloadDecisionMaker, releaseCache *releasecache.Cache, parsingSvc *parsingservice.Service, backupTempPath string, logFolderPath, frontendDir string) (*host.Server, error) {
+func buildHostServer(ctx context.Context, cfg *configfile.Provider, authSvc *auth.Service, indexerSearchSvc *indexersearch.Service, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, diskProv *disk.Provider, bus *messaging.Bus, processDownloadDecisions *download.ProcessDownloadDecisions, downloadDecider *decisionengine.DownloadDecisionMaker, releaseCache *releasecache.Cache, parsingSvc *parsingservice.Service, manualImportDecisionRejector apiv3.ManualImportDecisionRejector, backupTempPath string, logFolderPath, frontendDir string) (*host.Server, error) {
 	bind, err := cfg.BindAddress(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: bind address: %w", err)
@@ -145,7 +145,7 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, authSvc *aut
 		// default path.
 		{Method: "GET", Path: "/initialize.json", Handler: host.InitializeJSONHandler(cfg), Anonymous: true},
 	}
-	v3 := v3Routes(configProv, cfg, indexerSearchSvc, logger, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, cmdRegistry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, parsingSvc, backupTempPath, logFolderPath)
+	v3 := v3Routes(configProv, cfg, indexerSearchSvc, logger, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, cmdRegistry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, parsingSvc, manualImportDecisionRejector, backupTempPath, logFolderPath)
 	opts := []host.Option{
 		host.WithRoutes(append(loginRoutes, v3...)...),
 	}
@@ -1137,6 +1137,25 @@ type parsingServiceWithPopulator struct {
 	seriesSvc          historySeriesLookup
 	qualityProfilesSvc historyQualityProfileLookup
 	customFormatsSvc   historyCustomFormatsLookup
+	// decisionRejector is the J356 ManualImport GetDecision rejector.
+	// nil when the ImportDecisionMaker / AggregationService weren't
+	// threaded in — the reprocess handler then skips the episodeIds
+	// rejections (emits `[]`).
+	decisionRejector apiv3.ManualImportDecisionRejector
+}
+
+// ReprocessDecisionRejections satisfies
+// [apiv3.ManualImportDecisionRejector] by delegating to the injected
+// decisionRejector (the J356 manualImportDecisionAdapter, which carries
+// the ImportDecisionMaker + AggregationService). Delegation keeps the
+// heavy LocalEpisode-assembly logic out of host_wiring while letting
+// the reprocess handler discover the rejector via type-assertion on its
+// existing calc dep. Returns an empty slice when no rejector is wired.
+func (p *parsingServiceWithPopulator) ReprocessDecisionRejections(ctx context.Context, item *apiv3.ManualImportReprocessItem, parsed *parser.ParsedEpisodeInfo, episodeIDs []int) []apiv3.ManualImportRejectionResource {
+	if p.decisionRejector == nil {
+		return []apiv3.ManualImportRejectionResource{}
+	}
+	return p.decisionRejector.ReprocessDecisionRejections(ctx, item, parsed, episodeIDs)
 }
 
 // PopulateParseCustomFormats satisfies apiv3.ParsePopulator. Mirrors
@@ -1655,7 +1674,7 @@ func (h hostConfigGetter) SetProxyBypassLocalAddresses(ctx context.Context, v bo
 // autoTagsSvc + releaseProfilesSvc own their respective tables; both
 // expose All directly via Go's structural typing on the Lister
 // interfaces.
-func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSearchSvc *indexersearch.Service, logger *slog.Logger, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, diskProv *disk.Provider, bus *messaging.Bus, processDownloadDecisions *download.ProcessDownloadDecisions, downloadDecider *decisionengine.DownloadDecisionMaker, releaseCache *releasecache.Cache, parsingSvc *parsingservice.Service, backupTempPath, logFolderPath string) []host.Route {
+func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSearchSvc *indexersearch.Service, logger *slog.Logger, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, diskProv *disk.Provider, bus *messaging.Bus, processDownloadDecisions *download.ProcessDownloadDecisions, downloadDecider *decisionengine.DownloadDecisionMaker, releaseCache *releasecache.Cache, parsingSvc *parsingservice.Service, manualImportDecisionRejector apiv3.ManualImportDecisionRejector, backupTempPath, logFolderPath string) []host.Route {
 	langs := language.All()
 	localizationSvc := localization.NewService()
 	uiCfg := uiConfigGetter{cfg: configProv, xmlCfg: cfg}
@@ -1853,6 +1872,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		seriesSvc:          seriesSvc,
 		qualityProfilesSvc: qualityProfilesSvc,
 		customFormatsSvc:   customFormatsSvc,
+		decisionRejector:   manualImportDecisionRejector,
 	}
 	// 5.I7: log-file adapter sources LogFolder = <AppData>/logs and
 	// URLBase from configfile.Provider. The folder string + URLBase

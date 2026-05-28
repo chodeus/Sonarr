@@ -18419,3 +18419,44 @@ The full ImportDecisionMaker spec set is ported and (bar the J346-deferred Local
 | ManualImport Rejections — parsed==nil UnableToParse | OPEN |
 
 The ManualImport Rejections list now surfaces the deterministic NoEpisodes rejection with the faithful typed wire shape. The decision-maker-driven episodeIds branch is the next, larger flesh.
+
+---
+
+## J356 — Post-J352 residual-arc, Arc 1 (ImportDecisionMaker spec pipeline) slice 4: ManualImport reprocess episodeIds-branch GetDecision rejections (DRAINS the ManualImport Rejections sub-arc)
+
+**Anchor**: post-J355. Completes the J346-deferred ManualImport Rejections list (NoEpisodes landed J355; this slice adds the episodeIds GetDecision branch).
+
+### C# source
+
+- `src/NzbDrone.Core/MediaFiles/EpisodeImport/Manual/ManualImportService.cs:157-200` — episodeIds branch: build LocalEpisode (series, episodes, parsed, size, quality, languages, releaseGroup, indexerFlags, releaseType) → `_localEpisodeFormatCalculator.UpdateEpisodeCustomFormats` → `_aggregationService.Augment` (`:189`) → re-apply user values (`:191-198`) → `MapItem(_importDecisionMaker.GetDecision(localEpisode, downloadClientItem), ...)`.
+- `:447` `item.Rejections = decision.Rejections`.
+
+### Port deliverables
+
+- **`internal/api/v3/manual_import.go`**: new optional-extension `ManualImportDecisionRejector{ ReprocessDecisionRejections(ctx, item, parsed, episodeIDs) []ManualImportRejectionResource }`. `reprocessOne` captures `originalEpisodeIDs` (before clearing `item.EpisodeIDs`); in the `hadEpisodeIDs` branch, type-asserts `calc.(ManualImportDecisionRejector)` and, when present, populates `item.Rejections`. Handler signature UNCHANGED (type-assertion idiom — no churn across 27 call sites). Mutually exclusive with the J355 NoEpisodes branch (`!hadEpisodeIDs`).
+- **`cmd/sonarr/manual_import_decision_wiring.go`** (new) — `manualImportDecisionAdapter{idm, agg, series, episodes, disk, log}`: resolves series + full episodes by id, reads file size, reconstructs Quality (`qualityModelFromResource` → `quality.FindByID`) / Languages (`manualImportLanguages` → `language.FindByID`) / ReleaseGroup / IndexerFlags / ReleaseType, runs the production `AggregationService.Augment` (nil download item; Augment error → UnableToParse rejection), re-applies user values, runs `ImportDecisionMaker.GetDecision`, projects `decision.Rejections` → `[]ManualImportRejectionResource{Reason: r.Message, Type: r.Kind.String()}`. Compile-time guard. Reuses the SAME production `aggregationSvc` the download-import flow uses → manual-import rejections stay consistent with the real pipeline.
+- **`cmd/sonarr/host_wiring.go`**: `parsingServiceWithPopulator` gains `decisionRejector apiv3.ManualImportDecisionRejector` + a delegating `ReprocessDecisionRejections` method (the type-assertion carrier; keeps episodeimport out of host_wiring). New param threaded through `buildHostServer` + `v3Routes`. v5 manualimport route shares the same `parsingSvcWithPopulator` → covered automatically.
+- **`cmd/sonarr/main.go`**: constructs `manualImportDecisionAdapter` (importDecisionMaker + aggregationSvc + seriesSvc + episodesSvc + diskProv in scope) and passes it to `buildHostServer`.
+
+### Tests
+
+- `TestManualImportReprocessHandler_GetDecisionRejections_J356` — fake calc implementing both interfaces surfaces a rejection + receives the original episodeIds [42].
+- `TestManualImportReprocessHandler_NoRejectorWhenCalcLacksInterface_J356` — CF-only calc → rejections `[]` (type-assertion negative path).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/manualimport/... ./cmd/sonarr/...` ✓ (v3 1.76s, v5/manualimport 2.19s, cmd/sonarr 4.82s)
+- `go vet` + gofmt ✓
+
+### Arc 1 progress — substantively complete
+
+| Item | Status |
+| --- | --- |
+| 14 import Specification classes ported | DONE (J353) |
+| Production spec-list wiring (13 of 14) | DONE (J354) |
+| ManualImport Rejections — NoEpisodes arm + typed shape | DONE (J355) |
+| ManualImport Rejections — episodeIds GetDecision branch | **DONE this slice (J356)** |
+| ManualImport Rejections — parsed==nil UnableToParse | OPEN (minor edge; early-return branch) |
+
+The ManualImport Rejections list is fully ported (both deterministic + decision-maker-driven arms). Arc 1's spec pipeline + both consumer surfaces are complete. Next tick: advance to Arc 2 (Queue paging SORT + filter params) unless a cleaner Arc 1 residual surfaces.

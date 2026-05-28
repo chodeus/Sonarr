@@ -587,3 +587,88 @@ func TestManualImportReprocessHandler_NoNoEpisodesRejectionWithEpisodeIDs_J355(t
 		t.Errorf("body should emit rejections:[] for the episodeIds branch: %s", rr.Body.String())
 	}
 }
+
+// fakeManualImportRejectorCalc implements BOTH the CustomFormat
+// calculator and the J356 ManualImportDecisionRejector so the reprocess
+// handler discovers the rejector via type-assertion on its calc dep.
+type fakeManualImportRejectorCalc struct {
+	rejections []ManualImportRejectionResource
+	rejCalls   int
+	gotEpIDs   []int
+}
+
+func (f *fakeManualImportRejectorCalc) CalculateForManualImport(_ context.Context, _ *parser.ParsedEpisodeInfo, _ int, _ []language.Language, _ int) ([]CustomFormatResource, int) {
+	return []CustomFormatResource{}, 0
+}
+
+func (f *fakeManualImportRejectorCalc) ReprocessDecisionRejections(_ context.Context, _ *ManualImportReprocessItem, _ *parser.ParsedEpisodeInfo, episodeIDs []int) []ManualImportRejectionResource {
+	f.rejCalls++
+	f.gotEpIDs = episodeIDs
+	return f.rejections
+}
+
+// TestManualImportReprocessHandler_GetDecisionRejections_J356 pins that
+// the episodeIds branch surfaces rejections from a calc that also
+// implements ManualImportDecisionRejector (discovered via
+// type-assertion), passing the user's originally-selected episode ids.
+func TestManualImportReprocessHandler_GetDecisionRejections_J356(t *testing.T) {
+	t.Parallel()
+	epLookup := &fakeManualImportEpisodeLookup{byID: map[int]*episodes.Episode{
+		42: {ID: 42, SeasonNumber: 1, EpisodeNumber: 5, Title: "Pilot"},
+	}}
+	calc := &fakeManualImportRejectorCalc{rejections: []ManualImportRejectionResource{
+		{Reason: "Not an upgrade for existing episode file(s).", Type: "permanent"},
+	}}
+	body := `[{"path":"/tv/Show.S01E05.720p.mkv","seriesId":7,"episodeIds":[42],"languages":[]}]`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, epLookup, calc).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if calc.rejCalls != 1 {
+		t.Fatalf("rejector should fire once for the episodeIds branch; got %d", calc.rejCalls)
+	}
+	if len(calc.gotEpIDs) != 1 || calc.gotEpIDs[0] != 42 {
+		t.Errorf("rejector should receive the original episodeIds [42]; got %v", calc.gotEpIDs)
+	}
+	var out []ManualImportReprocessItem
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out[0].Rejections) != 1 || out[0].Rejections[0].Reason != "Not an upgrade for existing episode file(s)." {
+		t.Errorf("Rejections: got %+v", out[0].Rejections)
+	}
+	if out[0].Rejections[0].Type != "permanent" {
+		t.Errorf("Type: got %q want permanent", out[0].Rejections[0].Type)
+	}
+}
+
+// TestManualImportReprocessHandler_NoRejectorWhenCalcLacksInterface_J356
+// pins the type-assertion negative path: a calc that only implements the
+// CustomFormat calculator (not the rejector) leaves rejections empty.
+func TestManualImportReprocessHandler_NoRejectorWhenCalcLacksInterface_J356(t *testing.T) {
+	t.Parallel()
+	epLookup := &fakeManualImportEpisodeLookup{byID: map[int]*episodes.Episode{
+		42: {ID: 42, SeasonNumber: 1, EpisodeNumber: 5, Title: "Pilot"},
+	}}
+	// fakeManualImportCalc implements only ManualImportCustomFormatCalculator.
+	calc := &fakeManualImportCalc{}
+	body := `[{"path":"/tv/Show.S01E05.720p.mkv","seriesId":7,"episodeIds":[42],"languages":[]}]`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, epLookup, calc).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var out []ManualImportReprocessItem
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out[0].Rejections) != 0 {
+		t.Errorf("Rejections should be empty (calc lacks rejector iface); got %+v", out[0].Rejections)
+	}
+	if !strings.Contains(rr.Body.String(), `"rejections":[]`) {
+		t.Errorf("body should emit rejections:[]: %s", rr.Body.String())
+	}
+}
