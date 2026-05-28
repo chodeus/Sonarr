@@ -2198,7 +2198,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v3/blocklist", Handler: apiv3.BlocklistHandler(blocklistPagedAdapter{repo: blocklistRepo, seriesSvc: seriesSvc, customFormatsSvc: customFormatsSvc})},
 		{Method: "DELETE", Path: "/api/v3/blocklist/{id}", Handler: apiv3.BlocklistDeleteHandler(blocklistSvc)},
 		{Method: "DELETE", Path: "/api/v3/blocklist/bulk", Handler: apiv3.BlocklistBulkDeleteHandler(blocklistSvc)},
-		{Method: "GET", Path: "/api/v3/calendar", Handler: apiv3.CalendarHandler(episodesSvc)},
+		{Method: "GET", Path: "/api/v3/calendar", Handler: apiv3.CalendarHandler(episodesSvcWithEpisodeFile)},
 		{Method: "GET", Path: "/api/v3/calendar/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvcWithEpisodeFile)},
 		{Method: "GET", Path: "/feed/v3/calendar/Sonarr.ics", Handler: apiv3.CalendarFeedHandler(episodesSvc, seriesSvc)},
 		{Method: "GET", Path: "/api/v3/command", Handler: apiv3.CommandListHandler(cmdSvc)},
@@ -2690,7 +2690,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// empty-corpus level. Sub-resource hydration deferred per the
 		// Wave 1 chain (J258/J259/J261/J264). v5 lowercases the feed
 		// URL: /feed/v3/calendar/Sonarr.ics → /feed/v5/calendar/sonarr.ics.
-		{Method: "GET", Path: "/api/v5/calendar", Handler: calendarv5.ListHandler(episodesSvc)},
+		{Method: "GET", Path: "/api/v5/calendar", Handler: calendarv5.ListHandler(episodesSvcWithEpisodeFile)},
 		{Method: "GET", Path: "/api/v5/calendar/{id}", Handler: calendarv5.ByIDHandler(episodesSvc)},
 		{Method: "GET", Path: "/feed/v5/calendar/sonarr.ics", Handler: calendarv5.FeedHandler(episodesSvc, seriesSvc)},
 		// J269 — v5 Tag + TagDetails endpoint family (7 endpoints; 192

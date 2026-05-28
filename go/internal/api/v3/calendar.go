@@ -24,10 +24,21 @@ type CalendarEpisodeLister interface {
 //
 // Date defaults match C# `start ?? DateTime.Today` and `end ?? Today+2`.
 // includeSpecials is hard-coded to true to mirror the C# call site
-// (`EpisodesBetweenDates(..., unmonitored, true)`). Tag filtering /
-// includeSeries / includeEpisodeFile / includeEpisodeImages are
-// DEFERRED — the empty-DB recording has zero rows so the gap is
-// unobservable today.
+// (`EpisodesBetweenDates(..., unmonitored, true)`).
+//
+// J376: the includeSeries / includeEpisodeFile / includeEpisodeImages
+// query branches are wired — C# `CalendarController.GetCalendar` passes
+// them straight into `MapToResource(result, includeSeries,
+// includeEpisodeFile, includeEpisodeImages)`, the same MapToResource the
+// Episode handlers use (ported via applyEpisodeSeries /
+// applyEpisodeFileSubresource / applyEpisodeImages). Note C# names the
+// images param `includeEpisodeImages` here (not `includeImages` like the
+// Episode controller). The Series/EpisodeFile embeds light up only when
+// the lister ALSO implements the EpisodeSeriesLookup / EpisodeFileLookup
+// optional extensions (the cmd/sonarr composite does). Tag filtering +
+// AirDateUtc ordering remain DEFERRED (separate from the projection
+// branches); the empty-DB recording has zero rows so the gap is
+// unobservable in the goldens.
 func CalendarHandler(lister CalendarEpisodeLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -41,9 +52,18 @@ func CalendarHandler(lister CalendarEpisodeLister) http.Handler {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("calendar: %w", err), nil)
 			return
 		}
+		includeSeries := q.Get("includeSeries") == "true"
+		includeEpisodeFile := q.Get("includeEpisodeFile") == "true"
+		includeEpisodeImages := q.Get("includeEpisodeImages") == "true"
+		seriesCache := map[int]*SeriesResource{}
 		out := make([]EpisodeResource, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, ToEpisodeResource(row))
+			res := ToEpisodeResource(row)
+			ep := row
+			applyEpisodeFileSubresource(r.Context(), &res, &ep, lister, includeEpisodeFile)
+			applyEpisodeImages(&res, row, includeEpisodeImages)
+			applyEpisodeSeries(r.Context(), &res, row.SeriesID, lister, includeSeries, seriesCache)
+			out = append(out, res)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)

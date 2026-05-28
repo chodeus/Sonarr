@@ -19181,3 +19181,36 @@ Only **qualityCutoffNotMet** remains — needs the upgradable-spec service (same
 ### EpisodeFileResource — COMPLETE
 
 Every C# EpisodeFileResourceMapper.ToResource field ported: scalars + path + dateAdded + sceneName/releaseGroup + languages (ToLanguageRefs) + quality (J373) + mediaInfo (J374) + indexerFlags/releaseType (J328) + customFormats[]/customFormatScore (J339) + qualityCutoffNotMet (J375). Arc moves to priority #3: the queue/history/blocklist/calendar/wanted embedder include-branches (includeSeries / includeEpisode / includeEpisodeFile sub-resource hydration), which now reuse the complete Episode/EpisodeFile/Series projections.
+
+## J376 — Post-J365 resource-projection arc, slice 11: Calendar embedder include-branches
+
+**Anchor**: post-J375 (EpisodeResource + EpisodeFileResource complete). First of the priority-#3 embedder slices. Calendar is the natural lead — its UI consumes series title + images + episodeFile per entry, and it reuses the exact MapToResource the Episode handlers use.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Calendar/CalendarController.cs:33-67` — `GetCalendar(..., bool includeSeries=false, bool includeEpisodeFile=false, bool includeEpisodeImages=false, ...)` → `MapToResource(result, includeSeries, includeEpisodeFile, includeEpisodeImages)`. Note: the images param is `includeEpisodeImages` (NOT `includeImages` like EpisodeController).
+
+### Port deliverables
+
+- **`internal/api/v3/calendar.go`**: `CalendarHandler` parses `includeSeries`/`includeEpisodeFile`/`includeEpisodeImages` and threads them per-row through the already-ported `applyEpisodeFileSubresource` / `applyEpisodeImages` / `applyEpisodeSeries` helpers, with a per-request `seriesCache` (the Episode-list pattern).
+- **`cmd/sonarr/host_wiring.go`**: v3 `/api/v3/calendar` + v5 `/api/v5/calendar` (alias) list routes re-wired from `episodesSvc` to the `episodesSvcWithEpisodeFile` composite (implements GetFile + GetSeries + the populators; still satisfies CalendarEpisodeLister via the embedded *episodes.Service).
+
+### Design notes
+
+- **Pure reuse** — no new helpers; the J342/J371/J372 Episode embed machinery already handles all three branches. The slice is param parsing + a wiring swap.
+- **Tag filtering + AirDateUtc ordering** stay DEFERRED (separate from the projection branches; need GetAllSeries + a sort).
+- **v5 param shift** (`includeSubresources` CSV vs the three bools) stays deferred — the v5 ListHandler aliases the v3 handler so it responds to the v3-style bools additively.
+
+### Tests (`internal/api/v3/calendar_test.go`, 1 new)
+
+`TestCalendarHandler_IncludeBranches_J376` — a row with seriesId + episodeFileId + images; absent embeds without params; all three (series/episodeFile/images) present when the params are true and the lister implements the EpisodeSeriesLookup + EpisodeFileLookupForEpisode extensions.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/calendar/... ./cmd/sonarr/... ./test/contract/...` ✓
+- `go vet` + gofmt ✓; `test/contract/replayer` + `hostbootstrap` ✓.
+
+### Next embedders
+
+Wanted (missing/cutoff) — accepts includeSeries/includeEpisodeFile/includeImages on the same EpisodeResource projection (the natural next slice, same helper reuse). Queue already has includeSeries+includeEpisode (J348). History accepts includeSeries/includeEpisode. Blocklist.
