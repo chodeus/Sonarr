@@ -87,14 +87,12 @@ type OverrideResource struct {
 // fallback lookup used when the cached Subject has no Series /
 // Episodes attached (matches C# `ReleaseController.cs:135-159`).
 //
-// **DEFERRED on the Go-port**: today's cached Decision always carries
-// a populated Series + Episodes via the decision-engine pipeline, so
-// the SearchInfo fallback branch is unreachable in practice. The
-// field is decoded for wire-shape parity (so a v5 client sending
-// `searchInfo` doesn't get rejected by `DisallowUnknownFields`) but
-// the populated branch lookup is gated on a future
-// parsingService.GetEpisodes port. When that port lands, the lookup
-// surfaces via a new interface dependency on the handler.
+// J343 — wired through to the v3 fallback ladder. `SeriesID` +
+// `EpisodeID` translate to v3 body `SeriesId` + `EpisodeId`; the
+// `SeasonNumber` field is decoded for wire-shape parity but the
+// downstream ladder reads it from the cached ParsedEpisodeInfo
+// instead (matches C# behavior — `SeasonNumber` is informational on
+// the v5 wire body; the fallback always uses the parsed value).
 type SearchInfoResource struct {
 	SeriesID     *int `json:"seriesId,omitempty"`
 	SeasonNumber *int `json:"seasonNumber,omitempty"`
@@ -133,22 +131,23 @@ type GrabResource struct {
 // the v5 body back verbatim on 200 success or passes through the
 // v3 error envelope.
 //
-// The v5 `searchInfo` fallback branch (C# lines 133-159 — used when
-// the cached Subject has no Series attached) is DEFERRED on the
-// Go-port: today's cached Decision always carries populated Series
-// + Episodes via the decision-engine pipeline, making the fallback
-// unreachable. When `parsingService.GetEpisodes` ports in a future
-// slice, the SearchInfo arm wires through a new handler dependency.
+// The v5 `searchInfo` fallback branch (C# lines 133-159) wires through
+// to the v3 fallback ladder via J343 — body.SearchInfo.SeriesID and
+// body.SearchInfo.EpisodeID translate to v3Body.SeriesID +
+// v3Body.EpisodeID, and the v3 handler's parsingFallback +
+// singleEpLookup deps drive the recovery against the cached Subject.
 //
 // J308 — Wave 3 LARGE-family arc final residual (Release POST). The
-// arc DRAINS at this slice.
+// arc DRAINS at this slice. J343 — SearchInfo wire-through.
 func DownloadHandler(
 	cache *releasecache.Cache,
 	dispatcher apiv3.ReleaseDispatcher,
 	seriesLookup apiv3.ReleaseOverrideSeriesLookup,
 	episodeLookup apiv3.ReleaseOverrideEpisodeLookup,
+	parsingFallback apiv3.ReleaseParsingFallback,
+	singleEpLookup apiv3.ReleaseSingleEpisodeLookup,
 ) http.Handler {
-	v3Handler := apiv3.ReleaseDownloadHandler(cache, dispatcher, seriesLookup, episodeLookup)
+	v3Handler := apiv3.ReleaseDownloadHandler(cache, dispatcher, seriesLookup, episodeLookup, parsingFallback, singleEpLookup)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body GrabResource
 		dec := json.NewDecoder(r.Body)
@@ -184,6 +183,18 @@ func DownloadHandler(
 			}
 			v3Body.Quality = body.Override.Quality
 			v3Body.Languages = body.Override.Languages
+		}
+		// J343 — SearchInfo wire-through. The v5 `searchInfo` sub-block
+		// carries the same SeriesId / EpisodeId fields the v3 wire body
+		// holds flat. Translate into v3Body so the v3 handler's
+		// fallback ladder (C# `:114-153`) sees the lookup hints.
+		if body.SearchInfo != nil {
+			if body.SearchInfo.SeriesID != nil {
+				v3Body.SeriesID = *body.SearchInfo.SeriesID
+			}
+			if body.SearchInfo.EpisodeID != nil {
+				v3Body.EpisodeID = *body.SearchInfo.EpisodeID
+			}
 		}
 		// Re-encode for the v3 handler. The v3 handler decodes via
 		// json.NewDecoder + DisallowUnknownFields, so we need a

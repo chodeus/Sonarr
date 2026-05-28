@@ -10,9 +10,11 @@ import (
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/download"
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/indexersearch"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/releasecache"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 // stubSearcher implements Searcher (alias of apiv3.ReleaseSearcher).
@@ -103,7 +105,7 @@ func TestDownloadHandler_CacheMissReturns404(t *testing.T) {
 	rr := httptest.NewRecorder()
 	body := strings.NewReader(`{"guid":"abc","indexerId":42}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v5/release", body)
-	DownloadHandler(cache, disp, nil, nil).ServeHTTP(rr, req)
+	DownloadHandler(cache, disp, nil, nil, nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status: got %d want 404 (cache miss); body=%s", rr.Code, rr.Body.String())
 	}
@@ -119,8 +121,12 @@ func TestDownloadHandler_CacheHit_EchoesV5BodyAndDispatches(t *testing.T) {
 	t.Parallel()
 	cache := releasecache.New(0)
 	disp := &fakeDispatcher{}
+	// J343 — well-formed cached Subject (Series + Episodes populated)
+	// so the fallback ladder fast-paths and the dispatcher fires.
 	cached := decisionengine.NewDecision(&decisionengine.Subject{
-		Release: &parser.ReleaseInfo{Title: "X.S01E01", DownloadURL: "https://example.com/x.torrent"},
+		Release:  &parser.ReleaseInfo{Title: "X.S01E01", DownloadURL: "https://example.com/x.torrent"},
+		Series:   &series.Series{ID: 1},
+		Episodes: []episodes.Episode{{ID: 99}},
 	})
 	cache.Put(releasecache.Key(42, "abc"), cached)
 
@@ -128,7 +134,7 @@ func TestDownloadHandler_CacheHit_EchoesV5BodyAndDispatches(t *testing.T) {
 	rr := httptest.NewRecorder()
 	body := strings.NewReader(`{"guid":"abc","indexerId":42}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v5/release", body)
-	DownloadHandler(cache, disp, nil, nil).ServeHTTP(rr, req)
+	DownloadHandler(cache, disp, nil, nil, nil, nil).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200; body=%q", rr.Code, rr.Body.String())
@@ -155,7 +161,7 @@ func TestDownloadHandler_ValidatorGuidRequired_PassesThrough400(t *testing.T) {
 	rr := httptest.NewRecorder()
 	body := strings.NewReader(`{"guid":"","indexerId":42}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v5/release", body)
-	DownloadHandler(releasecache.New(0), &fakeDispatcher{}, nil, nil).ServeHTTP(rr, req)
+	DownloadHandler(releasecache.New(0), &fakeDispatcher{}, nil, nil, nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (Guid must not be empty)", rr.Code)
 	}
@@ -169,7 +175,7 @@ func TestDownloadHandler_ValidatorIndexerIDRequired_PassesThrough400(t *testing.
 	rr := httptest.NewRecorder()
 	body := strings.NewReader(`{"guid":"abc","indexerId":0}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v5/release", body)
-	DownloadHandler(releasecache.New(0), &fakeDispatcher{}, nil, nil).ServeHTTP(rr, req)
+	DownloadHandler(releasecache.New(0), &fakeDispatcher{}, nil, nil, nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (IndexerId must be > 0)", rr.Code)
 	}
@@ -182,7 +188,7 @@ func TestDownloadHandler_MalformedBody_400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v5/release", strings.NewReader(`{not-json`))
-	DownloadHandler(releasecache.New(0), &fakeDispatcher{}, nil, nil).ServeHTTP(rr, req)
+	DownloadHandler(releasecache.New(0), &fakeDispatcher{}, nil, nil, nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (malformed body)", rr.Code)
 	}
@@ -197,7 +203,7 @@ func TestDownloadHandler_UnknownField_RejectedAt400(t *testing.T) {
 	rr := httptest.NewRecorder()
 	body := strings.NewReader(`{"guid":"abc","indexerId":42,"shouldOverride":true}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v5/release", body)
-	DownloadHandler(releasecache.New(0), &fakeDispatcher{}, nil, nil).ServeHTTP(rr, req)
+	DownloadHandler(releasecache.New(0), &fakeDispatcher{}, nil, nil, nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (unknown field shouldOverride should be rejected)", rr.Code)
 	}
@@ -216,9 +222,68 @@ func TestDownloadHandler_OverrideRequiredFieldsValidated_400(t *testing.T) {
 	// Override with empty episodeIds + null quality + null languages → 400.
 	body := strings.NewReader(`{"guid":"abc","indexerId":42,"override":{"seriesId":7,"episodeIds":[]}}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v5/release", body)
-	DownloadHandler(cache, &fakeDispatcher{}, nil, nil).ServeHTTP(rr, req)
+	DownloadHandler(cache, &fakeDispatcher{}, nil, nil, nil, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (incomplete override should fail validation)", rr.Code)
+	}
+}
+
+// ----- POST /api/v5/release searchInfo wire-through (J343) -----
+
+// fakeV5ParsingFallback is the v5-side fake (separate to avoid import
+// cycle with the v3 test package). Implements apiv3.ReleaseParsingFallback.
+type fakeV5ParsingFallback struct {
+	gotSeries *series.Series
+	returnEps []episodes.Episode
+	calls     int
+}
+
+func (f *fakeV5ParsingFallback) GetEpisodes(_ context.Context, _ *parser.ParsedEpisodeInfo, ser *series.Series, _ bool) ([]episodes.Episode, error) {
+	f.gotSeries = ser
+	f.calls++
+	return f.returnEps, nil
+}
+
+type fakeV5SeriesLookup struct {
+	gotID   int
+	returnS *series.Series
+}
+
+func (f *fakeV5SeriesLookup) GetSeries(_ context.Context, id int) (*series.Series, error) {
+	f.gotID = id
+	return f.returnS, nil
+}
+
+func TestDownloadHandler_SearchInfo_SeriesIDRoutesToV3Fallback(t *testing.T) {
+	t.Parallel()
+	cache := releasecache.New(0)
+	// Bare Subject — Series nil, triggering fallback.
+	cache.Put(releasecache.Key(42, "abc"), decisionengine.NewDecision(&decisionengine.Subject{
+		Release:           &parser.ReleaseInfo{Title: "X.S01E01"},
+		ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{SeasonNumber: 1, ReleaseTitle: "X.S01E01"},
+	}))
+
+	disp := &fakeDispatcher{}
+	sl := &fakeV5SeriesLookup{returnS: &series.Series{ID: 99, Title: "FromSearchInfo"}}
+	pf := &fakeV5ParsingFallback{returnEps: []episodes.Episode{{ID: 41}, {ID: 42}}}
+
+	// v5 body carries searchInfo.seriesId — must translate to v3 fallback's seriesId arm.
+	body := strings.NewReader(`{"guid":"abc","indexerId":42,"searchInfo":{"seriesId":99}}`)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v5/release", body)
+	DownloadHandler(cache, disp, sl, nil, pf, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if sl.gotID != 99 {
+		t.Errorf("series lookup got id=%d, want 99 (from v5 searchInfo.seriesId)", sl.gotID)
+	}
+	if pf.calls != 1 || pf.gotSeries == nil || pf.gotSeries.ID != 99 {
+		t.Errorf("parsing fallback should fire against the looked-up Series; calls=%d gotSeries=%v", pf.calls, pf.gotSeries)
+	}
+	if len(disp.calls) != 1 {
+		t.Errorf("dispatcher want 1 call; got %d", len(disp.calls))
 	}
 }
 

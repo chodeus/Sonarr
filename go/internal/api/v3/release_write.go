@@ -22,6 +22,32 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 )
 
+// ReleaseParsingFallback is the narrow parsing-service surface used by
+// the POST /release fallback ladder (C# `ReleaseController.cs:114-153`).
+// When the cached Subject's Series is nil OR Episodes is empty, the
+// handler calls `GetEpisodes(parsedInfo, series, sceneSource=true)` to
+// re-derive the episode list against the (possibly newly-looked-up)
+// series. Satisfied by `*parsingservice.Service` via Go structural
+// typing. Nil-tolerant from the handler: a nil dep with a well-formed
+// cached Subject is a no-op; a nil dep with a fallback-needed Subject
+// surfaces as 503.
+//
+// J343.
+type ReleaseParsingFallback interface {
+	GetEpisodes(ctx context.Context, parsedInfo *parser.ParsedEpisodeInfo, ser *series.Series, sceneSource bool) ([]episodes.Episode, error)
+}
+
+// ReleaseSingleEpisodeLookup is the narrow single-id episode lookup
+// used by the fallback ladder's `body.EpisodeId.HasValue` arm
+// (C# `:117-122` + `:145-150`). Satisfied by `*episodes.Service` via
+// `GetEpisode(ctx, id)`. Separate from ReleaseOverrideEpisodeLookup
+// (which takes a slice) so the two arms can be wired independently.
+//
+// J343.
+type ReleaseSingleEpisodeLookup interface {
+	GetEpisode(ctx context.Context, id int) (*episodes.Episode, error)
+}
+
 // ReleaseDispatcher is the narrow dispatch interface for both write
 // handlers. Identical shape to QueueGrabDispatcher (J236) — separate
 // type alias so the two handler families can be wired independently
@@ -160,11 +186,23 @@ type ReleaseDownloadBody struct {
 //  4. Return the same body back to the caller (matches C# `return release`).
 //
 // Audit row C.1.i-follow-5a (J237). Override-branch port deferred.
+//
+// J343 — searchInfo-fallback ladder. After the optional override branch,
+// the handler checks the (possibly cloned) Subject for a missing Series
+// or empty Episodes. The C# fallback at `:114-153` recovers by either
+// looking up a single episode by id, looking up a series + parsing the
+// release title via `IParsingService.GetEpisodes`, or 404ing the
+// request. The two new params are optional from a wiring perspective:
+// when nil, the handler degrades to current behavior for well-formed
+// cached Subjects and surfaces 503 only when fallback is genuinely
+// required.
 func ReleaseDownloadHandler(
 	cache *releasecache.Cache,
 	dispatcher ReleaseDispatcher,
 	seriesLookup ReleaseOverrideSeriesLookup,
 	episodeLookup ReleaseOverrideEpisodeLookup,
+	parsingFallback ReleaseParsingFallback,
+	singleEpLookup ReleaseSingleEpisodeLookup,
 ) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body ReleaseDownloadBody
@@ -208,6 +246,18 @@ func ReleaseDownloadHandler(
 			}
 			decision = overridden
 		}
+
+		// J343 — searchInfo-fallback ladder. C# `:114-153`. When the
+		// (possibly override-cloned) Subject is missing a Series or has
+		// no Episodes, recover via single-episode lookup, series lookup
+		// + parsing service, or 404 the request. Pass-through when the
+		// Subject is already well-formed (the dominant path).
+		fallback, status, msg := applyParsingFallback(r.Context(), &body, decision, seriesLookup, singleEpLookup, parsingFallback)
+		if status != 0 {
+			httperr.Write(w, status, msg, "", nil)
+			return
+		}
+		decision = fallback
 
 		_ = dispatcher.ProcessDecisions(r.Context(), []decisionengine.Decision{decision})
 		// C# returns the request body back verbatim. Match.
@@ -318,6 +368,134 @@ func applyShouldOverride(
 	out := cached
 	out.Subject = &cloned
 	return out, 0, "", nil
+}
+
+// applyParsingFallback ports the C# `:114-153` ladder — after the
+// optional override branch, recover a Subject whose Series is nil or
+// whose Episodes is empty.
+//
+// Returns:
+//
+//   - fallback (Decision): the original decision when no fallback was
+//     needed (pass-through), or a clone whose Subject has Series +
+//     Episodes populated per the recovered arm.
+//   - status, msg: when status != 0, the handler should write that as
+//     the HTTP response (404 / 500 / 503).
+//
+// The fallback arms mirror C# verbatim:
+//
+//   - Subject.Series == nil:
+//     1. body.EpisodeId > 0 → single-episode lookup → series lookup
+//        via the episode's SeriesId → set Series + Episodes=[ep].
+//     2. body.SeriesId > 0 → series lookup → parsingService.GetEpisodes
+//        with sceneSource=true → 404 if empty.
+//     3. neither id → 404 "Unable to find matching series and episodes".
+//
+//   - Subject.Series != nil + len(Episodes) == 0:
+//     parsingService.GetEpisodes(parsedInfo, subj.Series, sceneSource=true);
+//     when empty AND body.EpisodeId > 0, fall through to single-episode
+//     lookup.
+//
+//   - Final guard: if the cloned Episodes is still empty after the
+//     arms above → 404 "Unable to parse episodes in the release".
+//
+// The cloned Subject preserves all decision-engine fields (Release,
+// SceneMapping, MappedSeasonNumber, CustomFormats, etc.) via shallow
+// struct copy — matches the C# clone pattern at `:93-104` from the
+// override path. The cache stays pristine even on fallback.
+//
+// J343.
+func applyParsingFallback(
+	ctx context.Context,
+	body *ReleaseDownloadBody,
+	decision decisionengine.Decision,
+	seriesLookup ReleaseOverrideSeriesLookup,
+	singleEpLookup ReleaseSingleEpisodeLookup,
+	parsingFallback ReleaseParsingFallback,
+) (decisionengine.Decision, int, string) {
+	subj, ok := decision.Subject.(*decisionengine.Subject)
+	if !ok || subj == nil {
+		// Unrecognised Subject shape — pass through; the dispatcher
+		// will surface its own error. Matches C# behavior of running
+		// the dispatch on the cached value regardless.
+		return decision, 0, ""
+	}
+
+	// Fast path: cached Subject is already well-formed. Dominant in
+	// practice — the search pipeline always populates Series + Episodes.
+	if subj.Series != nil && len(subj.Episodes) > 0 {
+		return decision, 0, ""
+	}
+
+	cloned := *subj
+
+	if subj.Series == nil {
+		// C# `:114-140` — Series-nil arms.
+		switch {
+		case body.EpisodeID > 0:
+			if singleEpLookup == nil || seriesLookup == nil {
+				return decisionengine.Decision{}, http.StatusServiceUnavailable, "release fallback: series/episode lookup not wired"
+			}
+			ep, err := singleEpLookup.GetEpisode(ctx, body.EpisodeID)
+			if err != nil {
+				return decisionengine.Decision{}, http.StatusInternalServerError, fmt.Sprintf("release fallback: episode lookup: %v", err)
+			}
+			srs, err := seriesLookup.GetSeries(ctx, ep.SeriesID)
+			if err != nil {
+				return decisionengine.Decision{}, http.StatusInternalServerError, fmt.Sprintf("release fallback: series lookup: %v", err)
+			}
+			cloned.Series = srs
+			cloned.Episodes = []episodes.Episode{*ep}
+		case body.SeriesID > 0:
+			if seriesLookup == nil || parsingFallback == nil {
+				return decisionengine.Decision{}, http.StatusServiceUnavailable, "release fallback: series/parsing lookup not wired"
+			}
+			srs, err := seriesLookup.GetSeries(ctx, body.SeriesID)
+			if err != nil {
+				return decisionengine.Decision{}, http.StatusInternalServerError, fmt.Sprintf("release fallback: series lookup: %v", err)
+			}
+			eps, err := parsingFallback.GetEpisodes(ctx, subj.ParsedEpisodeInfo, srs, true)
+			if err != nil {
+				return decisionengine.Decision{}, http.StatusInternalServerError, fmt.Sprintf("release fallback: parsing lookup: %v", err)
+			}
+			if len(eps) == 0 {
+				return decisionengine.Decision{}, http.StatusNotFound, "Unable to parse episodes in the release, will need to be manually provided"
+			}
+			cloned.Series = srs
+			cloned.Episodes = eps
+		default:
+			return decisionengine.Decision{}, http.StatusNotFound, "Unable to find matching series and episodes, will need to be manually provided"
+		}
+	} else if len(subj.Episodes) == 0 {
+		// C# `:141-153` — Series populated, Episodes empty.
+		if parsingFallback == nil {
+			return decisionengine.Decision{}, http.StatusServiceUnavailable, "release fallback: parsing lookup not wired"
+		}
+		eps, err := parsingFallback.GetEpisodes(ctx, subj.ParsedEpisodeInfo, subj.Series, true)
+		if err != nil {
+			return decisionengine.Decision{}, http.StatusInternalServerError, fmt.Sprintf("release fallback: parsing lookup: %v", err)
+		}
+		if len(eps) == 0 && body.EpisodeID > 0 {
+			if singleEpLookup == nil {
+				return decisionengine.Decision{}, http.StatusServiceUnavailable, "release fallback: episode lookup not wired"
+			}
+			ep, err := singleEpLookup.GetEpisode(ctx, body.EpisodeID)
+			if err != nil {
+				return decisionengine.Decision{}, http.StatusInternalServerError, fmt.Sprintf("release fallback: episode lookup: %v", err)
+			}
+			eps = []episodes.Episode{*ep}
+		}
+		cloned.Episodes = eps
+	}
+
+	// C# `:155-158` — final guard.
+	if len(cloned.Episodes) == 0 {
+		return decisionengine.Decision{}, http.StatusNotFound, "Unable to parse episodes in the release, will need to be manually provided"
+	}
+
+	out := decision
+	out.Subject = &cloned
+	return out, 0, ""
 }
 
 // ReleasePushHandler returns POST /api/v3/release/push.

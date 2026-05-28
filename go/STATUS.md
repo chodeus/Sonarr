@@ -17708,3 +17708,89 @@ No new routes. Helper + composite wrapper + 2 handler updates + 5 wire-site upda
 Remaining items are all gated on substantial deferred service ports (parsingService.Map, ImportDecisionMaker, Queue paged surface + Episodes pipeline, parsingService.GetEpisodes) — each is its own multi-slice arc. The current populator chain covers the entire EpisodeFile → Episode → Calendar/Wanted carrier tree via the optional-extension type-assertion pattern, so the populated-row mapper goal is effectively COMPLETE for the carrier families that have a viable population path today.
 
 Next-tick assessment: pause point. The remaining service-port-gated work warrants fresh user direction.
+
+---
+
+## J343 — Post-J342 service-port arc, slice 1 (B-category): Release POST searchInfo fallback ported via *parsingservice.Service.GetEpisodes + *episodes.Service.GetEpisode narrow interfaces
+
+**Anchor**: post-J342 (Post-Wave-3 drain arc DRAINED). Opens the new Post-J342 service-port arc by closing the `Release POST searchInfo fallback` row — the smallest of three sub-arcs in the new priority queue. The Go-port `parsingservice.Service.GetEpisodes` was already implemented (J3.81 era — sits at `internal/parsingservice/parsingservice.go:818`) but had never been wired into the Release POST handlers; this slice does the wire-through plus the helper ladder port.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Indexers/ReleaseController.cs:114-153` — fallback ladder. After the optional override branch, runs three arms when the cached `RemoteEpisode.Series` is nil OR `Episodes` is empty:
+  - `:117-122` — `release.EpisodeId.HasValue` arm: single-episode lookup + series-by-episode-SeriesId lookup.
+  - `:123-135` — `release.SeriesId.HasValue` arm: series lookup + `_parsingService.GetEpisodes(parsedInfo, series, true)`; empty result → 404 with "Unable to parse episodes in the release, will need to be manually provided".
+  - `:136-139` — neither id supplied → 404 with "Unable to find matching series and episodes, will need to be manually provided".
+  - `:141-153` — Series populated + Episodes empty: parsing fallback + optional single-episode fallback (when parsing returns empty AND `release.EpisodeId.HasValue`).
+  - `:155-158` — final guard 404 if Episodes still empty.
+- `src/Sonarr.Api.V5/Release/ReleaseController.cs:135-159` — v5 equivalent driven by the `searchInfo` body sub-block (`SeriesId` + `EpisodeId` fields on `SearchInfoResource`).
+- `src/NzbDrone.Core/Parser/ParsingService.cs:247-256` — `IParsingService.GetEpisodes(parsedInfo, series, sceneSource, searchCriteria=null)`. The `sceneSource=true` path delegates to `Map(parsedInfo, 0, 0, null, series, null)` for the scene-numbering branch; `false` calls the private `GetEpisodes(parsedInfo, series, parsedInfo.SeasonNumber, sceneSource, searchCriteria)` overload for the standard branches (FullSeason / IsDaily / IsAbsoluteNumbering / IsPossibleSceneSeasonSpecial / Standard).
+- Go-port already has the implementation at `internal/parsingservice/parsingservice.go:818` (matching signature minus the always-nil searchCriteria parameter).
+
+### Port deliverables
+
+**`go/internal/api/v3/release_write.go`** — 2 new narrow interfaces + helper + ReleaseDownloadHandler signature extension:
+
+- `ReleaseParsingFallback interface { GetEpisodes(ctx, *parser.ParsedEpisodeInfo, *series.Series, bool) ([]episodes.Episode, error) }`. Satisfied by `*parsingservice.Service` via Go structural typing — no adapter needed at the wire site. Nil-tolerant from the handler.
+- `ReleaseSingleEpisodeLookup interface { GetEpisode(ctx, int) (*episodes.Episode, error) }`. Satisfied by `*episodes.Service.GetEpisode`. Separate from `ReleaseOverrideEpisodeLookup` (which takes a slice for the override-branch multi-id lookup) so the two wire surfaces stay independent.
+- `ReleaseDownloadHandler` extended with these 2 new positional deps after the existing 4. Both nil-tolerant: well-formed cached Subject fast-paths regardless of dep nilness; broken Subject + nil deps → 503 ServiceUnavailable matching the J249 override pattern.
+- New `applyParsingFallback(ctx, body, decision, seriesLookup, singleEpLookup, parsingFallback) (Decision, int, string)` helper. Returns the original decision (pass-through) when no fallback was needed, or a clone whose Subject has Series + Episodes populated. The 4 fallback arms mirror C# verbatim. Shallow-clones the Subject via `cloned := *subj` before any mutation so the cache stays pristine — preserves Release / SceneMapping / MappedSeasonNumber / CustomFormats / etc. via Go's struct-copy semantics.
+
+**`go/internal/api/v5/release/release.go`** — `DownloadHandler` wire-through + body translation:
+
+- Signature gains `parsingFallback apiv3.ReleaseParsingFallback` + `singleEpLookup apiv3.ReleaseSingleEpisodeLookup` after the 4 existing deps; threads to `apiv3.ReleaseDownloadHandler`.
+- Body translation maps `body.SearchInfo.SeriesID/EpisodeID → v3Body.SeriesID/EpisodeID` when SearchInfo is non-nil so the v3 fallback ladder fires against the v5 wire shape.
+- "DEFERRED on the Go-port" comments on `SearchInfoResource` + handler doc-comment dropped — replaced with a J343 wire-through note.
+
+**`go/cmd/sonarr/main.go`** + **`host_wiring.go`** — production wiring:
+
+- `buildHostServer` signature gains `parsingSvc *parsingservice.Service` (positional after `releaseCache *releasecache.Cache`).
+- `v3Routes` signature mirrors the change so the param can reach the route block.
+- New `"sonarr.tv/sonarr/internal/parsingservice"` import in host_wiring.go.
+- 2 wire sites updated:
+  - `/api/v3/release` POST: `apiv3.ReleaseDownloadHandler(releaseCache, processDownloadDecisions, seriesSvc, episodesSvc, parsingSvc, episodesSvc)`.
+  - `/api/v5/release` POST: `releasev5.DownloadHandler(releaseCache, processDownloadDecisions, seriesSvc, episodesSvc, parsingSvc, episodesSvc)`.
+- `episodesSvc` satisfies BOTH `ReleaseOverrideEpisodeLookup.GetEpisodes(ctx, []int)` AND `ReleaseSingleEpisodeLookup.GetEpisode(ctx, int)` — both methods exist on the service so it's passed twice (different interface slots; same underlying value).
+
+### Tests (9 new + 2 fixture updates)
+
+**`go/internal/api/v3/release_write_test.go`** — 8 new tests under "POST /api/v3/release searchInfo fallback (J343)":
+
+- `TestReleaseDownloadHandler_Fallback_SeriesNil_EpisodeIDLookup` — C# `:117-122` arm. Body has episodeId, no seriesId. Validates single-episode lookup fires + series-by-episode-SeriesID lookup fires + parsing fallback does NOT fire + dispatched Subject carries the looked-up series + the single episode.
+- `TestReleaseDownloadHandler_Fallback_SeriesNil_SeriesIDLookup` — C# `:123-135` arm. Body has seriesId. Validates series lookup + parsing fallback fire with sceneSource=true; dispatched Subject carries the looked-up series + parsed episodes.
+- `TestReleaseDownloadHandler_Fallback_SeriesNil_SeriesIDParsingEmpty_404` — C# `:128-131` empty-result branch. Validates 404 with the C# `:130` message.
+- `TestReleaseDownloadHandler_Fallback_SeriesNil_NeitherID_404` — C# `:136-139` neither-id branch. Validates 404 with the C# `:138` message (distinct from the parsing-empty message).
+- `TestReleaseDownloadHandler_Fallback_EpisodesEmpty_ParsingPopulates` — C# `:141-153` else-if branch. Series populated, Episodes empty. Validates parsing fallback fires against the cached Series + dispatched Episodes from the parsing result.
+- `TestReleaseDownloadHandler_Fallback_EpisodesEmpty_ParsingEmpty_EpisodeIDFallback` — C# `:145-150` inner fallback. Parsing returns empty + body.EpisodeID>0 → single-episode lookup fires.
+- `TestReleaseDownloadHandler_Fallback_EpisodesEmpty_NoFallbackAvailable_404` — final guard at C# `:155`. Parsing returns empty + no episodeId → 404.
+- `TestReleaseDownloadHandler_Fallback_NilDeps_BrokenSubject_503` — nil-deps + broken Subject → 503 (matches J249 override-branch pattern).
+- `TestReleaseDownloadHandler_Fallback_CachedSubjectNotMutated` — cache invariant pin: after fallback fires + dispatch, the original cached Subject's Episodes must still be the pristine empty slice (not the fallback's populated slice).
+- 2 fixture helpers: `fakeParsingFallback` (satisfies `ReleaseParsingFallback`) + `fakeSingleEpisodeLookup` (satisfies `ReleaseSingleEpisodeLookup`) + `cachedBareSubject` helper that seeds a Subject with only Release + ParsedEpisodeInfo populated.
+
+**`go/internal/api/v5/release/release_test.go`** — 1 new test:
+
+- `TestDownloadHandler_SearchInfo_SeriesIDRoutesToV3Fallback` — v5 body carries `searchInfo.seriesId=99`. Validates the v3 series-id arm fires against the looked-up Series. New v5-side fakes (`fakeV5ParsingFallback` + `fakeV5SeriesLookup`) implement the v3 interfaces.
+
+**Fixture updates** (2):
+
+- `TestReleaseDownloadHandler_CacheHitDispatches` (v3) — original test fixtured a Subject with only `Release` populated (Series=nil, Episodes=nil). Pre-J343 the handler dispatched verbatim regardless; J343 fallback would correctly 404 such a Subject (it matches the C# `:138` arm). Updated fixture to populate Series + Episodes so the fast-path test stays focused on the dispatch invariant.
+- `TestDownloadHandler_CacheHit_EchoesV5BodyAndDispatches` (v5) — same fixture update reason.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/release/... ./cmd/sonarr/...` ✓
+  - v3: all pass, 1.711s
+  - v5/release: all pass, 2.353s
+  - cmd/sonarr: all pass, 4.011s
+- `go vet ./internal/api/v3/... ./internal/api/v5/release/... ./cmd/sonarr/...` ✓
+
+### Post-J342 service-port arc backlog
+
+| Sub-arc | Item | Status |
+| --- | --- | --- |
+| 1 (B-cat, smallest port surface) | Release POST searchInfo fallback (parsingService.GetEpisodes wire-through) | **DONE this slice (J343)** |
+| 2 (A-cat) | Parse + ManualImport populated customFormats (parsingService.Map + ImportDecisionMaker ports) | OPEN |
+| 3 (B-cat) | QueueResource v5 includeSubresources[] hydration (Queue.Service paged surface + Series+Episodes pipeline) | OPEN |
+
+Service-port arc 1 of 3 closed; arc 2 (parsingService.Map + ImportDecisionMaker) is the next-tick candidate.
