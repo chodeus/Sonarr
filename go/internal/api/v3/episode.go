@@ -223,6 +223,21 @@ func applyEpisodeSeries(ctx context.Context, res *EpisodeResource, seriesID int,
 	}
 }
 
+// ApplyEpisodeSeries is the exported wrapper over applyEpisodeSeries so
+// out-of-package list adapters (e.g. cmd/sonarr's wantedRepoLister, J383)
+// can reuse the same conditional BASE-Series-embed projection the v3
+// episode handlers use. Semantics are identical.
+func ApplyEpisodeSeries(ctx context.Context, res *EpisodeResource, seriesID int, lister any, includeSeries bool, cache map[int]*SeriesResource) {
+	applyEpisodeSeries(ctx, res, seriesID, lister, includeSeries, cache)
+}
+
+// ApplyEpisodeImages is the exported wrapper over applyEpisodeImages so
+// out-of-package list adapters (J383) can reuse the includeImages
+// projection. Semantics are identical.
+func ApplyEpisodeImages(res *EpisodeResource, e episodes.Episode, includeImages bool) {
+	applyEpisodeImages(res, e, includeImages)
+}
+
 // EpisodeListHandler returns the http.Handler for GET /api/v3/episode.
 // Mirrors `EpisodeController.GetEpisodes` at
 // `src/Sonarr.Api.V3/Episodes/EpisodeController.cs:35-66`. The full

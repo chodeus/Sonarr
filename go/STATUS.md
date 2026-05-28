@@ -19403,3 +19403,46 @@ Unlike paged History's includeSeries/includeEpisode (J380, conditional), blockli
 ### Arc status
 
 Paged Blocklist is now fully hydrated (EpisodeIDs/Protocol/Indexer/Message J311, Source J316, Languages J314, customFormats J337, Quality+Series J382) — only `Title` (Episode-join derived) remains DEFERRED, same as paged History (a join, not a clean projection). Priority #2 COMPLETE. Priority #3 Wanted is BLOCKED — `emptyWantedLister` is an unported stub returning zero rows (needs a service port, out of scope per the arc guard). Next tick: re-run the orientation grep; if no in-scope GET-side projection/hydration DEFERRAL remains, emit "embedder-hydration arc complete".
+
+---
+
+## J383 — Embedder/Lister Hydration Arc, slice 5: paged Wanted includeSeries + includeImages embeds
+
+### Orientation correction
+
+The prior-arc note claimed Wanted was BLOCKED on an unported `emptyWantedLister` stub. That is STALE. The production `wantedRepoLister` (J360/J361) is real — the missing branch queries `episodes.Repo.WantedMissing`, the cutoff branch `WantedCutoffUnmet` via per-profile below-cutoff sets. But it mapped rows with the BASE `apiv3.ToEpisodeResource` only, with no subresource hydration.
+
+### C# reference
+
+`MissingController` / `CutoffController` extend `EpisodeControllerWithSignalR` and call `MapToResource(v, includeSeries, includeEpisodeFile?, includeImages)`: Missing passes `(includeSeries, false, includeImages)`; Cutoff passes all three.
+
+### Changes
+
+`internal/api/v3/wanted.go`:
+- `WantedEpisodeLister.PagedWanted` widened to `(ctx, req, scope, includeSeries, includeImages bool)`.
+- `WantedHandler` parses `includeSeries` / `includeImages` and passes them through (conditional-hydration design like J380).
+
+`internal/api/v3/episode.go`:
+- Added exported wrappers `ApplyEpisodeSeries` / `ApplyEpisodeImages` over the unexported J371/J372 helpers so the out-of-package `wantedRepoLister` reuses the exact same conditional projections (BASE SeriesResource via `EpisodeSeriesLookup`; Images 3-state pointer).
+
+`cmd/sonarr/host_wiring.go`:
+- `wantedRepoLister` gains a `seriesSvc historySeriesLookup` field + a `GetSeries` method (satisfies `apiv3.EpisodeSeriesLookup`).
+- `PagedWanted` calls `apiv3.ApplyEpisodeSeries` + `apiv3.ApplyEpisodeImages` per row with a per-request series-embed cache.
+- Wired `seriesSvc: seriesSvc` at all 4 registration sites (v3+v5 × missing/cutoff; v5 ListHandler/EpisodeLister alias the v3 symbols).
+
+`includeEpisodeFile` (Cutoff-only in C#) stays DEFERRED — needs the heavier J340/J342 episodeFile populator hydration.
+
+### Tests
+
+- `cmd/sonarr/wanted_lister_test.go` (new): `TestPagedWanted_IncludeSeriesImages_J383` — real SQLite series+episodes repos seeded with one missing monitored episode; neither-flag → no Series/Images; both-flag → BASE Series embed + Images projection.
+- Updated the `fakeWantedLister` (v3), v5 `fakeLister`, and `emptyWantedLister` (hostbootstrap) fakes to the new 2-bool signature.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./cmd/sonarr/... ./internal/api/v3/... ./internal/api/v5/wanted/... ./test/contract/...` ✓
+- `go vet` + gofmt ✓; empty-DB contract goldens `[]` (embeds unobservable there).
+
+### Arc status
+
+Paged History (J379-J381), Blocklist (J382), and Wanted (J383) are hydrated for the clean read-projection subset. Remaining GET-surface DEFERRALs are not clean projections: Wanted/Cutoff `includeEpisodeFile` (needs the episodeFile populator), paged-list `Title`-from-Episode-join, Queue filter params (filter application not field projection), series statistics/images (stats service + MapCoversToLocal), and the mutation/command/cascade DEFERRALs (out of scope). Next tick: re-run the orientation grep; if Wanted/Cutoff `includeEpisodeFile` is judged in-scope do it as J384, else emit "embedder-hydration arc complete".
