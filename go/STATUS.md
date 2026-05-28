@@ -18237,3 +18237,50 @@ Arc 3 progress: v3 QueueResource FULLY populated (J347-J350). The only remaining
 | 3 (B-cat) | v5 Episodes-plural hydration + includeSubresources[] enum-array gating | OPEN — final Arc 3 sub-slice |
 
 Arc 3 progress: 5 of 6 sub-slices landed. The final sub-slice (J352) is the v5-specific QueueHandler with includeSubresources[] enum-array parsing + Episodes-plural gated hydration — closing it drains Arc 3 and completes all three Post-J342 service-port arcs.
+
+---
+
+## J352 — Post-J342 service-port arc, slice 10 (Arc 3 slice 6, DRAINS Arc 3 + COMPLETES the arc, B-category): Queue v5 includeSubresources[] enum-array gating + Episodes-plural hydration
+
+**Anchor**: post-J351. The final slice — closes Arc 3 and all three service-port arcs.
+
+### C# source
+
+- `src/Sonarr.Api.V5/Queue/QueueController.cs:141` — `includeSubresources QueueSubresource[]` query param; enum `QueueSubresource { Series, Episodes }`.
+- `:170-171` — `includeSeries = includeSubresources.Contains(Series)` + `includeEpisodes = includeSubresources.Contains(Episodes)`.
+- `src/Sonarr.Api.V5/Queue/QueueResource.cs:59` — `Episodes = includeEpisodes ? model.Episodes?.ToResource() : null` (the v5 QueueResource has NO singular Episode field).
+
+### Port deliverables
+
+1. **`projectQueueResource`** (cmd/sonarr): hydrate the plural `Episodes *[]EpisodeResource` from all q.Episodes (alongside the J348 Series + singular Episode). Always hydrated; handlers gate.
+2. **`apiv3.QueueHandler`** (v3): strip the plural Episodes unconditionally — the v3 wire carries only the singular Episode; the plural is a v5-only field the shared adapter hydrates.
+3. **`apiv3.QueueHandlerV5`** (new, lives in apiv3 for parsePagingRequest + shared QueueResource access): parse `includeSubresources` (repeated, case-insensitive "series"/"episodes"); keep Series iff ∋series; keep plural Episodes iff ∋episodes; strip the singular Episode unconditionally (v5 dropped it).
+4. **`queuev5.ListHandler`**: switch from the v3 alias to `apiv3.QueueHandlerV5`.
+
+### Tests
+
+- Updated the J347 scalar adapter test's Episodes-nil guard → now asserts the plural is hydrated ([{id=11}]).
+- `TestListHandler_IncludeSubresources_J352` (v5, 4 sub-tests): no-subresources strips all; series-only; episodes-only keeps plural + strips singular; both. New `fakeV5QueuePagedLister` (returns a copy per call so per-request stripping doesn't bleed across sub-tests).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/queue/... ./cmd/sonarr/...` ✓ (v3 1.441s, v5/queue 1.802s, cmd/sonarr 3.683s)
+- `go vet` + gofmt ✓
+
+### Post-J342 service-port arc — COMPLETE
+
+| Arc | Item | Status |
+| --- | --- | --- |
+| 1 (B-cat) | Release POST searchInfo fallback (parsingService.GetEpisodes) | DONE (J343) |
+| 2 (A-cat) | Parse + ManualImport full hydration (parsingService.Map + calculator) | DONE (J344-J346) |
+| 3 (B-cat) | Queue paged surface fully populated v3+v5 (scalar + subresources + CustomFormats + StatusMessages + v5 list fields + includeSubresources[] gating) | DONE (J347-J352) |
+
+**All three Post-J342 service-port arcs are drained.** The Queue paged list serves fully-hydrated rows on both surfaces: v3 (scalar + Series/Episode-singular gated by includeSeries/includeEpisode + CustomFormats + Score + StatusMessages) and v5 (the same scalars + EpisodeIDs/SeasonNumbers/EpisodesWithFilesCount + Series/Episodes-plural gated by includeSubresources[]). No further service-port arcs remain in the priority list — the next loop tick emits the arc-complete sentinel and stops.
+
+### Residual deferred items (NOT part of the service-port arc)
+
+- Queue paging SORT (the in-mem adapter paginates in cache order; the C# MapToPagingSpec sorts by ~18 keys) — same DEFERRED posture as the history/blocklist adapters.
+- Queue filter params (seriesIds / protocol / languages / quality / status) — DEFERRED.
+- ManualImport Rejections list + file-size/mediainfo CF specs — gated on the full ImportDecisionMaker spec pipeline (a separate future arc).
+- Queue CustomFormatScore recompute-vs-precomputed (the Go-port reuses the Subject's decision-time score; C# recomputes against the current series QP).

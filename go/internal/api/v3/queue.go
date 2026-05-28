@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"sonarr.tv/sonarr/internal/httperr"
@@ -409,14 +410,86 @@ func QueueHandler(lister QueuePagedLister) http.Handler {
 		}
 		// J348 — strip the always-hydrated subresources when the client
 		// didn't request them (C# gates the projection on these flags).
-		if !includeSeries || !includeEpisode {
-			for i := range records {
-				if !includeSeries {
-					records[i].Series = nil
-				}
-				if !includeEpisode {
-					records[i].Episode = nil
-				}
+		// J352 — the v3 wire carries only the SINGULAR Episode; strip the
+		// plural Episodes (a v5-only field the shared adapter hydrates)
+		// unconditionally so the v3 surface stays faithful.
+		for i := range records {
+			records[i].Episodes = nil
+			if !includeSeries {
+				records[i].Series = nil
+			}
+			if !includeEpisode {
+				records[i].Episode = nil
+			}
+		}
+		resp := PagingResource[QueueResource]{
+			Page: req.Page, PageSize: req.PageSize,
+			Records: records, SortDirection: req.SortDirection,
+			SortKey: req.SortKey, TotalRecords: total,
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(resp)
+		_, _ = w.Write(buf)
+	})
+}
+
+// QueueHandlerV5 returns GET /api/v5/queue. Mirrors C#
+// `Sonarr.Api.V5.Queue.QueueController.GetQueue` at
+// `src/Sonarr.Api.V5/Queue/QueueController.cs:141-173`. The v5
+// controller replaces v3's `includeSeries` + `includeEpisode` bool
+// pair with a single `includeSubresources` enum-array query param
+// (`QueueSubresource{Series, Episodes}`) — `includeSeries =
+// includeSubresources.Contains(Series)` (`:170`) + `includeEpisodes =
+// includeSubresources.Contains(Episodes)` (`:171`).
+//
+// Lives in the apiv3 package (alongside the shared QueueResource +
+// the unexported parsePagingRequest) and is aliased from the
+// internal/api/v5/queue package. The shared queuePagedAdapter
+// hydrates Series + Episode (singular) + Episodes (plural); this
+// handler strips them to the v5 surface shape:
+//
+//   - Series — kept iff `includeSubresources` contains "series".
+//   - Episodes (plural) — kept iff it contains "episodes".
+//   - Episode (singular) — stripped unconditionally; the v5
+//     QueueResource (QueueResource.cs:13-42) dropped the singular
+//     Episode field in favour of the plural Episodes list.
+//
+// Enum values arrive camelCased per STJson's
+// `JsonStringEnumConverter(CamelCase)` — `?includeSubresources=series`
+// / `&includeSubresources=episodes` (repeated). Parsing is
+// case-insensitive for client tolerance.
+//
+// J352.
+func QueueHandlerV5(lister QueuePagedLister) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := parsePagingRequest(r, "timeleft")
+		includeSeries, includeEpisodes := false, false
+		for _, v := range r.URL.Query()["includeSubresources"] {
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "series":
+				includeSeries = true
+			case "episodes":
+				includeEpisodes = true
+			}
+		}
+		records, total, err := lister.PagedQueue(r.Context(), req)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("queue: %w", err), nil)
+			return
+		}
+		if records == nil {
+			records = []QueueResource{}
+		}
+		// Strip to the v5 surface shape: drop the singular Episode
+		// always; gate Series + plural Episodes on the enum.
+		for i := range records {
+			records[i].Episode = nil
+			if !includeSeries {
+				records[i].Series = nil
+			}
+			if !includeEpisodes {
+				records[i].Episodes = nil
 			}
 		}
 		resp := PagingResource[QueueResource]{

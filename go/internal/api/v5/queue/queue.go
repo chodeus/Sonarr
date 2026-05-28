@@ -64,16 +64,17 @@ type Writer = apiv3.QueueWriter
 // (QueueBulkResource.cs:1-7).
 type BulkDeleteResource = apiv3.QueueBulkDeleteResource
 
-// ListHandler aliases v3's GET /api/v3/queue. Same wire shape +
-// status (200 + PagingResource<QueueResource>). The four scalar
-// query params (`includeUnknownSeriesItems` + `protocol` plus the
-// paging block) and the four multi-value query params (`seriesIds`,
-// `languages`, `quality`, `status`) route through the v3 handler
-// unchanged. The v5-specific `includeSubresources[]` enum-array
-// query param is invisible at stub level (J290 "query-param-shift
-// invisible at stub level" sub-pattern — populated-mapper port
-// gate).
-var ListHandler = apiv3.QueueHandler
+// ListHandler is the v5 GET /api/v5/queue handler. J352 switches it
+// from the v3 alias to the v5-specific `apiv3.QueueHandlerV5`, which
+// parses the v5 `includeSubresources[]` enum-array query param
+// (`QueueSubresource{Series, Episodes}`) in place of v3's
+// `includeSeries` + `includeEpisode` bool pair, and strips the
+// QueueResource to the v5 surface shape (plural Episodes gated on the
+// enum; singular Episode dropped). The remaining query params
+// (`includeUnknownSeriesItems` / `protocol` / `seriesIds` /
+// `languages` / `quality` / `status` + the paging block) carry the
+// same DEFERRED-filter posture as the v3 handler.
+var ListHandler = apiv3.QueueHandlerV5
 
 // DeleteHandler returns DELETE /api/v5/queue/{id}.
 //

@@ -2,6 +2,8 @@ package queue
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -153,6 +155,92 @@ func TestBulkDeleteHandler_MalformedBody_PassesThrough400(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (passthrough)", rr.Code)
 	}
+}
+
+// ----- GET /api/v5/queue — includeSubresources[] gating (J352) -----
+
+type fakeV5QueuePagedLister struct {
+	records []apiv3.QueueResource
+}
+
+func (f fakeV5QueuePagedLister) PagedQueue(_ context.Context, _ apiv3.PagingRequest) ([]apiv3.QueueResource, int, error) {
+	// Return a deep-ish copy so per-request stripping doesn't mutate
+	// the fixture across sub-tests.
+	out := make([]apiv3.QueueResource, len(f.records))
+	copy(out, f.records)
+	return out, len(out), nil
+}
+
+func mkV5Lister() fakeV5QueuePagedLister {
+	return fakeV5QueuePagedLister{records: []apiv3.QueueResource{{
+		ID:       1,
+		Series:   &apiv3.SeriesResource{ID: 7, Title: "Show"},
+		Episode:  &apiv3.EpisodeResource{ID: 11}, // v3-singular — v5 must strip
+		Episodes: &[]apiv3.EpisodeResource{{ID: 11}, {ID: 12}},
+	}}}
+}
+
+func TestListHandler_IncludeSubresources_J352(t *testing.T) {
+	t.Parallel()
+	decode := func(rr *httptest.ResponseRecorder) apiv3.QueueResource {
+		var env apiv3.PagingResource[apiv3.QueueResource]
+		if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+			t.Fatalf("decode: %v; body=%s", err, rr.Body.String())
+		}
+		if len(env.Records) != 1 {
+			t.Fatalf("records: got %d want 1", len(env.Records))
+		}
+		return env.Records[0]
+	}
+	t.Run("no subresources strips all", func(t *testing.T) {
+		t.Parallel()
+		rr := httptest.NewRecorder()
+		ListHandler(mkV5Lister()).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/queue", nil))
+		r := decode(rr)
+		if r.Series != nil || r.Episodes != nil || r.Episode != nil {
+			t.Errorf("no includeSubresources must strip all subresources; got series=%v episodes=%v episode=%v", r.Series, r.Episodes, r.Episode)
+		}
+	})
+	t.Run("series only", func(t *testing.T) {
+		t.Parallel()
+		rr := httptest.NewRecorder()
+		ListHandler(mkV5Lister()).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/queue?includeSubresources=series", nil))
+		r := decode(rr)
+		if r.Series == nil || r.Series.ID != 7 {
+			t.Errorf("series requested must be kept; got %v", r.Series)
+		}
+		if r.Episodes != nil {
+			t.Errorf("episodes not requested must be stripped; got %v", r.Episodes)
+		}
+		if r.Episode != nil {
+			t.Errorf("v5 must always strip the singular Episode; got %v", r.Episode)
+		}
+	})
+	t.Run("episodes only keeps plural strips singular", func(t *testing.T) {
+		t.Parallel()
+		rr := httptest.NewRecorder()
+		ListHandler(mkV5Lister()).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/queue?includeSubresources=episodes", nil))
+		r := decode(rr)
+		if r.Episodes == nil || len(*r.Episodes) != 2 {
+			t.Errorf("episodes requested must be kept (plural); got %v", r.Episodes)
+		}
+		if r.Series != nil {
+			t.Errorf("series not requested must be stripped; got %v", r.Series)
+		}
+		if r.Episode != nil {
+			t.Errorf("v5 must always strip the singular Episode; got %v", r.Episode)
+		}
+	})
+	t.Run("both", func(t *testing.T) {
+		t.Parallel()
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v5/queue?includeSubresources=series&includeSubresources=episodes", nil)
+		ListHandler(mkV5Lister()).ServeHTTP(rr, req)
+		r := decode(rr)
+		if r.Series == nil || r.Episodes == nil {
+			t.Errorf("both requested must keep series + episodes; got series=%v episodes=%v", r.Series, r.Episodes)
+		}
+	})
 }
 
 // ----- type aliases (compile-time invariant guard) -----

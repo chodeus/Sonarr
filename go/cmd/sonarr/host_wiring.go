@@ -291,6 +291,17 @@ func projectQueueResource(q queue.Queue) apiv3.QueueResource {
 		// includeEpisode query flag in QueueHandler.
 		er := apiv3.ToEpisodeResource(q.Episodes[0])
 		res.Episode = &er
+		// J352 — Episodes subresource hydration (plural, v5 shape).
+		// C# v5 QueueResource.cs:59 sets Episodes = includeEpisodes ?
+		// model.Episodes?.ToResource() : null. Hydrate the full list
+		// here; the v5 handler (QueueHandlerV5) gates it on the
+		// includeSubresources[] enum, and the v3 handler strips it
+		// unconditionally (v3's wire carries only the singular Episode).
+		eps := make([]apiv3.EpisodeResource, 0, len(q.Episodes))
+		for _, e := range q.Episodes {
+			eps = append(eps, apiv3.ToEpisodeResource(e))
+		}
+		res.Episodes = &eps
 	}
 	// J351 — v5 always-set list fields. C# v5 QueueResource.cs:56-57 sets
 	// EpisodeIds = model.Episodes?.Select(e => e.Id) (always) +
