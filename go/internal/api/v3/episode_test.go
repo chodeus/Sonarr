@@ -13,6 +13,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 type fakeEpisodeBySeries struct {
@@ -457,5 +458,103 @@ func TestEpisodeImages_EmptyList_J371(t *testing.T) {
 		httptest.NewRequest(http.MethodGet, "/api/v3/episode?seriesId=1&includeImages=true", nil))
 	if !strings.Contains(rr.Body.String(), `"images":[]`) {
 		t.Errorf("empty images must emit []; got %s", rr.Body.String())
+	}
+}
+
+// fakeEpisodeBySeriesWithSeriesLookup satisfies BOTH EpisodeBySeriesLister
+// AND EpisodeSeriesLookup — exercises the J372 includeSeries branch and
+// counts GetSeries calls so the per-request cache can be verified.
+type fakeEpisodeBySeriesWithSeriesLookup struct {
+	rows         []episodes.Episode
+	seriesByID   map[int]*series.Series
+	getSeriesHit int
+}
+
+func (f *fakeEpisodeBySeriesWithSeriesLookup) GetEpisodesBySeries(_ context.Context, _ int) ([]episodes.Episode, error) {
+	return f.rows, nil
+}
+func (f *fakeEpisodeBySeriesWithSeriesLookup) GetSeries(_ context.Context, id int) (*series.Series, error) {
+	f.getSeriesHit++
+	if s, ok := f.seriesByID[id]; ok {
+		return s, nil
+	}
+	return nil, series.ErrNotFound
+}
+
+// TestEpisodeSeries_J372 covers the includeSeries embed: absent without
+// the param; absent when the lister doesn't implement EpisodeSeriesLookup;
+// populated as a BASE SeriesResource (no statistics) when the param fires
+// and the lister implements the lookup.
+func TestEpisodeSeries_J372(t *testing.T) {
+	t.Parallel()
+	row := episodes.Episode{ID: 5, SeriesID: 7, SeasonNumber: 1, EpisodeNumber: 1, Title: "Pilot"}
+
+	// (a) includeSeries absent → series key absent.
+	rr := httptest.NewRecorder()
+	EpisodeListHandler(&fakeEpisodeBySeriesWithSeriesLookup{
+		rows:       []episodes.Episode{row},
+		seriesByID: map[int]*series.Series{7: {ID: 7, Title: "Breaking Bad"}},
+	}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/episode?seriesId=7", nil))
+	if strings.Contains(rr.Body.String(), `"series"`) {
+		t.Errorf("series must be absent without includeSeries; got %s", rr.Body.String())
+	}
+
+	// (b) includeSeries=true but lister doesn't implement the lookup → absent.
+	rr2 := httptest.NewRecorder()
+	EpisodeListHandler(&fakeEpisodeBySeries{rows: []episodes.Episode{row}}).ServeHTTP(rr2,
+		httptest.NewRequest(http.MethodGet, "/api/v3/episode?seriesId=7&includeSeries=true", nil))
+	if strings.Contains(rr2.Body.String(), `"series"`) {
+		t.Errorf("series must be absent when lister lacks EpisodeSeriesLookup; got %s", rr2.Body.String())
+	}
+
+	// (c) includeSeries=true + implementing lister → populated base embed.
+	rr3 := httptest.NewRecorder()
+	EpisodeListHandler(&fakeEpisodeBySeriesWithSeriesLookup{
+		rows:       []episodes.Episode{row},
+		seriesByID: map[int]*series.Series{7: {ID: 7, Title: "Breaking Bad"}},
+	}).ServeHTTP(rr3, httptest.NewRequest(http.MethodGet, "/api/v3/episode?seriesId=7&includeSeries=true", nil))
+	var got []EpisodeResource
+	if err := json.Unmarshal(rr3.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 1 || got[0].Series == nil {
+		t.Fatalf("series not populated: %+v", got)
+	}
+	if got[0].Series.ID != 7 || got[0].Series.Title != "Breaking Bad" {
+		t.Errorf("embedded series fields: %+v", got[0].Series)
+	}
+	// BASE projection: no statistics linked on the embed.
+	if strings.Contains(rr3.Body.String(), `"statistics"`) {
+		t.Errorf("embedded series must NOT carry statistics (base ToResource); got %s", rr3.Body.String())
+	}
+}
+
+// TestEpisodeSeries_PerRequestCache_J372 — the list path resolves each
+// distinct seriesId exactly once across rows (the per-request cache that
+// mirrors C#'s seriesDict).
+func TestEpisodeSeries_PerRequestCache_J372(t *testing.T) {
+	t.Parallel()
+	lister := &fakeEpisodeBySeriesWithSeriesLookup{
+		rows: []episodes.Episode{
+			{ID: 1, SeriesID: 7, SeasonNumber: 1, EpisodeNumber: 1, Title: "A"},
+			{ID: 2, SeriesID: 7, SeasonNumber: 1, EpisodeNumber: 2, Title: "B"},
+			{ID: 3, SeriesID: 7, SeasonNumber: 1, EpisodeNumber: 3, Title: "C"},
+		},
+		seriesByID: map[int]*series.Series{7: {ID: 7, Title: "Breaking Bad"}},
+	}
+	rr := httptest.NewRecorder()
+	EpisodeListHandler(lister).ServeHTTP(rr,
+		httptest.NewRequest(http.MethodGet, "/api/v3/episode?seriesId=7&includeSeries=true", nil))
+	if lister.getSeriesHit != 1 {
+		t.Errorf("expected 1 GetSeries call across 3 same-series rows, got %d", lister.getSeriesHit)
+	}
+	var got []EpisodeResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for i, e := range got {
+		if e.Series == nil || e.Series.ID != 7 {
+			t.Errorf("row %d series not populated from cache: %+v", i, e.Series)
+		}
 	}
 }

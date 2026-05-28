@@ -19047,3 +19047,36 @@ Every C# SeriesResourceMapper + SeriesController-linked field is projected on bo
 ### Remaining EpisodeResource deferral
 
 The `Series` embed (includeSeries) — needs a series-by-id lookup dep threaded into the episode handlers (+ calendar/wanted embedders); reuses the now-complete ToSeriesResource. Next slice (J372). Then the queue/history embedder include-branches + EpisodeFileResource's deferred mediaInfo/customFormats.
+
+## J372 — Post-J365 resource-projection arc, slice 7: EpisodeResource.series (includeSeries branch) — COMPLETES EpisodeResource
+
+**Anchor**: post-J371. The last remaining EpisodeResource embed. After this, every C# `EpisodeControllerWithSignalR.MapToResource` branch (scalars + FinaleType + episodeFile + images + series) is ported.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Episodes/EpisodeControllerWithSignalR.cs:61-118` — MapToResource(single + list). `resource.Series = series.ToResource()` is the **BASE** `Series.ToResource()` — NO MapCoversToLocal, NO LinkStatistics (those are applied only on the top-level series GET, never on the embed). The list overload caches the resolved series in a per-request `Dictionary<int, Series>` keyed by id so repeated seriesIds resolve once.
+
+### Port deliverables
+
+- **`internal/api/v3/episode.go`**: `EpisodeResource.Series *SeriesResource json:"series,omitempty"` (J302 pointer 3-state — nil→key absent / populated→embed). New `EpisodeSeriesLookup interface { GetSeries(ctx, id) (*series.Series, error) }` (optional-extension type-assertion idiom, J339/J342/J367/J369). New `applyEpisodeSeries(ctx, res, seriesID, lister, includeSeries, cache map[int]*SeriesResource)`: gates on param + type-asserts lister; projects via the BASE `ToSeriesResource`; dedupes across list rows via the optional per-request cache (mirrors C# seriesDict; cached pointer shared across rows — safe, read-only output). `includeSeries` query param wired into EpisodeListHandler + EpisodeMonitorHandler (shared cache per request) + EpisodeByIDHandler (nil cache, single row).
+- **`cmd/sonarr/host_wiring.go`**: J342 `episodesWithEpisodeFileLookup` composite gains `seriesSvc historySeriesLookup` field + a `GetSeries` forwarding method (satisfies `apiv3.EpisodeSeriesLookup`; nil-safe → `series.ErrNotFound`). Construction site sets `seriesSvc: seriesSvc`. Propagates to all v3 episode wire sites (`/api/v3/episode`, `/episode/{id}`, `/calendar/{id}`, `/wanted/{cutoff,missing}/{id}`) + v5 episode/calendar/wanted aliases.
+
+### Design notes
+
+- **Base-only by construction**: `ToSeriesResource` is the pure scalar/model projection — the image (J367) + stats (J369) populators are applied *separately* by the series handlers via ApplySeries*Populator, never inside ToSeriesResource. So reusing it for the embed yields exactly the C# base `Series.ToResource()` shape with no extra work to strip stats/local-URLs.
+- **Per-request cache**: list path repeats seriesIds heavily (a season's worth of episodes share one series). The `map[int]*SeriesResource` resolves each distinct id once — matches C#'s seriesDict and avoids N lookups.
+- **Test fixtures** don't implement EpisodeSeriesLookup → empty fallback fires → embed absent (omitempty). Embedders (queue/wanted/calendar/history) reuse the unchanged scalar ToEpisodeResource and don't call applyEpisodeSeries.
+
+### Tests (`internal/api/v3/episode_test.go`, 2)
+
+`TestEpisodeSeries_J372` (3 branches: absent without param / absent when lister lacks EpisodeSeriesLookup / populated base embed asserting series.id+title AND NO `statistics` key — proves base-only). `TestEpisodeSeries_PerRequestCache_J372` (one GetSeries call across 3 same-series rows; all 3 rows populated from cache).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/episode/... ./internal/api/v5/calendar/... ./internal/api/v5/wanted/... ./cmd/sonarr/... ./test/contract/...` ✓
+- `go vet` + gofmt ✓; `test/contract/replayer` + `hostbootstrap` ✓.
+
+### EpisodeResource — COMPLETE
+
+Every C# MapToResource branch ported: scalars + FinaleType + episodeFile (J340/J342) + images (J371) + series (J372). Arc moves to priority #2: EpisodeFileResource deferred fields (mediaInfo, quality cutoff flags, customFormats, languages, releaseGroup, dateAdded) in `internal/api/v3/episodefile.go` + the J339 EpisodeFilePopulator; then the queue/history/blocklist embedder include-branches.

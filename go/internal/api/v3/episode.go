@@ -12,14 +12,15 @@ import (
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/httperr"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 // EpisodeResource mirrors
 // `src/Sonarr.Api.V3/Episodes/EpisodeResource.cs`. The scalar
 // projection + the includeEpisodeFile (J340/J342) + includeImages
-// (J371) sub-resource branches are wired; the includeSeries embed is
-// the only remaining deferral (see below). Empty-DB recording has zero
-// records so the populated-row branches are unobservable today.
+// (J371) + includeSeries (J372) sub-resource branches are all wired.
+// Empty-DB recording has zero records so the populated-row branches are
+// unobservable today.
 //
 // Field-source mapping (C# → Go), passthrough subset:
 //
@@ -36,9 +37,13 @@ import (
 // matching C# `resource.Images = episode.Images` direct assignment,
 // no local-URL rewrite — unlike the series path).
 //
-// DEFERRED (populated-row only): series (full SeriesResource — the
-// includeSeries branch; needs a series-by-id lookup dep threaded into
-// the episode handlers + embedders).
+// series is wired via the includeSeries branch (J372 — `*SeriesResource`,
+// pointer 3-state: nil when includeSeries=false → key absent; populated
+// when true + the lister/getter implements EpisodeSeriesLookup). The
+// embed is the BASE series projection (apiv3.ToSeriesResource) with NO
+// MapCoversToLocal / LinkStatistics, mirroring C# `resource.Series =
+// series.ToResource()` (base ToResource, not the enriched controller
+// shape).
 //
 // J340 widening: EpisodeFile *EpisodeFileResource subresource
 // pointer field (J302 pattern). C# v3 declares
@@ -90,6 +95,7 @@ type EpisodeResource struct {
 	Grabbed                    *bool                 `json:"grabbed,omitempty"`
 	EpisodeFile                *EpisodeFileResource  `json:"episodeFile,omitempty"`
 	Images                     *[]MediaCoverResource `json:"images,omitempty"`
+	Series                     *SeriesResource       `json:"series,omitempty"`
 }
 
 // EpisodeBySeriesLister narrows the read surface to the
@@ -159,6 +165,64 @@ func applyEpisodeImages(res *EpisodeResource, e episodes.Episode, includeImages 
 	res.Images = &imgs
 }
 
+// EpisodeSeriesLookup is the optional-extension interface for the
+// includeSeries branch. When the handler's lister/getter parameter ALSO
+// implements this interface AND `includeSeries=true`, the handler embeds
+// the episode's owning series as a BASE SeriesResource. *series.Service
+// satisfies it; the cmd/sonarr episode composite forwards GetSeries to
+// the production series service.
+//
+// Test fixtures don't implement the extension so the empty fallback
+// fires (the J372 omitempty pointer stays nil → key absent).
+//
+// J372.
+type EpisodeSeriesLookup interface {
+	GetSeries(ctx context.Context, id int) (*series.Series, error)
+}
+
+// applyEpisodeSeries conditionally populates an EpisodeResource's Series
+// field when ALL of: (a) includeSeries=true; (b) the lister/svc
+// parameter implements EpisodeSeriesLookup; (c) the episode has a
+// non-zero SeriesID. The looked-up series is projected via the BASE
+// apiv3.ToSeriesResource (NO MapCoversToLocal / LinkStatistics — mirrors
+// C# EpisodeControllerWithSignalR.MapToResource `resource.Series =
+// series.ToResource()`, the base ToResource not the enriched controller
+// shape).
+//
+// cache (optional) dedupes the series→resource lookup across list rows:
+// the list path repeats series ids, and C# keeps a per-request seriesDict
+// for exactly this. A nil cache disables it (the by-id path passes nil).
+// The cached pointer is shared across rows with the same seriesId; that
+// is safe because the embed is read-only projection output.
+//
+// nil-safe everywhere.
+//
+// J372.
+func applyEpisodeSeries(ctx context.Context, res *EpisodeResource, seriesID int, lister any, includeSeries bool, cache map[int]*SeriesResource) {
+	if res == nil || !includeSeries || seriesID == 0 {
+		return
+	}
+	lookup, ok := lister.(EpisodeSeriesLookup)
+	if !ok {
+		return
+	}
+	if cache != nil {
+		if cached, hit := cache[seriesID]; hit {
+			res.Series = cached
+			return
+		}
+	}
+	s, err := lookup.GetSeries(ctx, seriesID)
+	if err != nil || s == nil {
+		return
+	}
+	sr := ToSeriesResource(*s)
+	res.Series = &sr
+	if cache != nil {
+		cache[seriesID] = &sr
+	}
+}
+
 // EpisodeListHandler returns the http.Handler for GET /api/v3/episode.
 // Mirrors `EpisodeController.GetEpisodes` at
 // `src/Sonarr.Api.V3/Episodes/EpisodeController.cs:35-66`. The full
@@ -192,12 +256,15 @@ func EpisodeListHandler(lister EpisodeBySeriesLister) http.Handler {
 		// lister implements EpisodeFileLookupForEpisode.
 		includeEpisodeFile := r.URL.Query().Get("includeEpisodeFile") == "true"
 		includeImages := r.URL.Query().Get("includeImages") == "true"
+		includeSeries := r.URL.Query().Get("includeSeries") == "true"
+		seriesCache := map[int]*SeriesResource{}
 		out := make([]EpisodeResource, 0, len(rows))
 		for _, row := range rows {
 			res := ToEpisodeResource(row)
 			ep := row
 			applyEpisodeFileSubresource(r.Context(), &res, &ep, lister, includeEpisodeFile)
 			applyEpisodeImages(&res, row, includeImages)
+			applyEpisodeSeries(r.Context(), &res, row.SeriesID, lister, includeSeries, seriesCache)
 			out = append(out, res)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -219,9 +286,8 @@ type EpisodeByIDGetter interface {
 // MapToResource with includeSeries+includeEpisodeFile+includeImages
 // all true.
 //
-// includeEpisodeFile (J340/J342) + includeImages (J371) branches are
-// honoured. DEFERRED: includeSeries (the embedded SeriesResource —
-// needs a series-by-id lookup dep, a follow-up slice).
+// includeEpisodeFile (J340/J342) + includeImages (J371) + includeSeries
+// (J372) branches are all honoured.
 func EpisodeByIDHandler(svc EpisodeByIDGetter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.PathValue("id"))
@@ -248,9 +314,11 @@ func EpisodeByIDHandler(svc EpisodeByIDGetter) http.Handler {
 		// C# byID populated shape send includeEpisodeFile=true.
 		includeEpisodeFile := r.URL.Query().Get("includeEpisodeFile") == "true"
 		includeImages := r.URL.Query().Get("includeImages") == "true"
+		includeSeries := r.URL.Query().Get("includeSeries") == "true"
 		res := ToEpisodeResource(*ep)
 		applyEpisodeFileSubresource(r.Context(), &res, ep, svc, includeEpisodeFile)
 		applyEpisodeImages(&res, *ep, includeImages)
+		applyEpisodeSeries(r.Context(), &res, ep.SeriesID, svc, includeSeries, nil)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		buf, _ := json.Marshal(res)
@@ -311,10 +379,13 @@ func EpisodeMonitorHandler(svc EpisodeMonitorWriter) http.Handler {
 			return
 		}
 		includeImages := r.URL.Query().Get("includeImages") == "true"
+		includeSeries := r.URL.Query().Get("includeSeries") == "true"
+		seriesCache := map[int]*SeriesResource{}
 		out := make([]EpisodeResource, 0, len(rows))
 		for _, row := range rows {
 			res := ToEpisodeResource(row)
 			applyEpisodeImages(&res, row, includeImages)
+			applyEpisodeSeries(ctx, &res, row.SeriesID, svc, includeSeries, seriesCache)
 			out = append(out, res)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -328,8 +399,10 @@ func EpisodeMonitorHandler(svc EpisodeMonitorWriter) http.Handler {
 // Exported so the cmd/sonarr wanted-episodes adapter can reuse the
 // same projection rather than re-rolling the field copy.
 // The optional embedded resources (series/episodeFile/images) are
-// DEFERRED — they're nil on the wire today and the empty-DB recording
-// has zero rows so the gap is unobservable.
+// populated by the handler-tier branches (applyEpisodeSeries /
+// applyEpisodeFileSubresource / applyEpisodeImages) when their
+// include* query params fire — ToEpisodeResource itself emits the
+// scalar projection only.
 func ToEpisodeResource(e episodes.Episode) EpisodeResource {
 	r := EpisodeResource{
 		ID:                       e.ID,

@@ -1181,6 +1181,22 @@ func computeHistoryCustomFormats(ctx context.Context, e *history.Entry, a histor
 type episodesWithEpisodeFileLookup struct {
 	*episodes.Service
 	epFilePop *episodeFileServiceWithPopulator
+	// seriesSvc backs the J372 includeSeries embed — the v3 Episode
+	// handlers discover apiv3.EpisodeSeriesLookup via type-assertion and
+	// embed the BASE SeriesResource when includeSeries=true.
+	seriesSvc historySeriesLookup
+}
+
+// GetSeries satisfies apiv3.EpisodeSeriesLookup by forwarding to the
+// injected series service. nil-safe — a missing dep degrades the embed
+// to absent (the omitempty pointer stays nil).
+//
+// J372.
+func (e *episodesWithEpisodeFileLookup) GetSeries(ctx context.Context, id int) (*series.Series, error) {
+	if e.seriesSvc == nil {
+		return nil, series.ErrNotFound
+	}
+	return e.seriesSvc.GetSeries(ctx, id)
 }
 
 // GetFile satisfies apiv3.EpisodeFileLookupForEpisode by forwarding
@@ -2074,6 +2090,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 	episodesSvcWithEpisodeFile := &episodesWithEpisodeFileLookup{
 		Service:   episodesSvc,
 		epFilePop: episodeFilesSvcPopulated,
+		seriesSvc: seriesSvc,
 	}
 	// J345: parsing-service populator wrapper — embeds
 	// *parsingservice.Service (satisfies apiv3.ParseMapper via the
