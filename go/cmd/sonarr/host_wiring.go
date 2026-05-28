@@ -580,6 +580,11 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 		}
 	}
 	seriesCache := map[int]*series.Series{}
+	// J382 series-embed cache: BASE SeriesResource memoized across
+	// rows so the per-page conversion happens once per distinct id;
+	// the underlying domain-series loads are shared with the
+	// customFormat path via seriesCache.
+	seriesEmbedCache := map[int]*apiv3.SeriesResource{}
 
 	for _, e := range page {
 		episodeIDs := e.EpisodeIDs
@@ -591,13 +596,14 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 		}
 		entry := e // copy for pointer capture
 		customFormats := computeBlocklistCustomFormats(ctx, &entry, a, allFormats, seriesCache)
-		out = append(out, apiv3.BlocklistResource{
+		res := apiv3.BlocklistResource{
 			ID:            e.ID,
 			SeriesID:      e.SeriesID,
 			EpisodeIDs:    episodeIDs,
 			SourceTitle:   e.SourceTitle,
 			Date:          e.Date.UTC().Format("2006-01-02T15:04:05Z"),
 			Languages:     apiv3.ToLanguageRefs(e.Languages),
+			Quality:       blocklistQualityResource(e.Quality),
 			Protocol:      apiv3.BlocklistProtocolName(e.Protocol),
 			Indexer:       e.Indexer,
 			Message:       e.Message,
@@ -606,17 +612,67 @@ func (a blocklistPagedAdapter) PagedBlocklist(ctx context.Context, req apiv3.Pag
 			// Title is derived from Episode.Title in C# — DEFERRED
 			// until the episode-join wiring lands. EpisodeIDs/
 			// Protocol/Indexer/Message added at J311. Languages
-			// (J314): typed []LanguageRef projection. Series
-			// subresource pinned at J313 (omitempty pointer).
-			// Quality still DEFERRED. CustomFormats (J337):
-			// populated via computeBlocklistCustomFormats; nil
-			// deps fall back to empty slice matching pre-J337 stub.
-			// Note: BlocklistResource is score-less per the J297
-			// wire-through (no CustomFormatScore field; unlike
-			// HistoryResource).
-		})
+			// (J314): typed []LanguageRef projection. Quality (J382):
+			// decoded from the persisted opaque-JSON column via
+			// blocklistQualityResource → apiv3.ToQualityModelResource;
+			// nil/unparseable drops the omitempty key. Series (J382):
+			// hydrated below (C# projects it unconditionally — blocklist
+			// GET has no include flag). CustomFormats (J337): populated
+			// via computeBlocklistCustomFormats; nil deps fall back to
+			// empty slice. Note: BlocklistResource is score-less per the
+			// J297 wire-through (no CustomFormatScore field).
+		}
+		if a.seriesSvc != nil && e.SeriesID != 0 {
+			res.Series = a.hydrateSeriesEmbed(ctx, e.SeriesID, seriesCache, seriesEmbedCache)
+		}
+		out = append(out, res)
 	}
 	return out, total, nil
+}
+
+// hydrateSeriesEmbed loads the BASE SeriesResource for the J382 paged
+// blocklist Series subresource, sharing the domain-series load with the
+// customFormat path (seriesCache) and memoizing the converted resource
+// (embedCache, negative-nil cached). Mirrors the historyPagedAdapter
+// J380 embed helper. C# BlocklistResourceMapper projects Series
+// unconditionally (model.Series.ToResource()).
+func (a blocklistPagedAdapter) hydrateSeriesEmbed(ctx context.Context, seriesID int, seriesCache map[int]*series.Series, embedCache map[int]*apiv3.SeriesResource) *apiv3.SeriesResource {
+	if sr, ok := embedCache[seriesID]; ok {
+		return sr
+	}
+	ser, cached := seriesCache[seriesID]
+	if !cached {
+		s, err := a.seriesSvc.GetSeries(ctx, seriesID)
+		if err != nil {
+			seriesCache[seriesID] = nil
+			embedCache[seriesID] = nil
+			return nil
+		}
+		ser = s
+		seriesCache[seriesID] = ser
+	}
+	var sr *apiv3.SeriesResource
+	if ser != nil {
+		r := apiv3.ToSeriesResource(*ser)
+		sr = &r
+	}
+	embedCache[seriesID] = sr
+	return sr
+}
+
+// blocklistQualityResource decodes the persisted opaque-JSON quality
+// column (the bare-int Model shape) into the typed QualityModelResource
+// DTO for the J382 paged blocklist Quality projection. Empty / unparseable
+// → nil (drops the omitempty key). C# projects model.Quality directly.
+func blocklistQualityResource(raw string) *apiv3.QualityModelResource {
+	if raw == "" {
+		return nil
+	}
+	var qm quality.Model
+	if err := json.Unmarshal([]byte(raw), &qm); err != nil {
+		return nil
+	}
+	return apiv3.ToQualityModelResource(qm)
 }
 
 // backupAdmin adapts *backup.Service + stdlib fs helpers to

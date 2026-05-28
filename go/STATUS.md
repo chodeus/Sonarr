@@ -19373,3 +19373,33 @@ Unlike the J380 includeSeries/includeEpisode embeds (conditional, to avoid per-r
 ### Arc status
 
 Paged History is now FULLY hydrated (EventType J379, includeSeries/includeEpisode J380, qualityCutoffNotMet J381) — at parity with the since/series path. Priority #1 COMPLETE. Next: priority #2 Blocklist (series + Languages + Quality typed DTO on `blocklistPagedAdapter`). Priority #3 Wanted BLOCKED (unported lister stub).
+
+---
+
+## J382 — Embedder/Lister Hydration Arc, slice 4: paged Blocklist Quality DTO + Series subresource
+
+Priority #2. C# `BlocklistResourceMapper.MapToResource` projects `Languages`, `Quality`, and `Series = model.Series.ToResource()` — all UNCONDITIONAL (blocklist GET has no include flag, unlike History). The Go `BlocklistResource` struct already pinned all three fields (Languages J314, Quality J311-pin, Series J313-pin) but the paged `blocklistPagedAdapter.PagedBlocklist` only populated Languages; Quality + Series were DEFERRED pending hydration.
+
+### Changes (`cmd/sonarr/host_wiring.go`)
+
+- `PagedBlocklist` now sets `Quality: blocklistQualityResource(e.Quality)` — a new helper that decodes the persisted opaque-JSON quality column (the bare-int `quality.Model` shape) and runs `apiv3.ToQualityModelResource`; empty / unparseable → nil (drops the omitempty key).
+- `res.Series` is hydrated via a new `hydrateSeriesEmbed` method: loads the series UNCONDITIONALLY (seriesSvc present + SeriesID≠0), SHARING the domain-series load with the customFormat path via the existing `seriesCache`, and memoizing the converted BASE `apiv3.SeriesResource` in a new per-request `seriesEmbedCache` (negative-nil cached) → `apiv3.ToSeriesResource`. Mirrors the J380 historyPagedAdapter embed helper.
+- No interface signature change (blocklist has no include flags) → no test-fake churn.
+
+### Design note — unconditional (no flag)
+
+Unlike paged History's includeSeries/includeEpisode (J380, conditional), blocklist Series has no API include flag — C# always projects it. So hydration is unconditional, bounded by distinct series ids per page via the shared cache.
+
+### Tests (`cmd/sonarr/blocklist_populated_mapper_test.go`, 1 new)
+
+`TestPagedBlocklist_QualityLanguagesSeries_J382` — real SQLite repo with an HDTV-720p quality row + a series fake → asserts the typed Quality DTO ID, the Languages ref count, and the BASE Series embed Title.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./cmd/sonarr/... ./internal/api/v3/... ./internal/api/v5/blocklist/... ./test/contract/...` ✓
+- `go vet` + gofmt ✓; empty-DB contract goldens `[]` (populated-row Quality/Series unobservable there).
+
+### Arc status
+
+Paged Blocklist is now fully hydrated (EpisodeIDs/Protocol/Indexer/Message J311, Source J316, Languages J314, customFormats J337, Quality+Series J382) — only `Title` (Episode-join derived) remains DEFERRED, same as paged History (a join, not a clean projection). Priority #2 COMPLETE. Priority #3 Wanted is BLOCKED — `emptyWantedLister` is an unported stub returning zero rows (needs a service port, out of scope per the arc guard). Next tick: re-run the orientation grep; if no in-scope GET-side projection/hydration DEFERRAL remains, emit "embedder-hydration arc complete".
