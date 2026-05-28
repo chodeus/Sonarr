@@ -17955,3 +17955,64 @@ The existing 5 J344 v3 tests + all v5 tests stay green — their fakes don't imp
 | 3 (B-cat) | QueueResource v5 includeSubresources[] hydration (Queue.Service paged surface + Series+Episodes pipeline) | OPEN |
 
 Arc 2 progress: 2 of 3 sub-slices landed; ManualImport (which has its own deferred ImportDecisionMaker integration) is the next-tick candidate.
+
+---
+
+## J346 — Post-J342 service-port arc, slice 4 (Arc 2 slice 3, DRAINS Arc 2, A-category): ManualImport reprocess handler populated CustomFormats + Score via the J345 calculator reused behind a new ManualImportCustomFormatCalculator optional-extension
+
+**Anchor**: post-J345 (Parse handler fully populated). Closes the last Arc 2 sub-slice — the `ManualImport handler populated customFormats` row deferred at J238. The reprocess handler already has all the inputs the J345 calculator needs (parsed-path info + SeriesID + languages + IndexerFlags), so J346 reuses `customformats.ParseCustomFormatForRemoteEpisode` rather than waiting on the full ImportDecisionMaker port. The release-title-derivable CustomFormat subset is covered; the file-size/mediainfo specs stay deferred (the bare-path endpoint can't feed those without the LocalEpisode that ImportDecisionMaker produces).
+
+### C# source
+
+- `src/Sonarr.Api.V3/ManualImport/ManualImportController.cs:46-77` — ReprocessItems loop. `:62-63` sets `item.CustomFormats = processedItem.CustomFormats.ToResource(false)` + `item.CustomFormatScore = processedItem.CustomFormatScore` from `_manualImportService.ReprocessItem(...)` which runs the LocalEpisode-driven calculator inside the ImportDecisionMaker pipeline.
+- `src/NzbDrone.Core/CustomFormats/CustomFormatCalculationService.cs:36-49` — the calculator-input shape (same one J345 mirrors).
+
+### Port deliverables
+
+**`go/internal/api/v3/manual_import.go`**:
+
+- New `language` import.
+- New `apiv3.ManualImportCustomFormatCalculator interface { CalculateForManualImport(ctx, *parser.ParsedEpisodeInfo, seriesID int, languages []language.Language, indexerFlags int) ([]CustomFormatResource, int) }` — optional-extension; the wrapper resolves the series + format catalogue internally.
+- `ManualImportReprocessHandler` gains a 3rd positional optional dep `calc ManualImportCustomFormatCalculator`, threaded into `reprocessOne`.
+- `reprocessOne`: in the populated branch (parsed != nil), after computing item.Languages, when `calc != nil && item.SeriesID > 0`, convert item.Languages (LanguageRef→language.Language via the new `languagesFromLanguageRefs` helper + language.FindByID) and call the calculator; assign item.CustomFormats + item.CustomFormatScore. Nil calc / no series → pre-J346 empty-slice fallback preserved.
+- New `languagesFromLanguageRefs([]LanguageRef) []language.Language` helper (skips unresolvable IDs).
+- Doc-comment updated: CustomFormats sub-arc marked CLOSED (title-based) with the residual file-size/mediainfo gap noted; Rejections + full Episode projection remain deferred.
+
+**`go/cmd/sonarr/host_wiring.go`**:
+
+- `parsingServiceWithPopulator` (the J345 wrapper) gains a `CalculateForManualImport` method satisfying the new interface. Resolves the series via seriesSvc, fetches allFormats, runs ParseCustomFormatForRemoteEpisode(parsedInfo, ser, languages, parser.IndexerFlags(indexerFlags), 0, allFormats), projects to []apiv3.CustomFormatResource + builds presentIDs, computes score via qualityprofiles.CalculateCustomFormatScore against Series.QualityProfileID. Empty/missing deps return empty + 0.
+- 2 wire-site updates: `/api/v3/manualimport` POST + `/api/v5/manualimport` POST both pass `parsingSvcWithPopulator` as the 3rd arg.
+
+**`go/internal/api/v5/manualimport/manualimport.go`** — no change needed; ReprocessHandler is a direct `var` alias of the v3 handler, so the signature change propagates automatically.
+
+### Tests
+
+**`go/internal/api/v3/manual_import_test.go`** — 3 new tests + 1 new fake:
+
+- `TestManualImportReprocessHandler_NilCalc_EmptyCustomFormats_J346` — nil calc keeps the empty-slice + score:0 fallback.
+- `TestManualImportReprocessHandler_CalcPopulates_J346` — calc returns typed CF + score:25 → body emits `customFormats:[{"id":5...}]` + `customFormatScore:25`; pins seriesID + parsed-info reach the calculator.
+- `TestManualImportReprocessHandler_CalcNotCalledWhenNoSeriesID_J346` — item without seriesId → calc must NOT fire (cfCalls=0).
+- New `fakeManualImportCalc` fake + `parser` + `language` imports in the test file.
+
+**Existing call sites updated** (20): 18 v3 reprocess test sites + 2 v5 sites via replace_all — all changed to pass nil for the new 3rd arg.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/api/v3/... ./internal/api/v5/manualimport/... ./cmd/sonarr/...` ✓
+  - v3: all pass, 1.729s
+  - v5/manualimport: all pass, 2.110s
+  - cmd/sonarr: all pass, 4.022s
+- `go vet ./internal/api/v3/... ./internal/api/v5/manualimport/... ./cmd/sonarr/...` ✓
+
+### Post-J342 service-port arc backlog
+
+| Sub-arc | Item | Status |
+| --- | --- | --- |
+| 1 (B-cat) | Release POST searchInfo fallback | DONE (J343) |
+| 2 (A-cat) | Parse handler Series/Episodes/Languages | DONE (J344) |
+| 2 (A-cat) | Parse handler CustomFormats + Score | DONE (J345) |
+| 2 (A-cat) | ManualImport handler CustomFormats + Score | **DONE this slice (J346) — DRAINS Arc 2** |
+| 3 (B-cat) | QueueResource v5 includeSubresources[] hydration (Queue.Service paged surface + Series+Episodes pipeline) | OPEN — only remaining arc |
+
+**Arc 2 (parsingService.Map + ImportDecisionMaker) DRAINS at J346.** The full ImportDecisionMaker spec pipeline (Rejections list + file-size/mediainfo CF specs) is a separate future arc, not part of the populated-mapper backlog. Arc 3 (Queue.Service paged surface) is the only remaining arc — it's the largest of the three (paged query surface + Series+Episodes join pipeline) and is the next-tick candidate.

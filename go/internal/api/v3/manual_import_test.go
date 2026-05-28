@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/language"
+	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -81,7 +83,7 @@ func TestManualImportReprocessHandler_EmptyBody400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(`[]`))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400", rr.Code)
 	}
@@ -94,7 +96,7 @@ func TestManualImportReprocessHandler_MalformedBody400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(`not-json`))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400", rr.Code)
 	}
@@ -114,7 +116,7 @@ func TestManualImportReprocessHandler_LanguagesTypedWiring_J332(t *testing.T) {
 	body := `[{"path":"/tv/Show.S01E01.720p.mkv","languages":[]}]`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -136,7 +138,7 @@ func TestManualImportReprocessHandler_LanguagesTypedWiring_J332(t *testing.T) {
 	body2 := `[{"path":"/tv/Show.S01E01.720p.mkv","languages":[{"id":1,"name":"English"},{"id":2,"name":"French"}]}]`
 	rr2 := httptest.NewRecorder()
 	req2 := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body2))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr2, req2)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr2, req2)
 	if rr2.Code != http.StatusOK {
 		t.Fatalf("status: %d body=%s", rr2.Code, rr2.Body.String())
 	}
@@ -170,7 +172,7 @@ func TestManualImportReprocessHandler_ParsesPathAndFillsReleaseGroup(t *testing.
 	body := `[{"path":"/tv/Show.S01E01.720p.WEB-DL.x264-RELEASEGRP.mkv","releaseGroup":"","languages":[]}]`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200; body=%s", rr.Code, rr.Body.String())
 	}
@@ -192,7 +194,7 @@ func TestManualImportReprocessHandler_PreservesNonBlankReleaseGroup(t *testing.T
 	body := `[{"path":"/tv/Show.S01E01.720p.WEB-DL.x264-RELEASEGRP.mkv","releaseGroup":"USER-CHOSEN","languages":[]}]`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -208,7 +210,7 @@ func TestManualImportReprocessHandler_SeasonNumberFromParser(t *testing.T) {
 	body := `[{"path":"/tv/Show.S01E01.720p.mkv","languages":[]}]`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -224,7 +226,7 @@ func TestManualImportReprocessHandler_ReleaseTypeForSingleEpisode(t *testing.T) 
 	body := `[{"path":"/tv/Show.S01E05.720p.mkv","languages":[]}]`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -240,7 +242,7 @@ func TestManualImportReprocessHandler_ReleaseTypeForMultiEpisode(t *testing.T) {
 	body := `[{"path":"/tv/Show.S01E01-E03.720p.mkv","languages":[]}]`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -263,7 +265,7 @@ func TestManualImportReprocessHandler_QualityFilledWhenUnknown(t *testing.T) {
 	}]`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
 	}
@@ -291,7 +293,7 @@ func TestManualImportReprocessHandler_QualityPreservedWhenSet(t *testing.T) {
 	}]`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -313,7 +315,7 @@ func TestManualImportReprocessHandler_EpisodeIDsResolveToFullEpisodes(t *testing
 	body := `[{"path":"/tv/Show.S01E05.720p.mkv","episodeIds":[42,43],"languages":[]}]`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, epLookup).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, epLookup, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -337,7 +339,7 @@ func TestManualImportReprocessHandler_RejectionsAlwaysArray(t *testing.T) {
 	body := `[{"path":"/tv/Show.S01E01.720p.mkv","languages":[]}]`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -362,7 +364,7 @@ func TestManualImportReprocessHandler_CustomFormatsTyped(t *testing.T) {
 	body := `[{"path":"/tv/Show.S01E01.720p.mkv","languages":[]}]`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -395,7 +397,7 @@ func TestManualImportReprocessHandler_CustomFormatsDefaultsOnParseFailure(t *tes
 	body := `[{"path":"random/gibberish/nothing/to/see.txt","languages":[]}]`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -412,7 +414,7 @@ func TestManualImportReprocessHandler_BatchOfMultipleItems(t *testing.T) {
 	]`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
-	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}).ServeHTTP(rr, req)
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -426,5 +428,91 @@ func TestManualImportReprocessHandler_BatchOfMultipleItems(t *testing.T) {
 	}
 	if out[1].SeasonNumber == nil || *out[1].SeasonNumber != 2 {
 		t.Errorf("item[1] SeasonNumber: %v", out[1].SeasonNumber)
+	}
+}
+
+// ----- J346 — ManualImportCustomFormatCalculator wire-through -----
+
+type fakeManualImportCalc struct {
+	gotSeriesID int
+	gotParsed   *parser.ParsedEpisodeInfo
+	cfReturn    []CustomFormatResource
+	scoreRet    int
+	calls       int
+}
+
+func (f *fakeManualImportCalc) CalculateForManualImport(_ context.Context, p *parser.ParsedEpisodeInfo, seriesID int, _ []language.Language, _ int) ([]CustomFormatResource, int) {
+	f.calls++
+	f.gotSeriesID = seriesID
+	f.gotParsed = p
+	return f.cfReturn, f.scoreRet
+}
+
+func TestManualImportReprocessHandler_NilCalc_EmptyCustomFormats_J346(t *testing.T) {
+	t.Parallel()
+	body := `[{"path":"/tv/Show.S01E01.720p.WEB-DL.mkv","seriesId":7,"languages":[]}]`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var out []ManualImportReprocessItem
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out[0].CustomFormats) != 0 {
+		t.Errorf("nil-calc CustomFormats must be empty; got %+v", out[0].CustomFormats)
+	}
+	if out[0].CustomFormatScore != 0 {
+		t.Errorf("nil-calc CustomFormatScore must be 0; got %d", out[0].CustomFormatScore)
+	}
+}
+
+func TestManualImportReprocessHandler_CalcPopulates_J346(t *testing.T) {
+	t.Parallel()
+	calc := &fakeManualImportCalc{
+		cfReturn: []CustomFormatResource{{ID: 5, Name: "x265"}},
+		scoreRet: 25,
+	}
+	body := `[{"path":"/tv/Show.S01E01.720p.WEB-DL.mkv","seriesId":7,"indexerFlags":3,"languages":[]}]`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, calc).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if calc.calls != 1 {
+		t.Errorf("calculator should fire once; got calls=%d", calc.calls)
+	}
+	if calc.gotSeriesID != 7 {
+		t.Errorf("calculator got seriesID=%d, want 7", calc.gotSeriesID)
+	}
+	if calc.gotParsed == nil {
+		t.Errorf("calculator should receive non-nil parsed info")
+	}
+	body0 := rr.Body.String()
+	if !strings.Contains(body0, `"customFormats":[{"id":5`) {
+		t.Errorf("populated CustomFormats missing in response; got %s", body0)
+	}
+	if !strings.Contains(body0, `"customFormatScore":25`) {
+		t.Errorf("populated CustomFormatScore missing; got %s", body0)
+	}
+}
+
+func TestManualImportReprocessHandler_CalcNotCalledWhenNoSeriesID_J346(t *testing.T) {
+	t.Parallel()
+	calc := &fakeManualImportCalc{cfReturn: []CustomFormatResource{{ID: 5, Name: "x265"}}, scoreRet: 25}
+	// No seriesId → calc must NOT fire (C# computes against the
+	// resolved series; without one there's nothing to score against).
+	body := `[{"path":"/tv/Show.S01E01.720p.WEB-DL.mkv","languages":[]}]`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(body))
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, calc).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if calc.calls != 0 {
+		t.Errorf("calculator must NOT fire without a seriesId; got calls=%d", calc.calls)
 	}
 }

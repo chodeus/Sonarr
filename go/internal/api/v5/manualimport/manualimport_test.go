@@ -62,7 +62,7 @@ func TestReprocessHandler_EmptyBody_Returns400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v5/manualimport", bytes.NewReader([]byte(`[]`)))
-	ReprocessHandler(fakeSeriesLookup{}, fakeEpisodeLookup{}).ServeHTTP(rr, req)
+	ReprocessHandler(fakeSeriesLookup{}, fakeEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (empty items)", rr.Code)
 	}
@@ -72,7 +72,7 @@ func TestReprocessHandler_MalformedBody_Returns400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v5/manualimport", bytes.NewReader([]byte(`{not json`)))
-	ReprocessHandler(fakeSeriesLookup{}, fakeEpisodeLookup{}).ServeHTTP(rr, req)
+	ReprocessHandler(fakeSeriesLookup{}, fakeEpisodeLookup{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (malformed body)", rr.Code)
 	}

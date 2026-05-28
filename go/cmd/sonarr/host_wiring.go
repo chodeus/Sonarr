@@ -1041,6 +1041,58 @@ func (p *parsingServiceWithPopulator) PopulateParseCustomFormats(ctx context.Con
 	return res, score
 }
 
+// CalculateForManualImport satisfies apiv3.ManualImportCustomFormatCalculator.
+// Mirrors C# `ManualImportController.cs:62-63` for the title-based
+// subset: resolves the series by id, fetches the format catalogue,
+// runs the J345 customformats.ParseCustomFormatForRemoteEpisode
+// calculator against the parsed-path info + the item's resolved
+// languages + indexerFlags (size=0 — the bare-path endpoint can't feed
+// the size/source specs), then computes the score via the series'
+// QualityProfile. Empty / missing deps return empty + 0 (preserves the
+// pre-J346 deferred-state behavior).
+//
+// J346.
+func (p *parsingServiceWithPopulator) CalculateForManualImport(ctx context.Context, parsedInfo *parser.ParsedEpisodeInfo, seriesID int, languages []language.Language, indexerFlags int) ([]apiv3.CustomFormatResource, int) {
+	empty := []apiv3.CustomFormatResource{}
+	if parsedInfo == nil || seriesID == 0 || p.customFormatsSvc == nil || p.seriesSvc == nil {
+		return empty, 0
+	}
+	allFormats, err := p.customFormatsSvc.All(ctx)
+	if err != nil || len(allFormats) == 0 {
+		return empty, 0
+	}
+	ser, err := p.seriesSvc.GetSeries(ctx, seriesID)
+	if err != nil || ser == nil {
+		return empty, 0
+	}
+	matched := customformats.ParseCustomFormatForRemoteEpisode(
+		parsedInfo,
+		ser,
+		languages,
+		parser.IndexerFlags(indexerFlags),
+		0,
+		allFormats,
+	)
+	res := make([]apiv3.CustomFormatResource, 0, len(matched))
+	presentIDs := make(map[int]bool, len(matched))
+	for _, m := range matched {
+		res = append(res, apiv3.CustomFormatResource{ID: m.ID, Name: m.Name})
+		presentIDs[m.ID] = true
+	}
+	score := 0
+	if p.qualityProfilesSvc != nil && ser.QualityProfileID > 0 {
+		if prof, err := p.qualityProfilesSvc.Get(ctx, ser.QualityProfileID); err == nil && prof != nil {
+			if items, perr := prof.ParsedFormatItems(); perr == nil {
+				score = qualityprofiles.CalculateCustomFormatScore(items, presentIDs)
+			}
+		}
+	}
+	if len(res) == 0 {
+		return empty, score
+	}
+	return res, score
+}
+
 // historyServiceWithPopulator embeds *history.Service (satisfies
 // apiv3.HistoryRangeReader via the embedded Since + GetBySeries
 // methods) and adds PopulateHistoryEntry — which the v3 history
@@ -2223,7 +2275,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// replay never POSTs this field; real v5 frontend will hit
 		// v3's DisallowUnknownFields 400 (deferred follow-up).
 		{Method: "GET", Path: "/api/v5/manualimport", Handler: manualimportv5.GetHandler()},
-		{Method: "POST", Path: "/api/v5/manualimport", Handler: manualimportv5.ReprocessHandler(seriesSvc, episodesSvc)},
+		{Method: "POST", Path: "/api/v5/manualimport", Handler: manualimportv5.ReprocessHandler(seriesSvc, episodesSvc, parsingSvcWithPopulator)},
 		// J272 — v5 Command endpoint family (4 endpoints; 247 LOC C#).
 		// Resource shape identical to v3 (same fields, same JSON tags,
 		// same computed-property semantics). ONE status divergence:
@@ -2415,7 +2467,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v3/log/file/{filename}", Handler: apiv3.LogFileByNameHandler(logFileSvc)},
 		{Method: "GET", Path: "/api/v3/manualimport", Handler: apiv3.ManualImportHandler()},
 		// J238 / C.1.i-follow-5b: manualimport POST reprocess endpoint.
-		{Method: "POST", Path: "/api/v3/manualimport", Handler: apiv3.ManualImportReprocessHandler(seriesSvc, episodesSvc)},
+		{Method: "POST", Path: "/api/v3/manualimport", Handler: apiv3.ManualImportReprocessHandler(seriesSvc, episodesSvc, parsingSvcWithPopulator)},
 		{Method: "GET", Path: "/api/v3/mediacover/{seriesId}/{filename}", Handler: apiv3.MediaCoverHandler(mediaCoverSvc)},
 		{Method: "GET", Path: "/api/v3/metadata", Handler: apiv3.MetadataListHandler(metadataRepo)},
 		{Method: "GET", Path: "/api/v3/metadata/schema", Handler: apiv3.MetadataSchemaHandler()},

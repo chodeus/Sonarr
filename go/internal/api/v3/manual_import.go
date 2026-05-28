@@ -10,6 +10,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/httperr"
+	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
@@ -113,6 +114,26 @@ type ManualImportEpisodeLookup interface {
 	GetEpisode(ctx context.Context, id int) (*episodes.Episode, error)
 }
 
+// ManualImportCustomFormatCalculator is the optional-extension surface
+// for the reprocess handler's per-item CustomFormats + Score
+// computation (C# `ManualImportController.cs:62-63`). The wrapper in
+// cmd/sonarr resolves the series + format catalogue internally and
+// runs the title-based calculator (customformats
+// .ParseCustomFormatForRemoteEpisode) against the parsed-path info +
+// the item's resolved languages + indexer flags. Nil-tolerant: when
+// nil (or the underlying deps are missing), the handler keeps the
+// pre-J346 empty-slice fallback.
+//
+// The calculation is the same title-based approximation the Parse
+// handler uses (J345) — the full ImportDecisionMaker pipeline (which
+// would feed file-size + mediainfo into the size/source specs) stays
+// deferred; this closes the release-title-derivable subset.
+//
+// J346.
+type ManualImportCustomFormatCalculator interface {
+	CalculateForManualImport(ctx context.Context, parsedInfo *parser.ParsedEpisodeInfo, seriesID int, languages []language.Language, indexerFlags int) ([]CustomFormatResource, int)
+}
+
 // ManualImportReprocessHandler returns POST /api/v3/manualimport.
 //
 // Mirrors `ManualImportController.ReprocessItems` at C#
@@ -141,18 +162,23 @@ type ManualImportEpisodeLookup interface {
 //     classes). The Go-port hasn't ported ImportDecisionMaker yet
 //     (it's the analogous-to-download.ProcessDecisions surface for
 //     local files). Rejections emit as `[]` for this initial port.
-//   - CustomFormats + CustomFormatScore re-calculation. The Go-port
-//     has `customformats.ParseCustomFormatForFile` but it requires an
-//     `*episodefiles.File` (with size + path), not the bare path string
-//     this endpoint receives. A path → File adapter is a sibling slice.
-//     Emits 0 / `[]` for this port.
+//   - CustomFormats + CustomFormatScore re-calculation. J346 wires the
+//     title-based subset via the optional ManualImportCustomFormatCalculator
+//     dep (reuses the J345 customformats.ParseCustomFormatForRemoteEpisode
+//     calculator against the parsed-path info + resolved series +
+//     languages + indexerFlags). The full ImportDecisionMaker pipeline
+//     — which feeds file-size + mediainfo into the size/source specs —
+//     stays DEFERRED; the bare-path endpoint can't synthesise those
+//     inputs. When the calculator dep is nil, the pre-J346 empty-slice
+//     fallback fires.
 //   - Full EpisodeResource projection on each item.Episodes entry.
 //     The minimal `{id, seasonNumber, episodeNumber, title}` shape is
 //     emitted; the full ~30-field projection is the same DEFERRED
 //     surface other v3 handlers carry.
 //
-// Audit row C.1.i-follow-5b (J238). 3 deferred sub-arcs documented.
-func ManualImportReprocessHandler(seriesLookup ManualImportSeriesLookup, episodeLookup ManualImportEpisodeLookup) http.Handler {
+// Audit row C.1.i-follow-5b (J238). CustomFormats sub-arc closed
+// (title-based) at J346; Rejections + full Episode projection remain.
+func ManualImportReprocessHandler(seriesLookup ManualImportSeriesLookup, episodeLookup ManualImportEpisodeLookup, calc ManualImportCustomFormatCalculator) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var items []ManualImportReprocessItem
 		dec := json.NewDecoder(r.Body)
@@ -167,7 +193,7 @@ func ManualImportReprocessHandler(seriesLookup ManualImportSeriesLookup, episode
 		}
 		ctx := r.Context()
 		for i := range items {
-			reprocessOne(ctx, &items[i], seriesLookup, episodeLookup)
+			reprocessOne(ctx, &items[i], seriesLookup, episodeLookup, calc)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -182,7 +208,7 @@ func ManualImportReprocessHandler(seriesLookup ManualImportSeriesLookup, episode
 // quality / language / release-group fallbacks, and clears the
 // EpisodeIds field (C# `:76`) so the UI re-fetches from item.Episodes
 // instead.
-func reprocessOne(ctx context.Context, item *ManualImportReprocessItem, seriesLookup ManualImportSeriesLookup, episodeLookup ManualImportEpisodeLookup) {
+func reprocessOne(ctx context.Context, item *ManualImportReprocessItem, seriesLookup ManualImportSeriesLookup, episodeLookup ManualImportEpisodeLookup, calc ManualImportCustomFormatCalculator) {
 	parsed := parser.ParsePath(item.Path)
 	if parsed == nil {
 		// C# `_manualImportService.ReprocessItem` returns a result
@@ -254,15 +280,47 @@ func reprocessOne(ctx context.Context, item *ManualImportReprocessItem, seriesLo
 	item.Episodes = resolved
 	// Clear EpisodeIds in favour of the full episode (C# `:76`).
 	item.EpisodeIDs = nil
-	// Rejections + CustomFormats + Score — DEFERRED per handler
-	// doc-comment. Emit empty slices / zero score for wire-shape
-	// completeness.
+	// CustomFormats + Score — J346 title-based calculation. C#
+	// `ManualImportController.cs:62-63`. When the calculator dep is
+	// wired AND the item has a resolved series, run the calc against
+	// the parsed-path info + the item's resolved languages +
+	// indexerFlags. The bare-path endpoint can't feed file-size /
+	// mediainfo into the size/source specs (those need the full
+	// ImportDecisionMaker pipeline), so this covers the release-title-
+	// derivable subset only.
+	if calc != nil && item.SeriesID > 0 {
+		langs := languagesFromLanguageRefs(item.Languages)
+		cf, score := calc.CalculateForManualImport(ctx, parsed, item.SeriesID, langs, item.IndexerFlags)
+		item.CustomFormats = cf
+		item.CustomFormatScore = score
+	}
+	// Rejections — DEFERRED per handler doc-comment (needs the
+	// ImportDecisionMaker spec pipeline). Emit empty slice for wire-
+	// shape completeness. CustomFormats also falls back to an empty
+	// slice when the calculator wasn't wired (pre-J346 behaviour).
 	if item.Rejections == nil {
 		item.Rejections = []any{}
 	}
 	if item.CustomFormats == nil {
 		item.CustomFormats = []CustomFormatResource{}
 	}
+}
+
+// languagesFromLanguageRefs maps the item's []LanguageRef back to the
+// typed []language.Language the custom-format calculator consumes.
+// Unknown / unresolvable IDs are skipped (matches the calculator's
+// tolerance for partial language data).
+func languagesFromLanguageRefs(refs []LanguageRef) []language.Language {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]language.Language, 0, len(refs))
+	for _, ref := range refs {
+		if l, ok := language.FindByID(ref.ID); ok {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // manualImportReleaseTypeFor maps the parsed-info shape to the
