@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
+	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/customformats"
+	"sonarr.tv/sonarr/internal/datastore/datastoretest"
 	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/series"
@@ -141,6 +143,58 @@ func TestComputeHistoryCustomFormats_CachesAcrossRows_J336(t *testing.T) {
 	}
 	if profileLookupCalls != 0 {
 		t.Errorf("empty allFormats should short-circuit before profile lookup; got %d calls", profileLookupCalls)
+	}
+}
+
+// J379: paged adapter maps the EventType ordinal to its wire-stable
+// name string — porting the since/series-path mapping into PagedHistory.
+// A nil EventType (old pre-column rows) maps to the empty string.
+func TestPagedHistory_EventTypeNameMapping_J379(t *testing.T) {
+	t.Parallel()
+	repo, err := history.NewRepo(datastoretest.OpenSQLite(t))
+	if err != nil {
+		t.Fatalf("NewRepo: %v", err)
+	}
+	ctx := t.Context()
+	grabbed := int(history.EventTypeGrabbed)
+	imported := int(history.EventTypeDownloadFolderImported)
+	now := time.Date(2026, 5, 2, 14, 30, 0, 0, time.UTC)
+	insert := func(srcTitle string, et *int) int {
+		e := &history.Entry{
+			SeriesID:    11,
+			SourceTitle: srcTitle,
+			Date:        now,
+			Quality:     `{"quality":{"id":7,"name":"WEBDL-1080p"},"revision":{"version":1}}`,
+			Data:        map[string]string{},
+			EventType:   et,
+		}
+		got, err := repo.Insert(ctx, e)
+		if err != nil {
+			t.Fatalf("Insert %s: %v", srcTitle, err)
+		}
+		return got.ID
+	}
+	idGrab := insert("Show.S01E01", &grabbed)
+	idImport := insert("Show.S01E02", &imported)
+	idNil := insert("Show.S01E03", nil)
+
+	adapter := historyPagedAdapter{repo: repo}
+	rows, total, err := adapter.PagedHistory(ctx, apiv3.PagingRequest{Page: 1, PageSize: 50})
+	if err != nil {
+		t.Fatalf("PagedHistory: %v", err)
+	}
+	if total != 3 {
+		t.Fatalf("total = %d, want 3", total)
+	}
+	want := map[int]string{
+		idGrab:   history.EventTypeGrabbed.String(),
+		idImport: history.EventTypeDownloadFolderImported.String(),
+		idNil:    "",
+	}
+	for _, r := range rows {
+		if got := r.EventType; got != want[r.ID] {
+			t.Errorf("row %d EventType = %q, want %q", r.ID, got, want[r.ID])
+		}
 	}
 }
 

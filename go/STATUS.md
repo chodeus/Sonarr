@@ -19277,3 +19277,32 @@ Wanted (missing/cutoff) — accepts includeSeries/includeEpisodeFile/includeImag
 ### Arc boundary
 
 The history since/series endpoints are now fully projected. The remaining embedder gaps (paged History / Wanted / Blocklist) return lister-projected resources whose embeds need service-tier hydration (Wanted's lister is an unported stub; blocklist/paged-history need lister hydration + the Queue J348 strip-pattern) — out of scope for the projection-only arc. Next tick: re-run the orientation grep; if no pure-projection DEFERRALs remain in scope, emit "resource-projection arc complete".
+---
+
+## J379 — Embedder/Lister Hydration Arc, slice 1: paged History EventType name mapping
+
+New arc. The projection-only arc (J366–J378) finished all clean GET-mapper field projections; this arc finishes embedder sub-resource hydration on the PAGED / lister-projected endpoints that arc deferred. Priority order: (1) paged History — EventType name (this slice) then includeSeries/includeEpisode/qualityCutoffNotMet hydration; (2) Blocklist series+Languages+Quality; (3) Wanted (BLOCKED — unported lister stub).
+
+This slice is the smallest clean win and is a PURE projection gap (not hydration): the paged `historyPagedAdapter.PagedHistory` left `EventType` empty while the model-based since/series path already mapped it.
+
+### C# parity
+
+`HistoryController.MapToResource` projects `EpisodeHistoryEventType` via `JsonStringEnumConverter` + camelCase. The Go since/series path (`internal/api/v3/history.go:310-311`) ports this as `history.EventType(*e.EventType).String()`. The frozen name table lives at `internal/history/service.go:67` (`func (t EventType) String()`).
+
+### Change (`cmd/sonarr/host_wiring.go`)
+
+`PagedHistory`'s row loop now computes `eventTypeName` — nil `*int` EventType (old pre-column rows) → `""`; non-nil → the wire-stable enum name — and sets `EventType: eventTypeName` on the emitted `apiv3.HistoryResource`. The EventType ordinal already rides on the `history.Entry` DB row, so no new interface and no DB lookup is needed; this is a single-field projection identical to the since/series path. The pre-existing DEFERRED doc-comment was replaced with the J379 note.
+
+### Tests (`cmd/sonarr/history_populated_mapper_test.go`, 1 new)
+
+`TestPagedHistory_EventTypeNameMapping_J379` — builds a real SQLite repo via `datastoretest.OpenSQLite`, inserts Grabbed / DownloadFolderImported / nil-EventType rows, runs `PagedHistory`, asserts the wire `eventType` string per row including the nil→`""` case.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./cmd/sonarr/... ./internal/api/v3/... ./test/contract/...` ✓
+- `go vet ./cmd/sonarr/...` + gofmt ✓; empty-DB contract goldens `[]` (populated-row addition unobservable there, confirmed via `./test/contract/...`).
+
+### Arc next
+
+Priority #1(b): paged History includeSeries/includeEpisode embeds + qualityCutoffNotMet — these need per-row series/episode DB loads with per-request caches. DESIGN DECISION: thread the include flags INTO the `HistoryPagedLister` interface so hydration is conditional (avoid per-request DB cost when the client didn't ask), NOT the Queue J348 always-hydrate-then-strip pattern (which was free only because the in-memory queue row already carried domain objects). Then priority #2 Blocklist.

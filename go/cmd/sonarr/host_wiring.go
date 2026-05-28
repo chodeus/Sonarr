@@ -1086,6 +1086,10 @@ func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingR
 	for _, e := range page {
 		entry := e // copy for pointer capture
 		customFormats, customFormatScore := computeHistoryCustomFormats(ctx, &entry, a, allFormats, seriesCache, profileCache)
+		eventTypeName := ""
+		if e.EventType != nil {
+			eventTypeName = history.EventType(*e.EventType).String()
+		}
 		out = append(out, apiv3.HistoryResource{
 			ID:                e.ID,
 			SeriesID:          e.SeriesID,
@@ -1093,13 +1097,14 @@ func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingR
 			SourceTitle:       e.SourceTitle,
 			Date:              e.Date.UTC().Format("2006-01-02T15:04:05Z"),
 			DownloadID:        e.DownloadID,
+			EventType:         eventTypeName,
 			Languages:         apiv3.ToLanguageRefs(e.Languages),
 			Data:              e.Data,
 			CustomFormats:     customFormats,
 			CustomFormatScore: customFormatScore,
-			// EventType in C# is JsonStringEnumConverter+CamelCase
-			// on EpisodeHistoryEventType; the Go-port mapping is
-			// DEFERRED until the event-type-name table lands.
+			// EventType (J379): name-mapped via history.EventType.String(),
+			// porting the since/series-path mapping (history.go:310-311)
+			// into the paged adapter — was the last clean EventType gap.
 			// Data (J310): per-history grab-time metadata dict; nil
 			// drops the key via omitempty, populated emits `"data":{...}`.
 			// Languages (J314): typed []LanguageRef projection from
