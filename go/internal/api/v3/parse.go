@@ -60,6 +60,28 @@ type ParseMapper interface {
 	Map(ctx context.Context, parsedInfo *parser.ParsedEpisodeInfo, tvdbID, tvRageID int, imdbID string, searchCriteria *decisionengine.SearchCriteria) (*decisionengine.Subject, error)
 }
 
+// ParsePopulator is the optional-extension type-assertion surface for
+// computing CustomFormats + CustomFormatScore against a populated
+// Subject. Mirrors C# `ParseController.cs:53-54` where
+// `_formatCalculator.ParseCustomFormat(remoteEpisode, 0)` + the
+// QualityProfile-driven `CalculateCustomFormatScore` run after the
+// Map projection completes. Satisfied by a wrapper struct in
+// cmd/sonarr that bundles the [parsingservice.Service.Map] result with
+// the calculator deps (customformats.Service.All + qualityprofiles.
+// Service.Get) — the same composition pattern J339 / J341 used for
+// EpisodeFile + SignalR broadcasts.
+//
+// The handler type-asserts mapper for this interface (J338 / J339 /
+// J342 idiom) so production wiring can swap the wrapper in without
+// changing handler signatures; test fakes that satisfy ParseMapper
+// but NOT ParsePopulator stay green (empty CustomFormats + 0 score
+// continue to flow).
+//
+// J345.
+type ParsePopulator interface {
+	PopulateParseCustomFormats(ctx context.Context, subject *decisionengine.Subject) ([]CustomFormatResource, int)
+}
+
 // ParseHandler returns GET /api/v3/parse. Mirrors C#
 // `ParseController.Parse` at ParseController.cs:31-77 which:
 //
@@ -124,6 +146,15 @@ func ParseHandler(mapper ParseMapper) http.Handler {
 					out.Episodes = eps
 				}
 				out.Languages = subject.Languages
+				// J345 — CustomFormats + Score via optional-extension
+				// type-assertion. Populator non-nil → invoke against the
+				// just-mapped Subject; populator nil → CustomFormats stays
+				// nil + Score stays 0 (J338/J339/J342 pattern).
+				if populator, ok := mapper.(ParsePopulator); ok && populator != nil {
+					cf, score := populator.PopulateParseCustomFormats(r.Context(), subject)
+					out.CustomFormats = cf
+					out.CustomFormatScore = score
+				}
 			}
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")

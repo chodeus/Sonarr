@@ -94,6 +94,7 @@ import (
 	"sonarr.tv/sonarr/internal/metadata"
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/notifications"
+	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/pendingreleases"
 	"sonarr.tv/sonarr/internal/qualitydefinitions"
@@ -969,6 +970,77 @@ func (e *episodeFileServiceWithPopulator) PopulateEpisodeFile(ctx context.Contex
 	return res, score
 }
 
+// parsingServiceWithPopulator embeds *parsingservice.Service
+// (satisfies apiv3.ParseMapper via the embedded Map method) and adds
+// PopulateParseCustomFormats — which the v3 + v5 Parse handlers
+// discover via optional-extension type-assertion (J345) to run the
+// CustomFormat calculator (internal/customformats
+// .ParseCustomFormatForRemoteEpisode) + qualityprofile score lookup
+// against the just-mapped Subject.
+//
+// J345 — companion to the J339 episodeFileServiceWithPopulator.
+// Re-uses the same narrow-interface lookups for parity. Each
+// PopulateParseCustomFormats call allocates a single allFormats
+// fetch + a single profile fetch — the call cadence is one per
+// Parse request (not per-row) so a per-request cache is unnecessary.
+type parsingServiceWithPopulator struct {
+	*parsingservice.Service
+	seriesSvc          historySeriesLookup
+	qualityProfilesSvc historyQualityProfileLookup
+	customFormatsSvc   historyCustomFormatsLookup
+}
+
+// PopulateParseCustomFormats satisfies apiv3.ParsePopulator. Mirrors
+// C# `ParseController.cs:53-54` — runs the calculator engine against
+// the Subject's parsed-info + series + languages, then computes the
+// score via the series' QualityProfile. Empty / missing deps return
+// empty + 0 (preserves the pre-J345 deferred-state behavior).
+func (p *parsingServiceWithPopulator) PopulateParseCustomFormats(ctx context.Context, subject *decisionengine.Subject) ([]apiv3.CustomFormatResource, int) {
+	empty := []apiv3.CustomFormatResource{}
+	if subject == nil || subject.ParsedEpisodeInfo == nil || p.customFormatsSvc == nil {
+		return empty, 0
+	}
+	allFormats, err := p.customFormatsSvc.All(ctx)
+	if err != nil || len(allFormats) == 0 {
+		return empty, 0
+	}
+	// IndexerFlags from Subject.Release when present (zero for Parse
+	// requests; non-zero for downstream RSS / Push paths that may
+	// reuse this helper later).
+	var indexerFlags parser.IndexerFlags
+	if rel, ok := subject.Release.(*parser.ReleaseInfo); ok && rel != nil {
+		indexerFlags = rel.IndexerFlags
+	} else if rel, ok := subject.Release.(*parser.TorrentInfo); ok && rel != nil {
+		indexerFlags = rel.IndexerFlags
+	}
+	matched := customformats.ParseCustomFormatForRemoteEpisode(
+		subject.ParsedEpisodeInfo,
+		subject.Series,
+		subject.Languages,
+		indexerFlags,
+		0, // size=0 for the Parse-handler call shape (no real release)
+		allFormats,
+	)
+	res := make([]apiv3.CustomFormatResource, 0, len(matched))
+	presentIDs := make(map[int]bool, len(matched))
+	for _, m := range matched {
+		res = append(res, apiv3.CustomFormatResource{ID: m.ID, Name: m.Name})
+		presentIDs[m.ID] = true
+	}
+	score := 0
+	if p.qualityProfilesSvc != nil && subject.Series != nil && subject.Series.QualityProfileID > 0 {
+		if prof, err := p.qualityProfilesSvc.Get(ctx, subject.Series.QualityProfileID); err == nil && prof != nil {
+			if items, perr := prof.ParsedFormatItems(); perr == nil {
+				score = qualityprofiles.CalculateCustomFormatScore(items, presentIDs)
+			}
+		}
+	}
+	if len(res) == 0 {
+		return empty, score
+	}
+	return res, score
+}
+
 // historyServiceWithPopulator embeds *history.Service (satisfies
 // apiv3.HistoryRangeReader via the embedded Since + GetBySeries
 // methods) and adds PopulateHistoryEntry — which the v3 history
@@ -1568,6 +1640,19 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		Service:   episodesSvc,
 		epFilePop: episodeFilesSvcPopulated,
 	}
+	// J345: parsing-service populator wrapper — embeds
+	// *parsingservice.Service (satisfies apiv3.ParseMapper via the
+	// embedded Map method) and adds PopulateParseCustomFormats. Used
+	// by the v3 + v5 Parse handlers via optional-extension type-
+	// assertion to route the Parse response through the CustomFormat
+	// calculator (against the Subject's parsedInfo + series +
+	// languages) + qualityprofile score lookup.
+	parsingSvcWithPopulator := &parsingServiceWithPopulator{
+		Service:            parsingSvc,
+		seriesSvc:          seriesSvc,
+		qualityProfilesSvc: qualityProfilesSvc,
+		customFormatsSvc:   customFormatsSvc,
+	}
 	// 5.I7: log-file adapter sources LogFolder = <AppData>/logs and
 	// URLBase from configfile.Provider. The folder string + URLBase
 	// are resolved at boot in buildHostServer and snapshot into the
@@ -2003,7 +2088,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// J258 — v5 Parse endpoint family (single GET; v5 differs from
 		// v3 ONLY in the empty-input case — v3 emits literal `null`,
 		// v5 emits a ParseResource object with `title` field).
-		{Method: "GET", Path: "/api/v5/parse", Handler: parsev5.GetHandler(parsingSvc)},
+		{Method: "GET", Path: "/api/v5/parse", Handler: parsev5.GetHandler(parsingSvcWithPopulator)},
 		// J259 — v5 Update endpoint family (single GET; pure path-alias
 		// to v3 handler — same wire shape, same 200 status).
 		{Method: "GET", Path: "/api/v5/update", Handler: updatev5.GetHandler(emptyUpdateLister{})},
@@ -2355,7 +2440,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "DELETE", Path: "/api/v3/notification/bulk", Handler: apiv3.NotificationBulkNotSupportedHandler()},
 		{Method: "PUT", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationUpdateHandler(notificationsRepo, notificationRegistry, notificationEmitter)},
 		{Method: "DELETE", Path: "/api/v3/notification/{id}", Handler: apiv3.NotificationDeleteHandler(notificationsRepo, notificationEmitter)},
-		{Method: "GET", Path: "/api/v3/parse", Handler: apiv3.ParseHandler(parsingSvc)},
+		{Method: "GET", Path: "/api/v3/parse", Handler: apiv3.ParseHandler(parsingSvcWithPopulator)},
 		{Method: "GET", Path: "/api/v3/qualitydefinition", Handler: apiv3.QualityDefinitionHandler(qualityDefSvc)},
 		{Method: "GET", Path: "/api/v3/qualitydefinition/{id}", Handler: apiv3.QualityDefinitionByIDHandler(qualityDefSvc)},
 		{Method: "GET", Path: "/api/v3/qualitydefinition/limits", Handler: apiv3.QualityDefinitionLimitsHandler()},

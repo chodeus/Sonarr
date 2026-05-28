@@ -184,3 +184,87 @@ var errParseMapper = &parseMapperErr{}
 type parseMapperErr struct{}
 
 func (e *parseMapperErr) Error() string { return "mapper boom" }
+
+// ----- J345 — ParsePopulator optional-extension wire-through -----
+
+// fakeParseMapperWithPopulator implements BOTH ParseMapper AND
+// ParsePopulator. The handler's type-assertion path picks up the
+// populator extension and emits populated customFormats[] +
+// customFormatScore.
+type fakeParseMapperWithPopulator struct {
+	returnSub *decisionengine.Subject
+	cfReturn  []CustomFormatResource
+	scoreRet  int
+	cfCalls   int
+}
+
+func (f *fakeParseMapperWithPopulator) Map(_ context.Context, _ *parser.ParsedEpisodeInfo, _ int, _ int, _ string, _ *decisionengine.SearchCriteria) (*decisionengine.Subject, error) {
+	return f.returnSub, nil
+}
+
+func (f *fakeParseMapperWithPopulator) PopulateParseCustomFormats(_ context.Context, _ *decisionengine.Subject) ([]CustomFormatResource, int) {
+	f.cfCalls++
+	return f.cfReturn, f.scoreRet
+}
+
+func TestParseHandler_PopulatorOptionalExtension_J345(t *testing.T) {
+	t.Parallel()
+	// Mapper-without-populator path: existing fakeParseMapper doesn't
+	// implement ParsePopulator → CustomFormats stays nil + customFormatScore=0.
+	t.Run("MapperWithoutPopulator_EmptyCustomFormats", func(t *testing.T) {
+		t.Parallel()
+		mapper := &fakeParseMapper{
+			returnSub: &decisionengine.Subject{
+				Series:    &series.Series{ID: 7, Title: "ResolvedShow"},
+				Episodes:  []episodes.Episode{{ID: 11}},
+				Languages: []language.Language{{ID: 1, Name: "English"}},
+			},
+		}
+		rr := httptest.NewRecorder()
+		ParseHandler(mapper).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/parse?title=The.Show.S01E02.720p.WEB-DL", nil))
+		body := rr.Body.String()
+		if strings.Contains(body, `"customFormats"`) {
+			t.Errorf("mapper-without-populator body must NOT contain `customFormats`; got %s", body)
+		}
+		if !strings.Contains(body, `"customFormatScore":0`) {
+			t.Errorf("mapper-without-populator must emit customFormatScore:0; got %s", body)
+		}
+	})
+	// Mapper-with-populator path: populated customFormats[] +
+	// customFormatScore in the wire.
+	t.Run("MapperWithPopulator_PopulatedCustomFormatsAndScore", func(t *testing.T) {
+		t.Parallel()
+		mapper := &fakeParseMapperWithPopulator{
+			returnSub: &decisionengine.Subject{
+				Series:    &series.Series{ID: 7, Title: "ResolvedShow"},
+				Episodes:  []episodes.Episode{{ID: 11}},
+				Languages: []language.Language{{ID: 1, Name: "English"}},
+			},
+			cfReturn: []CustomFormatResource{{ID: 5, Name: "x265"}},
+			scoreRet: 42,
+		}
+		rr := httptest.NewRecorder()
+		ParseHandler(mapper).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/parse?title=The.Show.S01E02.720p.WEB-DL", nil))
+		body := rr.Body.String()
+		if !strings.Contains(body, `"customFormats":[{"id":5`) {
+			t.Errorf("populator body must emit customFormats[] envelope; got %s", body)
+		}
+		if !strings.Contains(body, `"customFormatScore":42`) {
+			t.Errorf("populator body must emit customFormatScore:42; got %s", body)
+		}
+		if mapper.cfCalls != 1 {
+			t.Errorf("PopulateParseCustomFormats should fire once; got calls=%d", mapper.cfCalls)
+		}
+	})
+	// Subject-with-nil-series → handler short-circuits BEFORE the
+	// populator branch (matches the J344 fallback contract).
+	t.Run("MapperWithPopulator_NilSeries_NoPopulatorCall", func(t *testing.T) {
+		t.Parallel()
+		mapper := &fakeParseMapperWithPopulator{returnSub: &decisionengine.Subject{}}
+		rr := httptest.NewRecorder()
+		ParseHandler(mapper).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/parse?title=The.Show.S01E02.720p.WEB-DL", nil))
+		if mapper.cfCalls != 0 {
+			t.Errorf("PopulateParseCustomFormats must NOT fire when Subject.Series is nil; got calls=%d", mapper.cfCalls)
+		}
+	})
+}

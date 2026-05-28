@@ -106,6 +106,13 @@ func GetHandler(mapper apiv3.ParseMapper) http.Handler {
 					out.Episodes = eps
 				}
 				out.Languages = subject.Languages
+				// J345 — CustomFormats + Score via optional-extension
+				// type-assertion (same pattern as v3).
+				if populator, ok := mapper.(apiv3.ParsePopulator); ok && populator != nil {
+					cf, score := populator.PopulateParseCustomFormats(r.Context(), subject)
+					out.CustomFormats = cf
+					out.CustomFormatScore = score
+				}
 			}
 		}
 		writeJSON(w, out)

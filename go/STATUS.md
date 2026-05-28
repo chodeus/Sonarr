@@ -17872,3 +17872,86 @@ Service-port arc 1 of 3 closed; arc 2 (parsingService.Map + ImportDecisionMaker)
 | 3 (B-cat) | QueueResource v5 includeSubresources[] hydration (Queue.Service paged surface + Series+Episodes pipeline) | OPEN |
 
 Arc 2 progress: 1 of 3 sub-slices landed. Next-tick candidate: Parse-handler CustomFormats projection via aggregation.Service.Augment + a new customformats helper.
+
+---
+
+## J345 — Post-J342 service-port arc, slice 3 (Arc 2 slice 2, A-category): Parse handler populated CustomFormats + CustomFormatScore via new ParseCustomFormatForRemoteEpisode helper + ParsePopulator optional-extension type-assertion
+
+**Anchor**: post-J344 (Arc 2 slice 1 — Series/Episodes/Languages population). Layers the CustomFormats + CustomFormatScore projection onto the just-landed Map wire-through, completing the v3 + v5 Parse handler's populated-row mapper. The aggregation.Service.Augment pre-pass that the loop prompt mentioned turns out to be a no-op for the Parse-handler call shape (no real Release means no augmenter has useful data to add; the parser-set Languages on parsedInfo already covers what the language augmenter would emit), so the slice skips it and runs the calculator directly. ManualImport handler is the only Arc 2 sub-slice remaining; it's the larger port (~3 service deps + decision-maker integration) and is the next-tick candidate.
+
+### C# source
+
+- `src/Sonarr.Api.V3/Parse/ParseController.cs:50-65` — populated branch:
+  - `:50` `_aggregationService.Augment(remoteEpisode)` — Go-port skips for Parse call shape (no-op given parsed-only state).
+  - `:53` `_formatCalculator.ParseCustomFormat(remoteEpisode, 0)` → list of CustomFormat rows. Go-port equivalent is the new helper.
+  - `:54` `series.QualityProfile.Value.CalculateCustomFormatScore(remoteEpisode.CustomFormats) ?? 0` → int. Go-port uses existing qualityprofiles.CalculateCustomFormatScore.
+  - `:56-65` Resource projection — populates CustomFormats?.ToResource(false) + CustomFormatScore.
+- `src/NzbDrone.Core/CustomFormats/CustomFormatCalculationService.cs:36-49` — the C# `ParseCustomFormat(RemoteEpisode, long)` overload. Builds `CustomFormatInput` from `remoteEpisode.ParsedEpisodeInfo + Series + size + Languages + Release?.IndexerFlags ?? 0 + ParsedEpisodeInfo.ReleaseType` and dispatches to the shared `ParseCustomFormat(input)`. The Go-port `ParseCustomFormatForRemoteEpisode` mirrors this shape.
+
+### Port deliverables
+
+**`go/internal/customformats/calculate_remoteepisode.go`** — new file with single helper:
+
+- `ParseCustomFormatForRemoteEpisode(parsedInfo *parser.ParsedEpisodeInfo, ser *series.Series, languages []language.Language, indexerFlags parser.IndexerFlags, size int64, allFormats []*Format) []CustomFormat`.
+- Takes individual-field parameters instead of `*decisionengine.Subject` — the customformats package CANNOT import decisionengine because decisionengine.Subject already references customformats.CustomFormat (import cycle). Callers in cmd/sonarr + the API layer hold the Subject and lift the fields at the call site.
+- Empty allFormats / nil parsedInfo → nil (the Calculate engine would NPE otherwise; every Specification reads EpisodeInfo).
+- Builds CustomFormatInput → calls `Calculate(input, allFormats)` → projects matched []*Format to []CustomFormat (ID + Name + IncludeCustomFormatWhenRenaming).
+
+**`go/internal/api/v3/parse.go`** — new optional-extension interface + handler hook:
+
+- `apiv3.ParsePopulator interface { PopulateParseCustomFormats(ctx, *decisionengine.Subject) ([]CustomFormatResource, int) }`. Optional-extension that wraps the calculator engine + score lookup. Test fakes that satisfy ParseMapper but NOT ParsePopulator stay green — the type-assertion returns nil and the empty fallback fires (J338/J339/J342 idiom).
+- `ParseHandler` body extended: after the J344 Series/Episodes/Languages projection, type-assert mapper to `ParsePopulator`; on success invoke `PopulateParseCustomFormats(ctx, subject)` and populate `out.CustomFormats` + `out.CustomFormatScore`. Nil-Series subjects short-circuit BEFORE the populator branch (the J344 fallback to minimal shape preserves this gate).
+
+**`go/internal/api/v5/parse/parse.go`** — mirror change in v5 GetHandler, referencing `apiv3.ParsePopulator` directly.
+
+**`go/cmd/sonarr/host_wiring.go`** — new wrapper struct + 2 wire-site updates:
+
+- New `parsingServiceWithPopulator` struct embedding *parsingservice.Service + holding `seriesSvc historySeriesLookup` + `qualityProfilesSvc historyQualityProfileLookup` + `customFormatsSvc historyCustomFormatsLookup` (reuses the J336 lookup interfaces for symmetry with historyServiceWithPopulator + episodeFileServiceWithPopulator). Method `PopulateParseCustomFormats(ctx, *decisionengine.Subject) ([]apiv3.CustomFormatResource, int)` runs the C# `:36-49` sequence:
+  - Fetch allFormats via customformats.Service.All.
+  - Extract IndexerFlags from subject.Release (`*parser.ReleaseInfo` or `*parser.TorrentInfo` type-switch; zero for Parse call shape).
+  - Call ParseCustomFormatForRemoteEpisode(subject.ParsedEpisodeInfo, subject.Series, subject.Languages, indexerFlags, 0, allFormats).
+  - Project matched []CustomFormat to []apiv3.CustomFormatResource + build presentIDs map.
+  - Compute score via qualityprofiles.CalculateCustomFormatScore against Series.QualityProfileID's profile (qualityProfilesSvc.Get + ParsedFormatItems).
+- New `parser` import in host_wiring.go for the IndexerFlags type-switch.
+- Constructed once in v3Routes alongside historySvcPopulated + episodeFilesSvcPopulated + episodesSvcWithEpisodeFile.
+- 2 parse-route wire sites updated: `/api/v3/parse` + `/api/v5/parse` now pass `parsingSvcWithPopulator` instead of bare `parsingSvc`.
+
+### Tests
+
+**`go/internal/customformats/calculate_remoteepisode_test.go`** (new file) — 4 helper-direct unit tests:
+
+- `TestParseCustomFormatForRemoteEpisode_NilParsedInfo` — nil parsedInfo returns nil.
+- `TestParseCustomFormatForRemoteEpisode_EmptyFormats` — empty allFormats returns nil.
+- `TestParseCustomFormatForRemoteEpisode_MatchesReleaseTitleSpec` — happy path: ReleaseTitleSpec("720p") matches the Subject's parsed title.
+- `TestParseCustomFormatForRemoteEpisode_SizeThreadsThrough` — SizeSpec(0.5-2.0GB) matches when size=1.5GB; pins that the size param reaches the spec.
+
+**`go/internal/api/v3/parse_test.go`** — 1 new top-level test `TestParseHandler_PopulatorOptionalExtension_J345` with 3 sub-tests:
+
+- `MapperWithoutPopulator_EmptyCustomFormats` — existing fakeParseMapper (no PopulateParseCustomFormats method) → CustomFormats stays absent (omitempty) + customFormatScore:0.
+- `MapperWithPopulator_PopulatedCustomFormatsAndScore` — fakeParseMapperWithPopulator returns a typed CustomFormat slice + score=42 → body emits both verbatim. Pins the type-assertion + value-routing chain.
+- `MapperWithPopulator_NilSeries_NoPopulatorCall` — Subject with nil Series → handler short-circuits BEFORE the populator branch; PopulateParseCustomFormats must NOT fire (cfCalls=0).
+- New helper struct: `fakeParseMapperWithPopulator` (satisfies both ParseMapper + ParsePopulator).
+
+The existing 5 J344 v3 tests + all v5 tests stay green — their fakes don't implement ParsePopulator so the J345 hook is a no-op for them.
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/customformats/... ./internal/api/v3/... ./internal/api/v5/parse/... ./cmd/sonarr/...` ✓
+  - customformats: all pass, 19.877s
+  - v3: all pass, 1.583s
+  - v5/parse: all pass, 1.992s
+  - cmd/sonarr: all pass, 4.599s
+- `go vet ./internal/customformats/... ./internal/api/v3/... ./internal/api/v5/parse/... ./cmd/sonarr/...` ✓
+
+### Post-J342 service-port arc backlog
+
+| Sub-arc | Item | Status |
+| --- | --- | --- |
+| 1 (B-cat) | Release POST searchInfo fallback (parsingService.GetEpisodes wire-through) | DONE (J343) |
+| 2 (A-cat) | Parse handler populated Series/Episodes/Languages (parsingService.Map wire-through) | DONE (J344) |
+| 2 (A-cat) | Parse handler populated CustomFormats + CustomFormatScore | **DONE this slice (J345)** |
+| 2 (A-cat) | ManualImport handler populated customFormats (gated on ImportDecisionMaker port) | OPEN — next sub-slice in Arc 2 |
+| 3 (B-cat) | QueueResource v5 includeSubresources[] hydration (Queue.Service paged surface + Series+Episodes pipeline) | OPEN |
+
+Arc 2 progress: 2 of 3 sub-slices landed; ManualImport (which has its own deferred ImportDecisionMaker integration) is the next-tick candidate.
