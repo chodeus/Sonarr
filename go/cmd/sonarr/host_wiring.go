@@ -1833,7 +1833,11 @@ type wantedRepoLister struct {
 	// (applyEpisodeSeries's type-assertion still succeeds but the
 	// GetSeries forward degrades to a miss → nil embed).
 	seriesSvc historySeriesLookup
-	now       func() time.Time
+	// epFiles backs the J384 includeEpisodeFile embed. The wrapper
+	// implements apiv3.EpisodeFileLookupForEpisode (GetFile via the
+	// embedded service) + the populator interfaces. nil → no embed.
+	epFiles *episodeFileServiceWithPopulator
+	now     func() time.Time
 }
 
 // GetSeries satisfies apiv3.EpisodeSeriesLookup so applyEpisodeSeries can
@@ -1845,7 +1849,7 @@ func (w wantedRepoLister) GetSeries(ctx context.Context, id int) (*series.Series
 	return w.seriesSvc.GetSeries(ctx, id)
 }
 
-func (w wantedRepoLister) PagedWanted(ctx context.Context, req apiv3.PagingRequest, scope apiv3.WantedScope, includeSeries, includeImages bool) ([]apiv3.EpisodeResource, int, error) {
+func (w wantedRepoLister) PagedWanted(ctx context.Context, req apiv3.PagingRequest, scope apiv3.WantedScope, includeSeries, includeEpisodeFile, includeImages bool) ([]apiv3.EpisodeResource, int, error) {
 	// MissingController + CutoffController default — `monitored=true`.
 	// The recorded corpus exercises only the default, so the boolean
 	// toggle stays pinned here until query-string parsing for the
@@ -1884,6 +1888,15 @@ func (w wantedRepoLister) PagedWanted(ctx context.Context, req apiv3.PagingReque
 		// via GetSeries. Mirrors C# MapToResource(v, includeSeries, _,
 		// includeImages).
 		apiv3.ApplyEpisodeSeries(ctx, &res, e.SeriesID, w, includeSeries, seriesEmbedCache)
+		// J384 — conditional EpisodeFile subresource. Missing rows have
+		// no file (EpisodeFileID==0 → the helper no-ops); Cutoff rows
+		// carry a below-cutoff file so the embed appears. w.epFiles
+		// satisfies apiv3.EpisodeFileLookupForEpisode + the populator
+		// interfaces; nil → no embed.
+		if w.epFiles != nil {
+			ep := e // pointer capture
+			apiv3.ApplyEpisodeFileSubresource(ctx, &res, &ep, w.epFiles, includeEpisodeFile)
+		}
 		apiv3.ApplyEpisodeImages(&res, e, includeImages)
 		out = append(out, res)
 	}
@@ -2898,9 +2911,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// v3, query-param shape divergence is ignored by current stub).
 		// EpisodeResource widening (EndTime/GrabDate) deferred per same
 		// chain as J258/J259/J261.
-		{Method: "GET", Path: "/api/v5/wanted/missing", Handler: wantedv5.ListHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, seriesSvc: seriesSvc, now: func() time.Time { return time.Now().UTC() }}, wantedv5.ScopeMissing)},
+		{Method: "GET", Path: "/api/v5/wanted/missing", Handler: wantedv5.ListHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, seriesSvc: seriesSvc, epFiles: episodeFilesSvcPopulated, now: func() time.Time { return time.Now().UTC() }}, wantedv5.ScopeMissing)},
 		{Method: "GET", Path: "/api/v5/wanted/missing/{id}", Handler: wantedv5.ByIDHandler(episodesSvc)},
-		{Method: "GET", Path: "/api/v5/wanted/cutoff", Handler: wantedv5.ListHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, seriesSvc: seriesSvc, now: func() time.Time { return time.Now().UTC() }}, wantedv5.ScopeCutoff)},
+		{Method: "GET", Path: "/api/v5/wanted/cutoff", Handler: wantedv5.ListHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, seriesSvc: seriesSvc, epFiles: episodeFilesSvcPopulated, now: func() time.Time { return time.Now().UTC() }}, wantedv5.ScopeCutoff)},
 		{Method: "GET", Path: "/api/v5/wanted/cutoff/{id}", Handler: wantedv5.ByIDHandler(episodesSvc)},
 		// J265 — v5 Indexer + IndexerFlag endpoint family (12 endpoints;
 		// Resource shape identical to v3 — 9 fields field-for-field. Four
@@ -3280,9 +3293,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v3/tag/detail", Handler: apiv3.TagDetailHandler(emptyTagDetailLister{})},
 		{Method: "GET", Path: "/api/v3/tag/detail/{id}", Handler: apiv3.TagDetailByIDHandler(emptyTagDetailLister{})},
 		{Method: "GET", Path: "/api/v3/update", Handler: apiv3.UpdateHandler(emptyUpdateLister{})},
-		{Method: "GET", Path: "/api/v3/wanted/cutoff", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, seriesSvc: seriesSvc, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedCutoff)},
+		{Method: "GET", Path: "/api/v3/wanted/cutoff", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, seriesSvc: seriesSvc, epFiles: episodeFilesSvcPopulated, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedCutoff)},
 		{Method: "GET", Path: "/api/v3/wanted/cutoff/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvcWithEpisodeFile)},
-		{Method: "GET", Path: "/api/v3/wanted/missing", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, seriesSvc: seriesSvc, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedMissing)},
+		{Method: "GET", Path: "/api/v3/wanted/missing", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, seriesSvc: seriesSvc, epFiles: episodeFilesSvcPopulated, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedMissing)},
 		{Method: "GET", Path: "/api/v3/wanted/missing/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvcWithEpisodeFile)},
 		// SignalR negotiate endpoint — the JS client posts here
 		// first to discover the per-connection id and the available

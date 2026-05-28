@@ -19,7 +19,7 @@ type fakeLister struct {
 	err   error
 }
 
-func (f *fakeLister) PagedWanted(_ context.Context, _ apiv3.PagingRequest, _ apiv3.WantedScope, _, _ bool) ([]apiv3.EpisodeResource, int, error) {
+func (f *fakeLister) PagedWanted(_ context.Context, _ apiv3.PagingRequest, _ apiv3.WantedScope, _, _, _ bool) ([]apiv3.EpisodeResource, int, error) {
 	return f.rows, f.total, f.err
 }
 

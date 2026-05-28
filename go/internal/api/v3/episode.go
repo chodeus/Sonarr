@@ -147,6 +147,16 @@ func applyEpisodeFileSubresource(ctx context.Context, res *EpisodeResource, ep *
 	res.EpisodeFile = &epFile
 }
 
+// ApplyEpisodeFileSubresource is the exported wrapper over
+// applyEpisodeFileSubresource so out-of-package list adapters (e.g.
+// cmd/sonarr's wantedRepoLister, J384) can reuse the same conditional
+// EpisodeFile-embed projection the v3 episode handlers use. The lister
+// arg must implement EpisodeFileLookupForEpisode (+ optionally
+// EpisodeFilePopulator). Semantics are identical.
+func ApplyEpisodeFileSubresource(ctx context.Context, res *EpisodeResource, ep *episodes.Episode, lister any, includeEpisodeFile bool) {
+	applyEpisodeFileSubresource(ctx, res, ep, lister, includeEpisodeFile)
+}
+
 // applyEpisodeImages populates an EpisodeResource's Images field from
 // the persisted Episode.Images blob when includeImages is true. Mirrors
 // C# EpisodeControllerWithSignalR.MapToResource `resource.Images =

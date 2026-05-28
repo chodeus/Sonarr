@@ -16,7 +16,7 @@ type fakeWantedLister struct {
 	got     WantedScope
 }
 
-func (f *fakeWantedLister) PagedWanted(_ context.Context, _ PagingRequest, scope WantedScope, _, _ bool) ([]EpisodeResource, int, error) {
+func (f *fakeWantedLister) PagedWanted(_ context.Context, _ PagingRequest, scope WantedScope, _, _, _ bool) ([]EpisodeResource, int, error) {
 	f.got = scope
 	return f.records, f.total, f.err
 }

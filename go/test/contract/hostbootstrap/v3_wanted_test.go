@@ -84,6 +84,6 @@ func checkWantedEntry(t *testing.T, entryID string, scope apiv3.WantedScope) {
 
 type emptyWantedLister struct{}
 
-func (emptyWantedLister) PagedWanted(context.Context, apiv3.PagingRequest, apiv3.WantedScope, bool, bool) ([]apiv3.EpisodeResource, int, error) {
+func (emptyWantedLister) PagedWanted(context.Context, apiv3.PagingRequest, apiv3.WantedScope, bool, bool, bool) ([]apiv3.EpisodeResource, int, error) {
 	return nil, 0, nil
 }

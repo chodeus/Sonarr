@@ -14,15 +14,18 @@ import (
 // The production lister (`wantedRepoLister` in cmd/sonarr) hydrates real
 // rows; the contract fixtures return 0 records for fresh-DB byte-eq.
 //
-// J383: the includeSeries / includeImages flags are threaded INTO the
-// interface (like the J380 paged-History lister) so the production lister
-// can hydrate the BASE Series embed + the Images projection CONDITIONALLY
-// — no per-row series lookup when the client didn't ask. Mirrors C#
-// EpisodeControllerWithSignalR.MapToResource(v, includeSeries, _,
-// includeImages). includeEpisodeFile (Cutoff-only in C#) stays DEFERRED —
-// it needs the heavier J340/J342 episodeFile populator hydration.
+// J383/J384: the includeSeries / includeEpisodeFile / includeImages flags
+// are threaded INTO the interface (like the J380 paged-History lister) so
+// the production lister can hydrate the BASE Series embed, the EpisodeFile
+// subresource, and the Images projection CONDITIONALLY — no per-row lookup
+// when the client didn't ask. Mirrors C#
+// EpisodeControllerWithSignalR.MapToResource(v, includeSeries,
+// includeEpisodeFile, includeImages). Cutoff rows carry a file (embed
+// appears); Missing rows have no file (EpisodeFileID==0 → the embed helper
+// no-ops), so honoring includeEpisodeFile for both scopes is behaviorally
+// identical to C# (where MissingController hardcodes it false).
 type WantedEpisodeLister interface {
-	PagedWanted(ctx context.Context, req PagingRequest, scope WantedScope, includeSeries, includeImages bool) ([]EpisodeResource, int, error)
+	PagedWanted(ctx context.Context, req PagingRequest, scope WantedScope, includeSeries, includeEpisodeFile, includeImages bool) ([]EpisodeResource, int, error)
 }
 
 // WantedScope distinguishes the missing vs cutoff-not-met dataset.
@@ -44,17 +47,18 @@ const (
 // default sortKey "episodes.airDateUtc" and descending direction.
 //
 // The C# controllers accept includeSeries / includeEpisodeFile /
-// includeImages / monitored / sortKey overrides. J383 parses
-// includeSeries + includeImages and passes them to the lister so the
-// BASE Series embed + Images projection hydrate conditionally (mirrors
-// C# MapToResource). includeEpisodeFile + monitored + SQL-level sort
-// remain DEFERRED.
+// includeImages / monitored / sortKey overrides. J383/J384 parse
+// includeSeries + includeEpisodeFile + includeImages and pass them to the
+// lister so the BASE Series embed + EpisodeFile subresource + Images
+// projection hydrate conditionally (mirrors C# MapToResource). monitored +
+// SQL-level sort remain DEFERRED.
 func WantedHandler(lister WantedEpisodeLister, scope WantedScope) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		req := parsePagingRequest(r, "episodes.airDateUtc")
 		includeSeries := r.URL.Query().Get("includeSeries") == "true"
+		includeEpisodeFile := r.URL.Query().Get("includeEpisodeFile") == "true"
 		includeImages := r.URL.Query().Get("includeImages") == "true"
-		records, total, err := lister.PagedWanted(r.Context(), req, scope, includeSeries, includeImages)
+		records, total, err := lister.PagedWanted(r.Context(), req, scope, includeSeries, includeEpisodeFile, includeImages)
 		if err != nil {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("wanted: %w", err), nil)
 			return
