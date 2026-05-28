@@ -18897,3 +18897,41 @@ images + seasons[].images (MediaCover local-URL rewrite — next slice candidate
 ### Remaining SeriesResource deferrals
 
 statistics + seasons[].statistics + nextAiring/previousAiring/episodesChanged (episode/episodefile aggregation join — the big next candidate), seasons[].images (includeSeasonImages flag), alternateTitles (scene-mapping), isExcluded (importlistexclusion join). After statistics, SeriesResource is effectively complete → arc advances to EpisodeResource.
+
+---
+
+## J368 — Post-J365 resource-projection arc, slice 3: SeriesResource.statistics CORE (internal/seriesstats)
+
+**Anchor**: post-J367 (SeriesResource.images done). `statistics` is the biggest remaining SeriesResource piece and unblocks several deferred fields. Split core-then-wire per the J360→J361 cutoff-unmet precedent: this slice = the aggregation core; J369 = the API populator.
+
+### C# source
+
+- `src/NzbDrone.Core/SeriesStats/SeriesStatistics.cs` + `SeasonStatistics.cs` — the models (counts, airing, releaseGroups/types, qualities).
+- `SeriesStatisticsRepository.cs` — two grouped queries (EpisodesBuilder: per-season counts + airing CASE logic; EpisodeFilesBuilder: size + GROUP_CONCAT release groups/types/qualities) merged per (seriesId, seasonNumber).
+- `SeriesStatisticsService.cs` MapSeriesStatistics — series rollup (sums, distinct unions, MinBy NextAiring / MaxBy PreviousAiring / MaxBy LastAired where SeasonNumber>0, SortQualities by profile).
+- `src/Sonarr.Api.V3/Series/SeriesStatisticsResource.cs` + `SeasonStatisticsResource.cs` — the wire shapes (J369 consumes).
+
+### Port deliverable (`internal/seriesstats/seriesstats.go`)
+
+- **Models** SeasonStatistics + SeriesStatistics (full set incl. the v5-additive MonitoredEpisodeCount / ReleaseTypes / EpisodeFileQualities / AvailableEpisodeCount so one core feeds both surfaces).
+- **`Compute(eps, files, now) SeriesStatistics`** — pure, in-memory aggregation (faithful-degraded vs SQL GROUP BY; counts identical to the C# CASE expressions). Per-season: total / available / episode / file / monitored counts; NextAiring (min future monitored), PreviousAiring (max past monitored), LastAired (max date-only AirDate); file size sum + distinct sorted release groups + distinct release types + distinct quality ids (parsed from the bare-int `{"quality":<id>,...}` shape). Series rollup: sums + distinct-unions + min/max airing + LastAired max over SeasonNumber>0; seasons sorted by number; qualities ascending (API re-sorts by profile).
+
+### Design notes
+
+- **In-memory, not SQL.** Matches the wanted/cutoff "aggregate-in-Go" posture; J369 loads episodes (episodes.Repo.AllBySeriesID / AllBySeriesIDs) + files at the wiring tier and calls Compute. Keeps the counting logic in one unit-tested function.
+- **Quality id shape.** Persisted EpisodeFile.Quality is `{"quality":<id>,"revision":{...}}` (quality.Model.MarshalJSON bare-int; confirmed vs the J360 cutoff LIKE). Parsed via a local `{Quality int}` struct. The nested `{"quality":{"id":...}}` test fixture in episodefiles_test.go is legacy and not the canonical persisted shape.
+- **Specials.** Series LastAired excludes SeasonNumber 0 (C# `SeasonNumber > 0`); season-0 SeasonStatistics still records its own LastAired.
+
+### Tests (`internal/seriesstats/seriesstats_test.go`, 6)
+
+counts (mixed season + specials), airing (min-future-monitored / max-past-monitored / max-AirDate; unmonitored-future excluded), lastAired-excludes-season0, file-aggregation (distinct sorted groups+types+qualities unioned, empty skipped), empty (zero + non-nil slices), nil-AirDateUtc (file-bearing counts but no airing window).
+
+### Hard gates
+
+- `go build ./...` ✓
+- `go test -race -count=1 ./internal/seriesstats/...` ✓ (1.66s)
+- `go vet` + gofmt ✓
+
+### Next (J369)
+
+Wire via a `seriesStatsPopulator` (J367 image-populator + C# LinkSeriesStatistics idiom): per-request-cached series→stats lookup filling SeriesResource.Statistics + seasons[].Statistics + nextAiring/previousAiring + the `LastAired ??=` fallback; add the v3 SeriesStatisticsResource/SeasonStatisticsResource wire types (+ seasonCount computed from seasons>0, percentOfEpisodes) and the v5-additive widening. After J369 SeriesResource is effectively complete (only seasons[].images / alternateTitles / isExcluded remain) → arc advances to EpisodeResource.
