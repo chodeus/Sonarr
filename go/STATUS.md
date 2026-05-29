@@ -20176,3 +20176,15 @@ C# ref: the blocklist `IHandle<DownloadFailedEvent>` reads `TrackedDownload.Remo
 - AUDIT (Tier-4 verification): queue DELETE side-effects are otherwise complete (J395/J396 — removeFromClient→RemoveItem, changeCategory→MarkItemAsImported, blocklist→DownloadFailedEvent+StopTracking; the "PARSED-AND-IGNORED/DEFERRED" handler doc-comment is STALE). ManualImport execute command (J386) is a real disk-move port (only post-import DownloadCompletedEvent publication + CF recalc deferred). Remaining deferred queue-remove arm: redownload-search consumer for !skipRedownload.
 
 R: n/a. W: manual queue-remove with blocklist=true now records the release Indexer + Size on the blocklist row. M: PROGRESS + this entry. Tests: published event Data carries indexer=RARBG + size=2500000000. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).
+
+---
+
+## J440 — Tier-6 fresh audit + stale-doc fix (Tier-1/2/3/4 drained)
+
+Full-repo gates green (build/vet/gofmt `.`/test ./...). Traced the three remaining leads from the handoff:
+
+- redownload `!skipRedownload` arm: VERIFIED DONE — `redownload.Service` is subscribed to DownloadFailedEvent (main.go "redownload.HandleDownloadFailed" → redownloadSvc.Handle), so manual queue-remove with skipRedownload=false re-searches. Fixed the stale "deferred" doc-comment in queue_remove_wiring.go.
+- NEW **G10** (MEDIUM, in-scope, ungated, SIZEABLE): `/indexer/test` + `/testall` are inert — the 10 indexer provider init() blocks register into `provider.Default()` (FamilyIndexer catalog) but NOT `indexers.Default()` (the `indexers.Registry` the Test path uses) → 400 "Unknown implementation". Notification/downloadclient providers DO register into their `*.Default()` Registry (e.g. notifications/webhook/webhook.go:270), so their Test works. FIX = per-provider indexers.Registry constructor adapter (provider.NewIndexer→indexers.Provider) + init() registration + Dependencies threading; multi-slice, start Newznab/Torznab.
+- NEW **Q3** (BLOCKED): ManualImport completion events (DownloadCompletedEvent tracked / UntrackedDownloadCompletedEvent untracked + folder cleanup). Evidence: DownloadCompletedEvent has NO producer anywhere in the Go tree (Phase-4 CompletedDownloadService unported); UntrackedDownloadCompletedEvent not defined as a Go type. Revisit when the Phase-4 completion publisher lands.
+
+R/W: no behavior change (doc-comment correction only). M: GAP_ANALYSIS "Fresh audit findings (J440)" section (G10 + Q3 + redownload note) + PROGRESS + this entry. NEXT major in-scope work = G10 indexer Test registry. Hard gates clean (full suite).

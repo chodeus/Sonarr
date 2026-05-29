@@ -111,9 +111,11 @@ func (a *queueRemoveAdapter) RemoveQueueItem(ctx context.Context, id int, opts a
 // consumer (when one is wired). No-op when no bus is available.
 //
 // J439 enriches the event Data with the release indexer/size from the
-// Subject's Release so the blocklist row carries them. Still deferred:
-// the redownload-search consumer for the !skipRedownload arm — a
-// follow-up that doesn't affect the core "don't re-grab this release".
+// Subject's Release so the blocklist row carries them. The
+// !skipRedownload arm is fully handled: the redownload.Service is
+// subscribed to DownloadFailedEvent (main.go "redownload.HandleDownloadFailed")
+// and re-searches when SkipRedownload is false + auto-redownload is
+// enabled (verified J440).
 func (a *queueRemoveAdapter) blocklist(ctx context.Context, td *trackeddownloads.TrackedDownload, skipRedownload bool) {
 	if a.bus == nil {
 		return

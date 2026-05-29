@@ -79,6 +79,18 @@ done, and some "done"-looking paths are actually stubbed).
 
 ---
 
+## Fresh audit findings (J440, after Tier-1/2/3/4 drained)
+
+Method: full-repo gates (build/vet/gofmt `.`/test ./... — all green) + targeted production-wiring traces vs C#. Tier-1 (G1-G9,T1,Q1) confirmed fixed; Tier-2 resource projections complete; Tier-3 v5 route long-tail = 0 missing (79 C# v5 endpoints all wired); Tier-4 write paths done except the items below.
+
+**G10 (NEW, MEDIUM) — indexer Test endpoint inert (dual-registry split).** `POST /api/v3+v5/indexer/test` + `/indexer/testall` go through `registryIndexerTester` → `indexers.Default()` (an `indexers.Registry`), but the 10 concrete indexer provider packages' `init()` blocks register ONLY into `provider.Default()` (the `FamilyIndexer` catalog used by settings hydration + the indexersearch path), NOT into `indexers.Default()`. So `indexers.Registry` is empty at runtime → every test returns 400 "Unknown implementation" (host_wiring.go:2489 comment is accurate, not stale). Contrast: notification/downloadclient providers DO register into their `*.Default()` Registry via `init()` (e.g. `notifications/webhook/webhook.go:270`), so their Test works. FIX (in-scope, ungated, but SIZEABLE): give each indexer provider an `indexers.Registry` constructor (adapting `provider.NewIndexer(client,caps)` → the `indexers.Provider` Test interface) + register it in `init()`, threading `indexers.Dependencies`. ~10 providers + the indexers.Provider interface conformance. Distinct subsystem from both the catalog and the search-adapter path (`dbIndexerSource.buildAdapter` returns `indexersearch.Indexer`, a different interface). Multi-slice; start with Newznab/Torznab (the common case).
+
+**Q3 (NEW, BLOCKED) — ManualImport completion events.** The ManualImport command (J386) imports files but defers publishing `DownloadCompletedEvent` (tracked) / `UntrackedDownloadCompletedEvent` (untracked) + the tracked-download output-folder cleanup + state transition (C# `ManualImportService.cs:572-626`). Evidence it's BLOCKED on unported substrate: `DownloadCompletedEvent` has NO producer anywhere in the Go tree (grep: zero `Publish(...DownloadCompletedEvent)` / `DownloadCompletedEvent{}` construction) — it's the Phase-4 `CompletedDownloadService` completion-publication path, not yet ported; and `UntrackedDownloadCompletedEvent` is not even defined as a Go type. Wiring it from manual import alone would be a partial/inconsistent first producer. Revisit when the Phase-4 download-completion publisher lands.
+
+**Note — redownload !skipRedownload arm is DONE** (not deferred): `redownload.Service` IS subscribed to `DownloadFailedEvent` (`main.go` "redownload.HandleDownloadFailed" → `redownloadSvc.Handle`), so manual queue-remove with `skipRedownload=false` triggers the re-search. The queue_remove_wiring.go "deferred" doc-comment was stale — fixed J440.
+
+---
+
 ## Cross-cutting note
 G1 (search→grab) and the auto-redownload arc share one root: the search layer returns
 decisions but doesn't grab. G4 (provider fields) + customformat/autotagging specs share
