@@ -19838,3 +19838,17 @@ This closes the originally-BLOCKED ClearLog admin command AND completes the whol
 Tests: nil-ctor rejected; dispatch (Purge called once); error propagation.
 
 R: n/a. W: ClearLog command WIRED. M: matrix #6 + PROGRESS + this entry. Hard gates clean (build, race tests commands + handlers + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J411 — diskspace #4 slice 1/2: disk.Provider.GetMounts() cross-platform mount enumeration
+
+Adds the mount-enumeration primitive the diskspace optional-paths feature needs (C# `IDiskProvider.GetMounts()`, consumed at `DiskSpaceService.cs:69`). NEW `internal/disk/mounts.go`: `DriveType` (Unknown/Fixed/Network/Other) + `MountInfo{RootDirectory, DriveType}` + `(*Provider).GetMounts()` + the pure, unit-tested helpers `parseProcMounts` / `unescapeProcMount` / `driveTypeForFsType`.
+
+Platform implementations (build-tagged): `mounts_linux.go` parses `/proc/mounts`; `mounts_darwin.go` (darwin||freebsd) uses `getfsstat(2)` via `golang.org/x/sys/unix` (already a dependency — no new dep); `mounts_windows.go` uses `GetLogicalDriveStrings` + `GetDriveType` via `golang.org/x/sys/windows`; `mounts_other.go` is a nil stub. All errors degrade to nil (an unreadable mount table contributes no optional disks rather than failing the API). Verified building on darwin + linux + windows (cross-compile).
+
+Tests: fstype classification (case-insensitive; ext4/apfs/ntfs→Fixed, nfs/cifs/smbfs→Network, tmpfs/proc/overlay/""→Other); `/proc/mounts` parse (cifs→Network, octal-escape `\040`→space decode, tmpfs→Other); unescape table (incomplete escape left as-is); host smoke (≥1 Fixed root mount, no empty RootDirectory).
+
+Next: J412 wires the optional-paths union into the diskspace lister (special-drive denylist regex + dedup vs root folders + per-mount space).
+
+R: mount enumeration primitive. W: n/a. M: PROGRESS + this entry. Hard gates clean (build darwin/linux/windows, race tests disk, vet, gofmt).
