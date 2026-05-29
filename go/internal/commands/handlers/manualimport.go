@@ -26,12 +26,17 @@
 // affects malformed/partial requests, where keeping the augmented
 // value is strictly safer than zeroing it.
 //
-// Deferred vs C#: the post-import UntrackedDownloadCompletedEvent /
-// DownloadCompletedEvent publication + tracked-download output-folder
-// cleanup (C# `:572-626`) are not wired — the Go port's event bus
-// arms for these consumers aren't ported. The custom-format
-// recalculation (C# `:545`) is also deferred; the augmented values
-// stand.
+// Completion events (J450): after the per-file loop, the handler
+// publishes the same completion events C# does (`ManualImportService.cs:572-626`)
+// when a [ManualImportCompletionPublisher] is wired —
+// [trackeddownloads.UntrackedDownloadCompletedEvent] per series/season
+// group of imported untracked files, and [trackeddownloads.DownloadCompletedEvent]
+// per tracked download whose every episode imported (state → Imported).
+// Unwired the publication is skipped (prior behavior). The tracked-
+// download output-folder cleanup (C# `:606-615`) is a follow-up (J451 —
+// needs the ShouldDeleteFolder + DeleteFolder substrate wired in). The
+// custom-format recalculation (C# `:545`) is also deferred; the
+// augmented values stand.
 
 package handlers
 
@@ -44,6 +49,7 @@ import (
 	"strings"
 
 	"sonarr.tv/sonarr/internal/downloadclients"
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/language"
@@ -95,26 +101,40 @@ type ManualImportTrackedDownloadFinder interface {
 	Find(downloadID string) *trackeddownloads.TrackedDownload
 }
 
+// ManualImportCompletionPublisher publishes the post-import completion
+// events (J450). A boot-time adapter over *messaging.Bus satisfies it;
+// tests fake it to capture the events. Optional — when nil the handler
+// imports files but publishes nothing (prior behavior). Mirrors the
+// optional-publisher pattern of downloadprocessing (J449/J400).
+type ManualImportCompletionPublisher interface {
+	PublishDownloadCompleted(ctx context.Context, ev trackeddownloads.DownloadCompletedEvent) error
+	PublishUntrackedDownloadCompleted(ctx context.Context, ev trackeddownloads.UntrackedDownloadCompletedEvent) error
+}
+
 // ManualImport is the IExecute<ManualImportCommand> port. Holds four
-// required collaborators + one optional tracked-download finder.
+// required collaborators + one optional tracked-download finder +
+// one optional completion-event publisher.
 type ManualImport struct {
 	seriesGetter  ManualImportSeriesGetter
 	episodeGetter ManualImportEpisodeGetter
 	aggregator    ManualImportAggregator
 	importer      ManualImportImporter
 	finder        ManualImportTrackedDownloadFinder
+	publisher     ManualImportCompletionPublisher
 	log           *slog.Logger
 }
 
 // NewManualImport builds the handler. seriesGetter / episodeGetter /
-// aggregator / importer MUST be non-nil. finder is optional; nil
-// disables the tracked-download arm. log defaults to [slog.Default].
+// aggregator / importer MUST be non-nil. finder + publisher are optional;
+// nil finder disables the tracked-download arm, nil publisher disables
+// completion-event publication. log defaults to [slog.Default].
 func NewManualImport(
 	seriesGetter ManualImportSeriesGetter,
 	episodeGetter ManualImportEpisodeGetter,
 	aggregator ManualImportAggregator,
 	importer ManualImportImporter,
 	finder ManualImportTrackedDownloadFinder,
+	publisher ManualImportCompletionPublisher,
 	log *slog.Logger,
 ) (*ManualImport, error) {
 	switch {
@@ -136,6 +156,7 @@ func NewManualImport(
 		aggregator:    aggregator,
 		importer:      importer,
 		finder:        finder,
+		publisher:     publisher,
 		log:           log,
 	}, nil
 }
@@ -184,27 +205,58 @@ func (h *ManualImport) Execute(ctx context.Context, body string) error {
 	h.log.LogAttrs(ctx, slog.LevelInfo, "manualimport: importing files",
 		slog.Int("count", len(cmd.Files)), slog.String("mode", mode.String()))
 
+	// Collect results for the post-loop completion-event publication,
+	// mirroring C# `imported` / `importedUntrackedDownload` /
+	// `importedTrackedDownload` (`ManualImportService.cs:497,553-568`).
+	var imported []*episodeimport.ImportResult  // C# `imported` (all, in order)
+	var untracked []*episodeimport.ImportResult // C# importedUntrackedDownload
+	var tracked []trackedManualImport           // C# importedTrackedDownload
+
 	for i := range cmd.Files {
-		if err := h.importOne(ctx, &cmd.Files[i], mode); err != nil {
+		results, td, err := h.importOne(ctx, &cmd.Files[i], mode)
+		if err != nil {
 			return fmt.Errorf("handlers: ManualImport: file %q: %w", cmd.Files[i].Path, err)
 		}
+		if td == nil {
+			// Untracked path: C# AddRange's every result (`:557-558`).
+			imported = append(imported, results...)
+			untracked = append(untracked, results...)
+			continue
+		}
+		// Tracked path: C# takes .First() of the import result (`:561-567`).
+		if len(results) > 0 {
+			imported = append(imported, results[0])
+			tracked = append(tracked, trackedManualImport{td: td, result: results[0]})
+		}
 	}
+
+	h.publishCompletions(ctx, imported, untracked, tracked)
 	return nil
 }
 
+// trackedManualImport pairs a tracked download with the (first) import
+// result of one of its files. Mirrors C# `ManuallyImportedFile`
+// (`ManualImportService.cs:633-637`).
+type trackedManualImport struct {
+	td     *trackeddownloads.TrackedDownload
+	result *episodeimport.ImportResult
+}
+
 // importOne builds + dispatches the import for a single file. Mirrors
-// the C# loop body at `:493-569`.
-func (h *ManualImport) importOne(ctx context.Context, file *manualImportFile, mode episodeimport.ImportMode) error {
+// the C# loop body at `:493-569`. Returns the import results plus the
+// resolved tracked download (nil for the untracked path) so the caller
+// can publish the post-loop completion events.
+func (h *ManualImport) importOne(ctx context.Context, file *manualImportFile, mode episodeimport.ImportMode) ([]*episodeimport.ImportResult, *trackeddownloads.TrackedDownload, error) {
 	ser, err := h.seriesGetter.GetSeries(ctx, file.SeriesID)
 	if err != nil {
-		return fmt.Errorf("resolve series %d: %w", file.SeriesID, err)
+		return nil, nil, fmt.Errorf("resolve series %d: %w", file.SeriesID, err)
 	}
 	if ser == nil {
-		return fmt.Errorf("series %d not found", file.SeriesID)
+		return nil, nil, fmt.Errorf("series %d not found", file.SeriesID)
 	}
 	eps, err := h.episodeGetter.GetEpisodes(ctx, file.EpisodeIDs)
 	if err != nil {
-		return fmt.Errorf("resolve episodes %v: %w", file.EpisodeIDs, err)
+		return nil, nil, fmt.Errorf("resolve episodes %v: %w", file.EpisodeIDs, err)
 	}
 
 	existingFile := ospath.IsParent(ser.Path, file.Path)
@@ -279,15 +331,212 @@ func (h *ManualImport) importOne(ctx context.Context, file *manualImportFile, mo
 	// Untracked vs tracked dispatch (C# `:551-569`). Untracked:
 	// newDownload = !existingFile, nil item. Tracked: newDownload =
 	// true, the tracked download's item.
+	var results []*episodeimport.ImportResult
 	if td == nil {
-		_, err = h.importer.Import(ctx, []*episodeimport.ImportDecision{decision}, !existingFile, nil, mode)
+		results, err = h.importer.Import(ctx, []*episodeimport.ImportDecision{decision}, !existingFile, nil, mode)
 	} else {
-		_, err = h.importer.Import(ctx, []*episodeimport.ImportDecision{decision}, true, td.DownloadItem, mode)
+		results, err = h.importer.Import(ctx, []*episodeimport.ImportDecision{decision}, true, td.DownloadItem, mode)
 	}
 	if err != nil {
-		return fmt.Errorf("import: %w", err)
+		return nil, nil, fmt.Errorf("import: %w", err)
+	}
+	return results, td, nil
+}
+
+// publishCompletions fires the post-import completion events when a
+// publisher is wired. Ports the tail of C# `ManualImportService.Execute`
+// (`:576-625`): UntrackedDownloadCompletedEvent per untracked
+// series/season group, then DownloadCompletedEvent per tracked download
+// whose every episode imported. nil publisher → no-op.
+func (h *ManualImport) publishCompletions(ctx context.Context, imported, untracked []*episodeimport.ImportResult, tracked []trackedManualImport) {
+	if h.publisher == nil {
+		return
+	}
+	h.publishUntracked(ctx, untracked)
+	h.publishTracked(ctx, imported, tracked)
+}
+
+// publishUntracked groups the imported untracked results by their
+// EpisodeFile's {SeriesId, SeasonNumber} (first-seen order) and
+// publishes an UntrackedDownloadCompletedEvent per group. Ports C#
+// `:578-595`.
+func (h *ManualImport) publishUntracked(ctx context.Context, untracked []*episodeimport.ImportResult) {
+	type groupKey struct {
+		seriesID int
+		season   int
+	}
+	var order []groupKey
+	groups := map[groupKey][]*episodeimport.ImportResult{}
+	for _, r := range untracked {
+		if r == nil || r.ResultType() != episodeimport.ImportResultImported || r.EpisodeFile == nil {
+			continue
+		}
+		k := groupKey{seriesID: r.EpisodeFile.SeriesID, season: r.EpisodeFile.SeasonNumber}
+		if _, ok := groups[k]; !ok {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], r)
+	}
+	for _, k := range order {
+		g := groups[k]
+		var (
+			files []episodefiles.File
+			paths []string
+			eps   []episodes.Episode
+			le0   *episodeimport.LocalEpisode
+		)
+		for _, r := range g {
+			le := r.Decision.LocalEpisode
+			if le0 == nil {
+				le0 = le
+			}
+			files = append(files, *r.EpisodeFile)
+			paths = append(paths, le.Path)
+			eps = append(eps, le.Episodes...)
+		}
+		// ParsedEpisodeInfo: folder parse, fallback file parse (C# `:589`).
+		parsed := le0.FolderEpisodeInfo
+		if parsed == nil {
+			parsed = le0.FileEpisodeInfo
+		}
+		ev := trackeddownloads.UntrackedDownloadCompletedEvent{
+			Series:            le0.Series,
+			Episodes:          eps,
+			EpisodeFiles:      files,
+			ParsedEpisodeInfo: parsed,
+			SourcePath:        longestCommonPath(paths),
+		}
+		if err := h.publisher.PublishUntrackedDownloadCompleted(ctx, ev); err != nil {
+			h.log.LogAttrs(ctx, slog.LevelWarn, "manualimport: publish UntrackedDownloadCompletedEvent failed",
+				slog.Int("seriesId", k.seriesID), slog.Int("season", k.season), slog.String("err", err.Error()))
+		}
+	}
+}
+
+// publishTracked groups the tracked import results by download id and,
+// per group whose every episode imported, marks the tracked download
+// Imported + publishes a DownloadCompletedEvent. Ports C# `:597-625`.
+//
+// importedSeries mirrors the C# quirk `imported.First().LocalEpisode.Series`
+// (`:600`): the first imported file of the WHOLE batch supplies the
+// event's series id (manual imports are virtually always single-series).
+func (h *ManualImport) publishTracked(ctx context.Context, imported []*episodeimport.ImportResult, tracked []trackedManualImport) {
+	if len(tracked) == 0 {
+		return
+	}
+	importedSeries := firstLocalEpisodeSeries(imported)
+	if importedSeries == nil {
+		return
+	}
+
+	var order []string
+	groups := map[string][]trackedManualImport{}
+	for _, t := range tracked {
+		if t.td == nil || t.td.DownloadItem == nil {
+			continue
+		}
+		id := t.td.DownloadItem.DownloadID
+		if _, ok := groups[id]; !ok {
+			order = append(order, id)
+		}
+		groups[id] = append(groups[id], t)
+	}
+
+	for _, id := range order {
+		g := groups[id]
+		td := g[0].td
+
+		var importedResults []*episodeimport.ImportResult
+		for _, t := range g {
+			if t.result != nil && t.result.ResultType() == episodeimport.ImportResultImported {
+				importedResults = append(importedResults, t.result)
+			}
+		}
+
+		// all-episodes-imported gate (C# `:619-621`): count imported
+		// episodes (multiset) >= max(1, RemoteEpisode.Episodes.Count).
+		count := 0
+		for _, r := range importedResults {
+			if r.Decision != nil && r.Decision.LocalEpisode != nil {
+				count += len(r.Decision.LocalEpisode.Episodes)
+			}
+		}
+		expected := 1
+		if td.RemoteEpisode != nil {
+			if n := len(td.RemoteEpisode.Episodes); n > expected {
+				expected = n
+			}
+		}
+		if count < expected {
+			continue
+		}
+
+		var files []episodefiles.File
+		for _, r := range importedResults {
+			if r.EpisodeFile != nil {
+				files = append(files, *r.EpisodeFile)
+			}
+		}
+		// Release from the first imported result's LocalEpisode (C# `:624`).
+		var release *episodeimport.GrabbedReleaseInfo
+		if len(importedResults) > 0 && importedResults[0].Decision != nil && importedResults[0].Decision.LocalEpisode != nil {
+			release = importedResults[0].Decision.LocalEpisode.Release
+		}
+		td.State = trackeddownloads.StateImported
+		ev := trackeddownloads.DownloadCompletedEvent{
+			TrackedDownload: td,
+			SeriesID:        importedSeries.ID,
+			EpisodeFiles:    files,
+			Release:         release,
+		}
+		if err := h.publisher.PublishDownloadCompleted(ctx, ev); err != nil {
+			h.log.LogAttrs(ctx, slog.LevelWarn, "manualimport: publish DownloadCompletedEvent failed",
+				slog.String("downloadId", id), slog.String("err", err.Error()))
+		}
+	}
+}
+
+// firstLocalEpisodeSeries returns the Series of the first result that
+// carries a LocalEpisode. Mirrors C# `imported.First().LocalEpisode.Series`
+// (`:600`) with a nil-guard instead of the C# throw on an empty list.
+func firstLocalEpisodeSeries(results []*episodeimport.ImportResult) *series.Series {
+	for _, r := range results {
+		if r != nil && r.Decision != nil && r.Decision.LocalEpisode != nil {
+			return r.Decision.LocalEpisode.Series
+		}
 	}
 	return nil
+}
+
+// longestCommonPath ports C# `PathExtensions.GetLongestCommonPath`
+// (`PathExtensions.cs:271-296`): the longest common character prefix of
+// the inputs, truncated at the last path separator (`/` or `\`).
+// Byte-indexed (the inputs are filesystem paths). Empty input, or a
+// common prefix with no separator, → "" (the C# `Substring(0, -1)` would
+// throw; the Go-port returns "" — there's no common directory).
+func longestCommonPath(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	first := paths[0]
+	length := len(first)
+	for _, p := range paths[1:] {
+		if len(p) < length {
+			length = len(p)
+		}
+		for i := 0; i < length; i++ {
+			if p[i] != first[i] {
+				length = i
+				break
+			}
+		}
+	}
+	sub := first[:length]
+	idx := strings.LastIndexAny(sub, `/\`)
+	if idx < 0 {
+		return ""
+	}
+	return sub[:idx]
 }
 
 // parseManualImportBody parses the JSON body. Empty / `{}` bodies

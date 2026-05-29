@@ -280,6 +280,9 @@ type ManualImportDeps struct {
 	Aggregator    ManualImportAggregator
 	Importer      ManualImportImporter
 	Finder        ManualImportTrackedDownloadFinder
+	// Publisher is optional (J450): when wired the handler publishes
+	// the post-import completion events; nil disables publication.
+	Publisher ManualImportCompletionPublisher
 }
 
 // DownloadedEpisodesScanDeps bundles the four sub-deps the
@@ -455,6 +458,7 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 			deps.ManualImport.Aggregator,
 			deps.ManualImport.Importer,
 			deps.ManualImport.Finder,
+			deps.ManualImport.Publisher,
 			deps.Log,
 		)
 		if err != nil {

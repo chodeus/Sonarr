@@ -3412,6 +3412,11 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 			Aggregator:    aggregationSvc,
 			Importer:      importApprovedSvc,
 			Finder:        trackedDownloadsSvc,
+			// J450: publish post-import completion events
+			// (Download/UntrackedDownloadCompletedEvent) so a manual
+			// import drives the same history + notification consumers a
+			// download-client completion does.
+			Publisher: manualImportCompletionPublisher{bus: bus},
 		},
 		// J391 (punch-list #6): DeleteSeriesFiles command → the shared
 		// recycle-bin delete adapter.

@@ -5,8 +5,11 @@ import (
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/language"
+	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 // DownloadFailedEvent ports the C# `DownloadFailedEvent : IEvent` at
@@ -204,6 +207,46 @@ type DownloadCompletedEvent struct {
 	// Release — originating GrabbedReleaseInfo. Optional / nil when
 	// the producer couldn't recover the originating grab metadata.
 	Release *episodeimport.GrabbedReleaseInfo
+}
+
+// UntrackedDownloadCompletedEvent ports the C#
+// `UntrackedDownloadCompletedEvent : IEvent` at
+// `src/NzbDrone.Core/Download/UntrackedDownloadCompletedEvent.cs:9-25`.
+// Published by `ManualImportService.Execute` (`ManualImportService.cs:580-595`)
+// for files the user manually imported that had NO tracked download —
+// loose files the download clients don't know about — grouped by the
+// imported EpisodeFile's {SeriesId, SeasonNumber}. The tracked sibling
+// is [DownloadCompletedEvent]; this carries the same per-completion
+// context (matched series + episodes + freshly-written files + parsed
+// info + the longest-common source path) so notification / metadata
+// subscribers can react to a manual import the same way they react to a
+// download-client completion.
+//
+// Field-shape parity with the C# class (`:11-15`):
+//
+//   - Series: the matched series.
+//   - Episodes: the matched episodes across the group's files.
+//   - EpisodeFiles: the freshly-written EpisodeFile rows.
+//   - ParsedEpisodeInfo: the first file's FolderEpisodeInfo, falling
+//     back to its FileEpisodeInfo (C# `:589`).
+//   - SourcePath: the longest common path of the group's source files
+//     (C# `GetLongestCommonPath`).
+type UntrackedDownloadCompletedEvent struct {
+	// Series — the matched series for the group. Required.
+	Series *series.Series
+
+	// Episodes — the matched episodes across the group's files.
+	Episodes []episodes.Episode
+
+	// EpisodeFiles — freshly-imported file rows for the group.
+	EpisodeFiles []episodefiles.File
+
+	// ParsedEpisodeInfo — folder parse (fallback file parse) of the
+	// first file. Optional / nil when neither parse succeeded.
+	ParsedEpisodeInfo *parser.ParsedEpisodeInfo
+
+	// SourcePath — longest common source path of the group's files.
+	SourcePath string
 }
 
 // TrackedDownloadRefreshedEvent ports the C#

@@ -20299,3 +20299,17 @@ Ported the publication arm of C# `CompletedDownloadService.VerifyImport` (`Compl
 Tests (downloadprocessing): event published with td/seriesId/EpisodeFiles[7,8]; no-publisher still imports silently; partial import → no event + stays Downloading; publish-error → stays Imported (best-effort).
 
 R: service.go (CompletionPublisher iface, SetCompletionPublisher, publishCompleted, importOne call, episodefiles import). A: downloadprocessing_completion_wiring.go. M: main.go (SetCompletionPublisher wiring), service_test.go (4 tests + fakeCompletePub + helper), GAP_ANALYSIS.md (arc map), PROGRESS.md, STATUS.md. Hard gates green (build, vet, gofmt, test -race downloadprocessing+cmd/sonarr+contract).
+
+---
+
+## J450 — Q3: ManualImport completion events (Download + Untracked)
+
+**Slice (2+4): define UntrackedDownloadCompletedEvent + wire the ManualImport completion arm.** Built on J449's producer. NEW `trackeddownloads.UntrackedDownloadCompletedEvent` (ports C# `UntrackedDownloadCompletedEvent.cs:9-25`: Series, Episodes, EpisodeFiles, ParsedEpisodeInfo, SourcePath — added series/episodes/parser imports to events.go, no cycle since trackeddownloads already depends on them via decisionengine).
+
+Refactored `manualimport.go`: `importOne` now returns `([]*ImportResult, *TrackedDownload, error)`; `Execute` collects results into C#'s `imported`/`importedUntrackedDownload`/`importedTrackedDownload` shape, then `publishCompletions` (ports `ManualImportService.cs:576-625`): (a) untracked imported results grouped by EpisodeFile {SeriesId,SeasonNumber} → one `UntrackedDownloadCompletedEvent` each (series + episodes + files + folder/file parse + `longestCommonPath` source — NEW helper porting `PathExtensions.GetLongestCommonPath:271-296`); (b) tracked results grouped by downloadId → all-episodes-imported gate (`count >= max(1, RemoteEpisode.Episodes)`) → state→Imported + `DownloadCompletedEvent` (importedSeries = batch-first per the C# `imported.First()` quirk; Release from LocalEpisode.Release). NEW optional `ManualImportCompletionPublisher` dep (2-method); nil → publication skipped (prior behavior). NEW `cmd/sonarr/manualimport_completion_wiring.go` bus adapter, wired into ManualImportDeps in main.go.
+
+Output-folder cleanup (C# `:606-615`, needs ShouldDeleteFolder+DeleteFolder) deferred to J451.
+
+Tests: untracked→1 event (series/files/episodes/sourcePath=/downloads/Show); 2 same-series+season files→1 grouped event (2 files); tracked all-imported→DownloadCompletedEvent + state Imported; tracked partial (1<2 expected)→no event + state unchanged. Updated the 2 existing NewManualImport call sites (+nil publisher).
+
+R: manualimport.go (publisher iface, importOne sig, publishCompletions/publishUntracked/publishTracked/longestCommonPath/firstLocalEpisodeSeries, episodefiles import), handlers.go (Publisher dep + RegisterAll arg), main.go (Publisher wiring), trackeddownloads/events.go (UntrackedDownloadCompletedEvent + imports). A: manualimport_completion_wiring.go. M: manualimport_test.go (4 tests + fakes + import; 2 call-site fixes), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates green (build, vet, gofmt, test -race handlers+trackeddownloads+cmd/sonarr).
