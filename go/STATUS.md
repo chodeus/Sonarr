@@ -19706,3 +19706,17 @@ Deferred (documented): redownload-on-failure search consumer; rejection/partial-
 Tests: failed-matched publishes+marks; encrypted message; unmatched skip; unwired no-op; publish-error not-marked (J399 import tests still green).
 
 R: queue auto-fails failed downloads (blocklist + history side-effects fire). W: download-failure state machine WIRED. M: PROGRESS + matrix #5/#6 + this entry. Hard gates clean (build, race tests downloadprocessing + downloadmonitoring + commands + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J401 — Verticalization Arc: Phase-4 auto-redownload-on-failure (RedownloadFailedDownloadService)
+
+Closes the failure loop: J400 publishes `DownloadFailedEvent`, J401 re-searches for a replacement. NEW package `internal/redownload` ports `RedownloadFailedDownloadService` (`src/NzbDrone.Core/Download/RedownloadFailedDownloadService.cs`) as the `IHandle<DownloadFailedEvent>`.
+
+Decision parity with C#: SkipRedownload set → skip; `AutoRedownloadFailed` disabled → skip; `ReleaseSource==InteractiveSearch && !AutoRedownloadFailedFromInteractiveSearch` → skip; exactly one episode → episode search; failed-set == whole season → season search; otherwise (double-episode) → episode search of the set. Narrow consumer interfaces (`Config`/`EpisodeLookup`/`EpisodeSearcher`/`SeasonSearcher`) — the same search-dispatch indirection `episoderefreshed` uses (J209/J210). `EpisodeSearcher` reuses the existing `episodeRefreshedSearcherAdapter` (loops ids → `indexersearch.Service.EpisodeSearch`); `SeasonSearcher` is a new `redownloadSeasonSearchAdapter` (→ `SeasonSearch(..., missingOnly=false)`). Subscribed in main.go AFTER the history + blocklist DownloadFailed handlers to mirror C# `[EventHandleOrder.Last]`.
+
+NOTE (pre-existing gap, NOT introduced here): the search→grab step (C# ProcessDecisions/DownloadReport) is unported project-wide — `indexersearch.Service.EpisodeSearch/SeasonSearch` return evaluated decisions, fire real indexer queries, and stamp LastSearchTime, but don't auto-grab the best decision. This handler is exactly as functional as every other search trigger (MissingEpisodeSearch, episoderefreshed) — faithful, not a no-op.
+
+Tests: skip/auto-disabled/interactive-disabled skip; interactive-enabled + single + whole-season + partial-double dispatch; empty-ids no-op; lookup-error propagates; nil-ctor.
+
+R: failed downloads auto-trigger a replacement search. W: auto-redownload-on-failure WIRED. M: PROGRESS + matrix #5/#6 + this entry. Hard gates clean (build, race tests redownload + downloadprocessing + cmd/sonarr + contract, vet, gofmt).

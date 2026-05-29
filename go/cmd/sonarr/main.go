@@ -109,6 +109,7 @@ import (
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/recyclebin"
+	"sonarr.tv/sonarr/internal/redownload"
 	"sonarr.tv/sonarr/internal/refreshepisodes"
 	"sonarr.tv/sonarr/internal/refreshseries"
 	"sonarr.tv/sonarr/internal/releasecache"
@@ -3014,6 +3015,29 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	// the queue-delete blocklist arm). No publisher → arm no-ops.
 	downloadProcessingSvc.SetFailurePublisher(downloadFailedPublisher{bus: bus})
 	downloadMonitoringSvc.SetProcessor(downloadProcessingSvc)
+
+	// J401: auto-redownload-on-failure handler (ports
+	// RedownloadFailedDownloadService). Subscribes to the same
+	// DownloadFailedEvent the failure arm + queue-delete blocklist arm
+	// publish and, when AutoRedownloadFailed is enabled and the user
+	// didn't opt out (SkipRedownload), re-searches for a replacement —
+	// per-episode for a single/double, season-search when the whole
+	// season failed. Subscribed AFTER the history + blocklist
+	// DownloadFailed handlers to mirror C# [EventHandleOrder.Last].
+	redownloadSvc, err := redownload.NewService(
+		configProv,
+		episodesSvc,
+		episodeRefreshedSearcherAdapter{svc: indexerSearchSvc, log: logger},
+		redownloadSeasonSearchAdapter{svc: indexerSearchSvc, log: logger},
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("redownload service: %w", err)
+	}
+	messaging.Subscribe(bus, "redownload.HandleDownloadFailed",
+		func(ctx context.Context, ev trackeddownloads.DownloadFailedEvent) error {
+			return redownloadSvc.Handle(ctx, ev)
+		})
 
 	// Slice 5.J39 (audit B.3 close-out): adapter around
 	// indexerSearchSvc.EpisodeSearch that returns the decision count
