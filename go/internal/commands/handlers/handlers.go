@@ -213,6 +213,13 @@ type Deps struct {
 	// episodeimport/series/episodes services via structural typing.
 	ManualImport ManualImportDeps
 
+	// DeleteSeriesFiles wires the IExecute<DeleteSeriesFilesCommand>
+	// handler (slice 5.J391, punch-list #6). Optional — nil skips
+	// registration entirely (no useful stub for "recycle every file";
+	// a stub would silently no-op a destructive user action). Production
+	// binds the cmd/sonarr episodeFileDeleteAdapter (recycle + DB delete).
+	DeleteSeriesFiles SeriesFilesDeleter
+
 	Log *slog.Logger
 }
 
@@ -403,6 +410,20 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 			Handler:            manualImport,
 			RequiresDiskAccess: true,
 			IsLongRunning:      true,
+		})
+	}
+
+	// DeleteSeriesFiles registers only when the deleter is wired — no
+	// useful stub for a destructive recycle. RequiresDiskAccess mirrors
+	// the C# DeleteSeriesFilesCommand flag.
+	if deps.DeleteSeriesFiles != nil {
+		deleteSeriesFiles, err := NewDeleteSeriesFiles(deps.DeleteSeriesFiles, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(DeleteSeriesFilesName, commands.CommandSpec{
+			Handler:            deleteSeriesFiles,
+			RequiresDiskAccess: true,
 		})
 	}
 

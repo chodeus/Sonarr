@@ -19588,3 +19588,15 @@ NEW `cmd/sonarr/episodefile_delete_wiring.go`: `episodeFileDeleteAdapter` embeds
 Tests: api/v3 fake-deleter (disk path used, not DB-only; 409 single+bulk); cmd/sonarr real-SQLite adapter round-trip (recycle recorded + row gone; root missing/empty → sentinel + row survives; file-absent still deletes row).
 
 R: delete read unchanged. W: recycle-bin/disk delete WIRED. M: handler docs + adapter + matrix rows #3/#4 + this entry. EpisodeFile write (#3+#4) DONE. Hard gates clean (build, race tests api v3 + v5 episodefile + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J391 — Verticalization Arc: punch-list #5 blocked (flagged) + #6 DeleteSeriesFiles command
+
+**#5 (Queue delete side-effects) — BLOCKED on Phase 4, flagged not faked.** Verified by tracing call paths: no live download-client-by-id registry (`_downloadClientProvider.Get(id)` → RemoveItem/MarkItemAsImported is unported), `blocklist.Service` has only `Add(entry)` not `Block(remoteEpisode)`, `faileddownloads.MarkAsFailed` takes `(historyID)` not `(td, skipRedownload)`, tracked-download cache empty in prod. ProcessMonitoredDownloads shares the block (`DownloadProcessingService` unported). Matrix row #5 → BLOCKED with evidence; memory `phase4_blocks_punchlist` saved.
+
+**#6 DeleteSeriesFiles — DONE.** Ports `MediaFileDeletionService.Execute(DeleteSeriesFilesCommand)`. Refactored the J390 `episodeFileDeleteAdapter`: extracted `validateRootFolder` + `recycleFile`, shared by `DeleteEpisodeFileWithDisk` and the new `DeleteSeriesFiles(ctx, seriesIDs)` (per series: resolve → GetFilesBySeries → root-validate (skip series on bad root) → recycle + DB-delete each file, log-and-continue per-file). NEW `internal/commands/handlers/deleteseriesfiles.go` (thin handler, `SeriesFilesDeleter` narrow interface, `{seriesIds}` body, empty→no-op); registered (non-nil-guarded, RequiresDiskAccess); wired from the shared `episodeFileDeleter` (moved its construction above RegisterAll). The command name resolves via the registry-backed CanonicalName like ManualImport.
+
+Tests: handler (dispatch ids / empty no-op / malformed / nil ctor) + real-SQLite adapter round-trips (2 files recycled + rows deleted; root-invalid skips series + rows survive).
+
+R: n/a (command). W: DeleteSeriesFiles WIRED. M: matrix rows #5 (blocked) + #6 (partial) + this entry + memory. Hard gates clean (build, race tests internal/commands + cmd/sonarr + contract, vet, gofmt).

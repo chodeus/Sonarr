@@ -66,10 +66,60 @@ func (a *episodeFileDeleteAdapter) DeleteEpisodeFileWithDisk(ctx context.Context
 	if err != nil || ser == nil {
 		return fmt.Errorf("episodefile delete: resolve series %d: %w", f.SeriesID, err)
 	}
+	if err := a.validateRootFolder(ctx, ser); err != nil {
+		return err
+	}
+	if err := a.recycleFile(ser, f); err != nil {
+		return err
+	}
+	// Delete the DB row even if the file was already gone (C# `:60`).
+	return a.Service.Delete(ctx, f, reason)
+}
 
-	fullPath := filepath.Join(ser.Path, f.RelativePath)
+// DeleteSeriesFiles ports C# `MediaFileDeletionService.Execute(DeleteSeriesFilesCommand)`
+// (`MediaFileDeletionService.cs:62-130`): for each series, validate the
+// root folder + series folder, then recycle + DB-delete every episode
+// file. A bad/empty root folder (or a missing series folder) skips that
+// series (C# `CommandResult.Indeterminate` + continue); a per-file
+// recycle error is logged and the loop continues.
+func (a *episodeFileDeleteAdapter) DeleteSeriesFiles(ctx context.Context, seriesIDs []int) error {
+	for _, seriesID := range seriesIDs {
+		ser, err := a.series.GetSeries(ctx, seriesID)
+		if err != nil || ser == nil {
+			a.log.Warn("delete series files: resolve series failed", "seriesId", seriesID, "err", err)
+			continue
+		}
+		files, err := a.GetFilesBySeries(ctx, seriesID)
+		if err != nil {
+			a.log.Warn("delete series files: list files failed", "seriesId", seriesID, "err", err)
+			continue
+		}
+		if len(files) == 0 {
+			continue
+		}
+		if err := a.validateRootFolder(ctx, ser); err != nil {
+			continue // root missing/empty → skip series (C# Indeterminate)
+		}
+		if !a.disk.FolderExists(ser.Path) {
+			a.log.Warn("delete series files: series folder does not exist", "path", ser.Path)
+			continue
+		}
+		for i := range files {
+			if err := a.recycleFile(ser, &files[i]); err != nil {
+				a.log.Error("delete series files: recycle failed", "seriesId", seriesID, "err", err)
+				continue
+			}
+			if err := a.Service.Delete(ctx, &files[i], episodefiles.ReasonManual); err != nil {
+				a.log.Error("delete series files: db delete failed", "fileId", files[i].ID, "err", err)
+			}
+		}
+	}
+	return nil
+}
 
-	// Validate the root folder (C# `:35-46`): missing or empty → 409.
+// validateRootFolder mirrors the C# root-folder guards (`:35-46` /
+// `:73-94`): the best-matching root folder must exist and be non-empty.
+func (a *episodeFileDeleteAdapter) validateRootFolder(ctx context.Context, ser *series.Series) error {
 	rootFolder, err := a.rootFolders.GetBestRootFolderPath(ctx, ser.Path)
 	if err != nil {
 		return fmt.Errorf("episodefile delete: best root folder: %w", err)
@@ -82,24 +132,28 @@ func (a *episodeFileDeleteAdapter) DeleteEpisodeFileWithDisk(ctx context.Context
 		a.log.Warn("episodefile delete: series root folder is empty", "rootFolder", rootFolder, "err", err)
 		return apiv3.ErrEpisodeFileRootFolderInvalid
 	}
+	return nil
+}
 
-	// Recycle/delete the physical file when present (C# `:48-58`).
-	if a.disk.FolderExists(ser.Path) && a.disk.FileExists(fullPath) {
-		// subfolder = parent(series.Path) relative to parent(fullPath) —
-		// preserves the series/season structure inside the recycle bin
-		// (C# `_diskProvider.GetParentFolder(...).GetRelativePath(...)`).
-		subfolder, relErr := ospath.Relative(filepath.Dir(ser.Path), filepath.Dir(fullPath))
-		if relErr != nil {
-			subfolder = ""
-		}
-		a.log.Info("episodefile delete: recycling file", "path", fullPath)
-		if _, err := a.recycleBin.DeleteFile(fullPath, subfolder); err != nil {
-			return fmt.Errorf("episodefile delete: recycle %q: %w", fullPath, err)
-		}
+// recycleFile moves one file to the recycle bin when it's present under
+// the series folder (C# `:48-58`). No-op when the file isn't on disk.
+func (a *episodeFileDeleteAdapter) recycleFile(ser *series.Series, f *episodefiles.File) error {
+	fullPath := filepath.Join(ser.Path, f.RelativePath)
+	if !(a.disk.FolderExists(ser.Path) && a.disk.FileExists(fullPath)) {
+		return nil
 	}
-
-	// Delete the DB row even if the file was already gone (C# `:60`).
-	return a.Service.Delete(ctx, f, reason)
+	// subfolder = parent(series.Path) relative to parent(fullPath) —
+	// preserves the series/season structure inside the recycle bin
+	// (C# `_diskProvider.GetParentFolder(...).GetRelativePath(...)`).
+	subfolder, relErr := ospath.Relative(filepath.Dir(ser.Path), filepath.Dir(fullPath))
+	if relErr != nil {
+		subfolder = ""
+	}
+	a.log.Info("episodefile delete: recycling file", "path", fullPath)
+	if _, err := a.recycleBin.DeleteFile(fullPath, subfolder); err != nil {
+		return fmt.Errorf("episodefile delete: recycle %q: %w", fullPath, err)
+	}
+	return nil
 }
 
 // Compile-time guards.

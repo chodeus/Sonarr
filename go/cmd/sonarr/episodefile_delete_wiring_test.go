@@ -165,3 +165,72 @@ func TestEpisodeFileDeleteAdapter_FileAbsentStillDeletesRow_J390(t *testing.T) {
 		t.Error("DB row should be deleted even when file absent")
 	}
 }
+
+// J391: DeleteSeriesFiles recycles + DB-deletes every episode file of
+// each requested series. Uses a real SQLite episodefiles.Service seeded
+// with two on-disk files + fakes for series/root/recycle/disk.
+func TestEpisodeFileDeleteAdapter_DeleteSeriesFiles_J391(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	repo, err := episodefiles.NewRepo(db)
+	if err != nil {
+		t.Fatalf("NewRepo: %v", err)
+	}
+	svc, err := episodefiles.NewService(repo, messaging.New(slog.Default()))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	f1, _ := svc.Add(t.Context(), &episodefiles.File{SeriesID: 9, SeasonNumber: 1, RelativePath: "S01E01.mkv"})
+	f2, _ := svc.Add(t.Context(), &episodefiles.File{SeriesID: 9, SeasonNumber: 1, RelativePath: "S01E02.mkv"})
+
+	full1, full2 := "/tv/Show/S01E01.mkv", "/tv/Show/S01E02.mkv"
+	recycle := &fakeEFRecycle{}
+	a := &episodeFileDeleteAdapter{
+		Service:     svc,
+		series:      fakeEFSeries{ser: &series.Series{ID: 9, Path: "/tv/Show"}},
+		rootFolders: fakeEFRoot{path: "/tv"},
+		recycleBin:  recycle,
+		disk: fakeEFDisk{
+			folders: map[string]bool{"/tv": true, "/tv/Show": true},
+			files:   map[string]bool{full1: true, full2: true},
+			dirs:    map[string][]string{"/tv": {"/tv/Show"}},
+		},
+		log: slog.Default(),
+	}
+	if err := a.DeleteSeriesFiles(t.Context(), []int{9}); err != nil {
+		t.Fatalf("DeleteSeriesFiles: %v", err)
+	}
+	if len(recycle.moved) != 2 {
+		t.Errorf("recycled = %v, want both files", recycle.moved)
+	}
+	for _, f := range []*episodefiles.File{f1, f2} {
+		if _, err := svc.GetFile(t.Context(), f.ID); err == nil {
+			t.Errorf("file %d row should be deleted", f.ID)
+		}
+	}
+}
+
+// J391: a series with a missing root folder is skipped entirely — no
+// recycle, rows survive (C# CommandResult.Indeterminate + continue).
+func TestEpisodeFileDeleteAdapter_DeleteSeriesFiles_RootInvalidSkips_J391(t *testing.T) {
+	t.Parallel()
+	svc, row := realEpisodeFilesSvc(t) // seeds SeriesID 1
+	recycle := &fakeEFRecycle{}
+	a := &episodeFileDeleteAdapter{
+		Service:     svc,
+		series:      fakeEFSeries{ser: &series.Series{ID: 1, Path: "/tv/Show"}},
+		rootFolders: fakeEFRoot{path: "/tv"},
+		recycleBin:  recycle,
+		disk:        fakeEFDisk{folders: map[string]bool{}}, // root missing
+		log:         slog.Default(),
+	}
+	if err := a.DeleteSeriesFiles(t.Context(), []int{1}); err != nil {
+		t.Fatalf("DeleteSeriesFiles: %v", err)
+	}
+	if len(recycle.moved) != 0 {
+		t.Errorf("no recycle expected when root invalid; got %v", recycle.moved)
+	}
+	if _, err := svc.GetFile(t.Context(), row.ID); err != nil {
+		t.Error("row should survive when series root invalid")
+	}
+}

@@ -3173,6 +3173,20 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	messaging.Subscribe(bus, "seriesadd.HandleSeriesScanSkipped",
 		seriesAddSvc.HandleSeriesScanSkipped)
 
+	// J390/J391: the EpisodeFile delete adapter — recycle-bin + disk
+	// delete before the DB row removal (ports MediaFileDeletionService).
+	// Embeds episodeFilesSvc so it still satisfies apiv3.EpisodeFileWriter;
+	// the API delete handlers discover the disk arm via type-assertion,
+	// and the DeleteSeriesFiles command handler calls DeleteSeriesFiles.
+	episodeFileDeleter := &episodeFileDeleteAdapter{
+		Service:     episodeFilesSvc,
+		series:      seriesSvc,
+		rootFolders: rootFoldersSvc,
+		recycleBin:  recycleBinSvc,
+		disk:        diskProv,
+		log:         logger,
+	}
+
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:               cmdSvc,
 		Housekeeping:           houseSvc,
@@ -3262,7 +3276,10 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			Importer:      importApprovedSvc,
 			Finder:        trackedDownloadsSvc,
 		},
-		Log: logger,
+		// J391 (punch-list #6): DeleteSeriesFiles command → the shared
+		// recycle-bin delete adapter.
+		DeleteSeriesFiles: episodeFileDeleter,
+		Log:               logger,
 	}); err != nil {
 		return fmt.Errorf("commands handlers: %w", err)
 	}
@@ -3408,18 +3425,6 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		disk:         diskProv,
 		parsing:      parsingSvc,
 		log:          logger,
-	}
-	// J390: the EpisodeFile delete adapter — recycle-bin + disk delete
-	// before the DB row removal (ports MediaFileDeletionService). Embeds
-	// episodeFilesSvc so it still satisfies apiv3.EpisodeFileWriter; the
-	// delete handlers discover the disk arm via type-assertion.
-	episodeFileDeleter := &episodeFileDeleteAdapter{
-		Service:     episodeFilesSvc,
-		series:      seriesSvc,
-		rootFolders: rootFoldersSvc,
-		recycleBin:  recycleBinSvc,
-		disk:        diskProv,
-		log:         logger,
 	}
 	hostSrv, err := buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, mediaCoverSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, parsingSvc, manualImportDecisionRejector, episodeFileDeleter, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
 	if err != nil {
