@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/indexersearch"
 	"sonarr.tv/sonarr/internal/parser"
+	"sonarr.tv/sonarr/internal/scenemappings"
 )
 
 // ReleaseResource mirrors `src/Sonarr.Api.V3/Indexers/ReleaseResource.cs`
@@ -25,16 +27,15 @@ import (
 // (QualityWeight / LanguageWeight / ReleaseWeight) emit their C#
 // defaults (0) — the C# mapper leaves them unset (sorter-only).
 //
-// Still deferred: `SceneMapping` (→ AlternateTitleResource — the C#
-// `SceneMapping` type differs from the Go `scenemappings.Mapping`, so
-// the projection needs a dedicated mapping verified against the C#
-// `AlternateTitle.ToResource()` shape). The write-side echo fields
-// (SeriesId/EpisodeId/EpisodeIds/DownloadClientId/DownloadClient/
+// SceneMapping (→ AlternateTitleResource) is projected (J437) via
+// sceneMappingToAlternateTitle — the Go `scenemappings.Mapping` is a
+// field-for-field match of C# `SceneMapping`. The write-side echo
+// fields (SeriesId/EpisodeId/EpisodeIds/DownloadClientId/DownloadClient/
 // ShouldOverride/SubGroup) are not set by the decision mapper either
 // (null/omitted on the GET path), matching C#.
 //
 // Audit fix B.4 (initial wiring); J436 widened to the full decision
-// projection.
+// projection; J437 added SceneMapping.
 type ReleaseResource struct {
 	Guid                   string                `json:"guid"`
 	Quality                *QualityModelResource `json:"quality,omitempty"`
@@ -96,6 +97,7 @@ type ReleaseResource struct {
 	DownloadAllowed              bool                     `json:"downloadAllowed"`
 	CustomFormats                []CustomFormatResource   `json:"customFormats,omitempty"`
 	CustomFormatScore            int                      `json:"customFormatScore"`
+	SceneMapping                 *AlternateTitleResource  `json:"sceneMapping,omitempty"`
 }
 
 // ReleaseEpisodeResource mirrors C#
@@ -309,6 +311,7 @@ func toReleaseResource(d decisionengine.Decision) ReleaseResource {
 	r.EpisodeRequested = subj.EpisodeRequested
 	r.DownloadAllowed = subj.DownloadAllowed
 	r.CustomFormatScore = subj.CustomFormatScore
+	r.SceneMapping = sceneMappingToAlternateTitle(subj.SceneMapping)
 	if len(subj.CustomFormats) > 0 {
 		r.CustomFormats = make([]CustomFormatResource, 0, len(subj.CustomFormats))
 		for i := range subj.CustomFormats {
@@ -331,6 +334,29 @@ func toReleaseResource(d decisionengine.Decision) ReleaseResource {
 		r.Rejections = []string{}
 	}
 	return r
+}
+
+// sceneMappingToAlternateTitle ports C#
+// `AlternateTitleResourceMapper.ToResource(SceneMapping)`
+// (`src/Sonarr.Api.V3/Series/AlternateTitleResource.cs:17-40`). nil →
+// nil (the C# null guard). When the mapping has no Comment but does
+// carry a FilterRegex, the comment is set to "Limited matching" (the
+// C# fallback for a regex-restricted mapping).
+func sceneMappingToAlternateTitle(m *scenemappings.Mapping) *AlternateTitleResource {
+	if m == nil {
+		return nil
+	}
+	comment := m.Comment
+	if strings.TrimSpace(comment) == "" && strings.TrimSpace(m.FilterRegex) != "" {
+		comment = "Limited matching"
+	}
+	return &AlternateTitleResource{
+		Title:             m.Title,
+		SeasonNumber:      m.SeasonNumber,
+		SceneSeasonNumber: m.SceneSeasonNumber,
+		SceneOrigin:       m.SceneOrigin,
+		Comment:           comment,
+	}
 }
 
 // asReleaseInfo wraps the type assertion the per-subject mapper uses

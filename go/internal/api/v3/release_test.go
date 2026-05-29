@@ -16,6 +16,7 @@ import (
 	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
+	"sonarr.tv/sonarr/internal/scenemappings"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -321,5 +322,62 @@ func TestReleaseHandler_FullDecisionProjection_J436(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing default field %s in %s", want, body)
 		}
+	}
+}
+
+// TestSceneMappingToAlternateTitle_J437 pins the SceneMapping →
+// AlternateTitleResource projection incl. the "Limited matching"
+// comment fallback (C# AlternateTitleResource.cs:24-28).
+func TestSceneMappingToAlternateTitle_J437(t *testing.T) {
+	t.Parallel()
+	if sceneMappingToAlternateTitle(nil) != nil {
+		t.Fatal("nil mapping must project to nil")
+	}
+	season := 3
+	scene := 1
+	got := sceneMappingToAlternateTitle(&scenemappings.Mapping{
+		Title:             "Show (Scene)",
+		SeasonNumber:      &season,
+		SceneSeasonNumber: &scene,
+		SceneOrigin:       "tvdb",
+		Comment:           "hand-mapped",
+	})
+	if got == nil || got.Title != "Show (Scene)" || got.SceneOrigin != "tvdb" || got.Comment != "hand-mapped" {
+		t.Fatalf("projection mismatch: %+v", got)
+	}
+	if got.SeasonNumber == nil || *got.SeasonNumber != 3 || got.SceneSeasonNumber == nil || *got.SceneSeasonNumber != 1 {
+		t.Errorf("season fields: %+v", got)
+	}
+	// Blank comment + non-empty FilterRegex → "Limited matching".
+	lim := sceneMappingToAlternateTitle(&scenemappings.Mapping{Title: "T", Comment: "  ", FilterRegex: "S0[12]"})
+	if lim.Comment != "Limited matching" {
+		t.Errorf("FilterRegex fallback comment = %q, want 'Limited matching'", lim.Comment)
+	}
+	// Blank comment + blank FilterRegex → stays blank.
+	blank := sceneMappingToAlternateTitle(&scenemappings.Mapping{Title: "T"})
+	if blank.Comment != "" {
+		t.Errorf("comment should stay blank, got %q", blank.Comment)
+	}
+}
+
+// TestReleaseHandler_SceneMappingProjected_J437 verifies the field
+// flows through the full release projection.
+func TestReleaseHandler_SceneMappingProjected_J437(t *testing.T) {
+	t.Parallel()
+	season := 2
+	searcher := &fakeReleaseSearcher{
+		decisions: []decisionengine.Decision{
+			decisionengine.NewDecision(&decisionengine.Subject{
+				Release:           &parser.ReleaseInfo{Title: "X", Guid: "g", Indexer: "I"},
+				ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{Quality: quality.Model{Quality: quality.HDTV720p, Revision: quality.NewRevision()}, EpisodeNumbers: []int{1}, SeasonNumber: 1},
+				SceneMapping:      &scenemappings.Mapping{Title: "Alt Title", SeasonNumber: &season, SceneOrigin: "tvdb"},
+			}),
+		},
+	}
+	rr := httptest.NewRecorder()
+	ReleaseHandler(searcher).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/release?episodeId=1", nil))
+	body := rr.Body.String()
+	if !strings.Contains(body, `"sceneMapping":{`) || !strings.Contains(body, `"title":"Alt Title"`) || !strings.Contains(body, `"sceneOrigin":"tvdb"`) {
+		t.Errorf("sceneMapping not projected: %s", body)
 	}
 }

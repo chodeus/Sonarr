@@ -20138,3 +20138,15 @@ C# ref: `src/Sonarr.Api.V3/Indexers/ReleaseResource.cs:96-225` (ToResource(Downl
 - DEFERRED (documented in the struct doc): SceneMapping → AlternateTitleResource (C# `SceneMapping` type differs from go `scenemappings.Mapping`; needs a dedicated verified mapping) + write-side echo fields (SeriesId/EpisodeId/EpisodeIds/DownloadClientId/DownloadClient/ShouldOverride/SubGroup) which the C# decision mapper also leaves null/omitted on the GET path.
 
 R: GET /api/v3+v5/release now returns the full decision projection (mapped episodes, decision flags, custom formats + score). W: n/a. M: PROGRESS + this entry (Tier-2 ReleaseResource row). Tests: full projection (mapped-episode info, abs-number filter excludes nil, flags, CF lite without specifications, default-0 weights). Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).
+
+---
+
+## J437 — Tier-2: ReleaseResource.SceneMapping projection (+ Tier-2 audit)
+
+C# ref: `src/Sonarr.Api.V3/Indexers/ReleaseResource.cs:148` (SceneMapping = remoteEpisode.SceneMapping.ToResource()) + `src/Sonarr.Api.V3/Series/AlternateTitleResource.cs:17-40`.
+
+- J436 deferred SceneMapping assuming the C# `SceneMapping` type diverged from go `scenemappings.Mapping`; VERIFIED they match field-for-field (Title/SeasonNumber/SceneSeasonNumber/SceneOrigin/Comment/FilterRegex/...). Deferral was over-cautious.
+- NEW `sceneMappingToAlternateTitle(*scenemappings.Mapping) *AlternateTitleResource`: nil→nil; maps the 5 wire fields; "Limited matching" comment fallback when Comment is blank but FilterRegex is set (C# `AlternateTitleResource.cs:24-28`). Reuses the existing apiv3.AlternateTitleResource (exact field match). Wired into toReleaseResource from subj.SceneMapping. No import cycle (scenemappings is a core data pkg).
+- AUDIT (this slice, Tier-2 verification): HistoryResource (all C# fields present), BlocklistResource (all present + Title/Source extras), SeriesResource statistics + per-season statistics (J369) + images (J367) are ALL complete — the DEFERRED doc-notes are stale. The J234 route-audit.md is stale: history/failed, history/since, qualitydefinition/limits, indexerflag, parse, queue/status, episode/monitor, mediacover all already wired. Tier-2 resource projections are effectively drained.
+
+R: GET /api/v3+v5/release now emits sceneMapping (when the release matched via a scene alias). W: n/a. M: PROGRESS + this entry. Tests: sceneMappingToAlternateTitle (nil/fields/FilterRegex-fallback/blank) + handler flow-through. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).
