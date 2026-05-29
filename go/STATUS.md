@@ -20203,3 +20203,15 @@ C# ref: indexer Test goes through `IIndexerFactory.Construct` → `IIndexer.Test
 - PART 2 (remaining 8 providers): one `reg(...)` line each; note some `NewIndexer` take only `client` (torrentrss) — verify per-provider signature + ConfigContract.
 
 R: POST /api/v3+v5/indexer/test + /testall + /action for a Newznab/Torznab row now builds a real provider + runs the connection self-check (was 400). W: n/a. M: GAP_ANALYSIS G10 (part 1) + PROGRESS + this entry. Tests: adapter error/warning translation + valid-result + RequestAction delegate + registry round-trip (Has + idempotent + nil no-op). Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).
+
+---
+
+## J442 — G10 part 2 COMPLETE: remaining 8 indexer providers wired for Test/Action
+
+Finishes G10. Added the 8 non-Newznab-protocol providers to `registerIndexerTestProviders` (cmd/sonarr/indexer_test_wiring.go): Fanzub, BroadcastheNet, HDBits, IPTorrents, Nyaa, Torrentleech, FileList, TorrentRssIndexer.
+
+- All 8 `NewIndexer` take only `(httpClient httpclient.Client)` (no caps provider), so they reuse the existing `mk` closure + `concreteIndexerProviderAdapter` (ValidationResult→[]TestFailure, error-severity only) verbatim — one `reg(...)` line each.
+- Registry keys taken verbatim from the FamilyIndexer catalog (`internal/provider/ids.go:67-76`) so they match the persisted Implementation/ConfigContract columns. Exact casing matters: "BroadcastheNet"/"BroadcastheNetSettings", "Torrentleech"/"TorrentleechSettings", "TorrentRssIndexer"/"TorrentRssIndexerSettings".
+- `go build` confirms all 8 satisfy `concreteIndexer` (Test(ctx)→provider.ValidationResult + RequestAction(stage,query) + SetDefinition).
+
+R: POST /api/v3+v5/indexer/test + /testall + /action now build a real provider + run the connection self-check for EVERY ported indexer impl (10/10) — was 400 "Unknown implementation" for all. W: n/a. M: GAP_ANALYSIS G10 ✅ FIXED + PROGRESS + this entry. Tests: registry round-trip Has() asserts all 10 impl/contract keys (+ idempotent + nil no-op). Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...). NEXT: fresh Tier-6 audit.

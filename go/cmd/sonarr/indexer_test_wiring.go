@@ -7,7 +7,15 @@ import (
 
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/indexers/broadcasthenet"
+	"sonarr.tv/sonarr/internal/indexers/fanzub"
+	"sonarr.tv/sonarr/internal/indexers/filelist"
+	"sonarr.tv/sonarr/internal/indexers/hdbits"
+	"sonarr.tv/sonarr/internal/indexers/iptorrents"
 	"sonarr.tv/sonarr/internal/indexers/newznab"
+	"sonarr.tv/sonarr/internal/indexers/nyaa"
+	"sonarr.tv/sonarr/internal/indexers/torrentleech"
+	"sonarr.tv/sonarr/internal/indexers/torrentrss"
 	"sonarr.tv/sonarr/internal/indexers/torznab"
 	"sonarr.tv/sonarr/internal/provider"
 )
@@ -98,6 +106,19 @@ func registerIndexerTestProviders(httpClient httpclient.Client) {
 		}
 	}
 
+	// Newznab-protocol family (take the shared caps provider).
 	reg("Newznab", "NewznabSettings", mk(func() concreteIndexer { return newznab.NewIndexer(httpClient, caps) }))
 	reg("Torznab", "TorznabSettings", mk(func() concreteIndexer { return torznab.NewIndexer(httpClient, caps) }))
+
+	// Bespoke trackers + RSS (take only the http client — no caps
+	// provider). Keys mirror the FamilyIndexer catalog (provider/ids.go)
+	// so they match the persisted Implementation/ConfigContract columns.
+	reg("Fanzub", "FanzubSettings", mk(func() concreteIndexer { return fanzub.NewIndexer(httpClient) }))
+	reg("BroadcastheNet", "BroadcastheNetSettings", mk(func() concreteIndexer { return broadcasthenet.NewIndexer(httpClient) }))
+	reg("HDBits", "HDBitsSettings", mk(func() concreteIndexer { return hdbits.NewIndexer(httpClient) }))
+	reg("IPTorrents", "IPTorrentsSettings", mk(func() concreteIndexer { return iptorrents.NewIndexer(httpClient) }))
+	reg("Nyaa", "NyaaSettings", mk(func() concreteIndexer { return nyaa.NewIndexer(httpClient) }))
+	reg("Torrentleech", "TorrentleechSettings", mk(func() concreteIndexer { return torrentleech.NewIndexer(httpClient) }))
+	reg("FileList", "FileListSettings", mk(func() concreteIndexer { return filelist.NewIndexer(httpClient) }))
+	reg("TorrentRssIndexer", "TorrentRssIndexerSettings", mk(func() concreteIndexer { return torrentrss.NewIndexer(httpClient) }))
 }

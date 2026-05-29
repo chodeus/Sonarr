@@ -69,6 +69,14 @@ func TestRegisterIndexerTestProviders_PopulatesRegistry(t *testing.T) {
 	for _, k := range []struct{ impl, contract string }{
 		{"Newznab", "NewznabSettings"},
 		{"Torznab", "TorznabSettings"},
+		{"Fanzub", "FanzubSettings"},
+		{"BroadcastheNet", "BroadcastheNetSettings"},
+		{"HDBits", "HDBitsSettings"},
+		{"IPTorrents", "IPTorrentsSettings"},
+		{"Nyaa", "NyaaSettings"},
+		{"Torrentleech", "TorrentleechSettings"},
+		{"FileList", "FileListSettings"},
+		{"TorrentRssIndexer", "TorrentRssIndexerSettings"},
 	} {
 		if !indexers.Default().Has(k.impl, k.contract) {
 			t.Errorf("indexers.Default() missing %s/%s after registration", k.impl, k.contract)
