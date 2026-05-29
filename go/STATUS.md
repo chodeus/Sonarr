@@ -20365,3 +20365,17 @@ Metadata side: ported C# ExtraService's stateful `_seriesWithImportedFiles` dict
 Tests: downloadprocessing publishes the marker once per pass (incl. empty pass); metadata accumulator dedups (2 imports series5 + 1 series9 → 2 distinct CreateAfterEpisodesImported), second DownloadsProcessed with no new imports drains nothing.
 
 R: trackeddownloads/events.go (DownloadsProcessedEvent), downloadprocessing/service.go (ProcessedPublisher iface/field/setter + end-of-pass publish), metadata_subscriptions.go (importedSeriesAccumulator, driver method, EpisodeImported accumulation, 6th subscription, doc), downloadprocessing_completion_wiring.go (adapter), main.go (SetProcessedPublisher). M: service_test.go (fakeProcessedPub + 2 tests), metadata_subscriptions_test.go (accumulator test + fake method/field + import), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. FULL SUITE green. **Q1 tail fully closed (J452 folder + J453 rename + J454 downloads-processed).**
+
+---
+
+## J455 — DownloadEventHub completion arm (auto mark-imported + remove-completed)
+
+**Slice (6/arc-row-5): port the DownloadCompletedEvent arm of C# DownloadEventHub.** Slice-6 verification (Explore agent) confirmed the J449 producer now drives the downloadhistory DownloadImported row end-to-end, and surfaced 2 unported C# DownloadCompletedEvent consumers: (a) DownloadEventHub (mark-imported + remove-completed) and (b) NotificationService OnImportComplete (blocked — notifications.Service.Subscribe unwired, needs RemoteEpisode rehydration; left for a separate slice). Ported (a).
+
+NEW `internal/downloadeventhub.Service.HandleDownloadCompleted` (ports `DownloadEventHub.cs:49-69`): resolve the originating client by `td.DownloadClient`, MarkItemAsImported always (best-effort: unsupported→debug, else error log, never fatal), then the removal gate (skip if !CanBeRemoved || Status==Downloading), then if the client's RemoveCompletedDownloads flag is set → RemoveItem(deleteData=true) + StopTracking. Reuses the existing `downloadClientResolver` (ResolveClient→Provider) + the download-client repo (RemoveCompletedDownloads flag, read from the config ROW like C# — verified the Item-level RemoveCompletedDownloads field is a STUB never populated in the tracked path) + trackedDownloadsSvc.StopTracking. Subscribed in main.go (2nd DownloadCompletedEvent subscriber alongside downloadhistory; the bus subscriberSet supports multiple). C# hub's DownloadFailedEvent (RemoveFailedDownloads) + DownloadCanBeRemovedEvent arms NOT ported (separate follow-ups; the Go failure path already drives blocklist/history/redownload).
+
+Tests: mark+remove+stop when RemoveCompletedDownloads=true; mark-only when flag off; skip-remove when !CanBeRemoved / Status==Downloading; unsupported-mark still removes; resolve-error swallowed; nil guards. (fakeProvider embeds the Provider iface, overrides only Mark/Remove.)
+
+R: A internal/downloadeventhub/downloadeventhub.go (+_test). M: main.go (hub construct + subscription + import), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. FULL SUITE green.
+
+**Arc status:** Q1 tail (J452-454) + Q3 (J449-451) DONE; J449 producer + J455 hub close the auto-import completion side-effects. Remaining arc residuals (separate, partly gated): NotificationService OnImportComplete (gated on RemoteEpisode rehydration / customformats), DownloadFailedEvent RemoveFailedDownloads arm, the RemoveCompletedDownloads sweep / DownloadCanBeRemovedEvent.

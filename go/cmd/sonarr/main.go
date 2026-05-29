@@ -66,6 +66,7 @@ import (
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadclientstatus"
 	"sonarr.tv/sonarr/internal/downloadedimport"
+	"sonarr.tv/sonarr/internal/downloadeventhub"
 	"sonarr.tv/sonarr/internal/downloadhistory"
 	"sonarr.tv/sonarr/internal/downloadhistoryhandlers"
 	"sonarr.tv/sonarr/internal/downloadmonitoring"
@@ -3076,6 +3077,26 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	// fires once per pass per imported series (ports DownloadProcessingService.cs:80).
 	downloadProcessingSvc.SetProcessedPublisher(downloadsProcessedPublisher{bus: bus})
 	downloadMonitoringSvc.SetProcessor(downloadProcessingSvc)
+
+	// J455: DownloadEventHub completion arm. On DownloadCompletedEvent
+	// (now produced by J449/J450), tell the originating client the item
+	// was imported (e.g. qBittorrent post-import category move) and, when
+	// the client's RemoveCompletedDownloads flag is set + the item is in a
+	// removable state, remove it + StopTracking. Ports
+	// DownloadEventHub.Handle(DownloadCompletedEvent).
+	downloadEventHub, err := downloadeventhub.NewService(
+		downloadClientResolver{rows: downloadClientsRepo, registry: downloadclients.Default(), deps: dcDeps},
+		downloadClientsRepo,
+		trackedDownloadsSvc,
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("downloadeventhub service: %w", err)
+	}
+	messaging.Subscribe(bus, "downloadeventhub.HandleDownloadCompleted",
+		func(ctx context.Context, ev trackeddownloads.DownloadCompletedEvent) error {
+			return downloadEventHub.HandleDownloadCompleted(ctx, &ev)
+		})
 
 	// J401: auto-redownload-on-failure handler (ports
 	// RedownloadFailedDownloadService). Subscribes to the same
