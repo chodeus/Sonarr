@@ -1,5 +1,15 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+> **Fix status (updated through J425):**
+> - ✅ **G1** search→grab — FIXED J423 (search adapters now feed the grabber).
+> - ✅ **G2** CleanUpRecycleBin stub — FIXED J421 (dep wired).
+> - ✅ **G3** queue/details empty — FIXED J422 (real lister).
+> - ✅ **G4** provider fields[] on GET — FIXED J425 (inverse settings→fields mapper; 4 families). Follow-up: customformat/autotagging `specifications[]` + `ImplementationName` stub still open.
+> - ✅ **G7** import-list sync inert — FIXED J424 (providers blank-imported). Sub-gap: `IDTranslator` nil (non-TVDB-id items).
+> - ⏳ **G5** rename previews, **G6** series/lookup, **G8** v5 history season/episode, **G9** tag/detail — OPEN (focused service ports, autonomous).
+> - ⏳ **T1** flaky shadowtraffic-e2e, **Q1** latent metadata-writer — OPEN.
+
+
 Full-project audit after the read-surface verticalization work drained. Method: real
 full-repo gates (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l .` — all
 run correctly this time, see note) + three parallel verification agents that traced
