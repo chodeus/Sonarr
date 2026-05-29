@@ -245,6 +245,11 @@ type Deps struct {
 	// Production binds *qualitydefinitions.Service.
 	ResetQualityDefinitions QualityDefinitionResetter
 
+	// ClearLog wires the IExecute<ClearLogCommand> handler (slice 5.J410,
+	// punch-list #6 admin commands). Optional — nil skips registration
+	// (e.g. the log DB is disabled). Production binds *logs.Repo.
+	ClearLog LogClearer
+
 	// ProcessMonitoredDownloads wires the
 	// IExecute<ProcessMonitoredDownloadsCommand> handler (slice 5.J399,
 	// Phase-4 auto-import). Optional — nil skips registration. Production
@@ -526,6 +531,15 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 			return err
 		}
 		registry.Register(ResetQualityDefinitionsName, commands.CommandSpec{Handler: resetQualityDefinitions})
+	}
+
+	// ClearLog registers only when the clearer is wired (log DB enabled).
+	if deps.ClearLog != nil {
+		clearLog, err := NewClearLog(deps.ClearLog, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(ClearLogName, commands.CommandSpec{Handler: clearLog})
 	}
 
 	// UpdateSceneMapping registers only when the updater is wired.

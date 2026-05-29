@@ -3293,6 +3293,14 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		log:    logger,
 	}
 
+	// ClearLog is wired only when the log DB is enabled (logRepo non-nil);
+	// a typed-nil would register a handler that panics on Purge. Mirrors
+	// the C# ClearLog command which requires the log database.
+	var logClearer handlers.LogClearer
+	if logRepo != nil {
+		logClearer = logRepo
+	}
+
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:               cmdSvc,
 		Housekeeping:           houseSvc,
@@ -3401,6 +3409,9 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		// J402 (punch-list #6): ResetQualityDefinitions command →
 		// qualitydefinitions.Service.ResetTitles.
 		ResetQualityDefinitions: qualityDefSvc,
+		// J410 (punch-list #6): ClearLog command → logs.Repo.Purge.
+		// nil when the log DB is disabled (skips registration).
+		ClearLog: logClearer,
 		// J399 (Phase-4 auto-import): ProcessMonitoredDownloads command.
 		ProcessMonitoredDownloads: downloadProcessingSvc,
 		Log:                       logger,

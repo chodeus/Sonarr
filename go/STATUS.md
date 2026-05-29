@@ -19826,3 +19826,15 @@ Remaining #3 slice: J410 ClearLog command → `logs.Repo.Purge`.
 Tests: repo level-filter (warn cascade excludes Info); handler nil→empty + SortKey time / returns-rows + internal id-sort + default-desc / level-expands to Fatal,Error,Warn / lister-error→500 / `expandLogLevelFilter` cascade table.
 
 R: GET /api/v3+v5/log now returns real log rows (paged, level-filtered). W: n/a. M: PROGRESS + this entry. Hard gates clean (build, race tests api v3 + v5 log + logs + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J410 — Log subsystem 4b: ClearLog command → Purge (subsystem COMPLETE; "what's next" #3 done)
+
+Ports `LogService.Execute(ClearLogCommand)` (`src/NzbDrone.Core/Instrumentation/LogService.cs:26-29`) → `_logRepository.Purge(vacuum: true)`. NEW `internal/commands/handlers/clearlog.go`: thin `IExecute<ClearLogCommand>` handler + narrow `LogClearer` interface (`Purge(ctx) (int64, error)`) satisfied by `*logs.Repo`. Registered as `ClearLog` via new `Deps.ClearLog`; wired in main.go conditionally — `logClearer` is left nil when the log DB is disabled (logRepo nil), so `RegisterAll` skips registration rather than registering a typed-nil that would panic. Mirrors the C# ClearLog command requiring the log database.
+
+This closes the originally-BLOCKED ClearLog admin command AND completes the whole Log subsystem: J406 repo → J407 async slog→DB sink → J408 fan-out + open RoleLog DB + attach → J409 GET /log read → J410 ClearLog purge. End-to-end: application logs (Info+) persist to the log DB, GET /api/v3+v5/log reads them paged + level-filtered, ClearLog purges them.
+
+Tests: nil-ctor rejected; dispatch (Purge called once); error propagation.
+
+R: n/a. W: ClearLog command WIRED. M: matrix #6 + PROGRESS + this entry. Hard gates clean (build, race tests commands + handlers + cmd/sonarr + contract, vet, gofmt).
