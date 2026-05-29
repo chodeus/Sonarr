@@ -20188,3 +20188,18 @@ Full-repo gates green (build/vet/gofmt `.`/test ./...). Traced the three remaini
 - NEW **Q3** (BLOCKED): ManualImport completion events (DownloadCompletedEvent tracked / UntrackedDownloadCompletedEvent untracked + folder cleanup). Evidence: DownloadCompletedEvent has NO producer anywhere in the Go tree (Phase-4 CompletedDownloadService unported); UntrackedDownloadCompletedEvent not defined as a Go type. Revisit when the Phase-4 completion publisher lands.
 
 R/W: no behavior change (doc-comment correction only). M: GAP_ANALYSIS "Fresh audit findings (J440)" section (G10 + Q3 + redownload note) + PROGRESS + this entry. NEXT major in-scope work = G10 indexer Test registry. Hard gates clean (full suite).
+
+---
+
+## J441 — G10 part 1: indexer Test/Action wired (Newznab + Torznab)
+
+C# ref: indexer Test goes through `IIndexerFactory.Construct` → `IIndexer.Test`. Go gap (J440 finding): the 10 indexer provider init()s register into `provider.Default()` (FamilyIndexer catalog) but NOT `indexers.Default()` (the `indexers.Registry` the `registryIndexerTester` uses) → 400 "Unknown implementation".
+
+- NEW `cmd/sonarr/indexer_test_wiring.go`:
+  - `concreteIndexer` iface (Test(ctx)→provider.ValidationResult + RequestAction(stage,query) + SetDefinition) — the uniform surface all 10 provider Indexer types expose.
+  - `concreteIndexerProviderAdapter` → `indexers.Provider`: Test translates `provider.ValidationResult`→`[]indexers.TestFailure` (error-severity only; warnings don't block, matching ValidationResult.IsValid); RequestAction adapts the ctx-less concrete signature.
+  - `registerIndexerTestProviders(httpClient)`: registers Newznab + Torznab Registry constructors into `indexers.Default()`. Each constructor builds the Definition via `provider.NewFactory(provider.Default()).LoadDefinition(FamilyIndexer, indexerRowAdapter{row})` (same as the search path) + `NewIndexer(client, caps)` + SetDefinition. Idempotent (Register, tolerates ErrAlreadyRegistered). Captures the host httpClient (rate-limited/host-status) → no signature threading; the existing tester (uses indexers.Default()) now builds real providers.
+- Wired: called in serve() right after httpClient construction (main.go). Updated the stale host_wiring "zero providers register" comment.
+- PART 2 (remaining 8 providers): one `reg(...)` line each; note some `NewIndexer` take only `client` (torrentrss) — verify per-provider signature + ConfigContract.
+
+R: POST /api/v3+v5/indexer/test + /testall + /action for a Newznab/Torznab row now builds a real provider + runs the connection self-check (was 400). W: n/a. M: GAP_ANALYSIS G10 (part 1) + PROGRESS + this entry. Tests: adapter error/warning translation + valid-result + RequestAction delegate + registry round-trip (Has + idempotent + nil no-op). Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).

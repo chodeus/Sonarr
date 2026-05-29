@@ -2486,12 +2486,14 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 	indexerEmitter := signalr.NewV3Emitter[apiv3.IndexerResource](signalRHub, "indexer")
 	// 5.C2b: indexer Test endpoint adapter. Wraps
 	// indexers.Registry.Construct + provider.Test under
-	// indexers.Dependencies. Zero concrete indexer providers register
-	// today — every request to /indexer/test will return 400
-	// "Unknown implementation" until the first concrete impl ports
-	// (Newznab/Torznab/BroadcastTheNet/etc.). The wire boundary is
-	// in place so subsequent slices can land concrete providers
-	// without touching this wiring.
+	// indexers.Dependencies. G10/J441 populated indexers.Default() with
+	// the Newznab + Torznab Registry constructors (see
+	// registerIndexerTestProviders in main.go), so /indexer/test for a
+	// Newznab/Torznab row now builds a real provider + runs the
+	// connection self-check. The remaining concrete impls
+	// (BroadcastTheNet/HDBits/FileList/etc.) follow the same one-line
+	// registration; until then they still return 400 "Unknown
+	// implementation".
 	indexerRegistry := indexers.Default()
 	indexerTester := &registryIndexerTester{
 		registry: indexerRegistry,

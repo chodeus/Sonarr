@@ -2637,6 +2637,11 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	if err != nil {
 		return fmt.Errorf("http client: %w", err)
 	}
+	// G10 (J441): populate indexers.Default() with the Newznab/Torznab
+	// Registry constructors so the indexer Test/TestAll/Action endpoints
+	// build real providers (the concrete impls otherwise only register
+	// into the provider.Default() catalog). Idempotent across boots.
+	registerIndexerTestProviders(httpClient)
 	// J364 — MediaCover cover-download subscriber. Construct the
 	// mediacover.Service (URL-rewrite surface ported in 3.BO; download
 	// arm in J363) against the real disk + http + config adapters, then
