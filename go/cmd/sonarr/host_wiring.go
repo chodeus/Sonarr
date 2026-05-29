@@ -2436,6 +2436,12 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 	// J369 extends the wrapper to also link episode/file statistics
 	// (PopulateSeriesStats) via the episodes repo + episodefiles service.
 	seriesImgSvc := seriesReadEnricher{Service: seriesSvc, mc: mediaCoverConvertSvc, eps: episodesRepo, files: episodeFilesSvc}
+	// G5 (J429): GET /rename + /rename/bulk preview driver — joins
+	// episode files against their linked episodes + diffs each current
+	// path against the NamingConfig-derived target (ports
+	// RenameEpisodeFileService.GetRenamePreviews). nil when a required
+	// service is unset (handlers then emit `[]`).
+	renamePreviewer := newRenamePreviewer(seriesSvc, episodesSvc, episodeFilesSvc, namingConfigSvc, logger)
 	uiCfg := uiConfigGetter{cfg: configProv, xmlCfg: cfg}
 	hostCfg := hostConfigGetter{cfg: configProv, xmlCfg: cfg}
 	// 5.B2: per-resource SignalR emitter for the rootfolder writes.
@@ -2877,8 +2883,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// missing/invalid query params. v5 inherits the same deferred
 		// `[]` shape; both surfaces widen via shared handler when the
 		// comparison driver lands.
-		{Method: "GET", Path: "/api/v5/rename", Handler: renameepisodev5.GetHandler()},
-		{Method: "GET", Path: "/api/v5/rename/bulk", Handler: renameepisodev5.BulkHandler()},
+		{Method: "GET", Path: "/api/v5/rename", Handler: renameepisodev5.GetHandler(renamePreviewer)},
+		{Method: "GET", Path: "/api/v5/rename/bulk", Handler: renameepisodev5.BulkHandler(renamePreviewer)},
 		// J288 — v5 SeriesLookup endpoint family (1 endpoint; 58 LOC
 		// C# — SeriesLookupController.Search GET /series/lookup?term=).
 		// Pure path-alias slice — v3 emits the same 200+`[]` stub
@@ -3470,8 +3476,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v3/release", Handler: apiv3.ReleaseDownloadHandler(releaseCache, processDownloadDecisions, seriesSvc, episodesSvc, parsingSvc, episodesSvc)},
 		{Method: "POST", Path: "/api/v3/release/push", Handler: apiv3.ReleasePushHandler(downloadDecider, processDownloadDecisions, releaseCache, indexersRepo, downloadClientsRepo)},
 		{Method: "GET", Path: "/api/v3/releaseprofile", Handler: apiv3.ReleaseProfileHandler(releaseProfilesSvc)},
-		{Method: "GET", Path: "/api/v3/rename", Handler: apiv3.RenameHandler()},
-		{Method: "GET", Path: "/api/v3/rename/bulk", Handler: apiv3.RenameBulkHandler()},
+		{Method: "GET", Path: "/api/v3/rename", Handler: apiv3.RenameHandler(renamePreviewer)},
+		{Method: "GET", Path: "/api/v3/rename/bulk", Handler: apiv3.RenameBulkHandler(renamePreviewer)},
 		{Method: "GET", Path: "/api/v3/releaseprofile/{id}", Handler: apiv3.ReleaseProfileByIDHandler(releaseProfilesSvc)},
 		{Method: "POST", Path: "/api/v3/releaseprofile", Handler: apiv3.ReleaseProfileCreateHandler(releaseProfilesSvc)},
 		{Method: "PUT", Path: "/api/v3/releaseprofile/{id}", Handler: apiv3.ReleaseProfileUpdateHandler(releaseProfilesSvc)},

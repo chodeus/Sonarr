@@ -11,7 +11,7 @@ import (
 func TestGetHandler_ValidSeriesID_ReturnsEmptyArray(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	renameepisode.GetHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename?seriesId=42", nil))
+	renameepisode.GetHandler(nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename?seriesId=42", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -23,7 +23,7 @@ func TestGetHandler_ValidSeriesID_ReturnsEmptyArray(t *testing.T) {
 func TestGetHandler_MissingSeriesID_400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	renameepisode.GetHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename", nil))
+	renameepisode.GetHandler(nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename", nil))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (seriesId required)", rr.Code)
 	}
@@ -32,7 +32,7 @@ func TestGetHandler_MissingSeriesID_400(t *testing.T) {
 func TestGetHandler_InvalidSeriesID_400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	renameepisode.GetHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename?seriesId=-1", nil))
+	renameepisode.GetHandler(nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename?seriesId=-1", nil))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (seriesId must be positive)", rr.Code)
 	}
@@ -41,7 +41,7 @@ func TestGetHandler_InvalidSeriesID_400(t *testing.T) {
 func TestGetHandler_WithSeasonNumber_AlsoReturnsEmptyArray(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	renameepisode.GetHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename?seriesId=42&seasonNumber=3", nil))
+	renameepisode.GetHandler(nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename?seriesId=42&seasonNumber=3", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -53,7 +53,7 @@ func TestGetHandler_WithSeasonNumber_AlsoReturnsEmptyArray(t *testing.T) {
 func TestBulkHandler_ValidSeriesIDs_ReturnsEmptyArray(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	renameepisode.BulkHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename/bulk?seriesIds=1&seriesIds=2", nil))
+	renameepisode.BulkHandler(nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename/bulk?seriesIds=1&seriesIds=2", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -65,7 +65,7 @@ func TestBulkHandler_ValidSeriesIDs_ReturnsEmptyArray(t *testing.T) {
 func TestBulkHandler_MissingSeriesIDs_400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	renameepisode.BulkHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename/bulk", nil))
+	renameepisode.BulkHandler(nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename/bulk", nil))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (seriesIds must be provided)", rr.Code)
 	}
@@ -74,7 +74,7 @@ func TestBulkHandler_MissingSeriesIDs_400(t *testing.T) {
 func TestBulkHandler_InvalidSeriesID_400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	renameepisode.BulkHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename/bulk?seriesIds=0", nil))
+	renameepisode.BulkHandler(nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/rename/bulk?seriesIds=0", nil))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400 (seriesIds must be positive)", rr.Code)
 	}
@@ -82,11 +82,11 @@ func TestBulkHandler_InvalidSeriesID_400(t *testing.T) {
 
 func TestHandlerAliases_NonNil(t *testing.T) {
 	t.Parallel()
-	if renameepisode.GetHandler == nil {
-		t.Errorf("GetHandler nil")
+	if renameepisode.GetHandler(nil) == nil {
+		t.Errorf("GetHandler returned nil handler")
 	}
-	if renameepisode.BulkHandler == nil {
-		t.Errorf("BulkHandler nil")
+	if renameepisode.BulkHandler(nil) == nil {
+		t.Errorf("BulkHandler returned nil handler")
 	}
 }
 

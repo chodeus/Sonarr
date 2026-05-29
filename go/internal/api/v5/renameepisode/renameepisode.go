@@ -25,6 +25,8 @@
 package renameepisode
 
 import (
+	"net/http"
+
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 )
 
@@ -33,9 +35,14 @@ import (
 type Resource = apiv3.RenameEpisodeResource
 
 // GetHandler returns GET /api/v5/rename. Same wire shape + status
-// codes as v3 — re-exported.
-var GetHandler = apiv3.RenameHandler
+// codes as v3 — delegates to the shared v3 handler with the same
+// preview driver.
+func GetHandler(previewer apiv3.RenamePreviewer) http.Handler {
+	return apiv3.RenameHandler(previewer)
+}
 
 // BulkHandler returns GET /api/v5/rename/bulk. Same wire shape +
-// status codes as v3 — re-exported.
-var BulkHandler = apiv3.RenameBulkHandler
+// status codes as v3 — delegates to the shared v3 handler.
+func BulkHandler(previewer apiv3.RenamePreviewer) http.Handler {
+	return apiv3.RenameBulkHandler(previewer)
+}

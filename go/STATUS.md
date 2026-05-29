@@ -20034,3 +20034,16 @@ Tests: wrapper GetBySeason filters to season episodes + drops others + nil-looku
 With J427, **G8 is complete** — both history/episode + history/season return real data.
 
 R: history/season now returns real rows. W: n/a. M: GAP_ANALYSIS G8 + this entry. Hard gates clean (build, race tests api v3 + v5 history + history + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J429 — G5: rename-preview driver (GET /rename + /rename/bulk)
+
+C# ref: `src/NzbDrone.Core/MediaFiles/RenameEpisodeFileService.cs:57-128` (GetRenamePreviews) + `Sonarr.Api.V3/Episodes/RenameEpisodeController.cs`. Both v3+v5 previously returned a hardcoded `[]` (comparison driver unported).
+
+- NEW `internal/renamepreview/renamepreview.go`: `Service` with narrow consumer ifaces (SeriesGetter/EpisodeGetter/FileGetter/PathBuilder). `GetBySeries`/`GetBySeason`/`GetBulk` join files↔linked episodes, diff current path vs `BuildFilePath` target (pathEquals = cleaned Ordinal compare), emit Preview per differing file. C# sort order ported (desc season→firstEp; bulk desc seriesId→season→firstEp). Orphan files (no linked episode) logged + skipped.
+- `internal/api/v3/rename.go`: handlers now take a `RenamePreviewer` (nil→`[]` fallback retained); `RenamePreview` neutral row + `renamePreviewToResource` (Id=EpisodeFileId per C# mapper). `json.Marshal` (no trailing newline) keeps `[]` byte-exact.
+- v5 `renameepisode` GetHandler/BulkHandler changed var-aliases → funcs taking the previewer.
+- `cmd/sonarr/renamepreview_wiring.go`: `renamePreviewPathBuilder` (loads NamingConfig per call + threads file.MediaInfo into BuildOptions; CustomFormats nil = documented divergence) + `renamePreviewerAdapter` + `newRenamePreviewer`. Wired at v3+v5 rename routes in v3Routes.
+
+R: /rename + /rename/bulk now return real preview rows. W: n/a (read-only; rename *execute* command still unported). M: GAP_ANALYSIS G5 fixed + PROGRESS + this entry. Tests: service (diff/sort/season-filter/bulk-order/error/missing-series) + v3 handler (projection/season-branch/invalid-season-400/error-500/bulk). Hard gates clean (build, race tests renamepreview + api v3 + v5 renameepisode + cmd/sonarr + contract, vet, gofmt on touched dirs).

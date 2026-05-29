@@ -1,6 +1,6 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
-> **Fix status (updated through J425):**
+> **Fix status (updated through J429):**
 > - ✅ **G1** search→grab — FIXED J423 (search adapters now feed the grabber).
 > - ✅ **G2** CleanUpRecycleBin stub — FIXED J421 (dep wired).
 > - ✅ **G3** queue/details empty — FIXED J422 (real lister).
@@ -8,7 +8,8 @@
 > - ✅ **G7** import-list sync inert — FIXED J424 (providers blank-imported). Sub-gap: `IDTranslator` nil (non-TVDB-id items).
 > - ✅ **G6** series/lookup — FIXED J426 (wired to skyhook proxy).
 > - ✅ **G8** v5 history season/episode — FIXED J427 (episode) + J428 (season).
-> - ⏳ **G5** rename previews, **G9** tag/detail — OPEN (focused service ports, autonomous).
+> - ✅ **G5** rename previews — FIXED J429 (`internal/renamepreview.Service` diff driver; wired v3+v5 with NamingConfig path builder).
+> - ⏳ **G9** tag/detail — OPEN (focused service port, autonomous).
 > - ⏳ **T1** flaky shadowtraffic-e2e, **Q1** latent metadata-writer — OPEN.
 
 
@@ -49,7 +50,7 @@ done, and some "done"-looking paths are actually stubbed).
 
 ### MEDIUM — endpoint returns empty (needs a focused service/driver port)
 
-**G5 — `GET /rename` + `/rename/bulk` return `[]`.** Need a port of C# `RenameEpisodeFileService.GetRenamePreviews` (diff each file's current path vs `BuildFileName` output). `BuildFileName` exists; the comparison driver doesn't.
+**G5 — `GET /rename` + `/rename/bulk` return `[]`.** ✅ FIXED J429. Ported C# `RenameEpisodeFileService.GetRenamePreviews` as `internal/renamepreview.Service` (diff each file's current path vs `organizer.BuildFilePath` output, NamingConfig-driven, file.MediaInfo threaded). Wired v3+v5 via `newRenamePreviewer`. CustomFormats stay nil (same documented divergence as the import path).
 
 **G6 — `GET /series/lookup` returns `[]`.** Need to wire the already-ported `metadatasource.Proxy.SearchForNewSeries` → cover-rewrite + folder-name preview → `SeriesResource`.
 
