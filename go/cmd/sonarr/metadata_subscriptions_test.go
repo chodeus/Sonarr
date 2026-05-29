@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"sonarr.tv/sonarr/internal/episodefilemoving"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/mediacover"
@@ -24,6 +25,9 @@ type fakeMetadataDriver struct {
 	coverSeriesID     int
 	scanSeriesID      int
 	scanFileCount     int
+	folderSeriesID    int
+	folderSeries      string
+	folderSeason      string
 	failEpisodeImport bool
 }
 
@@ -50,6 +54,15 @@ func (f *fakeMetadataDriver) CreateAfterSeriesScan(_ context.Context, sr *series
 	defer f.mu.Unlock()
 	f.scanSeriesID = sr.ID
 	f.scanFileCount = len(list)
+	return nil, nil
+}
+
+func (f *fakeMetadataDriver) CreateAfterEpisodeFolder(_ context.Context, sr *series.Series, seriesFolder, seasonFolder string) ([]metadatafiles.MetadataFile, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.folderSeriesID = sr.ID
+	f.folderSeries = seriesFolder
+	f.folderSeason = seasonFolder
 	return nil, nil
 }
 
@@ -143,6 +156,38 @@ func TestSubscribeMetadataWriters_SeriesScanned_FileLoadError_NoCall(t *testing.
 	_ = messaging.Publish(context.Background(), bus, mediafiles.SeriesScannedEvent{Series: &series.Series{ID: 5}})
 	if drv.scanSeriesID != 0 {
 		t.Errorf("file-load error must skip CreateAfterSeriesScan, got series=%d", drv.scanSeriesID)
+	}
+}
+
+func TestSubscribeMetadataWriters_EpisodeFolderCreated_J452(t *testing.T) {
+	t.Parallel()
+	bus := newTestBus()
+	drv := &fakeMetadataDriver{}
+	subscribeMetadataWriters(bus, drv, fakeScanFileLister{}, discardLogger())
+
+	ev := episodefilemoving.EpisodeFolderCreatedEvent{
+		Series:       &series.Series{ID: 11},
+		SeriesFolder: "/tv/Show",
+		SeasonFolder: "/tv/Show/Season 01",
+	}
+	if err := messaging.Publish(context.Background(), bus, ev); err != nil {
+		t.Fatal(err)
+	}
+	if drv.folderSeriesID != 11 || drv.folderSeries != "/tv/Show" || drv.folderSeason != "/tv/Show/Season 01" {
+		t.Errorf("CreateAfterEpisodeFolder got series=%d seriesFolder=%q seasonFolder=%q, want 11//tv/Show//tv/Show/Season 01",
+			drv.folderSeriesID, drv.folderSeries, drv.folderSeason)
+	}
+}
+
+func TestSubscribeMetadataWriters_EpisodeFolderCreated_NilSeries_J452(t *testing.T) {
+	t.Parallel()
+	bus := newTestBus()
+	drv := &fakeMetadataDriver{}
+	subscribeMetadataWriters(bus, drv, fakeScanFileLister{}, discardLogger())
+
+	_ = messaging.Publish(context.Background(), bus, episodefilemoving.EpisodeFolderCreatedEvent{})
+	if drv.folderSeriesID != 0 {
+		t.Errorf("nil-series EpisodeFolderCreatedEvent should not call driver, got series=%d", drv.folderSeriesID)
 	}
 }
 

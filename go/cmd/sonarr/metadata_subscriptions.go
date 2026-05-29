@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"sonarr.tv/sonarr/internal/episodefilemoving"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/mediacover"
@@ -20,6 +21,7 @@ type metadataWriterDriver interface {
 	CreateAfterEpisodeImport(ctx context.Context, sr *series.Series, episodeFile *episodefiles.File) ([]metadatafiles.MetadataFile, error)
 	CreateAfterMediaCoverUpdate(ctx context.Context, sr *series.Series) ([]metadatafiles.MetadataFile, error)
 	CreateAfterSeriesScan(ctx context.Context, sr *series.Series, episodeFilesList []episodefiles.File) ([]metadatafiles.MetadataFile, error)
+	CreateAfterEpisodeFolder(ctx context.Context, sr *series.Series, seriesFolder, seasonFolder string) ([]metadatafiles.MetadataFile, error)
 }
 
 // metadataScanFileLister loads a series' episode files for the
@@ -33,14 +35,16 @@ type metadataScanFileLister interface {
 // (`src/NzbDrone.Core/Extras/ExtraService.cs:26-29`). Of C#'s six
 // IHandle events, three are ported + published in the Go tree today:
 //
-//   - EpisodeImportedEvent → CreateAfterEpisodeImport
-//   - CoversUpdatedEvent    → CreateAfterMediaCoverUpdate
-//   - SeriesScannedEvent    → CreateAfterSeriesScan
+//   - EpisodeImportedEvent     → CreateAfterEpisodeImport
+//   - CoversUpdatedEvent        → CreateAfterMediaCoverUpdate
+//   - SeriesScannedEvent        → CreateAfterSeriesScan
+//   - EpisodeFolderCreatedEvent → CreateAfterEpisodeFolder (J452 — the
+//     event is published by episodefilemoving when a series/season/episode
+//     folder is freshly created during a file move)
 //
-// The other three (SeriesRenamedEvent, DownloadsProcessedEvent,
-// EpisodeFolderCreatedEvent) are not yet defined/published in the Go
-// port; their subscriptions follow when the publishers land (tracked
-// in GAP_ANALYSIS Q1).
+// The remaining two (SeriesRenamedEvent, DownloadsProcessedEvent) are
+// not yet defined/published in the Go port; their subscriptions follow
+// when the publishers land (tracked in GAP_ANALYSIS Q1).
 //
 // Metadata is only actually written when a metadata consumer (e.g.
 // Kodi nfo) is enabled + registered; with none configured these
@@ -81,6 +85,22 @@ func subscribeMetadataWriters(bus *messaging.Bus, svc metadataWriterDriver, file
 			}
 			if _, err := svc.CreateAfterSeriesScan(ctx, ev.Series, fs); err != nil {
 				log.Warn("metadata: CreateAfterSeriesScan failed", "series", ev.Series.ID, "err", err)
+			}
+			return nil
+		})
+	// EpisodeFolderCreatedEvent → CreateAfterEpisodeFolder (C# ExtraService
+	// Handle(EpisodeFolderCreatedEvent), `ExtraService.cs:142-150`). The
+	// event carries whichever of series/season/episode folders were just
+	// created; CreateAfterEpisodeFolder writes series/season-level metadata
+	// + images for the freshly-created folders (no-op when both folder
+	// args are blank).
+	messaging.Subscribe(bus, "metadata.CreateAfterEpisodeFolder",
+		func(ctx context.Context, ev episodefilemoving.EpisodeFolderCreatedEvent) error {
+			if ev.Series == nil {
+				return nil
+			}
+			if _, err := svc.CreateAfterEpisodeFolder(ctx, ev.Series, ev.SeriesFolder, ev.SeasonFolder); err != nil {
+				log.Warn("metadata: CreateAfterEpisodeFolder failed", "series", ev.Series.ID, "err", err)
 			}
 			return nil
 		})

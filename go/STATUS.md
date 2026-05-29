@@ -20327,3 +20327,15 @@ Tests (real temp-dir rigor): shouldDelete+canMove → folder actually removed (o
 **Q3 now fully done** (J449 producer + J450 events + J451 cleanup).
 
 R: manualimport.go (Cleaner iface/field/param, finalizeTracked + cleanupTrackedFolder, package doc), handlers.go (Cleaner dep + RegisterAll arg), main.go (Cleaner wiring). A: manualimport_cleanup_wiring.go. M: manualimport_test.go (3 temp-dir tests + tempDirCleaner/helpers + os/filepath/ospath imports; call-site fixes), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. FULL SUITE green (build, vet, gofmt `.`, go test ./...).
+
+---
+
+## J452 — Q1 tail: metadata CreateAfterEpisodeFolder subscription
+
+**Slice (5a): subscribe the metadata writer to EpisodeFolderCreatedEvent.** First of the Q1-tail event wirings. EpisodeFolderCreatedEvent is ALREADY defined (episodefilemoving.go:140) + published to the bus (episodefilemoving.go:636 via episodeFileMovingEventPublisherAdapter, which type-switches it to messaging.Publish) — only the subscriber was missing (the metadata_subscriptions.go:40 doc claiming "not yet defined/published" was STALE). Verified the metadata service already exposes `CreateAfterEpisodeFolder(ctx, sr, seriesFolder, seasonFolder)` (service_public.go:234, safely no-ops when both folder args blank).
+
+Added `CreateAfterEpisodeFolder` to the `metadataWriterDriver` iface + a 4th subscription in `subscribeMetadataWriters` → calls it on EpisodeFolderCreatedEvent (ports C# `ExtraService.Handle(EpisodeFolderCreatedEvent)`, `ExtraService.cs:142-150`). nil-series guarded + error logged/swallowed (same posture as the other 3). Fixed the stale doc. *metadataservice.Service satisfies the widened iface (build-verified at the main.go call site).
+
+Tests: EpisodeFolderCreatedEvent w/ series+folders → CreateAfterEpisodeFolder(11, /tv/Show, /tv/Show/Season 01); nil-series → no call. Added folder fields + method to fakeMetadataDriver.
+
+R: metadata_subscriptions.go (iface method, subscription, doc). M: metadata_subscriptions_test.go (2 tests + fake method/fields + import), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates green (build, vet, gofmt, test -race cmd/sonarr). Remaining Q1 tail: SeriesRenamedEvent + DownloadsProcessedEvent (not yet defined/published).
