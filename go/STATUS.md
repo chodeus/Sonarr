@@ -20096,3 +20096,16 @@ C# ref: `AutoTaggingResource` ToModel/ToResource + `AutoTaggingSpecificationSche
 - No bulk-reload path for autotagging (writes only from request-decoded bodies), so no FieldDef-vs-map round-trip hazard.
 
 R: GET /autotagging (v3+v5) now returns populated `specifications[]`. W: POST/PUT /autotagging with conditions now persists a loader-readable column. M: GAP_ANALYSIS G4b autotagging + PROGRESS + this entry. Tests: envelope round-trip (seriestype int / status-key / genre array / year min-max) + empty/unknown-impl + GET projection (impl/implementationName/base flags/injected value/id-omitted). G4-followup specifications[] COMPLETE for customformat + autotagging. Hard gates clean (full suite).
+
+---
+
+## J434 — T1: shadowtraffic-e2e flake fixed (read-before-flush race)
+
+The J428-diagnosed flake ("got 0 log entries" in `TestTriadComposesEndToEnd`). Root cause confirmed by reading `cmd/shadow-traffic-record/writer.go`: the LogWriter drain goroutine flushes the buffered writer every `-flush-interval` (50ms in the test) AND on close. Both e2e tests read the JSONL immediately after `stopAndWait` (SIGTERM + 5s grace → force-kill); under full-suite parallel load the record subprocess could be force-killed before the drain flushed → 0/short entries.
+
+- NEW `waitForJSONLEntries(t, path, want, max)` + `countJSONLEntries(path)` (tolerant read): polls the log until it holds `want` well-formed entries (entries are reader-visible after each 50ms flush, no graceful-shutdown dependency).
+- `TestTriadComposesEndToEnd`: poll for 3 entries before `stopAndWait`.
+- `TestRecordReplayRoundTripsCleanly` (sibling, same race — not in the original T1 note): poll for `len(probes)` entries before `stopAndWait` + before replay reads the log.
+- Assertions UNCHANGED (still `len(entries) != 3` / `len(replayed) != len(probes)`) — the poll only removes the timing dependency; it does not weaken the check.
+
+R/W: n/a (dev tooling test only). M: GAP_ANALYSIS T1 fixed + PROGRESS + this entry. Verified: `go test -count=8 ./cmd/shadowtraffic-e2e/...` green + full `go test ./...` 3× consecutive green (was ~1-in-2 flaky before). Hard gates clean (vet, gofmt touched).

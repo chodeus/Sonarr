@@ -188,7 +188,12 @@ func TestTriadComposesEndToEnd(t *testing.T) {
 		t.Errorf("fake C# saw %d hits during record-capture phase, want 3", got)
 	}
 
-	// SIGTERM record → flushes log on graceful shutdown.
+	// Wait for the record's periodic flush (50ms cadence) to land all
+	// 3 entries before shutting down — decouples the assertion from
+	// graceful-shutdown flush timing (see waitForJSONLEntries).
+	waitForJSONLEntries(t, logPath, 3, 10*time.Second)
+
+	// SIGTERM record → final flush + fsync on graceful shutdown.
 	stopAndWait(t, recordCmd, "record")
 
 	// 4. Read the JSONL log — assert 3 entries shaped per FORMAT.md.
@@ -393,6 +398,11 @@ func TestRecordReplayRoundTripsCleanly(t *testing.T) {
 		}
 		_ = resp.Body.Close()
 	}
+	// Wait for the periodic flush to land all probes in the log before
+	// shutdown + before replay reads it — same decoupling as
+	// TestTriadComposesEndToEnd (avoids the force-killed-before-flush
+	// race under full-suite parallel load).
+	waitForJSONLEntries(t, logPath, len(probes), 10*time.Second)
 	stopAndWait(t, recordCmd, "record")
 
 	// Capture what the backend saw during recording.
@@ -433,6 +443,48 @@ func TestRecordReplayRoundTripsCleanly(t *testing.T) {
 
 // readJSONL reads a JSONL file (skipping blank/comment lines per
 // FORMAT.md) and decodes each line to a map. Test-side helper.
+// countJSONLEntries reads path and returns the number of well-formed
+// (non-blank, non-comment, JSON-parseable) lines. Tolerant: a partial
+// trailing line mid-flush counts as 0 for that line rather than
+// failing — used by the poll below.
+func countJSONLEntries(path string) int {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		s := bytes.TrimSpace(line)
+		if len(s) == 0 || bytes.HasPrefix(s, []byte("#")) {
+			continue
+		}
+		var m map[string]any
+		if json.Unmarshal(s, &m) == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// waitForJSONLEntries polls path until it holds at least `want`
+// well-formed entries or `max` elapses. The record binary's drain
+// goroutine flushes the buffered writer on its -flush-interval ticker
+// (50ms in this test), so entries become reader-visible WITHOUT
+// waiting for graceful shutdown — this decouples the entry-count
+// assertion from subprocess shutdown timing (the J428-diagnosed flake:
+// under full-suite parallel load the record process could be
+// force-killed before its drain flushed, yielding "0 log entries").
+func waitForJSONLEntries(t *testing.T, path string, want int, max time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(max)
+	for time.Now().Before(deadline) {
+		if countJSONLEntries(path) >= want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func readJSONL(t *testing.T, path string) []map[string]any {
 	t.Helper()
 	b, err := os.ReadFile(path)
