@@ -19720,3 +19720,15 @@ NOTE (pre-existing gap, NOT introduced here): the search→grab step (C# Process
 Tests: skip/auto-disabled/interactive-disabled skip; interactive-enabled + single + whole-season + partial-double dispatch; empty-ids no-op; lookup-error propagates; nil-ctor.
 
 R: failed downloads auto-trigger a replacement search. W: auto-redownload-on-failure WIRED. M: PROGRESS + matrix #5/#6 + this entry. Hard gates clean (build, race tests redownload + downloadprocessing + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J402 — Verticalization Arc: ResetQualityDefinitions command (punch-list #6 admin)
+
+Ports `QualityDefinitionService.Execute(ResetQualityDefinitionsCommand)` (`src/NzbDrone.Core/Qualities/QualityDefinitionService.cs:112-131`). NEW `internal/commands/handlers/resetqualitydefinitions.go`: thin `IExecute<ResetQualityDefinitionsCommand>` handler that parses the optional `resetTitles` bool body → `qualitydefinitions.Service.ResetTitles(ctx, resetTitles)`. The service method already existed (J-earlier); this slice exposes it as the named command. Registered as `ResetQualityDefinitions` via new `Deps.ResetQualityDefinitions QualityDefinitionResetter`, wired in main.go from `qualityDefSvc`. Malformed body → default (resetTitles=false), matching the lenient body handling of the other command handlers.
+
+Tests: nil-ctor rejected; empty-body defaults false; `{"resetTitles":true}` parsed+forwarded; malformed body → default; error propagation.
+
+Remaining #6 admin: ClearLog (needs a Log table/repo port — no logs package in go/ yet) + ResetApiKey (EXCLUDED from autonomous scope — operator-only auth rotation).
+
+R: n/a. W: ResetQualityDefinitions command WIRED. M: PROGRESS + matrix #6 + this entry. Hard gates clean (build, race tests commands + handlers + qualitydefinitions + cmd/sonarr + contract, vet, gofmt).

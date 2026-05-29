@@ -3364,6 +3364,9 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		SeriesMover: seriesMover,
 		// J398 (punch-list #6): ClearBlocklist command → blocklist.Service.Clear.
 		ClearBlocklist: blocklistSvc,
+		// J402 (punch-list #6): ResetQualityDefinitions command →
+		// qualitydefinitions.Service.ResetTitles.
+		ResetQualityDefinitions: qualityDefSvc,
 		// J399 (Phase-4 auto-import): ProcessMonitoredDownloads command.
 		ProcessMonitoredDownloads: downloadProcessingSvc,
 		Log:                       logger,

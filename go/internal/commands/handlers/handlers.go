@@ -239,6 +239,12 @@ type Deps struct {
 	// registration. Production binds *blocklist.Service.
 	ClearBlocklist BlocklistClearer
 
+	// ResetQualityDefinitions wires the
+	// IExecute<ResetQualityDefinitionsCommand> handler (slice 5.J402,
+	// punch-list #6 admin commands). Optional — nil skips registration.
+	// Production binds *qualitydefinitions.Service.
+	ResetQualityDefinitions QualityDefinitionResetter
+
 	// ProcessMonitoredDownloads wires the
 	// IExecute<ProcessMonitoredDownloadsCommand> handler (slice 5.J399,
 	// Phase-4 auto-import). Optional — nil skips registration. Production
@@ -511,6 +517,15 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 			return err
 		}
 		registry.Register(ClearBlocklistName, commands.CommandSpec{Handler: clearBlocklist})
+	}
+
+	// ResetQualityDefinitions registers only when the resetter is wired.
+	if deps.ResetQualityDefinitions != nil {
+		resetQualityDefinitions, err := NewResetQualityDefinitions(deps.ResetQualityDefinitions, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(ResetQualityDefinitionsName, commands.CommandSpec{Handler: resetQualityDefinitions})
 	}
 
 	// UpdateSceneMapping registers only when the updater is wired.
