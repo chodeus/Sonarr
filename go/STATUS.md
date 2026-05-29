@@ -19732,3 +19732,15 @@ Tests: nil-ctor rejected; empty-body defaults false; `{"resetTitles":true}` pars
 Remaining #6 admin: ClearLog (needs a Log table/repo port — no logs package in go/ yet) + ResetApiKey (EXCLUDED from autonomous scope — operator-only auth rotation).
 
 R: n/a. W: ResetQualityDefinitions command WIRED. M: PROGRESS + matrix #6 + this entry. Hard gates clean (build, race tests commands + handlers + qualitydefinitions + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J403 — Verticalization Arc: Update endpoint Latest/Installable/Installed marking (punch-list #9 straggler)
+
+Ports the marking arm of `UpdateController.GetRecentUpdates` (`src/Sonarr.Api.V3/Update/UpdateController.cs:30-49`) into the go `UpdateHandler`, which previously passed the lister's rows through unmarked. NEW `markRecentUpdates(rows, currentVersion)`: sort packages by version descending, set `Latest` on the highest row, `Installable` on it when newer than the running build, `Installed` on the row equal to the build. NEW `compareVersions`/`versionPart` helpers (dotted-numeric, System.Version semantics: missing trailing component==0; non-numeric→0 so the "dev" build sorts below any release). Flags computed against `buildinfo.Version`.
+
+NOTE: the production lister is still the empty fixture (`emptyUpdateLister` — the C# `RecentUpdateProvider` isn't ported), so the marking is inert in production until that provider lands. It is correct + unit-tested for the moment the lister returns real rows, and the empty-corpus contract golden is unaffected (empty rows → no-op). The `InstalledOn` arm (C# UpdateHistoryService / LogDbEnabled branch `:50-66`) stays DEFERRED — no UpdateHistoryService in the Go tree.
+
+Tests: compareVersions (8 cases incl. dev / missing-component / major-dominates); markRecentUpdates empty / newer-than-build (Latest+Installable, not Installed) / unsorted-multi-row (sorts desc + marks) / highest-is-build (Latest+Installed, not Installable).
+
+R: GET /api/v3/update now marks Latest/Installable/Installed (live once RecentUpdateProvider lands). W: n/a. M: matrix #9 + PROGRESS + this entry. Hard gates clean (build, race tests api v3 + cmd/sonarr + contract, vet, gofmt).
