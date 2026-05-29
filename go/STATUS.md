@@ -20000,3 +20000,13 @@ Empty/`{}`/unparseable settings → nil → omitempty drops the key, so empty-DB
 Not covered by this slice (separate, smaller): customformat/autotagging `specifications[]` (same inverse-mapper idea but spec-shaped) + the `ImplementationName` stub — left for a follow-up.
 
 R: provider GET now returns saved field values (UI edit-forms work). W: n/a. M: GAP_ANALYSIS G4 + this entry. Hard gates clean (build, race tests api v3 + v5 + contract, vet, gofmt).
+
+---
+
+## J426 — G6 fix: wire series/lookup to the metadata-source proxy
+
+Audit finding G6: `GET /api/v3+v5/series/lookup` returned a hardcoded `[]` — the "add new series" search box was dead — even though the skyhook `metadatasource.Proxy` (which implements `SearchForNewSeries`) was already constructed + wired (it backs the SkyHook health check). NEW `apiv3.SeriesSearcher` consumer interface; `SeriesLookupHandler(searcher)` now calls `SearchForNewSeries(term)` and projects each `*series.Series` result via the existing `ToSeriesResource`. `metadataSourceProxy` threaded through buildHostServer/v3Routes into both routes (v5 GetHandler is a var alias — auto-tracks the new signature). Cover URLs stay remote (lookup results aren't in the library → no MapCoversToLocal); folder-name preview + statistics placeholder DEFERRED (the React flow derives the folder client-side).
+
+term missing → 400; nil searcher → `[]` (200, preserves the empty-DB contract); search error → 500. Tests: nil→[], missing-term→400, results projected + term passthrough + nil-entry skip, search-error→500; v5 smoke calls updated to GetHandler(nil).
+
+R: series/lookup now returns real TVDB search results. W: n/a. M: GAP_ANALYSIS G6 + this entry. Hard gates clean (build, race tests api v3 + v5 serieslookup + cmd/sonarr + contract, vet, gofmt).

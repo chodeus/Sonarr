@@ -1,35 +1,58 @@
 package v3
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"sonarr.tv/sonarr/internal/httperr"
+	"sonarr.tv/sonarr/internal/series"
 )
 
+// SeriesSearcher is the metadata-source search the lookup endpoint calls.
+// *metadatasource.Proxy satisfies it (skyhook SearchForNewSeries). nil →
+// the handler returns an empty list (the pre-G6 stub posture).
+type SeriesSearcher interface {
+	SearchForNewSeries(ctx context.Context, term string) ([]*series.Series, error)
+}
+
 // SeriesLookupHandler returns GET /api/v3/series/lookup. Mirrors C#
-// `SeriesLookupController.Search` at
-// `src/Sonarr.Api.V3/Series/SeriesLookupController.cs:26-31` which
-// calls `_searchProxy.SearchForNewSeries(term)` + maps the metadata-
-// source results to SeriesResource (with cover-URL rewrite + folder-
-// name preview + statistics placeholder).
+// `SeriesLookupController.Search` (`src/Sonarr.Api.V3/Series/
+// SeriesLookupController.cs:26-31`): `_searchProxy.SearchForNewSeries(term)`
+// → map each result to SeriesResource. G6 (J426) wires the real
+// metadatasource proxy (was a hardcoded `[]` stub). Cover URLs stay
+// remote (lookup results aren't in the library, so no MapCoversToLocal);
+// the C# folder-name preview + statistics placeholder are DEFERRED (the
+// React add-series flow derives the folder client-side from rootFolder +
+// title).
 //
-// DEFERRED with rationale: the search-proxy integration. The
-// metadatasource.Proxy ports (slice 4.AS - 4.AW) wired
-// SearchForNewSeries but the cover-URL rewrite + folder-name
-// builder integration with the SearchForNewSeries result pipeline
-// hasn't ported. Today returns `[]` matching the "no results"
-// wire shape so the React UI's "add new series" search box gets
-// 200 instead of 404.
-//
-// Required: `term` query. Missing term -> 400.
-func SeriesLookupHandler() http.Handler {
+// Required: `term` query → 400 if missing. nil searcher → `[]` (200).
+// Search error → 500.
+func SeriesLookupHandler(searcher SeriesSearcher) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("term") == "" {
+		term := r.URL.Query().Get("term")
+		if term == "" {
 			httperr.BadRequest(w, "series/lookup: term is required")
 			return
 		}
+		out := []SeriesResource{}
+		if searcher != nil {
+			results, err := searcher.SearchForNewSeries(r.Context(), term)
+			if err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/lookup: %w", err), nil)
+				return
+			}
+			for _, s := range results {
+				if s == nil {
+					continue
+				}
+				out = append(out, ToSeriesResource(*s))
+			}
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`[]`))
+		buf, _ := json.Marshal(out)
+		_, _ = w.Write(buf)
 	})
 }

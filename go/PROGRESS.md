@@ -4,6 +4,8 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Current state
 
+HEAD at `J426` — **G6: wire series/lookup to the skyhook proxy.** GET /series/lookup returned hardcoded `[]` (add-series search dead) though the metadatasource.Proxy (SearchForNewSeries) was built + wired for the health check. NEW apiv3.SeriesSearcher; SeriesLookupHandler(searcher) projects SearchForNewSeries results via ToSeriesResource; metadataSourceProxy threaded into v3+v5 routes. Covers stay remote; folder-preview deferred. Tests: nil→[], missing→400, results projected, error→500. Hard gates clean.
+
 HEAD at `J425` — **G4: populate provider fields[] on GET.** Provider GET (notification/indexer/importlist/downloadclient) never emitted fields[] though POST consumed them → UI couldn't show saved provider settings. NEW `fieldsFromSettingsJSON` (inverse of settingsJSONFromFields): stored Settings JSON → name-sorted []ProviderField{name,value}; wired into all 4 to*Resource mappers (+ derefSettings for *string cols). Empty→nil keeps empty-DB goldens byte-eq. Follow-up: customformat/autotagging specifications[] + ImplementationName stub. Tests: decode/sort/round-trip. Hard gates clean.
 
 HEAD at `J424` — **G7: register import-list providers.** ImportListSync was inert — the 8 provider packages self-register via init() into importlists.Default() (which the factory uses, confirmed) but main.go never blank-imported them. Added the 8 blank imports (download-client pattern). Import-list sync now has providers. Sub-gap deferred: IDTranslator nil skips non-TVDB-id items. Test: Default().Names() >= 8. Hard gates clean.

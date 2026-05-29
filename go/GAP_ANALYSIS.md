@@ -6,7 +6,8 @@
 > - ✅ **G3** queue/details empty — FIXED J422 (real lister).
 > - ✅ **G4** provider fields[] on GET — FIXED J425 (inverse settings→fields mapper; 4 families). Follow-up: customformat/autotagging `specifications[]` + `ImplementationName` stub still open.
 > - ✅ **G7** import-list sync inert — FIXED J424 (providers blank-imported). Sub-gap: `IDTranslator` nil (non-TVDB-id items).
-> - ⏳ **G5** rename previews, **G6** series/lookup, **G8** v5 history season/episode, **G9** tag/detail — OPEN (focused service ports, autonomous).
+> - ✅ **G6** series/lookup — FIXED J426 (wired to skyhook proxy).
+> - ⏳ **G5** rename previews, **G8** v5 history season/episode, **G9** tag/detail — OPEN (focused service ports, autonomous).
 > - ⏳ **T1** flaky shadowtraffic-e2e, **Q1** latent metadata-writer — OPEN.
 
 
