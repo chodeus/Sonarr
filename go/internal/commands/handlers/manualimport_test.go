@@ -3,6 +3,8 @@ package handlers_test
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"sonarr.tv/sonarr/internal/commands/handlers"
@@ -12,6 +14,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/language"
+	"sonarr.tv/sonarr/internal/ospath"
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
@@ -100,7 +103,7 @@ func (s *stubManualFinder) Find(_ string) *trackeddownloads.TrackedDownload { re
 
 func TestManualImport_NewWithNilImporter(t *testing.T) {
 	t.Parallel()
-	_, err := handlers.NewManualImport(&stubSeriesGetter{}, &stubEpisodeGetter{}, &passthroughAggregator{}, nil, nil, nil, nil)
+	_, err := handlers.NewManualImport(&stubSeriesGetter{}, &stubEpisodeGetter{}, &passthroughAggregator{}, nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error from nil importer")
 	}
@@ -287,7 +290,7 @@ func newTestManualImport(
 	finder handlers.ManualImportTrackedDownloadFinder,
 ) *handlers.ManualImport {
 	t.Helper()
-	h, err := handlers.NewManualImport(sg, eg, agg, imp, finder, nil, slog.Default())
+	h, err := handlers.NewManualImport(sg, eg, agg, imp, finder, nil, nil, slog.Default())
 	if err != nil {
 		t.Fatalf("NewManualImport: %v", err)
 	}
@@ -336,7 +339,12 @@ func (f *fakeManualCompletionPub) PublishUntrackedDownloadCompleted(_ context.Co
 
 func newManualImportWithPub(t *testing.T, eg handlers.ManualImportEpisodeGetter, imp handlers.ManualImportImporter, finder handlers.ManualImportTrackedDownloadFinder, pub handlers.ManualImportCompletionPublisher) *handlers.ManualImport {
 	t.Helper()
-	h, err := handlers.NewManualImport(&stubSeriesGetter{ser: &series.Series{ID: 42, Path: "/tv/Show"}}, eg, &passthroughAggregator{}, imp, finder, pub, slog.Default())
+	return newManualImportWithDeps(t, eg, imp, finder, pub, nil)
+}
+
+func newManualImportWithDeps(t *testing.T, eg handlers.ManualImportEpisodeGetter, imp handlers.ManualImportImporter, finder handlers.ManualImportTrackedDownloadFinder, pub handlers.ManualImportCompletionPublisher, cleaner handlers.ManualImportFolderCleaner) *handlers.ManualImport {
+	t.Helper()
+	h, err := handlers.NewManualImport(&stubSeriesGetter{ser: &series.Series{ID: 42, Path: "/tv/Show"}}, eg, &passthroughAggregator{}, imp, finder, pub, cleaner, slog.Default())
 	if err != nil {
 		t.Fatalf("NewManualImport: %v", err)
 	}
@@ -465,5 +473,121 @@ func TestManualImport_Tracked_PartialGate_NoEvent_J450(t *testing.T) {
 	}
 	if td.State != trackeddownloads.StateDownloading {
 		t.Errorf("tracked download state = %v, want still Downloading", td.State)
+	}
+}
+
+// --- J451: tracked output-folder cleanup --------------------------
+
+// tempDirCleaner is a real-filesystem ManualImportFolderCleaner: it
+// stats the path for FolderExists and os.RemoveAll's it for DeleteFolder,
+// gating deletion on the configured shouldDelete flag. Lets the cleanup
+// arm be exercised against an actual temp directory.
+type tempDirCleaner struct {
+	shouldDelete bool
+	deleted      []string
+}
+
+func (c *tempDirCleaner) FolderExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
+}
+
+func (c *tempDirCleaner) ShouldDeleteFolder(_ string, _ *series.Series) bool { return c.shouldDelete }
+
+func (c *tempDirCleaner) DeleteFolder(path string, _ bool) error {
+	c.deleted = append(c.deleted, path)
+	return os.RemoveAll(path)
+}
+
+// trackedWithOutput builds a tracked download whose DownloadItem points
+// at outputDir, with the given CanMoveFiles flag.
+func trackedWithOutput(outputDir string, canMove bool) *trackeddownloads.TrackedDownload {
+	return &trackeddownloads.TrackedDownload{
+		State: trackeddownloads.StateDownloading,
+		DownloadItem: &downloadclients.Item{
+			DownloadID:   "abc",
+			Title:        "Show.S01E01",
+			CanMoveFiles: canMove,
+			OutputPath:   ospath.New(outputDir),
+		},
+		RemoteEpisode: &decisionengine.Subject{},
+	}
+}
+
+// makeOutputDir creates a populated output directory under t.TempDir().
+func makeOutputDir(t *testing.T) string {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "Show.S01E01")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(out, "leftover.nfo"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return out
+}
+
+const trackedImportBody = `{"importMode":1,"files":[{"path":"/downloads/Show.S01E01.mkv","seriesId":42,"episodeIds":[100],"downloadId":"abc"}]}`
+
+// J451: a tracked manual import deletes the output folder when it's safe
+// to delete and the client allows file moves.
+func TestManualImport_Tracked_CleansOutputFolder_J451(t *testing.T) {
+	t.Parallel()
+	out := makeOutputDir(t)
+	eg := &stubEpisodeGetter{eps: []episodes.Episode{{ID: 100}}}
+	td := trackedWithOutput(out, true)
+	cleaner := &tempDirCleaner{shouldDelete: true}
+	h := newManualImportWithDeps(t, eg, &resultImporter{season: 1}, &stubManualFinder{td: td}, nil, cleaner)
+
+	if err := h.Execute(t.Context(), trackedImportBody); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(cleaner.deleted) != 1 || cleaner.deleted[0] != out {
+		t.Errorf("deleted = %v, want [%s]", cleaner.deleted, out)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("output folder still exists (stat err = %v), want removed", err)
+	}
+}
+
+// J451: cleanup is skipped when ShouldDeleteFolder says no — the folder
+// (e.g. one still holding wanted files) is left intact.
+func TestManualImport_Tracked_CleanupSkippedWhenShouldNotDelete_J451(t *testing.T) {
+	t.Parallel()
+	out := makeOutputDir(t)
+	eg := &stubEpisodeGetter{eps: []episodes.Episode{{ID: 100}}}
+	td := trackedWithOutput(out, true)
+	cleaner := &tempDirCleaner{shouldDelete: false}
+	h := newManualImportWithDeps(t, eg, &resultImporter{season: 1}, &stubManualFinder{td: td}, nil, cleaner)
+
+	if err := h.Execute(t.Context(), trackedImportBody); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(cleaner.deleted) != 0 {
+		t.Errorf("deleted = %v, want none (ShouldDeleteFolder=false)", cleaner.deleted)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Errorf("output folder removed despite ShouldDeleteFolder=false (stat err = %v)", err)
+	}
+}
+
+// J451: cleanup is skipped when the client can't move files
+// (CanMoveFiles=false) — e.g. a still-seeding torrent.
+func TestManualImport_Tracked_CleanupSkippedWhenCannotMove_J451(t *testing.T) {
+	t.Parallel()
+	out := makeOutputDir(t)
+	eg := &stubEpisodeGetter{eps: []episodes.Episode{{ID: 100}}}
+	td := trackedWithOutput(out, false)
+	cleaner := &tempDirCleaner{shouldDelete: true}
+	h := newManualImportWithDeps(t, eg, &resultImporter{season: 1}, &stubManualFinder{td: td}, nil, cleaner)
+
+	if err := h.Execute(t.Context(), trackedImportBody); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(cleaner.deleted) != 0 {
+		t.Errorf("deleted = %v, want none (CanMoveFiles=false)", cleaner.deleted)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Errorf("output folder removed despite CanMoveFiles=false (stat err = %v)", err)
 	}
 }

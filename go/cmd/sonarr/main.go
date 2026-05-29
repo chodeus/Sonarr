@@ -3417,6 +3417,9 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 			// import drives the same history + notification consumers a
 			// download-client completion does.
 			Publisher: manualImportCompletionPublisher{bus: bus},
+			// J451: delete the tracked download's output folder after a
+			// manual import when it's safe + the client allows moves.
+			Cleaner: manualImportFolderCleaner{disk: diskProv, dimp: dimpSvc},
 		},
 		// J391 (punch-list #6): DeleteSeriesFiles command → the shared
 		// recycle-bin delete adapter.

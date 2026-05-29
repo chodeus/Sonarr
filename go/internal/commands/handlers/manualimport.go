@@ -26,17 +26,18 @@
 // affects malformed/partial requests, where keeping the augmented
 // value is strictly safer than zeroing it.
 //
-// Completion events (J450): after the per-file loop, the handler
-// publishes the same completion events C# does (`ManualImportService.cs:572-626`)
-// when a [ManualImportCompletionPublisher] is wired —
-// [trackeddownloads.UntrackedDownloadCompletedEvent] per series/season
-// group of imported untracked files, and [trackeddownloads.DownloadCompletedEvent]
-// per tracked download whose every episode imported (state → Imported).
-// Unwired the publication is skipped (prior behavior). The tracked-
-// download output-folder cleanup (C# `:606-615`) is a follow-up (J451 —
-// needs the ShouldDeleteFolder + DeleteFolder substrate wired in). The
-// custom-format recalculation (C# `:545`) is also deferred; the
-// augmented values stand.
+// Completion events + cleanup (J450/J451): after the per-file loop, the
+// handler runs the same post-import tail C# does (`ManualImportService.cs:572-625`):
+//   - [trackeddownloads.UntrackedDownloadCompletedEvent] per series/season
+//     group of imported untracked files (when a [ManualImportCompletionPublisher]
+//     is wired);
+//   - per tracked download: output-folder cleanup (when a
+//     [ManualImportFolderCleaner] is wired) + a [trackeddownloads.DownloadCompletedEvent]
+//     when every episode imported (state → Imported; publisher only).
+//
+// Each side-effect no-ops when its optional dep is unset (prior
+// behavior). The custom-format recalculation (C# `:545`) is still
+// deferred; the augmented values stand.
 
 package handlers
 
@@ -111,9 +112,24 @@ type ManualImportCompletionPublisher interface {
 	PublishUntrackedDownloadCompleted(ctx context.Context, ev trackeddownloads.UntrackedDownloadCompletedEvent) error
 }
 
+// ManualImportFolderCleaner removes a tracked download's output folder
+// after a manual import (J451). Optional — when nil the cleanup is
+// skipped. The boot adapter combines the disk provider (FolderExists /
+// DeleteFolder) with downloadedimport.Service (ShouldDeleteFolder).
+// Ports the collaborators C# uses at `ManualImportService.cs:606-615`.
+type ManualImportFolderCleaner interface {
+	// FolderExists reports whether path is an existing directory.
+	FolderExists(path string) bool
+	// ShouldDeleteFolder reports whether the output folder is safe to
+	// delete after import (no leftover video files worth keeping).
+	ShouldDeleteFolder(path string, ser *series.Series) bool
+	// DeleteFolder removes path (recursive when true).
+	DeleteFolder(path string, recursive bool) error
+}
+
 // ManualImport is the IExecute<ManualImportCommand> port. Holds four
-// required collaborators + one optional tracked-download finder +
-// one optional completion-event publisher.
+// required collaborators + optional tracked-download finder, completion-
+// event publisher, and output-folder cleaner.
 type ManualImport struct {
 	seriesGetter  ManualImportSeriesGetter
 	episodeGetter ManualImportEpisodeGetter
@@ -121,13 +137,15 @@ type ManualImport struct {
 	importer      ManualImportImporter
 	finder        ManualImportTrackedDownloadFinder
 	publisher     ManualImportCompletionPublisher
+	cleaner       ManualImportFolderCleaner
 	log           *slog.Logger
 }
 
 // NewManualImport builds the handler. seriesGetter / episodeGetter /
-// aggregator / importer MUST be non-nil. finder + publisher are optional;
-// nil finder disables the tracked-download arm, nil publisher disables
-// completion-event publication. log defaults to [slog.Default].
+// aggregator / importer MUST be non-nil. finder / publisher / cleaner are
+// optional; nil finder disables the tracked-download arm, nil publisher
+// disables completion-event publication, nil cleaner disables output-
+// folder cleanup. log defaults to [slog.Default].
 func NewManualImport(
 	seriesGetter ManualImportSeriesGetter,
 	episodeGetter ManualImportEpisodeGetter,
@@ -135,6 +153,7 @@ func NewManualImport(
 	importer ManualImportImporter,
 	finder ManualImportTrackedDownloadFinder,
 	publisher ManualImportCompletionPublisher,
+	cleaner ManualImportFolderCleaner,
 	log *slog.Logger,
 ) (*ManualImport, error) {
 	switch {
@@ -157,6 +176,7 @@ func NewManualImport(
 		importer:      importer,
 		finder:        finder,
 		publisher:     publisher,
+		cleaner:       cleaner,
 		log:           log,
 	}, nil
 }
@@ -343,17 +363,17 @@ func (h *ManualImport) importOne(ctx context.Context, file *manualImportFile, mo
 	return results, td, nil
 }
 
-// publishCompletions fires the post-import completion events when a
-// publisher is wired. Ports the tail of C# `ManualImportService.Execute`
-// (`:576-625`): UntrackedDownloadCompletedEvent per untracked
-// series/season group, then DownloadCompletedEvent per tracked download
-// whose every episode imported. nil publisher → no-op.
+// publishCompletions runs the post-import tail of C#
+// `ManualImportService.Execute` (`:576-625`): the untracked
+// UntrackedDownloadCompletedEvent groups (publisher only), then the
+// tracked-download finalize loop (output-folder cleanup + the
+// DownloadCompletedEvent). Each side-effect no-ops when its optional dep
+// is unset.
 func (h *ManualImport) publishCompletions(ctx context.Context, imported, untracked []*episodeimport.ImportResult, tracked []trackedManualImport) {
-	if h.publisher == nil {
-		return
+	if h.publisher != nil {
+		h.publishUntracked(ctx, untracked)
 	}
-	h.publishUntracked(ctx, untracked)
-	h.publishTracked(ctx, imported, tracked)
+	h.finalizeTracked(ctx, imported, tracked)
 }
 
 // publishUntracked groups the imported untracked results by their
@@ -413,14 +433,19 @@ func (h *ManualImport) publishUntracked(ctx context.Context, untracked []*episod
 	}
 }
 
-// publishTracked groups the tracked import results by download id and,
-// per group whose every episode imported, marks the tracked download
-// Imported + publishes a DownloadCompletedEvent. Ports C# `:597-625`.
+// finalizeTracked groups the tracked import results by download id and,
+// per group: cleans up the output folder (C# `:606-615`), then — when
+// every episode imported — marks the tracked download Imported +
+// publishes a DownloadCompletedEvent (C# `:617-625`). Each side-effect
+// is gated on its optional dep; both unset → no-op.
 //
 // importedSeries mirrors the C# quirk `imported.First().LocalEpisode.Series`
 // (`:600`): the first imported file of the WHOLE batch supplies the
 // event's series id (manual imports are virtually always single-series).
-func (h *ManualImport) publishTracked(ctx context.Context, imported []*episodeimport.ImportResult, tracked []trackedManualImport) {
+func (h *ManualImport) finalizeTracked(ctx context.Context, imported []*episodeimport.ImportResult, tracked []trackedManualImport) {
+	if h.publisher == nil && h.cleaner == nil {
+		return
+	}
 	if len(tracked) == 0 {
 		return
 	}
@@ -445,6 +470,16 @@ func (h *ManualImport) publishTracked(ctx context.Context, imported []*episodeim
 	for _, id := range order {
 		g := groups[id]
 		td := g[0].td
+
+		// Output-folder cleanup (C# `:606-615`) — runs before the
+		// publication gate, independent of whether all episodes imported.
+		if h.cleaner != nil {
+			h.cleanupTrackedFolder(ctx, td, importedSeries)
+		}
+
+		if h.publisher == nil {
+			continue
+		}
 
 		var importedResults []*episodeimport.ImportResult
 		for _, t := range g {
@@ -493,6 +528,46 @@ func (h *ManualImport) publishTracked(ctx context.Context, imported []*episodeim
 			h.log.LogAttrs(ctx, slog.LevelWarn, "manualimport: publish DownloadCompletedEvent failed",
 				slog.String("downloadId", id), slog.String("err", err.Error()))
 		}
+	}
+}
+
+// cleanupTrackedFolder deletes a tracked download's output folder when
+// it's safe to (no leftover wanted files) and the client allows file
+// moves. Ports C# `ManualImportService.cs:606-615`:
+//
+//	if (_diskProvider.FolderExists(outputPath))
+//	    if (ShouldDeleteFolder(outputPath, importedSeries) && DownloadItem.CanMoveFiles)
+//	        _diskProvider.DeleteFolder(outputPath, true);
+//
+// The output path is the tracked download's ImportItem (the post-rename
+// view), falling back to its DownloadItem — mirroring C# SetImportItem,
+// which sets ImportItem to the original DownloadItem when no script-
+// import reshaped it. A delete error is logged + swallowed (the import
+// already succeeded; the stale folder is a cleanup nicety, not a gate).
+func (h *ManualImport) cleanupTrackedFolder(ctx context.Context, td *trackeddownloads.TrackedDownload, importedSeries *series.Series) {
+	if importedSeries == nil {
+		return
+	}
+	item := td.ImportItem
+	if item == nil {
+		item = td.DownloadItem
+	}
+	if item == nil {
+		return
+	}
+	outputPath := item.OutputPath.FullPath()
+	if outputPath == "" || !h.cleaner.FolderExists(outputPath) {
+		return
+	}
+	if !h.cleaner.ShouldDeleteFolder(outputPath, importedSeries) {
+		return
+	}
+	if td.DownloadItem == nil || !td.DownloadItem.CanMoveFiles {
+		return
+	}
+	if err := h.cleaner.DeleteFolder(outputPath, true); err != nil {
+		h.log.LogAttrs(ctx, slog.LevelWarn, "manualimport: delete output folder failed",
+			slog.String("path", outputPath), slog.String("err", err.Error()))
 	}
 }
 

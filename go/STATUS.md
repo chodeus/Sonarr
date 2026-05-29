@@ -20313,3 +20313,17 @@ Output-folder cleanup (C# `:606-615`, needs ShouldDeleteFolder+DeleteFolder) def
 Tests: untracked→1 event (series/files/episodes/sourcePath=/downloads/Show); 2 same-series+season files→1 grouped event (2 files); tracked all-imported→DownloadCompletedEvent + state Imported; tracked partial (1<2 expected)→no event + state unchanged. Updated the 2 existing NewManualImport call sites (+nil publisher).
 
 R: manualimport.go (publisher iface, importOne sig, publishCompletions/publishUntracked/publishTracked/longestCommonPath/firstLocalEpisodeSeries, episodefiles import), handlers.go (Publisher dep + RegisterAll arg), main.go (Publisher wiring), trackeddownloads/events.go (UntrackedDownloadCompletedEvent + imports). A: manualimport_completion_wiring.go. M: manualimport_test.go (4 tests + fakes + import; 2 call-site fixes), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates green (build, vet, gofmt, test -race handlers+trackeddownloads+cmd/sonarr).
+
+---
+
+## J451 — Q3 tail: ManualImport tracked output-folder cleanup
+
+**Slice (4 cont.): wire the tracked-download output-folder cleanup arm.** Completes the C# `ManualImportService.cs:606-615` tail J450 deferred. NEW optional `handlers.ManualImportFolderCleaner` iface (FolderExists / ShouldDeleteFolder / DeleteFolder); `publishTracked` renamed `finalizeTracked` — per download-id group it now runs `cleanupTrackedFolder` (when cleaner wired) BEFORE the publication gate, then publishes (when publisher wired). Cleanup logic ports C# verbatim: output path = `td.ImportItem` (post-rename view) falling back to `td.DownloadItem` (mirrors C# SetImportItem); `if FolderExists(p) && ShouldDeleteFolder(p, importedSeries) && DownloadItem.CanMoveFiles { DeleteFolder(p, true) }`. Delete error logged + swallowed (import already succeeded). Each side-effect gated on its optional dep; both nil → no-op (prior behavior).
+
+NEW `cmd/sonarr/manualimport_cleanup_wiring.go` adapter combining `diskProv` (FolderExists/DeleteFolder) + `dimpSvc` (downloadedimport.ShouldDeleteFolder), wired into ManualImportDeps.Cleaner in main.go. Substrate was already present (downloadedimport.ShouldDeleteFolder, Item.CanMoveFiles, disk FolderExists/DeleteFolder) — just unwired.
+
+Tests (real temp-dir rigor): shouldDelete+canMove → folder actually removed (os.RemoveAll via the cleaner) + delete recorded; ShouldDeleteFolder=false → folder intact, no delete; CanMoveFiles=false → folder intact, no delete. Updated NewManualImport call sites (+nil cleaner).
+
+**Q3 now fully done** (J449 producer + J450 events + J451 cleanup).
+
+R: manualimport.go (Cleaner iface/field/param, finalizeTracked + cleanupTrackedFolder, package doc), handlers.go (Cleaner dep + RegisterAll arg), main.go (Cleaner wiring). A: manualimport_cleanup_wiring.go. M: manualimport_test.go (3 temp-dir tests + tempDirCleaner/helpers + os/filepath/ospath imports; call-site fixes), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. FULL SUITE green (build, vet, gofmt `.`, go test ./...).

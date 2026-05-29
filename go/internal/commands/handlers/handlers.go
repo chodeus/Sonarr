@@ -283,6 +283,9 @@ type ManualImportDeps struct {
 	// Publisher is optional (J450): when wired the handler publishes
 	// the post-import completion events; nil disables publication.
 	Publisher ManualImportCompletionPublisher
+	// Cleaner is optional (J451): when wired the handler deletes a
+	// tracked download's output folder after import; nil disables it.
+	Cleaner ManualImportFolderCleaner
 }
 
 // DownloadedEpisodesScanDeps bundles the four sub-deps the
@@ -459,6 +462,7 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 			deps.ManualImport.Importer,
 			deps.ManualImport.Finder,
 			deps.ManualImport.Publisher,
+			deps.ManualImport.Cleaner,
 			deps.Log,
 		)
 		if err != nil {
