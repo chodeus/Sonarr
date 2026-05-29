@@ -4,7 +4,7 @@
 > - ✅ **G1** search→grab — FIXED J423 (search adapters now feed the grabber).
 > - ✅ **G2** CleanUpRecycleBin stub — FIXED J421 (dep wired).
 > - ✅ **G3** queue/details empty — FIXED J422 (real lister).
-> - ✅ **G4** provider fields[] on GET — FIXED J425 (inverse settings→fields mapper; 4 families). Follow-up: customformat/autotagging `specifications[]` + `ImplementationName` stub still open.
+> - ✅ **G4** provider fields[] on GET — FIXED J425 (inverse settings→fields mapper; 4 families). Follow-up: customformat WRITE-path persistence shape FIXED J431 (was a CRITICAL bug — POST/PUT-with-specs 500'd through real svc; now stores `{type,body}` envelope). REMAINING: customformat GET projects typed specs→full schema (read half); autotagging `specifications[]`; `ImplementationName` stub.
 > - ✅ **G7** import-list sync inert — FIXED J424 (providers blank-imported). Sub-gap: `IDTranslator` nil (non-TVDB-id items).
 > - ✅ **G6** series/lookup — FIXED J426 (wired to skyhook proxy).
 > - ✅ **G8** v5 history season/episode — FIXED J427 (episode) + J428 (season).
@@ -47,6 +47,12 @@ done, and some "done"-looking paths are actually stubbed).
 ### HIGH — resource projection gaps (UI edit-forms depend on these)
 
 **G4 — Provider `fields[]` are never populated on GET (notification / indexer / importlist / downloadclient).** `to*Resource` mappers omit `Fields`; POST/PUT *consume* `fields[]` but GET emits nothing → asymmetric round-trip. Schema endpoints ARE fully populated (the stale "schema-builder DEFERRED" comments are wrong for schemas). Root cause: no inverse `settings-JSON → []ProviderField` mapper. The per-impl `FieldDef` metadata already exists in the `*_schema.go` tables. Fix (AUTONOMOUS): one shared mapper that joins a stored `Settings` map against the matching schema's field list → populates all four families. Also fixes `ImplementationName` (currently copies `Implementation` as a stub) + `customformat`/`autotagging` `specifications[]` (same shape).
+
+### G4b — customformat specifications round-trip (write FIXED J431, read OPEN)
+
+**Write half (CRITICAL, FIXED J431):** `customFormatToModel` persisted the on-wire schema shape (`{implementation, fields[]}`) into the `Specifications` column, but `customformats.LoadFromRow`→`UnmarshalSpecs` only accepts the `{type, body}` envelope. So creating/updating a CustomFormat with ANY condition failed write→reload through the real service (the handler unit tests use a fake writer that skips the reload, masking it). Fixed by `customFormatSpecsToEnvelopeJSON` (maps wire spec → envelope, validates via the loader's own codec).
+
+**Read half (OPEN):** `toCustomFormatResource` still emits `specifications:[]` (stub). The faithful port projects each typed `customformats.Specification` → `CustomFormatSpecificationSchema` with full FieldDef metadata + injected value (C# `spec.ToSchema()` per `CustomFormatResource.cs:32`). Reuse the `customFormatSchemas` template table (clone FieldDefs, inject the persisted value by field name). Same shape needed for autotagging `specifications[]`.
 
 ### MEDIUM — endpoint returns empty (needs a focused service/driver port)
 

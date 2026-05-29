@@ -415,20 +415,23 @@ func validateCustomFormat(ctx context.Context, svc CustomFormatWriter, res *Cust
 }
 
 // customFormatToModel serialises the resource into the persisted
-// model. Specifications round-trips through json.Marshal so the
-// Specifications column carries the canonical JSON form. Mirrors
-// the C# `resource.ToModel(_specifications)` projection at
-// `CustomFormatResource.cs` (the spec-builder reflection that gives
-// each Specification its typed shape — Go defers that, persisting
-// the on-wire structure verbatim).
+// model. Mirrors the C# `resource.ToModel(_specifications)` projection
+// at `CustomFormatResource.cs:44-53`: each wire spec is mapped to its
+// typed `ICustomFormatSpecification` then serialised by the
+// `CustomFormatSpecificationConverter` into the persisted
+// `[{"type","body"}]` envelope shape.
+//
+// CRITICAL: the column MUST carry the envelope shape — the load path
+// (`customformats.LoadFromRow` → `UnmarshalSpecs`) only understands
+// `{type, body}`. The earlier stub persisted the on-wire schema shape
+// (`{implementation, fields[]}`) verbatim, which `UnmarshalSpecs`
+// rejects ("unknown discriminator"), so any CustomFormat created with
+// conditions failed the write→reload round-trip through the real
+// service.
 func customFormatToModel(res CustomFormatResource) (customformats.CustomFormat, error) {
-	specJSON := "[]"
-	if res.Specifications != nil && len(*res.Specifications) > 0 {
-		buf, err := json.Marshal(*res.Specifications)
-		if err != nil {
-			return customformats.CustomFormat{}, err
-		}
-		specJSON = string(buf)
+	specJSON, err := customFormatSpecsToEnvelopeJSON(res.Specifications)
+	if err != nil {
+		return customformats.CustomFormat{}, err
 	}
 	include := false
 	if res.IncludeCustomFormatWhenRenaming != nil {
@@ -440,6 +443,69 @@ func customFormatToModel(res CustomFormatResource) (customformats.CustomFormat, 
 		Specifications:                  specJSON,
 		IncludeCustomFormatWhenRenaming: include,
 	}, nil
+}
+
+// customFormatSpecsToEnvelopeJSON maps the on-wire specification list
+// into the persisted `[{"type","body"}]` envelope JSON the load path
+// understands. Ports the C# `ToModel` → `MapSpecification` →
+// converter-serialise chain.
+//
+// Each wire spec contributes one envelope element: `type` is its
+// `implementation` discriminator, and `body` is `{name, negate,
+// required}` plus the spec's value fields (each `fields[]` entry's
+// `name` → `value`). The assembled envelope is then validated +
+// canonicalised by round-tripping through the same
+// `UnmarshalSpecs`/`MarshalSpecs` the loader uses — so an unknown
+// implementation or a malformed value surfaces as an error here (the
+// handler maps it to 4xx/5xx) rather than corrupting the column.
+//
+// Empty / nil specs persist as `"[]"` (matching the C# empty
+// `List<>` → `[]`).
+func customFormatSpecsToEnvelopeJSON(specs *[]CustomFormatSpecificationSchema) (string, error) {
+	if specs == nil || len(*specs) == 0 {
+		return "[]", nil
+	}
+	type envelope struct {
+		Type string         `json:"type"`
+		Body map[string]any `json:"body"`
+	}
+	envs := make([]envelope, 0, len(*specs))
+	for _, s := range *specs {
+		body := map[string]any{
+			"name":     s.Name,
+			"negate":   s.Negate,
+			"required": s.Required,
+		}
+		for _, raw := range s.Fields {
+			fm, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := fm["name"].(string)
+			if name == "" {
+				continue
+			}
+			if v, present := fm["value"]; present {
+				body[name] = v
+			}
+		}
+		envs = append(envs, envelope{Type: s.Implementation, Body: body})
+	}
+	rawJSON, err := json.Marshal(envs)
+	if err != nil {
+		return "", err
+	}
+	// Validate + canonicalise through the loader's own codec so the
+	// stored column is exactly what LoadFromRow will accept.
+	typed, err := customformats.UnmarshalSpecs(rawJSON)
+	if err != nil {
+		return "", err
+	}
+	canonical, err := customformats.MarshalSpecs(typed)
+	if err != nil {
+		return "", err
+	}
+	return string(canonical), nil
 }
 
 // CustomFormatModelFromFormat is the exported entrypoint to

@@ -431,3 +431,92 @@ func TestCustomFormatResource_RoundTrip_NilSpecsDecodesAsNilPointer(t *testing.T
 		}
 	}
 }
+
+// --- G4-followup write-path fix (J431): the persisted Specifications
+// column MUST carry the loader's envelope shape `[{"type","body"}]`,
+// not the on-wire schema shape. These tests prove the transform's
+// output decodes through the SAME customformats.UnmarshalSpecs the
+// load path uses (the old schema-shape persistence did NOT decode —
+// it produced "unknown discriminator").
+
+func cfField(name string, value any) map[string]any {
+	return map[string]any{"name": name, "value": value}
+}
+
+func TestCustomFormatSpecsToEnvelopeJSON_EmptyAndNil(t *testing.T) {
+	t.Parallel()
+	got, err := customFormatSpecsToEnvelopeJSON(nil)
+	if err != nil || got != "[]" {
+		t.Fatalf("nil: got %q err %v want []", got, err)
+	}
+	empty := []CustomFormatSpecificationSchema{}
+	got, err = customFormatSpecsToEnvelopeJSON(&empty)
+	if err != nil || got != "[]" {
+		t.Fatalf("empty: got %q err %v want []", got, err)
+	}
+}
+
+func TestCustomFormatSpecsToEnvelopeJSON_RoundTripsThroughLoader(t *testing.T) {
+	t.Parallel()
+	specs := []CustomFormatSpecificationSchema{
+		{
+			Name: "x264", Implementation: "ReleaseTitleSpecification",
+			Negate: true, Required: true,
+			Fields: []any{cfField("value", `(x|h)\.?264`)},
+		},
+		{
+			Name: "1080p", Implementation: "ResolutionSpecification",
+			Fields: []any{cfField("value", float64(1080))},
+		},
+		{
+			Name: "Big", Implementation: "SizeSpecification",
+			Fields: []any{cfField("min", float64(5)), cfField("max", float64(20))},
+		},
+		{
+			Name: "NotEnglish", Implementation: "LanguageSpecification",
+			Fields: []any{cfField("value", float64(1)), cfField("exceptLanguage", true)},
+		},
+	}
+	out, err := customFormatSpecsToEnvelopeJSON(&specs)
+	if err != nil {
+		t.Fatalf("transform: %v", err)
+	}
+	// The load path's exact call — this is what failed under the old
+	// schema-shape persistence.
+	typed, err := customformats.UnmarshalSpecs([]byte(out))
+	if err != nil {
+		t.Fatalf("UnmarshalSpecs rejected the persisted shape: %v\njson=%s", err, out)
+	}
+	if len(typed) != 4 {
+		t.Fatalf("got %d specs, want 4", len(typed))
+	}
+	rt, ok := typed[0].(*customformats.ReleaseTitleSpec)
+	if !ok {
+		t.Fatalf("spec0 type %T", typed[0])
+	}
+	if rt.Pattern() != `(x|h)\.?264` {
+		t.Errorf("regex value = %q", rt.Pattern())
+	}
+	if !rt.Negate || !rt.Required || rt.Name != "x264" {
+		t.Errorf("base fields not preserved: %+v", rt.BaseSpecification)
+	}
+	if res, ok := typed[1].(*customformats.ResolutionSpec); !ok || res.Value != 1080 {
+		t.Errorf("resolution = %+v", typed[1])
+	}
+	if sz, ok := typed[2].(*customformats.SizeSpec); !ok || sz.Min != 5 || sz.Max != 20 {
+		t.Errorf("size = %+v", typed[2])
+	}
+	if lg, ok := typed[3].(*customformats.LanguageSpec); !ok || lg.Value != 1 || !lg.ExceptLanguage {
+		t.Errorf("language = %+v", typed[3])
+	}
+}
+
+func TestCustomFormatSpecsToEnvelopeJSON_UnknownImplementationErrors(t *testing.T) {
+	t.Parallel()
+	specs := []CustomFormatSpecificationSchema{
+		{Name: "x", Implementation: "NotARealSpecification", Fields: []any{cfField("value", "y")}},
+	}
+	if _, err := customFormatSpecsToEnvelopeJSON(&specs); err == nil {
+		t.Fatal("expected error for unknown implementation discriminator")
+	}
+}

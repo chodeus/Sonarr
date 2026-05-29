@@ -20059,3 +20059,15 @@ C# ref: `src/NzbDrone.Core/Tags/TagService.cs:88-152` (Details/Details(int) + Ge
 - Wired at v3 (3525-3526) + v5 (3219-3220) tag/detail routes; all 9 services already in v3Routes scope (no signature change).
 
 R: /tag/detail now returns real usage rows; empty-DB → `[]` (contract byte-eq preserved). W: n/a. M: GAP_ANALYSIS G9 fixed + PROGRESS + this entry. Tests: 9-source join + label-order + by-id + not-found + empty-DB + loader-error-propagate + nil-loaders. Hard gates clean (build, race tests tagdetail + api v3 + cmd/sonarr + contract, vet, gofmt on touched dirs).
+
+---
+
+## J431 — G4-followup write half + CRITICAL customformat persistence-shape bug
+
+C# ref: `src/Sonarr.Api.V3/CustomFormats/CustomFormatResource.cs:44-77` (ToModel→MapSpecification→converter) + the load codec `internal/customformats/marshal.go` (UnmarshalSpecs/MarshalSpecs) + `loader.go` (LoadFromRow).
+
+- BUG (found via G4-followup audit): `customFormatToModel` did `json.Marshal(*res.Specifications)` → persisted the on-wire SCHEMA shape (`{implementation,fields[]}`). But `customformats.Service.Insert/Update/All` reload via `LoadFromRow`→`UnmarshalSpecs`, which only accepts the `{type,body}` ENVELOPE → schema-shape decodes to empty Type → "unknown discriminator" error. So POST/PUT of any CustomFormat WITH conditions returned 500 through the REAL service. The handler unit tests passed only because their fake writer never reloads.
+- FIX: NEW `customFormatSpecsToEnvelopeJSON(*[]CustomFormatSpecificationSchema)` — per wire spec emits `{type: implementation, body: {name,negate,required} + field-name→value}`, then round-trips through the loader's own `UnmarshalSpecs`+`MarshalSpecs` to validate (unknown impl / bad value → error here, surfaced as 4xx/5xx, never column corruption) + canonicalise. Empty/nil → `"[]"`. Wired into `customFormatToModel`.
+- Field-value mapping is type-agnostic (each `fields[]` entry's name→value); UnmarshalSpecs re-types per discriminator (regex string / int / size float / language int+bool). Verified all 4 value shapes.
+
+R: n/a (write path). W: POST/PUT /customformat with conditions now persists a loader-readable column → create/update with specs works through the real service. M: GAP_ANALYSIS G4 + new G4b finding + PROGRESS + this entry. Tests: envelope round-trips through customformats.UnmarshalSpecs for regex/int/size/language + empty/nil→`[]` + unknown-impl error. Read half (typed spec→full schema on GET) is the next slice. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).
