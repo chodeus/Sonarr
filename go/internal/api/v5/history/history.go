@@ -54,11 +54,9 @@ package history
 
 import (
 	"net/http"
-	"strconv"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/api/v5/internal/v5util"
-	"sonarr.tv/sonarr/internal/httperr"
 )
 
 // Resource is an alias of the v3 (reduced) HistoryResource wire
@@ -108,39 +106,12 @@ var SeriesHandler = apiv3.HistorySeriesHandler
 // SeasonHandler returns GET /api/v5/history/season. Mirrors
 // `HistoryController.GetSeasonHistory` at
 // `src/Sonarr.Api.V5/History/HistoryController.cs:118-130`:
-// historyService.GetBySeason(seriesId, seasonNumber, eventType).
-//
-// **Empty-corpus stub** — the underlying `history.Service.GetBySeason`
-// is DEFERRED in the Go port (per `internal/history/service.go:127`
-// — same package-level deferred-methods list); only GetBySeries is
-// ported today. For empty-corpus parity this handler validates the
-// `seriesId` + `seasonNumber` query params (400 on missing/invalid)
-// then emits `[]`. When GetBySeason lands, swap the body to a real
-// service call without rewiring.
-//
-// J270.
-func SeasonHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seriesIDStr := r.URL.Query().Get("seriesId")
-		if seriesIDStr == "" {
-			httperr.BadRequest(w, "history/season: missing seriesId")
-			return
-		}
-		if id, err := strconv.Atoi(seriesIDStr); err != nil || id <= 0 {
-			httperr.BadRequest(w, "history/season: invalid seriesId")
-			return
-		}
-		seasonStr := r.URL.Query().Get("seasonNumber")
-		if seasonStr == "" {
-			httperr.BadRequest(w, "history/season: missing seasonNumber")
-			return
-		}
-		if _, err := strconv.Atoi(seasonStr); err != nil {
-			httperr.BadRequest(w, "history/season: invalid seasonNumber")
-			return
-		}
-		writeEmptyHistoryList(w)
-	})
+// historyService.GetBySeason(seriesId, seasonNumber, eventType). G8/J428
+// wires the real reader (was an empty-corpus stub) by delegating to the
+// v3 HistorySeasonHandler; the production reader resolves the season →
+// episode-id set and filters the series history.
+func SeasonHandler(svc apiv3.HistorySeasonReader) http.Handler {
+	return apiv3.HistorySeasonHandler(svc)
 }
 
 // EpisodeHandler returns GET /api/v5/history/episode. Mirrors
@@ -161,12 +132,4 @@ func EpisodeHandler(svc apiv3.HistoryEpisodeReader) http.Handler {
 // J270.
 func MarkAsFailedHandler(svc FailedDownloadMarker) http.Handler {
 	return v5util.RewriteSuccessTo204(apiv3.HistoryMarkAsFailedHandler(svc))
-}
-
-// ----- private helpers -----
-
-func writeEmptyHistoryList(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("[]"))
 }

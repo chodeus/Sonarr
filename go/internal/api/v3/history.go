@@ -260,6 +260,57 @@ func HistoryEpisodeHandler(svc HistoryEpisodeReader) http.Handler {
 	})
 }
 
+// HistorySeasonReader is the read surface for /history/season.
+// Satisfied by the production history wrapper (which resolves the
+// season → episode-id set + filters). Separate narrow interface,
+// like HistoryEpisodeReader.
+type HistorySeasonReader interface {
+	GetBySeason(ctx context.Context, seriesID, seasonNumber int, eventType *history.EventType) ([]history.Entry, error)
+}
+
+// HistorySeasonHandler returns GET /api/v5/history/season. Mirrors C#
+// `HistoryController.GetSeasonHistory`:
+// `historyService.GetBySeason(seriesId, seasonNumber, eventType)` →
+// MapToResource. Required `seriesId` + `seasonNumber` → 400 if
+// missing/invalid; optional `eventType`. Embeds + populator via
+// writeHistoryEntries (same as since/series/episode).
+func HistorySeasonHandler(svc HistorySeasonReader) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seriesIDStr := r.URL.Query().Get("seriesId")
+		if seriesIDStr == "" {
+			httperr.BadRequest(w, "history/season: missing seriesId")
+			return
+		}
+		seriesID, err := strconv.Atoi(seriesIDStr)
+		if err != nil || seriesID <= 0 {
+			httperr.BadRequest(w, fmt.Sprintf("history/season: invalid seriesId %q", seriesIDStr))
+			return
+		}
+		seasonStr := r.URL.Query().Get("seasonNumber")
+		if seasonStr == "" {
+			httperr.BadRequest(w, "history/season: missing seasonNumber")
+			return
+		}
+		seasonNumber, err := strconv.Atoi(seasonStr)
+		if err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("history/season: invalid seasonNumber %q", seasonStr))
+			return
+		}
+		eventType, ok := parseEventTypeQuery(w, r)
+		if !ok {
+			return
+		}
+		rows, err := svc.GetBySeason(r.Context(), seriesID, seasonNumber, eventType)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("history/season: %w", err), nil)
+			return
+		}
+		includeSeries := r.URL.Query().Get("includeSeries") == "true"
+		includeEpisode := r.URL.Query().Get("includeEpisode") == "true"
+		writeHistoryEntries(r.Context(), w, rows, svc, includeSeries, includeEpisode)
+	})
+}
+
 func parseEventTypeQuery(w http.ResponseWriter, r *http.Request) (*history.EventType, bool) {
 	raw := r.URL.Query().Get("eventType")
 	if raw == "" {

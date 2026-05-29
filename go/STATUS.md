@@ -20022,3 +20022,15 @@ Part 2 (J428): `history/season` — needs the season→episode-id join (Entry ha
 Tests: service GetByEpisode (no-filter / grabbed-filter / error / nil-receiver); v5 EpisodeHandler valid→[]/missing-id→400/returns-rows.
 
 R: history/episode now returns real rows. W: n/a. M: GAP_ANALYSIS G8 + this entry. Hard gates clean (build, race tests history + api v3 + v5 history + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J428 — G8 (part 2): wire GET /api/v5/history/season (G8 complete)
+
+Ports C# `HistoryController.GetSeasonHistory` → `historyService.GetBySeason`. Since `history.Entry` carries no SeasonNumber, the production wrapper `historyServiceWithPopulator.GetBySeason` resolves the season's episode-id set (NEW: widened `historyEpisodeLookup` with `GetEpisodesBySeason`, satisfied by *episodes.Service) and filters the series' event-type-filtered history rows to it. NEW `apiv3.HistorySeasonReader` + `HistorySeasonHandler` (seriesId+seasonNumber required → 400; projects via shared `writeHistoryEntries`). v5 `SeasonHandler(svc)` delegates; wired from `historySvcPopulated`. Removed the now-dead `writeEmptyHistoryList` stub helper + unused imports from the v5 history package.
+
+Tests: wrapper GetBySeason filters to season episodes + drops others + nil-lookup→error; v5 SeasonHandler valid→[]/missing-seriesId→400/missing-seasonNumber→400.
+
+With J427, **G8 is complete** — both history/episode + history/season return real data.
+
+R: history/season now returns real rows. W: n/a. M: GAP_ANALYSIS G8 + this entry. Hard gates clean (build, race tests api v3 + v5 history + history + cmd/sonarr + contract, vet, gofmt).

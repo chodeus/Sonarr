@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1297,6 +1298,9 @@ type historyCustomFormatsLookup interface {
 // includeEpisode embed needs. *episodes.Service satisfies it.
 type historyEpisodeLookup interface {
 	GetEpisode(ctx context.Context, id int) (*episodes.Episode, error)
+	// GetEpisodesBySeason backs the J428 history/season filter
+	// (season → episode-id set). *episodes.Service satisfies it.
+	GetEpisodesBySeason(ctx context.Context, seriesID, seasonNumber int) ([]episodes.Episode, error)
 }
 
 func (a historyPagedAdapter) PagedHistory(ctx context.Context, req apiv3.PagingRequest, includeSeries, includeEpisode bool) ([]apiv3.HistoryResource, int, error) {
@@ -1833,6 +1837,36 @@ type historyServiceWithPopulator struct {
 	episodesSvc historyEpisodeLookup
 	// upgradable backs the J378 qualityCutoffNotMet flag. nil → false.
 	upgradable *decisionengine.UpgradableSpecification
+}
+
+// GetBySeason satisfies apiv3.HistorySeasonReader (J428/G8 part 2):
+// ports C# `HistoryService.GetBySeason(seriesId, seasonNumber, eventType)`.
+// history.Entry carries no SeasonNumber, so we resolve the season's
+// episode-id set (via the episodes lookup) and filter the series'
+// (event-type-filtered) history rows to it. nil episode lookup → error.
+func (h *historyServiceWithPopulator) GetBySeason(ctx context.Context, seriesID, seasonNumber int, eventType *history.EventType) ([]history.Entry, error) {
+	if h.episodesSvc == nil {
+		return nil, errors.New("history: GetBySeason: no episode lookup wired")
+	}
+	eps, err := h.episodesSvc.GetEpisodesBySeason(ctx, seriesID, seasonNumber)
+	if err != nil {
+		return nil, fmt.Errorf("history: GetBySeason: episodes: %w", err)
+	}
+	idSet := make(map[int]bool, len(eps))
+	for _, e := range eps {
+		idSet[e.ID] = true
+	}
+	rows, err := h.GetBySeries(ctx, seriesID, eventType) // embedded *history.Service
+	if err != nil {
+		return nil, err
+	}
+	out := make([]history.Entry, 0, len(rows))
+	for _, r := range rows {
+		if idSet[r.EpisodeID] {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 // PopulateHistoryQualityCutoffNotMet satisfies apiv3.HistoryQualityCutoffPopulator.
@@ -3182,7 +3216,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/history", Handler: historyv5.ListHandler(historyPagedAdapter{repo: historyRepo, seriesSvc: seriesSvc, qualityProfilesSvc: qualityProfilesSvc, customFormatsSvc: customFormatsSvc, episodesSvc: episodesSvc, upgradable: upgradableSpecForReads})},
 		{Method: "GET", Path: "/api/v5/history/since", Handler: historyv5.SinceHandler(historySvcPopulated)},
 		{Method: "GET", Path: "/api/v5/history/series", Handler: historyv5.SeriesHandler(historySvcPopulated)},
-		{Method: "GET", Path: "/api/v5/history/season", Handler: historyv5.SeasonHandler()},
+		{Method: "GET", Path: "/api/v5/history/season", Handler: historyv5.SeasonHandler(historySvcPopulated)},
 		{Method: "GET", Path: "/api/v5/history/episode", Handler: historyv5.EpisodeHandler(historySvcPopulated)},
 		{Method: "POST", Path: "/api/v5/history/failed/{id}", Handler: historyv5.MarkAsFailedHandler(failedDownloadsSvc)},
 		// J271 — v5 ManualImport endpoint family (2 endpoints; 236 LOC C#).

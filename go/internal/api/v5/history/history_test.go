@@ -42,14 +42,18 @@ func TestMarkAsFailedHandler_Rewrites200To204(t *testing.T) {
 
 // ----- GET /season — v5-specific stub -----
 
+// fakeSeasonReader satisfies apiv3.HistorySeasonReader.
+type fakeSeasonReader struct{ rows []history.Entry }
+
+func (f fakeSeasonReader) GetBySeason(_ context.Context, _, _ int, _ *history.EventType) ([]history.Entry, error) {
+	return f.rows, nil
+}
+
 func TestSeasonHandler_ValidQuery_ReturnsEmptyArray(t *testing.T) {
 	t.Parallel()
-	// Stub emits `[]` for empty-corpus parity pending the
-	// historyService.GetBySeason port (deferred per internal/history/
-	// service.go:127).
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v5/history/season?seriesId=1&seasonNumber=2", nil)
-	SeasonHandler().ServeHTTP(rr, req)
+	SeasonHandler(fakeSeasonReader{}).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200; body=%q", rr.Code, rr.Body.String())
 	}
@@ -62,7 +66,7 @@ func TestSeasonHandler_MissingSeriesID_Returns400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v5/history/season?seasonNumber=2", nil)
-	SeasonHandler().ServeHTTP(rr, req)
+	SeasonHandler(fakeSeasonReader{}).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400", rr.Code)
 	}
@@ -72,7 +76,7 @@ func TestSeasonHandler_MissingSeasonNumber_Returns400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v5/history/season?seriesId=1", nil)
-	SeasonHandler().ServeHTTP(rr, req)
+	SeasonHandler(fakeSeasonReader{}).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400", rr.Code)
 	}

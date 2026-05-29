@@ -282,6 +282,10 @@ func (f *fakeHistoryEpisodeLookup) GetEpisode(_ context.Context, id int) (*episo
 	return nil, episodes.ErrNotFound
 }
 
+func (f *fakeHistoryEpisodeLookup) GetEpisodesBySeason(_ context.Context, _, _ int) ([]episodes.Episode, error) {
+	return nil, nil
+}
+
 // stubUpgradableConfig satisfies decisionengine.ConfigReader for the
 // J381 paged qualityCutoffNotMet test (default proper mode).
 type stubUpgradableConfig struct{}
