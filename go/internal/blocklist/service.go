@@ -24,6 +24,7 @@ type EntryWriter interface {
 	Delete(ctx context.Context, id int) error
 	DeleteByIDs(ctx context.Context, ids []int) (int64, error)
 	DeleteForSeries(ctx context.Context, seriesIDs []int) (int64, error)
+	Purge(ctx context.Context) (int64, error)
 }
 
 // Service ports a subset of `IBlocklistService` at
@@ -182,6 +183,24 @@ func (s *Service) DeleteByIDs(ctx context.Context, ids []int) (int64, error) {
 	}
 	if n > 0 {
 		s.publishChanged(ctx, ids, n)
+	}
+	return n, nil
+}
+
+// Clear ports `BlocklistService.Execute(ClearBlocklistCommand)` at
+// `BlocklistService.cs:121-124` → `_blocklistRepository.Purge()`:
+// removes every Blocklist row. Returns rows affected. Publishes
+// [BlocklistChangedEvent] (nil ids = "all changed") when n > 0.
+func (s *Service) Clear(ctx context.Context) (int64, error) {
+	if s == nil || s.repo == nil {
+		return 0, errors.New("blocklist: Clear on nil receiver")
+	}
+	n, err := s.repo.Purge(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("blocklist: Clear: %w", err)
+	}
+	if n > 0 {
+		s.publishChanged(ctx, nil, n)
 	}
 	return n, nil
 }

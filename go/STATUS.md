@@ -19666,3 +19666,13 @@ PUT /api/v5/series/{id}/season previously updated only the Season JSON Monitored
 Tests: cascade invoked with (id,season,monitored); cascade error→500.
 
 R: n/a. W: v5 season-monitor episode cascade WIRED. M: matrix row #7 + this entry. Hard gates clean (build, race tests api v5 series + v3 + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J398 — Verticalization Arc: ClearBlocklist command (punch-list #6 admin)
+
+Ports `BlocklistService.Execute(ClearBlocklistCommand)` → `Purge()`. `internal/blocklist`: new `Repo.Purge` (`DELETE FROM "Blocklist"`) + `Service.Clear` (BlocklistChangedEvent with nil ids when n>0); `EntryWriter` gains `Purge`. NEW `internal/commands/handlers/clearblocklist.go` (thin handler + narrow `BlocklistClearer`); registered + wired from blocklistSvc.
+
+Tests: service Clear; handler dispatch/error/nil-ctor; existing stubWriter gained Purge.
+
+R: n/a. W: ClearBlocklist WIRED. M: matrix #6 + this entry. Remaining #6 admin: ResetApiKey/ResetQualityDefinitions/ClearLog. Hard gates clean (build, race tests blocklist + blocklisthandlers + commands + cmd/sonarr + contract, vet, gofmt).

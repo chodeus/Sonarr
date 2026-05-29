@@ -232,6 +232,20 @@ func (r *Repo) DeleteByIDs(ctx context.Context, ids []int) (int64, error) {
 	return n, nil
 }
 
+// Purge ports `BlocklistRepository.Purge()` — deletes every Blocklist
+// row (the ClearBlocklist command). Returns rows affected.
+func (r *Repo) Purge(ctx context.Context) (int64, error) {
+	res, err := r.DB().SQL.ExecContext(ctx, `DELETE FROM "Blocklist"`)
+	if err != nil {
+		return 0, fmt.Errorf("blocklist: Purge: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("blocklist: Purge: rowsAffected: %w", err)
+	}
+	return n, nil
+}
+
 func marshalInts(xs []int) string {
 	if xs == nil {
 		xs = []int{}

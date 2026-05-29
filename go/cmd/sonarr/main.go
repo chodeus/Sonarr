@@ -3321,7 +3321,9 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		},
 		// J393 (punch-list #6): MoveSeries/BulkMoveSeries commands.
 		SeriesMover: seriesMover,
-		Log:         logger,
+		// J398 (punch-list #6): ClearBlocklist command → blocklist.Service.Clear.
+		ClearBlocklist: blocklistSvc,
+		Log:            logger,
 	}); err != nil {
 		return fmt.Errorf("commands handlers: %w", err)
 	}

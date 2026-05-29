@@ -28,6 +28,14 @@ type stubWriter struct {
 	gotDeleteByIDs       []int
 	deleteByIDsAffected  int64
 	deleteByIDsErr       error
+	purgeCalls           int
+	purgeAffected        int64
+	purgeErr             error
+}
+
+func (s *stubWriter) Purge(_ context.Context) (int64, error) {
+	s.purgeCalls++
+	return s.purgeAffected, s.purgeErr
 }
 
 func (s *stubWriter) Insert(_ context.Context, e *blocklist.Entry) (*blocklist.Entry, error) {
@@ -378,5 +386,20 @@ func TestService_DeleteForSeriesPublishesWhenAffected(t *testing.T) {
 	}
 	if ids := lastIDs.Load(); ids == nil || len(*ids) != 0 {
 		t.Errorf("DeleteForSeries event IDs: %+v, want empty (repo bulk WHERE doesn't return IDs)", ids)
+	}
+}
+
+// J398: Clear delegates to repo.Purge and returns the affected count;
+// publishes a changed event when n > 0.
+func TestService_Clear_J398(t *testing.T) {
+	t.Parallel()
+	w := &stubWriter{purgeAffected: 5}
+	svc := blocklist.NewService(w, nil)
+	n, err := svc.Clear(context.Background())
+	if err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	if n != 5 || w.purgeCalls != 1 {
+		t.Errorf("Clear = %d (purgeCalls %d), want 5/1", n, w.purgeCalls)
 	}
 }

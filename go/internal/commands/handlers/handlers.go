@@ -234,6 +234,11 @@ type Deps struct {
 	// seriesMoveAdapter (ports MoveSeriesService).
 	SeriesMover SeriesMover
 
+	// ClearBlocklist wires the IExecute<ClearBlocklistCommand> handler
+	// (slice 5.J398, punch-list #6 admin commands). Optional — nil skips
+	// registration. Production binds *blocklist.Service.
+	ClearBlocklist BlocklistClearer
+
 	Log *slog.Logger
 }
 
@@ -479,6 +484,15 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 			Handler:            bulkMoveSeries,
 			RequiresDiskAccess: true,
 		})
+	}
+
+	// ClearBlocklist registers only when the clearer is wired.
+	if deps.ClearBlocklist != nil {
+		clearBlocklist, err := NewClearBlocklist(deps.ClearBlocklist, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(ClearBlocklistName, commands.CommandSpec{Handler: clearBlocklist})
 	}
 
 	// UpdateSceneMapping registers only when the updater is wired.
