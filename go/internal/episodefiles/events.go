@@ -112,6 +112,30 @@ type EpisodeFileRenamedEvent struct {
 	OriginalPath string
 }
 
+// RenamedEpisodeFile ports C# `MediaFiles/RenamedEpisodeFile.cs`: one
+// successfully-renamed file plus where it lived before the move. Carried
+// in [SeriesRenamedEvent].
+type RenamedEpisodeFile struct {
+	// EpisodeFile is the file row after the move (updated RelativePath).
+	EpisodeFile *File
+	// PreviousPath is the absolute path the file lived at pre-move.
+	PreviousPath string
+	// PreviousRelativePath is the series-relative path pre-move.
+	PreviousRelativePath string
+}
+
+// SeriesRenamedEvent ports `MediaFiles/Events/SeriesRenamedEvent.cs`.
+// Published by the rename path (C# `RenameEpisodeFileService.RenameFiles`
+// at `:174`) once per series after at least one of its files was
+// renamed, carrying every renamed file + its prior paths. Consumed by
+// the extras/metadata writer (ExtraService.Handle(SeriesRenamedEvent) →
+// MoveFilesAfterRename) to relocate sidecar files alongside the renamed
+// media.
+type SeriesRenamedEvent struct {
+	Series       *series.Series
+	RenamedFiles []RenamedEpisodeFile
+}
+
 // EpisodeFileUpdatedEvent is a Go-port additive event fired by
 // [Service.Update] / [Service.UpdateMany] after a successful repo
 // update. C# Sonarr emits the equivalent signal via Dapper's

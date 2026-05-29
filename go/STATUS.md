@@ -20339,3 +20339,17 @@ Added `CreateAfterEpisodeFolder` to the `metadataWriterDriver` iface + a 4th sub
 Tests: EpisodeFolderCreatedEvent w/ series+folders → CreateAfterEpisodeFolder(11, /tv/Show, /tv/Show/Season 01); nil-series → no call. Added folder fields + method to fakeMetadataDriver.
 
 R: metadata_subscriptions.go (iface method, subscription, doc). M: metadata_subscriptions_test.go (2 tests + fake method/fields + import), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates green (build, vet, gofmt, test -race cmd/sonarr). Remaining Q1 tail: SeriesRenamedEvent + DownloadsProcessedEvent (not yet defined/published).
+
+---
+
+## J453 — Q1 tail: SeriesRenamedEvent (+ EpisodeFileRenamedEvent producer)
+
+**Slice (5b): wire the rename path's event publication.** The Go rename handler moved + persisted files but published NOTHING — so both the history "renamed" consumer (main.go:1056, EpisodeFileRenamedEvent) AND the metadata MoveFilesAfterRename path were dormant (the EpisodeFileRenamedEvent consumer was a dead consumer, same pattern as DownloadCompletedEvent pre-J449).
+
+NEW `episodefiles.SeriesRenamedEvent` + `episodefiles.RenamedEpisodeFile` (ports `SeriesRenamedEvent.cs` + `RenamedEpisodeFile.cs`). NEW optional `handlers.RenameEventPublisher` (2-method) on RenameDeps; `renameEpisodeFiles` now, per successfully-moved file, captures the pre-move abs/relative paths, publishes a per-file `EpisodeFileRenamedEvent` (C# `:155`), and after the loop publishes one `SeriesRenamedEvent` when any file renamed (C# `:172-176`). nil publisher → silent (prior behavior). NEW `cmd/sonarr/rename_event_wiring.go` bus adapter wired into RenameDeps.Publisher.
+
+Metadata side: added `MoveFilesAfterRename` to `metadataWriterDriver` + a 5th subscription → on SeriesRenamedEvent reloads ALL series files (C# ignores RenamedFiles + reloads, `ExtraService.cs:162-171`) → `svc.MoveFilesAfterRename`. Both RenameFiles + RenameSeries commands now drive history + metadata sidecar relocation. (C# `RemoveEmptySubfolders` pre-publish disk cleanup still deferred — needs a disk dep, orthogonal.)
+
+Tests: rename handler publishes 2 file events (OriginalPath=/tv/Show/<rel>) + 1 series event (2 renamed files w/ prior paths); all-same-filename → no events. Metadata sub: SeriesRenamedEvent→MoveFilesAfterRename(7, 2 files); nil-series→no call.
+
+R: episodefiles/events.go (SeriesRenamedEvent+RenamedEpisodeFile), rename.go (RenameEventPublisher iface, RenameDeps.Publisher, renameEpisodeFiles publish + filepath import), metadata_subscriptions.go (driver method + subscription + doc), main.go (RenameDeps.Publisher wiring). A: rename_event_wiring.go. M: rename_test.go (2 tests + fakeRenamePublisher), metadata_subscriptions_test.go (2 tests + fake method/fields), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates green (build, vet, gofmt, test -race handlers+episodefiles+cmd/sonarr). Remaining Q1 tail: DownloadsProcessedEvent → CreateAfterEpisodesImported.

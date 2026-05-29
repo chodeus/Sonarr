@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 
 	"sonarr.tv/sonarr/internal/episodefilemoving"
@@ -57,12 +58,26 @@ type EpisodeFileRowUpdater interface {
 	Update(ctx context.Context, file *episodefiles.File) error
 }
 
+// RenameEventPublisher publishes the rename-path events (J453): the
+// per-file [episodefiles.EpisodeFileRenamedEvent] (→ history row) and
+// the per-series [episodefiles.SeriesRenamedEvent] (→ metadata/extras
+// MoveFilesAfterRename). Optional — when nil the rename still moves +
+// persists files, just without firing the events (prior behavior). A
+// boot-time bus adapter satisfies it. Ports the two PublishEvent calls
+// in C# `RenameEpisodeFileService.RenameFiles` (`:155` + `:174`).
+type RenameEventPublisher interface {
+	PublishEpisodeFileRenamed(ctx context.Context, ev episodefiles.EpisodeFileRenamedEvent) error
+	PublishSeriesRenamed(ctx context.Context, ev episodefiles.SeriesRenamedEvent) error
+}
+
 // RenameDeps bundles the collaborators both rename handlers share.
 type RenameDeps struct {
 	Series  RenameSeriesLookup
 	Files   RenameFileLookup
 	Mover   EpisodeFileMover
 	Updater EpisodeFileRowUpdater
+	// Publisher is optional (J453); nil disables rename-event publication.
+	Publisher RenameEventPublisher
 }
 
 func (d RenameDeps) valid() bool {
@@ -156,13 +171,19 @@ func (h *RenameSeries) Execute(ctx context.Context, body string) error {
 }
 
 // renameEpisodeFiles ports the per-file loop of C# `RenameFiles(...)`
-// at `:130-178`: move each file to its canonical path then persist the
-// updated row. A same-source-and-destination result is skipped quietly
-// (C# SameFilenameException); any other move error is logged and the
-// loop continues (C# broad catch).
+// at `:130-178`: move each file to its canonical path, persist the
+// updated row, and publish a per-file EpisodeFileRenamedEvent. A
+// same-source-and-destination result is skipped quietly (C#
+// SameFilenameException); any other move error is logged and the loop
+// continues (C# broad catch). After the loop, when at least one file
+// renamed, a SeriesRenamedEvent is published (C# `:172-176`). Both
+// publications are gated on an optional publisher (nil → silent).
 func renameEpisodeFiles(ctx context.Context, deps RenameDeps, ser *series.Series, files []episodefiles.File, log *slog.Logger) {
+	var renamed []episodefiles.RenamedEpisodeFile
 	for i := range files {
 		f := files[i]
+		previousRelativePath := f.RelativePath
+		previousPath := filepath.Join(ser.Path, f.RelativePath)
 		moved, err := deps.Mover.MoveEpisodeFile(ctx, &f, ser)
 		if err != nil {
 			if errors.Is(err, episodefilemoving.ErrSameFilename) {
@@ -174,6 +195,25 @@ func renameEpisodeFiles(ctx context.Context, deps RenameDeps, ser *series.Series
 		}
 		if err := deps.Updater.Update(ctx, moved); err != nil {
 			log.Error("rename: persist moved file failed", "fileId", moved.ID, "err", err)
+		}
+		renamed = append(renamed, episodefiles.RenamedEpisodeFile{
+			EpisodeFile:          moved,
+			PreviousPath:         previousPath,
+			PreviousRelativePath: previousRelativePath,
+		})
+		// Per-file event (C# `:155`) → history "renamed" row.
+		if deps.Publisher != nil {
+			ev := episodefiles.EpisodeFileRenamedEvent{Series: ser, EpisodeFile: moved, OriginalPath: previousPath}
+			if err := deps.Publisher.PublishEpisodeFileRenamed(ctx, ev); err != nil {
+				log.Warn("rename: publish EpisodeFileRenamedEvent failed", "fileId", moved.ID, "err", err)
+			}
+		}
+	}
+	// Per-series event (C# `:172-176`) → metadata/extras MoveFilesAfterRename.
+	if len(renamed) > 0 && deps.Publisher != nil {
+		ev := episodefiles.SeriesRenamedEvent{Series: ser, RenamedFiles: renamed}
+		if err := deps.Publisher.PublishSeriesRenamed(ctx, ev); err != nil {
+			log.Warn("rename: publish SeriesRenamedEvent failed", "seriesId", ser.ID, "err", err)
 		}
 	}
 }

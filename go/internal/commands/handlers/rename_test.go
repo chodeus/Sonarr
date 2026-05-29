@@ -60,6 +60,21 @@ func renameDeps(mover *fakeMover, upd *fakeRowUpdater, fl fakeRenameFiles) handl
 	}
 }
 
+type fakeRenamePublisher struct {
+	fileEvents   []episodefiles.EpisodeFileRenamedEvent
+	seriesEvents []episodefiles.SeriesRenamedEvent
+}
+
+func (p *fakeRenamePublisher) PublishEpisodeFileRenamed(_ context.Context, ev episodefiles.EpisodeFileRenamedEvent) error {
+	p.fileEvents = append(p.fileEvents, ev)
+	return nil
+}
+
+func (p *fakeRenamePublisher) PublishSeriesRenamed(_ context.Context, ev episodefiles.SeriesRenamedEvent) error {
+	p.seriesEvents = append(p.seriesEvents, ev)
+	return nil
+}
+
 func TestRename_NilDeps(t *testing.T) {
 	t.Parallel()
 	if _, err := handlers.NewRenameFiles(handlers.RenameDeps{}, nil); err == nil {
@@ -81,6 +96,55 @@ func TestRenameFiles_MovesAndUpdatesEach(t *testing.T) {
 	}
 	if len(mover.moved) != 2 || len(upd.updated) != 2 {
 		t.Errorf("moved=%v updated=%v, want both [10 11]", mover.moved, upd.updated)
+	}
+}
+
+func TestRenameFiles_PublishesEvents_J453(t *testing.T) {
+	t.Parallel()
+	mover := &fakeMover{}
+	upd := &fakeRowUpdater{}
+	fl := fakeRenameFiles{byIDs: []episodefiles.File{{ID: 10, SeriesID: 1, RelativePath: "a.mkv"}, {ID: 11, SeriesID: 1, RelativePath: "b.mkv"}}}
+	pub := &fakeRenamePublisher{}
+	deps := renameDeps(mover, upd, fl)
+	deps.Publisher = pub
+	h, _ := handlers.NewRenameFiles(deps, slog.Default())
+	if err := h.Execute(t.Context(), `{"seriesId":1,"files":[10,11]}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// One per-file event each, with the absolute pre-move path.
+	if len(pub.fileEvents) != 2 {
+		t.Fatalf("file events = %d, want 2", len(pub.fileEvents))
+	}
+	if pub.fileEvents[0].OriginalPath != "/tv/Show/a.mkv" || pub.fileEvents[1].OriginalPath != "/tv/Show/b.mkv" {
+		t.Errorf("file event OriginalPaths = %q,%q", pub.fileEvents[0].OriginalPath, pub.fileEvents[1].OriginalPath)
+	}
+	// One per-series event carrying both renamed files + prior paths.
+	if len(pub.seriesEvents) != 1 {
+		t.Fatalf("series events = %d, want 1", len(pub.seriesEvents))
+	}
+	se := pub.seriesEvents[0]
+	if se.Series == nil || se.Series.ID != 1 || len(se.RenamedFiles) != 2 {
+		t.Fatalf("series event = %+v, want series 1 + 2 renamed files", se)
+	}
+	if se.RenamedFiles[0].PreviousRelativePath != "a.mkv" || se.RenamedFiles[0].PreviousPath != "/tv/Show/a.mkv" {
+		t.Errorf("renamed[0] prior paths = %q / %q", se.RenamedFiles[0].PreviousRelativePath, se.RenamedFiles[0].PreviousPath)
+	}
+}
+
+func TestRenameFiles_NoFilesRenamed_NoSeriesEvent_J453(t *testing.T) {
+	t.Parallel()
+	mover := &fakeMover{sameForID: map[int]bool{10: true, 11: true}} // both same-filename → no move
+	upd := &fakeRowUpdater{}
+	fl := fakeRenameFiles{byIDs: []episodefiles.File{{ID: 10, SeriesID: 1, RelativePath: "a.mkv"}, {ID: 11, SeriesID: 1, RelativePath: "b.mkv"}}}
+	pub := &fakeRenamePublisher{}
+	deps := renameDeps(mover, upd, fl)
+	deps.Publisher = pub
+	h, _ := handlers.NewRenameFiles(deps, slog.Default())
+	if err := h.Execute(t.Context(), `{"seriesId":1,"files":[10,11]}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(pub.fileEvents) != 0 || len(pub.seriesEvents) != 0 {
+		t.Errorf("no files renamed → expected no events, got file=%d series=%d", len(pub.fileEvents), len(pub.seriesEvents))
 	}
 }
 

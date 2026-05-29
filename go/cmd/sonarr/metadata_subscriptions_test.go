@@ -28,6 +28,8 @@ type fakeMetadataDriver struct {
 	folderSeriesID    int
 	folderSeries      string
 	folderSeason      string
+	renameSeriesID    int
+	renameFileCount   int
 	failEpisodeImport bool
 }
 
@@ -63,6 +65,14 @@ func (f *fakeMetadataDriver) CreateAfterEpisodeFolder(_ context.Context, sr *ser
 	f.folderSeriesID = sr.ID
 	f.folderSeries = seriesFolder
 	f.folderSeason = seasonFolder
+	return nil, nil
+}
+
+func (f *fakeMetadataDriver) MoveFilesAfterRename(_ context.Context, sr *series.Series, list []episodefiles.File) ([]metadatafiles.MetadataFile, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.renameSeriesID = sr.ID
+	f.renameFileCount = len(list)
 	return nil, nil
 }
 
@@ -188,6 +198,35 @@ func TestSubscribeMetadataWriters_EpisodeFolderCreated_NilSeries_J452(t *testing
 	_ = messaging.Publish(context.Background(), bus, episodefilemoving.EpisodeFolderCreatedEvent{})
 	if drv.folderSeriesID != 0 {
 		t.Errorf("nil-series EpisodeFolderCreatedEvent should not call driver, got series=%d", drv.folderSeriesID)
+	}
+}
+
+func TestSubscribeMetadataWriters_SeriesRenamed_J453(t *testing.T) {
+	t.Parallel()
+	bus := newTestBus()
+	drv := &fakeMetadataDriver{}
+	lister := fakeScanFileLister{files: []episodefiles.File{{ID: 1}, {ID: 2}}}
+	subscribeMetadataWriters(bus, drv, lister, discardLogger())
+
+	ev := episodefiles.SeriesRenamedEvent{Series: &series.Series{ID: 7}}
+	if err := messaging.Publish(context.Background(), bus, ev); err != nil {
+		t.Fatal(err)
+	}
+	// C# reloads ALL series files (not the renamed subset) → 2 here.
+	if drv.renameSeriesID != 7 || drv.renameFileCount != 2 {
+		t.Errorf("MoveFilesAfterRename got series=%d files=%d, want 7/2", drv.renameSeriesID, drv.renameFileCount)
+	}
+}
+
+func TestSubscribeMetadataWriters_SeriesRenamed_NilSeries_J453(t *testing.T) {
+	t.Parallel()
+	bus := newTestBus()
+	drv := &fakeMetadataDriver{}
+	subscribeMetadataWriters(bus, drv, fakeScanFileLister{}, discardLogger())
+
+	_ = messaging.Publish(context.Background(), bus, episodefiles.SeriesRenamedEvent{})
+	if drv.renameSeriesID != 0 {
+		t.Errorf("nil-series SeriesRenamedEvent should not call driver, got series=%d", drv.renameSeriesID)
 	}
 }
 

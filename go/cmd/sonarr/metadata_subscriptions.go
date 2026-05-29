@@ -22,6 +22,7 @@ type metadataWriterDriver interface {
 	CreateAfterMediaCoverUpdate(ctx context.Context, sr *series.Series) ([]metadatafiles.MetadataFile, error)
 	CreateAfterSeriesScan(ctx context.Context, sr *series.Series, episodeFilesList []episodefiles.File) ([]metadatafiles.MetadataFile, error)
 	CreateAfterEpisodeFolder(ctx context.Context, sr *series.Series, seriesFolder, seasonFolder string) ([]metadatafiles.MetadataFile, error)
+	MoveFilesAfterRename(ctx context.Context, sr *series.Series, episodeFilesList []episodefiles.File) ([]metadatafiles.MetadataFile, error)
 }
 
 // metadataScanFileLister loads a series' episode files for the
@@ -41,10 +42,12 @@ type metadataScanFileLister interface {
 //   - EpisodeFolderCreatedEvent → CreateAfterEpisodeFolder (J452 — the
 //     event is published by episodefilemoving when a series/season/episode
 //     folder is freshly created during a file move)
+//   - SeriesRenamedEvent        → MoveFilesAfterRename (J453 — published
+//     by the rename handler once per series after files are renamed)
 //
-// The remaining two (SeriesRenamedEvent, DownloadsProcessedEvent) are
-// not yet defined/published in the Go port; their subscriptions follow
-// when the publishers land (tracked in GAP_ANALYSIS Q1).
+// The last one (DownloadsProcessedEvent → CreateAfterEpisodesImported) is
+// not yet defined/published in the Go port; its subscription follows when
+// the publisher lands (tracked in GAP_ANALYSIS Q1).
 //
 // Metadata is only actually written when a metadata consumer (e.g.
 // Kodi nfo) is enabled + registered; with none configured these
@@ -101,6 +104,26 @@ func subscribeMetadataWriters(bus *messaging.Bus, svc metadataWriterDriver, file
 			}
 			if _, err := svc.CreateAfterEpisodeFolder(ctx, ev.Series, ev.SeriesFolder, ev.SeasonFolder); err != nil {
 				log.Warn("metadata: CreateAfterEpisodeFolder failed", "series", ev.Series.ID, "err", err)
+			}
+			return nil
+		})
+	// SeriesRenamedEvent → MoveFilesAfterRename (C# ExtraService
+	// Handle(SeriesRenamedEvent), `ExtraService.cs:162-171`). The C#
+	// handler ignores the event's RenamedFiles and reloads ALL of the
+	// series' files, relocating each writer's sidecars to match the
+	// renamed media.
+	messaging.Subscribe(bus, "metadata.MoveFilesAfterRename",
+		func(ctx context.Context, ev episodefiles.SeriesRenamedEvent) error {
+			if ev.Series == nil {
+				return nil
+			}
+			fs, err := files.GetFilesBySeries(ctx, ev.Series.ID)
+			if err != nil {
+				log.Warn("metadata: MoveFilesAfterRename file load failed", "series", ev.Series.ID, "err", err)
+				return nil
+			}
+			if _, err := svc.MoveFilesAfterRename(ctx, ev.Series, fs); err != nil {
+				log.Warn("metadata: MoveFilesAfterRename failed", "series", ev.Series.ID, "err", err)
 			}
 			return nil
 		})

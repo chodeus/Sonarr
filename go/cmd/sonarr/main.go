@@ -3432,6 +3432,11 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 			Files:   episodeFilesSvc,
 			Mover:   episodeFileMovingSvc,
 			Updater: episodeFilesSvc,
+			// J453: publish per-file EpisodeFileRenamedEvent (→ history
+			// "renamed" row) + per-series SeriesRenamedEvent (→ metadata
+			// MoveFilesAfterRename). Without this the rename moved files
+			// silently and both consumers stayed dormant.
+			Publisher: renameEventPublisher{bus: bus},
 		},
 		// J393 (punch-list #6): MoveSeries/BulkMoveSeries commands.
 		SeriesMover: seriesMover,
