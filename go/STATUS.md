@@ -19656,3 +19656,13 @@ R: queue-delete client side-effects WIRED. W: n/a. M: this entry + PROGRESS. #5 
 Deferred (documented): redownload-search consumer for `!skipRedownload`; event Data enrichment (indexer/size). Test: real-bus capture asserts SeriesID/EpisodeIDs/SkipRedownload/SourceTitle.
 
 **Matrix row #5 → DONE (J394 cache population + J395 removeFromClient/changeCategory + J396 blocklist).** R: n/a. W: queue-delete blocklist WIRED. M: matrix #5 + this entry + memory updated. Hard gates clean (build, race tests api v3 + v5 queue + blocklisthandlers + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J397 — Verticalization Arc: v5 season-monitor per-episode cascade (punch-list #7)
+
+PUT /api/v5/series/{id}/season previously updated only the Season JSON Monitored flag; the per-episode cascade was deferred. Now ports the EpisodeMonitoredService arm of C# `SeriesService.UpdateSeries`. `internal/api/v5/series/series.go`: optional-extension `SeasonEpisodeMonitorer`; `SeasonMonitorHandler` discovers it on svc and, after the series Update, calls `SetEpisodeMonitoredBySeason(id, seasonNumber, monitored)` (error→500). `cmd/sonarr/host_wiring.go`: `seriesCascadeAdapter` (already the v5 Writer + carries episodes) gains the method delegating to `episodes.Service.SetEpisodeMonitoredBySeason`. No handler signature/wiring change; fakes without the extension skip (backward compatible).
+
+Tests: cascade invoked with (id,season,monitored); cascade error→500.
+
+R: n/a. W: v5 season-monitor episode cascade WIRED. M: matrix row #7 + this entry. Hard gates clean (build, race tests api v5 series + v3 + cmd/sonarr + contract, vet, gofmt).

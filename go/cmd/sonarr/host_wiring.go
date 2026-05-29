@@ -735,6 +735,20 @@ func (a *seriesCascadeAdapter) MoveFolder(_ context.Context, src, dst string) er
 	return a.disk.MoveFolder(src, dst)
 }
 
+// SetEpisodeMonitoredBySeason satisfies seriesv5.SeasonEpisodeMonitorer
+// (J397): cascades the per-episode monitored state when the v5
+// season-monitor endpoint flips a season's Monitored flag. Delegates to
+// episodes.Service.SetEpisodeMonitoredBySeason (bulk WHERE update +
+// EpisodesMonitoredChanged publish). No-op when no episodes service is
+// wired.
+func (a *seriesCascadeAdapter) SetEpisodeMonitoredBySeason(ctx context.Context, seriesID, seasonNumber int, monitored bool) error {
+	if a.episodes == nil {
+		return nil
+	}
+	_, err := a.episodes.SetEpisodeMonitoredBySeason(ctx, seriesID, seasonNumber, monitored)
+	return err
+}
+
 // AddImportListExclusion satisfies apiv3.SeriesExclusionAdder. Loads
 // the series row to read TvdbID + Title, then calls
 // importlistexclusions.Service.Add. Mirrors C# `SeriesService.DeleteSeries`

@@ -535,3 +535,54 @@ func TestTypeAliasesMatchV3(t *testing.T) {
 	var _ EditorResource = apiv3.SeriesEditorResource{}
 	var _ apiv3.SeriesEditorResource = EditorResource{}
 }
+
+// fakeCascadeWriter implements Writer (via embedding) + the J397
+// SeasonEpisodeMonitorer optional extension.
+type fakeCascadeWriter struct {
+	fakeWriter
+	cascadeCalls []cascadeCall
+	cascadeErr   error
+}
+
+type cascadeCall struct {
+	seriesID, seasonNumber int
+	monitored              bool
+}
+
+func (f *fakeCascadeWriter) SetEpisodeMonitoredBySeason(_ context.Context, seriesID, seasonNumber int, monitored bool) error {
+	f.cascadeCalls = append(f.cascadeCalls, cascadeCall{seriesID, seasonNumber, monitored})
+	return f.cascadeErr
+}
+
+// J397: the season-monitor endpoint cascades per-episode monitored state
+// when the writer implements SeasonEpisodeMonitorer.
+func TestSeasonMonitorHandler_CascadesEpisodes_J397(t *testing.T) {
+	t.Parallel()
+	w := &fakeCascadeWriter{fakeWriter: fakeWriter{rows: []series.Series{{ID: 11, Title: "ShowA", Seasons: `[{"seasonNumber":2,"monitored":true}]`}}}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v5/series/11/season", bytesReader([]byte(`{"seasonNumber":2,"monitored":false}`)))
+	req.SetPathValue("id", "11")
+	SeasonMonitorHandler(w, &fakeEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.cascadeCalls) != 1 || w.cascadeCalls[0] != (cascadeCall{11, 2, false}) {
+		t.Errorf("cascadeCalls = %+v, want [{11 2 false}]", w.cascadeCalls)
+	}
+}
+
+// J397: a cascade failure surfaces as 500.
+func TestSeasonMonitorHandler_CascadeError_500_J397(t *testing.T) {
+	t.Parallel()
+	w := &fakeCascadeWriter{
+		fakeWriter: fakeWriter{rows: []series.Series{{ID: 11, Seasons: `[{"seasonNumber":1,"monitored":true}]`}}},
+		cascadeErr: context.DeadlineExceeded,
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v5/series/11/season", bytesReader([]byte(`{"seasonNumber":1,"monitored":false}`)))
+	req.SetPathValue("id", "11")
+	SeasonMonitorHandler(w, &fakeEmitter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: %d, want 500", rr.Code)
+	}
+}

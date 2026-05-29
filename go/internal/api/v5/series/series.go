@@ -50,6 +50,7 @@
 package series
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,6 +79,16 @@ type ByIDGetter = apiv3.SeriesByIDGetter
 
 // Writer re-exports v3's write surface (POST / PUT / DELETE).
 type Writer = apiv3.SeriesWriter
+
+// SeasonEpisodeMonitorer is the optional-extension surface (J397) the
+// SeasonMonitorHandler discovers on its Writer to cascade per-episode
+// monitored state when a season's Monitored flag changes — porting the
+// EpisodeMonitoredService arm of C# `SeriesService.UpdateSeries`. The
+// cmd/sonarr seriesCascadeAdapter (which carries the episodes service)
+// implements it; test fakes that don't simply skip the cascade.
+type SeasonEpisodeMonitorer interface {
+	SetEpisodeMonitoredBySeason(ctx context.Context, seriesID, seasonNumber int, monitored bool) error
+}
 
 // Emitter re-exports v3's SignalR broadcast surface.
 type Emitter = apiv3.SeriesEmitter
@@ -374,25 +385,25 @@ type MediaCover struct {
 // Mirrors `SeriesController.UpdateSeasonMonitored` at
 // `src/Sonarr.Api.V5/Series/SeriesController.cs:223-246`:
 //
-//	1. Load the series by route-{id}; 404 if missing (matches C#
-//	   `_seriesService.GetSeries(id)` throwing ModelNotFoundException).
-//	2. Walk the persisted Seasons JSON, find the entry whose
-//	   SeasonNumber matches the body's SeasonNumber; 404 if absent
-//	   (matches C# `series.Seasons.FirstOrDefault(...) == null`).
-//	3. Overwrite that entry's Monitored field with the body's value.
-//	   Other Season fields (Statistics snapshot, Images, etc.) are
-//	   preserved via the `[]map[string]any` decode/re-encode pattern
-//	   (matches the J214/seasonpass updateSeasonsJSON contract).
-//	4. Persist via Writer.Update at the repo layer (matches the
-//	   established v3 SeriesEditor + SeasonPass pattern — service-
-//	   layer UpdateSeries cascade is DEFERRED on the v5 surface
-//	   today; the v3 5.D1a deferred-cascade contract carries through).
-//	5. Emit SignalR `series/updated` broadcast with the freshly-
-//	   updated full SeriesResource (matches C#
-//	   `BroadcastResourceChange(ModelAction.Updated, GetSeriesResource(series, false))`).
-//	6. Return 200 + SeasonResource with SeasonNumber + Monitored
-//	   (Statistics + Images NOT emitted — matches C#
-//	   `season.ToResource()` default `includeImages: false`).
+//  1. Load the series by route-{id}; 404 if missing (matches C#
+//     `_seriesService.GetSeries(id)` throwing ModelNotFoundException).
+//  2. Walk the persisted Seasons JSON, find the entry whose
+//     SeasonNumber matches the body's SeasonNumber; 404 if absent
+//     (matches C# `series.Seasons.FirstOrDefault(...) == null`).
+//  3. Overwrite that entry's Monitored field with the body's value.
+//     Other Season fields (Statistics snapshot, Images, etc.) are
+//     preserved via the `[]map[string]any` decode/re-encode pattern
+//     (matches the J214/seasonpass updateSeasonsJSON contract).
+//  4. Persist via Writer.Update at the repo layer (matches the
+//     established v3 SeriesEditor + SeasonPass pattern — service-
+//     layer UpdateSeries cascade is DEFERRED on the v5 surface
+//     today; the v3 5.D1a deferred-cascade contract carries through).
+//  5. Emit SignalR `series/updated` broadcast with the freshly-
+//     updated full SeriesResource (matches C#
+//     `BroadcastResourceChange(ModelAction.Updated, GetSeriesResource(series, false))`).
+//  6. Return 200 + SeasonResource with SeasonNumber + Monitored
+//     (Statistics + Images NOT emitted — matches C#
+//     `season.ToResource()` default `includeImages: false`).
 //
 // 400 on invalid id / malformed body / missing seasonNumber field.
 // 500 on Service errors (load / persist).
@@ -436,6 +447,17 @@ func SeasonMonitorHandler(svc Writer, emitter Emitter) http.Handler {
 		if err := svc.Update(ctx, existing); err != nil {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/season: update %d: %w", id, err), nil)
 			return
+		}
+		// J397: cascade the per-episode monitored state for the season
+		// (C# `_seriesService.UpdateSeries` runs the EpisodeMonitoredService
+		// cascade). Discovered via optional-extension on svc so the handler
+		// signature is unchanged; when the writer doesn't implement it
+		// (test fakes) the episode cascade is skipped (pre-J397 behaviour).
+		if cascader, ok := svc.(SeasonEpisodeMonitorer); ok && cascader != nil {
+			if err := cascader.SetEpisodeMonitoredBySeason(ctx, id, body.SeasonNumber, body.Monitored); err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/season: episode cascade %d/%d: %w", id, body.SeasonNumber, err), nil)
+				return
+			}
 		}
 		// SignalR series/updated broadcast — matches C# at line 242
 		// (`BroadcastResourceChange(ModelAction.Updated, GetSeriesResource(...))`).
