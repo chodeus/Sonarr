@@ -19964,3 +19964,15 @@ Audit finding G3: `GET /api/v3+v5/queue/details` returned empty (backed by `empt
 Contract-safe: empty queue → `[]` (goldens unaffected). Tests: filtering by seriesId / episodeIds / none / seriesId-precedence + the queueRowMatchesEpisodes helper, via queue.Service.SetQueue.
 
 R: queue/details now returns the real queue. W: n/a. M: GAP_ANALYSIS G3 + this entry. Hard gates clean (build, race tests cmd/sonarr + v5 queuedetails + contract, vet, gofmt).
+
+---
+
+## J423 — G1 fix: search now grabs (MissingEpisodeSearch / CutoffUnmet / SeriesSearch / episoderefreshed / redownload)
+
+Audit finding G1 (CRITICAL): `indexersearch.Service.EpisodeSearch`/`SeasonSearch` return decisions but never grab — only RssSync bridged decisions→grabber. So all the episode/season/series search commands + episode-refreshed post-scan search + auto-redownload-on-failure found releases but downloaded nothing.
+
+Fix: the 4 search adapters in cmd/sonarr (handlerEpisodeSearchAdapter, seasonSearchAdapter, episodeRefreshedSearcherAdapter, redownloadSeasonSearchAdapter) now feed their decisions into the existing `processDownloadDecisions` grabber (the same `*download.ProcessDownloadDecisions` RssSync uses) via a new shared `grabSearchDecisions(ctx, grabber, decisions)` helper + narrow `decisionGrabber` interface. Grabber threaded into all 5 construction sites. Approved decisions now dispatch to download clients; the count return (handler log metric) is unchanged. Fixed the stale `EpisodeSearcher` doc-comment that wrongly claimed "the search service handles its own grab dispatch".
+
+Hermetic: no test/contract path dispatches a search command, so no live grab in tests; empty-DB contract unaffected. Tests: `grabSearchDecisions` grabs non-empty decisions / no-ops on empty / no-ops on nil grabber + a compile-time guard that `*download.ProcessDownloadDecisions` satisfies `decisionGrabber`.
+
+R: episode/season/series search + auto-redownload now actually download. W: n/a. M: GAP_ANALYSIS G1 + search→grab memory + this entry. Hard gates clean (build, race tests cmd/sonarr + commands + episoderefreshed + redownload + contract, vet, gofmt).

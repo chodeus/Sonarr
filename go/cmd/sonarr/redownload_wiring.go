@@ -20,15 +20,18 @@ import (
 // zero value matches the bulk-default posture the other search adapters
 // use (no UserInvokedSearch override).
 type redownloadSeasonSearchAdapter struct {
-	svc *indexersearch.Service
-	log *slog.Logger
+	svc     *indexersearch.Service
+	grabber decisionGrabber
+	log     *slog.Logger
 }
 
 func (a redownloadSeasonSearchAdapter) SearchSeason(ctx context.Context, seriesID, seasonNumber int) error {
-	if _, err := a.svc.SeasonSearch(ctx, seriesID, seasonNumber, false, indexersearch.SearchSettings{}); err != nil {
+	decisions, err := a.svc.SeasonSearch(ctx, seriesID, seasonNumber, false, indexersearch.SearchSettings{})
+	if err != nil {
 		a.log.LogAttrs(ctx, slog.LevelWarn, "redownload: season search failed",
 			slog.Int("seriesId", seriesID), slog.Int("seasonNumber", seasonNumber), slog.Any("err", err))
 		return err
 	}
+	grabSearchDecisions(ctx, a.grabber, decisions) // G1 (J423)
 	return nil
 }

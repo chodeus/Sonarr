@@ -60,10 +60,11 @@ type EpisodeMissingLister interface {
 }
 
 // EpisodeSearcher dispatches the per-episode search. The narrow
-// interface keeps the handlers package decoupled from
-// indexersearch — `*indexersearch.Service.EpisodeSearch` satisfies
-// this; the returned decision count is logged but not surfaced
-// further (the search service handles its own grab dispatch).
+// interface keeps the handlers package decoupled from indexersearch.
+// The production adapter (cmd/sonarr handlerEpisodeSearchAdapter) runs
+// the search AND feeds the resulting decisions into the grabber so
+// approved candidates download (G1/J423); the returned count is the
+// number of decisions made, logged by the handler.
 type EpisodeSearcher interface {
 	EpisodeSearch(ctx context.Context, episodeID int) (int, error)
 }

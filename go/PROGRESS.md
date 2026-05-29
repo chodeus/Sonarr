@@ -4,6 +4,8 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Current state
 
+HEAD at `J423` — **G1 (CRITICAL): search now grabs.** The 4 search adapters (MissingEpisodeSearch/CutoffUnmet/SeriesSearch per-episode+season, episoderefreshed, redownload) fed their decisions nowhere — search found releases but never downloaded. Now they route decisions into the existing `processDownloadDecisions` grabber (the one RssSync uses) via a shared `grabSearchDecisions` helper + `decisionGrabber` interface, threaded into all 5 construction sites. Episode/season/series search + auto-redownload-on-failure now actually grab approved releases. Fixed the stale 'search handles its own grab' doc-comment. Tests: grab-bridge helper (non-empty grabs / empty + nil no-op). Hard gates clean.
+
 HEAD at `J422` — **G3: real queue/details lister.** Replaced `emptyQueueDetailsLister` (returned empty) with `queueDetailsAdapter` porting `QueueDetailsController.GetQueue`: queueSvc.GetQueue() filtered by seriesId (precedence) / episodeIds / all, projected via projectQueueResource; wired at v3 + v5 routes. Pending-concat + includeSubresources gating documented-deferred. Tests: filter matrix + helper. Hard gates clean.
 
 HEAD at `J421` — **G2: wire CleanUpRecycleBin task → recyclebin.Service.** The 24h cleanup task was a nil no-op stub (Deps.CleanUpRecycleBin unset); recyclebin.Service.Cleanup is real + constructed. One-line Deps wiring. Recycle-bin retention cleanup now runs. Hard gates clean.

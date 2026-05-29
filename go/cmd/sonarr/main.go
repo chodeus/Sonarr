@@ -3061,8 +3061,8 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	redownloadSvc, err := redownload.NewService(
 		configProv,
 		episodesSvc,
-		episodeRefreshedSearcherAdapter{svc: indexerSearchSvc, log: logger},
-		redownloadSeasonSearchAdapter{svc: indexerSearchSvc, log: logger},
+		episodeRefreshedSearcherAdapter{svc: indexerSearchSvc, grabber: processDownloadDecisions, log: logger},
+		redownloadSeasonSearchAdapter{svc: indexerSearchSvc, grabber: processDownloadDecisions, log: logger},
 		logger,
 	)
 	if err != nil {
@@ -3078,7 +3078,7 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	// only — narrows the surface the MissingEpisodeSearch handler
 	// consumes. SearchSettings zero value (no Manual override; same
 	// as the C# bulk missing-search default).
-	episodeSearchAdapter := handlerEpisodeSearchAdapter{svc: indexerSearchSvc}
+	episodeSearchAdapter := handlerEpisodeSearchAdapter{svc: indexerSearchSvc, grabber: processDownloadDecisions}
 
 	// Slice 5.J40's update.Service + handlers.UpdateChecker adapter
 	// is constructed earlier (around the healthSvc-build site,
@@ -3191,7 +3191,7 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		bus,
 		seriesSvc,
 		episodesSvc,
-		episodeRefreshedSearcherAdapter{svc: indexerSearchSvc, log: logger},
+		episodeRefreshedSearcherAdapter{svc: indexerSearchSvc, grabber: processDownloadDecisions, log: logger},
 		nil,
 		logger,
 	)
@@ -3327,7 +3327,7 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		// SeasonSearcher shape — see the type at the bottom of this file.
 		SeriesSearchLookup:         seriesSvc,
 		SeriesSearchEpisodes:       episodesSvc,
-		SeriesSeasonSearcher:       seasonSearchAdapter{svc: indexerSearchSvc},
+		SeriesSeasonSearcher:       seasonSearchAdapter{svc: indexerSearchSvc, grabber: processDownloadDecisions},
 		MonitoredDownloadRefresher: downloadMonitoringSvc,
 		RssSync:                    indexerSearchSvc,
 		RssSyncBus:                 bus,
@@ -3721,18 +3721,44 @@ func buildLogDatastoreConfig(ctx context.Context, cfg *configfile.Provider, fold
 // handler (slice 5.J39). The handler only wants the decision count;
 // the full Decision slice is consumed by the upstream grab pipeline
 // inside indexersearch — not by the missing-search dispatcher.
+// decisionGrabber is the narrow grab surface the search adapters use to
+// dispatch approved search decisions to the download clients (G1/J423).
+// *download.ProcessDownloadDecisions satisfies it.
+type decisionGrabber interface {
+	ProcessDecisions(ctx context.Context, decisions []decisionengine.Decision) *download.ProcessedDecisions
+}
+
+// grabSearchDecisions feeds search decisions into the grabber so approved
+// candidates actually download. No-op when grabber is nil or there are no
+// decisions. Shared by the search-command / episoderefreshed / redownload
+// adapters — the bridge that was missing (search found releases but never
+// grabbed them), mirroring the RssSync handler's decider→grabber flow.
+func grabSearchDecisions(ctx context.Context, grabber decisionGrabber, decisions []decisionengine.Decision) {
+	if grabber != nil && len(decisions) > 0 {
+		grabber.ProcessDecisions(ctx, decisions)
+	}
+}
+
 type handlerEpisodeSearchAdapter struct {
-	svc *indexersearch.Service
+	svc     *indexersearch.Service
+	grabber decisionGrabber
 }
 
 // EpisodeSearch satisfies the handlers.EpisodeSearcher interface.
 // SearchSettings zero value matches the C# `MissingEpisodeSearch`
 // path which uses bulk defaults (no UserInvokedSearch override).
+//
+// G1 (J423): feed the search decisions into the grabber so approved
+// candidates actually download — mirrors the RssSync handler's
+// decider→grabber bridge. Without this the search found releases but
+// never grabbed them. Returns the decision count (the handler's log
+// metric); the grab is a side effect.
 func (a handlerEpisodeSearchAdapter) EpisodeSearch(ctx context.Context, episodeID int) (int, error) {
 	decisions, err := a.svc.EpisodeSearch(ctx, episodeID, indexersearch.SearchSettings{})
 	if err != nil {
 		return 0, err
 	}
+	grabSearchDecisions(ctx, a.grabber, decisions)
 	return len(decisions), nil
 }
 
@@ -3743,7 +3769,8 @@ func (a handlerEpisodeSearchAdapter) EpisodeSearch(ctx context.Context, episodeI
 // C# `SeriesSearchService` bulk-default posture (no UserInvokedSearch
 // override; matches the J215 documented quality-profile divergence).
 type seasonSearchAdapter struct {
-	svc *indexersearch.Service
+	svc     *indexersearch.Service
+	grabber decisionGrabber
 }
 
 func (a seasonSearchAdapter) SeasonSearch(ctx context.Context, seriesID, seasonNumber int, missingOnly bool) (int, error) {
@@ -3751,6 +3778,7 @@ func (a seasonSearchAdapter) SeasonSearch(ctx context.Context, seriesID, seasonN
 	if err != nil {
 		return 0, err
 	}
+	grabSearchDecisions(ctx, a.grabber, decisions) // G1 (J423)
 	return len(decisions), nil
 }
 
@@ -3765,19 +3793,22 @@ func (a seasonSearchAdapter) SeasonSearch(ctx context.Context, seriesID, seasonN
 // Per-episode failures are warn-logged and swallowed; one bad indexer
 // query in a batch shouldn't abort the rest. Slice 5.J210.
 type episodeRefreshedSearcherAdapter struct {
-	svc *indexersearch.Service
-	log *slog.Logger
+	svc     *indexersearch.Service
+	grabber decisionGrabber
+	log     *slog.Logger
 }
 
 func (a episodeRefreshedSearcherAdapter) SearchEpisodes(ctx context.Context, episodeIDs []int) error {
 	for _, id := range episodeIDs {
-		if _, err := a.svc.EpisodeSearch(ctx, id, indexersearch.SearchSettings{}); err != nil {
+		decisions, err := a.svc.EpisodeSearch(ctx, id, indexersearch.SearchSettings{})
+		if err != nil {
 			a.log.LogAttrs(ctx, slog.LevelWarn,
 				"episoderefreshed: per-episode search failed",
 				slog.Int("episodeId", id),
 				slog.Any("err", err))
 			continue
 		}
+		grabSearchDecisions(ctx, a.grabber, decisions) // G1 (J423)
 	}
 	return nil
 }
