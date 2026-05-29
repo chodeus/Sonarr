@@ -246,3 +246,27 @@ func TestRefresh_TrackerPopulatesEvent_J394(t *testing.T) {
 		t.Error("no TrackedDownloadRefreshedEvent observed")
 	}
 }
+
+type stubProcessor struct{ calls int }
+
+func (s *stubProcessor) ProcessTrackedDownloads(context.Context) int { s.calls++; return 0 }
+
+// J399: Refresh runs the wired processor after populating the cache.
+func TestRefresh_RunsProcessor_J399(t *testing.T) {
+	t.Parallel()
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+	prov := &stubProvider{name: "sab", items: []*downloadclients.Item{{DownloadID: "a"}}}
+	svc, err := downloadmonitoring.NewService(&stubLister{usenet: []downloadclients.Provider{prov}}, bus, slog.Default())
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	proc := &stubProcessor{}
+	svc.SetProcessor(proc)
+	if _, err := svc.Refresh(t.Context()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if proc.calls != 1 {
+		t.Errorf("processor calls = %d, want 1", proc.calls)
+	}
+}

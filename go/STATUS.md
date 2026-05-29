@@ -19676,3 +19676,17 @@ Ports `BlocklistService.Execute(ClearBlocklistCommand)` → `Purge()`. `internal
 Tests: service Clear; handler dispatch/error/nil-ctor; existing stubWriter gained Purge.
 
 R: n/a. W: ClearBlocklist WIRED. M: matrix #6 + this entry. Remaining #6 admin: ResetApiKey/ResetQualityDefinitions/ClearLog. Hard gates clean (build, race tests blocklist + blocklisthandlers + commands + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J399 — Phase-4 capstone: auto-import of completed downloads (ProcessMonitoredDownloads)
+
+The download loop is now end-to-end (grab → J394 queue population → J399 auto-import). Ports the happy path of `DownloadProcessingService.Execute(ProcessMonitoredDownloadsCommand)` → `CompletedDownloadService.Import`. NEW `internal/downloadprocessing/service.go`: `ProcessTrackedDownloads` walks the tracked-download cache; for each StateDownloading download whose client Item.Status==Completed + matched a series, hands the output path to `downloadedimport.Service.ProcessPath` (+ series + item); all-imported → mark StateImported. `internal/downloadmonitoring`: optional `MonitoredDownloadProcessor` + `SetProcessor`; Refresh runs it after cache population (auto-import each poll). NEW `processmonitoreddownloads.go` command handler. Wired from trackedDownloadsSvc + dimpSvc.
+
+Safe: no clients → empty cache → no-op (contract goldens unaffected).
+
+Deferred (documented): rejection/partial/failure state machine (left Downloading for retry), auto-redownload consumer, script-import/cleanup/DownloadCompletedEvent, import-blocked state.
+
+Tests: downloadprocessing (imports+marks; not-completed/unmatched/already-imported skip; partial not marked); downloadmonitoring Refresh-runs-processor; handler dispatch/nil-ctor.
+
+R: queue auto-imports completed downloads. W: ProcessMonitoredDownloads WIRED (happy path). M: PROGRESS + memory updated. Hard gates clean (build, race tests downloadprocessing + downloadmonitoring + commands + cmd/sonarr + contract, vet, gofmt).

@@ -69,6 +69,7 @@ import (
 	"sonarr.tv/sonarr/internal/downloadhistory"
 	"sonarr.tv/sonarr/internal/downloadhistoryhandlers"
 	"sonarr.tv/sonarr/internal/downloadmonitoring"
+	"sonarr.tv/sonarr/internal/downloadprocessing"
 	"sonarr.tv/sonarr/internal/episodefilemoving"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
@@ -2997,6 +2998,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		tracked: trackedDownloadsSvc,
 		log:     logger,
 	})
+	// J399: auto-import completed downloads. The processor reads the
+	// tracked-download cache the tracker populated above + imports
+	// completed ones via the existing downloadedimport pipeline. Run on
+	// every Refresh cycle (SetProcessor) + registered as the
+	// ProcessMonitoredDownloads command for manual/API trigger.
+	downloadProcessingSvc, err := downloadprocessing.NewService(trackedDownloadsSvc, dimpSvc, logger)
+	if err != nil {
+		return fmt.Errorf("downloadprocessing service: %w", err)
+	}
+	downloadMonitoringSvc.SetProcessor(downloadProcessingSvc)
 
 	// Slice 5.J39 (audit B.3 close-out): adapter around
 	// indexerSearchSvc.EpisodeSearch that returns the decision count
@@ -3323,7 +3334,9 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		SeriesMover: seriesMover,
 		// J398 (punch-list #6): ClearBlocklist command → blocklist.Service.Clear.
 		ClearBlocklist: blocklistSvc,
-		Log:            logger,
+		// J399 (Phase-4 auto-import): ProcessMonitoredDownloads command.
+		ProcessMonitoredDownloads: downloadProcessingSvc,
+		Log:                       logger,
 	}); err != nil {
 		return fmt.Errorf("commands handlers: %w", err)
 	}

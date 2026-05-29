@@ -69,10 +69,11 @@ type DownloadItemTracker interface {
 // doc-comment). Goroutine-safe: stateless beyond construction-time
 // deps.
 type Service struct {
-	clients ClientLister
-	tracker DownloadItemTracker
-	bus     *messaging.Bus
-	log     *slog.Logger
+	clients   ClientLister
+	tracker   DownloadItemTracker
+	processor MonitoredDownloadProcessor
+	bus       *messaging.Bus
+	log       *slog.Logger
 }
 
 // SetTracker wires the optional per-item [DownloadItemTracker] (J394).
@@ -81,6 +82,22 @@ type Service struct {
 func (s *Service) SetTracker(t DownloadItemTracker) {
 	if s != nil {
 		s.tracker = t
+	}
+}
+
+// MonitoredDownloadProcessor auto-imports completed tracked downloads
+// (downloadprocessing.Service.ProcessTrackedDownloads). Mirrors C#
+// Refresh pushing ProcessMonitoredDownloadsCommand at the end of a poll.
+type MonitoredDownloadProcessor interface {
+	ProcessTrackedDownloads(ctx context.Context) int
+}
+
+// SetProcessor wires the optional [MonitoredDownloadProcessor] (J399).
+// Once set, Refresh runs it after populating the cache so completed
+// downloads auto-import on every poll cycle.
+func (s *Service) SetProcessor(p MonitoredDownloadProcessor) {
+	if s != nil {
+		s.processor = p
 	}
 }
 
@@ -182,6 +199,12 @@ func (s *Service) Refresh(ctx context.Context) (int, error) {
 				"downloadmonitoring: TrackedDownloadRefreshedEvent publish failed",
 				slog.Any("err", err))
 		}
+	}
+
+	// J399: auto-import completed downloads now that the cache is
+	// populated (mirrors C# Refresh pushing ProcessMonitoredDownloadsCommand).
+	if s.processor != nil {
+		s.processor.ProcessTrackedDownloads(ctx)
 	}
 
 	if firstErr != nil {

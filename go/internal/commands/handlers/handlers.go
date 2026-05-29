@@ -239,6 +239,12 @@ type Deps struct {
 	// registration. Production binds *blocklist.Service.
 	ClearBlocklist BlocklistClearer
 
+	// ProcessMonitoredDownloads wires the
+	// IExecute<ProcessMonitoredDownloadsCommand> handler (slice 5.J399,
+	// Phase-4 auto-import). Optional — nil skips registration. Production
+	// binds *downloadprocessing.Service.
+	ProcessMonitoredDownloads MonitoredDownloadProcessor
+
 	Log *slog.Logger
 }
 
@@ -482,6 +488,18 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 		}
 		registry.Register(BulkMoveSeriesName, commands.CommandSpec{
 			Handler:            bulkMoveSeries,
+			RequiresDiskAccess: true,
+		})
+	}
+
+	// ProcessMonitoredDownloads registers only when the processor is wired.
+	if deps.ProcessMonitoredDownloads != nil {
+		pmd, err := NewProcessMonitoredDownloads(deps.ProcessMonitoredDownloads, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(ProcessMonitoredDownloadsName, commands.CommandSpec{
+			Handler:            pmd,
 			RequiresDiskAccess: true,
 		})
 	}
