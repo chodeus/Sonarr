@@ -43,11 +43,12 @@ import (
 // / "unknown"; always emit, default "unknown" when persisted
 // Protocol is nil/0); Indexer + Message (nullable strings — use
 // omitempty to match `JsonIgnoreCondition.WhenWritingNull` for
-// v5's `string?` semantic; v3 STJson same posture). Languages,
-// Quality, EpisodeIds-as-subresource, and Series subresource remain
-// DEFERRED — each requires either a typed wire DTO (Quality is
-// complex) or a service join (Languages still needs an id-to-name
-// lookup; Quality needs the QualityModel typed envelope).
+// v5's `string?` semantic; v3 STJson same posture). Languages
+// (J314, typed []LanguageRef), Quality (J382, typed QualityModel DTO
+// via cmd/sonarr's blocklistQualityResource), and the Series
+// subresource (J382, BASE SeriesResource hydration) are now all
+// projected. Only the Title-from-Episode-join remains DEFERRED (needs
+// an episode-table lookup the paged adapter doesn't yet thread).
 //
 // J316 v5-additive widening: Source (`string?` on v5 only; absent
 // from v3 C# `BlocklistResource.cs`). Persisted as

@@ -227,13 +227,15 @@ func (emptyUpdateLister) RecentUpdates(context.Context) ([]apiv3.UpdateResource,
 // Mirrors C# `QueueController.GetQueue` → `QueueResourceMapper.ToResource`
 // at `src/Sonarr.Api.V3/Queue/QueueResource.cs:58-107`.
 //
-// J347 — Arc 3 slice 1. Projects the scalar field set; Series /
-// Episode / Episodes subresources + CustomFormats are DEFERRED to the
-// next sub-slice (the queue.Queue row already carries the Series +
-// Episodes domain objects, so hydration is a projection-only follow-up
-// — no new lookups needed). Pagination follows the historyPagedAdapter
-// convention (paginateInMemory in cache order); SQL/in-mem sorting is
-// the same DEFERRED posture the history + blocklist adapters carry.
+// J347 — Arc 3 slice 1 projected the scalar field set. Sub-resource
+// hydration is now COMPLETE (the queue.Queue row carries the Series +
+// Episodes domain objects, so no extra lookups were needed): Series +
+// Episode hydrate-then-strip (J348), CustomFormats (J349),
+// EpisodeIDs/SeasonNumbers (J351), Episodes plural (J352), and the
+// CustomFormatScore recompute against the live profile (J359) — see
+// projectQueueResource. Pagination follows the historyPagedAdapter
+// convention (paginateInMemory in cache order); filter/sort applied via
+// queueFilterCriteria + SortQueue (J357/J358).
 type queuePagedAdapter struct {
 	svc         *queue.Service
 	qualityDefs *qualitydefinitions.Service
@@ -2966,9 +2968,11 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "DELETE", Path: "/api/v5/connection/{id}", Handler: connectionv5.DeleteHandler(notificationsRepo, notificationEmitter)},
 		// J268 — v5 Calendar endpoint family (3 endpoints; 184 LOC C#).
 		// Pure path-alias slice — same envelope/status/sort as v3 at the
-		// empty-corpus level. Sub-resource hydration deferred per the
-		// Wave 1 chain (J258/J259/J261/J264). v5 lowercases the feed
-		// URL: /feed/v3/calendar/Sonarr.ics → /feed/v5/calendar/sonarr.ics.
+		// empty-corpus level. Sub-resource hydration (includeSeries /
+		// includeEpisodeFile / includeImages) is wired via the shared
+		// episodesSvcWithEpisodeFile composite (J376, same as v3). v5
+		// lowercases the feed URL: /feed/v3/calendar/Sonarr.ics →
+		// /feed/v5/calendar/sonarr.ics.
 		{Method: "GET", Path: "/api/v5/calendar", Handler: calendarv5.ListHandler(episodesSvcWithEpisodeFile)},
 		{Method: "GET", Path: "/api/v5/calendar/{id}", Handler: calendarv5.ByIDHandler(episodesSvc)},
 		{Method: "GET", Path: "/feed/v5/calendar/sonarr.ics", Handler: calendarv5.FeedHandler(episodesSvc, seriesSvc)},
