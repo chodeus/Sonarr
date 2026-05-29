@@ -12,6 +12,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/datastore"
 	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/mediainfo"
 	"sonarr.tv/sonarr/internal/quality"
 )
@@ -875,5 +876,95 @@ func TestEpisodeFileBulkUpdateHandler_MissingID_400(t *testing.T) {
 	EpisodeFileBulkUpdateHandler(&fakeEpisodeFileWriter{}).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// J389: single PUT /{id} persists Quality (decoded to the bare-int model
+// column) but leaves Languages untouched (C# single SetQuality scope).
+func TestEpisodeFileUpdateHandler_PersistsQuality_J389(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeFileWriter{get: map[int]*episodefiles.File{
+		7: {ID: 7, SeriesID: 1, Quality: `{"quality":1,"revision":{"version":1}}`, Languages: []int{1}},
+	}}
+	q, _ := quality.FindByID(7)
+	body, _ := json.Marshal(EpisodeFileResource{ID: 7, SeriesID: 1, Quality: ToQualityModelResource(quality.NewModel(q))})
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/7", strings.NewReader(string(body)))
+	req.SetPathValue("id", "7")
+	EpisodeFileUpdateHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	var got quality.Model
+	if err := json.Unmarshal([]byte(w.updated.Quality), &got); err != nil {
+		t.Fatalf("persisted quality not decodable: %q: %v", w.updated.Quality, err)
+	}
+	if got.Quality.ID != 7 {
+		t.Errorf("persisted quality id = %d, want 7", got.Quality.ID)
+	}
+	if len(w.updated.Languages) != 1 || w.updated.Languages[0] != 1 {
+		t.Errorf("single update must not change Languages; got %v", w.updated.Languages)
+	}
+}
+
+// J389: editor applies Quality + Languages to ALL files; the Original
+// sentinel (id -2) is dropped from the persisted language list.
+func TestEpisodeFileEditorHandler_PersistsQualityLanguages_J389(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeFileWriter{getMany: []episodefiles.File{
+		{ID: 1, SeriesID: 1}, {ID: 2, SeriesID: 1},
+	}}
+	q, _ := quality.FindByID(7)
+	body, _ := json.Marshal(episodeFileEditorBody{
+		EpisodeFileIDs: []int{1, 2},
+		Quality:        ToQualityModelResource(quality.NewModel(q)),
+		Languages:      []LanguageRef{ToLanguageRef(1), ToLanguageRef(language.Original.ID), ToLanguageRef(2)},
+	})
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/editor", strings.NewReader(string(body)))
+	EpisodeFileEditorHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.updatedMany) != 2 {
+		t.Fatalf("updatedMany = %d, want 2", len(w.updatedMany))
+	}
+	for _, f := range w.updatedMany {
+		var got quality.Model
+		if err := json.Unmarshal([]byte(f.Quality), &got); err != nil || got.Quality.ID != 7 {
+			t.Errorf("file %d quality = %q (id err %v)", f.ID, f.Quality, err)
+		}
+		if len(f.Languages) != 2 || f.Languages[0] != 1 || f.Languages[1] != 2 {
+			t.Errorf("file %d languages = %v, want [1 2] (Original dropped)", f.ID, f.Languages)
+		}
+	}
+}
+
+// J389: bulk applies per-entry Quality + Languages matched by id.
+func TestEpisodeFileBulkUpdateHandler_PersistsQualityLanguages_J389(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeFileWriter{getMany: []episodefiles.File{{ID: 5, SeriesID: 1}}}
+	q, _ := quality.FindByID(3)
+	body, _ := json.Marshal([]EpisodeFileResource{{
+		ID: 5, SeriesID: 1,
+		Quality:   ToQualityModelResource(quality.NewModel(q)),
+		Languages: []LanguageRef{ToLanguageRef(2)},
+	}})
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/bulk", strings.NewReader(string(body)))
+	EpisodeFileBulkUpdateHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.updatedMany) != 1 {
+		t.Fatalf("updatedMany = %d, want 1", len(w.updatedMany))
+	}
+	f := w.updatedMany[0]
+	var got quality.Model
+	if err := json.Unmarshal([]byte(f.Quality), &got); err != nil || got.Quality.ID != 3 {
+		t.Errorf("quality = %q (id err %v), want id 3", f.Quality, err)
+	}
+	if len(f.Languages) != 1 || f.Languages[0] != 2 {
+		t.Errorf("languages = %v, want [2]", f.Languages)
 	}
 }

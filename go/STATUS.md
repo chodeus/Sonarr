@@ -19566,3 +19566,13 @@ Tests: unparseable-path rejection; `S01E03` season resolution keeps only E3.
 Matrix: row #1 (LIST) → DONE (J387a-c, J388); row #2 (EXECUTE) already DONE (J386). Manual Import (punch-list #1+#2) functionally complete. Sole remaining deferral: unknown-series recursive disk fallback + >100-file ProcessDownloadDirectory (documented edge case).
 
 R: reprocess resolution/rejection completed. W: n/a. M: handler doc + matrix rows #1/#2 + this entry. Hard gates clean (build, race tests on api v3 + v5 manualimport + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J389 — Verticalization Arc: EpisodeFile editor Quality/Languages persist (punch-list #3)
+
+Closes the dropped Quality/Languages writes on the episodefile editor/bulk/single PUT handlers. `internal/api/v3/episodefile.go`: `persistedQualityFromResource` (expanded wire DTO → persisted bare-int model column string, inverse of the GET decode) + `languageIDsFromRefs` (drops `Original` id -2 per C# `SetPropertiesBulk`). Applied per the C# field matrix — single PUT/{id}: Quality only; editor: Quality+Languages to all; bulk: per-entry Quality+Languages. Quality applied when non-nil, Languages when present (matches C# `!= null`). Added Quality/Languages to `episodeFileEditorBody`; single+bulk reuse `EpisodeFileResource`.
+
+Tests: single persists Quality (leaves Languages untouched), editor applies both to all + drops Original, bulk per-entry.
+
+R: editor read unchanged. W: Quality+Languages WIRED. M: handler docs (stale DEFERRED removed) + this entry. Matrix punch-list #3 done. Hard gates clean (build, race tests on api v3 + v5 episodefile + cmd/sonarr + contract, vet, gofmt).

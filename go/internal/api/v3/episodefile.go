@@ -11,6 +11,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/httperr"
+	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
 )
@@ -288,6 +289,49 @@ func EpisodeFileByIDHandler(svc EpisodeFileReader) http.Handler {
 	})
 }
 
+// persistedQualityFromResource encodes the expanded REST QualityModel
+// wire shape back into the persisted bare-int `{"quality":<id>,
+// "revision":{...}}` JSON string that the episodefiles row stores
+// (the inverse of ToEpisodeFileResource's decode). Returns ("", false)
+// for a nil resource. J389 — the EpisodeFile editor Quality persist.
+func persistedQualityFromResource(res *QualityModelResource) (string, bool) {
+	if res == nil {
+		return "", false
+	}
+	q, ok := quality.FindByID(res.Quality.ID)
+	if !ok {
+		q = quality.Quality{ID: res.Quality.ID, Name: res.Quality.Name, Resolution: res.Quality.Resolution}
+	}
+	m := quality.Model{
+		Quality: q,
+		Revision: quality.Revision{
+			Version:  res.Revision.Version,
+			Real:     res.Revision.Real,
+			IsRepack: res.Revision.IsRepack,
+		},
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
+// languageIDsFromRefs maps the wire LanguageRef list to the persisted
+// `[]int` id list, dropping `Original` (C# `SetPropertiesBulk` rejects
+// `Language.Original`: a file can't be tagged with the synthetic
+// "use series original" sentinel). J389.
+func languageIDsFromRefs(refs []LanguageRef) []int {
+	out := make([]int, 0, len(refs))
+	for _, r := range refs {
+		if r.ID == language.Original.ID {
+			continue
+		}
+		out = append(out, r.ID)
+	}
+	return out
+}
+
 // EpisodeFileWriter is the write surface for DELETE /api/v3/episodefile
 // + PUT /api/v3/episodefile/{id} + bulk variants. Satisfied directly
 // by *episodefiles.Service.
@@ -299,20 +343,23 @@ type EpisodeFileWriter interface {
 	UpdateMany(ctx context.Context, files []*episodefiles.File) error
 }
 
-// episodeFileEditorBody mirrors C# `EpisodeFileListResource` — same
-// shape as the DELETE-bulk body plus the editor's metadata override
-// fields (Languages/Quality DEFERRED).
+// episodeFileEditorBody mirrors C# `EpisodeFileListResource` — the
+// DELETE-bulk body plus the editor's metadata override fields. Quality
+// + Languages persist as of J389 (Quality decoded to the bare-int
+// model column; Languages to the id list, dropping Original).
 type episodeFileEditorBody struct {
-	EpisodeFileIDs []int  `json:"episodeFileIds"`
-	SceneName      string `json:"sceneName,omitempty"`
-	ReleaseGroup   string `json:"releaseGroup,omitempty"`
+	EpisodeFileIDs []int                 `json:"episodeFileIds"`
+	SceneName      string                `json:"sceneName,omitempty"`
+	ReleaseGroup   string                `json:"releaseGroup,omitempty"`
+	Quality        *QualityModelResource `json:"quality,omitempty"`
+	Languages      []LanguageRef         `json:"languages,omitempty"`
 }
 
 // EpisodeFileEditorHandler returns PUT /api/v3/episodefile/editor.
 // Mirrors `EpisodeFileController.SetQuality` (the `[HttpPut("editor")]`
 // overload at `:115-150`) — applies one set of metadata overrides
-// (SceneName/ReleaseGroup; Languages/Quality DEFERRED) to ALL files
-// in the EpisodeFileIds list. The C# action is marked `[Obsolete]`
+// (SceneName/ReleaseGroup/Quality/Languages, J389) to ALL files in the
+// EpisodeFileIds list. The C# action is marked `[Obsolete]`
 // in favour of PUT /bulk but is still served; the Go port mirrors
 // that surface preservation.
 func EpisodeFileEditorHandler(svc EpisodeFileWriter) http.Handler {
@@ -337,6 +384,7 @@ func EpisodeFileEditorHandler(svc EpisodeFileWriter) http.Handler {
 			httperr.NotFound(w, "episodefile/editor: no matching files")
 			return
 		}
+		qualityStr, hasQuality := persistedQualityFromResource(body.Quality)
 		ptrs := make([]*episodefiles.File, len(files))
 		for i := range files {
 			f := files[i]
@@ -345,6 +393,12 @@ func EpisodeFileEditorHandler(svc EpisodeFileWriter) http.Handler {
 			}
 			if body.ReleaseGroup != "" {
 				f.ReleaseGroup = body.ReleaseGroup
+			}
+			if hasQuality {
+				f.Quality = qualityStr
+			}
+			if body.Languages != nil {
+				f.Languages = languageIDsFromRefs(body.Languages)
 			}
 			ptrs[i] = &f
 		}
@@ -412,6 +466,12 @@ func EpisodeFileBulkUpdateHandler(svc EpisodeFileWriter) http.Handler {
 				if entry.ReleaseGroup != "" {
 					f.ReleaseGroup = entry.ReleaseGroup
 				}
+				if qualityStr, hasQuality := persistedQualityFromResource(entry.Quality); hasQuality {
+					f.Quality = qualityStr
+				}
+				if entry.Languages != nil {
+					f.Languages = languageIDsFromRefs(entry.Languages)
+				}
 			}
 			ptrs[i] = &f
 		}
@@ -433,17 +493,16 @@ func EpisodeFileBulkUpdateHandler(svc EpisodeFileWriter) http.Handler {
 }
 
 // EpisodeFileUpdateHandler returns PUT /api/v3/episodefile/{id}. Mirrors
-// `EpisodeFileController.SetQuality` at `:94-113`. Updates SceneName
-// + ReleaseGroup on the persisted row; returns 202 + the updated
-// resource.
+// `EpisodeFileController.SetQuality` at `:94-113`. Updates Quality (J389)
+// + SceneName + ReleaseGroup on the persisted row; returns 202 + the
+// updated resource. Per C#, the single-id endpoint does NOT touch
+// Languages (only the editor/bulk overloads do).
 //
-// DEFERRED with rationale: Quality + Languages updates (the
-// EpisodeFileResource skeleton doesn't yet model these fields - same
-// gap as the existing GET; revisit when the populated-row mapping
-// lands); IsSceneTitle regex validation on SceneName (C# guards the
-// assignment with `SceneChecker.IsSceneTitle` which validates the
-// proper scene naming pattern - the Go port accepts any non-empty
-// value today and trusts the React UI to send well-formed data).
+// DEFERRED with rationale: IsSceneTitle regex validation on SceneName
+// (C# guards the assignment with `SceneChecker.IsSceneTitle` which
+// validates the proper scene naming pattern - the Go port accepts any
+// non-empty value today and trusts the React UI to send well-formed
+// data).
 func EpisodeFileUpdateHandler(svc EpisodeFileWriter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.PathValue("id"))
@@ -472,6 +531,10 @@ func EpisodeFileUpdateHandler(svc EpisodeFileWriter) http.Handler {
 		}
 		if body.ReleaseGroup != "" {
 			f.ReleaseGroup = body.ReleaseGroup
+		}
+		// C# single SetQuality (`:94-113`) sets Quality but NOT Languages.
+		if qualityStr, hasQuality := persistedQualityFromResource(body.Quality); hasQuality {
+			f.Quality = qualityStr
 		}
 		if err := svc.Update(r.Context(), f); err != nil {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile: update %d: %w", id, err), nil)
