@@ -19690,3 +19690,19 @@ Deferred (documented): rejection/partial/failure state machine (left Downloading
 Tests: downloadprocessing (imports+marks; not-completed/unmatched/already-imported skip; partial not marked); downloadmonitoring Refresh-runs-processor; handler dispatch/nil-ctor.
 
 R: queue auto-imports completed downloads. W: ProcessMonitoredDownloads WIRED (happy path). M: PROGRESS + memory updated. Hard gates clean (build, race tests downloadprocessing + downloadmonitoring + commands + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J400 — Verticalization Arc: Phase-4 download-failure arm (FailedDownloadService.Check + ProcessFailed)
+
+Continues the download lifecycle started by J394 (queue population) + J399 (auto-import): J400 auto-fails the failed downloads. Ports `FailedDownloadService.Check`+`ProcessFailed` (`src/NzbDrone.Core/Download/FailedDownloadService.cs:85-138`) into `downloadprocessing.Service.ProcessTrackedDownloads`. A tracked download still `StateDownloading`/`StateImportBlocked` whose client `Item.Status==Failed` (or `IsEncrypted`) and which matched a series is marked `StateFailed` and publishes a `trackeddownloads.DownloadFailedEvent` — the same event the queue-delete blocklist arm publishes (J396), consumed by the already-subscribed blocklist + history handlers.
+
+Failure-message precedence mirrors C# (encrypted→"Encrypted download detected"; failed-with-message→client message; else "Failed download detected"); `SkipRedownload=false` so a future redownload consumer would re-search. New optional `FailurePublisher` + `SetFailurePublisher` (arm no-ops when unwired); NEW `cmd/sonarr/downloadprocessing_failure_wiring.go` (`downloadFailedPublisher` over `*messaging.Bus`), wired in main.go. C#'s two-phase Downloading→FailedPending→Failed is collapsed into one pass (consistent with J399's completed Check+Import collapse — same end state, event fires one cycle earlier).
+
+Safe: no clients → empty cache → no-op (contract goldens unaffected); publish-error leaves Downloading for retry (no silent state transition); unmatched (no series) → warn + skip.
+
+Deferred (documented): redownload-on-failure search consumer; rejection/partial-import handling; FailedPending grace-cycle.
+
+Tests: failed-matched publishes+marks; encrypted message; unmatched skip; unwired no-op; publish-error not-marked (J399 import tests still green).
+
+R: queue auto-fails failed downloads (blocklist + history side-effects fire). W: download-failure state machine WIRED. M: PROGRESS + matrix #5/#6 + this entry. Hard gates clean (build, race tests downloadprocessing + downloadmonitoring + commands + cmd/sonarr + contract, vet, gofmt).

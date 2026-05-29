@@ -64,6 +64,34 @@ func newSvc(t *testing.T, store downloadprocessing.TrackedDownloadStore, imp dow
 	return s
 }
 
+// fakeFailPub captures published DownloadFailedEvents (J400).
+type fakeFailPub struct {
+	evs []trackeddownloads.DownloadFailedEvent
+	err error
+}
+
+func (f *fakeFailPub) PublishDownloadFailed(_ context.Context, ev trackeddownloads.DownloadFailedEvent) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.evs = append(f.evs, ev)
+	return nil
+}
+
+// failedTD builds a tracked download the client reports Failed, with an
+// optional matched series + parsed grab.
+func failedTD(id string, ser *series.Series) *trackeddownloads.TrackedDownload {
+	td := &trackeddownloads.TrackedDownload{
+		DownloadID:   id,
+		State:        trackeddownloads.StateDownloading,
+		DownloadItem: &downloadclients.Item{DownloadID: id, Title: "Show.S01E01.720p", Status: downloadclients.DownloadItemStatusFailed, Message: "extraction failed"},
+	}
+	if ser != nil {
+		td.RemoteEpisode = &decisionengine.Subject{Series: ser}
+	}
+	return td
+}
+
 // J399: a completed + matched download imports via ProcessPath and is
 // marked Imported when all results imported.
 func TestProcess_CompletedMatched_Imports_J399(t *testing.T) {
@@ -130,5 +158,106 @@ func TestProcess_AlreadyImported_Skipped_J399(t *testing.T) {
 	imp := &fakeImporter{}
 	if n := newSvc(t, fakeStore{tds: []*trackeddownloads.TrackedDownload{td}}, imp).ProcessTrackedDownloads(context.Background()); n != 0 || imp.calls != 0 {
 		t.Errorf("n=%d calls=%d, want 0/0", n, imp.calls)
+	}
+}
+
+// J400: a failed + matched download publishes a DownloadFailedEvent and
+// is marked Failed. The failure message comes from the client item.
+func TestProcess_FailedMatched_PublishesAndMarks_J400(t *testing.T) {
+	t.Parallel()
+	ser := &series.Series{ID: 42}
+	td := failedTD("dl1", ser)
+	pub := &fakeFailPub{}
+	svc := newSvc(t, fakeStore{tds: []*trackeddownloads.TrackedDownload{td}}, &fakeImporter{})
+	svc.SetFailurePublisher(pub)
+
+	svc.ProcessTrackedDownloads(context.Background())
+
+	if len(pub.evs) != 1 {
+		t.Fatalf("published %d events, want 1", len(pub.evs))
+	}
+	ev := pub.evs[0]
+	if ev.SeriesID != 42 || ev.DownloadID != "dl1" || ev.Message != "extraction failed" {
+		t.Errorf("event = %+v, want SeriesID=42 DownloadID=dl1 Message=\"extraction failed\"", ev)
+	}
+	if ev.SkipRedownload {
+		t.Error("SkipRedownload = true, want false (auto-failure should allow redownload)")
+	}
+	if ev.SourceTitle != "Show.S01E01.720p" {
+		t.Errorf("SourceTitle = %q, want the download-item title", ev.SourceTitle)
+	}
+	if td.State != trackeddownloads.StateFailed {
+		t.Errorf("state = %v, want Failed", td.State)
+	}
+}
+
+// J400: an encrypted download (Status not Failed) is still detected and
+// uses the "Encrypted download detected" message.
+func TestProcess_Encrypted_PublishesEncryptedMessage_J400(t *testing.T) {
+	t.Parallel()
+	td := failedTD("dl1", &series.Series{ID: 7})
+	td.DownloadItem.Status = downloadclients.DownloadItemStatusDownloading
+	td.DownloadItem.IsEncrypted = true
+	pub := &fakeFailPub{}
+	svc := newSvc(t, fakeStore{tds: []*trackeddownloads.TrackedDownload{td}}, &fakeImporter{})
+	svc.SetFailurePublisher(pub)
+
+	svc.ProcessTrackedDownloads(context.Background())
+
+	if len(pub.evs) != 1 || pub.evs[0].Message != "Encrypted download detected" {
+		t.Fatalf("evs=%d msg=%q, want 1 / \"Encrypted download detected\"", len(pub.evs), func() string {
+			if len(pub.evs) > 0 {
+				return pub.evs[0].Message
+			}
+			return ""
+		}())
+	}
+	if td.State != trackeddownloads.StateFailed {
+		t.Errorf("state = %v, want Failed", td.State)
+	}
+}
+
+// J400: a failed but unmatched download (no series) is skipped — not
+// published, not marked (C# warns "wasn't grabbed by Sonarr").
+func TestProcess_FailedUnmatched_Skipped_J400(t *testing.T) {
+	t.Parallel()
+	td := failedTD("dl1", nil)
+	pub := &fakeFailPub{}
+	svc := newSvc(t, fakeStore{tds: []*trackeddownloads.TrackedDownload{td}}, &fakeImporter{})
+	svc.SetFailurePublisher(pub)
+
+	svc.ProcessTrackedDownloads(context.Background())
+
+	if len(pub.evs) != 0 {
+		t.Errorf("published %d events, want 0", len(pub.evs))
+	}
+	if td.State != trackeddownloads.StateDownloading {
+		t.Errorf("state = %v, want still Downloading", td.State)
+	}
+}
+
+// J400: with no publisher wired the failure arm no-ops (preserves prior
+// behavior; the SAFE default for the no-clients contract goldens).
+func TestProcess_FailedNoPublisher_NoOp_J400(t *testing.T) {
+	t.Parallel()
+	td := failedTD("dl1", &series.Series{ID: 1})
+	svc := newSvc(t, fakeStore{tds: []*trackeddownloads.TrackedDownload{td}}, &fakeImporter{})
+	svc.ProcessTrackedDownloads(context.Background())
+	if td.State != trackeddownloads.StateDownloading {
+		t.Errorf("state = %v, want still Downloading (unwired)", td.State)
+	}
+}
+
+// J400: a publish error leaves the download Downloading for retry (no
+// silent state transition without the side effect).
+func TestProcess_FailedPublishError_NotMarked_J400(t *testing.T) {
+	t.Parallel()
+	td := failedTD("dl1", &series.Series{ID: 1})
+	pub := &fakeFailPub{err: context.Canceled}
+	svc := newSvc(t, fakeStore{tds: []*trackeddownloads.TrackedDownload{td}}, &fakeImporter{})
+	svc.SetFailurePublisher(pub)
+	svc.ProcessTrackedDownloads(context.Background())
+	if td.State != trackeddownloads.StateDownloading {
+		t.Errorf("state = %v, want still Downloading (publish failed)", td.State)
 	}
 }

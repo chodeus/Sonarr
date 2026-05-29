@@ -3007,6 +3007,12 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("downloadprocessing service: %w", err)
 	}
+	// J400: the failure arm — a tracked download the client reports
+	// failed (or that came back encrypted) and matched a series is
+	// marked Failed and a DownloadFailedEvent is published (feeding the
+	// already-subscribed blocklist + history handlers, same event as
+	// the queue-delete blocklist arm). No publisher → arm no-ops.
+	downloadProcessingSvc.SetFailurePublisher(downloadFailedPublisher{bus: bus})
 	downloadMonitoringSvc.SetProcessor(downloadProcessingSvc)
 
 	// Slice 5.J39 (audit B.3 close-out): adapter around
