@@ -561,7 +561,7 @@ func toMetadataResource(m metadata.Metadata, fields []ProviderField) MetadataRes
 		ID:                 m.ID,
 		Name:               m.Name,
 		Implementation:     m.Implementation,
-		ImplementationName: m.Implementation,
+		ImplementationName: implementationNameOr(metadataImplNames, m.Implementation),
 		ConfigContract:     m.ConfigContract,
 		Tags:               []int{},
 		Enable:             m.Enable,

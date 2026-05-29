@@ -634,7 +634,7 @@ func toDownloadClientResource(d downloadclients.DownloadClient) DownloadClientRe
 			ID:                 d.ID,
 			Name:               d.Name,
 			Implementation:     d.Implementation,
-			ImplementationName: d.Implementation,
+			ImplementationName: implementationNameOr(downloadClientImplNames, d.Implementation),
 			ConfigContract:     d.ConfigContract,
 			Tags:               tags,
 		},

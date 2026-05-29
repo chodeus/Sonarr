@@ -783,7 +783,7 @@ func toIndexerResource(i indexers.Indexer) IndexerResource {
 			ID:                 i.ID,
 			Name:               i.Name,
 			Implementation:     i.Implementation,
-			ImplementationName: i.Implementation,
+			ImplementationName: implementationNameOr(indexerImplNames, i.Implementation),
 			ConfigContract:     cfg,
 			Tags:               tags,
 		},

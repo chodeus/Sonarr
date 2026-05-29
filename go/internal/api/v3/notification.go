@@ -714,7 +714,7 @@ func toNotificationResource(n notifications.Notification) NotificationResource {
 			// ImplementationName comes from the schema-builder
 			// reflection (DEFERRED) — for now copy
 			// Implementation as a pragmatic stub.
-			ImplementationName: n.Implementation,
+			ImplementationName: implementationNameOr(notificationImplNames, n.Implementation),
 			ConfigContract:     cfg,
 			Tags:               tags,
 		},

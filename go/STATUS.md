@@ -20215,3 +20215,16 @@ Finishes G10. Added the 8 non-Newznab-protocol providers to `registerIndexerTest
 - `go build` confirms all 8 satisfy `concreteIndexer` (Test(ctx)→provider.ValidationResult + RequestAction(stage,query) + SetDefinition).
 
 R: POST /api/v3+v5/indexer/test + /testall + /action now build a real provider + run the connection self-check for EVERY ported indexer impl (10/10) — was 400 "Unknown implementation" for all. W: n/a. M: GAP_ANALYSIS G10 ✅ FIXED + PROGRESS + this entry. Tests: registry round-trip Has() asserts all 10 impl/contract keys (+ idempotent + nil no-op). Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...). NEXT: fresh Tier-6 audit.
+
+---
+
+## J443 — G4 follow-up: ImplementationName sourced from schema tables (all 5 families)
+
+C# ref: provider resources emit the human-readable ImplementationName (differs from Implementation for several impls). Go gap: the 5 to*Resource mappers set `ImplementationName: row.Implementation` (stub).
+
+- NEW `internal/api/v3/provider_impl_names.go`: generic `implNameMapFrom[T](schemas, implFn, nameFn)` builds an Implementation→ImplementationName index from each family's schema list (the correct names already live there); `implementationNameOr(m, impl)` = lookup with fallback to raw Implementation. 5 package-level maps (notification/indexer/downloadclient via schema funcs; importlist/metadata via schema vars).
+- Wired into all 5 mappers (downloadclient.go/indexer.go/notification.go/importlist.go/metadata.go) — 1-line each.
+- Divergent examples now correct: Nzbget→NZBGet, NzbVortex→NZBVortex, UsenetDownloadStation→"Download Station", QBittorrent→qBittorrent, XbmcMetadata→"Kodi (XBMC) / Emby", BroadcastheNet→BroadcasTheNet. Schema Implementation keys verified to match persisted-row keys (casing).
+- Empty-DB contract goldens unaffected (mappers run only on rows; schema endpoints untouched). Fallback preserves behaviour for matching/unknown impls.
+
+R: GET /api/v3+v5/{downloadclient,indexer,notification,importlist,metadata} now emit the correct human-readable implementationName. W: n/a. M: GAP_ANALYSIS G4-followup fully drained + PROGRESS + this entry. Tests: divergent lookups (5) + fallback (unknown/nil) + maps-non-empty. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...). NEXT: fresh Tier-6 audit.

@@ -4,7 +4,7 @@
 > - ✅ **G1** search→grab — FIXED J423 (search adapters now feed the grabber).
 > - ✅ **G2** CleanUpRecycleBin stub — FIXED J421 (dep wired).
 > - ✅ **G3** queue/details empty — FIXED J422 (real lister).
-> - ✅ **G4** provider fields[] on GET — FIXED J425 (inverse settings→fields mapper; 4 families). Follow-up: customformat WRITE-path persistence shape FIXED J431 (was a CRITICAL bug — POST/PUT-with-specs 500'd through real svc; now stores `{type,body}` envelope). REMAINING: customformat GET projects typed specs→full schema (read half); autotagging `specifications[]`; `ImplementationName` stub.
+> - ✅ **G4** provider fields[] on GET — FIXED J425 (inverse settings→fields mapper; 4 families). Follow-up: customformat WRITE-path persistence shape FIXED J431 (was a CRITICAL bug — POST/PUT-with-specs 500'd through real svc; now stores `{type,body}` envelope). G4-followup fully drained: customformat GET read-half (J432), autotagging specs (J433), `ImplementationName` (J443, all 5 families).
 > - ✅ **G7** import-list sync inert — FIXED J424 (providers blank-imported). Sub-gap: `IDTranslator` nil (non-TVDB-id items).
 > - ✅ **G6** series/lookup — FIXED J426 (wired to skyhook proxy).
 > - ✅ **G8** v5 history season/episode — FIXED J427 (episode) + J428 (season).
@@ -55,7 +55,7 @@ done, and some "done"-looking paths are actually stubbed).
 
 **Read half (FIXED J432):** `toCustomFormatResource` now projects each typed `customformats.Specification` → `CustomFormatSpecificationSchema` via `specToSchema` (clones the golden-verified `customFormatSchemas` FieldDef template, injects the persisted value by field name; adds InfoLink + id-omitempty). With J431 the customformat spec round-trip (create→reload→GET) is whole.
 
-**Autotagging (FIXED J433):** identical dual defect (write persisted schema-shape → CUD-with-specs broke; GET stubbed `[]`) fixed symmetrically — `autoTaggingSpecsToEnvelopeJSON` (write) + `autoTagSpecToSchema` (GET, clones `autoTaggingSchemas` templates, handles `status` body-key + array-valued specs) + id-omitempty. **G4-followup specifications[] now COMPLETE for customformat + autotagging.** Only `ImplementationName` provider stub remains (separate, low).
+**Autotagging (FIXED J433):** identical dual defect (write persisted schema-shape → CUD-with-specs broke; GET stubbed `[]`) fixed symmetrically — `autoTaggingSpecsToEnvelopeJSON` (write) + `autoTagSpecToSchema` (GET, clones `autoTaggingSchemas` templates, handles `status` body-key + array-valued specs) + id-omitempty. **G4-followup specifications[] now COMPLETE for customformat + autotagging.** `ImplementationName` provider stub FIXED J443 (all 5 families source from schema tables). G4-followup fully drained.
 
 ### MEDIUM — endpoint returns empty (needs a focused service/driver port)
 

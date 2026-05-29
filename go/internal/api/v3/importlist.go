@@ -676,7 +676,7 @@ func toImportListResource(i importlists.ImportList) ImportListResource {
 			ID:                 i.ID,
 			Name:               i.Name,
 			Implementation:     i.Implementation,
-			ImplementationName: i.Implementation,
+			ImplementationName: implementationNameOr(importListImplNames, i.Implementation),
 			ConfigContract:     cfg,
 			Tags:               tags,
 		},
