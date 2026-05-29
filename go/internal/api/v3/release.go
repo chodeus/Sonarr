@@ -16,17 +16,25 @@ import (
 // — the per-release wire shape returned by `GET /api/v3/release` /
 // manual-search results.
 //
-// **Minimal projection**: the full C# ReleaseResource has ~50 fields;
-// this initial port covers the core read-side subset the React UI
-// surfaces in the manual-search dialog (Title / Quality / Indexer /
-// Size / Age / Languages / Approved+Rejections / SeasonNumber /
-// EpisodeNumbers / FullSeason). Custom-format scoring, scene-mapping
-// indicators, magnet-url + torrent peers, and the "send when queuing
-// unknown release" fields land in a follow-up slice — they're either
-// produced from subsystems still being wired (custom-format calc on
-// search) or are write-side echoes the GET path doesn't need.
+// Projection coverage (J436 Tier-2): covers every field the C#
+// `ReleaseResourceMapper.ToResource(DownloadDecision)` populates —
+// core release info, torrent peers, mapped episodes (incl.
+// MappedSeriesId / MappedAbsoluteEpisodeNumbers / MappedEpisodeInfo),
+// the EpisodeRequested / DownloadAllowed decision-output flags, and
+// CustomFormats (lite) + CustomFormatScore. The weight fields
+// (QualityWeight / LanguageWeight / ReleaseWeight) emit their C#
+// defaults (0) — the C# mapper leaves them unset (sorter-only).
 //
-// Audit fix B.4 (initial wiring).
+// Still deferred: `SceneMapping` (→ AlternateTitleResource — the C#
+// `SceneMapping` type differs from the Go `scenemappings.Mapping`, so
+// the projection needs a dedicated mapping verified against the C#
+// `AlternateTitle.ToResource()` shape). The write-side echo fields
+// (SeriesId/EpisodeId/EpisodeIds/DownloadClientId/DownloadClient/
+// ShouldOverride/SubGroup) are not set by the decision mapper either
+// (null/omitted on the GET path), matching C#.
+//
+// Audit fix B.4 (initial wiring); J436 widened to the full decision
+// projection.
 type ReleaseResource struct {
 	Guid                   string                `json:"guid"`
 	Quality                *QualityModelResource `json:"quality,omitempty"`
@@ -69,6 +77,37 @@ type ReleaseResource struct {
 	Leechers               *int                  `json:"leechers,omitempty"`
 	MappedSeasonNumber     *int                  `json:"mappedSeasonNumber,omitempty"`
 	MappedEpisodeNumbers   []int                 `json:"mappedEpisodeNumbers,omitempty"`
+
+	// Tier-2 (J436): the remaining DownloadDecision-mapper fields
+	// (`Sonarr.Api.V3/Indexers/ReleaseResource.cs:106-165`). The
+	// weight fields (QualityWeight/LanguageWeight/ReleaseWeight) are
+	// declared on the C# resource but the decision mapper leaves them
+	// at their default (the `// QualityWeight`/`// ReleaseWeight`
+	// comment placeholders) — they're only populated by the sorter,
+	// which isn't part of the GET projection, so they emit 0.
+	QualityWeight                int                      `json:"qualityWeight"`
+	LanguageWeight               int                      `json:"languageWeight"`
+	ReleaseWeight                int                      `json:"releaseWeight"`
+	SceneSource                  bool                     `json:"sceneSource"`
+	MappedSeriesID               *int                     `json:"mappedSeriesId,omitempty"`
+	MappedAbsoluteEpisodeNumbers []int                    `json:"mappedAbsoluteEpisodeNumbers,omitempty"`
+	MappedEpisodeInfo            []ReleaseEpisodeResource `json:"mappedEpisodeInfo,omitempty"`
+	EpisodeRequested             bool                     `json:"episodeRequested"`
+	DownloadAllowed              bool                     `json:"downloadAllowed"`
+	CustomFormats                []CustomFormatResource   `json:"customFormats,omitempty"`
+	CustomFormatScore            int                      `json:"customFormatScore"`
+}
+
+// ReleaseEpisodeResource mirrors C#
+// `Sonarr.Api.V3/Indexers/ReleaseResource.cs:205-225` — the per-episode
+// projection inside ReleaseResource.MappedEpisodeInfo. AbsoluteEpisodeNumber
+// is omitted when null (C# `int?`).
+type ReleaseEpisodeResource struct {
+	ID                    int    `json:"id"`
+	SeasonNumber          int    `json:"seasonNumber"`
+	EpisodeNumber         int    `json:"episodeNumber"`
+	AbsoluteEpisodeNumber *int   `json:"absoluteEpisodeNumber,omitempty"`
+	Title                 string `json:"title"`
 }
 
 // ReleaseSearcher is the narrow projection the handler uses for
@@ -241,8 +280,40 @@ func toReleaseResource(d decisionengine.Decision) ReleaseResource {
 		s := subj.Episodes[0].SeasonNumber
 		r.MappedSeasonNumber = &s
 		r.MappedEpisodeNumbers = make([]int, 0, len(subj.Episodes))
+		r.MappedEpisodeInfo = make([]ReleaseEpisodeResource, 0, len(subj.Episodes))
 		for _, ep := range subj.Episodes {
 			r.MappedEpisodeNumbers = append(r.MappedEpisodeNumbers, ep.EpisodeNumber)
+			// MappedAbsoluteEpisodeNumbers: only episodes WITH an absolute
+			// number contribute (C# `.Where(v => v.AbsoluteEpisodeNumber.HasValue)`).
+			if ep.AbsoluteEpisodeNumber != nil {
+				r.MappedAbsoluteEpisodeNumbers = append(r.MappedAbsoluteEpisodeNumbers, *ep.AbsoluteEpisodeNumber)
+			}
+			r.MappedEpisodeInfo = append(r.MappedEpisodeInfo, ReleaseEpisodeResource{
+				ID:                    ep.ID,
+				SeasonNumber:          ep.SeasonNumber,
+				EpisodeNumber:         ep.EpisodeNumber,
+				AbsoluteEpisodeNumber: ep.AbsoluteEpisodeNumber,
+				Title:                 ep.Title,
+			})
+		}
+	}
+	// MappedSeriesId ← matched series row (C# `remoteEpisode.Series?.Id`).
+	if subj.Series != nil {
+		id := subj.Series.ID
+		r.MappedSeriesID = &id
+	}
+	// Decision output flags + custom-format scoring (C# mapper lines
+	// 144-148). CustomFormats uses the lite (id+name) projection
+	// (`ToResource(false)`); the persisted CustomFormat row carries id
+	// + name directly, so no spec hydration is needed here.
+	r.EpisodeRequested = subj.EpisodeRequested
+	r.DownloadAllowed = subj.DownloadAllowed
+	r.CustomFormatScore = subj.CustomFormatScore
+	if len(subj.CustomFormats) > 0 {
+		r.CustomFormats = make([]CustomFormatResource, 0, len(subj.CustomFormats))
+		for i := range subj.CustomFormats {
+			cf := &subj.CustomFormats[i]
+			r.CustomFormats = append(r.CustomFormats, CustomFormatResource{ID: cf.ID, Name: cf.Name})
 		}
 	}
 	// Always emit empty arrays (not null) for the slice wire-shape

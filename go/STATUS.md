@@ -20125,3 +20125,16 @@ C# ref: `src/NzbDrone.Core/Extras/ExtraService.cs:26-29` (IHandle fan-out). The 
 - DEFERRED tail (evidence in GAP_ANALYSIS): C#'s SeriesRenamedEvent / DownloadsProcessedEvent / EpisodeFolderCreatedEvent are not yet defined+published in the Go port (only per-file EpisodeFileRenamedEvent exists) — wire those when publishers land. Metadata also only writes when a consumer package is registered (registry empty today — orthogonal, like G7).
 
 R: metadata (nfo/images) now written on import + cover-refresh + library scan when a consumer is enabled. W: n/a. M: GAP_ANALYSIS Q1 fixed + PROGRESS + this entry. Tests: each event→method+args + nil-guards + scan file-load-error skip + handler-error-swallowed. Tier-1 GAP_ANALYSIS now fully resolved. Hard gates clean (full suite).
+
+---
+
+## J436 — Tier-2: ReleaseResource full DownloadDecision projection
+
+C# ref: `src/Sonarr.Api.V3/Indexers/ReleaseResource.cs:96-225` (ToResource(DownloadDecision) + ReleaseEpisodeResource). The go `toReleaseResource` covered a core subset; widened to the full set of fields the C# decision mapper actually populates.
+
+- NEW struct fields on ReleaseResource: QualityWeight/LanguageWeight/ReleaseWeight (emit C# default 0 — the mapper leaves them unset; sorter-only), SceneSource (default false), MappedSeriesID(*int omitempty), MappedAbsoluteEpisodeNumbers, MappedEpisodeInfo[], EpisodeRequested, DownloadAllowed, CustomFormats(omitempty), CustomFormatScore.
+- NEW `ReleaseEpisodeResource` {id, seasonNumber, episodeNumber, absoluteEpisodeNumber(*int omitempty), title} — mirrors C# ReleaseEpisodeResource.
+- Mapper now sets from the Subject: MappedSeriesID←Series.ID; per-episode MappedEpisodeNumbers + MappedAbsoluteEpisodeNumbers (only eps WITH an absolute number, per C# `.Where(HasValue)`) + MappedEpisodeInfo; EpisodeRequested/DownloadAllowed/CustomFormatScore; CustomFormats via the lite (id+name) projection straight off the persisted CustomFormat rows (no spec hydration needed for lite).
+- DEFERRED (documented in the struct doc): SceneMapping → AlternateTitleResource (C# `SceneMapping` type differs from go `scenemappings.Mapping`; needs a dedicated verified mapping) + write-side echo fields (SeriesId/EpisodeId/EpisodeIds/DownloadClientId/DownloadClient/ShouldOverride/SubGroup) which the C# decision mapper also leaves null/omitted on the GET path.
+
+R: GET /api/v3+v5/release now returns the full decision projection (mapped episodes, decision flags, custom formats + score). W: n/a. M: PROGRESS + this entry (Tier-2 ReleaseResource row). Tests: full projection (mapped-episode info, abs-number filter excludes nil, flags, CF lite without specifications, default-0 weights). Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).

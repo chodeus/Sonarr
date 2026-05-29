@@ -9,11 +9,14 @@ import (
 	"strings"
 	"testing"
 
+	"sonarr.tv/sonarr/internal/customformats"
 	"sonarr.tv/sonarr/internal/decisionengine"
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/indexersearch"
 	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 type fakeReleaseSearcher struct {
@@ -247,5 +250,76 @@ func TestReleaseHandler_SearcherErrorPropagates(t *testing.T) {
 	ReleaseHandler(searcher).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/release?episodeId=1", nil))
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// TestReleaseHandler_FullDecisionProjection_J436 pins the Tier-2
+// widening: the mapped-episode info, decision-output flags, and
+// custom-format fields the C# DownloadDecision mapper populates.
+func TestReleaseHandler_FullDecisionProjection_J436(t *testing.T) {
+	t.Parallel()
+	abs := 101
+	searcher := &fakeReleaseSearcher{
+		decisions: []decisionengine.Decision{
+			decisionengine.NewDecision(&decisionengine.Subject{
+				Release:           &parser.ReleaseInfo{Title: "Show.S01E01", Guid: "g1", Indexer: "X"},
+				ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{Quality: quality.Model{Quality: quality.HDTV720p, Revision: quality.NewRevision()}, EpisodeNumbers: []int{1}, SeasonNumber: 1},
+				Series:            &series.Series{ID: 77},
+				Episodes: []episodes.Episode{
+					{ID: 501, SeasonNumber: 1, EpisodeNumber: 1, AbsoluteEpisodeNumber: &abs, Title: "Pilot"},
+					{ID: 502, SeasonNumber: 1, EpisodeNumber: 2, Title: "Second"},
+				},
+				EpisodeRequested:  true,
+				DownloadAllowed:   true,
+				CustomFormatScore: 42,
+				CustomFormats:     []customformats.CustomFormat{{ID: 3, Name: "x265"}},
+			}),
+		},
+	}
+	rr := httptest.NewRecorder()
+	ReleaseHandler(searcher).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/release?episodeId=42", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	var got []ReleaseResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	r := got[0]
+	if r.MappedSeriesID == nil || *r.MappedSeriesID != 77 {
+		t.Errorf("MappedSeriesID = %v, want 77", r.MappedSeriesID)
+	}
+	if len(r.MappedEpisodeInfo) != 2 || r.MappedEpisodeInfo[0].ID != 501 || r.MappedEpisodeInfo[0].Title != "Pilot" {
+		t.Errorf("MappedEpisodeInfo = %+v", r.MappedEpisodeInfo)
+	}
+	if r.MappedEpisodeInfo[0].AbsoluteEpisodeNumber == nil || *r.MappedEpisodeInfo[0].AbsoluteEpisodeNumber != 101 {
+		t.Errorf("ep0 abs = %v, want 101", r.MappedEpisodeInfo[0].AbsoluteEpisodeNumber)
+	}
+	if r.MappedEpisodeInfo[1].AbsoluteEpisodeNumber != nil {
+		t.Errorf("ep1 abs should be nil (omitted), got %v", *r.MappedEpisodeInfo[1].AbsoluteEpisodeNumber)
+	}
+	// Only ep0 had an absolute number → MappedAbsoluteEpisodeNumbers has 1 entry.
+	if len(r.MappedAbsoluteEpisodeNumbers) != 1 || r.MappedAbsoluteEpisodeNumbers[0] != 101 {
+		t.Errorf("MappedAbsoluteEpisodeNumbers = %v, want [101]", r.MappedAbsoluteEpisodeNumbers)
+	}
+	if !r.EpisodeRequested || !r.DownloadAllowed {
+		t.Errorf("flags: requested=%v allowed=%v, want true/true", r.EpisodeRequested, r.DownloadAllowed)
+	}
+	if r.CustomFormatScore != 42 {
+		t.Errorf("CustomFormatScore = %d, want 42", r.CustomFormatScore)
+	}
+	if len(r.CustomFormats) != 1 || r.CustomFormats[0].ID != 3 || r.CustomFormats[0].Name != "x265" {
+		t.Errorf("CustomFormats = %+v", r.CustomFormats)
+	}
+	// Lite custom-format projection: no specifications key on the spec.
+	body := rr.Body.String()
+	if strings.Contains(body, `"specifications"`) {
+		t.Errorf("release CustomFormats must be lite (no specifications): %s", body)
+	}
+	// Weight fields emit their C# defaults (0).
+	for _, want := range []string{`"qualityWeight":0`, `"languageWeight":0`, `"releaseWeight":0`, `"sceneSource":false`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing default field %s in %s", want, body)
+		}
 	}
 }
