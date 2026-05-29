@@ -3187,6 +3187,15 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		log:         logger,
 	}
 
+	// J393 (punch-list #6): MoveSeries + BulkMoveSeries command mover —
+	// disk folder move + revert-on-failure (ports MoveSeriesService).
+	seriesMover := &seriesMoveAdapter{
+		series: seriesSvc,
+		naming: namingConfigSvc,
+		disk:   diskProv,
+		log:    logger,
+	}
+
 	if err := handlers.RegisterAll(registry, handlers.Deps{
 		Commands:               cmdSvc,
 		Housekeeping:           houseSvc,
@@ -3288,7 +3297,9 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			Mover:   episodeFileMovingSvc,
 			Updater: episodeFilesSvc,
 		},
-		Log: logger,
+		// J393 (punch-list #6): MoveSeries/BulkMoveSeries commands.
+		SeriesMover: seriesMover,
+		Log:         logger,
 	}); err != nil {
 		return fmt.Errorf("commands handlers: %w", err)
 	}

@@ -19610,3 +19610,13 @@ Ports `RenameEpisodeFileService.Execute(RenameFilesCommand/RenameSeriesCommand)`
 Tests: nil-deps ctor errors; RenameFiles moves+updates each file; same-filename skips the update; empty/partial body no-op; RenameSeries renames all per-series files.
 
 R: n/a (command). W: Rename{Files,Series} WIRED. M: matrix row #6 + this entry. #6 remaining: MoveSeries/BulkMoveSeries (portable), ProcessMonitoredDownloads (Phase-4-blocked). Hard gates clean (build, race tests internal/commands + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J393 — Verticalization Arc: MoveSeries + BulkMoveSeries commands (punch-list #6)
+
+Ports `MoveSeriesService.Execute(MoveSeriesCommand/BulkMoveSeriesCommand)`. NEW `internal/commands/handlers/moveseries.go` (two handlers + `SeriesMover` narrow interface + `BulkMoveSeriesItem`). NEW `cmd/sonarr/series_move_wiring.go`: `seriesMoveAdapter` ports `MoveSingleSeries` — validate source exists / skip-if-equal / CreateFolder(parent) / MoveFolder / revert series.Path to source on failure (C# RevertPath). BulkMove dest = `destRoot + organizer.GetSeriesFolder(ser, FolderOptions-from-namingConfig)`. Diverges from C# by also persisting Path=dest on success (robust for direct API pushes; harmless superset). Registered (both, non-nil-guarded, RequiresDiskAccess); built in main.go before RegisterAll.
+
+Tests: handler dispatch + incomplete-body no-op + nil-ctor (both); real-SQLite adapter (move persists new Path; move-fail reverts; source-missing skips; bulk dest computed from naming).
+
+R: n/a. W: Move{Series,BulkSeries} WIRED. M: matrix row #6 + this entry. The named file/folder commands (DeleteSeriesFiles/Rename/Move) are done; only ProcessMonitoredDownloads (Phase-4-blocked) + lower-pri admin commands remain in #6. Hard gates clean (build, race tests internal/commands + cmd/sonarr + contract, vet, gofmt).

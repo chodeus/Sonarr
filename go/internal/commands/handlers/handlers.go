@@ -227,6 +227,13 @@ type Deps struct {
 	// series/episodefiles/episodefilemoving services.
 	Rename RenameDeps
 
+	// SeriesMover wires the IExecute<MoveSeriesCommand> +
+	// IExecute<BulkMoveSeriesCommand> handlers (slice 5.J393, punch-list
+	// #6). Optional — nil skips registration (no useful stub for a
+	// destructive folder move). Production binds the cmd/sonarr
+	// seriesMoveAdapter (ports MoveSeriesService).
+	SeriesMover SeriesMover
+
 	Log *slog.Logger
 }
 
@@ -450,6 +457,26 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 		}
 		registry.Register(RenameSeriesName, commands.CommandSpec{
 			Handler:            renameSeries,
+			RequiresDiskAccess: true,
+		})
+	}
+
+	// Move{Series,BulkSeries} register only when the mover is wired.
+	if deps.SeriesMover != nil {
+		moveSeries, err := NewMoveSeries(deps.SeriesMover, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(MoveSeriesName, commands.CommandSpec{
+			Handler:            moveSeries,
+			RequiresDiskAccess: true,
+		})
+		bulkMoveSeries, err := NewBulkMoveSeries(deps.SeriesMover, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(BulkMoveSeriesName, commands.CommandSpec{
+			Handler:            bulkMoveSeries,
 			RequiresDiskAccess: true,
 		})
 	}
