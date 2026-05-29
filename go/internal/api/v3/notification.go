@@ -718,6 +718,7 @@ func toNotificationResource(n notifications.Notification) NotificationResource {
 			ConfigContract:     cfg,
 			Tags:               tags,
 		},
+		Fields:                        fieldsFromSettingsJSON(n.Settings), // G4 (J425)
 		OnGrab:                        n.OnGrab,
 		OnDownload:                    n.OnDownload,
 		OnUpgrade:                     upgrade,

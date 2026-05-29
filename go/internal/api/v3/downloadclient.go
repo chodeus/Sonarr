@@ -638,6 +638,7 @@ func toDownloadClientResource(d downloadclients.DownloadClient) DownloadClientRe
 			ConfigContract:     d.ConfigContract,
 			Tags:               tags,
 		},
+		Fields:                   fieldsFromSettingsJSON(d.Settings), // G4 (J425)
 		Enable:                   d.Enable,
 		Protocol:                 "unknown", // DEFERRED: factory introspection
 		Priority:                 d.Priority,

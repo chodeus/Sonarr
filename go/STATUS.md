@@ -19988,3 +19988,15 @@ Note (sub-gap, deferred): `IDTranslator: nil` in the SyncService still skips ite
 Tests: assert `len(importlists.Default().Names()) >= 8` after the blank imports.
 
 R: n/a. W: import-list sync now functional (TVDB-id items). M: GAP_ANALYSIS G7 + this entry. Hard gates clean (build, test cmd/sonarr, vet, gofmt).
+
+---
+
+## J425 — G4 fix: populate provider fields[] on GET (notification/indexer/importlist/downloadclient)
+
+Audit finding G4 (HIGH): the provider GET responses never emitted `fields[]` — POST/PUT consumed `fields[]` (→ Settings JSON) but GET returned nothing, so the React UI couldn't display/edit a saved indexer/notification/import-list/download-client's settings (asymmetric round-trip). NEW `fieldsFromSettingsJSON(settingsJSON) []ProviderField` in provider_resource.go — the inverse of `settingsJSONFromFields`: decodes the stored Settings JSON object → name-sorted `[]ProviderField{name,value}` (the reduced Go-port ProviderField contract; type/label come from the schema endpoint, merged by the UI by name). Wired into all four `to*Resource` mappers (notification n.Settings, indexer/importlist derefSettings(*string), downloadclient d.Settings). NEW `derefSettings` helper for the nullable columns.
+
+Empty/`{}`/unparseable settings → nil → omitempty drops the key, so empty-DB contract goldens are unaffected (verified: api/v3 + api/v5 + contract all green). Tests: fieldsFromSettingsJSON name-sort + empty/invalid→nil; fields→JSON→fields round-trip; derefSettings.
+
+Not covered by this slice (separate, smaller): customformat/autotagging `specifications[]` (same inverse-mapper idea but spec-shaped) + the `ImplementationName` stub — left for a follow-up.
+
+R: provider GET now returns saved field values (UI edit-forms work). W: n/a. M: GAP_ANALYSIS G4 + this entry. Hard gates clean (build, race tests api v3 + v5 + contract, vet, gofmt).

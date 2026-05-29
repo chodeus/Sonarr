@@ -787,6 +787,7 @@ func toIndexerResource(i indexers.Indexer) IndexerResource {
 			ConfigContract:     cfg,
 			Tags:               tags,
 		},
+		Fields:                  fieldsFromSettingsJSON(derefSettings(i.Settings)), // G4 (J425)
 		EnableRss:               enableRss,
 		EnableAutomaticSearch:   enableAuto,
 		EnableInteractiveSearch: i.EnableInteractiveSearch,

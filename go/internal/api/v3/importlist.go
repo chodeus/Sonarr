@@ -680,6 +680,7 @@ func toImportListResource(i importlists.ImportList) ImportListResource {
 			ConfigContract:     cfg,
 			Tags:               tags,
 		},
+		Fields:                   fieldsFromSettingsJSON(derefSettings(i.Settings)), // G4 (J425)
 		EnableAutomaticAdd:       enableAuto,
 		SearchForMissingEpisodes: i.SearchForMissingEpisodes,
 		ShouldMonitor:            i.ShouldMonitor,
