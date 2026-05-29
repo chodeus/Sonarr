@@ -123,7 +123,7 @@ After 19 slices, the clean / in-scope / ungated / non-cosmetic autonomous work i
 **DONE this campaign (J429–J447):** G5 rename previews; G9 tag/detail aggregator; G4-followup (customformat write-envelope CRITICAL fix + read projection, autotagging specs, ImplementationName all 5 families); T1 flaky e2e; Q1 metadata writer (import/cover/scan events); ReleaseResource full decision projection incl. SceneMapping; series/editor moveFiles; queue-remove blocklist Indexer/Size; G10 indexer Test/Action (all 10 providers); G7 IDTranslator; G11 EpisodeSearch+SeasonSearch commands; DeleteLogFiles/DeleteUpdateLogFiles + disk.EmptyFolder. Plus verified-complete: Tier-2 projections (Release/Queue/History/Blocklist/Series stats+images), Tier-3 v5 routes (0 missing), Tier-4 write paths, all scheduled tasks + handlers.Deps (no nil stubs), all command-registry production commands, all v5 resource fields.
 
 **GATED (need unported Phase-4 substrate — NOT autonomously portable):**
-- Q3 — ManualImport completion events: `DownloadCompletedEvent` has NO producer anywhere in the Go tree (it's the Phase-4 `CompletedDownloadService` publication path); `UntrackedDownloadCompletedEvent` isn't defined. Wiring it from manual import alone would be a partial/inconsistent first producer.
+- Q3 — ManualImport completion events: **PARTIALLY UNGATED (J449).** `DownloadCompletedEvent` now HAS a producer — `downloadprocessing.Service.publishCompleted` (J449) publishes it from the auto-import completion path, so it's no longer a "partial/inconsistent first producer" risk. Remaining Q3 work: the ManualImport handler's own completion arm (publish DownloadCompletedEvent for tracked imports + define & publish `UntrackedDownloadCompletedEvent` for untracked, grouped by series/season + output-folder cleanup) — cite `ManualImportService.cs:560-626`. Now autonomously portable on top of the J449 producer.
 - Q1 tail — metadata on rename / downloads-processed: C# ExtraService also handles `SeriesRenamedEvent` / `DownloadsProcessedEvent` / `EpisodeFolderCreatedEvent`, none of which are defined/published in the Go port yet (only per-file `EpisodeFileRenamedEvent` exists).
 - Provider Test for non-Newznab-protocol indexer families beyond the 10 registered — N/A (all 10 ported providers registered J441-442).
 
@@ -133,3 +133,19 @@ After 19 slices, the clean / in-scope / ungated / non-cosmetic autonomous work i
 - The clean comprehensive fix for both = de-alias v5 series to its own resource type (larger; not warranted for two LOW residuals).
 
 **RESUMING LATER:** the next genuinely-impactful work is the Phase-4 download-completion pipeline (`CompletedDownloadService` + its event publishers), which unblocks Q1 tail + Q3 — but that's a substantial subsystem port, not an autonomous-loop slice. Flag to the operator.
+
+## PHASE-4 DOWNLOAD-COMPLETION ARC (J449+ campaign — re-opened)
+
+Slice-1 arc map (verified against actual Go code, not doc-comments — C# `CompletedDownloadService.cs` + `DownloadProcessingService.cs`). The arc turned out **smaller than J448 feared**: the import gate, state→Imported transition, and the consumer are ALREADY ported; only the event *producer* + cleanup + a few event *types* are missing.
+
+| # | Behavior | C# anchor | Go state | Verdict |
+|---|----------|-----------|----------|---------|
+| 1 | Import-on-completion gate | `CompletedDownloadService.cs:66-126` | `downloadprocessing/service.go:142-160` (`shouldImport`: state==Downloading + client Completed + matched series) | DONE (J399). No ValidatePath / grabbed-history check — assumes pre-parsed RemoteEpisode (documented). |
+| 2 | Tracked-download state → Imported (all-imported gate) | `CompletedDownloadService.cs:212-236` (`VerifyImport`) | `downloadprocessing/service.go:164-185` (`importOne`: `allImported(results)` → `td.State = StateImported`) | DONE (J399). No history-fallback edge case (`:248-279`). |
+| 3 | **DownloadCompletedEvent PRODUCER** | `CompletedDownloadService.cs:229-234, 275-276` | **MISSING** — `importOne` sets Imported but never publishes; event fully defined `trackeddownloads/events.go:190-207` | **J449 target** — narrow optional `CompletionPublisher`, mirrors the `FailurePublisher` (J400) pattern. |
+| 4 | DownloadCompletedEvent CONSUMER | `DownloadHistoryService` Handle | `downloadhistoryhandlers/download_completed.go:72` (→ DownloadImported row), wired `main.go:1108-1110` | DONE (J140) — reads only TrackedDownload; ignores EpisodeFiles/Release. |
+| 5 | Output-folder cleanup (`ShouldDeleteItemFolder` / RemoveCompletedDownloads + DownloadEventHub MarkItemAsImported) | `DownloadProcessingService.cs:35-45` + `DownloadEventHub.cs:50-85` | MISSING | follow-up — needs download-client `MarkItemAsImported`/`RemoveItem` substrate; verify before porting. |
+| 6 | DownloadsProcessedEvent (marker, end-of-pass) | `DownloadsProcessedEvent.cs`; `DownloadProcessingService.cs:80` | NOT defined / not published | define + publish at end of `ProcessTrackedDownloads` (later slice — needed for Q1 tail). |
+| 7 | UntrackedDownloadCompletedEvent | `UntrackedDownloadCompletedEvent.cs` | NOT defined | define for Q3 (ManualImport untracked arm). |
+| 8a | SeriesRenamedEvent | `SeriesRenamedEvent.cs:7-16` | NOT defined / not published | define + publish from rename path (Q1 tail). |
+| 8b | EpisodeFolderCreatedEvent | `EpisodeFolderCreatedEvent.cs:6-19` | DEFINED + PUBLISHED `episodefilemoving/episodefilemoving.go:134-146,609` (no subscribers) | DONE (defined+published); metadata_subscriptions.go:40 doc claiming "not yet defined" is STALE. |

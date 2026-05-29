@@ -20285,3 +20285,17 @@ Decisive verification sweep of the remaining v5 resources (Episode/Queue/History
 Conclusion: clean/in-scope/ungated/non-cosmetic autonomous work is DRAINED across all six tiers. Remaining = GATED (Q3 ManualImport completion + Q1 metadata rename/downloads tail, both needing the unported Phase-4 CompletedDownloadService / per-series event publishers) or LOW-cosmetic (v3 series over-emit; IsExcluded-on-lookup; v5-series de-alias). Full breakdown in GAP_ANALYSIS.md "AUTONOMOUS EXHAUSTION" section.
 
 R/W: no code change (verification + docs only). M: PROGRESS + GAP_ANALYSIS exhaustion sections + this entry. Per the operator's exhaustion clause, the loop STOPS here (no further wakeup) rather than manufacture low-value churn. Hard gates green (build, vet, gofmt `.`, go test ./...). 19 slices this campaign (J429–J447).
+
+---
+
+## J449 — Phase-4 completion arc re-opened: DownloadCompletedEvent PRODUCER wired
+
+**Slice (1+3): map the arc + publish DownloadCompletedEvent from the real completion path.** The J448 "exhaustion" flagged the Phase-4 completion pipeline as the next impactful work. Slice-1 Explore-agent map (appended to GAP_ANALYSIS "PHASE-4 DOWNLOAD-COMPLETION ARC") found the arc is SMALLER than feared: the import gate (`shouldImport`, J399), the all-imported state→Imported transition (`importOne`, J399), and the consumer (`downloadhistoryhandlers.HandleDownloadCompleted`→DownloadImported row, J140) were ALL already ported — only the **producer** was missing. `importOne` set `td.State=StateImported` but never published `DownloadCompletedEvent` (defined `trackeddownloads/events.go:190`, zero producers).
+
+Ported the publication arm of C# `CompletedDownloadService.VerifyImport` (`CompletedDownloadService.cs:229-234`): NEW optional `downloadprocessing.CompletionPublisher` iface + `SetCompletionPublisher` (mirrors the J400 `FailurePublisher` pattern); `importOne` now calls `publishCompleted` after the state transition — builds the event with TrackedDownload + matched SeriesID + the imported results' EpisodeFile rows. `Release` (GrabbedReleaseInfo) left nil (C# recovers it from grabbed history — a lookup this service lacks; field is documented-optional + the history consumer ignores it; follow-up). Best-effort: a publish error logs + keeps Imported (files already on disk). NEW `cmd/sonarr/downloadprocessing_completion_wiring.go` `downloadCompletedPublisher{bus}` adapter, wired in main.go alongside the failure publisher. With no publisher the import stays silent (prior J399 behavior preserved).
+
+**End-to-end now live:** completed download → import → state Imported → DownloadCompletedEvent → DownloadImported history row (the J140 consumer finally has a producer). Unblocks the Q1/Q3 follow-ups (they layer on this producer).
+
+Tests (downloadprocessing): event published with td/seriesId/EpisodeFiles[7,8]; no-publisher still imports silently; partial import → no event + stays Downloading; publish-error → stays Imported (best-effort).
+
+R: service.go (CompletionPublisher iface, SetCompletionPublisher, publishCompleted, importOne call, episodefiles import). A: downloadprocessing_completion_wiring.go. M: main.go (SetCompletionPublisher wiring), service_test.go (4 tests + fakeCompletePub + helper), GAP_ANALYSIS.md (arc map), PROGRESS.md, STATUS.md. Hard gates green (build, vet, gofmt, test -race downloadprocessing+cmd/sonarr+contract).

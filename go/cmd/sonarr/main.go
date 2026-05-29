@@ -3064,6 +3064,13 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	// already-subscribed blocklist + history handlers, same event as
 	// the queue-delete blocklist arm). No publisher → arm no-ops.
 	downloadProcessingSvc.SetFailurePublisher(downloadFailedPublisher{bus: bus})
+	// J449: the completion arm — when every episode of a completed
+	// download imports, the tracked download is marked Imported and a
+	// DownloadCompletedEvent is published (feeding the already-subscribed
+	// downloadhistory handler → DownloadImported audit row, + future
+	// notification/metadata subscribers). No publisher → import is silent
+	// (prior J399 behavior). Ports CompletedDownloadService.cs:229-234.
+	downloadProcessingSvc.SetCompletionPublisher(downloadCompletedPublisher{bus: bus})
 	downloadMonitoringSvc.SetProcessor(downloadProcessingSvc)
 
 	// J401: auto-redownload-on-failure handler (ports

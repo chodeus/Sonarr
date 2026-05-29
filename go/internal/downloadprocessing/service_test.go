@@ -8,6 +8,7 @@ import (
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/downloadprocessing"
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/ospath"
 	"sonarr.tv/sonarr/internal/series"
@@ -259,5 +260,116 @@ func TestProcess_FailedPublishError_NotMarked_J400(t *testing.T) {
 	svc.ProcessTrackedDownloads(context.Background())
 	if td.State != trackeddownloads.StateDownloading {
 		t.Errorf("state = %v, want still Downloading (publish failed)", td.State)
+	}
+}
+
+// fakeCompletePub captures published DownloadCompletedEvents (J449).
+type fakeCompletePub struct {
+	evs []trackeddownloads.DownloadCompletedEvent
+	err error
+}
+
+func (f *fakeCompletePub) PublishDownloadCompleted(_ context.Context, ev trackeddownloads.DownloadCompletedEvent) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.evs = append(f.evs, ev)
+	return nil
+}
+
+// importedResultWithFile returns an Imported result carrying an
+// EpisodeFile row (the file the writer produced), so the completion
+// event's EpisodeFiles slice can be asserted.
+func importedResultWithFile(fileID int) *episodeimport.ImportResult {
+	le := episodeimport.NewLocalEpisode()
+	return episodeimport.NewImportedImportResult(episodeimport.NewImportDecision(le), &episodefiles.File{ID: fileID})
+}
+
+// J449: a fully-imported completed download publishes a
+// DownloadCompletedEvent carrying the tracked download, matched series
+// id, and the imported EpisodeFile rows.
+func TestProcess_CompletedMatched_PublishesCompleted_J449(t *testing.T) {
+	t.Parallel()
+	ser := &series.Series{ID: 42, Path: "/tv/Show"}
+	td := completedTD("dl1", ser, "/dl/Show.S01E01")
+	imp := &fakeImporter{results: []*episodeimport.ImportResult{importedResultWithFile(7), importedResultWithFile(8)}}
+	pub := &fakeCompletePub{}
+	svc := newSvc(t, fakeStore{tds: []*trackeddownloads.TrackedDownload{td}}, imp)
+	svc.SetCompletionPublisher(pub)
+	if n := svc.ProcessTrackedDownloads(context.Background()); n != 1 {
+		t.Fatalf("n=%d, want 1", n)
+	}
+	if td.State != trackeddownloads.StateImported {
+		t.Errorf("state = %v, want Imported", td.State)
+	}
+	if len(pub.evs) != 1 {
+		t.Fatalf("published %d events, want 1", len(pub.evs))
+	}
+	ev := pub.evs[0]
+	if ev.TrackedDownload != td {
+		t.Errorf("event TrackedDownload = %v, want td", ev.TrackedDownload)
+	}
+	if ev.SeriesID != 42 {
+		t.Errorf("event SeriesID = %d, want 42", ev.SeriesID)
+	}
+	if len(ev.EpisodeFiles) != 2 || ev.EpisodeFiles[0].ID != 7 || ev.EpisodeFiles[1].ID != 8 {
+		t.Errorf("event EpisodeFiles = %+v, want file ids [7 8]", ev.EpisodeFiles)
+	}
+}
+
+// J449: with no completion publisher wired the import still happens
+// (state Imported, counted) but nothing is published (prior J399 behavior).
+func TestProcess_CompletedNoCompletionPublisher_NoEvent_J449(t *testing.T) {
+	t.Parallel()
+	ser := &series.Series{ID: 1, Path: "/tv/Show"}
+	td := completedTD("dl1", ser, "/dl/Show.S01E01")
+	imp := &fakeImporter{results: []*episodeimport.ImportResult{importedResult()}}
+	svc := newSvc(t, fakeStore{tds: []*trackeddownloads.TrackedDownload{td}}, imp)
+	if n := svc.ProcessTrackedDownloads(context.Background()); n != 1 {
+		t.Fatalf("n=%d, want 1", n)
+	}
+	if td.State != trackeddownloads.StateImported {
+		t.Errorf("state = %v, want Imported", td.State)
+	}
+}
+
+// J449: a partial import publishes NO completion event (the gate is
+// all-episodes-imported; the download stays Downloading for retry).
+func TestProcess_PartialImport_NoCompletedEvent_J449(t *testing.T) {
+	t.Parallel()
+	ser := &series.Series{ID: 1, Path: "/tv/Show"}
+	td := completedTD("dl1", ser, "/dl/Show.S01E01")
+	rejected := &episodeimport.ImportResult{Decision: episodeimport.NewImportDecision(episodeimport.NewLocalEpisode(), episodeimport.NewImportRejection(episodeimport.ImportRejectionError, "no")), Errors: []string{"no"}}
+	imp := &fakeImporter{results: []*episodeimport.ImportResult{importedResultWithFile(7), rejected}}
+	pub := &fakeCompletePub{}
+	svc := newSvc(t, fakeStore{tds: []*trackeddownloads.TrackedDownload{td}}, imp)
+	svc.SetCompletionPublisher(pub)
+	if n := svc.ProcessTrackedDownloads(context.Background()); n != 0 {
+		t.Fatalf("n=%d, want 0", n)
+	}
+	if len(pub.evs) != 0 {
+		t.Errorf("published %d events, want 0 (partial import)", len(pub.evs))
+	}
+	if td.State != trackeddownloads.StateDownloading {
+		t.Errorf("state = %v, want still Downloading", td.State)
+	}
+}
+
+// J449: a completion-publish error is best-effort — the files are
+// already on disk, so the download stays Imported (the event is an
+// audit/notification signal, not a transactional gate).
+func TestProcess_CompletionPublishError_StaysImported_J449(t *testing.T) {
+	t.Parallel()
+	ser := &series.Series{ID: 1, Path: "/tv/Show"}
+	td := completedTD("dl1", ser, "/dl/Show.S01E01")
+	imp := &fakeImporter{results: []*episodeimport.ImportResult{importedResult()}}
+	pub := &fakeCompletePub{err: context.Canceled}
+	svc := newSvc(t, fakeStore{tds: []*trackeddownloads.TrackedDownload{td}}, imp)
+	svc.SetCompletionPublisher(pub)
+	if n := svc.ProcessTrackedDownloads(context.Background()); n != 1 {
+		t.Fatalf("n=%d, want 1 (import succeeded)", n)
+	}
+	if td.State != trackeddownloads.StateImported {
+		t.Errorf("state = %v, want Imported (publish error is best-effort)", td.State)
 	}
 }

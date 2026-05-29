@@ -50,6 +50,7 @@ import (
 
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/downloadclients"
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
@@ -75,13 +76,24 @@ type FailurePublisher interface {
 	PublishDownloadFailed(ctx context.Context, ev trackeddownloads.DownloadFailedEvent) error
 }
 
+// CompletionPublisher publishes a [trackeddownloads.DownloadCompletedEvent]
+// for a tracked download whose every episode just imported (J449). A
+// boot-time adapter over *messaging.Bus satisfies it; tests fake it to
+// capture the event. Optional — when unset the import path still marks
+// the download Imported but publishes nothing (preserving prior J399
+// behavior). Mirrors the optional [FailurePublisher] (J400).
+type CompletionPublisher interface {
+	PublishDownloadCompleted(ctx context.Context, ev trackeddownloads.DownloadCompletedEvent) error
+}
+
 // Service auto-imports completed tracked downloads and (J400) marks
 // failed ones Failed + publishes a DownloadFailedEvent.
 type Service struct {
-	tracked  TrackedDownloadStore
-	importer Importer
-	failPub  FailurePublisher
-	log      *slog.Logger
+	tracked     TrackedDownloadStore
+	importer    Importer
+	failPub     FailurePublisher
+	completePub CompletionPublisher
+	log         *slog.Logger
 }
 
 // SetFailurePublisher wires the optional [FailurePublisher] (J400). The
@@ -91,6 +103,17 @@ type Service struct {
 func (s *Service) SetFailurePublisher(p FailurePublisher) {
 	if s != nil {
 		s.failPub = p
+	}
+}
+
+// SetCompletionPublisher wires the optional [CompletionPublisher] (J449).
+// When set, a fully-imported tracked download publishes a
+// DownloadCompletedEvent after its state transitions to Imported;
+// unwired the import still happens, just silently (prior J399 behavior).
+// nil-safe. Mirrors SetFailurePublisher.
+func (s *Service) SetCompletionPublisher(p CompletionPublisher) {
+	if s != nil {
+		s.completePub = p
 	}
 }
 
@@ -181,7 +204,45 @@ func (s *Service) importOne(ctx context.Context, td *trackeddownloads.TrackedDow
 	td.State = trackeddownloads.StateImported
 	s.log.LogAttrs(ctx, slog.LevelInfo, "downloadprocessing: imported",
 		slog.String("downloadId", td.DownloadID), slog.String("path", outputPath))
+	s.publishCompleted(ctx, td, results)
 	return true
+}
+
+// publishCompleted publishes a DownloadCompletedEvent for a fully-
+// imported tracked download. Ports the publication arm of C#
+// `CompletedDownloadService.VerifyImport` (`:229-234`): after the state
+// transition to Imported, fire the event carrying the tracked download,
+// matched series id, and the freshly-written EpisodeFile rows (the
+// imported results' files). The history + notification subscribers
+// consume it (the DownloadImported audit row is written by the already-
+// wired downloadhistory handler).
+//
+// Release (the originating GrabbedReleaseInfo) is left nil: C# recovers
+// it from grabbed history (`:222`), a lookup this service doesn't have;
+// the event field is documented-optional and the history consumer
+// ignores it. Recovering it is a follow-up (would need a history reader).
+//
+// Best-effort: the import already moved files on disk, so a publish
+// error never reverts the Imported state — it's logged and swallowed
+// (the event is an audit/notification signal, not a transactional gate).
+func (s *Service) publishCompleted(ctx context.Context, td *trackeddownloads.TrackedDownload, results []*episodeimport.ImportResult) {
+	if s.completePub == nil {
+		return
+	}
+	var files []episodefiles.File
+	for _, r := range results {
+		if r != nil && r.ResultType() == episodeimport.ImportResultImported && r.EpisodeFile != nil {
+			files = append(files, *r.EpisodeFile)
+		}
+	}
+	ev := trackeddownloads.DownloadCompletedEvent{
+		TrackedDownload: td,
+		SeriesID:        td.RemoteEpisode.Series.ID,
+		EpisodeFiles:    files,
+	}
+	if err := s.completePub.PublishDownloadCompleted(ctx, ev); err != nil {
+		s.log.Warn("downloadprocessing: publish DownloadCompletedEvent failed", "downloadId", td.DownloadID, "err", err)
+	}
 }
 
 // shouldFail reports whether a tracked download is a candidate for the
