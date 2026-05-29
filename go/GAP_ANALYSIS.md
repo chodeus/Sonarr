@@ -11,7 +11,7 @@
 > - ✅ **G5** rename previews — FIXED J429 (`internal/renamepreview.Service` diff driver; wired v3+v5 with NamingConfig path builder).
 > - ✅ **G9** tag/detail — FIXED J430 (`internal/tagdetail.Service` 9-source aggregator; folds autotag TagSpec values; wired v3+v5).
 > - ✅ **T1** flaky shadowtraffic-e2e — FIXED J434 (poll log for entries before SIGTERM; sibling test too; 3× full-suite green).
-> - ⏳ **Q1** latent metadata-writer — OPEN.
+> - ✅ **Q1** latent metadata-writer — FIXED J435 (subscribeMetadataWriters drives metadataSvc from EpisodeImported/CoversUpdated/SeriesScanned). Tail: SeriesRenamed/DownloadsProcessed/EpisodeFolderCreated events not yet ported/published — wire when publishers land.
 
 
 Full-project audit after the read-surface verticalization work drained. Method: real
@@ -73,7 +73,7 @@ done, and some "done"-looking paths are actually stubbed).
 
 **T1 — Flaky test `TestTriadComposesEndToEnd`** (cmd/shadowtraffic-e2e, dev tooling). ✅ FIXED J434 — root cause confirmed: the test read the record binary's JSONL immediately after SIGTERM, but under parallel load the subprocess could be force-killed before its async drain flushed. Fix polls the log for the expected entry count (the drain flushes every 50ms, so entries are visible pre-shutdown) before SIGTERM. Same fix applied to the sibling `TestRecordReplayRoundTripsCleanly`. Verified 3× consecutive full-suite green. Original diagnosis below retained for context. Refined diagnosis (J428 audit): the test runs the record proxy as a SUBPROCESS with an async buffered LogWriter (flush-on-Close). Under full-suite parallel load the subprocess is starved, and `stopAndWait`'s graceful-shutdown window likely elapses → the proxy is force-killed before the drain goroutine flushes+fsyncs → "got 0 log entries". Passes 3/3 in isolation. Fix options: lengthen the subprocess shutdown grace in `stopAndWait`, or have the test poll the JSONL for N entries with a timeout before asserting. Dev-tooling only; not app behaviour.
 
-**Q1 — Metadata-writer orchestrator is latent** — built + reachable but no event source drives it (`metadataSvc` held via `_`). Metadata files (nfo/images) aren't written on import/rename yet.
+**Q1 — Metadata-writer orchestrator is latent.** ✅ FIXED J435 — `subscribeMetadataWriters` (cmd/sonarr) drives `metadataSvc` from the 3 ported+published events (EpisodeImported→CreateAfterEpisodeImport, CoversUpdated→CreateAfterMediaCoverUpdate, SeriesScanned→CreateAfterSeriesScan). TAIL (deferred, evidence): C# also handles SeriesRenamedEvent / DownloadsProcessedEvent / EpisodeFolderCreatedEvent — these event types are NOT defined/published in the Go port yet (only EpisodeFileRenamedEvent exists, per-file vs C#'s per-series); wire the rename/downloads-processed metadata paths when those publishers land. Separately, metadata only writes when a metadata consumer package is blank-imported + enabled (registry currently empty — orthogonal, same shape as G7).
 
 **Q2 — `internal/repo` has no direct tests** (transitively covered by every repo's suite). Low risk.
 

@@ -20109,3 +20109,19 @@ The J428-diagnosed flake ("got 0 log entries" in `TestTriadComposesEndToEnd`). R
 - Assertions UNCHANGED (still `len(entries) != 3` / `len(replayed) != len(probes)`) — the poll only removes the timing dependency; it does not weaken the check.
 
 R/W: n/a (dev tooling test only). M: GAP_ANALYSIS T1 fixed + PROGRESS + this entry. Verified: `go test -count=8 ./cmd/shadowtraffic-e2e/...` green + full `go test ./...` 3× consecutive green (was ~1-in-2 flaky before). Hard gates clean (vet, gofmt touched).
+
+---
+
+## J435 — Q1: drive the metadata writer from events (was latent)
+
+C# ref: `src/NzbDrone.Core/Extras/ExtraService.cs:26-29` (IHandle fan-out). The Go `metadataSvc` was built but held via `_ = metadataSvc` — no event source drove it, so nfo/images were never written.
+
+- NEW `cmd/sonarr/metadata_subscriptions.go`: `subscribeMetadataWriters(bus, svc metadataWriterDriver, files metadataScanFileLister, log)` — narrow consumer interfaces + 3 bus subscriptions:
+  - `episodeimport.EpisodeImportedEvent` → `CreateAfterEpisodeImport(series, episodeFile)` (the primary metadata-on-import path; event published via importEventPublisherAdapter).
+  - `mediacover.CoversUpdatedEvent` → `CreateAfterMediaCoverUpdate(series)` (published at main.go HandleSeriesUpdated).
+  - `mediafiles.SeriesScannedEvent` → loads files via `episodeFilesSvc.GetFilesBySeries` → `CreateAfterSeriesScan(series, files)`.
+- Handlers nil-guard event fields + log-and-swallow driver errors (return nil) — a metadata write failure never aborts the import/scan flow or sibling subscribers (matches C# per-consumer try/catch + the bus's per-handler error isolation).
+- main.go: replaced `_ = metadataSvc` with the one-line `subscribeMetadataWriters(...)` call.
+- DEFERRED tail (evidence in GAP_ANALYSIS): C#'s SeriesRenamedEvent / DownloadsProcessedEvent / EpisodeFolderCreatedEvent are not yet defined+published in the Go port (only per-file EpisodeFileRenamedEvent exists) — wire those when publishers land. Metadata also only writes when a consumer package is registered (registry empty today — orthogonal, like G7).
+
+R: metadata (nfo/images) now written on import + cover-refresh + library scan when a consumer is enabled. W: n/a. M: GAP_ANALYSIS Q1 fixed + PROGRESS + this entry. Tests: each event→method+args + nil-guards + scan file-load-error skip + handler-error-swallowed. Tier-1 GAP_ANALYSIS now fully resolved. Hard gates clean (full suite).

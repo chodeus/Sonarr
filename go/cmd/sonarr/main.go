@@ -3015,12 +3015,11 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	if err != nil {
 		return fmt.Errorf("metadataservice: %w", err)
 	}
-	// metadataSvc held here as the orchestrator surface. The Phase-5
-	// ExtraService port + the IHandle event-dispatcher fan-out will
-	// publish to this service when they land; until then the
-	// orchestrator is reachable but no event source drives it. The
-	// blank-ident retains it across the linter check.
-	_ = metadataSvc
+	// Q1 (J435): drive the metadata writer from the ported subset of
+	// the events C# ExtraService subscribes to. See
+	// subscribeMetadataWriters for the event→method map + the three
+	// not-yet-ported events still pending.
+	subscribeMetadataWriters(bus, metadataSvc, episodeFilesSvc, logger)
 
 	registry := commands.NewRegistry()
 	queue := commands.NewQueue(registry.Properties)
