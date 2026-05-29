@@ -29,6 +29,38 @@ func osFileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
+// hostConfigChecks bundles the injectable filesystem/crypto capabilities
+// the SSL validation needs, so the handler stays hermetic in tests.
+type hostConfigChecks struct {
+	fileExists FileChecker
+	cert       CertValidator
+}
+
+// HostConfigOption configures the optional validators on
+// [HostConfigUpdateHandler]. Unset capabilities default to the
+// production os-backed implementations (osFileExists / osValidateCertificate).
+type HostConfigOption func(*hostConfigChecks)
+
+// WithFileChecker overrides the SslCertPath/SslKeyPath FileExists probe
+// (J404). nil is ignored.
+func WithFileChecker(f FileChecker) HostConfigOption {
+	return func(c *hostConfigChecks) {
+		if f != nil {
+			c.fileExists = f
+		}
+	}
+}
+
+// WithCertValidator overrides the SslCertPath IsValidCertificate check
+// (J413). nil is ignored.
+func WithCertValidator(v CertValidator) HostConfigOption {
+	return func(c *hostConfigChecks) {
+		if v != nil {
+			c.cert = v
+		}
+	}
+}
+
 // HostConfigResource mirrors
 // `src/Sonarr.Api.V3/Config/HostConfigResource.cs`. 39 fields covering
 // every host-level knob (bind/port, ssl, branch, auth, proxy, backup,
@@ -377,7 +409,7 @@ var urlBasePattern = regexp.MustCompile(`^[A-Za-z0-9_\-./]*$`)
 //   - AuthenticationMethod: not "Basic" (deprecated)
 //   - Username/Password: NotEmpty when AuthenticationMethod==Forms
 //   - PasswordConfirmation: equals Password
-//   - SslCertPath: NotEmpty + absolute + FileExists when EnableSsl
+//   - SslCertPath: NotEmpty + absolute + FileExists + IsValidCertificate when EnableSsl
 //   - SslKeyPath: absolute + FileExists when set (any non-empty value)
 //   - LogSizeLimit: 1..10
 //   - Branch: NotEmpty
@@ -386,19 +418,20 @@ var urlBasePattern = regexp.MustCompile(`^[A-Za-z0-9_\-./]*$`)
 //   - BackupInterval: 1..7
 //   - BackupRetention: 1..90
 //
-// J404 closes the SslCertPath/SslKeyPath FileExists arm of the deferral
-// (C# `:63,70` `FileExistsValidator`). The optional fileExists arg is a
-// [FileChecker]; when omitted the production [osFileExists] (os.Stat) is
-// used, so the file-existence check is never silently skipped. DEFERRED
-// still: SslCertPath IsValidCertificate (needs an X.509 parse adapter);
-// UserService.Upsert (needs a hash-aware writer). PasswordConfirmation's
+// J404 closed the SslCertPath/SslKeyPath FileExists arm (C# `:63,70`
+// `FileExistsValidator`); J413 adds the SslCertPath IsValidCertificate
+// arm (C# `:64` — PEM or PKCS#12 load). Both are injectable via
+// [HostConfigOption] (WithFileChecker / WithCertValidator); when omitted
+// the production os-backed implementations are used, so neither check is
+// silently skipped. DEFERRED still: UserService.Upsert (needs a
+// hash-aware writer). PasswordConfirmation's
 // user-svc short-circuit ("if the stored user's password matches, ignore
 // the confirmation field") is also DEFERRED — the simpler equal-pair
 // check rejects mismatches.
-func HostConfigUpdateHandler(svc HostConfigWriter, fileExists ...FileChecker) http.Handler {
-	check := osFileExists
-	if len(fileExists) > 0 && fileExists[0] != nil {
-		check = fileExists[0]
+func HostConfigUpdateHandler(svc HostConfigWriter, opts ...HostConfigOption) http.Handler {
+	checks := hostConfigChecks{fileExists: osFileExists, cert: osValidateCertificate}
+	for _, o := range opts {
+		o(&checks)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body HostConfigResource
@@ -408,7 +441,7 @@ func HostConfigUpdateHandler(svc HostConfigWriter, fileExists ...FileChecker) ht
 			httperr.BadRequest(w, fmt.Sprintf("config/host: malformed body: %v", err))
 			return
 		}
-		if errs := validateHostConfig(&body, check); !errs.OK() {
+		if errs := validateHostConfig(&body, checks); !errs.OK() {
 			httperr.WriteValidation(w, errs.Failures())
 			return
 		}
@@ -531,8 +564,9 @@ func HostConfigUpdateHandler(svc HostConfigWriter, fileExists ...FileChecker) ht
 // validateHostConfig ports the cheap subset of HostConfigController's
 // SharedValidator chain. See HostConfigUpdateHandler doc for the
 // deferred filesystem-state checks.
-func validateHostConfig(res *HostConfigResource, fileExists FileChecker) *validation.Errors {
+func validateHostConfig(res *HostConfigResource, checks hostConfigChecks) *validation.Errors {
 	errs := validation.New()
+	fileExists := checks.fileExists
 
 	// BindAddress: ValidIpAddress when not "*" / "localhost".
 	if res.BindAddress != "*" && res.BindAddress != "localhost" && res.BindAddress != "" {
@@ -560,6 +594,12 @@ func validateHostConfig(res *HostConfigResource, fileExists FileChecker) *valida
 		} else if fileExists != nil && !fileExists(res.SslCertPath) {
 			// C# FileExistsValidator on SslCertPath, When(EnableSsl).
 			errs.Add("SslCertPath", "SslCertPath file does not exist")
+		} else if checks.cert != nil {
+			// C# IsValidCertificate on SslCertPath, When(EnableSsl) —
+			// only after NotEmpty + absolute + FileExists pass.
+			if err := checks.cert(res.SslCertPath, res.SslKeyPath, res.SslCertPassword); err != nil {
+				errs.Add("SslCertPath", "Invalid SSL certificate file or password/key: "+err.Error())
+			}
 		}
 	}
 

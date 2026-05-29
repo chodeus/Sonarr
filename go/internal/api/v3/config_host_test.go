@@ -432,7 +432,7 @@ func TestHostConfigUpdateHandler_SslCertPathMissing_400_J404(t *testing.T) {
 	rr := httptest.NewRecorder()
 	body := strings.Replace(hostBody(), `"enableSsl":false`, `"enableSsl":true`, 1)
 	body = strings.Replace(body, `"sslCertPath":""`, `"sslCertPath":"/etc/sonarr/cert.pfx"`, 1)
-	HostConfigUpdateHandler(&fakeHostConfig{}, func(string) bool { return false }).
+	HostConfigUpdateHandler(&fakeHostConfig{}, WithFileChecker(func(string) bool { return false })).
 		ServeHTTP(rr, putHostReq(body))
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
@@ -449,8 +449,10 @@ func TestHostConfigUpdateHandler_SslCertPathExists_OK_J404(t *testing.T) {
 	rr := httptest.NewRecorder()
 	body := strings.Replace(hostBody(), `"enableSsl":false`, `"enableSsl":true`, 1)
 	body = strings.Replace(body, `"sslCertPath":""`, `"sslCertPath":"/etc/sonarr/cert.pfx"`, 1)
-	HostConfigUpdateHandler(&fakeHostConfig{}, func(string) bool { return true }).
-		ServeHTTP(rr, putHostReq(body))
+	HostConfigUpdateHandler(&fakeHostConfig{},
+		WithFileChecker(func(string) bool { return true }),
+		WithCertValidator(func(_, _, _ string) error { return nil }),
+	).ServeHTTP(rr, putHostReq(body))
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
 	}
@@ -462,7 +464,7 @@ func TestHostConfigUpdateHandler_SslKeyPathMissing_400_J404(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	body := strings.Replace(hostBody(), `"sslKeyPath":""`, `"sslKeyPath":"/etc/sonarr/key.pem"`, 1)
-	HostConfigUpdateHandler(&fakeHostConfig{}, func(string) bool { return false }).
+	HostConfigUpdateHandler(&fakeHostConfig{}, WithFileChecker(func(string) bool { return false })).
 		ServeHTTP(rr, putHostReq(body))
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
@@ -483,8 +485,10 @@ func TestHostConfigUpdateHandler_SslCertPathRealFile_OK_J404(t *testing.T) {
 	rr := httptest.NewRecorder()
 	body := strings.Replace(hostBody(), `"enableSsl":false`, `"enableSsl":true`, 1)
 	body = strings.Replace(body, `"sslCertPath":""`, `"sslCertPath":"`+certPath+`"`, 1)
-	// No checker passed → default osFileExists exercised.
-	HostConfigUpdateHandler(&fakeHostConfig{}).ServeHTTP(rr, putHostReq(body))
+	// Default osFileExists exercised (real temp file); cert validation
+	// bypassed so this test isolates the FileExists-default path.
+	HostConfigUpdateHandler(&fakeHostConfig{}, WithCertValidator(func(_, _, _ string) error { return nil })).
+		ServeHTTP(rr, putHostReq(body))
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
 	}

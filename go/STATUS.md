@@ -19866,3 +19866,19 @@ Contract-safe: the diskspace hostbootstrap contract uses a fake lister, so the r
 Tests: `specialDriveRegex` denylist parity — 11 excluded paths (docker/rancher/kubelet/boot/etc/aufs/timemachine + sub-paths) and 7 kept (incl. boundary cases `/etcetera`, `/boots`, `/var/lib/sonarr`).
 
 R: GET /api/v3+v5/diskspace now lists fixed/network mounts beyond the root folders. W: n/a. M: matrix #9 + PROGRESS + this entry. Hard gates clean (build darwin/linux/windows, race tests cmd/sonarr + disk + contract, vet, gofmt).
+
+---
+
+## J413 — #5: SslCertPath IsValidCertificate validation (#5 DONE; "what's next" list complete)
+
+Closes the last arm of the SSL-cert validation deferral — C# `HostConfigController.cs:64` `IsValidCertificate` (the J404 FileExists arm + this complete the chain NotEmpty→absolute→FileExists→IsValidCertificate). NEW `internal/api/v3/cert_validate.go`: `CertValidator` interface + `osValidateCertificate` production impl — reads the cert file and validates it as PEM (cert + optional separate key via `tls.LoadX509KeyPair`, else parse a `CERTIFICATE` block via `x509.ParseCertificate`) or as binary PKCS#12/PFX (`golang.org/x/crypto/pkcs12.Decode` with the SslCertPassword). Mirrors the C# `CertificateValidator` PEM-vs-Pkcs12 dispatch.
+
+Refactored `HostConfigUpdateHandler` from the J404 variadic `FileChecker` to functional options (`HostConfigOption` + `WithFileChecker` / `WithCertValidator`); unset capabilities default to the os-backed implementations so neither the FileExists nor the IsValidCertificate check is ever silently skipped. Cert validation runs only after NotEmpty + absolute + FileExists pass, adding "Invalid SSL certificate file or password/key: <msg>" on failure.
+
+NEW dependency: `golang.org/x/crypto/pkcs12` (go get bumped x/crypto v0.51→v0.52 + x/sys v0.44→v0.45; go mod tidy promoted x/crypto to a direct require). Verified building on darwin + linux + windows.
+
+Tests: `osValidateCertificate` valid-PEM (self-signed, generated in-test) / valid-PEM+key / garbage→error / missing→error; handler valid-cert→202 (end-to-end via the real osValidateCertificate) + existing-but-invalid→400 with the IsValidCertificate message; the J404 FileExists tests migrated to `WithFileChecker`/`WithCertValidator`.
+
+NOTE: pre-existing gofmt drift in `internal/api/v3/release.go` + `release_write.go` (committed unformatted before this slice, operator-driven release files) was flagged as a separate spawned task — deliberately NOT touched here (scope discipline).
+
+R: n/a. W: PUT /config/host now rejects SSL configs whose cert file isn't a loadable PEM/PKCS#12. M: matrix #9 + PROGRESS + this entry. Hard gates clean for touched files (build darwin/linux/windows, race tests api v3 + cmd/sonarr + contract, vet, gofmt on touched files).
