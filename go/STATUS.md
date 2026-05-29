@@ -19954,3 +19954,13 @@ R: n/a. W: n/a. M: this entry + PROGRESS + memory (gofmt-gate lesson). Hard gate
 Audit finding G2: the `CleanUpRecycleBin` 24h scheduled task registered `NewCleanUpRecycleBin(nil)` (a no-op stub) because `handlers.Deps.CleanUpRecycleBin` was never set in main.go — even though `recyclebin.Service.Cleanup(ctx)` is real + already constructed (`recycleBinSvc`). One-line fix: set `CleanUpRecycleBin: recycleBinSvc` in the Deps literal (the service satisfies the `CleanupRunner` interface). The scheduled recycle-bin cleanup (delete files past the configured retention) now actually runs.
 
 R: n/a. W: recycle-bin cleanup task now functional. M: GAP_ANALYSIS G2 + this entry. Hard gates clean (build, tests commands/handlers + cmd/sonarr, vet, gofmt).
+
+---
+
+## J422 — G3 fix: real queue/details lister (was emptyQueueDetailsLister stub)
+
+Audit finding G3: `GET /api/v3+v5/queue/details` returned empty (backed by `emptyQueueDetailsLister`), though the queue data + `projectQueueResource` mapper already existed (the /queue list endpoint uses them). NEW `queueDetailsAdapter{svc: *queue.Service}` ports `QueueDetailsController.GetQueue`: `queueSvc.GetQueue()` filtered by seriesId (precedence) or episodeIds, else the full queue, each projected via projectQueueResource. Replaced the stub at both v3 + v5 routes. DEFERRED (documented): the C# `Concat(pending)` pending-release rows (the /queue list also omits pending, kept consistent); includeSubresources gating (details over-includes Series+Episodes — benign).
+
+Contract-safe: empty queue → `[]` (goldens unaffected). Tests: filtering by seriesId / episodeIds / none / seriesId-precedence + the queueRowMatchesEpisodes helper, via queue.Service.SetQueue.
+
+R: queue/details now returns the real queue. W: n/a. M: GAP_ANALYSIS G3 + this entry. Hard gates clean (build, race tests cmd/sonarr + v5 queuedetails + contract, vet, gofmt).

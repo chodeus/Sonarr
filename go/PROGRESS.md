@@ -4,6 +4,8 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Current state
 
+HEAD at `J422` — **G3: real queue/details lister.** Replaced `emptyQueueDetailsLister` (returned empty) with `queueDetailsAdapter` porting `QueueDetailsController.GetQueue`: queueSvc.GetQueue() filtered by seriesId (precedence) / episodeIds / all, projected via projectQueueResource; wired at v3 + v5 routes. Pending-concat + includeSubresources gating documented-deferred. Tests: filter matrix + helper. Hard gates clean.
+
 HEAD at `J421` — **G2: wire CleanUpRecycleBin task → recyclebin.Service.** The 24h cleanup task was a nil no-op stub (Deps.CleanUpRecycleBin unset); recyclebin.Service.Cleanup is real + constructed. One-line Deps wiring. Recycle-bin retention cleanup now runs. Hard gates clean.
 
 HEAD at `J420` — **Full-project audit + gap analysis (GAP_ANALYSIS.md).** Ran the REAL full-repo gates (build/vet/gofmt/test ./...) + 3 verification agents. Findings: CRITICAL **G1 search→grab gap** (MissingEpisodeSearch/CutoffUnmet/SeriesSearch/auto-redownload all search but never grab — only RssSync bridges to the existing grabber); HIGH cheap fixes **G2** (CleanUpRecycleBin task is a nil stub — 1-line dep wiring) + **G3** (queue/details returns empty though data+mapper exist) + **G4** (provider fields[] never populated on GET — needs inverse settings→fields mapper); MEDIUM G5 rename-previews, G6 series/lookup, G7 importlist providers not blank-imported (sync inert), G8 v5 history season/episode, G9 tag/detail aggregator; LOW T1 flaky shadowtraffic-e2e test, Q1 latent metadata-writer. Gates: build/vet/gofmt clean; `go test ./...` 1 flaky failure (T1, passes isolated). Now fixing the AUTONOMOUS items (G2/G3/G1/G4/...) as slices.

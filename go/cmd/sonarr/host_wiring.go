@@ -587,10 +587,55 @@ func projectQueueResource(q queue.Queue) apiv3.QueueResource {
 // production wiring substitutes the empty implementation today.
 // Populated-row projection lands when the tracked-downloads /
 // pending-release join surface ports.
-type emptyQueueDetailsLister struct{}
+// queueDetailsAdapter is the real apiv3.QueueDetailsLister (G3/J422):
+// returns the in-memory queue rows, optionally filtered by seriesId or
+// episodeIds, projected via projectQueueResource. Ports
+// `QueueDetailsController.GetQueue` (`src/Sonarr.Api.V5/Queue/
+// QueueDetailsController.cs`) — seriesId takes precedence over
+// episodeIds, else the full queue. DEFERRED (documented): the C#
+// `fullQueue = queue.Concat(pending)` pending-release concat — the
+// Go-port /queue list endpoint also omits pending, so /queue/details
+// stays consistent; pending lands when the pending→queue projection
+// does. Sub-resource gating (includeSubresources) is not applied —
+// projectQueueResource hydrates Series+Episodes; details returns them
+// (benign over-inclusion vs the C# enum gate).
+type queueDetailsAdapter struct{ svc *queue.Service }
 
-func (emptyQueueDetailsLister) QueueDetails(context.Context, *int, []int) ([]apiv3.QueueResource, error) {
-	return nil, nil
+func (a queueDetailsAdapter) QueueDetails(_ context.Context, seriesID *int, episodeIDs []int) ([]apiv3.QueueResource, error) {
+	rows := a.svc.GetQueue()
+	var epSet map[int]bool
+	if seriesID == nil && len(episodeIDs) > 0 {
+		epSet = make(map[int]bool, len(episodeIDs))
+		for _, id := range episodeIDs {
+			epSet[id] = true
+		}
+	}
+	out := make([]apiv3.QueueResource, 0, len(rows))
+	for _, q := range rows {
+		switch {
+		case seriesID != nil:
+			if q.Series == nil || q.Series.ID != *seriesID {
+				continue
+			}
+		case epSet != nil:
+			if !queueRowMatchesEpisodes(q, epSet) {
+				continue
+			}
+		}
+		out = append(out, projectQueueResource(q))
+	}
+	return out, nil
+}
+
+// queueRowMatchesEpisodes reports whether any of the row's episodes is in
+// the requested set (C# `episodeIds.IntersectBy(... q.Episodes ...)`).
+func queueRowMatchesEpisodes(q queue.Queue, epSet map[int]bool) bool {
+	for _, e := range q.Episodes {
+		if epSet[e.ID] {
+			return true
+		}
+	}
+	return false
 }
 
 // pendingCountLister wraps the pendingreleases.Repo's row count for
@@ -2829,7 +2874,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// `includeSubresources` query param accepted but ignored at
 		// the stub level (same as v3's includeSeries/includeEpisode
 		// bools). Re-uses emptyQueueDetailsLister stub adapter.
-		{Method: "GET", Path: "/api/v5/queue/details", Handler: queuedetailsv5.GetHandler(emptyQueueDetailsLister{})},
+		{Method: "GET", Path: "/api/v5/queue/details", Handler: queuedetailsv5.GetHandler(queueDetailsAdapter{svc: queueSvc})},
 		// J291 — v5 QueueStatus endpoint family (1 endpoint; 80 LOC C#
 		// — QueueStatusController only). Pure path-alias slice. v3
 		// already exposes /api/v3/queue/status via apiv3.QueueStatusHandler
@@ -3378,7 +3423,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "PUT", Path: "/api/v3/qualityprofile/{id}", Handler: apiv3.QualityProfileUpdateHandler(qualityProfilesSvc, customFormatsSvc)},
 		{Method: "DELETE", Path: "/api/v3/qualityprofile/{id}", Handler: apiv3.QualityProfileDeleteHandler(qualityProfilesSvc)},
 		{Method: "GET", Path: "/api/v3/queue", Handler: apiv3.QueueHandler(queuePagedAdapter{svc: queueSvc, qualityDefs: qualityDefSvc, qualityProfiles: qualityProfilesSvc})},
-		{Method: "GET", Path: "/api/v3/queue/details", Handler: apiv3.QueueDetailsHandler(emptyQueueDetailsLister{})},
+		{Method: "GET", Path: "/api/v3/queue/details", Handler: apiv3.QueueDetailsHandler(queueDetailsAdapter{svc: queueSvc})},
 		{Method: "GET", Path: "/api/v3/queue/status", Handler: apiv3.QueueStatusHandler(queueSvc, pendingCountLister{repo: pendingReleasesRepo}, queueStatusPauser)},
 		{Method: "DELETE", Path: "/api/v3/queue/bulk", Handler: apiv3.QueueBulkDeleteHandler(queueRemover, nil)},
 		{Method: "DELETE", Path: "/api/v3/queue/{id}", Handler: apiv3.QueueDeleteHandler(queueRemover, nil)},
