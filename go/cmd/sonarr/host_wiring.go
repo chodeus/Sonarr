@@ -557,6 +557,12 @@ func projectQueueResource(q queue.Queue) apiv3.QueueResource {
 			res.CustomFormats = cf
 		}
 		res.CustomFormatScore = q.RemoteEpisode.CustomFormatScore
+		// J415 — IsFullSeason from the parsed release. C# v5
+		// QueueResource.cs:82 `IsFullSeason = model.RemoteEpisode
+		// ?.ParsedEpisodeInfo?.FullSeason ?? false`.
+		if q.RemoteEpisode.ParsedEpisodeInfo != nil {
+			res.IsFullSeason = q.RemoteEpisode.ParsedEpisodeInfo.FullSeason
+		}
 	}
 	// J350 — StatusMessages projection. C# QueueResource.cs:89 sets
 	// StatusMessages = model.StatusMessages (always a non-null list).

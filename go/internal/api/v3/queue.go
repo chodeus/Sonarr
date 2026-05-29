@@ -195,13 +195,14 @@ import (
 // string-collapse caveat (acceptable: empty Indexer / OutputPath
 // / DownloadClient / ErrorMessage carry no semantic).
 //
-// DEFERRED on the QueueResource scalar tier: SizeLeft + TimeLeft
-// (need TimeSpan wire format), TrackedDownloadStatus + State
-// (need enum-string conversion via existing trackeddownloads
-// types), StatusMessages (typed list DTO), Quality + CustomFormats
-// (typed DTOs), DownloadClientHasPostImportCategory + IsFullSeason
-// + EpisodesWithFilesCount (bool/int — addable in a J317-pattern
-// follow-up).
+// The QueueResource projection is now complete (the scalar tier +
+// subresources): SizeLeft/TimeLeft (J318), TrackedDownloadStatus/State,
+// StatusMessages (J350), Quality + CustomFormats + CustomFormatScore
+// (J349), DownloadClientHasPostImportCategory + EpisodesWithFilesCount
+// (J318/J351), and IsFullSeason (J415) all populate via
+// cmd/sonarr's projectQueueResource. The only remaining paged-list gap
+// is the `Title`-from-Episode-join (shared with History/Blocklist —
+// a DB join, not a clean projection).
 //
 // J315 widening: Languages ([]LanguageRef with omitempty). C# v3
 // declares `List<Language>` (non-nullable) and v5 marks the same

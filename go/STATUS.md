@@ -19888,3 +19888,13 @@ R: n/a. W: PUT /config/host now rejects SSL configs whose cert file isn't a load
 ## J414 — gofmt hygiene: re-format v3 release files
 
 Pure gofmt-whitespace fix for `internal/api/v3/release.go` + `release_write.go`, which had been committed not-gofmt-clean before this session (surfaced by the J413 gate). `git diff -w` is empty (whitespace-only; no logic change). `gofmt -l ./...` is now empty tree-wide. Makes the spawned "fix gofmt drift" task chip redundant (can be dismissed). Hard gates clean (build, test api v3, gofmt).
+
+---
+
+## J415 — v5 field-divergence tail: QueueResource.IsFullSeason populated
+
+The last unpopulated QueueResource extra. `cmd/sonarr` `projectQueueResource` now sets `IsFullSeason` from `q.RemoteEpisode.ParsedEpisodeInfo.FullSeason` (nil-guarded), porting C# v5 `QueueResource.cs:82` `IsFullSeason = model.RemoteEpisode?.ParsedEpisodeInfo?.FullSeason ?? false`. The other three J318 bool/int extras (DownloadClientHasPostImportCategory / EpisodesWithFilesCount / CustomFormatScore) were already populated by J318/J349/J351, so the QueueResource scalar+extras tier is now complete. Corrected the stale `internal/api/v3/queue.go` DEFERRED doc-note (which still listed these as "addable in a J317-pattern follow-up") to reflect the completed projection; only the paged `Title`-from-Episode-join remains (a DB join shared with History/Blocklist, not a clean projection). ReleaseResource.Languages — the other flagged v5 field gap — was already typed `[]LanguageRef` since J334 (that OPEN note was stale).
+
+Tests: projectQueueResource full-season→IsFullSeason true; single-episode→false; nil RemoteEpisode→false; nil ParsedEpisodeInfo→false (no panic).
+
+R: v5 queue rows now report IsFullSeason. W: n/a. M: PROGRESS + this entry. Hard gates clean (build, race tests cmd/sonarr + api v3 + contract, vet, gofmt).
