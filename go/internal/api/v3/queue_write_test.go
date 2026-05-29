@@ -2,6 +2,7 @@ package v3
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -178,5 +179,107 @@ func TestQueueBulkDeleteHandler_MalformedJSON_400(t *testing.T) {
 	QueueBulkDeleteHandler(&fakeQueueWriter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/api/v3/queue/bulk", bytes.NewReader([]byte(`{bad`))))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// fakeQueueRemover implements QueueWriter (via embedding) + the J395
+// QueueItemRemover optional extension.
+type fakeQueueRemover struct {
+	fakeQueueWriter
+	calls   []int
+	gotOpts QueueRemoveOptions
+	removed bool
+	err     error
+}
+
+func (f *fakeQueueRemover) RemoveQueueItem(_ context.Context, id int, opts QueueRemoveOptions) (bool, error) {
+	f.calls = append(f.calls, id)
+	f.gotOpts = opts
+	return f.removed, f.err
+}
+
+// J395: when the writer implements QueueItemRemover, the delete handler
+// delegates the removal (and parses the option flags).
+func TestQueueDeleteHandler_UsesRemover_J395(t *testing.T) {
+	t.Parallel()
+	r := &fakeQueueRemover{removed: true}
+	var broadcasts []int
+	rr := httptest.NewRecorder()
+	// removeFromClient defaults true; blocklist=true requested.
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/queue/3?blocklist=true", nil)
+	req.SetPathValue("id", "3")
+	QueueDeleteHandler(r, func(id int) { broadcasts = append(broadcasts, id) }).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(r.calls) != 1 || r.calls[0] != 3 {
+		t.Errorf("RemoveQueueItem calls = %v, want [3]", r.calls)
+	}
+	if !r.gotOpts.RemoveFromClient || !r.gotOpts.Blocklist {
+		t.Errorf("opts = %+v, want RemoveFromClient+Blocklist", r.gotOpts)
+	}
+	if len(broadcasts) != 1 || broadcasts[0] != 3 {
+		t.Errorf("broadcasts = %v, want [3]", broadcasts)
+	}
+}
+
+// J395: removeFromClient=false is parsed as false (default-true override).
+func TestQueueDeleteHandler_RemoveFromClientFalse_J395(t *testing.T) {
+	t.Parallel()
+	r := &fakeQueueRemover{removed: true}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/queue/3?removeFromClient=false&changeCategory=true", nil)
+	req.SetPathValue("id", "3")
+	QueueDeleteHandler(r, nil).ServeHTTP(rr, req)
+	if r.gotOpts.RemoveFromClient {
+		t.Error("removeFromClient=false should parse to false")
+	}
+	if !r.gotOpts.ChangeCategory {
+		t.Error("changeCategory=true should parse to true")
+	}
+}
+
+// J395: remover reporting not-removed → 404.
+func TestQueueDeleteHandler_RemoverNotFound_404_J395(t *testing.T) {
+	t.Parallel()
+	r := &fakeQueueRemover{removed: false}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/queue/9", nil)
+	req.SetPathValue("id", "9")
+	QueueDeleteHandler(r, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status: %d, want 404", rr.Code)
+	}
+}
+
+// J395: client-unavailable sentinel → 400.
+func TestQueueDeleteHandler_ClientUnavailable_400_J395(t *testing.T) {
+	t.Parallel()
+	r := &fakeQueueRemover{err: ErrQueueDownloadClientUnavailable}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/queue/3", nil)
+	req.SetPathValue("id", "3")
+	QueueDeleteHandler(r, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: %d, want 400", rr.Code)
+	}
+}
+
+// J395: bulk delete delegates per-id to the remover.
+func TestQueueBulkDeleteHandler_UsesRemover_J395(t *testing.T) {
+	t.Parallel()
+	r := &fakeQueueRemover{removed: true}
+	var broadcasts []int
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/queue/bulk?removeFromClient=false", bytes.NewReader([]byte(`{"ids":[1,2]}`)))
+	QueueBulkDeleteHandler(r, func(id int) { broadcasts = append(broadcasts, id) }).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(r.calls) != 2 || r.gotOpts.RemoveFromClient {
+		t.Errorf("calls=%v opts=%+v, want 2 calls + removeFromClient=false", r.calls, r.gotOpts)
+	}
+	if len(broadcasts) != 2 {
+		t.Errorf("broadcasts = %v, want 2", broadcasts)
 	}
 }

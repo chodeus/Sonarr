@@ -19634,3 +19634,15 @@ Safe for fresh installs (no clients → empty queue → contract goldens unaffec
 Tests: downloadmonitoring stub-tracker (Refresh publishes 1 td/item) + cmd/sonarr adapter (field mapping + existing-state preservation).
 
 R: queue read surface now populates from live clients. W: prerequisite for #5 delete side-effects. M: this entry + PROGRESS. #5 still open pending J395 (removeFromClient/changeCategory) + J396 (blocklist). Hard gates clean (build, race tests downloadmonitoring + queue + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J395 — Phase-4 unblock, #5 part 2: queue-delete removeFromClient + changeCategory
+
+With J394 populating the queue from live clients, the delete side-effects now act on real tracked downloads. `internal/api/v3/queue_write.go`: `QueueRemoveOptions` (4 flags; removeFromClient defaults TRUE) + optional-extension `QueueItemRemover` + `ErrQueueDownloadClientUnavailable` (→400). Single + bulk DELETE handlers parse the flags + delegate to the remover when present (else cache-only fallback); 404 on not-found, 400 on sentinel, bulk logs-and-continues.
+
+NEW `cmd/sonarr/queue_remove_wiring.go`: `queueRemoveAdapter` (embeds *queue.Service) ports C# `QueueController.Remove(trackedDownload,...)` — resolve tracked download → RemoveItem (removeFromClient) / MarkItemAsImported (changeCategory) → StopTracking → cache Remove. Live client via injected `queueClientResolver` (prod scans rows + registry.Construct; interface for testability). Threaded through buildHostServer→v3Routes; wired to v3+v5 DELETE/{id}+bulk. blocklist arm = documented no-op (J396).
+
+Tests: handler (delegation, opt parsing + removeFromClient=false override, 404/400, bulk) + cmd/sonarr adapter (RemoveItem; MarkItemAsImported; resolver-fail→sentinel; no-flags stops+removes; unknown id→false).
+
+R: queue-delete client side-effects WIRED. W: n/a. M: this entry + PROGRESS. #5 closes at J396 (blocklist). Hard gates clean (build, race tests api v3 + v5 queue + cmd/sonarr + contract, vet, gofmt).

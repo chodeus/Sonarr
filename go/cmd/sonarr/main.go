@@ -2770,6 +2770,20 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		dcDeps,
 		logger,
 	)
+	// J395: queue-delete side-effect adapter — resolves a queue row's
+	// tracked download + applies removeFromClient/changeCategory via the
+	// live client, then drops the cache row. Embeds queueSvc so it still
+	// satisfies apiv3.QueueWriter for the delete handlers.
+	queueRemover := &queueRemoveAdapter{
+		Service: queueSvc,
+		tracked: trackedDownloadsSvc,
+		clients: downloadClientResolver{
+			rows:     downloadClientsRepo,
+			registry: downloadclients.Default(),
+			deps:     dcDeps,
+		},
+		log: logger,
+	}
 	// Audit fix B.5d: now that the deps bundle exists, late-bind the
 	// healthcheck DC-status enumerator. Pre-bind it returned an
 	// "registry not yet wired" Err per row; post-bind it constructs
@@ -3453,7 +3467,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		parsing:      parsingSvc,
 		log:          logger,
 	}
-	hostSrv, err := buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, mediaCoverSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, parsingSvc, manualImportDecisionRejector, episodeFileDeleter, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
+	hostSrv, err := buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, mediaCoverSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, parsingSvc, manualImportDecisionRejector, episodeFileDeleter, queueRemover, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
 	if err != nil {
 		return err
 	}
