@@ -29,7 +29,7 @@ func TestLogHandler_EmptyCorpus_Returns200PagedEmpty(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v5/log", nil)
-	LogHandler().ServeHTTP(rr, req)
+	LogHandler(nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200; body=%q", rr.Code, rr.Body.String())
 	}

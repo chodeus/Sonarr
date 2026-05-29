@@ -51,7 +51,7 @@ func TestSink_HandlePersists(t *testing.T) {
 	}
 	_ = s.Close() // flush
 
-	page, err := r.Paged(context.Background(), 1, 50, "time", true)
+	page, err := r.Paged(context.Background(), logs.PageQuery{Page: 1, PageSize: 50, SortKey: "time", Desc: true})
 	if err != nil {
 		t.Fatalf("Paged: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestSink_ExceptionMapping(t *testing.T) {
 	}
 	_ = s.Close()
 
-	page, _ := r.Paged(context.Background(), 1, 50, "time", true)
+	page, _ := r.Paged(context.Background(), logs.PageQuery{Page: 1, PageSize: 50, SortKey: "time", Desc: true})
 	if page.TotalRecords != 1 {
 		t.Fatalf("rows = %d, want 1", page.TotalRecords)
 	}
@@ -101,7 +101,7 @@ func TestSink_WithAttrsLogger(t *testing.T) {
 	}
 	_ = s.Close() // shares the same core/writer
 
-	page, _ := r.Paged(context.Background(), 1, 50, "time", true)
+	page, _ := r.Paged(context.Background(), logs.PageQuery{Page: 1, PageSize: 50, SortKey: "time", Desc: true})
 	if page.TotalRecords != 1 || page.Records[0].Logger != "DiskScan" {
 		t.Errorf("Logger = %q (rows=%d), want DiskScan", func() string {
 			if page.TotalRecords > 0 {
@@ -124,7 +124,7 @@ func TestSink_CloseFlushesAll(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	page, _ := r.Paged(context.Background(), 1, 100, "time", true)
+	page, _ := r.Paged(context.Background(), logs.PageQuery{Page: 1, PageSize: 100, SortKey: "time", Desc: true})
 	if page.TotalRecords != 20 {
 		t.Errorf("after flush rows = %d, want 20", page.TotalRecords)
 	}

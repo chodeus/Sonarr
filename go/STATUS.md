@@ -19812,3 +19812,17 @@ NEW `internal/instrumentation/fanout.go`: `Fanout` is an slog.Handler that dispa
 Tests: fanout dispatch-to-all; attach-adds-handler (the pre-existing handler sees both records, the attached one only post-attach); Enabled reflects any sub-handler; per-handler level gate (Info record skips an Error-only handler); WithAttrs-derived still dispatches.
 
 R: n/a. W: application logs now persist to the log DB (Info+). M: PROGRESS + this entry. Hard gates clean (build, race tests instrumentation + logs + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J409 — Log subsystem 4a: wire GET /api/v3+v5/log to the log DB
+
+Ports `LogController.GetLogs` (`src/Sonarr.Api.V3/Logs/LogController.cs:26-78`). `internal/logs`: `Paged` refactored from positional args to a `PageQuery` struct and given a cumulative `Levels` filter (`Level IN (...)` applied to both the COUNT and the page SELECT). `internal/api/v3/log.go`: NEW `LogLister` consumer interface + `LogHandler(lister)` replacing the hardcoded empty stub — parses paging, expands the `level` query param via `expandLogLevelFilter` (the C# cascade: warn→{Fatal,Error,Warn}, info→+Info, …), sorts by `id` internally while reporting SortKey `time` (C# parity), and returns an empty page for a nil lister (the C# `LogDbEnabled == false` short-circuit). v5 `LogHandler(lister)` threads the lister through its existing stripMethod wrapper.
+
+`cmd/sonarr`: NEW `logLister` adapter maps `logs.Repo.Paged` rows → `[]apiv3.LogResource` (Time formatted as the history-style `2006-01-02T15:04:05Z`) and is threaded through `buildHostServer`/`v3Routes` (one param), fed by the J408 `logRepo` (nil when the log DB is disabled). Contract-safe: with an empty Logs table the endpoint still returns `records:[]`, so the goldens stay byte-eq.
+
+Remaining #3 slice: J410 ClearLog command → `logs.Repo.Purge`.
+
+Tests: repo level-filter (warn cascade excludes Info); handler nil→empty + SortKey time / returns-rows + internal id-sort + default-desc / level-expands to Fatal,Error,Warn / lister-error→500 / `expandLogLevelFilter` cascade table.
+
+R: GET /api/v3+v5/log now returns real log rows (paged, level-filtered). W: n/a. M: PROGRESS + this entry. Hard gates clean (build, race tests api v3 + v5 log + logs + cmd/sonarr + contract, vet, gofmt).

@@ -123,10 +123,10 @@ func TestLogFileByNameHandler_InvalidExtension_400(t *testing.T) {
 	}
 }
 
-func TestLogHandler_AlwaysEmptyPagedResponse(t *testing.T) {
+func TestLogHandler_NilListerEmptyPagedResponse(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	LogHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/log?pageSize=10", nil))
+	LogHandler(nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/log?pageSize=10", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}

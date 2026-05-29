@@ -24,6 +24,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"sonarr.tv/sonarr/internal/datastore"
@@ -95,36 +96,65 @@ type Page struct {
 	TotalRecords int
 }
 
-// Paged returns one page of log rows ordered by sortKey (whitelisted;
-// defaults to Time) in the requested direction, plus the total row
-// count. page is 1-indexed; pageSize <= 0 falls back to 50. Mirrors the
-// shape the C# `LogController.GetLogs` PagingSpec consumes.
-func (r *Repo) Paged(ctx context.Context, page, pageSize int, sortKey string, desc bool) (Page, error) {
+// PageQuery describes a paged log read. Levels, when non-empty, filters
+// to rows whose Level is in the set (the cumulative level filter the C#
+// LogController builds from the `level` query param). page is 1-indexed.
+type PageQuery struct {
+	Page     int
+	PageSize int
+	SortKey  string
+	Desc     bool
+	Levels   []string
+}
+
+// Paged returns one page of log rows ordered by SortKey (whitelisted;
+// defaults to Time) in the requested direction, optionally filtered to
+// the given Levels, plus the (filtered) total row count. PageSize <= 0
+// falls back to 50. Mirrors the shape the C# `LogController.GetLogs`
+// PagingSpec consumes.
+func (r *Repo) Paged(ctx context.Context, qy PageQuery) (Page, error) {
+	page, pageSize := qy.Page, qy.PageSize
 	if page < 1 {
 		page = 1
 	}
 	if pageSize <= 0 {
 		pageSize = 50
 	}
-	col, ok := sortColumns[sortKey]
+	col, ok := sortColumns[qy.SortKey]
 	if !ok {
 		col = "Time"
 	}
 	dir := "ASC"
-	if desc {
+	if qy.Desc {
 		dir = "DESC"
 	}
 
+	// Optional level filter — a `Level IN (...)` clause shared by the
+	// COUNT and the page SELECT. Placeholders 1..len(Levels) bind the
+	// level values; LIMIT/OFFSET take the next two.
+	where := ""
+	args := make([]any, 0, len(qy.Levels)+2)
+	if len(qy.Levels) > 0 {
+		phs := make([]string, len(qy.Levels))
+		for i, lv := range qy.Levels {
+			phs[i] = datastore.Placeholder(r.db.Engine, i+1)
+			args = append(args, lv)
+		}
+		where = ` WHERE "Level" IN (` + strings.Join(phs, ",") + `)`
+	}
+
 	var total int
-	if err := r.db.SQL.QueryRowContext(ctx, `SELECT COUNT(*) FROM "Logs"`).Scan(&total); err != nil {
+	if err := r.db.SQL.QueryRowContext(ctx, `SELECT COUNT(*) FROM "Logs"`+where, args...).Scan(&total); err != nil {
 		return Page{}, fmt.Errorf("logs: count: %w", err)
 	}
 
+	limitPH := datastore.Placeholder(r.db.Engine, len(qy.Levels)+1)
+	offsetPH := datastore.Placeholder(r.db.Engine, len(qy.Levels)+2)
 	q := fmt.Sprintf(
-		`SELECT "Id","Message","Time","Logger","Exception","ExceptionType","Level" FROM "Logs" ORDER BY "%s" %s, "Id" %s LIMIT %s OFFSET %s`,
-		col, dir, dir, datastore.Placeholder(r.db.Engine, 1), datastore.Placeholder(r.db.Engine, 2),
+		`SELECT "Id","Message","Time","Logger","Exception","ExceptionType","Level" FROM "Logs"%s ORDER BY "%s" %s, "Id" %s LIMIT %s OFFSET %s`,
+		where, col, dir, dir, limitPH, offsetPH,
 	)
-	rows, err := r.db.SQL.QueryContext(ctx, q, pageSize, (page-1)*pageSize)
+	rows, err := r.db.SQL.QueryContext(ctx, q, append(args, pageSize, (page-1)*pageSize)...)
 	if err != nil {
 		return Page{}, fmt.Errorf("logs: paged query: %w", err)
 	}

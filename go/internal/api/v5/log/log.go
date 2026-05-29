@@ -105,7 +105,7 @@ type UpdateFileLister = apiv3.UpdateLogFileLister
 // key from each record so the v5 wire matches the C# v5 7-field
 // LogResource (see [Resource]). At empty-corpus (records `[]`) the
 // strip is a no-op.
-func LogHandler() http.Handler { return stripMethod(apiv3.LogHandler()) }
+func LogHandler(lister apiv3.LogLister) http.Handler { return stripMethod(apiv3.LogHandler(lister)) }
 
 // stripMethod buffers the wrapped handler's JSON response, removes
 // the `method` key from each entry under `records`, and re-emits.

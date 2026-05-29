@@ -288,7 +288,9 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		logFanout.Attach(logSink)
 		logger.Info("log database ready", "role", string(logDB.Role))
 	}
-	_ = logRepo // consumed by the GET /log + ClearLog wiring (next slice)
+	// logRepo (nil when the log DB is disabled) feeds the GET /log read
+	// via logLister{} at the buildHostServer call below; ClearLog→Purge
+	// wiring follows in the next slice.
 
 	// Commands + scheduled-tasks wiring (Phase 3.13). Build the
 	// service stack before the ApplicationStartedEvent fan-out so
@@ -3548,7 +3550,7 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		parsing:      parsingSvc,
 		log:          logger,
 	}
-	hostSrv, err := buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, mediaCoverSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, parsingSvc, manualImportDecisionRejector, episodeFileDeleter, queueRemover, recentUpdateLister{svc: updateSvc}, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
+	hostSrv, err := buildHostServer(ctx, cfg, authSvc, indexerSearchSvc, logger, configRepo, configProv, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, mediaCoverSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, registry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, parsingSvc, manualImportDecisionRejector, episodeFileDeleter, queueRemover, recentUpdateLister{svc: updateSvc}, logLister{repo: logRepo}, backupTempPath, filepath.Join(folder.AppData, "logs"), frontendDir)
 	if err != nil {
 		return err
 	}

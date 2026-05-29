@@ -32,7 +32,7 @@ func TestInsertAndPaged(t *testing.T) {
 	}
 
 	// Newest-first by Time.
-	page, err := r.Paged(ctx, 1, 2, "time", true)
+	page, err := r.Paged(ctx, logs.PageQuery{Page: 1, PageSize: 2, SortKey: "time", Desc: true})
 	if err != nil {
 		t.Fatalf("Paged: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestInsertAndPaged(t *testing.T) {
 	}
 
 	// Page 2 carries the remaining row.
-	page2, err := r.Paged(ctx, 2, 2, "time", true)
+	page2, err := r.Paged(ctx, logs.PageQuery{Page: 2, PageSize: 2, SortKey: "time", Desc: true})
 	if err != nil {
 		t.Fatalf("Paged p2: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestPaged_NullableExceptionRoundTrips(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Insert plain: %v", err)
 	}
-	page, err := r.Paged(ctx, 1, 50, "level", false)
+	page, err := r.Paged(ctx, logs.PageQuery{Page: 1, PageSize: 50, SortKey: "level", Desc: false})
 	if err != nil {
 		t.Fatalf("Paged: %v", err)
 	}
@@ -93,6 +93,31 @@ func TestPaged_NullableExceptionRoundTrips(t *testing.T) {
 	}
 }
 
+func TestPaged_LevelFilter(t *testing.T) {
+	t.Parallel()
+	r := newRepo(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+	for _, lv := range []string{"Info", "Warn", "Error", "Error"} {
+		if _, err := r.Insert(ctx, &logs.Log{Message: "m", Time: now, Logger: "L", Level: lv}); err != nil {
+			t.Fatalf("Insert %s: %v", lv, err)
+		}
+	}
+	// Filter to the {Fatal,Error,Warn} set (the "warn" cascade): excludes Info.
+	page, err := r.Paged(ctx, logs.PageQuery{Page: 1, PageSize: 50, SortKey: "time", Desc: true, Levels: []string{"Fatal", "Error", "Warn"}})
+	if err != nil {
+		t.Fatalf("Paged: %v", err)
+	}
+	if page.TotalRecords != 3 {
+		t.Errorf("filtered total = %d, want 3 (1 Warn + 2 Error)", page.TotalRecords)
+	}
+	for _, l := range page.Records {
+		if l.Level == "Info" {
+			t.Errorf("Info row leaked through the warn-cascade filter")
+		}
+	}
+}
+
 func TestPurge(t *testing.T) {
 	t.Parallel()
 	r := newRepo(t)
@@ -109,7 +134,7 @@ func TestPurge(t *testing.T) {
 	if n != 5 {
 		t.Errorf("purged = %d, want 5", n)
 	}
-	page, err := r.Paged(ctx, 1, 50, "time", true)
+	page, err := r.Paged(ctx, logs.PageQuery{Page: 1, PageSize: 50, SortKey: "time", Desc: true})
 	if err != nil {
 		t.Fatalf("Paged: %v", err)
 	}
@@ -137,7 +162,7 @@ func TestTrim(t *testing.T) {
 	if n != 1 {
 		t.Errorf("trimmed = %d, want 1 (the >7d row)", n)
 	}
-	page, _ := r.Paged(ctx, 1, 50, "time", true)
+	page, _ := r.Paged(ctx, logs.PageQuery{Page: 1, PageSize: 50, SortKey: "time", Desc: true})
 	if page.TotalRecords != 1 || page.Records[0].Message != "new" {
 		t.Errorf("after trim: total=%d records=%v, want 1 'new'", page.TotalRecords, page.Records)
 	}
