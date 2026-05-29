@@ -2782,6 +2782,7 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			registry: downloadclients.Default(),
 			deps:     dcDeps,
 		},
+		bus: bus,
 		log: logger,
 	}
 	// Audit fix B.5d: now that the deps bundle exists, late-bind the

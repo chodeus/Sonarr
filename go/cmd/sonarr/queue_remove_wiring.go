@@ -18,9 +18,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/downloadclients"
+	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 )
@@ -38,6 +41,7 @@ type queueRemoveAdapter struct {
 
 	tracked *trackeddownloads.Service
 	clients queueClientResolver
+	bus     *messaging.Bus
 	log     *slog.Logger
 }
 
@@ -74,12 +78,63 @@ func (a *queueRemoveAdapter) RemoveQueueItem(ctx context.Context, id int, opts a
 			if err := a.applyClientSideEffects(ctx, td, opts); err != nil {
 				return false, err
 			}
+			if opts.Blocklist {
+				a.blocklist(ctx, td, opts.SkipRedownload)
+			}
 			a.tracked.StopTracking(td.DownloadID)
 		}
 	}
 
 	a.Service.Remove(id)
 	return true, nil
+}
+
+// blocklist publishes a DownloadFailedEvent for the tracked download.
+// Mirrors the C# `_failedDownloadService.MarkAsFailed(trackedDownload,
+// skipRedownload)` arm (`QueueController.cs:360`): the already-subscribed
+// blocklist + history handlers consume the event and add the blocklist
+// row. SkipRedownload is carried verbatim for the redownload-on-failure
+// consumer (when one is wired). No-op when no bus is available.
+//
+// Deferred: enriching the event Data with the release indexer/size from
+// the Subject's Release (the blocklist row's Indexer/Size stay empty);
+// and the redownload-search consumer for the !skipRedownload arm — both
+// follow-ups that don't affect the core "don't re-grab this release".
+func (a *queueRemoveAdapter) blocklist(ctx context.Context, td *trackeddownloads.TrackedDownload, skipRedownload bool) {
+	if a.bus == nil {
+		return
+	}
+	ev := trackeddownloads.DownloadFailedEvent{
+		DownloadID:      td.DownloadID,
+		TrackedDownload: td,
+		Message:         "Manually marked as failed",
+		Source:          "ManualOverride",
+		SkipRedownload:  skipRedownload,
+		ReleaseSource:   decisionengine.ReleaseSourceUnknown,
+		Data:            map[string]string{"protocol": strconv.Itoa(td.Protocol)},
+	}
+	if r := td.RemoteEpisode; r != nil {
+		if r.Series != nil {
+			ev.SeriesID = r.Series.ID
+		}
+		for _, e := range r.Episodes {
+			ev.EpisodeIDs = append(ev.EpisodeIDs, e.ID)
+		}
+		ev.Languages = r.Languages
+		if r.ParsedEpisodeInfo != nil {
+			ev.Quality = r.ParsedEpisodeInfo.Quality
+			ev.SourceTitle = r.ParsedEpisodeInfo.ReleaseTitle
+			if len(ev.Languages) == 0 {
+				ev.Languages = r.ParsedEpisodeInfo.Languages
+			}
+		}
+	}
+	if ev.SourceTitle == "" && td.DownloadItem != nil {
+		ev.SourceTitle = td.DownloadItem.Title
+	}
+	if err := messaging.Publish(ctx, a.bus, ev); err != nil {
+		a.log.Warn("queue remove: blocklist publish failed", "downloadId", td.DownloadID, "err", err)
+	}
 }
 
 // applyClientSideEffects mirrors C# `Remove(trackedDownload, ...)`

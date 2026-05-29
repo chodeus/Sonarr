@@ -7,8 +7,13 @@ import (
 	"testing"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/downloadclients"
+	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/queue"
+	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 )
 
@@ -111,5 +116,64 @@ func TestQueueRemoveAdapter_NotFound_J395(t *testing.T) {
 	removed, err := a.RemoveQueueItem(t.Context(), 99, apiv3.QueueRemoveOptions{RemoveFromClient: true})
 	if err != nil || removed {
 		t.Errorf("RemoveQueueItem(99) = (%v,%v), want (false,nil)", removed, err)
+	}
+}
+
+// J396: opts.Blocklist publishes a DownloadFailedEvent built from the
+// tracked download's RemoteEpisode (consumed by the subscribed blocklist
+// handler). Verifies the essential fields + SkipRedownload pass-through.
+func TestQueueRemoveAdapter_Blocklist_J396(t *testing.T) {
+	t.Parallel()
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+
+	got := make(chan trackeddownloads.DownloadFailedEvent, 1)
+	messaging.Subscribe(bus, "test.blocklist.capture",
+		func(_ context.Context, ev trackeddownloads.DownloadFailedEvent) error {
+			select {
+			case got <- ev:
+			default:
+			}
+			return nil
+		})
+
+	qs := queue.NewService()
+	qs.SetQueue([]queue.Queue{{ID: 1, DownloadID: "dl1"}})
+	tracked := trackeddownloads.NewService(slog.Default())
+	item := &downloadclients.Item{DownloadID: "dl1", Title: "Show.S01E01.WEBDL-1080p"}
+	_ = tracked.Track(&trackeddownloads.TrackedDownload{
+		DownloadID:   "dl1",
+		DownloadItem: item,
+		IsTrackable:  true,
+		RemoteEpisode: &decisionengine.Subject{
+			Series:            &series.Series{ID: 42},
+			Episodes:          []episodes.Episode{{ID: 100}},
+			ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{ReleaseTitle: "Show.S01E01.WEBDL-1080p"},
+		},
+	})
+
+	a := &queueRemoveAdapter{Service: qs, tracked: tracked, clients: fakeClientResolver{}, bus: bus, log: slog.Default()}
+	if _, err := a.RemoveQueueItem(t.Context(), 1, apiv3.QueueRemoveOptions{Blocklist: true, SkipRedownload: true}); err != nil {
+		t.Fatalf("RemoveQueueItem: %v", err)
+	}
+	bus.BeginShutdown()
+	bus.Wait()
+
+	select {
+	case ev := <-got:
+		if ev.SeriesID != 42 {
+			t.Errorf("ev.SeriesID = %d, want 42", ev.SeriesID)
+		}
+		if len(ev.EpisodeIDs) != 1 || ev.EpisodeIDs[0] != 100 {
+			t.Errorf("ev.EpisodeIDs = %v, want [100]", ev.EpisodeIDs)
+		}
+		if !ev.SkipRedownload {
+			t.Error("SkipRedownload should propagate")
+		}
+		if ev.SourceTitle != "Show.S01E01.WEBDL-1080p" {
+			t.Errorf("ev.SourceTitle = %q", ev.SourceTitle)
+		}
+	default:
+		t.Fatal("no DownloadFailedEvent published")
 	}
 }

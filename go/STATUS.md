@@ -19646,3 +19646,13 @@ NEW `cmd/sonarr/queue_remove_wiring.go`: `queueRemoveAdapter` (embeds *queue.Ser
 Tests: handler (delegation, opt parsing + removeFromClient=false override, 404/400, bulk) + cmd/sonarr adapter (RemoveItem; MarkItemAsImported; resolver-fail→sentinel; no-flags stops+removes; unknown id→false).
 
 R: queue-delete client side-effects WIRED. W: n/a. M: this entry + PROGRESS. #5 closes at J396 (blocklist). Hard gates clean (build, race tests api v3 + v5 queue + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J396 — Phase-4 unblock complete: queue-delete blocklist arm (punch-list #5 DONE)
+
+`cmd/sonarr/queue_remove_wiring.go`: when `opts.Blocklist`, build a `trackeddownloads.DownloadFailedEvent` from the tracked download's RemoteEpisode (SeriesID/EpisodeIDs/Quality/Languages/SourceTitle, DownloadID, TrackedDownload=td, SkipRedownload verbatim, Source="ManualOverride") and publish it — consumed by the already-subscribed `blocklisthandlers.HandleDownloadFailed` (main.go:2402) → blocklist row + history. Reuses the event-driven design rather than duplicating entry-build. Added `bus` to the adapter; wired in main.go.
+
+Deferred (documented): redownload-search consumer for `!skipRedownload`; event Data enrichment (indexer/size). Test: real-bus capture asserts SeriesID/EpisodeIDs/SkipRedownload/SourceTitle.
+
+**Matrix row #5 → DONE (J394 cache population + J395 removeFromClient/changeCategory + J396 blocklist).** R: n/a. W: queue-delete blocklist WIRED. M: matrix #5 + this entry + memory updated. Hard gates clean (build, race tests api v3 + v5 queue + blocklisthandlers + cmd/sonarr + contract, vet, gofmt).
