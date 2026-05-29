@@ -220,6 +220,13 @@ type Deps struct {
 	// binds the cmd/sonarr episodeFileDeleteAdapter (recycle + DB delete).
 	DeleteSeriesFiles SeriesFilesDeleter
 
+	// Rename wires the IExecute<RenameFilesCommand> +
+	// IExecute<RenameSeriesCommand> handlers (slice 5.J392, punch-list
+	// #6). Registered only when all RenameDeps fields are non-nil (a
+	// stub would silently no-op a user rename). Production binds
+	// series/episodefiles/episodefilemoving services.
+	Rename RenameDeps
+
 	Log *slog.Logger
 }
 
@@ -423,6 +430,26 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 		}
 		registry.Register(DeleteSeriesFilesName, commands.CommandSpec{
 			Handler:            deleteSeriesFiles,
+			RequiresDiskAccess: true,
+		})
+	}
+
+	// Rename{Files,Series} register only when all deps are wired.
+	if deps.Rename.valid() {
+		renameFiles, err := NewRenameFiles(deps.Rename, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(RenameFilesName, commands.CommandSpec{
+			Handler:            renameFiles,
+			RequiresDiskAccess: true,
+		})
+		renameSeries, err := NewRenameSeries(deps.Rename, deps.Log)
+		if err != nil {
+			return err
+		}
+		registry.Register(RenameSeriesName, commands.CommandSpec{
+			Handler:            renameSeries,
 			RequiresDiskAccess: true,
 		})
 	}

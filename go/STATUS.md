@@ -19600,3 +19600,13 @@ R: delete read unchanged. W: recycle-bin/disk delete WIRED. M: handler docs + ad
 Tests: handler (dispatch ids / empty no-op / malformed / nil ctor) + real-SQLite adapter round-trips (2 files recycled + rows deleted; root-invalid skips series + rows survive).
 
 R: n/a (command). W: DeleteSeriesFiles WIRED. M: matrix rows #5 (blocked) + #6 (partial) + this entry + memory. Hard gates clean (build, race tests internal/commands + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J392 — Verticalization Arc: RenameFiles + RenameSeries commands (punch-list #6)
+
+Ports `RenameEpisodeFileService.Execute(RenameFilesCommand/RenameSeriesCommand)`. NEW `internal/commands/handlers/rename.go`: two handlers sharing `RenameDeps` (narrow consumer-side interfaces satisfied by series/episodefiles/episodefilemoving). `RenameFiles` ({seriesId,files[]}) renames a selected file list; `RenameSeries` ({seriesIds[]}) renames all files per series. Shared loop: `episodefilemoving.MoveEpisodeFile` (recompute canonical path + transfer) → `episodefiles.Update`; `ErrSameFilename` skipped quietly, other errors logged-and-continue (faithful to C# catch arms). Move does not persist, so the handler calls Update (like C#). Registered (both, `RenameDeps.valid()`-guarded, RequiresDiskAccess); wired in main.go.
+
+Tests: nil-deps ctor errors; RenameFiles moves+updates each file; same-filename skips the update; empty/partial body no-op; RenameSeries renames all per-series files.
+
+R: n/a (command). W: Rename{Files,Series} WIRED. M: matrix row #6 + this entry. #6 remaining: MoveSeries/BulkMoveSeries (portable), ProcessMonitoredDownloads (Phase-4-blocked). Hard gates clean (build, race tests internal/commands + cmd/sonarr + contract, vet, gofmt).

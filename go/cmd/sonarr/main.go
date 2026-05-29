@@ -3279,7 +3279,16 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		// J391 (punch-list #6): DeleteSeriesFiles command → the shared
 		// recycle-bin delete adapter.
 		DeleteSeriesFiles: episodeFileDeleter,
-		Log:               logger,
+		// J392 (punch-list #6): Rename{Files,Series} commands. series +
+		// episodefiles services + the episodefilemoving mover all satisfy
+		// the narrow RenameDeps interfaces structurally.
+		Rename: handlers.RenameDeps{
+			Series:  seriesSvc,
+			Files:   episodeFilesSvc,
+			Mover:   episodeFileMovingSvc,
+			Updater: episodeFilesSvc,
+		},
+		Log: logger,
 	}); err != nil {
 		return fmt.Errorf("commands handlers: %w", err)
 	}
