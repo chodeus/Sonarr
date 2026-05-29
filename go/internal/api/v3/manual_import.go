@@ -248,6 +248,17 @@ type ManualImportEpisodeLookup interface {
 	GetEpisode(ctx context.Context, id int) (*episodes.Episode, error)
 }
 
+// ManualImportEpisodesBySeasonLookup is the optional-extension surface
+// (J388) for resolving the reprocessed item's episodes from a
+// (SeriesID, SeasonNumber, EpisodeNumbers) tuple when the user didn't
+// supply explicit episodeIds. Discovered via type-assertion on the
+// episodeLookup dep so the handler signature is unchanged and fakes
+// that only implement GetEpisode simply skip the season resolution.
+// `*episodes.Service.GetEpisodesBySeason` satisfies it.
+type ManualImportEpisodesBySeasonLookup interface {
+	GetEpisodesBySeason(ctx context.Context, seriesID, seasonNumber int) ([]episodes.Episode, error)
+}
+
 // ManualImportCustomFormatCalculator is the optional-extension surface
 // for the reprocess handler's per-item CustomFormats + Score
 // computation (C# `ManualImportController.cs:62-63`). The wrapper in
@@ -388,15 +399,16 @@ func reprocessOne(ctx context.Context, item *ManualImportReprocessItem, seriesLo
 
 	parsed := parser.ParsePath(item.Path)
 	if parsed == nil {
-		// C# `_manualImportService.ReprocessItem` returns a result
-		// with empty Episodes + a "Unable to parse" rejection. Without
-		// the ImportDecisionMaker we can't synthesise that rejection;
-		// leave item.Episodes nil and item.Rejections `[]`.
+		// C# `_manualImportService.ReprocessItem` → ProcessFile returns a
+		// result whose only rejection is "Unable to parse" when the path
+		// yields no ParsedEpisodeInfo (J388 — closes the prior deferral
+		// that left Rejections `[]`). Empty Episodes, cleared EpisodeIDs.
 		item.Episodes = nil
 		item.EpisodeIDs = nil
-		if item.Rejections == nil {
-			item.Rejections = []ManualImportRejectionResource{}
-		}
+		item.Rejections = []ManualImportRejectionResource{{
+			Reason: "Unable to parse file",
+			Type:   manualImportRejectionTypePermanent,
+		}}
 		if item.CustomFormats == nil {
 			item.CustomFormats = []CustomFormatResource{}
 		}
@@ -553,11 +565,11 @@ func manualImportReleaseTypeFor(p *parser.ParsedEpisodeInfo) string {
 //  1. If item.EpisodeIDs is non-empty AND episodeLookup is wired,
 //     look each up by id (matches C# `:51` which uses the cached
 //     Episodes from processedItem regardless of input).
-//  2. Else if series + parsed info give a (SeriesID, SeasonNumber,
-//     EpisodeNumbers) tuple AND episodeLookup is wired, look each up
-//     by series+season+number. DEFERRED — the Go-port episodes.Service
-//     exposes Get(id) but not Get(seriesID, season, episode) at this
-//     layering; deferred to a follow-up sub-arc.
+//  2. Else if item.SeriesID + parsed (SeasonNumber, EpisodeNumbers) are
+//     present AND episodeLookup also implements
+//     [ManualImportEpisodesBySeasonLookup], resolve the season's episodes
+//     and keep those whose EpisodeNumber the parse matched (J388 — closes
+//     the prior deferral).
 //  3. Else nil (UI shows "no episodes resolved").
 func resolveManualImportEpisodes(ctx context.Context, item *ManualImportReprocessItem, parsed *parser.ParsedEpisodeInfo, seriesLookup ManualImportSeriesLookup, episodeLookup ManualImportEpisodeLookup) []manualImportEpisodeStub {
 	if episodeLookup == nil {
@@ -576,8 +588,29 @@ func resolveManualImportEpisodes(ctx context.Context, item *ManualImportReproces
 		}
 		return out
 	}
-	// SeriesID + parsed-info-based resolution deferred.
-	_ = parsed
+
+	// SeriesID + parsed-info resolution (J388). Requires the by-season
+	// optional extension + a non-empty parsed episode list.
+	bySeason, ok := episodeLookup.(ManualImportEpisodesBySeasonLookup)
+	if !ok || item.SeriesID <= 0 || parsed == nil || len(parsed.EpisodeNumbers) == 0 {
+		return nil
+	}
+	seasonEps, err := bySeason.GetEpisodesBySeason(ctx, item.SeriesID, parsed.SeasonNumber)
+	if err != nil {
+		return nil
+	}
+	wanted := make(map[int]struct{}, len(parsed.EpisodeNumbers))
+	for _, n := range parsed.EpisodeNumbers {
+		wanted[n] = struct{}{}
+	}
+	out := make([]manualImportEpisodeStub, 0, len(wanted))
+	for _, ep := range seasonEps {
+		if _, ok := wanted[ep.EpisodeNumber]; ok {
+			out = append(out, manualImportEpisodeStub{
+				ID: ep.ID, SeasonNumber: ep.SeasonNumber, EpisodeNumber: ep.EpisodeNumber, Title: ep.Title,
+			})
+		}
+	}
 	_ = seriesLookup
-	return nil
+	return out
 }

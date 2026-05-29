@@ -19552,3 +19552,17 @@ The plan paired "fuller episode projection" with this slice, but J387a/b already
 Test: `TestManualImportHandler_QualityWeight_J387c` (SDTV+Real+Version weight; nil-quality→0).
 
 R: list QualityWeight WIRED (LIST modes now complete bar the deferred unknown-series fallback). W: n/a. M: handler doc + this entry. Matrix row #1 flips at J388. Hard gates clean (build, race tests on api v3 + v5 manualimport + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J388 — Verticalization Arc: Manual Import wrap-up (reprocess deferrals + matrix close)
+
+Closes the two POST-reprocess deferrals in `internal/api/v3/manual_import.go`:
+- `parsed==nil` → single `{"Unable to parse file","permanent"}` rejection (was `[]`), per C# ProcessFile.
+- seriesId+season episode resolution: new optional-extension `ManualImportEpisodesBySeasonLookup` (GetEpisodesBySeason) discovered via type-assertion on episodeLookup. With no episodeIds but SeriesID + parsed `(SeasonNumber, EpisodeNumbers)`, `resolveManualImportEpisodes` fetches the season and keeps the parsed episode numbers. `*episodes.Service` satisfies it; GetEpisode-only fakes skip.
+
+Tests: unparseable-path rejection; `S01E03` season resolution keeps only E3.
+
+Matrix: row #1 (LIST) → DONE (J387a-c, J388); row #2 (EXECUTE) already DONE (J386). Manual Import (punch-list #1+#2) functionally complete. Sole remaining deferral: unknown-series recursive disk fallback + >100-file ProcessDownloadDirectory (documented edge case).
+
+R: reprocess resolution/rejection completed. W: n/a. M: handler doc + matrix rows #1/#2 + this entry. Hard gates clean (build, race tests on api v3 + v5 manualimport + cmd/sonarr + contract, vet, gofmt).

@@ -787,3 +787,74 @@ func TestManualImportReprocessHandler_NoRejectorWhenCalcLacksInterface_J356(t *t
 		t.Errorf("body should emit rejections:[]: %s", rr.Body.String())
 	}
 }
+
+// fakeManualImportSeasonLookup implements both the by-id lookup and the
+// J388 by-season optional extension.
+type fakeManualImportSeasonLookup struct {
+	byID   map[int]*episodes.Episode
+	season []episodes.Episode
+}
+
+func (f *fakeManualImportSeasonLookup) GetEpisode(_ context.Context, id int) (*episodes.Episode, error) {
+	if row, ok := f.byID[id]; ok {
+		return row, nil
+	}
+	return nil, episodes.ErrNotFound
+}
+
+func (f *fakeManualImportSeasonLookup) GetEpisodesBySeason(_ context.Context, _, _ int) ([]episodes.Episode, error) {
+	return f.season, nil
+}
+
+// J388: an unparseable path yields a single "Unable to parse file"
+// permanent rejection (was previously an empty rejection list).
+func TestManualImportReprocessHandler_UnableToParseRejection_J388(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(`[{"path":"/dl/!!!.mkv","seriesId":1}]`))
+	ManualImportReprocessHandler(&fakeManualImportSeriesLookup{}, &fakeManualImportEpisodeLookup{}, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got []ManualImportReprocessItem
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Rejections) != 1 {
+		t.Fatalf("rejections = %+v, want 1", got[0].Rejections)
+	}
+	if got[0].Rejections[0].Reason != "Unable to parse file" || got[0].Rejections[0].Type != "permanent" {
+		t.Errorf("rejection = %+v", got[0].Rejections[0])
+	}
+	if len(got[0].Episodes) != 0 {
+		t.Errorf("episodes = %+v, want none", got[0].Episodes)
+	}
+}
+
+// J388: with no episodeIds but a path that parses to a (season, episode),
+// the reprocess resolves episodes via the by-season optional extension,
+// keeping only the parsed episode numbers.
+func TestManualImportReprocessHandler_SeasonEpisodeResolution_J388(t *testing.T) {
+	t.Parallel()
+	epLookup := &fakeManualImportSeasonLookup{season: []episodes.Episode{
+		{ID: 30, SeasonNumber: 1, EpisodeNumber: 3, Title: "Three"},
+		{ID: 31, SeasonNumber: 1, EpisodeNumber: 4, Title: "Four"},
+	}}
+	seriesLookup := &fakeManualImportSeriesLookup{byID: map[int]*series.Series{7: {ID: 7, Title: "Show"}}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v3/manualimport", strings.NewReader(`[{"path":"/dl/Show.S01E03.mkv","seriesId":7}]`))
+	ManualImportReprocessHandler(seriesLookup, epLookup, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	var got []ManualImportReprocessItem
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d items", len(got))
+	}
+	if len(got[0].Episodes) != 1 || got[0].Episodes[0].ID != 30 || got[0].Episodes[0].EpisodeNumber != 3 {
+		t.Errorf("episodes = %+v, want only E3 (id 30)", got[0].Episodes)
+	}
+}

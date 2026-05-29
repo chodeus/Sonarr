@@ -82,7 +82,7 @@ functionally complete; most prior `DEFERRED` comments were stale. Evidence file:
 
 | # | Gap | State | What's needed (deps that EXIST) | Evidence | Done by |
 |---|---|---|---|---|---|
-| 1 | Manual import — list candidates | STUB (`[]`) | port `ManualImportService.GetMediaFiles` (disk-walk + per-file decision eval) | `manual_import.go:36` | |
+| 1 | Manual import — list candidates | DONE | `GetMediaFiles` ported: disk file/folder walk → GetImportDecisions (J387a), downloadId + library/unmapped modes (J387b), QualityWeight (J387c); reprocess deferrals closed (J388). Remaining: unknown-series recursive fallback + >100-file ProcessDownloadDirectory (documented edge-case deferral) | `internal/api/v3/manual_import.go` + `cmd/sonarr/manual_import_decision_wiring.go` | J387a-c, J388 |
 | 2 | Manual import — execute | DONE | `ManualImport` command handler ports `ManualImportService.Execute`; per-file build → Augment → re-apply → `ImportApprovedEpisodes.Import` (real move/rename + episodefile insert) | `internal/commands/handlers/manualimport.go` | J386 |
 | 3 | EpisodeFile editor Quality/Languages | PARTIAL (dropped) | read `body.Quality`/`body.Languages` → row update | `episodefile.go:441` | |
 | 4 | EpisodeFile delete — disk/recycle-bin | PARTIAL (DB row only) | call `recyclebin`/disk on delete (svc exists) | `episodefile.go:501` | |
