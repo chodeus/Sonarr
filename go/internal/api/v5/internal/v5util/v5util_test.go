@@ -3,6 +3,7 @@ package v5util
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -143,5 +144,66 @@ func TestRewriteHappyTo204_PreservesHeadersExceptContentType(t *testing.T) {
 	}
 	if rr.Header().Get("X-Custom") != "preserved" {
 		t.Errorf("X-Custom should be preserved; got %q", rr.Header().Get("X-Custom"))
+	}
+}
+
+// ----- TranslateIncludeSubresources (J417) -----
+
+// queryCapture records the query the wrapped handler receives.
+type queryCapture struct{ got url.Values }
+
+func (q *queryCapture) ServeHTTP(_ http.ResponseWriter, r *http.Request) {
+	q.got = r.URL.Query()
+}
+
+var episodeMapping = map[string]string{
+	"series":      "includeSeries",
+	"episodefile": "includeEpisodeFile",
+	"images":      "includeImages",
+}
+
+func TestTranslateIncludeSubresources_CSV(t *testing.T) {
+	t.Parallel()
+	cap := &queryCapture{}
+	h := TranslateIncludeSubresources(cap, episodeMapping)
+	h.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/api/v5/episode?seriesId=1&includeSubresources=series,episodeFile", nil))
+	if cap.got.Get("includeSeries") != "true" || cap.got.Get("includeEpisodeFile") != "true" {
+		t.Errorf("flags not set: %v", cap.got)
+	}
+	if cap.got.Get("includeImages") == "true" {
+		t.Error("includeImages should not be set (not requested)")
+	}
+	if cap.got.Get("seriesId") != "1" {
+		t.Error("unrelated query param dropped")
+	}
+	if _, ok := cap.got["includeSubresources"]; ok {
+		t.Error("includeSubresources should be removed after translation")
+	}
+}
+
+func TestTranslateIncludeSubresources_RepeatedAndCaseInsensitive(t *testing.T) {
+	t.Parallel()
+	cap := &queryCapture{}
+	h := TranslateIncludeSubresources(cap, episodeMapping)
+	h.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/x?includeSubresources=Series&includeSubresources=IMAGES&includeSubresources=bogus", nil))
+	if cap.got.Get("includeSeries") != "true" || cap.got.Get("includeImages") != "true" {
+		t.Errorf("repeated/case-insensitive tokens not mapped: %v", cap.got)
+	}
+	if cap.got.Get("includeEpisodeFile") == "true" {
+		t.Error("unrequested flag set")
+	}
+}
+
+func TestTranslateIncludeSubresources_NoParam_PassThrough(t *testing.T) {
+	t.Parallel()
+	cap := &queryCapture{}
+	h := TranslateIncludeSubresources(cap, episodeMapping)
+	h.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/x?includeSeries=true", nil))
+	// v3-style bools still work untouched.
+	if cap.got.Get("includeSeries") != "true" {
+		t.Errorf("passthrough lost the v3 bool: %v", cap.got)
 	}
 }

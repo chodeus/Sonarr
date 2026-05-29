@@ -19908,3 +19908,17 @@ Audit conclusion: the "v5 read field-widenings" direction is drained. Verified t
 Remaining v5 divergences are genuinely gated, not clean projections: the `includeSubresources[]` query-param-shape sub-resource hydration (deferred consistently on both v3+v5), and items needing a service/extraction subsystem. These + operator-driven resources + ResetApiKey are out of the clean autonomous tier.
 
 R: doc accuracy. W: n/a. M: this entry + PROGRESS. Hard gates clean (build, gofmt).
+
+---
+
+## J417 — v5 includeSubresources[] param translation (episode); slice 1 of the v5 param-shape arc
+
+The one genuinely-unimplemented read-surface item (everything else flagged this session turned out already-done behind stale notes — calculator, RecentUpdateProvider, queue extras, episodefile fields, ReleaseResource Languages, Wanted lister, episode sub-resource hydration were all already wired). The v5 routes document `?includeSubresources=series,episodeFile,images` (enum array — C# `EpisodeSubresource[]`), but the go-port v5 handlers alias the v3 handlers, which only read v3's `?includeSeries=true` bools — so a v5 client using the documented param got no hydration.
+
+NEW `v5util.TranslateIncludeSubresources(h, mapping)`: a query-translating wrapper that parses `includeSubresources` (repeated params + comma-separated, case-insensitive), maps each token to its v3 bool query key, strips the v5 param, and delegates to the wrapped v3 handler. Applied to v5 episode `ListHandler` + `ByIDHandler` with mapping series→includeSeries / episodeFile→includeEpisodeFile / images→includeImages. v3-style bools still pass through untouched when no includeSubresources param is present.
+
+Remaining v5 resources with the same `includeSubresources[]` divergence (calendar, queue, queuedetails, series, history) are follow-up slices reusing this helper.
+
+Tests: v5util CSV translation + param-stripping / repeated+case-insensitive tokens + unknown-token-ignored / no-param passthrough; v5 episode handler tests still green.
+
+R: v5 episode GET honors the documented includeSubresources param. W: n/a. M: PROGRESS + this entry. Hard gates clean (build, race tests v5 + cmd/sonarr + contract, vet, gofmt).

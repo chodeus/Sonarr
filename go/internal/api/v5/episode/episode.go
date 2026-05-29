@@ -63,13 +63,28 @@ type ByIDGetter = apiv3.EpisodeByIDGetter
 // Writer re-exports v3's write surface.
 type Writer = apiv3.EpisodeMonitorWriter
 
-// ListHandler aliases v3's GET /api/v3/episode. Same wire shape +
-// status (200/400) — re-exported.
-var ListHandler = apiv3.EpisodeListHandler
+// episodeSubresourceMapping maps the v5 EpisodeSubresource enum tokens
+// (`series` / `episodeFile` / `images`, camelCase per
+// `src/Sonarr.Api.V5/Episodes/EpisodeSubresource.cs`) onto the v3 bool
+// include-flag query keys the underlying v3 handler reads.
+var episodeSubresourceMapping = map[string]string{
+	"series":      "includeSeries",
+	"episodefile": "includeEpisodeFile",
+	"images":      "includeImages",
+}
 
-// ByIDHandler aliases v3's GET /api/v3/episode/{id}. Same wire shape
-// + status (200/404) — re-exported.
-var ByIDHandler = apiv3.EpisodeByIDHandler
+// ListHandler wraps v3's GET /api/v3/episode, translating the v5
+// `?includeSubresources=series,episodeFile,images` enum-array param onto
+// v3's include bools (J417). Same wire shape + status (200/400).
+func ListHandler(lister Lister) http.Handler {
+	return v5util.TranslateIncludeSubresources(apiv3.EpisodeListHandler(lister), episodeSubresourceMapping)
+}
+
+// ByIDHandler wraps v3's GET /api/v3/episode/{id}, with the same v5
+// includeSubresources translation (J417). Same wire shape + status (200/404).
+func ByIDHandler(getter ByIDGetter) http.Handler {
+	return v5util.TranslateIncludeSubresources(apiv3.EpisodeByIDHandler(getter), episodeSubresourceMapping)
+}
 
 // MonitorHandler wraps v3's PUT /api/v3/episode/monitor with the
 // 202→200 demote (v5 returns Ok where v3 returned Accepted). Body

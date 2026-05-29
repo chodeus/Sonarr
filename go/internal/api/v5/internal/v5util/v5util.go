@@ -28,7 +28,43 @@ package v5util
 import (
 	"bytes"
 	"net/http"
+	"strings"
 )
+
+// TranslateIncludeSubresources wraps a v3 handler so the v5-native
+// `?includeSubresources=a,b,c` enum-array query param sets the
+// equivalent v3-style boolean include flags before delegating. v5
+// controllers expose sub-resource selection as one CSV/repeated enum
+// array (e.g. EpisodeSubresource[]) where v3 used individual
+// `?includeX=true` bools; the Go-port v5 handlers alias the v3 handlers,
+// which still read the bools — so this translates the v5 param onto them.
+//
+// mapping maps each lower-cased subresource token to its v3 bool query
+// key (e.g. "series" → "includeSeries"). Both repeated params and
+// comma-separated values are accepted; token matching is
+// case-insensitive. When no includeSubresources param is present the
+// request passes through untouched (v3-style bools still work).
+func TranslateIncludeSubresources(h http.Handler, mapping map[string]string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		vals, ok := q["includeSubresources"]
+		if !ok {
+			h.ServeHTTP(w, r)
+			return
+		}
+		for _, v := range vals {
+			for _, tok := range strings.Split(v, ",") {
+				if key, found := mapping[strings.ToLower(strings.TrimSpace(tok))]; found {
+					q.Set(key, "true")
+				}
+			}
+		}
+		q.Del("includeSubresources")
+		r2 := r.Clone(r.Context())
+		r2.URL.RawQuery = q.Encode()
+		h.ServeHTTP(w, r2)
+	})
+}
 
 // BufferingWriter is a minimal http.ResponseWriter that captures the
 // status code + body + headers into memory. The wrapping handler then
