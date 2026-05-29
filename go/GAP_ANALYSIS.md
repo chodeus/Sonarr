@@ -5,7 +5,7 @@
 > - ✅ **G2** CleanUpRecycleBin stub — FIXED J421 (dep wired).
 > - ✅ **G3** queue/details empty — FIXED J422 (real lister).
 > - ✅ **G4** provider fields[] on GET — FIXED J425 (inverse settings→fields mapper; 4 families). Follow-up: customformat WRITE-path persistence shape FIXED J431 (was a CRITICAL bug — POST/PUT-with-specs 500'd through real svc; now stores `{type,body}` envelope). G4-followup fully drained: customformat GET read-half (J432), autotagging specs (J433), `ImplementationName` (J443, all 5 families).
-> - ✅ **G7** import-list sync inert — FIXED J424 (providers blank-imported). Sub-gap: `IDTranslator` nil (non-TVDB-id items).
+> - ✅ **G7** import-list sync inert — FIXED J424 (providers blank-imported) + J444 (IDTranslator wired — non-TVDB-id items now resolve via metadata source). Fully drained.
 > - ✅ **G6** series/lookup — FIXED J426 (wired to skyhook proxy).
 > - ✅ **G8** v5 history season/episode — FIXED J427 (episode) + J428 (season).
 > - ✅ **G5** rename previews — FIXED J429 (`internal/renamepreview.Service` diff driver; wired v3+v5 with NamingConfig path builder).

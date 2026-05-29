@@ -20228,3 +20228,15 @@ C# ref: provider resources emit the human-readable ImplementationName (differs f
 - Empty-DB contract goldens unaffected (mappers run only on rows; schema endpoints untouched). Fallback preserves behaviour for matching/unknown impls.
 
 R: GET /api/v3+v5/{downloadclient,indexer,notification,importlist,metadata} now emit the correct human-readable implementationName. W: n/a. M: GAP_ANALYSIS G4-followup fully drained + PROGRESS + this entry. Tests: divergent lookups (5) + fallback (unknown/nil) + maps-non-empty. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...). NEXT: fresh Tier-6 audit.
+
+---
+
+## J444 — G7 sub-gap: import-list IDTranslator wired (non-TVDB items resolve)
+
+C# ref: `ImportListSyncService.cs:151-208` (per item, when TvdbId<=0, translate IMDb→TMDb→AniList→MAL via ISearchForNewSeries, take FirstOrDefault, adopt TvdbId+Title).
+
+- GAP (G7 sub-gap): SyncService's IDTranslator was `nil` (main.go) → items with TvdbId=0 but a valid external id were skipped with a debug log. The metadata-source proxy already implements all 4 typed-id searches (verified) but wasn't wired as the translator.
+- NEW `cmd/sonarr/importlist_idtranslator_wiring.go`: `importListIDTranslator{search seriesIDSearcher, log}` implements `importlists.IDTranslator` — each By{Imdb,Tmdb,AniList,MyAnimeList} delegates to the proxy's SearchForNewSeriesBy*ID + `first()` adopts results[0].TvdbID/Title; ok=false on error/empty/TvdbID<=0 (matches the C# `item.TvdbId <= 0` fall-through gate). Compile-time guard `var _ importlists.IDTranslator`.
+- Wired into `importlists.NewSyncService(...)` (replaced the `nil` arg) using the already-constructed `metadataSourceProxy`. Updated the stale "intentionally nil" comment.
+
+R: import-list sync now resolves+adds series that lists supply only by IMDb/TMDb/AniList/MAL id (was silently skipped). W: n/a (read-side translation feeding the existing SeriesAdder). M: GAP_ANALYSIS G7 fully drained + PROGRESS + this entry. Tests: 4 id-kinds resolve first match + error/empty/zero-TvdbID→ok=false. Hard gates clean (full suite). NEXT: fresh Tier-6 audit.

@@ -3128,10 +3128,10 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	// registry), the scheduler-fired Sync starts processing real
 	// persisted ImportList rows.
 	//
-	// IDTranslator is intentionally nil — items whose TvdbID is zero
-	// get skipped with a debug log (matches the C# null-translator
-	// behaviour). Live translation against SkyHook lands when the
-	// metadata-source family port reaches M3b.
+	// IDTranslator (J444): items whose TvdbID is zero but which carry an
+	// IMDb/TMDb/AniList/MyAnimeList id are resolved against the
+	// metadata-source proxy (importListIDTranslator) before adding —
+	// ports the C# ImportListSyncService translation chain.
 	importListSyncFactory, err := importlists.NewFactory(
 		importListsRepo,
 		importlists.Default(),
@@ -3161,7 +3161,7 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 			episodes:   episodesRepo,
 			log:        logger,
 		},
-		nil, // IDTranslator wired once metadata-source M3b lands.
+		importListIDTranslator{search: metadataSourceProxy, log: logger}, // G7 sub-gap (J444): non-TVDB items resolve via the metadata source.
 		logger,
 	)
 	if err != nil {
