@@ -20275,3 +20275,13 @@ The J446 audit "finding" G12 (v5 /series missing AniListIds/MalIds/OriginalCount
 - Residual divergences (both LOW, shared-struct tradeoff, unobserved by empty-DB goldens), recorded in GAP_ANALYSIS G12: (a) v3 GET /series over-emits the 3 v5-only fields on populated rows (vs C# v3); (b) `IsExcluded` (v5-only, set only on series/lookup, C# SeriesLookupController:53) absent from the shared struct. Comprehensive fix = de-alias v5 series resource — larger, not warranted for two LOW residuals.
 
 R: no behaviour change (v5 already correct). W: n/a. M: GAP_ANALYSIS G12 corrected + PROGRESS + this entry + stale v5 docs fixed. Test: v5 series emits malIds/aniListIds/originalCountry + strips languageProfileId. Hard gates clean (full suite). LESSON: verify the shared apiv3 struct before believing any v5 "missing field" claim.
+
+---
+
+## J448 — Autonomous-scope exhaustion (campaign J429–J447 conclusion)
+
+Decisive verification sweep of the remaining v5 resources (Episode/Queue/History/Season/Series) vs v3: every v5-only field is ALREADY emitted via the shared apiv3 structs (Episode EndTime/GrabDate J327; Queue EpisodeIds/Episodes/EpisodesWithFilesCount/IsFullSeason/SeasonNumbers J318-J415, set in host_wiring; Series malIds/aniListIds/originalCountry J447); History/Season have no v5-only fields. Zero genuinely-missing fields.
+
+Conclusion: clean/in-scope/ungated/non-cosmetic autonomous work is DRAINED across all six tiers. Remaining = GATED (Q3 ManualImport completion + Q1 metadata rename/downloads tail, both needing the unported Phase-4 CompletedDownloadService / per-series event publishers) or LOW-cosmetic (v3 series over-emit; IsExcluded-on-lookup; v5-series de-alias). Full breakdown in GAP_ANALYSIS.md "AUTONOMOUS EXHAUSTION" section.
+
+R/W: no code change (verification + docs only). M: PROGRESS + GAP_ANALYSIS exhaustion sections + this entry. Per the operator's exhaustion clause, the loop STOPS here (no further wakeup) rather than manufacture low-value churn. Hard gates green (build, vet, gofmt `.`, go test ./...). 19 slices this campaign (J429–J447).
