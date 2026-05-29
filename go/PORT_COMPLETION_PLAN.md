@@ -60,44 +60,59 @@ NOT "GET body matches golden."
 
 ## Resource-completion matrix (burn-down)
 
-`R` = read/hydration · `W` = write/CRUD+cascade · `M` = middle (logic in service vs `cmd` wiring).
-✅ done · 🟡 partial · ❌ gap. Ordered by remaining work. First-pass triage from markers + structure;
-each slice refines its own row before acting.
+**VERIFIED post-audit (ground-truthed against handler bodies + route wiring + command registry, NOT
+comments).** Audit performed after J385 by tracing actual call paths. The v3 surface is ~90%+
+functionally complete; most prior `DEFERRED` comments were stale. Evidence file:line in the punch-list.
 
-| Resource | R | W | M | Remaining work | Closed by |
+### Verified DONE (do NOT re-do — markers were stale)
+
+- **series**: create / update (+`?moveFiles` → real `MoveFolder`) / delete (+`?deleteFiles` cascade → real
+  disk folder + 3 tables) / bulk editor / seasonpass monitor cascade — all real side-effects
+  (`series.go:1203/1267/1326`, `seriesCascadeAdapter` `host_wiring.go:799`). Stats+images hydrated (J367/J369).
+- **episode**: monitor toggle + update — real (`episode.go:393`).
+- **queue grab**: real dispatch to download client (`queue_grab.go:183` → `ProcessDownloadDecisions`).
+- **release push + download/grab**: fully wired in production; the `503 "not wired"` branches in
+  `release_write.go` are DEAD code (fire only under nil test deps).
+- **commands**: 20 handlers wired real (RefreshSeries, RssSync, Missing/CutoffUnmet/SeriesSearch, Backup,
+  RescanSeries, DownloadedEpisodesScan, Housekeeping, CheckHealth, RefreshMonitoredDownloads, …);
+  backlog **B.3 closed at J208**.
+- **read surface**: history/blocklist/wanted/calendar/episode/queue all hydrated (J366–J384).
+
+### Verified remaining functional punch-list (the REAL work, by impact)
+
+| # | Gap | State | What's needed (deps that EXIST) | Evidence | Done by |
 |---|---|---|---|---|---|
-| manual import | 🟡 | ❌ | ❌ | exec service exists (`episodeimport`/`downloadedimport`) but POST no-ops; wire it; episode-stub projection | |
-| series | 🟡 | 🟡 | ❌ | hydrate stats/images (DTOs done); wire delete-cascade (`recyclebin`), path-move (`episodefilemoving`/`organizer`), bulk-move; relocate `seriesCascadeAdapter` logic out of `cmd` | |
-| release (grab/push) | 🟡 | 🟡 | 🟡 | grab override branch, indexer/dc name→id resolvers, full ReleaseResource response | |
-| episodefile | ✅ | 🟡 | 🟡 | editor Quality/Languages updates; physical delete/recycle-bin move (service exists) | |
-| queue | ✅ | 🟡 | 🟡 | write query-params parsed-and-ignored; relocate `queuePagedAdapter` logic | |
-| command / scheduled-task | 🟡 | 🟡 | 🟡 | B.3: ~5 task handlers stub; SuppressMessages projection | |
-| history | ✅ | n/a | 🟡 | read done (J366–J384); relocate populator/hydrate logic from `cmd` into a service | |
-| blocklist | ✅ | n/a | 🟡 | read done (J382); relocate populator/hydrate logic from `cmd` | |
-| wanted | ✅ | n/a | 🟡 | read done (J383/J384); relocate hydrate logic from `cmd` | |
-| calendar | ✅ | n/a | 🟡 | read done (J376); relocate hydrate logic from `cmd` | |
-| episode | ✅ | ✅ | 🟡 | relocate `applyEpisode*` orchestration into the service | |
-| importlist | ✅ | 🟡 | ✅ | registry-membership validation | |
-| update | 🟡 | n/a | 🟡 | Latest/Installable computation | |
-| diskspace / parse / config_host | 🟡 | n/a | 🟡 | small read deferreds (path option, cert-exists) | |
-| profiles / customformats / indexers / downloadclients / notifications / tags / config* | ✅ | ✅ | ✅ | thin/CRUD — low risk, spot-check only | |
+| 1 | Manual import — list candidates | STUB (`[]`) | port `ManualImportService.GetMediaFiles` (disk-walk + per-file decision eval) | `manual_import.go:36` | |
+| 2 | Manual import — execute | MISSING | `ManualImport` command + import-execute pipeline (move/rename + episodefile insert); `episodeimport`/`downloadedimport` svcs exist | commands registry | |
+| 3 | EpisodeFile editor Quality/Languages | PARTIAL (dropped) | read `body.Quality`/`body.Languages` → row update | `episodefile.go:441` | |
+| 4 | EpisodeFile delete — disk/recycle-bin | PARTIAL (DB row only) | call `recyclebin`/disk on delete (svc exists) | `episodefile.go:501` | |
+| 5 | Queue delete — client/blocklist effects | PARTIAL (cache-only, not durable) | apply `removeFromClient`/`blocklist`/`skipRedownload`/`changeCategory` | `queue_write.go:30` | |
+| 6 | Missing commands | MISSING | RenameFiles, RenameSeries, MoveSeries/BulkMoveSeries, DeleteSeriesFiles, ProcessMonitoredDownloads; lower-pri ClearBlocklist, ResetApiKey, ResetQualityDefinitions, ClearLog/DeleteLogFiles (`organizer`/`episodefilemoving`/`recyclebin` exist) | commands handlers | |
+| 7 | v5 season-monitor per-episode cascade | PARTIAL | `SetEpisodeMonitoredBySeason` on PUT season | `v5/series:436` | |
+| 8 | release/push response shape | COSMETIC | full ReleaseResource projection (functionally works) | `release_write.go` | |
+| 9 | small read stragglers | PARTIAL | update Latest/Installable, diskspace path option, cert-exists | various | |
+
+### Architecture (quality, not functional — opportunistic)
+
+`cmd/sonarr` holds ~38 logic funcs + 15 wrapper types (populators/adapters/hydrate/compute/cascade). Relocate
+into services WHEN you're already touching a resource for the punch-list — do NOT run a separate
+relocation-only arc (it churns finished code for no functional gain). Contract + round-trip tests must stay green.
 
 ---
 
-## Priority order (biggest incoherence first; reassess each tick)
+## Priority order (verified)
 
-1. **SERIES** — hydrate statistics + images (DTOs/mappers already done) into list/by-id handlers; wire
-   delete-cascade (`recyclebin`) + path-move (`episodefilemoving`/`organizer`) + bulk-move; relocate
-   `seriesCascadeAdapter` logic from `cmd` into a series application service. Multi-slice.
-2. **MANUAL IMPORT** — wire the existing `episodeimport`/`downloadedimport` executor into the POST
-   (currently no-ops); finish the episode-stub projection.
-3. **RELEASE (grab/push)** — grab override branch, indexer/dc name→id resolvers, full ReleaseResource response.
-4. **EPISODEFILE write** — editor Quality/Languages updates; physical delete/recycle-bin move (service exists).
-5. **QUEUE write** — apply the parsed-and-ignored query params; relocate `queuePagedAdapter` logic.
-6. **COMMAND / SCHEDULED-TASK** — B.3 stub handlers; SuppressMessages projection.
-7. **MIDDLE-ONLY refactors** for already-coherent read resources (history/blocklist/wanted/calendar/
-   episode/queue): relocate populator/hydrate logic from `cmd` into services (no wire change; round-trip
-   + contract tests must stay green).
+**Phase 1 — functional gaps (interactive/hybrid):**
+1. **MANUAL IMPORT** (#1 + #2) — the biggest real feature gap; list candidates + execute command. Wire the
+   existing `episodeimport`/`downloadedimport` pipeline.
+2. **EPISODEFILE write** (#3 + #4) — editor Quality/Languages persist; delete → recycle-bin/disk.
+3. **QUEUE delete** (#5) — apply removeFromClient/blocklist/skipRedownload/changeCategory.
+4. **MISSING COMMANDS** (#6) — RenameFiles/RenameSeries, MoveSeries/BulkMove, DeleteSeriesFiles,
+   ProcessMonitoredDownloads (reuse `organizer`/`episodefilemoving`/`recyclebin`); then lower-pri admin commands.
+5. **stragglers** (#7 #8 #9) — season cascade, release response shape, small read fields.
+
+**Phase 2 — v5 catch-up (backlog C.1):** the genuine bulk of remaining work — mirror ~56 upstream commits
+per-endpoint (loop-friendly once Phase 1 lands).
 
 ---
 
