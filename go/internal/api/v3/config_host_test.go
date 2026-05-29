@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -420,6 +422,71 @@ func TestHostConfigUpdateHandler_SslRequiresCertPath_400(t *testing.T) {
 	HostConfigUpdateHandler(&fakeHostConfig{}).ServeHTTP(rr, putHostReq(body))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+// J404: SSL enabled + absolute cert path that does NOT exist on disk →
+// 400 with the FileExists message (injected fake checker).
+func TestHostConfigUpdateHandler_SslCertPathMissing_400_J404(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	body := strings.Replace(hostBody(), `"enableSsl":false`, `"enableSsl":true`, 1)
+	body = strings.Replace(body, `"sslCertPath":""`, `"sslCertPath":"/etc/sonarr/cert.pfx"`, 1)
+	HostConfigUpdateHandler(&fakeHostConfig{}, func(string) bool { return false }).
+		ServeHTTP(rr, putHostReq(body))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "SslCertPath file does not exist") {
+		t.Errorf("expected FileExists rejection; body=%s", rr.Body.String())
+	}
+}
+
+// J404: SSL enabled + absolute cert path that DOES exist → 202 (the
+// FileExists check passes via the injected checker).
+func TestHostConfigUpdateHandler_SslCertPathExists_OK_J404(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	body := strings.Replace(hostBody(), `"enableSsl":false`, `"enableSsl":true`, 1)
+	body = strings.Replace(body, `"sslCertPath":""`, `"sslCertPath":"/etc/sonarr/cert.pfx"`, 1)
+	HostConfigUpdateHandler(&fakeHostConfig{}, func(string) bool { return true }).
+		ServeHTTP(rr, putHostReq(body))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// J404: a non-empty SslKeyPath that doesn't exist → 400 even when SSL is
+// off (C# gates the key FileExists on the field being set, not EnableSsl).
+func TestHostConfigUpdateHandler_SslKeyPathMissing_400_J404(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	body := strings.Replace(hostBody(), `"sslKeyPath":""`, `"sslKeyPath":"/etc/sonarr/key.pem"`, 1)
+	HostConfigUpdateHandler(&fakeHostConfig{}, func(string) bool { return false }).
+		ServeHTTP(rr, putHostReq(body))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "SslKeyPath file does not exist") {
+		t.Errorf("expected SslKeyPath FileExists rejection; body=%s", rr.Body.String())
+	}
+}
+
+// J404: the production default ([osFileExists]) accepts a real file on
+// disk — SSL enabled + a cert path pointing at a temp file → 200.
+func TestHostConfigUpdateHandler_SslCertPathRealFile_OK_J404(t *testing.T) {
+	t.Parallel()
+	certPath := filepath.Join(t.TempDir(), "cert.pfx")
+	if err := os.WriteFile(certPath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	body := strings.Replace(hostBody(), `"enableSsl":false`, `"enableSsl":true`, 1)
+	body = strings.Replace(body, `"sslCertPath":""`, `"sslCertPath":"`+certPath+`"`, 1)
+	// No checker passed → default osFileExists exercised.
+	HostConfigUpdateHandler(&fakeHostConfig{}).ServeHTTP(rr, putHostReq(body))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
 	}
 }
 

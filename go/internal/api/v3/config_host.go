@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -13,6 +14,20 @@ import (
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/validation"
 )
+
+// FileChecker reports whether path is an existing regular file. It
+// mirrors the C# `FileExistsValidator(diskProvider)` applied to
+// SslCertPath / SslKeyPath (`HostConfigController.cs:63,70`). Injected
+// so the validator stays hermetic in tests; the production default
+// ([osFileExists]) uses os.Stat.
+type FileChecker func(path string) bool
+
+// osFileExists is the production [FileChecker]: the path must exist and
+// be a regular file (a directory doesn't satisfy DiskProvider.FileExists).
+func osFileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
 
 // HostConfigResource mirrors
 // `src/Sonarr.Api.V3/Config/HostConfigResource.cs`. 39 fields covering
@@ -362,8 +377,8 @@ var urlBasePattern = regexp.MustCompile(`^[A-Za-z0-9_\-./]*$`)
 //   - AuthenticationMethod: not "Basic" (deprecated)
 //   - Username/Password: NotEmpty when AuthenticationMethod==Forms
 //   - PasswordConfirmation: equals Password
-//   - SslCertPath: NotEmpty + absolute when EnableSsl
-//   - SslKeyPath: NotEmpty + absolute when set (any non-empty value)
+//   - SslCertPath: NotEmpty + absolute + FileExists when EnableSsl
+//   - SslKeyPath: absolute + FileExists when set (any non-empty value)
 //   - LogSizeLimit: 1..10
 //   - Branch: NotEmpty
 //   - UpdateScriptPath: absolute when UpdateMechanism==Script
@@ -371,13 +386,20 @@ var urlBasePattern = regexp.MustCompile(`^[A-Za-z0-9_\-./]*$`)
 //   - BackupInterval: 1..7
 //   - BackupRetention: 1..90
 //
-// DEFERRED: SslCertPath FileExists + IsValidCertificate (need disk +
-// X.509 parse adapters); SslKeyPath FileExists; UserService.Upsert
-// (need hash-aware writer). PasswordConfirmation's user-svc short-
-// circuit ("if the stored user's password matches, ignore the
-// confirmation field") is also DEFERRED — the simpler equal-pair
+// J404 closes the SslCertPath/SslKeyPath FileExists arm of the deferral
+// (C# `:63,70` `FileExistsValidator`). The optional fileExists arg is a
+// [FileChecker]; when omitted the production [osFileExists] (os.Stat) is
+// used, so the file-existence check is never silently skipped. DEFERRED
+// still: SslCertPath IsValidCertificate (needs an X.509 parse adapter);
+// UserService.Upsert (needs a hash-aware writer). PasswordConfirmation's
+// user-svc short-circuit ("if the stored user's password matches, ignore
+// the confirmation field") is also DEFERRED — the simpler equal-pair
 // check rejects mismatches.
-func HostConfigUpdateHandler(svc HostConfigWriter) http.Handler {
+func HostConfigUpdateHandler(svc HostConfigWriter, fileExists ...FileChecker) http.Handler {
+	check := osFileExists
+	if len(fileExists) > 0 && fileExists[0] != nil {
+		check = fileExists[0]
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body HostConfigResource
 		dec := json.NewDecoder(r.Body)
@@ -386,7 +408,7 @@ func HostConfigUpdateHandler(svc HostConfigWriter) http.Handler {
 			httperr.BadRequest(w, fmt.Sprintf("config/host: malformed body: %v", err))
 			return
 		}
-		if errs := validateHostConfig(&body); !errs.OK() {
+		if errs := validateHostConfig(&body, check); !errs.OK() {
 			httperr.WriteValidation(w, errs.Failures())
 			return
 		}
@@ -509,7 +531,7 @@ func HostConfigUpdateHandler(svc HostConfigWriter) http.Handler {
 // validateHostConfig ports the cheap subset of HostConfigController's
 // SharedValidator chain. See HostConfigUpdateHandler doc for the
 // deferred filesystem-state checks.
-func validateHostConfig(res *HostConfigResource) *validation.Errors {
+func validateHostConfig(res *HostConfigResource, fileExists FileChecker) *validation.Errors {
 	errs := validation.New()
 
 	// BindAddress: ValidIpAddress when not "*" / "localhost".
@@ -535,12 +557,20 @@ func validateHostConfig(res *HostConfigResource) *validation.Errors {
 			errs.Add("SslCertPath", "SslCertPath is required when SSL is enabled")
 		} else if !filepath.IsAbs(res.SslCertPath) {
 			errs.Add("SslCertPath", "SslCertPath must be an absolute path")
+		} else if fileExists != nil && !fileExists(res.SslCertPath) {
+			// C# FileExistsValidator on SslCertPath, When(EnableSsl).
+			errs.Add("SslCertPath", "SslCertPath file does not exist")
 		}
 	}
 
-	// SslKeyPath is optional but when set must be absolute.
-	if strings.TrimSpace(res.SslKeyPath) != "" && !filepath.IsAbs(res.SslKeyPath) {
-		errs.Add("SslKeyPath", "SslKeyPath must be an absolute path")
+	// SslKeyPath is optional but when set must be absolute and exist on
+	// disk (C# FileExistsValidator on SslKeyPath, When(not empty)).
+	if strings.TrimSpace(res.SslKeyPath) != "" {
+		if !filepath.IsAbs(res.SslKeyPath) {
+			errs.Add("SslKeyPath", "SslKeyPath must be an absolute path")
+		} else if fileExists != nil && !fileExists(res.SslKeyPath) {
+			errs.Add("SslKeyPath", "SslKeyPath file does not exist")
+		}
 	}
 
 	// UrlBase regex.

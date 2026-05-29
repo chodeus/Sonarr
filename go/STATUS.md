@@ -19744,3 +19744,17 @@ NOTE: the production lister is still the empty fixture (`emptyUpdateLister` — 
 Tests: compareVersions (8 cases incl. dev / missing-component / major-dominates); markRecentUpdates empty / newer-than-build (Latest+Installable, not Installed) / unsorted-multi-row (sorts desc + marks) / highest-is-build (Latest+Installed, not Installable).
 
 R: GET /api/v3/update now marks Latest/Installable/Installed (live once RecentUpdateProvider lands). W: n/a. M: matrix #9 + PROGRESS + this entry. Hard gates clean (build, race tests api v3 + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J404 — Verticalization Arc: SslCertPath/SslKeyPath FileExists validation on PUT /config/host (punch-list #9 "cert-exists")
+
+Closes the FileExists arm of the SSL-path validation deferral (go already did NotEmpty + absolute-path). Ports the `FileExistsValidator(diskProvider)` rules at C# `HostConfigController.cs:59-71`: when `EnableSsl`, an absolute `SslCertPath` must point at an existing file; a non-empty `SslKeyPath` must too (gated on the field being set, not on EnableSsl — matches C#).
+
+NEW `FileChecker func(path string) bool` narrow consumer-interface + `osFileExists` production default (os.Stat; rejects directories per DiskProvider.FileExists). `validateHostConfig` gains the param; `HostConfigUpdateHandler(svc, fileExists ...FileChecker)` takes it as an optional variadic — nil/omitted falls back to `osFileExists` so the check is never silently skipped, and existing single-arg callers + `host_wiring.go` stay unchanged.
+
+Contract-safe: the empty-state recording has `EnableSsl=false`, so the FileExists branch is inert there (goldens unaffected). STILL DEFERRED: `SslCertPath` IsValidCertificate (needs an X.509 parse adapter); UserService.Upsert (needs a hash-aware writer).
+
+Tests: cert-missing→400 + message; cert-exists→202; key-missing→400 + message (injected fake checkers); real-temp-file→202 (exercises the default `osFileExists`).
+
+R: n/a. W: PUT /config/host now rejects SSL configs whose cert/key file is absent. M: matrix #9 + PROGRESS + this entry. Hard gates clean (build, race tests api v3 + cmd/sonarr + contract, vet, gofmt).
