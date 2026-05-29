@@ -111,6 +111,41 @@ func TestManualImportHandler_Lister_MapsQueryAndProjects_J387a(t *testing.T) {
 	}
 }
 
+func TestManualImportHandler_QualityWeight_J387c(t *testing.T) {
+	t.Parallel()
+	// SDTV (id 2, default weight 2) + Real=1 (+10) + Version=2 (+2) → 14.
+	lister := &fakeManualImportLister{ret: []ManualImportResource{
+		{Path: "/dl/a.mkv", Quality: ToQualityModelResource(quality.NewModelWithRevision(
+			mustQualityByID(t, 2), quality.Revision{Version: 2, Real: 1}))},
+		{Path: "/dl/b.mkv", Quality: nil}, // nil quality → weight stays 0
+	}}
+	rr := httptest.NewRecorder()
+	ManualImportHandler(lister).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/manualimport?folder=/dl", nil))
+	var got []ManualImportResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d", len(got))
+	}
+	want := quality.QualityWeight(mustQualityByID(t, 2)) + 1*10 + 2
+	if got[0].QualityWeight != want {
+		t.Errorf("QualityWeight = %d, want %d", got[0].QualityWeight, want)
+	}
+	if got[1].QualityWeight != 0 {
+		t.Errorf("nil-quality QualityWeight = %d, want 0", got[1].QualityWeight)
+	}
+}
+
+func mustQualityByID(t *testing.T, id int) quality.Quality {
+	t.Helper()
+	q, ok := quality.FindByID(id)
+	if !ok {
+		t.Fatalf("quality id %d not found", id)
+	}
+	return q
+}
+
 func TestManualImportHandler_FilterExistingFilesFalse_J387a(t *testing.T) {
 	t.Parallel()
 	lister := &fakeManualImportLister{ret: []ManualImportResource{}}

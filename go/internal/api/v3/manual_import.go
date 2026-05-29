@@ -123,11 +123,29 @@ func ManualImportHandler(lister ManualImportLister) http.Handler {
 		if res == nil {
 			res = []ManualImportResource{}
 		}
+		addManualImportQualityWeight(res)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		buf, _ := json.Marshal(res)
 		_, _ = w.Write(buf)
 	})
+}
+
+// addManualImportQualityWeight fills each resource's QualityWeight from
+// its quality, porting C# `ManualImportController.AddQualityWeight`
+// (`ManualImportController.cs:82-92`): the static default-definition
+// weight + Revision.Real*10 + Revision.Version. Applied centrally over
+// the lister output so all modes (disk / library / unmapped) match the
+// C# controller's `Select(AddQualityWeight)`.
+func addManualImportQualityWeight(items []ManualImportResource) {
+	for i := range items {
+		q := items[i].Quality
+		if q == nil {
+			continue
+		}
+		qual, _ := quality.FindByID(q.Quality.ID)
+		items[i].QualityWeight = quality.QualityWeight(qual) + q.Revision.Real*10 + q.Revision.Version
+	}
 }
 
 // parseOptionalIntParam reads an optional integer query param. Returns

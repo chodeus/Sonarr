@@ -19540,3 +19540,15 @@ Deferred (noted): unknown-series fallback (recursive subfolder descent + >100-fi
 Tests: `mapEpisodeFile`/`mapUnmappedFile` units (real temp file, persisted-quality decode, episode-link filter), real SQLite + real-disk `libraryMediaFiles` round-trip (mapped row w/ episode embed + unmapped Unknown row), downloadId+empty-cache nil-guard.
 
 R: list (library + downloadId modes) WIRED. W: n/a. M: adapter doc + this entry. Matrix row #1 still open → J387c (QualityWeight + fuller episode projection) then J388. Hard gates clean (build, race tests on api v3 + v5 manualimport + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J387c — Verticalization Arc: Manual Import LIST candidates, QualityWeight fill (punch-list #1, slice c)
+
+Ports C# `ManualImportController.AddQualityWeight` (`:82-92`). New `addManualImportQualityWeight` in `internal/api/v3/manual_import.go`, applied over the lister output in `ManualImportHandler` (central, like C# `Select(AddQualityWeight)` — covers disk/library/unmapped uniformly): `QualityWeight = quality.QualityWeight(FindByID(id)) + Revision.Real*10 + Revision.Version`; nil Quality → 0. `Unknown.ID` has default weight 1 so unmapped items aren't zeroed.
+
+The plan paired "fuller episode projection" with this slice, but J387a/b already emit the full `apiv3.ToEpisodeResource` (never stubbed), so no episode change.
+
+Test: `TestManualImportHandler_QualityWeight_J387c` (SDTV+Real+Version weight; nil-quality→0).
+
+R: list QualityWeight WIRED (LIST modes now complete bar the deferred unknown-series fallback). W: n/a. M: handler doc + this entry. Matrix row #1 flips at J388. Hard gates clean (build, race tests on api v3 + v5 manualimport + cmd/sonarr + contract, vet, gofmt).
