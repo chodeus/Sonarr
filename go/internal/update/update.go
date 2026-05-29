@@ -35,9 +35,9 @@ const DefaultServicesBaseURL = "https://services.sonarr.tv/v1"
 
 // Package is the per-release projection the upstream feed returns.
 // Mirrors C# `UpdatePackage` at `Update/UpdatePackage.cs:5-15`. The
-// `Changes` field (changelog blob — C# UpdateChanges) is omitted from
-// the Go port for now — the healthcheck only consumes Version; the
-// command handler only consumes the existence of a non-nil package.
+// `Changes` changelog blob is populated by the recent-updates feed
+// (`/update/{branch}/changes`) consumed by [Service.RecentUpdates];
+// the single-package `AvailableUpdate` path leaves it zero.
 type Package struct {
 	Version     string    `json:"version"`
 	ReleaseDate time.Time `json:"releaseDate"`
@@ -45,6 +45,15 @@ type Package struct {
 	URL         string    `json:"url"`
 	Hash        string    `json:"hash"`
 	Branch      string    `json:"branch"`
+	Changes     Changes   `json:"changes"`
+}
+
+// Changes is the changelog blob on an update package — the New +
+// Fixed bullet lists. Mirrors C# `UpdateChanges` at
+// `Update/UpdateChanges.cs`.
+type Changes struct {
+	New   []string `json:"new"`
+	Fixed []string `json:"fixed"`
 }
 
 // availableResponse mirrors the C# `UpdatePackageAvailable` envelope.
@@ -171,6 +180,59 @@ func (s *Service) AvailableUpdate(ctx context.Context) (*Package, error) {
 		return nil, nil
 	}
 	return parsed.UpdatePackage, nil
+}
+
+// RecentUpdates mirrors `UpdatePackageProvider.GetRecentUpdates` at
+// `Update/UpdatePackageProvider.cs:66-90` (via the C#
+// `RecentUpdateProvider`). Hits
+// `<base>/update/{branch}/changes?version=&os=&arch=&runtime=netcore`
+// and returns the full list of recent release packages (each with its
+// changelog) — the feed GET /api/v3/update projects to UpdateResource.
+//
+// DEFERRED relative to C#: the `prevVersion` query param (C# sends it
+// from `UpdateHistoryService.PreviouslyInstalled()` when LogDbEnabled)
+// — the Go tree has no UpdateHistoryService yet, so the param is
+// omitted; the server returns the standard recent list without it.
+func (s *Service) RecentUpdates(ctx context.Context) ([]Package, error) {
+	if s == nil {
+		return nil, nil
+	}
+	br := strings.TrimSpace(s.branch.Branch(ctx))
+	if br == "" {
+		br = "main"
+	}
+
+	q := url.Values{}
+	q.Set("version", s.version)
+	q.Set("os", goosToServiceOs(runtime.GOOS))
+	q.Set("arch", runtime.GOARCH)
+	q.Set("runtime", "netcore")
+
+	u := fmt.Sprintf("%s/update/%s/changes?%s", strings.TrimRight(s.baseURL, "/"), url.PathEscape(br), q.Encode())
+
+	cctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(cctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("update: build request: %w", err)
+	}
+
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("update: GET %s: %w", u, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("update: unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var packages []Package
+	if err := json.NewDecoder(resp.Body).Decode(&packages); err != nil {
+		return nil, fmt.Errorf("update: decode recent updates: %w", err)
+	}
+	return packages, nil
 }
 
 // goosToServiceOs maps the Go `runtime.GOOS` value to the C#

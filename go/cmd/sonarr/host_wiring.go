@@ -112,6 +112,7 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
+	"sonarr.tv/sonarr/internal/update"
 )
 
 // buildHostServer assembles the *host.Server from the runtime
@@ -121,7 +122,7 @@ import (
 // Mirrors `src/NzbDrone.Host/Bootstrap.cs:CreateConsoleHostBuilder`
 // where BindAddress + Port are pulled from the configuration before
 // the URL list is handed to Kestrel.
-func buildHostServer(ctx context.Context, cfg *configfile.Provider, authSvc *auth.Service, indexerSearchSvc *indexersearch.Service, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, mediaCoverConvertSvc *mediacover.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, diskProv *disk.Provider, bus *messaging.Bus, processDownloadDecisions *download.ProcessDownloadDecisions, downloadDecider *decisionengine.DownloadDecisionMaker, releaseCache *releasecache.Cache, parsingSvc *parsingservice.Service, manualImportDecisionRejector apiv3.ManualImportDecisionRejector, episodeFileDeleter *episodeFileDeleteAdapter, queueRemover apiv3.QueueWriter, backupTempPath string, logFolderPath, frontendDir string) (*host.Server, error) {
+func buildHostServer(ctx context.Context, cfg *configfile.Provider, authSvc *auth.Service, indexerSearchSvc *indexersearch.Service, logger *slog.Logger, configRepo *config.Repo, configProv *config.Provider, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, mediaCoverConvertSvc *mediacover.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, diskProv *disk.Provider, bus *messaging.Bus, processDownloadDecisions *download.ProcessDownloadDecisions, downloadDecider *decisionengine.DownloadDecisionMaker, releaseCache *releasecache.Cache, parsingSvc *parsingservice.Service, manualImportDecisionRejector apiv3.ManualImportDecisionRejector, episodeFileDeleter *episodeFileDeleteAdapter, queueRemover apiv3.QueueWriter, recentUpdates apiv3.UpdateLister, backupTempPath string, logFolderPath, frontendDir string) (*host.Server, error) {
 	bind, err := cfg.BindAddress(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("host: bind address: %w", err)
@@ -149,7 +150,7 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, authSvc *aut
 		// default path.
 		{Method: "GET", Path: "/initialize.json", Handler: host.InitializeJSONHandler(cfg), Anonymous: true},
 	}
-	v3 := v3Routes(configProv, cfg, indexerSearchSvc, logger, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, mediaCoverConvertSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, cmdRegistry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, parsingSvc, manualImportDecisionRejector, episodeFileDeleter, queueRemover, backupTempPath, logFolderPath)
+	v3 := v3Routes(configProv, cfg, indexerSearchSvc, logger, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, mediaCoverConvertSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, cmdRegistry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, parsingSvc, manualImportDecisionRejector, episodeFileDeleter, queueRemover, recentUpdates, backupTempPath, logFolderPath)
 	opts := []host.Option{
 		host.WithRoutes(append(loginRoutes, v3...)...),
 	}
@@ -211,15 +212,38 @@ func (emptyTagDetailLister) TagDetail(context.Context, int) (*apiv3.TagDetailsRe
 	return nil, apiv3.ErrTagDetailNotFound
 }
 
-// emptyUpdateLister stands in for the future Update package
-// provider. /api/v3/update's empty-DB recording shows 0 entries.
-// The C# UpdateController fetches recent packages via
-// RecentUpdateProvider; that provider isn't ported yet, so the
-// stub keeps byte-eq while the wider Update sub-arc lands later.
-type emptyUpdateLister struct{}
+// recentUpdateLister adapts *update.Service to apiv3.UpdateLister
+// (J405). It ports C# RecentUpdateProvider → UpdateController feed:
+// fetches the recent release packages from services.sonarr.tv and
+// projects each to an apiv3.UpdateResource. The handler's
+// markRecentUpdates (J403) then flags Latest/Installable/Installed.
+// A nil service (update wiring absent) yields an empty list — the same
+// byte-eq-safe posture the old emptyUpdateLister stub gave.
+type recentUpdateLister struct {
+	svc *update.Service
+}
 
-func (emptyUpdateLister) RecentUpdates(context.Context) ([]apiv3.UpdateResource, error) {
-	return nil, nil
+func (l recentUpdateLister) RecentUpdates(ctx context.Context) ([]apiv3.UpdateResource, error) {
+	if l.svc == nil {
+		return nil, nil
+	}
+	pkgs, err := l.svc.RecentUpdates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]apiv3.UpdateResource, 0, len(pkgs))
+	for _, p := range pkgs {
+		out = append(out, apiv3.UpdateResource{
+			Version:     p.Version,
+			Branch:      p.Branch,
+			ReleaseDate: p.ReleaseDate,
+			FileName:    p.FileName,
+			URL:         p.URL,
+			Hash:        p.Hash,
+			Changes:     apiv3.UpdateChanges{New: p.Changes.New, Fixed: p.Changes.Fixed},
+		})
+	}
+	return out, nil
 }
 
 // queuePagedAdapter satisfies apiv3.QueuePagedLister by projecting the
@@ -2231,7 +2255,7 @@ func (h hostConfigGetter) SetProxyBypassLocalAddresses(ctx context.Context, v bo
 // autoTagsSvc + releaseProfilesSvc own their respective tables; both
 // expose All directly via Go's structural typing on the Lister
 // interfaces.
-func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSearchSvc *indexersearch.Service, logger *slog.Logger, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, mediaCoverConvertSvc *mediacover.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, diskProv *disk.Provider, bus *messaging.Bus, processDownloadDecisions *download.ProcessDownloadDecisions, downloadDecider *decisionengine.DownloadDecisionMaker, releaseCache *releasecache.Cache, parsingSvc *parsingservice.Service, manualImportDecisionRejector apiv3.ManualImportDecisionRejector, episodeFileDeleter *episodeFileDeleteAdapter, queueRemover apiv3.QueueWriter, backupTempPath, logFolderPath string) []host.Route {
+func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSearchSvc *indexersearch.Service, logger *slog.Logger, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, mediaCoverConvertSvc *mediacover.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, diskProv *disk.Provider, bus *messaging.Bus, processDownloadDecisions *download.ProcessDownloadDecisions, downloadDecider *decisionengine.DownloadDecisionMaker, releaseCache *releasecache.Cache, parsingSvc *parsingservice.Service, manualImportDecisionRejector apiv3.ManualImportDecisionRejector, episodeFileDeleter *episodeFileDeleteAdapter, queueRemover apiv3.QueueWriter, recentUpdates apiv3.UpdateLister, backupTempPath, logFolderPath string) []host.Route {
 	langs := language.All()
 	localizationSvc := localization.NewService()
 	// J367: the series read handlers (v3 + v5 GET list/by-id) discover
@@ -2901,7 +2925,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/parse", Handler: parsev5.GetHandler(parsingSvcWithPopulator)},
 		// J259 — v5 Update endpoint family (single GET; pure path-alias
 		// to v3 handler — same wire shape, same 200 status).
-		{Method: "GET", Path: "/api/v5/update", Handler: updatev5.GetHandler(emptyUpdateLister{})},
+		{Method: "GET", Path: "/api/v5/update", Handler: updatev5.GetHandler(recentUpdates)},
 		// J260 — v5 RemotePathMappings endpoint family (5 endpoints; TWO
 		// status divergences: PUT 202→200 via v5util.RewriteAcceptedToOK,
 		// DELETE 200+empty→204 via v5util.RewriteSuccessTo204).
@@ -3321,7 +3345,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "DELETE", Path: "/api/v3/tag/{id}", Handler: apiv3.TagDeleteHandler(tagsSvc)},
 		{Method: "GET", Path: "/api/v3/tag/detail", Handler: apiv3.TagDetailHandler(emptyTagDetailLister{})},
 		{Method: "GET", Path: "/api/v3/tag/detail/{id}", Handler: apiv3.TagDetailByIDHandler(emptyTagDetailLister{})},
-		{Method: "GET", Path: "/api/v3/update", Handler: apiv3.UpdateHandler(emptyUpdateLister{})},
+		{Method: "GET", Path: "/api/v3/update", Handler: apiv3.UpdateHandler(recentUpdates)},
 		{Method: "GET", Path: "/api/v3/wanted/cutoff", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, seriesSvc: seriesSvc, epFiles: episodeFilesSvcPopulated, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedCutoff)},
 		{Method: "GET", Path: "/api/v3/wanted/cutoff/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvcWithEpisodeFile)},
 		{Method: "GET", Path: "/api/v3/wanted/missing", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, seriesSvc: seriesSvc, epFiles: episodeFilesSvcPopulated, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedMissing)},

@@ -19758,3 +19758,17 @@ Contract-safe: the empty-state recording has `EnableSsl=false`, so the FileExist
 Tests: cert-missing→400 + message; cert-exists→202; key-missing→400 + message (injected fake checkers); real-temp-file→202 (exercises the default `osFileExists`).
 
 R: n/a. W: PUT /config/host now rejects SSL configs whose cert/key file is absent. M: matrix #9 + PROGRESS + this entry. Hard gates clean (build, race tests api v3 + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J405 — v5 catch-up "what's next" #2: RecentUpdateProvider port (GET /api/v3+v5/update returns real updates)
+
+Ports `UpdatePackageProvider.GetRecentUpdates` (`src/NzbDrone.Core/Update/UpdatePackageProvider.cs:66-90`) behind the C# `RecentUpdateProvider` → `UpdateController` feed. `internal/update`: NEW `Service.RecentUpdates(ctx) ([]Package, error)` hits `<base>/update/{branch}/changes?version=&os=&arch=&runtime=netcore` and decodes the list; `Package` gains a `Changes{New,Fixed}` changelog field (the single-package `AvailableUpdate` path leaves it zero).
+
+`cmd/sonarr`: NEW `recentUpdateLister` adapter maps `[]update.Package` → `[]apiv3.UpdateResource` (incl. Changes) and replaces the `emptyUpdateLister` stub at BOTH `/api/v3/update` and `/api/v5/update`; `updateSvc` threaded through `buildHostServer` + `v3Routes` (1 param each + call site). Combined with J403's `markRecentUpdates`, the endpoint now returns real available packages with Latest/Installable/Installed flags.
+
+Hermetic: the contract suite injects its own empty lister per-handler (`test/contract/hostbootstrap/v3_update_test.go`), and the service only calls services.sonarr.tv when the endpoint is actually hit (not at boot) — so no test makes a live network call. DEFERRED: the `prevVersion` query param (C# sends it from the unported UpdateHistoryService).
+
+Tests: RecentUpdates list+changelog parse / non-2xx → error / empty-branch → "main" path.
+
+R: GET /api/v3+v5/update now returns the real recent-update list. W: n/a. M: matrix #9 + PROGRESS + this entry. Hard gates clean (build, race tests update + api v3 + cmd/sonarr + contract, vet, gofmt).

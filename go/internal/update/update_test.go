@@ -136,3 +136,84 @@ func TestAvailableUpdate_MalformedBodyErrors(t *testing.T) {
 		t.Errorf("malformed body: want error")
 	}
 }
+
+// J405: RecentUpdates hits /update/{branch}/changes and parses the
+// package list including the changelog.
+func TestRecentUpdates_ListReturned_J405(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/update/main/changes") {
+			t.Errorf("URL path: got %q, want suffix /update/main/changes", r.URL.Path)
+		}
+		if r.URL.Query().Get("version") != "5.0.1" {
+			t.Errorf("version param: %q", r.URL.Query().Get("version"))
+		}
+		if r.URL.Query().Get("runtime") != "netcore" {
+			t.Errorf("runtime param: %q", r.URL.Query().Get("runtime"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"version":     "5.0.42",
+				"releaseDate": "2026-05-15T12:00:00Z",
+				"fileName":    "Sonarr.5.0.42.zip",
+				"url":         "https://download.example/Sonarr.zip",
+				"hash":        "deadbeef",
+				"branch":      "main",
+				"changes":     map[string]any{"new": []string{"feature A"}, "fixed": []string{"bug B", "bug C"}},
+			},
+			{"version": "5.0.41", "branch": "main"},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	svc, err := update.NewService(srv.Client(), stubBranch{value: "main"}, "5.0.1", srv.URL, 2*time.Second)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	pkgs, err := svc.RecentUpdates(context.Background())
+	if err != nil {
+		t.Fatalf("RecentUpdates: %v", err)
+	}
+	if len(pkgs) != 2 {
+		t.Fatalf("len: got %d, want 2", len(pkgs))
+	}
+	if pkgs[0].Version != "5.0.42" || pkgs[0].FileName != "Sonarr.5.0.42.zip" {
+		t.Errorf("pkg[0] = %+v", pkgs[0])
+	}
+	if len(pkgs[0].Changes.New) != 1 || pkgs[0].Changes.New[0] != "feature A" {
+		t.Errorf("changes.new = %v, want [feature A]", pkgs[0].Changes.New)
+	}
+	if len(pkgs[0].Changes.Fixed) != 2 {
+		t.Errorf("changes.fixed = %v, want 2 entries", pkgs[0].Changes.Fixed)
+	}
+}
+
+// J405: a non-2xx response is an error.
+func TestRecentUpdates_Non2xxErrors_J405(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	svc, _ := update.NewService(srv.Client(), stubBranch{value: "main"}, "5.0.1", srv.URL, 2*time.Second)
+	if _, err := svc.RecentUpdates(context.Background()); err == nil {
+		t.Error("want error on non-2xx, got nil")
+	}
+}
+
+// J405: empty branch falls back to "main" in the path.
+func TestRecentUpdates_EmptyBranchFallsBackToMain_J405(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/update/main/changes") {
+			t.Errorf("path: got %q, want /update/main/changes", r.URL.Path)
+		}
+		_, _ = w.Write([]byte("[]"))
+	}))
+	t.Cleanup(srv.Close)
+	svc, _ := update.NewService(srv.Client(), stubBranch{value: ""}, "5.0.1", srv.URL, 2*time.Second)
+	if _, err := svc.RecentUpdates(context.Background()); err != nil {
+		t.Fatalf("RecentUpdates: %v", err)
+	}
+}
