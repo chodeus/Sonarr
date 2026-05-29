@@ -20047,3 +20047,15 @@ C# ref: `src/NzbDrone.Core/MediaFiles/RenameEpisodeFileService.cs:57-128` (GetRe
 - `cmd/sonarr/renamepreview_wiring.go`: `renamePreviewPathBuilder` (loads NamingConfig per call + threads file.MediaInfo into BuildOptions; CustomFormats nil = documented divergence) + `renamePreviewerAdapter` + `newRenamePreviewer`. Wired at v3+v5 rename routes in v3Routes.
 
 R: /rename + /rename/bulk now return real preview rows. W: n/a (read-only; rename *execute* command still unported). M: GAP_ANALYSIS G5 fixed + PROGRESS + this entry. Tests: service (diff/sort/season-filter/bulk-order/error/missing-series) + v3 handler (projection/season-branch/invalid-season-400/error-500/bulk). Hard gates clean (build, race tests renamepreview + api v3 + v5 renameepisode + cmd/sonarr + contract, vet, gofmt on touched dirs).
+
+---
+
+## J430 — G9: tag/detail usage aggregator
+
+C# ref: `src/NzbDrone.Core/Tags/TagService.cs:88-152` (Details/Details(int) + GetAutoTagIds). GET /tag/detail + /tag/detail/{id} (v3+v5) previously used `emptyTagDetailLister` → always 0 rows.
+
+- NEW `internal/tagdetail/tagdetail.go`: `Service` driven by `Loaders` closures (Tags + 9 consumer EntityLoaders) — keeps the pkg decoupled from the 9 consumer packages. Loads each list once, then per tag emits ids of every Entity whose Tags contain the tag id (`idsReferencing`, non-nil empties). `AllTagDetails` (label order from the Tags loader) + `TagDetail(id)→(*Detail,bool,error)`.
+- `cmd/sonarr/tagdetail_wiring.go`: `newTagDetailLister` builds loaders from the already-wired services (delayProfilesSvc/importListsRepo/notificationsRepo/releaseProfilesSvc/seriesSvc/indexersRepo/autoTagsSvc/downloadClientsRepo + tagsSvc). AutoTag loader folds `*autotagging.TagSpec.Value` into the entity tag-set (ports GetAutoTagIds OR-arm); excluded-RP loader maps `ExcludedTags`. `tagDetailAdapter` projects Detail→apiv3.TagDetailsResource + satisfies TagDetailLister+TagDetailByIDGetter; nil tagsSvc → emptyTagDetailLister fallback.
+- Wired at v3 (3525-3526) + v5 (3219-3220) tag/detail routes; all 9 services already in v3Routes scope (no signature change).
+
+R: /tag/detail now returns real usage rows; empty-DB → `[]` (contract byte-eq preserved). W: n/a. M: GAP_ANALYSIS G9 fixed + PROGRESS + this entry. Tests: 9-source join + label-order + by-id + not-found + empty-DB + loader-error-propagate + nil-loaders. Hard gates clean (build, race tests tagdetail + api v3 + cmd/sonarr + contract, vet, gofmt on touched dirs).

@@ -2442,6 +2442,11 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 	// RenameEpisodeFileService.GetRenamePreviews). nil when a required
 	// service is unset (handlers then emit `[]`).
 	renamePreviewer := newRenamePreviewer(seriesSvc, episodesSvc, episodeFilesSvc, namingConfigSvc, logger)
+	// G9 (J430): GET /tag/detail + /tag/detail/{id} usage aggregator —
+	// joins each Tag against the 9 consumer tables (ports
+	// TagService.Details). Falls back to the empty lister when tagsSvc
+	// is unset.
+	tagDetailLister := newTagDetailLister(tagsSvc, delayProfilesSvc, importListsRepo, notificationsRepo, releaseProfilesSvc, seriesSvc, indexersRepo, autoTagsSvc, downloadClientsRepo)
 	uiCfg := uiConfigGetter{cfg: configProv, xmlCfg: cfg}
 	hostCfg := hostConfigGetter{cfg: configProv, xmlCfg: cfg}
 	// 5.B2: per-resource SignalR emitter for the rootfolder writes.
@@ -3211,8 +3216,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v5/tag", Handler: tagv5.CreateHandler(tagsSvc)},
 		{Method: "PUT", Path: "/api/v5/tag/{id}", Handler: tagv5.UpdateHandler(tagsSvc)},
 		{Method: "DELETE", Path: "/api/v5/tag/{id}", Handler: tagv5.DeleteHandler(tagsSvc)},
-		{Method: "GET", Path: "/api/v5/tag/detail", Handler: tagv5.DetailListHandler(emptyTagDetailLister{})},
-		{Method: "GET", Path: "/api/v5/tag/detail/{id}", Handler: tagv5.DetailByIDHandler(emptyTagDetailLister{})},
+		{Method: "GET", Path: "/api/v5/tag/detail", Handler: tagv5.DetailListHandler(tagDetailLister)},
+		{Method: "GET", Path: "/api/v5/tag/detail/{id}", Handler: tagv5.DetailByIDHandler(tagDetailLister)},
 		// J270 — v5 History endpoint family (6 endpoints; 232 LOC C#).
 		// 3 path-aliases (list/since/series) + 2 new v5-specific stub
 		// handlers (/season + /episode; v3 has neither, underlying
@@ -3517,8 +3522,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v3/tag", Handler: apiv3.TagCreateHandler(tagsSvc)},
 		{Method: "PUT", Path: "/api/v3/tag/{id}", Handler: apiv3.TagUpdateHandler(tagsSvc)},
 		{Method: "DELETE", Path: "/api/v3/tag/{id}", Handler: apiv3.TagDeleteHandler(tagsSvc)},
-		{Method: "GET", Path: "/api/v3/tag/detail", Handler: apiv3.TagDetailHandler(emptyTagDetailLister{})},
-		{Method: "GET", Path: "/api/v3/tag/detail/{id}", Handler: apiv3.TagDetailByIDHandler(emptyTagDetailLister{})},
+		{Method: "GET", Path: "/api/v3/tag/detail", Handler: apiv3.TagDetailHandler(tagDetailLister)},
+		{Method: "GET", Path: "/api/v3/tag/detail/{id}", Handler: apiv3.TagDetailByIDHandler(tagDetailLister)},
 		{Method: "GET", Path: "/api/v3/update", Handler: apiv3.UpdateHandler(recentUpdates)},
 		{Method: "GET", Path: "/api/v3/wanted/cutoff", Handler: apiv3.WantedHandler(wantedRepoLister{episodes: episodesRepo, profiles: qualityProfilesSvc, seriesSvc: seriesSvc, epFiles: episodeFilesSvcPopulated, now: func() time.Time { return time.Now().UTC() }}, apiv3.WantedCutoff)},
 		{Method: "GET", Path: "/api/v3/wanted/cutoff/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvcWithEpisodeFile)},

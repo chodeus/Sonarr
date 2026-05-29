@@ -9,7 +9,7 @@
 > - ✅ **G6** series/lookup — FIXED J426 (wired to skyhook proxy).
 > - ✅ **G8** v5 history season/episode — FIXED J427 (episode) + J428 (season).
 > - ✅ **G5** rename previews — FIXED J429 (`internal/renamepreview.Service` diff driver; wired v3+v5 with NamingConfig path builder).
-> - ⏳ **G9** tag/detail — OPEN (focused service port, autonomous).
+> - ✅ **G9** tag/detail — FIXED J430 (`internal/tagdetail.Service` 9-source aggregator; folds autotag TagSpec values; wired v3+v5).
 > - ⏳ **T1** flaky shadowtraffic-e2e, **Q1** latent metadata-writer — OPEN.
 
 
@@ -58,7 +58,7 @@ done, and some "done"-looking paths are actually stubbed).
 
 **G8 — `GET /api/v5/history/season` + `/history/episode` return `[]`.** Need `history.Service.GetBySeason`/`GetByEpisode` (only `GetBySeries` ported). v5-only routes.
 
-**G9 — `GET /tag/detail` returns empty.** Needs a tag-usage aggregator joining Tag rows against every consumer table (DelayProfile/ImportList/Notification/Indexer/DownloadClient/AutoTagging/Series). Larger.
+**G9 — `GET /tag/detail` returns empty.** ✅ FIXED J430. `internal/tagdetail.Service` ports `TagService.Details()` — joins Tag rows against all 9 consumer tables via caller-supplied loaders; autotag loader folds `*TagSpec.Value` (ports `GetAutoTagIds`), excluded-RP uses `ExcludedTags`. Wired v3+v5 via `newTagDetailLister`.
 
 ### LOW — quality / latent
 
