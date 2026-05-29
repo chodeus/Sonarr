@@ -191,3 +191,58 @@ func TestRefresh_NilBusSkipsPublish(t *testing.T) {
 		t.Errorf("Refresh with nil bus: %v", err)
 	}
 }
+
+// stubTracker returns one TrackedDownload per item (echoing the item's
+// DownloadID), recording how many times it was invoked.
+type stubTracker struct{ calls int }
+
+func (s *stubTracker) TrackDownload(_ context.Context, _ downloadclients.Provider, item *downloadclients.Item) *trackeddownloads.TrackedDownload {
+	s.calls++
+	return &trackeddownloads.TrackedDownload{DownloadID: item.DownloadID, IsTrackable: true}
+}
+
+// J394: with a tracker wired, Refresh maps polled items into the
+// TrackedDownloadRefreshedEvent so the queue can populate.
+func TestRefresh_TrackerPopulatesEvent_J394(t *testing.T) {
+	t.Parallel()
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+
+	usenetProv := &stubProvider{name: "sab", items: []*downloadclients.Item{{DownloadID: "a"}, {DownloadID: "b"}}}
+	torrentProv := &stubProvider{name: "qbit", items: []*downloadclients.Item{{DownloadID: "c"}}}
+
+	gotCount := make(chan int, 1)
+	messaging.Subscribe(bus, "test.tracked.count",
+		func(_ context.Context, ev trackeddownloads.TrackedDownloadRefreshedEvent) error {
+			select {
+			case gotCount <- len(ev.TrackedDownloads):
+			default:
+			}
+			return nil
+		})
+
+	svc, err := downloadmonitoring.NewService(&stubLister{usenet: []downloadclients.Provider{usenetProv}, torrent: []downloadclients.Provider{torrentProv}}, bus, slog.Default())
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tracker := &stubTracker{}
+	svc.SetTracker(tracker)
+
+	if _, err := svc.Refresh(t.Context()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	bus.BeginShutdown()
+	bus.Wait()
+
+	if tracker.calls != 3 {
+		t.Errorf("tracker calls = %d, want 3 (2 usenet + 1 torrent)", tracker.calls)
+	}
+	select {
+	case n := <-gotCount:
+		if n != 3 {
+			t.Errorf("published TrackedDownloads = %d, want 3", n)
+		}
+	default:
+		t.Error("no TrackedDownloadRefreshedEvent observed")
+	}
+}

@@ -19620,3 +19620,17 @@ Ports `MoveSeriesService.Execute(MoveSeriesCommand/BulkMoveSeriesCommand)`. NEW 
 Tests: handler dispatch + incomplete-body no-op + nil-ctor (both); real-SQLite adapter (move persists new Path; move-fail reverts; source-missing skips; bulk dest computed from naming).
 
 R: n/a. W: Move{Series,BulkSeries} WIRED. M: matrix row #6 + this entry. The named file/folder commands (DeleteSeriesFiles/Rename/Move) are done; only ProcessMonitoredDownloads (Phase-4-blocked) + lower-pri admin commands remain in #6. Hard gates clean (build, race tests internal/commands + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J394 — Phase-4 unblock keystone: tracked-download cache populates from polls
+
+Re-audit corrected the earlier over-broad "#5 blocked" claim: the download clients ARE ported (registry.Construct → live providers with GetItems/RemoveItem), and parsingService.Map / trackeddownloads.Track / queue.HandleTrackedDownloadRefreshed all exist. The only gap was `downloadmonitoring.Refresh` discarding polled items (publishing `TrackedDownloadRefreshedEvent{nil}`).
+
+`internal/downloadmonitoring/service.go`: optional `DownloadItemTracker` iface + `SetTracker`; Refresh maps each polled item → TrackedDownload and publishes the populated event (nil tracker → prior count-only behaviour). NEW `cmd/sonarr/download_tracker_wiring.go`: `downloadItemTrackerAdapter` ports the primary path of `TrackedDownloadService.TrackDownload` — parse title → parsingService.Map → RemoteEpisode; build + Track TrackedDownload (client-id from Definition().ID, protocol, live item, State=Downloading); existing entries preserve state + refresh item. Deferred: grab-history fallback, Augment/custom-format, the state machine (DownloadProcessingService layer). Wired in main.go.
+
+Safe for fresh installs (no clients → empty queue → contract goldens unaffected, verified).
+
+Tests: downloadmonitoring stub-tracker (Refresh publishes 1 td/item) + cmd/sonarr adapter (field mapping + existing-state preservation).
+
+R: queue read surface now populates from live clients. W: prerequisite for #5 delete side-effects. M: this entry + PROGRESS. #5 still open pending J395 (removeFromClient/changeCategory) + J396 (blocklist). Hard gates clean (build, race tests downloadmonitoring + queue + cmd/sonarr + contract, vet, gofmt).

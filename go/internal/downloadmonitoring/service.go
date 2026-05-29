@@ -50,14 +50,38 @@ type ClientLister interface {
 	ListByProtocol(ctx context.Context, protocol indexers.DownloadProtocol) ([]downloadclients.Provider, error)
 }
 
+// DownloadItemTracker maps a polled download-client item to a
+// [trackeddownloads.TrackedDownload] (parsing its title + matching a
+// series), Tracks it in the tracked-download cache, and returns it for
+// the queue-refresh event. Mirrors the per-item arm of C#
+// `DownloadMonitoringService.Refresh` → `TrackedDownloadService.TrackDownload`.
+//
+// Optional (wired via [Service.SetTracker]). When unset, Refresh keeps
+// the pre-J394 behaviour of polling for the item count + publishing an
+// empty TrackedDownloadRefreshedEvent (the queue cache stays empty).
+// Returns nil when the item can't be turned into a trackable download.
+type DownloadItemTracker interface {
+	TrackDownload(ctx context.Context, client downloadclients.Provider, item *downloadclients.Item) *trackeddownloads.TrackedDownload
+}
+
 // Service is the minimal Refresh orchestrator. Mirrors the C# class
 // at `DownloadMonitoringService.cs` (subset — see package
 // doc-comment). Goroutine-safe: stateless beyond construction-time
 // deps.
 type Service struct {
 	clients ClientLister
+	tracker DownloadItemTracker
 	bus     *messaging.Bus
 	log     *slog.Logger
+}
+
+// SetTracker wires the optional per-item [DownloadItemTracker] (J394).
+// Once set, Refresh maps each polled item into a TrackedDownload so the
+// queue cache populates from the live download clients.
+func (s *Service) SetTracker(t DownloadItemTracker) {
+	if s != nil {
+		s.tracker = t
+	}
 }
 
 // NewService binds the ClientLister + bus. log defaults to
@@ -90,6 +114,7 @@ func (s *Service) Refresh(ctx context.Context) (int, error) {
 	var (
 		totalItems int
 		firstErr   error
+		tracked    []*trackeddownloads.TrackedDownload
 	)
 	for _, protocol := range []indexers.DownloadProtocol{
 		indexers.DownloadProtocolUsenet,
@@ -125,6 +150,17 @@ func (s *Service) Refresh(ctx context.Context) (int, error) {
 				slog.String("client", client.Name()),
 				slog.String("protocol", protocol.String()),
 				slog.Int("items", len(items)))
+
+			// J394: map each polled item into a TrackedDownload so the
+			// queue cache populates from the live client. Skipped when
+			// no tracker is wired (preserves the count-only behaviour).
+			if s.tracker != nil {
+				for _, item := range items {
+					if td := s.tracker.TrackDownload(ctx, client, item); td != nil {
+						tracked = append(tracked, td)
+					}
+				}
+			}
 		}
 	}
 
@@ -135,13 +171,12 @@ func (s *Service) Refresh(ctx context.Context) (int, error) {
 				slog.Any("err", err))
 		}
 		// TrackedDownloadRefreshedEvent carries the in-memory
-		// TrackedDownload snapshot in C#. The Go-port slice doesn't
-		// yet populate the cache from poll output (follow-up — see
-		// package doc-comment), so the snapshot is empty. Subscribers
-		// (queue.Service.HandleTrackedDownloadRefreshed) still get
-		// the refresh signal — they tolerate an empty slice.
+		// TrackedDownload snapshot. J394 populates it from the poll
+		// output via the wired tracker; when no tracker is set the
+		// slice is nil (queue.Service.HandleTrackedDownloadRefreshed
+		// tolerates an empty slice → empty queue).
 		if err := messaging.Publish(ctx, s.bus, trackeddownloads.TrackedDownloadRefreshedEvent{
-			TrackedDownloads: nil,
+			TrackedDownloads: tracked,
 		}); err != nil {
 			s.log.LogAttrs(ctx, slog.LevelWarn,
 				"downloadmonitoring: TrackedDownloadRefreshedEvent publish failed",

@@ -2975,6 +2975,13 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("downloadmonitoring service: %w", err)
 	}
+	// J394: populate the tracked-download cache (and thus the queue) from
+	// each Refresh poll by mapping polled items → TrackedDownloads.
+	downloadMonitoringSvc.SetTracker(downloadItemTrackerAdapter{
+		parsing: parsingSvc,
+		tracked: trackedDownloadsSvc,
+		log:     logger,
+	})
 
 	// Slice 5.J39 (audit B.3 close-out): adapter around
 	// indexerSearchSvc.EpisodeSearch that returns the decision count
