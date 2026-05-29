@@ -219,6 +219,47 @@ func HistorySeriesHandler(svc HistoryRangeReader) http.Handler {
 	})
 }
 
+// HistoryEpisodeReader is the read surface for /history/episode.
+// Satisfied by *history.Service (GetByEpisode). A separate narrow
+// interface (not folded into HistoryRangeReader) so existing test fakes
+// for since/series don't need to grow the method.
+type HistoryEpisodeReader interface {
+	GetByEpisode(ctx context.Context, episodeID int, eventType *history.EventType) ([]history.Entry, error)
+}
+
+// HistoryEpisodeHandler returns GET /api/v3/history/episode (also the v5
+// route). Mirrors C# `HistoryController.GetEpisodeHistory`: it calls
+// `historyService.GetByEpisode(episodeId, eventType)` → MapToResource.
+// Required `episodeId` → 400 if missing/invalid; optional `eventType`.
+// Series/episode embeds + the populator are discovered on svc by
+// writeHistoryEntries (same as since/series).
+func HistoryEpisodeHandler(svc HistoryEpisodeReader) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idStr := r.URL.Query().Get("episodeId")
+		if idStr == "" {
+			httperr.BadRequest(w, "history/episode: missing episodeId")
+			return
+		}
+		episodeID, err := strconv.Atoi(idStr)
+		if err != nil || episodeID <= 0 {
+			httperr.BadRequest(w, fmt.Sprintf("history/episode: invalid episodeId %q", idStr))
+			return
+		}
+		eventType, ok := parseEventTypeQuery(w, r)
+		if !ok {
+			return
+		}
+		rows, err := svc.GetByEpisode(r.Context(), episodeID, eventType)
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("history/episode: %w", err), nil)
+			return
+		}
+		includeSeries := r.URL.Query().Get("includeSeries") == "true"
+		includeEpisode := r.URL.Query().Get("includeEpisode") == "true"
+		writeHistoryEntries(r.Context(), w, rows, svc, includeSeries, includeEpisode)
+	})
+}
+
 func parseEventTypeQuery(w http.ResponseWriter, r *http.Request) (*history.EventType, bool) {
 	raw := r.URL.Query().Get("eventType")
 	if raw == "" {

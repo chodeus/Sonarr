@@ -78,13 +78,20 @@ func TestSeasonHandler_MissingSeasonNumber_Returns400(t *testing.T) {
 	}
 }
 
-// ----- GET /episode — v5-specific stub -----
+// ----- GET /episode (J427: wired to a real reader) -----
+
+// fakeEpisodeReader satisfies apiv3.HistoryEpisodeReader.
+type fakeEpisodeReader struct{ rows []history.Entry }
+
+func (f fakeEpisodeReader) GetByEpisode(_ context.Context, _ int, _ *history.EventType) ([]history.Entry, error) {
+	return f.rows, nil
+}
 
 func TestEpisodeHandler_ValidQuery_ReturnsEmptyArray(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v5/history/episode?episodeId=42", nil)
-	EpisodeHandler().ServeHTTP(rr, req)
+	EpisodeHandler(fakeEpisodeReader{}).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200; body=%q", rr.Code, rr.Body.String())
 	}
@@ -100,9 +107,23 @@ func TestEpisodeHandler_MissingEpisodeID_Returns400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v5/history/episode", nil)
-	EpisodeHandler().ServeHTTP(rr, req)
+	EpisodeHandler(fakeEpisodeReader{}).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400", rr.Code)
+	}
+}
+
+// J427: a populated reader's rows project into the response.
+func TestEpisodeHandler_ReturnsRows_J427(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v5/history/episode?episodeId=42", nil)
+	EpisodeHandler(fakeEpisodeReader{rows: []history.Entry{{ID: 1, EpisodeID: 42}, {ID: 2, EpisodeID: 42}}}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if body := rr.Body.String(); !strings.Contains(body, `"id":1`) || !strings.Contains(body, `"id":2`) {
+		t.Errorf("body missing rows: %s", body)
 	}
 }
 

@@ -367,6 +367,23 @@ func (s *Service) GetBySeries(ctx context.Context, seriesID int, eventType *Even
 	return filterByEventType(rows, *eventType), nil
 }
 
+// GetByEpisode ports `HistoryService.GetByEpisode(episodeId, eventType)`
+// (`src/NzbDrone.Core/History/HistoryService.cs:86-89`). Returns every
+// history row for the episode, optionally filtered by event type.
+func (s *Service) GetByEpisode(ctx context.Context, episodeID int, eventType *EventType) ([]Entry, error) {
+	if s == nil || s.repo == nil {
+		return nil, errors.New("history: GetByEpisode on nil receiver")
+	}
+	rows, err := s.repo.AllByEpisodeID(ctx, episodeID)
+	if err != nil {
+		return nil, fmt.Errorf("history: GetByEpisode: %w", err)
+	}
+	if eventType == nil {
+		return rows, nil
+	}
+	return filterByEventType(rows, *eventType), nil
+}
+
 // FindDownloadID ports `HistoryService.cs:101-142` —
 // recovers a download-client identifier for an imported episode whose
 // EpisodeImportedEvent carries no DownloadID of its own (manual /

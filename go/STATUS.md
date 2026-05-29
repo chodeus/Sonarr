@@ -20010,3 +20010,15 @@ Audit finding G6: `GET /api/v3+v5/series/lookup` returned a hardcoded `[]` — t
 term missing → 400; nil searcher → `[]` (200, preserves the empty-DB contract); search error → 500. Tests: nil→[], missing-term→400, results projected + term passthrough + nil-entry skip, search-error→500; v5 smoke calls updated to GetHandler(nil).
 
 R: series/lookup now returns real TVDB search results. W: n/a. M: GAP_ANALYSIS G6 + this entry. Hard gates clean (build, race tests api v3 + v5 serieslookup + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J427 — G8 (part 1): wire GET /api/v5/history/episode to real data
+
+Audit finding G8 (part 1 of 2). `GET /api/v5/history/episode` was an empty-corpus stub. NEW `history.Service.GetByEpisode(ctx, episodeID, eventType)` (mirrors GetBySeries — wraps the already-tested `Repo.AllByEpisodeID` + optional event-type filter). NEW `apiv3.HistoryEpisodeReader` narrow interface + `HistoryEpisodeHandler` (parses episodeId → 400 if missing/invalid, GetByEpisode, projects via the shared `writeHistoryEntries` — so the J338 populator + J377 series/episode embeds work via type-assertion). v5 `EpisodeHandler(svc)` delegates to it; wired from `historySvcPopulated` (which embeds *history.Service, inheriting GetByEpisode). Kept as a separate reader interface (not folded into HistoryRangeReader) so the existing since/series test fakes don't grow the method.
+
+Part 2 (J428): `history/season` — needs the season→episode-id join (Entry has no SeasonNumber).
+
+Tests: service GetByEpisode (no-filter / grabbed-filter / error / nil-receiver); v5 EpisodeHandler valid→[]/missing-id→400/returns-rows.
+
+R: history/episode now returns real rows. W: n/a. M: GAP_ANALYSIS G8 + this entry. Hard gates clean (build, race tests history + api v3 + v5 history + cmd/sonarr + contract, vet, gofmt).

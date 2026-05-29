@@ -3183,7 +3183,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/history/since", Handler: historyv5.SinceHandler(historySvcPopulated)},
 		{Method: "GET", Path: "/api/v5/history/series", Handler: historyv5.SeriesHandler(historySvcPopulated)},
 		{Method: "GET", Path: "/api/v5/history/season", Handler: historyv5.SeasonHandler()},
-		{Method: "GET", Path: "/api/v5/history/episode", Handler: historyv5.EpisodeHandler()},
+		{Method: "GET", Path: "/api/v5/history/episode", Handler: historyv5.EpisodeHandler(historySvcPopulated)},
 		{Method: "POST", Path: "/api/v5/history/failed/{id}", Handler: historyv5.MarkAsFailedHandler(failedDownloadsSvc)},
 		// J271 — v5 ManualImport endpoint family (2 endpoints; 236 LOC C#).
 		// Pure path-alias at empty-corpus level. Both endpoints share

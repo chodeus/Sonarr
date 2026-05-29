@@ -144,27 +144,12 @@ func SeasonHandler() http.Handler {
 }
 
 // EpisodeHandler returns GET /api/v5/history/episode. Mirrors
-// `HistoryController.GetEpisodeHistory` at `:132-146`:
-// historyService.GetByEpisode(episodeId, eventType).
-//
-// **Empty-corpus stub** — same deferral as SeasonHandler. Validates
-// the `episodeId` query param (400 on missing/invalid) then emits
-// `[]`.
-//
-// J270.
-func EpisodeHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		idStr := r.URL.Query().Get("episodeId")
-		if idStr == "" {
-			httperr.BadRequest(w, "history/episode: missing episodeId")
-			return
-		}
-		if id, err := strconv.Atoi(idStr); err != nil || id <= 0 {
-			httperr.BadRequest(w, "history/episode: invalid episodeId")
-			return
-		}
-		writeEmptyHistoryList(w)
-	})
+// `HistoryController.GetEpisodeHistory`:
+// historyService.GetByEpisode(episodeId, eventType) → MapToResource.
+// G8 (J427) wires the real reader (was an empty-corpus stub) by
+// delegating to the v3 HistoryEpisodeHandler.
+func EpisodeHandler(svc apiv3.HistoryEpisodeReader) http.Handler {
+	return apiv3.HistoryEpisodeHandler(svc)
 }
 
 // ----- status-rewriting wrapper -----

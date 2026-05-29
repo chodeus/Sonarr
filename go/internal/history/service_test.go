@@ -856,3 +856,43 @@ func TestService_SQLite(t *testing.T) {
 func TestService_Postgres(t *testing.T) {
 	runServiceSuite(t, datastoretest.OpenPostgres(t))
 }
+
+// J427 (G8): GetByEpisode routes through AllByEpisodeID, optionally
+// filtering by event type, with the same shape as GetBySeries.
+func TestService_GetByEpisode_J427(t *testing.T) {
+	t.Parallel()
+	grabbed := history.EventTypeGrabbed
+	gi, oi := int(history.EventTypeGrabbed), int(history.EventTypeSeriesFolderImported)
+	rows := []history.Entry{
+		{ID: 1, EpisodeID: 42, EventType: &gi},
+		{ID: 2, EpisodeID: 42, EventType: &oi},
+	}
+
+	// No filter → all rows.
+	s := history.NewService(&stubReader{out: rows})
+	got, err := s.GetByEpisode(t.Context(), 42, nil)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("no filter: got %d rows (err %v), want 2", len(got), err)
+	}
+
+	// Filter to Grabbed → only row 1.
+	got2, err := s.GetByEpisode(t.Context(), 42, &grabbed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got2) != 1 || got2[0].ID != 1 {
+		t.Errorf("grabbed filter: got %v, want [row 1]", got2)
+	}
+
+	// Error propagates.
+	se := history.NewService(&stubReader{err: errors.New("EIO")})
+	if _, err := se.GetByEpisode(t.Context(), 42, nil); err == nil {
+		t.Error("want error propagation")
+	}
+
+	// nil receiver → error, no panic.
+	var nilSvc *history.Service
+	if _, err := nilSvc.GetByEpisode(t.Context(), 42, nil); err == nil {
+		t.Error("nil receiver should error")
+	}
+}
