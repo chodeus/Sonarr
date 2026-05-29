@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -1120,25 +1122,46 @@ func (l logFileLister) LogFolder() string       { return l.folder }
 func (l logFileLister) UpdateLogFolder() string { return l.updateFolder }
 func (l logFileLister) URLBase() string         { return l.urlBase }
 
-// diskSpaceFromRootFolders adapts *rootfolders.Service to
-// apiv3.FreeSpaceLister. Each configured root folder becomes one
-// DiskSpaceResource; rows with nil FreeSpace/TotalSpace (disk-stat
-// probe failed) are dropped to match the C# behaviour where
-// `_diskProvider.GetAvailableSpace(path)` returning null skips the
-// row at `DiskSpaceService.cs:75-82`. Label stays empty pending a
-// GetVolumeLabel adapter port.
-type diskSpaceFromRootFolders struct{ svc *rootfolders.Service }
+// specialDriveRegex ports C# `DiskSpaceService._regexSpecialDrive`
+// (`DiskSpaceService.cs:26`) — container/system mounts excluded from the
+// optional disk list.
+var specialDriveRegex = regexp.MustCompile(`^/var/lib/(docker|rancher|kubelet)(/|$)|^/(boot|etc)(/|$)|/docker(/var)?/aufs(/|$)|/\.timemachine`)
 
-func (a diskSpaceFromRootFolders) GetFreeSpace(ctx context.Context) ([]apiv3.DiskSpaceResource, error) {
+// diskSpaceAdapter adapts *rootfolders.Service + *disk.Provider to
+// apiv3.FreeSpaceLister, porting `DiskSpaceService.GetFreeSpace`
+// (`DiskSpaceService.cs:37-47`): the union of the "important" root-folder
+// disks and the "optional" fixed/network mounts, deduped, sorted by path.
+//
+// Important rows come from the configured root folders (each with its
+// precomputed FreeSpace/TotalSpace; rows where the disk-stat probe failed
+// are dropped, matching the C# null-skip at `:75-82`). Optional rows come
+// from disk.GetMounts() filtered to Fixed/Network drive types, excluding
+// the special-drive denylist and any path already surfaced as a root
+// folder; their space is probed via disk.GetAvailableSpace/GetTotalSize
+// (errors silently skip the row — the C# `suppressWarnings` optional arm).
+// Label stays empty pending a GetVolumeLabel adapter port.
+//
+// Divergence (pre-existing): C# dedups optional mounts against the
+// PATH-ROOTS of the series folders; the Go port surfaces root folders by
+// their configured path (not path-root), so a root folder and its
+// underlying mount can both appear. The dedup here is exact-path.
+type diskSpaceAdapter struct {
+	svc  *rootfolders.Service
+	disk *disk.Provider
+}
+
+func (a diskSpaceAdapter) GetFreeSpace(ctx context.Context) ([]apiv3.DiskSpaceResource, error) {
 	folders, err := a.svc.AllWithUnmappedFolders(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]apiv3.DiskSpaceResource, 0, len(folders))
+	seen := make(map[string]bool, len(folders))
 	for _, f := range folders {
 		if f.FreeSpace == nil || f.TotalSpace == nil {
 			continue
 		}
+		seen[f.Path] = true
 		out = append(out, apiv3.DiskSpaceResource{
 			Path:       f.Path,
 			Label:      "",
@@ -1146,6 +1169,34 @@ func (a diskSpaceFromRootFolders) GetFreeSpace(ctx context.Context) ([]apiv3.Dis
 			TotalSpace: *f.TotalSpace,
 		})
 	}
+
+	// Optional fixed/network mounts not already covered by a root folder.
+	if a.disk != nil {
+		for _, m := range a.disk.GetMounts() {
+			if m.DriveType != disk.DriveTypeFixed && m.DriveType != disk.DriveTypeNetwork {
+				continue
+			}
+			if seen[m.RootDirectory] || specialDriveRegex.MatchString(m.RootDirectory) {
+				continue
+			}
+			free, ferr := a.disk.GetAvailableSpace(m.RootDirectory)
+			total, terr := a.disk.GetTotalSize(m.RootDirectory)
+			if ferr != nil || terr != nil || total <= 0 {
+				continue // suppressWarnings arm — skip un-probeable mounts
+			}
+			seen[m.RootDirectory] = true
+			out = append(out, apiv3.DiskSpaceResource{
+				Path:       m.RootDirectory,
+				Label:      "",
+				FreeSpace:  free,
+				TotalSpace: total,
+			})
+		}
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		return strings.ToLower(out[i].Path) < strings.ToLower(out[j].Path)
+	})
 	return out, nil
 }
 
@@ -2541,7 +2592,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 	// GetMounts adapter lands; the rootfolder-only surface still
 	// matches C# wire shape on empty DB (`[]`) and gives populated
 	// DBs the right entries for the UI's "free space" widget.
-	diskSpaceLister := diskSpaceFromRootFolders{svc: rootFoldersSvc}
+	diskSpaceLister := diskSpaceAdapter{svc: rootFoldersSvc, disk: diskProv}
 	return []host.Route{
 		{Method: "GET", Path: "/api/v3/autotagging", Handler: apiv3.AutoTaggingHandler(autoTagsSvc)},
 		{Method: "GET", Path: "/api/v3/autotagging/{id}", Handler: apiv3.AutoTaggingByIDHandler(autoTagsSvc)},

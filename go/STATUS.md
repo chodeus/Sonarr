@@ -19852,3 +19852,17 @@ Tests: fstype classification (case-insensitive; ext4/apfs/ntfs→Fixed, nfs/cifs
 Next: J412 wires the optional-paths union into the diskspace lister (special-drive denylist regex + dedup vs root folders + per-mount space).
 
 R: mount enumeration primitive. W: n/a. M: PROGRESS + this entry. Hard gates clean (build darwin/linux/windows, race tests disk, vet, gofmt).
+
+---
+
+## J412 — diskspace #4 slice 2/2: optional-paths union (#4 DONE)
+
+Completes the port of `DiskSpaceService.GetFreeSpace` (`src/NzbDrone.Core/DiskSpace/DiskSpaceService.cs:37-71`). `cmd/sonarr`: renamed `diskSpaceFromRootFolders` → `diskSpaceAdapter{svc, disk}` and added the optional-paths arm. It unions the "important" root-folder disks (precomputed FreeSpace/TotalSpace; nil-probe rows dropped) with the "optional" mounts from J411's `disk.GetMounts()` filtered to Fixed/Network drive types, excluding the special-drive denylist (`specialDriveRegex`, ported verbatim from C# `_regexSpecialDrive`: `/var/lib/{docker,rancher,kubelet}`, `/boot`, `/etc`, docker aufs, `.timemachine`) and any path already surfaced as a root folder. Each optional mount's space is probed via the existing `disk.GetAvailableSpace`/`GetTotalSize` (errors silently skip — the C# `suppressWarnings` optional arm). Results are sorted by path, case-insensitive (C# `OrderBy(d => d.Path, OrdinalIgnoreCase)`).
+
+Divergence (documented): C# dedups optional mounts against the PATH-ROOTS of the series folders; the Go port surfaces root folders by their configured path, so dedup is exact-path (a root folder and its underlying mount can both appear).
+
+Contract-safe: the diskspace hostbootstrap contract uses a fake lister, so the real `GetMounts()` isn't exercised non-deterministically (verified — contract tests green).
+
+Tests: `specialDriveRegex` denylist parity — 11 excluded paths (docker/rancher/kubelet/boot/etc/aufs/timemachine + sub-paths) and 7 kept (incl. boundary cases `/etcetera`, `/boots`, `/var/lib/sonarr`).
+
+R: GET /api/v3+v5/diskspace now lists fixed/network mounts beyond the root folders. W: n/a. M: matrix #9 + PROGRESS + this entry. Hard gates clean (build darwin/linux/windows, race tests cmd/sonarr + disk + contract, vet, gofmt).
