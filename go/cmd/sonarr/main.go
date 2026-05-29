@@ -3248,6 +3248,20 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 			// slice-3.80's handler definition; the handler tolerates
 			// nil for both.
 		},
+		// Slice 5.J386 (punch-list #2) — ManualImport execute command.
+		// All four core deps satisfy the handler's narrow interfaces
+		// structurally: seriesSvc.GetSeries, episodesSvc.GetEpisodes,
+		// aggregationSvc.Augment, importApprovedSvc.Import. Finder reuses
+		// the same trackeddownloads.Service the DownloadedEpisodesScan
+		// slot wires (nil for any unknown downloadId until Phase 4
+		// download-client wiring populates the cache).
+		ManualImport: handlers.ManualImportDeps{
+			SeriesGetter:  seriesSvc,
+			EpisodeGetter: episodesSvc,
+			Aggregator:    aggregationSvc,
+			Importer:      importApprovedSvc,
+			Finder:        trackedDownloadsSvc,
+		},
 		Log: logger,
 	}); err != nil {
 		return fmt.Errorf("commands handlers: %w", err)

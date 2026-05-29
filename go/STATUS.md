@@ -19498,3 +19498,15 @@ Final orientation tick. Re-ran the hydration-gap grep across `internal/api/v3` +
 No clean in-scope GET read-projection/hydration gap remains. The Embedder/Lister Hydration Arc (J379–J384, building on the J366–J378 projection arc and the J348-complete Queue) is DRAINED. Loop stopped.
 
 Out-of-scope follow-ups flagged for a future arc (need a service/join, not a projection): paged-list `Title`-from-Episode-join (History+Blocklist), series statistics/images (stats service + MapCoversToLocal), Queue filter coverage tests. The three stale DEFERRED doc comments above are harmless but could be tidied to keep future orientation greps clean.
+
+---
+
+## J386 — Verticalization Arc: Manual Import EXECUTE command (punch-list #2)
+
+Ports `ManualImportService.Execute` (`src/.../Manual/ManualImportService.cs:485-570`). NEW `internal/commands/handlers/manualimport.go`: `ManualImportName` + narrow in-file deps (SeriesGetter/EpisodeGetter/Aggregator/Importer + optional TrackedDownloadFinder). `Execute` per file → resolve series+episodes → build LocalEpisode (ParsePath, ExistingFile via ospath.IsParent) → tracked-download enrich → `Aggregator.Augment` → re-apply user ReleaseGroup/IndexerFlags/ReleaseType verbatim + Quality/Languages when present → `NewImportDecision` → per-file `Importer.Import` (untracked newDownload=!existingFile/nil item; tracked newDownload=true/td.DownloadItem). Quality/Languages decoded from the UI's expanded wire shapes via local decoders (package can't import api/v3).
+
+Registered in `handlers.go` (new `ManualImportDeps`, guarded by `Importer!=nil`, `RequiresDiskAccess:true, IsLongRunning:true`); wired in `main.go` from seriesSvc/episodesSvc/aggregationSvc/importApprovedSvc/trackedDownloadsSvc (structural — no adapters). v3 `command.go:137` already routes the name to PriorityHigh + passes the `files` body through.
+
+Test (`manualimport_test.go`): recording-importer round-trip asserting decision contents (resolved series+episodes, re-applied quality/languages/releaseGroup) + untracked/existing/tracked routing + newDownload flag. The disk move + EpisodeFile insert side-effect lives in `ImportApprovedEpisodes.Import` and is covered by that package's temp-dir tests; the handler does no disk I/O of its own.
+
+DEFERRED vs C#: post-import UntrackedDownloadCompleted/DownloadCompleted event publication + tracked output-folder cleanup (event-bus arms unported); custom-format recalc. R: n/a (command). W: ManualImport execute WIRED. M: handler doc + this entry. Matrix row #2 → done (J386); row #1 (LIST) still open → J387. Hard gates clean (build, race tests on commands+cmd/sonarr+contract, vet, gofmt).

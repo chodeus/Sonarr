@@ -204,7 +204,30 @@ type Deps struct {
 	// `*refreshseries.Service` via structural typing.
 	RefreshSeries RefreshSeriesRunner
 
+	// ManualImport wires the IExecute<ManualImportCommand> handler into
+	// the dispatcher. Slice 5.J386 (punch-list #2). RegisterAll
+	// registers the slot only when Importer is non-nil — there's no
+	// useful stub fallback (a stub would silently no-op a user-
+	// triggered import). The four core sub-deps are all required; the
+	// Finder is optional. Production binds the existing
+	// episodeimport/series/episodes services via structural typing.
+	ManualImport ManualImportDeps
+
 	Log *slog.Logger
+}
+
+// ManualImportDeps bundles the collaborators the ManualImport handler
+// reaches for. Hoisted into its own struct so the parent Deps stays
+// readable. SeriesGetter / EpisodeGetter / Aggregator / Importer are
+// required when this struct is non-zero; Finder is optional. When
+// Importer is nil the whole slot is skipped (RegisterAll registers no
+// ManualImport command).
+type ManualImportDeps struct {
+	SeriesGetter  ManualImportSeriesGetter
+	EpisodeGetter ManualImportEpisodeGetter
+	Aggregator    ManualImportAggregator
+	Importer      ManualImportImporter
+	Finder        ManualImportTrackedDownloadFinder
 }
 
 // DownloadedEpisodesScanDeps bundles the four sub-deps the
@@ -357,6 +380,29 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 		}
 		registry.Register(DownloadedEpisodesScanName, commands.CommandSpec{
 			Handler: downloadedScan,
+		})
+	}
+
+	// ManualImport registers only when the importer is wired — there's
+	// no useful stub fallback (a stub would silently no-op a user-
+	// triggered import). RequiresDiskAccess + IsLongRunning mirror the
+	// C# ManualImportCommand flags (`ManualImportCommand.cs:11-13`).
+	if deps.ManualImport.Importer != nil {
+		manualImport, err := NewManualImport(
+			deps.ManualImport.SeriesGetter,
+			deps.ManualImport.EpisodeGetter,
+			deps.ManualImport.Aggregator,
+			deps.ManualImport.Importer,
+			deps.ManualImport.Finder,
+			deps.Log,
+		)
+		if err != nil {
+			return err
+		}
+		registry.Register(ManualImportName, commands.CommandSpec{
+			Handler:            manualImport,
+			RequiresDiskAccess: true,
+			IsLongRunning:      true,
 		})
 	}
 
