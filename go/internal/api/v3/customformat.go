@@ -40,19 +40,23 @@ type CustomFormatResource struct {
 }
 
 // CustomFormatSpecificationSchema mirrors the C# wire shape for one
-// element of CustomFormatResource.Specifications. Same schema-builder
-// dependency as AutoTaggingSpecificationSchema — the Fields slice
-// holds the polymorphic ClientSchema.Field list, populated by a
-// future slice once the reflection layer ports.
+// element of CustomFormatResource.Specifications
+// (`src/Sonarr.Api.V3/CustomFormats/CustomFormatSpecificationSchema.cs`).
+// On GET it carries each persisted spec's typed shape: implementation
+// discriminator + ImplementationName + InfoLink + Negate/Required +
+// the full ClientSchema field list with the persisted value injected
+// (built by [specToSchema], J432). On POST/PUT the request decodes
+// into the same type ([]any fields preserve the client's {name,value}
+// objects, which [customFormatSpecsToEnvelopeJSON] reads on write).
 //
-// TODO (DEFERRED): map customformats.Specification → Schema once the
-// schema-builder package lands. Empty-DB golden has zero rows so the
-// gap is unobservable today.
+// `id` uses omitempty because C# `ToSchema` never sets the spec's
+// RestResource.Id (stays 0 → omitted under WhenWritingDefault).
 type CustomFormatSpecificationSchema struct {
-	ID                 int    `json:"id"`
+	ID                 int    `json:"id,omitempty"`
 	Name               string `json:"name"`
 	Implementation     string `json:"implementation"`
 	ImplementationName string `json:"implementationName"`
+	InfoLink           string `json:"infoLink"`
 	Negate             bool   `json:"negate"`
 	Required           bool   `json:"required"`
 	Fields             []any  `json:"fields"`
@@ -531,15 +535,22 @@ func customFormatToModelFromFormat(f *customformats.Format) (customformats.Custo
 	if f == nil {
 		return customformats.CustomFormat{}, errors.New("nil format")
 	}
-	// Re-marshal Specifications from the typed Format projection.
-	// For now, the toCustomFormatResource path returns an empty
-	// Specifications slice (the spec-builder port is deferred), so
-	// the persisted column is [] — same as the pre-patch state. When
-	// the spec-builder lands, this round-trip needs to preserve the
-	// spec-internal structure.
-	res := toCustomFormatResource(f)
-	res.IncludeCustomFormatWhenRenaming = boolPtr(f.IncludeCustomFormatWhenRenaming)
-	return customFormatToModel(res)
+	// Serialise the typed Specifications directly through the
+	// persistence codec — this preserves the full spec-internal
+	// structure on the bulk-update round-trip (the GET projection now
+	// emits FieldDef-valued fields, which the request-shaped write
+	// helper can't read back, so we bypass it here and go straight
+	// from typed specs → envelope JSON).
+	specJSON, err := customformats.MarshalSpecs(f.Specifications)
+	if err != nil {
+		return customformats.CustomFormat{}, err
+	}
+	return customformats.CustomFormat{
+		ID:                              f.ID,
+		Name:                            f.Name,
+		Specifications:                  string(specJSON),
+		IncludeCustomFormatWhenRenaming: f.IncludeCustomFormatWhenRenaming,
+	}, nil
 }
 
 func boolPtr(b bool) *bool { return &b }
@@ -572,16 +583,94 @@ func toCustomFormatResource(f *customformats.Format) CustomFormatResource {
 	// omitempty drops — matching the C# `Specifications` field staying
 	// null under STJson's `DefaultIgnoreCondition.WhenWritingNull`
 	// (`src/NzbDrone.Common/Serializer/System.Text.Json/STJson.cs:27`).
-	specs := []CustomFormatSpecificationSchema{}
+	specs := make([]CustomFormatSpecificationSchema, 0, len(f.Specifications))
+	for _, spec := range f.Specifications {
+		schema, err := specToSchema(spec)
+		if err != nil {
+			// Defensive: a loaded spec always round-trips (it came from
+			// UnmarshalSpecs) and every discriminator has a template, so
+			// this is unreachable in practice. Skip rather than panic.
+			continue
+		}
+		specs = append(specs, schema)
+	}
 	return CustomFormatResource{
 		ID:                              f.ID,
 		Name:                            f.Name,
 		IncludeCustomFormatWhenRenaming: &include,
-		// TODO (DEFERRED): populate *specs from f.Specifications once the
-		// schema-builder port lands. Empty slice keeps the wire shape
-		// stable until then.
-		Specifications: &specs,
+		Specifications:                  &specs,
 	}
+}
+
+// cfSchemaTemplateByImpl indexes the canonical schema templates by
+// their implementation discriminator, for the GET projection's
+// field-metadata clone.
+var cfSchemaTemplateByImpl = func() map[string]CustomFormatSpecificationSchemaResource {
+	m := make(map[string]CustomFormatSpecificationSchemaResource, len(customFormatSchemas))
+	for _, s := range customFormatSchemas {
+		m[s.Implementation] = s
+	}
+	return m
+}()
+
+// specToSchema projects one persisted typed spec onto the wire
+// [CustomFormatSpecificationSchema]. Ports C#
+// `ICustomFormatSpecification.ToSchema()` (`CustomFormatSpecificationSchema.cs`):
+// the implementation discriminator + ImplementationName + InfoLink +
+// base flags, with the full ClientSchema field list (cloned from the
+// golden-verified [customFormatSchemas] template) carrying the
+// persisted value injected per field name.
+//
+// The spec's base fields (name/negate/required) + value fields are
+// recovered by round-tripping through the tested
+// [customformats.MarshalSpecs] envelope (`{type, body{...}}`) — body
+// holds `name`/`negate`/`required` plus the value keys, so this stays
+// in lock-step with the persistence codec.
+func specToSchema(spec customformats.Specification) (CustomFormatSpecificationSchema, error) {
+	envJSON, err := customformats.MarshalSpecs([]customformats.Specification{spec})
+	if err != nil {
+		return CustomFormatSpecificationSchema{}, err
+	}
+	var envs []struct {
+		Type string         `json:"type"`
+		Body map[string]any `json:"body"`
+	}
+	if err := json.Unmarshal(envJSON, &envs); err != nil {
+		return CustomFormatSpecificationSchema{}, err
+	}
+	if len(envs) != 1 {
+		return CustomFormatSpecificationSchema{}, fmt.Errorf("customformat: specToSchema: expected 1 envelope, got %d", len(envs))
+	}
+	impl := envs[0].Type
+	body := envs[0].Body
+
+	template, ok := cfSchemaTemplateByImpl[impl]
+	if !ok {
+		return CustomFormatSpecificationSchema{}, fmt.Errorf("customformat: specToSchema: no schema template for %q", impl)
+	}
+
+	name, _ := body["name"].(string)
+	negate, _ := body["negate"].(bool)
+	required, _ := body["required"].(bool)
+
+	fields := make([]any, 0, len(template.Fields))
+	for _, fd := range template.Fields {
+		if v, present := body[fd.Name]; present {
+			fields = append(fields, fd.WithValue(v))
+		} else {
+			fields = append(fields, fd)
+		}
+	}
+
+	return CustomFormatSpecificationSchema{
+		Name:               name,
+		Implementation:     impl,
+		ImplementationName: template.ImplementationName,
+		InfoLink:           template.InfoLink,
+		Negate:             negate,
+		Required:           required,
+		Fields:             fields,
+	}, nil
 }
 
 // ToCustomFormatResourceLite is the `includeDetails=false` projection

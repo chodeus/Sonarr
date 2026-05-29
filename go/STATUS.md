@@ -20071,3 +20071,16 @@ C# ref: `src/Sonarr.Api.V3/CustomFormats/CustomFormatResource.cs:44-77` (ToModel
 - Field-value mapping is type-agnostic (each `fields[]` entry's name→value); UnmarshalSpecs re-types per discriminator (regex string / int / size float / language int+bool). Verified all 4 value shapes.
 
 R: n/a (write path). W: POST/PUT /customformat with conditions now persists a loader-readable column → create/update with specs works through the real service. M: GAP_ANALYSIS G4 + new G4b finding + PROGRESS + this entry. Tests: envelope round-trips through customformats.UnmarshalSpecs for regex/int/size/language + empty/nil→`[]` + unknown-impl error. Read half (typed spec→full schema on GET) is the next slice. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).
+
+---
+
+## J432 — G4-followup read half: customformat GET projects typed specs → full schema
+
+C# ref: `CustomFormatResource.cs:32` (`model.Specifications.Select(x => x.ToSchema())`) + `CustomFormatSpecificationSchema.cs` ToSchema (impl + implementationName + infoLink + Negate/Required + SchemaBuilder.ToSchema fields).
+
+- `toCustomFormatResource`: replaced the `specifications:[]` stub with a real projection over `f.Specifications`. NEW `specToSchema(spec)`: round-trips the spec through `customformats.MarshalSpecs` to recover the `{type, body}` envelope (body = name/negate/required + value fields), looks up the golden-verified `customFormatSchemas` template by implementation (NEW `cfSchemaTemplateByImpl` index), clones each FieldDef and injects the persisted value by field name via `FieldDef.WithValue`, and builds the wire schema.
+- Resource spec type `CustomFormatSpecificationSchema`: added `InfoLink string` (C# always emits the wiki link) + changed `id` → `omitempty` (C# ToSchema never sets the spec's RestResource.Id).
+- `customFormatToModelFromFormat` (bulk-update reload): rewritten to serialise `f.Specifications` straight through `customformats.MarshalSpecs` — the GET projection now emits FieldDef-valued fields, which the request-shaped J431 write helper (`map[string]any` assertion) can't read back, so this path bypasses it and goes typed-specs → envelope directly (no lossy round-trip).
+- v5 customformat inherits via the shared `ToCustomFormatResource`.
+
+R: GET /customformat (v3+v5) now returns populated `specifications[]` with full field metadata + values; with J431 the create→reload→GET round-trip is whole. W: bulk-update spec round-trip preserved (no value loss). M: GAP_ANALYSIS G4b read half + PROGRESS + this entry. Tests: typed spec→schema (impl/implementationName/infoLink/base flags/injected regex string + resolution int value/id-omitted); empty-DB still `[]`. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).

@@ -520,3 +520,61 @@ func TestCustomFormatSpecsToEnvelopeJSON_UnknownImplementationErrors(t *testing.
 		t.Fatal("expected error for unknown implementation discriminator")
 	}
 }
+
+// TestSpecToSchema_ProjectsTypedSpecWithFieldMetadata is the G4-followup
+// read half (J432): GET must project each persisted typed spec into the
+// full CustomFormatSpecificationSchema (implementation + implementationName
+// + infoLink + base flags + the cloned schema fields with the persisted
+// value injected). Mirrors C# ICustomFormatSpecification.ToSchema().
+func TestSpecToSchema_ProjectsTypedSpecWithFieldMetadata(t *testing.T) {
+	t.Parallel()
+	// Build typed specs through the real load codec (envelope → typed).
+	env := `[
+	  {"type":"ReleaseTitleSpecification","body":{"name":"x264","negate":true,"required":true,"value":"(x|h)264"}},
+	  {"type":"ResolutionSpecification","body":{"name":"1080p","negate":false,"required":false,"value":1080}}
+	]`
+	typed, err := customformats.UnmarshalSpecs([]byte(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &customformats.Format{ID: 7, Name: "HD", IncludeCustomFormatWhenRenaming: true, Specifications: typed}
+	res := toCustomFormatResource(f)
+	if res.Specifications == nil || len(*res.Specifications) != 2 {
+		t.Fatalf("specs = %v", res.Specifications)
+	}
+	rt := (*res.Specifications)[0]
+	if rt.Implementation != "ReleaseTitleSpecification" || rt.ImplementationName != "Release Title" {
+		t.Errorf("impl = %q / %q", rt.Implementation, rt.ImplementationName)
+	}
+	if rt.InfoLink != customFormatInfoLink {
+		t.Errorf("infoLink = %q", rt.InfoLink)
+	}
+	if rt.Name != "x264" || !rt.Negate || !rt.Required {
+		t.Errorf("base flags wrong: %+v", rt)
+	}
+	if len(rt.Fields) != 1 {
+		t.Fatalf("fields = %d want 1", len(rt.Fields))
+	}
+	// The cloned regex field must carry the injected value on the wire.
+	body, _ := json.Marshal(res)
+	s := string(body)
+	for _, want := range []string{
+		`"implementation":"ReleaseTitleSpecification"`,
+		`"implementationName":"Release Title"`,
+		`"infoLink":"` + customFormatInfoLink + `"`,
+		`"value":"(x|h)264"`,
+		`"name":"value"`, // the field's name
+		`"value":1080`,   // resolution int value injected
+		`"implementation":"ResolutionSpecification"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("wire missing %s\n%s", want, s)
+		}
+	}
+	// id=0 on each spec must be omitted (C# ToSchema never sets it).
+	res2 := toCustomFormatResource(f)
+	b2, _ := json.Marshal((*res2.Specifications)[0])
+	if strings.Contains(string(b2), `"id"`) {
+		t.Errorf("spec must omit id=0: %s", b2)
+	}
+}

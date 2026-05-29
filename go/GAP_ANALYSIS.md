@@ -52,7 +52,7 @@ done, and some "done"-looking paths are actually stubbed).
 
 **Write half (CRITICAL, FIXED J431):** `customFormatToModel` persisted the on-wire schema shape (`{implementation, fields[]}`) into the `Specifications` column, but `customformats.LoadFromRow`→`UnmarshalSpecs` only accepts the `{type, body}` envelope. So creating/updating a CustomFormat with ANY condition failed write→reload through the real service (the handler unit tests use a fake writer that skips the reload, masking it). Fixed by `customFormatSpecsToEnvelopeJSON` (maps wire spec → envelope, validates via the loader's own codec).
 
-**Read half (OPEN):** `toCustomFormatResource` still emits `specifications:[]` (stub). The faithful port projects each typed `customformats.Specification` → `CustomFormatSpecificationSchema` with full FieldDef metadata + injected value (C# `spec.ToSchema()` per `CustomFormatResource.cs:32`). Reuse the `customFormatSchemas` template table (clone FieldDefs, inject the persisted value by field name). Same shape needed for autotagging `specifications[]`.
+**Read half (FIXED J432):** `toCustomFormatResource` now projects each typed `customformats.Specification` → `CustomFormatSpecificationSchema` via `specToSchema` (clones the golden-verified `customFormatSchemas` FieldDef template, injects the persisted value by field name; adds InfoLink + id-omitempty). With J431 the customformat spec round-trip (create→reload→GET) is whole. REMAINING: autotagging `specifications[]` (same shape; `internal/autotagging` has typed specs + a schema table) + `ImplementationName` stub.
 
 ### MEDIUM — endpoint returns empty (needs a focused service/driver port)
 
