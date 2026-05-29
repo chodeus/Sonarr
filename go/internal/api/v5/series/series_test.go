@@ -586,3 +586,34 @@ func TestSeasonMonitorHandler_CascadeError_500_J397(t *testing.T) {
 		t.Errorf("status: %d, want 500", rr.Code)
 	}
 }
+
+// TestV5SeriesResource_EmitsV5OnlyModelFields pins that the v5 series
+// list emits the v5-only model fields MalIds / AniListIds /
+// OriginalCountry (they flow through the shared apiv3.SeriesResource +
+// ToSeriesResource). Guards against a future iteration wrongly
+// "re-adding" them (G12 was a stale-doc false alarm). languageProfileId
+// must still be stripped.
+func TestV5SeriesResource_EmitsV5OnlyModelFields(t *testing.T) {
+	t.Parallel()
+	pop := series.Series{
+		ID: 11, Title: "Anime", Monitored: true, Status: 1,
+		MalIDs: []int{101, 202}, AniListIDs: []int{303}, OriginalCountry: "JP",
+		Tags: []int{},
+	}
+	w := &fakeWriter{rows: []series.Series{pop}}
+	rr := httptest.NewRecorder()
+	ListHandler(w).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/series", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, want := range []string{`"malIds":[101,202]`, `"aniListIds":[303]`, `"originalCountry":"JP"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("v5 series body missing %s\n%s", want, body)
+		}
+	}
+	// v5 still strips the v3-only languageProfileId.
+	if strings.Contains(body, "languageProfileId") {
+		t.Errorf("v5 must strip languageProfileId: %s", body)
+	}
+}

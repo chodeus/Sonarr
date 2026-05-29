@@ -21,16 +21,13 @@
 //     SeasonNumber doesn't match. Genuinely new wire shape — no v3
 //     equivalent — and needs single-season monitored-set on
 //     series.Service.
-//   - v5-specific SeriesResource field divergences: `MalIds`,
-//     `AniListIds`, `OriginalCountry`, `IsExcluded` (added in v5);
-//     `LanguageProfileId` (computed expr `=> 1` in v3; absent in
-//     v5). All v3 `string`/`List` fields are made `nullable` in v5
-//     but STJson's `DefaultIgnoreCondition.WhenWritingNull` config
-//     (`STJson.cs:27`) makes the wire indistinguishable when the
-//     populated values match. Empty-DB Go-port today emits zero
-//     rows, so the divergences are unobservable at the
-//     shadow-traffic level. When populated-row mappers land, the
-//     SeriesResource widening will be a separate slice.
+//   - v5-specific SeriesResource fields: `MalIds`, `AniListIds`,
+//     `OriginalCountry` are EMITTED (shared apiv3.SeriesResource +
+//     ToSeriesResource populate them; see the Resource doc below).
+//     `LanguageProfileId` (v3 computed `=> 1`; absent in v5) is
+//     stripped by stripLanguageProfileID. `IsExcluded` (v5-only,
+//     set on series/lookup) is a remaining shared-struct follow-up
+//     (GAP_ANALYSIS G12).
 //   - `includeSubresources[]` query-param filtering (C# SeriesSubresource
 //     enum at `SeriesSubresource.cs`). Today the v3 Go-port handlers
 //     ignore all sub-resource flags (same J290 "query-param-shift
@@ -64,11 +61,22 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 )
 
-// Resource is the v5 SeriesResource — variable-aliased to v3 at the
-// declared-shape level. v5-specific fields (MalIds, AniListIds,
-// OriginalCountry, IsExcluded) DEFERRED to the populated-mapper
-// slice — empty-DB Go-port today emits zero rows so the divergence
-// is unobservable at the shadow-traffic level.
+// Resource is the v5 SeriesResource — aliased to the shared
+// apiv3.SeriesResource. The v5-specific fields MalIds / AniListIds /
+// OriginalCountry are ALREADY emitted: apiv3.SeriesResource carries
+// them (series.go:132/133/145) and apiv3.ToSeriesResource populates
+// them from the persisted row (series.go:600/601/613), with omitempty
+// so they appear on populated v5 rows. (Pinned by
+// TestV5SeriesResource_EmitsV5OnlyModelFields.)
+//
+// Residual shared-struct divergences (LOW, tracked in GAP_ANALYSIS
+// G12): (a) v3 GET /series ALSO emits those 3 v5-only fields on
+// populated rows — an over-emission vs C# v3, accepted as the
+// shared-struct/omitempty tradeoff; (b) `IsExcluded` (v5-only, set
+// only on the series/lookup path, C# SeriesLookupController:53) is not
+// on the shared struct yet — a v5-lookup-only follow-up. The clean
+// comprehensive fix for both is de-aliasing v5 series to its own
+// resource type.
 type Resource = apiv3.SeriesResource
 
 // Lister re-exports v3's read-side list interface.

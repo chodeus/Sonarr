@@ -20264,3 +20264,14 @@ C# ref: `src/NzbDrone.Core/Instrumentation/DeleteLogFilesService.cs:26-37` (Exec
 - handlers.Deps += LogFolderCleaner/LogFolder/UpdateLogFolder; register both (RequiresDiskAccess) only when cleaner non-nil. main.go binds diskProv + filepath.Join(folder.AppData,"logs"/"UpdateLogs").
 
 R: POST /api/v3+v5/command DeleteLogFiles / DeleteUpdateLogFiles now empty the app log folders (were unregistered → unknown command). W: real disk delete (folder emptied, folder kept). M: PROGRESS + this entry. Tests: disk EmptyFolder real temp-dir (files+subdir→empty + folder kept + missing→no-op) + handler (right folder / nil+empty no-op / error propagates). Hard gates clean (full suite). NEXT: v5 field-divergence spot-check (audit lead 2).
+
+---
+
+## J447 — G12 correction: v5 SeriesResource fields already emitted (stale-doc false alarm)
+
+The J446 audit "finding" G12 (v5 /series missing AniListIds/MalIds/OriginalCountry/IsExcluded) was WRONG — verified against code:
+- `apiv3.SeriesResource` has `MalIds`/`AniListIds`/`OriginalCountry` (series.go:132/133/145, omitempty) and `ToSeriesResource` sets them from `series.Series.{MalIDs,AniListIDs,OriginalCountry}` (600/601/613). v5 `Resource = apiv3.SeriesResource` + `stripLanguageProfileID` → v5 GET /series ALREADY emits all 3 on populated rows. The v5-package doc comment calling them DEFERRED was stale (now corrected).
+- Added `TestV5SeriesResource_EmitsV5OnlyModelFields` pinning emission of the 3 fields + the languageProfileId strip (guards against re-adding done work).
+- Residual divergences (both LOW, shared-struct tradeoff, unobserved by empty-DB goldens), recorded in GAP_ANALYSIS G12: (a) v3 GET /series over-emits the 3 v5-only fields on populated rows (vs C# v3); (b) `IsExcluded` (v5-only, set only on series/lookup, C# SeriesLookupController:53) absent from the shared struct. Comprehensive fix = de-alias v5 series resource — larger, not warranted for two LOW residuals.
+
+R: no behaviour change (v5 already correct). W: n/a. M: GAP_ANALYSIS G12 corrected + PROGRESS + this entry + stale v5 docs fixed. Test: v5 series emits malIds/aniListIds/originalCountry + strips languageProfileId. Hard gates clean (full suite). LESSON: verify the shared apiv3 struct before believing any v5 "missing field" claim.
