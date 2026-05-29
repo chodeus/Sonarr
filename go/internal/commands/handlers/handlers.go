@@ -347,6 +347,15 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 	registry.Register(SeriesSearchName, commands.CommandSpec{
 		Handler: NewSeriesSearch(deps.SeriesSearchLookup, deps.SeriesSearchEpisodes, deps.MissingEpisodeSearcher, deps.SeriesSeasonSearcher, deps.Log),
 	})
+	// G11 (J445): per-episode + per-season MANUAL search commands (the
+	// UI "search" buttons). Reuse the already-wired EpisodeSearcher /
+	// SeasonSearcher adapters (search + grab).
+	registry.Register(EpisodeSearchName, commands.CommandSpec{
+		Handler: NewEpisodeSearch(deps.MissingEpisodeSearcher, deps.Log),
+	})
+	registry.Register(SeasonSearchName, commands.CommandSpec{
+		Handler: NewSeasonSearch(deps.SeriesSeasonSearcher, deps.Log),
+	})
 	registry.Register(ImportListSyncName, commands.CommandSpec{
 		Handler: NewImportListSync(deps.ImportListSync, deps.Log),
 	})

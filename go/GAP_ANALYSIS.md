@@ -99,3 +99,14 @@ one root: no inverse settings→fields mapper. Each root fix closes several find
 ## Autonomy
 AUTONOMOUS (no operator input; connect/port existing tested pieces): G1, G2, G3, G4, G7, T1.
 Needs a focused service/driver port (still autonomous but larger): G5, G6, G8, G9, Q1.
+
+## Fresh audit findings (J445, after G4/G7/G10 drained)
+
+Method: full-repo gates (all green) + a command-registry/scheduled-task/event-subscriber diff vs C# (Explore agent) + nil-deps + wired-stub probes.
+
+- **handlers.Deps**: ALL fields non-nil — no `NewXxx(nil)` no-op stubs remain (the old G2 class is gone). Clean.
+- **Scheduled tasks**: all 11 C# scheduled commands wired (RefreshMonitoredDownloads, MessagingCleanup, ApplicationUpdateCheck, UpdateSceneMapping, CheckHealth, RefreshSeries, Housekeeping, CleanUpRecycleBin, ImportListSync, Backup, RssSync). Clean.
+- **G11 (FIXED J445)**: `EpisodeSearch` + `SeasonSearch` commands (UI per-episode/per-season search buttons) were unregistered → unknown-command. Wired reusing the existing EpisodeSearcher/SeasonSearcher adapters.
+- Remaining C# commands NOT in the go registry are all out-of-scope: `DeleteLogFiles`/`DeleteUpdateLogFiles` (manual admin log deletion — low value, no scheduled use), `ApplicationUpdate` (install — triggered by update-check; install path is operator-territory), `ResetApiKey` (SAFETY-RAILED — do not touch), `UnknownCommand`/`TestCommand` (framework internals). None are scheduled or core-flow.
+- **Wired stub adapters**: none in production (emptyTagDetailLister exists only as a nil-fallback; the real tagdetail aggregator is wired J430).
+- **Gated (unchanged)**: Q3 ManualImport completion events + Q1 metadata rename/downloads-processed tail — both need the unported Phase-4 download-completion / per-series-rename event publishers.

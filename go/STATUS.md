@@ -20240,3 +20240,15 @@ C# ref: `ImportListSyncService.cs:151-208` (per item, when TvdbId<=0, translate 
 - Wired into `importlists.NewSyncService(...)` (replaced the `nil` arg) using the already-constructed `metadataSourceProxy`. Updated the stale "intentionally nil" comment.
 
 R: import-list sync now resolves+adds series that lists supply only by IMDb/TMDb/AniList/MAL id (was silently skipped). W: n/a (read-side translation feeding the existing SeriesAdder). M: GAP_ANALYSIS G7 fully drained + PROGRESS + this entry. Tests: 4 id-kinds resolve first match + error/empty/zero-TvdbID→ok=false. Hard gates clean (full suite). NEXT: fresh Tier-6 audit.
+
+---
+
+## J445 — G11 (Tier-6 audit find): EpisodeSearch + SeasonSearch commands wired
+
+C# ref: `IndexerSearch/EpisodeSearchService.cs:110-119` (Execute(EpisodeSearchCommand): per episodeId → EpisodeSearch + ProcessDecisions) + `SeasonSearchService.cs:23-31` (Execute(SeasonSearchCommand): SeasonSearch missingOnly=false + ProcessDecisions).
+
+- Tier-6 audit (this iteration): command-registry diff vs C# + scheduled-task nil-deps + wired-stub probes + full gates (all green). Found G11 — the UI's per-episode/per-season manual search buttons POST `{name:"EpisodeSearch",episodeIds:[…]}` / `{name:"SeasonSearch",seriesId,seasonNumber}`, but only MissingEpisodeSearch/CutoffUnmet/SeriesSearch were registered → those clicks hit unknown-command (no-op).
+- FIX: NEW `internal/commands/handlers/episodeseasonsearch.go` — `EpisodeSearch` (loops episodeIds, search+grab per id, per-id errors absorbed) + `SeasonSearch` (single season, missingOnly=false). Both REUSE the already-wired `EpisodeSearcher` (deps.MissingEpisodeSearcher) + `SeasonSearcher` (deps.SeriesSeasonSearcher) adapters that run search AND feed the grabber (G1/J423) — no new Deps fields. Registered in RegisterAll.
+- Audit conclusion (GAP_ANALYSIS J445 section): all scheduled tasks + handlers.Deps wired; remaining unregistered C# commands are deprecated aliases / ResetApiKey (safety-railed) / framework internals; no production stub adapters; Q1/Q3 tails gated on Phase-4 substrate.
+
+R: UI per-episode + per-season "search" now actually search + grab approved releases (were no-ops). W: n/a. M: GAP_ANALYSIS fresh-audit J445 section + PROGRESS + this entry. Tests: per-id search+grab / error-absorbed / empty+nil no-op / season missingOnly=false + error-propagate. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).
