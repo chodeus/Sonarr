@@ -968,3 +968,83 @@ func TestEpisodeFileBulkUpdateHandler_PersistsQualityLanguages_J389(t *testing.T
 		t.Errorf("languages = %v, want [2]", f.Languages)
 	}
 }
+
+// fakeEpisodeFileDiskDeleter implements EpisodeFileWriter (via embedding)
+// plus the J390 EpisodeFileDiskDeleter optional extension.
+type fakeEpisodeFileDiskDeleter struct {
+	fakeEpisodeFileWriter
+	diskErr   error
+	diskCalls []int
+}
+
+func (f *fakeEpisodeFileDiskDeleter) DeleteEpisodeFileWithDisk(_ context.Context, file *episodefiles.File, _ episodefiles.DeleteMediaFileReason) error {
+	if f.diskErr != nil {
+		return f.diskErr
+	}
+	f.diskCalls = append(f.diskCalls, file.ID)
+	return nil
+}
+
+// J390: when the writer implements EpisodeFileDiskDeleter, the delete
+// handler routes through it (recycle/disk) instead of the DB-only Delete.
+func TestEpisodeFileDeleteHandler_UsesDiskDeleter_J390(t *testing.T) {
+	t.Parallel()
+	d := &fakeEpisodeFileDiskDeleter{fakeEpisodeFileWriter: fakeEpisodeFileWriter{
+		get: map[int]*episodefiles.File{7: {ID: 7, SeriesID: 1, RelativePath: "Show.S01E01.mkv"}},
+	}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/episodefile/7", nil)
+	req.SetPathValue("id", "7")
+	EpisodeFileDeleteHandler(d).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if len(d.diskCalls) != 1 || d.diskCalls[0] != 7 {
+		t.Errorf("disk deleter calls = %v, want [7]", d.diskCalls)
+	}
+	if len(d.deletedIDs) != 0 {
+		t.Errorf("DB-only Delete should not be called when disk deleter present; got %v", d.deletedIDs)
+	}
+}
+
+// J390: a missing/empty root folder surfaces as 409 Conflict.
+func TestEpisodeFileDeleteHandler_RootFolderInvalid_409_J390(t *testing.T) {
+	t.Parallel()
+	d := &fakeEpisodeFileDiskDeleter{
+		fakeEpisodeFileWriter: fakeEpisodeFileWriter{get: map[int]*episodefiles.File{7: {ID: 7}}},
+		diskErr:               ErrEpisodeFileRootFolderInvalid,
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/episodefile/7", nil)
+	req.SetPathValue("id", "7")
+	EpisodeFileDeleteHandler(d).ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status: %d, want 409; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// J390: bulk delete also routes through the disk deleter + maps 409.
+func TestEpisodeFileBulkDeleteHandler_DiskDeleterAnd409_J390(t *testing.T) {
+	t.Parallel()
+	// Happy path: disk deleter invoked per file.
+	d := &fakeEpisodeFileDiskDeleter{fakeEpisodeFileWriter: fakeEpisodeFileWriter{
+		getMany: []episodefiles.File{{ID: 1, SeriesID: 1}, {ID: 2, SeriesID: 1}},
+	}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/episodefile/bulk", strings.NewReader(`{"episodeFileIds":[1,2]}`))
+	EpisodeFileBulkDeleteHandler(d).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || len(d.diskCalls) != 2 {
+		t.Fatalf("status=%d diskCalls=%v, want 200 + [1 2]", rr.Code, d.diskCalls)
+	}
+	// 409 propagation.
+	d2 := &fakeEpisodeFileDiskDeleter{
+		fakeEpisodeFileWriter: fakeEpisodeFileWriter{getMany: []episodefiles.File{{ID: 1, SeriesID: 1}}},
+		diskErr:               ErrEpisodeFileRootFolderInvalid,
+	}
+	rr2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodDelete, "/api/v3/episodefile/bulk", strings.NewReader(`{"episodeFileIds":[1]}`))
+	EpisodeFileBulkDeleteHandler(d2).ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusConflict {
+		t.Errorf("bulk 409: got %d", rr2.Code)
+	}
+}

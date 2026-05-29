@@ -555,17 +555,45 @@ type episodeFileBulkBody struct {
 	EpisodeFileIDs []int `json:"episodeFileIds"`
 }
 
+// ErrEpisodeFileRootFolderInvalid is returned by an
+// [EpisodeFileDiskDeleter] when the series' best-matching root folder is
+// missing or empty — the delete handlers map it to 409 Conflict,
+// mirroring C# `MediaFileDeletionService.DeleteEpisodeFile`'s
+// `NzbDroneClientException(HttpStatusCode.Conflict, ...)` guards at
+// `MediaFileDeletionService.cs:35-46`.
+var ErrEpisodeFileRootFolderInvalid = errors.New("episodefile: series root folder missing or empty")
+
+// EpisodeFileDiskDeleter is the optional-extension surface (J390) for
+// the recycle-bin + physical-disk delete. When the delete handlers'
+// writer dep ALSO implements it, the file is moved to the recycle bin
+// (or hard-deleted) before the DB row is removed — porting C#
+// `MediaFileDeletionService.DeleteEpisodeFile`. When it doesn't (test
+// fakes, hosts without the recyclebin wiring), the handlers fall back to
+// the DB-only [EpisodeFileWriter.Delete] (pre-J390 behaviour).
+type EpisodeFileDiskDeleter interface {
+	DeleteEpisodeFileWithDisk(ctx context.Context, f *episodefiles.File, reason episodefiles.DeleteMediaFileReason) error
+}
+
+// deleteEpisodeFileManual deletes one file via the disk-aware deleter
+// when the writer implements [EpisodeFileDiskDeleter], else via the
+// DB-only Delete. Reason is always Manual (the API delete is user-driven).
+func deleteEpisodeFileManual(ctx context.Context, svc EpisodeFileWriter, f *episodefiles.File) error {
+	if d, ok := svc.(EpisodeFileDiskDeleter); ok && d != nil {
+		return d.DeleteEpisodeFileWithDisk(ctx, f, episodefiles.ReasonManual)
+	}
+	return svc.Delete(ctx, f, episodefiles.ReasonManual)
+}
+
 // EpisodeFileDeleteHandler returns DELETE /api/v3/episodefile/{id}.
 // Mirrors `EpisodeFileController.DeleteEpisodeFile` at `:152-165`.
 // 404 when the id doesn't match; 200 + `{}` on success matching C#
-// `void` action. Calls Service.Delete with reason=Manual so the
-// auto-unmonitor + history-write handler chain reacts appropriately.
+// `void` action. The delete reason is Manual so the auto-unmonitor +
+// history-write handler chain reacts appropriately.
 //
-// DEFERRED: physical disk delete / recycle-bin move (C# delegates
-// to MediaFileDeletionService which calls DiskProvider.MoveFile to
-// recycle bin OR DeleteFile - the Go-port episodefiles.Service.Delete
-// removes the DB row + fires the event but doesn't touch disk yet,
-// per its own DEFER comment).
+// J390: when the wired writer implements [EpisodeFileDiskDeleter] the
+// physical file is recycled/deleted before the DB row is removed (C#
+// `MediaFileDeletionService.DeleteEpisodeFile`); a missing/empty series
+// root folder surfaces as 409. Otherwise the DB-only delete runs.
 func EpisodeFileDeleteHandler(svc EpisodeFileWriter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.PathValue("id"))
@@ -582,7 +610,11 @@ func EpisodeFileDeleteHandler(svc EpisodeFileWriter) http.Handler {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile: get %d: %w", id, err), nil)
 			return
 		}
-		if err := svc.Delete(r.Context(), f, episodefiles.ReasonManual); err != nil {
+		if err := deleteEpisodeFileManual(r.Context(), svc, f); err != nil {
+			if errors.Is(err, ErrEpisodeFileRootFolderInvalid) {
+				httperr.Conflict(w, err.Error())
+				return
+			}
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile: delete %d: %w", id, err), nil)
 			return
 		}
@@ -626,7 +658,11 @@ func EpisodeFileBulkDeleteHandler(svc EpisodeFileWriter) http.Handler {
 			return
 		}
 		for i := range files {
-			if err := svc.Delete(r.Context(), &files[i], episodefiles.ReasonManual); err != nil {
+			if err := deleteEpisodeFileManual(r.Context(), svc, &files[i]); err != nil {
+				if errors.Is(err, ErrEpisodeFileRootFolderInvalid) {
+					httperr.Conflict(w, err.Error())
+					return
+				}
 				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodefile/bulk: delete %d: %w", files[i].ID, err), nil)
 				return
 			}

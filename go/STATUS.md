@@ -19576,3 +19576,15 @@ Closes the dropped Quality/Languages writes on the episodefile editor/bulk/singl
 Tests: single persists Quality (leaves Languages untouched), editor applies both to all + drops Original, bulk per-entry.
 
 R: editor read unchanged. W: Quality+Languages WIRED. M: handler docs (stale DEFERRED removed) + this entry. Matrix punch-list #3 done. Hard gates clean (build, race tests on api v3 + v5 episodefile + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J390 — Verticalization Arc: EpisodeFile delete → recycle-bin/disk (punch-list #4)
+
+Ports C# `MediaFileDeletionService.DeleteEpisodeFile`. `internal/api/v3/episodefile.go`: optional-extension `EpisodeFileDiskDeleter` + `ErrEpisodeFileRootFolderInvalid` sentinel; `deleteEpisodeFileManual` helper used by single + bulk DELETE handlers — disk-aware delete when the writer implements it, DB-only fallback otherwise; missing/empty root → 409 Conflict.
+
+NEW `cmd/sonarr/episodefile_delete_wiring.go`: `episodeFileDeleteAdapter` embeds `*episodefiles.Service` (satisfies apiv3.EpisodeFileWriter) + narrow consumer-side deps (series/rootfolders/recyclebin/disk). `DeleteEpisodeFileWithDisk`: resolve series → validate root folder (exists + non-empty, else sentinel) → recycle the physical file (season subfolder preserved) → embedded DB delete + event. Disk precedes DB (recycle failure aborts row removal). Built in main.go + threaded through buildHostServer→v3Routes (concrete-typed param, satisfies v3+v5 Writer), wired to v3 + v5 DELETE/{id} + /bulk.
+
+Tests: api/v3 fake-deleter (disk path used, not DB-only; 409 single+bulk); cmd/sonarr real-SQLite adapter round-trip (recycle recorded + row gone; root missing/empty → sentinel + row survives; file-absent still deletes row).
+
+R: delete read unchanged. W: recycle-bin/disk delete WIRED. M: handler docs + adapter + matrix rows #3/#4 + this entry. EpisodeFile write (#3+#4) DONE. Hard gates clean (build, race tests api v3 + v5 episodefile + cmd/sonarr + contract, vet, gofmt).

@@ -84,8 +84,8 @@ functionally complete; most prior `DEFERRED` comments were stale. Evidence file:
 |---|---|---|---|---|---|
 | 1 | Manual import — list candidates | DONE | `GetMediaFiles` ported: disk file/folder walk → GetImportDecisions (J387a), downloadId + library/unmapped modes (J387b), QualityWeight (J387c); reprocess deferrals closed (J388). Remaining: unknown-series recursive fallback + >100-file ProcessDownloadDirectory (documented edge-case deferral) | `internal/api/v3/manual_import.go` + `cmd/sonarr/manual_import_decision_wiring.go` | J387a-c, J388 |
 | 2 | Manual import — execute | DONE | `ManualImport` command handler ports `ManualImportService.Execute`; per-file build → Augment → re-apply → `ImportApprovedEpisodes.Import` (real move/rename + episodefile insert) | `internal/commands/handlers/manualimport.go` | J386 |
-| 3 | EpisodeFile editor Quality/Languages | PARTIAL (dropped) | read `body.Quality`/`body.Languages` → row update | `episodefile.go:441` | |
-| 4 | EpisodeFile delete — disk/recycle-bin | PARTIAL (DB row only) | call `recyclebin`/disk on delete (svc exists) | `episodefile.go:501` | |
+| 3 | EpisodeFile editor Quality/Languages | DONE | persisted on editor/bulk/single PUT per the C# field matrix (J389) | `internal/api/v3/episodefile.go` | J389 |
+| 4 | EpisodeFile delete — disk/recycle-bin | DONE | recycle-then-DB-delete via cmd adapter (ports MediaFileDeletionService); 409 on missing/empty root (J390) | `cmd/sonarr/episodefile_delete_wiring.go` | J390 |
 | 5 | Queue delete — client/blocklist effects | PARTIAL (cache-only, not durable) | apply `removeFromClient`/`blocklist`/`skipRedownload`/`changeCategory` | `queue_write.go:30` | |
 | 6 | Missing commands | MISSING | RenameFiles, RenameSeries, MoveSeries/BulkMoveSeries, DeleteSeriesFiles, ProcessMonitoredDownloads; lower-pri ClearBlocklist, ResetApiKey, ResetQualityDefinitions, ClearLog/DeleteLogFiles (`organizer`/`episodefilemoving`/`recyclebin` exist) | commands handlers | |
 | 7 | v5 season-monitor per-episode cascade | PARTIAL | `SetEpisodeMonitoredBySeason` on PUT season | `v5/series:436` | |
