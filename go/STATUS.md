@@ -19772,3 +19772,17 @@ Hermetic: the contract suite injects its own empty lister per-handler (`test/con
 Tests: RecentUpdates list+changelog parse / non-2xx → error / empty-branch → "main" path.
 
 R: GET /api/v3+v5/update now returns the real recent-update list. W: n/a. M: matrix #9 + PROGRESS + this entry. Hard gates clean (build, race tests update + api v3 + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J406 — Log subsystem 1/4: logs repo over the RoleLog DB ("what's next" #3)
+
+Ports the C# `Instrumentation/Log` model + `LogRepository` (`src/NzbDrone.Core/Instrumentation/{Log,LogRepository}.cs`). NEW `internal/logs` package: `Log` row (Id/Message/Time/Logger/Exception/ExceptionType/Level — the Method column was dropped at log-DB migration 064, matching C# HEAD) + `Repo` with `Insert` (`RETURNING "Id"`, works on SQLite>=3.35 + Postgres), `Paged` (whitelisted sort key → physical column + unpaged total count), `Purge` (DELETE all — the ClearLog primitive), `Trim` (delete rows ≤ now-7d, now injected).
+
+The Logs table + separate log-DB migrations already existed in the tree (`internal/datastore/migrations/sqlite/log/`); this slice opens a repo over them. Uses direct SQL rather than the generic `internal/repo` helper because that helper hard-rejects any non-RoleMain DB (`repo.New`: "expected RoleMain") and the Logs table lives in the RoleLog database. NEW `datastoretest.OpenSQLiteLog` helper opens a migrated RoleLog SQLite DB for tests.
+
+Remaining #3 slices: J407 = async slog→DB sink (C# NLog DatabaseTarget equivalent — the keystone that populates the table) + open the RoleLog DB in main.go; J408 = wire GET /api/v3+v5/log to the paged read; J409 = wire ClearLog → Purge.
+
+Tests: insert + paged (newest-first ordering, page-2 remainder), nullable-exception round-trip (NULL ↔ ""), purge (count→0), trim (only >7d row removed).
+
+R: log repo read primitives. W: log repo write/purge/trim primitives. M: PROGRESS + this entry. Hard gates clean (build, race tests logs + datastore, vet, gofmt).

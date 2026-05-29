@@ -35,6 +35,26 @@ func OpenSQLite(t *testing.T) *datastore.DB {
 	return db
 }
 
+// OpenSQLiteLog returns a RoleLog SQLite DB with the log-DB migrations
+// applied — the separate log database (Logs / UpdateHistory tables).
+func OpenSQLiteLog(t *testing.T) *datastore.DB {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := datastore.Open(t.Context(), datastore.Config{
+		Engine: datastore.EngineSQLite,
+		Role:   datastore.RoleLog,
+		Path:   filepath.Join(dir, "logs.db"),
+	})
+	if err != nil {
+		t.Fatalf("Open SQLite log: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := datastore.Migrate(t.Context(), db); err != nil {
+		t.Fatalf("Migrate SQLite log: %v", err)
+	}
+	return db
+}
+
 // OpenPostgres returns a Postgres DB with all migrations applied. It
 // skips the calling test if SONARR_PG_DSN is unset. The DB's public
 // schema is dropped + recreated each call so tests are hermetic. Cannot
