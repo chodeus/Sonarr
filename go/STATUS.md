@@ -20419,3 +20419,17 @@ Tests: sweep publishes only for Imported+removable (not Downloading, not Importe
 **DownloadEventHub now fully ported** (completed J455 + failed J457 + can-be-removed J458). Completion arc + its side-effects comprehensively complete.
 
 R: trackeddownloads/events.go (DownloadCanBeRemovedEvent), downloadprocessing/service.go (sweep + publisher), downloadeventhub.go (HandleDownloadCanBeRemoved + doc), downloadprocessing_completion_wiring.go (adapter), main.go (publisher set + subscription). M: 2 test files, GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. FULL SUITE green.
+
+---
+
+## J459 — wire the notification DISPATCH service (was entirely unsubscribed)
+
+**Slice (operator-requested, the J456 flagged gap): wire `notifications.Service` into cmd/sonarr.** Until now the running app fired ZERO event-driven notifications — only the notification CRUD/API + status + provider-Test paths were wired; the dispatch Service (OnGrab/OnDownload/OnImportComplete/health/etc. fan-out) was never constructed (`notifications.NewService` appeared nowhere). All per-event handlers were defined+unit-tested but dormant.
+
+In serve() (after httpClient is built): build `notifications.Dependencies` with a dedicated `*http.Client{Timeout:30s}` (the providers' httpDoer is the std `Do(*http.Request)` shape — NOT the internal httpclient.Client `Execute` surface; confirmed by the provider tests passing `httptest.Server.Client()`), ConfigProvider=configProv, StatusService+NotificationsRepo+Logger; then `NewFactory(notificationsRepo, notifications.Default(), notificationStatusSvc, deps, logger)` → `NewService(factory, notificationStatusSvc, logger)` → `Subscribe(bus)`. notificationStatusSvc backs both the Factory blocked-filter (GetBlockedProviders) and the per-dispatch recorder (RecordSuccess/Failure). The Default() registry is populated (25 providers blank-imported via provider_imports.go). CacheManager left nil (no Go provider consumes it — only doc-comments reference it).
+
+End-to-end VERIFIED: NEW `dispatch_integration_test.go` exercises the real path (Default() registry → Factory → Service → bus → concrete Webhook provider's real HTTP send) — a published EpisodeImportedEvent POSTs to the configured webhook URL within 3s; absent the Subscribe it would never arrive.
+
+Now LIVE end-to-end: grab/import/download-completed/health events → enabled notification providers (email/Discord/webhook/etc.). This also activates the J456 OnImportComplete handlers + J453's per-file rename consumer path for notifications.
+
+R: main.go (factory+service+Subscribe wiring). A: notifications/dispatch_integration_test.go. M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md, memories. FULL SUITE green.

@@ -2643,6 +2643,35 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	// build real providers (the concrete impls otherwise only register
 	// into the provider.Default() catalog). Idempotent across boots.
 	registerIndexerTestProviders(httpClient)
+
+	// J459 — wire the notification DISPATCH service. Until now only the
+	// notification CRUD/API + status + provider-Test paths were wired;
+	// `notifications.Service` (the event-driven OnGrab/OnDownload/
+	// OnImportComplete/health/etc. fan-out) was never constructed, so the
+	// running app fired ZERO event-driven notifications. Build the Factory
+	// over the Default() provider registry + a dedicated net/http client
+	// (the providers' httpDoer is the std `Do(*http.Request)` shape, NOT
+	// the internal httpclient.Client `Execute` surface — confirmed by the
+	// provider tests passing `httptest.Server.Client()`), then subscribe
+	// the dispatchers to the bus. notificationStatusSvc backs both the
+	// Factory blocked-filter and the per-dispatch success/failure recorder.
+	notificationDeps := notifications.Dependencies{
+		HTTPClient:        &http.Client{Timeout: 30 * time.Second},
+		ConfigProvider:    configProv,
+		Logger:            logger,
+		StatusService:     notificationStatusSvc,
+		NotificationsRepo: notificationsRepo,
+	}
+	notificationFactory, err := notifications.NewFactory(notificationsRepo, notifications.Default(), notificationStatusSvc, notificationDeps, logger)
+	if err != nil {
+		return fmt.Errorf("notifications factory: %w", err)
+	}
+	notificationDispatchSvc, err := notifications.NewService(notificationFactory, notificationStatusSvc, logger)
+	if err != nil {
+		return fmt.Errorf("notifications service: %w", err)
+	}
+	notificationDispatchSvc.Subscribe(bus)
+
 	// J364 — MediaCover cover-download subscriber. Construct the
 	// mediacover.Service (URL-rewrite surface ported in 3.BO; download
 	// arm in J363) against the real disk + http + config adapters, then
