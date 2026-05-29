@@ -20252,3 +20252,15 @@ C# ref: `IndexerSearch/EpisodeSearchService.cs:110-119` (Execute(EpisodeSearchCo
 - Audit conclusion (GAP_ANALYSIS J445 section): all scheduled tasks + handlers.Deps wired; remaining unregistered C# commands are deprecated aliases / ResetApiKey (safety-railed) / framework internals; no production stub adapters; Q1/Q3 tails gated on Phase-4 substrate.
 
 R: UI per-episode + per-season "search" now actually search + grab approved releases (were no-ops). W: n/a. M: GAP_ANALYSIS fresh-audit J445 section + PROGRESS + this entry. Tests: per-id search+grab / error-absorbed / empty+nil no-op / season missingOnly=false + error-propagate. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).
+
+---
+
+## J446 — DeleteLogFiles + DeleteUpdateLogFiles commands (J445-audit lead 1)
+
+C# ref: `src/NzbDrone.Core/Instrumentation/DeleteLogFilesService.cs:26-37` (Execute(DeleteLogFilesCommand)→EmptyFolder(logFolder); Execute(DeleteUpdateLogFilesCommand)→EmptyFolder(updateLogFolder)). Back the Settings→General log-deletion UI buttons.
+
+- NEW `internal/disk/provider.go` `EmptyFolder(path)`: deletes every entry (files + subdirs via os.RemoveAll) inside path, keeps the folder; missing path → no-op; best-effort (per-entry errors joined). Ports `IDiskProvider.EmptyFolder`.
+- NEW `internal/commands/handlers/deletelogfiles.go`: `DeleteLogFiles` + `DeleteUpdateLogFiles` over a narrow `LogFolderCleaner{EmptyFolder}` (satisfied by *disk.Provider) + a configured folder; nil cleaner / empty folder → stub no-op.
+- handlers.Deps += LogFolderCleaner/LogFolder/UpdateLogFolder; register both (RequiresDiskAccess) only when cleaner non-nil. main.go binds diskProv + filepath.Join(folder.AppData,"logs"/"UpdateLogs").
+
+R: POST /api/v3+v5/command DeleteLogFiles / DeleteUpdateLogFiles now empty the app log folders (were unregistered → unknown command). W: real disk delete (folder emptied, folder kept). M: PROGRESS + this entry. Tests: disk EmptyFolder real temp-dir (files+subdir→empty + folder kept + missing→no-op) + handler (right folder / nil+empty no-op / error propagates). Hard gates clean (full suite). NEXT: v5 field-divergence spot-check (audit lead 2).

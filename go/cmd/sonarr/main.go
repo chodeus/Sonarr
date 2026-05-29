@@ -3433,7 +3433,12 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		CleanUpRecycleBin: recycleBinSvc,
 		// J399 (Phase-4 auto-import): ProcessMonitoredDownloads command.
 		ProcessMonitoredDownloads: downloadProcessingSvc,
-		Log:                       logger,
+		// J446: DeleteLogFiles / DeleteUpdateLogFiles commands (Settings→
+		// General log-deletion buttons) — empty the app log folders.
+		LogFolderCleaner: diskProv,
+		LogFolder:        filepath.Join(folder.AppData, "logs"),
+		UpdateLogFolder:  filepath.Join(folder.AppData, "UpdateLogs"),
+		Log:              logger,
 	}); err != nil {
 		return fmt.Errorf("commands handlers: %w", err)
 	}

@@ -28,6 +28,7 @@
 package disk
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -196,6 +197,40 @@ func (p *Provider) DeleteFolder(path string, recursive bool) error {
 	}
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("disk: DeleteFolder(%q): %w", path, err)
+	}
+	return nil
+}
+
+// EmptyFolder deletes every entry (files + subdirectories) inside path
+// while keeping path itself. Ports C# `IDiskProvider.EmptyFolder`
+// (`Common/Disk/DiskProviderBase.cs`). A non-existent path is a no-op
+// (nothing to empty). Deletion is best-effort: per-entry errors are
+// collected and joined so one undeletable file (e.g. locked on Windows)
+// doesn't abort the rest — matching the C# loop that deletes each file
+// then each subfolder.
+func (p *Provider) EmptyFolder(path string) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("disk: EmptyFolder(%q): %w", path, err)
+	}
+	var errs []error
+	for _, e := range entries {
+		full := filepath.Join(path, e.Name())
+		if e.IsDir() {
+			if rmErr := os.RemoveAll(full); rmErr != nil {
+				errs = append(errs, rmErr)
+			}
+			continue
+		}
+		if rmErr := os.Remove(full); rmErr != nil {
+			errs = append(errs, rmErr)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("disk: EmptyFolder(%q): %w", path, errors.Join(errs...))
 	}
 	return nil
 }

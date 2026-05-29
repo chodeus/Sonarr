@@ -256,6 +256,15 @@ type Deps struct {
 	// binds *downloadprocessing.Service.
 	ProcessMonitoredDownloads MonitoredDownloadProcessor
 
+	// LogFolderCleaner + LogFolder/UpdateLogFolder wire the
+	// IExecute<DeleteLogFilesCommand> + <DeleteUpdateLogFilesCommand>
+	// handlers (the Settings→General log-deletion buttons). Optional —
+	// the commands register only when LogFolderCleaner is non-nil.
+	// Production binds *disk.Provider + the app log folders.
+	LogFolderCleaner LogFolderCleaner
+	LogFolder        string
+	UpdateLogFolder  string
+
 	Log *slog.Logger
 }
 
@@ -520,6 +529,19 @@ func RegisterAll(registry *commands.CommandRegistry, deps Deps) error {
 		}
 		registry.Register(ProcessMonitoredDownloadsName, commands.CommandSpec{
 			Handler:            pmd,
+			RequiresDiskAccess: true,
+		})
+	}
+
+	// DeleteLogFiles + DeleteUpdateLogFiles register only when a folder
+	// cleaner is wired (J446). RequiresDiskAccess — they empty folders.
+	if deps.LogFolderCleaner != nil {
+		registry.Register(DeleteLogFilesName, commands.CommandSpec{
+			Handler:            NewDeleteLogFiles(deps.LogFolderCleaner, deps.LogFolder, deps.Log),
+			RequiresDiskAccess: true,
+		})
+		registry.Register(DeleteUpdateLogFilesName, commands.CommandSpec{
+			Handler:            NewDeleteUpdateLogFiles(deps.LogFolderCleaner, deps.UpdateLogFolder, deps.Log),
 			RequiresDiskAccess: true,
 		})
 	}
