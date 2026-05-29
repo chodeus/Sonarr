@@ -4,6 +4,8 @@ Resumption pointer for the /loop driver. Cheaper to read than STATUS.md (which i
 
 ## Current state
 
+HEAD at `J424` — **G7: register import-list providers.** ImportListSync was inert — the 8 provider packages self-register via init() into importlists.Default() (which the factory uses, confirmed) but main.go never blank-imported them. Added the 8 blank imports (download-client pattern). Import-list sync now has providers. Sub-gap deferred: IDTranslator nil skips non-TVDB-id items. Test: Default().Names() >= 8. Hard gates clean.
+
 HEAD at `J423` — **G1 (CRITICAL): search now grabs.** The 4 search adapters (MissingEpisodeSearch/CutoffUnmet/SeriesSearch per-episode+season, episoderefreshed, redownload) fed their decisions nowhere — search found releases but never downloaded. Now they route decisions into the existing `processDownloadDecisions` grabber (the one RssSync uses) via a shared `grabSearchDecisions` helper + `decisionGrabber` interface, threaded into all 5 construction sites. Episode/season/series search + auto-redownload-on-failure now actually grab approved releases. Fixed the stale 'search handles its own grab' doc-comment. Tests: grab-bridge helper (non-empty grabs / empty + nil no-op). Hard gates clean.
 
 HEAD at `J422` — **G3: real queue/details lister.** Replaced `emptyQueueDetailsLister` (returned empty) with `queueDetailsAdapter` porting `QueueDetailsController.GetQueue`: queueSvc.GetQueue() filtered by seriesId (precedence) / episodeIds / all, projected via projectQueueResource; wired at v3 + v5 routes. Pending-concat + includeSubresources gating documented-deferred. Tests: filter matrix + helper. Hard gates clean.

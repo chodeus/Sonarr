@@ -166,6 +166,18 @@ import (
 	_ "sonarr.tv/sonarr/internal/downloadclients/tribler"
 	_ "sonarr.tv/sonarr/internal/downloadclients/utorrent"
 	_ "sonarr.tv/sonarr/internal/downloadclients/vuze"
+
+	// G7 (J424): import-list providers self-register via init() into
+	// importlists.Default(); blank-import them so ImportListSync actually
+	// has providers (the registry was empty → sync added nothing).
+	_ "sonarr.tv/sonarr/internal/importlists/anilist"
+	_ "sonarr.tv/sonarr/internal/importlists/custom"
+	_ "sonarr.tv/sonarr/internal/importlists/myanimelist"
+	_ "sonarr.tv/sonarr/internal/importlists/plex"
+	_ "sonarr.tv/sonarr/internal/importlists/plexrss"
+	_ "sonarr.tv/sonarr/internal/importlists/simkl"
+	_ "sonarr.tv/sonarr/internal/importlists/sonarr"
+	_ "sonarr.tv/sonarr/internal/importlists/trakt"
 )
 
 func main() {

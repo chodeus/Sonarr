@@ -19976,3 +19976,15 @@ Fix: the 4 search adapters in cmd/sonarr (handlerEpisodeSearchAdapter, seasonSea
 Hermetic: no test/contract path dispatches a search command, so no live grab in tests; empty-DB contract unaffected. Tests: `grabSearchDecisions` grabs non-empty decisions / no-ops on empty / no-ops on nil grabber + a compile-time guard that `*download.ProcessDownloadDecisions` satisfies `decisionGrabber`.
 
 R: episode/season/series search + auto-redownload now actually download. W: n/a. M: GAP_ANALYSIS G1 + search→grab memory + this entry. Hard gates clean (build, race tests cmd/sonarr + commands + episoderefreshed + redownload + contract, vet, gofmt).
+
+---
+
+## J424 — G7 fix: register import-list providers (ImportListSync was inert)
+
+Audit finding G7: `ImportListSync` ran on its schedule but added nothing — the 8 import-list provider packages (anilist/custom/myanimelist/plex/plexrss/simkl/sonarr/trakt) self-register via `init()` into `importlists.Default()`, but main.go never blank-imported them, so the registry was empty. main.go passes `importlists.Default()` to `NewFactory`, confirmed. Fix: add the 8 blank imports (same pattern as the download clients). ImportListSync now constructs real providers from configured list rows.
+
+Note (sub-gap, deferred): `IDTranslator: nil` in the SyncService still skips items that arrive with a non-TVDB id (needs an id-resolution adapter) — items carrying a TVDB id now sync.
+
+Tests: assert `len(importlists.Default().Names()) >= 8` after the blank imports.
+
+R: n/a. W: import-list sync now functional (TVDB-id items). M: GAP_ANALYSIS G7 + this entry. Hard gates clean (build, test cmd/sonarr, vet, gofmt).
