@@ -19786,3 +19786,17 @@ Remaining #3 slices: J407 = async slog→DB sink (C# NLog DatabaseTarget equival
 Tests: insert + paged (newest-first ordering, page-2 remainder), nullable-exception round-trip (NULL ↔ ""), purge (count→0), trim (only >7d row removed).
 
 R: log repo read primitives. W: log repo write/purge/trim primitives. M: PROGRESS + this entry. Hard gates clean (build, race tests logs + datastore, vet, gofmt).
+
+---
+
+## J407 — Log subsystem 2/4: async slog→DB sink (C# DatabaseTarget equivalent)
+
+NEW `internal/logs/sink.go`: `Sink` is an `slog.Handler` persisting log records into the log DB via `logs.Repo.Insert` on a background goroutine draining a buffered channel — the Go-port equivalent of the C# NLog `DatabaseTarget` (`src/NzbDrone.Core/Instrumentation/DatabaseTarget.cs`). Async + non-blocking (full buffer → drop + `Dropped()` counter); logs Info+ by default (matches the C# `LoggingRule("*", LogLevel.Info, target)`).
+
+Field mapping mirrors `DatabaseTarget.Write`: Time/Level/Message from the record; Logger from a `component`/`logger` attribute; Exception/ExceptionType from an `err`/`error` attribute whose value is an error, with the exception folded into the message. Standard shared-core handler pattern: `sinkCore` owns the single writer goroutine + channel, so `WithAttrs` returns a lightweight handler sharing it; `WithGroup` is a no-op for the flat extracted fields. `Close()` closes the channel and waits for the goroutine to drain (flush-on-shutdown); idempotent.
+
+NOT yet attached to the production logger — slice 3/4 adds a runtime-attachable fan-out handler + the `NewLogger` change + opens the RoleLog DB in main.go and attaches the sink; slice 4/4 wires GET /api/v3+v5/log read + ClearLog→Purge.
+
+Tests: Enabled gate (Debug off, Info/Error on); Handle persists with mapped fields; exception mapping + message fold ("import failed: boom", type `*errors.errorString`); WithAttrs `component`→Logger; Close flushes all 20 buffered records; Close idempotent. All under `-race`.
+
+R: n/a. W: async log-persistence sink (not yet wired). M: PROGRESS + this entry. Hard gates clean (build, race tests logs, vet, gofmt).
