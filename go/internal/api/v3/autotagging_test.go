@@ -2,6 +2,7 @@ package v3
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -272,5 +273,90 @@ func TestAutoTaggingDeleteHandler_Idempotent(t *testing.T) {
 	AutoTaggingDeleteHandler(w).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Errorf("status: got %d want 200 (v3 DELETE is idempotent — matches live C# v5-develop 7c41dcbe2)", rr.Code)
+	}
+}
+
+// --- G4-followup autotagging (J433): write persists envelope shape +
+// GET projects typed specs → full schema. Mirrors the customformat
+// J431/J432 pair.
+
+func atField(name string, value any) map[string]any {
+	return map[string]any{"name": name, "value": value}
+}
+
+func TestAutoTaggingSpecsToEnvelopeJSON_RoundTripsThroughLoader(t *testing.T) {
+	t.Parallel()
+	specs := []AutoTaggingSpecificationSchema{
+		{Name: "anime", Implementation: "SeriesTypeSpecification", Negate: true, Required: true,
+			Fields: []any{atField("value", float64(2))}},
+		{Name: "ended", Implementation: "StatusSpecification",
+			Fields: []any{atField("status", float64(1))}},
+		{Name: "genres", Implementation: "GenreSpecification",
+			Fields: []any{atField("value", []any{"Animation", "Comedy"})}},
+		{Name: "years", Implementation: "YearSpecification",
+			Fields: []any{atField("min", float64(2010)), atField("max", float64(2020))}},
+	}
+	out, err := autoTaggingSpecsToEnvelopeJSON(specs)
+	if err != nil {
+		t.Fatalf("transform: %v", err)
+	}
+	// The load path's exact call.
+	typed, err := autotagging.UnmarshalSpecs([]byte(out))
+	if err != nil {
+		t.Fatalf("UnmarshalSpecs rejected persisted shape: %v\njson=%s", err, out)
+	}
+	if len(typed) != 4 {
+		t.Fatalf("got %d specs, want 4", len(typed))
+	}
+	// StatusSpecification uses the "status" body key, not "value".
+	if !strings.Contains(out, `"status":1`) {
+		t.Errorf("status key not mapped: %s", out)
+	}
+	if !strings.Contains(out, `"min":2010`) || !strings.Contains(out, `"max":2020`) {
+		t.Errorf("year min/max not mapped: %s", out)
+	}
+}
+
+func TestAutoTaggingSpecsToEnvelopeJSON_EmptyAndUnknown(t *testing.T) {
+	t.Parallel()
+	got, err := autoTaggingSpecsToEnvelopeJSON(nil)
+	if err != nil || got != "[]" {
+		t.Fatalf("nil: %q %v", got, err)
+	}
+	_, err = autoTaggingSpecsToEnvelopeJSON([]AutoTaggingSpecificationSchema{
+		{Name: "x", Implementation: "BogusSpecification", Fields: []any{atField("value", 1)}},
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown implementation")
+	}
+}
+
+func TestToAutoTaggingResource_ProjectsTypedSpecs(t *testing.T) {
+	t.Parallel()
+	env := `[{"type":"StatusSpecification","body":{"name":"ended","negate":true,"required":false,"status":1}}]`
+	typed, err := autotagging.UnmarshalSpecs([]byte(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := toAutoTaggingResource(&autotagging.Tag{ID: 3, Name: "a", Specifications: typed})
+	if len(res.Specifications) != 1 {
+		t.Fatalf("specs = %d", len(res.Specifications))
+	}
+	s := res.Specifications[0]
+	if s.Implementation != "StatusSpecification" || s.ImplementationName != "Status" {
+		t.Errorf("impl = %q/%q", s.Implementation, s.ImplementationName)
+	}
+	if s.Name != "ended" || !s.Negate {
+		t.Errorf("base = %+v", s)
+	}
+	body, _ := json.Marshal(res)
+	str := string(body)
+	if !strings.Contains(str, `"value":1`) { // status field's value injected
+		t.Errorf("status value not injected: %s", str)
+	}
+	// id=0 must be omitted on each spec.
+	b2, _ := json.Marshal(s)
+	if strings.Contains(string(b2), `"id"`) {
+		t.Errorf("spec must omit id=0: %s", b2)
 	}
 }

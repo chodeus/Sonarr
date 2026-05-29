@@ -36,18 +36,18 @@ type AutoTaggingResource struct {
 
 // AutoTaggingSpecificationSchema mirrors
 // `AutoTaggingSpecificationSchema.cs:8-16`. Carries the wire shape
-// for each spec; the Fields slice is the polymorphic
-// ClientSchema.Field list, which Phase 5 ports in a later slice
-// alongside the schema-builder package.
+// for each spec. On GET it's populated by [autoTagSpecToSchema]
+// (J433): the typed spec's base flags + value fields projected onto
+// the golden-verified [autoTaggingSchemas] FieldDef templates. On
+// POST/PUT the request decodes into the same type ([]any fields hold
+// the client's {name,value} objects, read by
+// [autoTaggingSpecsToEnvelopeJSON] on write).
 //
-// TODO: populate from `autotagging.Specification` once the schema
-// reflection layer lands. Until then, the mapper emits an empty
-// Specifications slice for any populated AutoTag row — the empty-DB
-// golden has zero rows so the contract harness can't observe the
-// gap, but a future slice with seeded auto-tags MUST land the schema
-// port (DEFERRED).
+// `id` uses omitempty because C# ToSchema never sets the spec's
+// RestResource.Id (stays 0 → omitted). No InfoLink — the C# autotag
+// spec POCO has none.
 type AutoTaggingSpecificationSchema struct {
-	ID                 int    `json:"id"`
+	ID                 int    `json:"id,omitempty"`
 	Name               string `json:"name"`
 	Implementation     string `json:"implementation"`
 	ImplementationName string `json:"implementationName"`
@@ -95,16 +95,137 @@ func toAutoTaggingResource(t *autotagging.Tag) AutoTaggingResource {
 	if tags == nil {
 		tags = []int{}
 	}
+	specs := make([]AutoTaggingSpecificationSchema, 0, len(t.Specifications))
+	for _, spec := range t.Specifications {
+		schema, err := autoTagSpecToSchema(spec)
+		if err != nil {
+			// Unreachable in practice (loaded specs round-trip + every
+			// discriminator has a template); skip rather than panic.
+			continue
+		}
+		specs = append(specs, schema)
+	}
 	return AutoTaggingResource{
 		ID:                      t.ID,
 		Name:                    t.Name,
 		RemoveTagsAutomatically: t.RemoveTagsAutomatically,
 		Tags:                    tags,
-		// TODO: map Specifications via the schema-builder port
-		// (DEFERRED). Empty slice keeps the wire shape (`[]`)
-		// stable until then.
-		Specifications: []AutoTaggingSpecificationSchema{},
+		Specifications:          specs,
 	}
+}
+
+// atSchemaTemplateByImpl indexes the canonical autotag schema
+// templates by implementation discriminator for the GET projection's
+// field-metadata clone.
+var atSchemaTemplateByImpl = func() map[string]AutoTaggingSpecificationSchemaResource {
+	m := make(map[string]AutoTaggingSpecificationSchemaResource, len(autoTaggingSchemas))
+	for _, s := range autoTaggingSchemas {
+		m[s.Implementation] = s
+	}
+	return m
+}()
+
+// autoTagSpecToSchema projects one persisted typed autotag spec onto
+// the wire [AutoTaggingSpecificationSchema]. Ports C#
+// `IAutoTaggingSpecification.ToSchema()`. Recovers base flags + value
+// fields by round-tripping through the tested
+// [autotagging.MarshalSpecs] envelope, then clones the golden-verified
+// [autoTaggingSchemas] FieldDef template for the impl and injects the
+// persisted value per field name. (AutoTag specs carry no InfoLink —
+// matches the C# AutoTaggingSpecificationSchema shape.)
+func autoTagSpecToSchema(spec autotagging.Specification) (AutoTaggingSpecificationSchema, error) {
+	envJSON, err := autotagging.MarshalSpecs([]autotagging.Specification{spec})
+	if err != nil {
+		return AutoTaggingSpecificationSchema{}, err
+	}
+	var envs []struct {
+		Type string         `json:"type"`
+		Body map[string]any `json:"body"`
+	}
+	if err := json.Unmarshal(envJSON, &envs); err != nil {
+		return AutoTaggingSpecificationSchema{}, err
+	}
+	if len(envs) != 1 {
+		return AutoTaggingSpecificationSchema{}, fmt.Errorf("autotagging: specToSchema: expected 1 envelope, got %d", len(envs))
+	}
+	impl := envs[0].Type
+	body := envs[0].Body
+
+	template, ok := atSchemaTemplateByImpl[impl]
+	if !ok {
+		return AutoTaggingSpecificationSchema{}, fmt.Errorf("autotagging: specToSchema: no schema template for %q", impl)
+	}
+
+	name, _ := body["name"].(string)
+	negate, _ := body["negate"].(bool)
+	required, _ := body["required"].(bool)
+
+	fields := make([]any, 0, len(template.Fields))
+	for _, fd := range template.Fields {
+		if v, present := body[fd.Name]; present {
+			fields = append(fields, fd.WithValue(v))
+		} else {
+			fields = append(fields, fd)
+		}
+	}
+
+	return AutoTaggingSpecificationSchema{
+		Name:               name,
+		Implementation:     impl,
+		ImplementationName: template.ImplementationName,
+		Negate:             negate,
+		Required:           required,
+		Fields:             fields,
+	}, nil
+}
+
+// autoTaggingSpecsToEnvelopeJSON maps the on-wire autotag spec list
+// into the persisted `[{"type","body"}]` envelope JSON the load path
+// understands (same pattern + rationale as customformat's
+// [customFormatSpecsToEnvelopeJSON]). Empty/nil → `"[]"`.
+func autoTaggingSpecsToEnvelopeJSON(specs []AutoTaggingSpecificationSchema) (string, error) {
+	if len(specs) == 0 {
+		return "[]", nil
+	}
+	type envelope struct {
+		Type string         `json:"type"`
+		Body map[string]any `json:"body"`
+	}
+	envs := make([]envelope, 0, len(specs))
+	for _, s := range specs {
+		bodyMap := map[string]any{
+			"name":     s.Name,
+			"negate":   s.Negate,
+			"required": s.Required,
+		}
+		for _, raw := range s.Fields {
+			fm, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			fname, _ := fm["name"].(string)
+			if fname == "" {
+				continue
+			}
+			if v, present := fm["value"]; present {
+				bodyMap[fname] = v
+			}
+		}
+		envs = append(envs, envelope{Type: s.Implementation, Body: bodyMap})
+	}
+	rawJSON, err := json.Marshal(envs)
+	if err != nil {
+		return "", err
+	}
+	typed, err := autotagging.UnmarshalSpecs(rawJSON)
+	if err != nil {
+		return "", err
+	}
+	canonical, err := autotagging.MarshalSpecs(typed)
+	if err != nil {
+		return "", err
+	}
+	return string(canonical), nil
 }
 
 // ---------- 5.B10: CRUD ----------
@@ -317,21 +438,18 @@ func validateAutoTagging(ctx context.Context, svc AutoTaggingWriter, res *AutoTa
 }
 
 // autoTaggingToModel serialises the resource into the persisted
-// model. Specifications round-trips through json.Marshal so the
-// DB column carries the canonical JSON form. Mirrors C#
-// `resource.ToModel(_specifications)` where the spec-builder
-// reflection projects each typed spec; the Go port defers the
-// typed projection (5.B4 customformat does the same — accepts
-// opaque JSON and persists verbatim) and will activate the deeper
-// per-spec Validate() when the spec-builder slice ports.
+// model. Mirrors C# `resource.ToModel(_specifications)` →
+// MapSpecification → converter-serialise.
+//
+// CRITICAL (same class of bug as customformat J431): the column MUST
+// carry the loader's `{type, body}` envelope — `autotagging.LoadAll`
+// → `UnmarshalSpecs` rejects the on-wire schema shape. The earlier
+// stub persisted the schema shape verbatim, so any AutoTag created
+// with conditions failed write→reload through the real service.
 func autoTaggingToModel(res AutoTaggingResource) (autotagging.AutoTag, error) {
-	specJSON := "[]"
-	if len(res.Specifications) > 0 {
-		buf, err := json.Marshal(res.Specifications)
-		if err != nil {
-			return autotagging.AutoTag{}, err
-		}
-		specJSON = string(buf)
+	specJSON, err := autoTaggingSpecsToEnvelopeJSON(res.Specifications)
+	if err != nil {
+		return autotagging.AutoTag{}, err
 	}
 	tags := res.Tags
 	if tags == nil {

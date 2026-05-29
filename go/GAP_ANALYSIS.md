@@ -52,7 +52,9 @@ done, and some "done"-looking paths are actually stubbed).
 
 **Write half (CRITICAL, FIXED J431):** `customFormatToModel` persisted the on-wire schema shape (`{implementation, fields[]}`) into the `Specifications` column, but `customformats.LoadFromRow`→`UnmarshalSpecs` only accepts the `{type, body}` envelope. So creating/updating a CustomFormat with ANY condition failed write→reload through the real service (the handler unit tests use a fake writer that skips the reload, masking it). Fixed by `customFormatSpecsToEnvelopeJSON` (maps wire spec → envelope, validates via the loader's own codec).
 
-**Read half (FIXED J432):** `toCustomFormatResource` now projects each typed `customformats.Specification` → `CustomFormatSpecificationSchema` via `specToSchema` (clones the golden-verified `customFormatSchemas` FieldDef template, injects the persisted value by field name; adds InfoLink + id-omitempty). With J431 the customformat spec round-trip (create→reload→GET) is whole. REMAINING: autotagging `specifications[]` (same shape; `internal/autotagging` has typed specs + a schema table) + `ImplementationName` stub.
+**Read half (FIXED J432):** `toCustomFormatResource` now projects each typed `customformats.Specification` → `CustomFormatSpecificationSchema` via `specToSchema` (clones the golden-verified `customFormatSchemas` FieldDef template, injects the persisted value by field name; adds InfoLink + id-omitempty). With J431 the customformat spec round-trip (create→reload→GET) is whole.
+
+**Autotagging (FIXED J433):** identical dual defect (write persisted schema-shape → CUD-with-specs broke; GET stubbed `[]`) fixed symmetrically — `autoTaggingSpecsToEnvelopeJSON` (write) + `autoTagSpecToSchema` (GET, clones `autoTaggingSchemas` templates, handles `status` body-key + array-valued specs) + id-omitempty. **G4-followup specifications[] now COMPLETE for customformat + autotagging.** Only `ImplementationName` provider stub remains (separate, low).
 
 ### MEDIUM — endpoint returns empty (needs a focused service/driver port)
 

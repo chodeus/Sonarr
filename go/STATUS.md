@@ -20084,3 +20084,15 @@ C# ref: `CustomFormatResource.cs:32` (`model.Specifications.Select(x => x.ToSche
 - v5 customformat inherits via the shared `ToCustomFormatResource`.
 
 R: GET /customformat (v3+v5) now returns populated `specifications[]` with full field metadata + values; with J431 the create→reload→GET round-trip is whole. W: bulk-update spec round-trip preserved (no value loss). M: GAP_ANALYSIS G4b read half + PROGRESS + this entry. Tests: typed spec→schema (impl/implementationName/infoLink/base flags/injected regex string + resolution int value/id-omitted); empty-DB still `[]`. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).
+
+---
+
+## J433 — G4-followup: autotagging specs (write-envelope fix + GET projection)
+
+C# ref: `AutoTaggingResource` ToModel/ToResource + `AutoTaggingSpecificationSchema.cs` ToSchema. Symmetric to the customformat J431/J432 pair — `internal/autotagging` uses the same `{type,body}` persistence codec and had the same two defects.
+
+- WRITE bug (same class as J431): `autoTaggingToModel` did `json.Marshal(res.Specifications)` (schema shape); `autotagging.LoadAll`→`UnmarshalSpecs` only accepts the envelope → AutoTag CUD with conditions broke through the real service. FIX: NEW `autoTaggingSpecsToEnvelopeJSON` (type=Implementation, body={name,negate,required}+field name→value; validated/canonicalised via `autotagging.UnmarshalSpecs`/`MarshalSpecs`). The schema FieldDef names match the body keys for all 11 specs (incl. Status' `status` key + array-valued Genre/Network/Country).
+- READ stub (same as J432): `toAutoTaggingResource` emitted `specifications:[]`. FIX: NEW `autoTagSpecToSchema` — round-trips the typed spec through MarshalSpecs to recover base+value fields, clones the golden-verified `autoTaggingSchemas` template (NEW `atSchemaTemplateByImpl` index), injects values via `FieldDef.WithValue`. Spec type `id`→omitempty (C# ToSchema never sets it); NO InfoLink (C# autotag spec POCO has none).
+- No bulk-reload path for autotagging (writes only from request-decoded bodies), so no FieldDef-vs-map round-trip hazard.
+
+R: GET /autotagging (v3+v5) now returns populated `specifications[]`. W: POST/PUT /autotagging with conditions now persists a loader-readable column. M: GAP_ANALYSIS G4b autotagging + PROGRESS + this entry. Tests: envelope round-trip (seriestype int / status-key / genre array / year min-max) + empty/unknown-impl + GET projection (impl/implementationName/base flags/injected value/id-omitted). G4-followup specifications[] COMPLETE for customformat + autotagging. Hard gates clean (full suite).
