@@ -1738,3 +1738,91 @@ func TestToSeriesStatisticsResource_V5Additive_J370(t *testing.T) {
 		}
 	}
 }
+
+// --- J438: series/editor moveFiles → on-disk relocation arm ---
+
+func TestSeriesEditorUpdate_MoveFilesTrue_RootFolderSet_FiresMover(t *testing.T) {
+	t.Parallel()
+	existing := series.Series{ID: 1, Title: "Show", Path: "/tv/Show", RootFolderPath: "/tv", QualityProfileID: 1}
+	w := &fakeSeriesMover{
+		fakeSeriesCascadeWriter: &fakeSeriesCascadeWriter{
+			fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{existing}},
+		},
+	}
+	body := SeriesEditorResource{SeriesIDs: []int{1}, RootFolderPath: "/media", MoveFiles: true}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(w.moves) != 1 || w.moves[0].src != "/tv/Show" || w.moves[0].dst != "/media/Show" {
+		t.Errorf("MoveFolder old→newRoot/base: %+v", w.moves)
+	}
+	if w.rows[0].Path != "/media/Show" || w.rows[0].RootFolderPath != "/media" {
+		t.Errorf("DB row not updated: path=%q root=%q", w.rows[0].Path, w.rows[0].RootFolderPath)
+	}
+}
+
+func TestSeriesEditorUpdate_MoveFilesFalse_NoMove(t *testing.T) {
+	t.Parallel()
+	existing := series.Series{ID: 1, Path: "/tv/Show", RootFolderPath: "/tv", QualityProfileID: 1}
+	w := &fakeSeriesMover{
+		fakeSeriesCascadeWriter: &fakeSeriesCascadeWriter{
+			fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{existing}},
+		},
+	}
+	body := SeriesEditorResource{SeriesIDs: []int{1}, RootFolderPath: "/media", MoveFiles: false}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status %d", rr.Code)
+	}
+	if len(w.moves) != 0 {
+		t.Errorf("moveFiles=false must NOT move: %+v", w.moves)
+	}
+	// RootFolderPath still updates; Path stays (no disk move).
+	if w.rows[0].RootFolderPath != "/media" || w.rows[0].Path != "/tv/Show" {
+		t.Errorf("expected root updated + path unchanged: root=%q path=%q", w.rows[0].RootFolderPath, w.rows[0].Path)
+	}
+}
+
+func TestSeriesEditorUpdate_MoveFilesTrue_NoRootFolder_NoMove(t *testing.T) {
+	t.Parallel()
+	existing := series.Series{ID: 1, Path: "/tv/Show", QualityProfileID: 1}
+	w := &fakeSeriesMover{
+		fakeSeriesCascadeWriter: &fakeSeriesCascadeWriter{
+			fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{existing}},
+		},
+	}
+	body := SeriesEditorResource{SeriesIDs: []int{1}, MoveFiles: true} // no RootFolderPath
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if len(w.moves) != 0 {
+		t.Errorf("no RootFolderPath → no move: %+v", w.moves)
+	}
+}
+
+func TestSeriesEditorUpdate_MoveFolderError_500_NoUpdate(t *testing.T) {
+	t.Parallel()
+	existing := series.Series{ID: 1, Path: "/tv/Show", QualityProfileID: 1}
+	w := &fakeSeriesMover{
+		fakeSeriesCascadeWriter: &fakeSeriesCascadeWriter{
+			fakeSeriesWriter: &fakeSeriesWriter{rows: []series.Series{existing}},
+		},
+		moveErr: errors.New("disk full"),
+	}
+	body := SeriesEditorResource{SeriesIDs: []int{1}, RootFolderPath: "/media", MoveFiles: true}
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesEditorUpdateHandler(w, &fakeSeriesEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v3/series/editor", bytes.NewReader(buf)))
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("move failure → 500, got %d", rr.Code)
+	}
+	// DB row must be untouched on move failure (no Update persisted).
+	if w.rows[0].Path != "/tv/Show" {
+		t.Errorf("path must stay on move failure: %q", w.rows[0].Path)
+	}
+}

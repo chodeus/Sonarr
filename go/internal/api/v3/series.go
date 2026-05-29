@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -923,9 +924,10 @@ type SeriesEditorResource struct {
 // per-field updates only when the body's optional pointer is non-
 // nil, broadcasts Updated per row, returns 202 + array.
 //
-// MoveFiles is DEFERRED (BulkMoveSeriesCommand not yet ported).
-// The RootFolderPath field updates the DB row but no on-disk move
-// fires — same gap as 5.D1a's ?moveFiles=true query param.
+// MoveFiles (J438): when set with a RootFolderPath, each series folder
+// is relocated on disk via the optional SeriesMover surface before the
+// row is persisted (ports the C# BulkMoveSeriesCommand arm). Reuses the
+// same disk-move path as the single-series ?moveFiles=true handler.
 func SeriesEditorUpdateHandler(svc SeriesWriter, emitter SeriesEmitter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := decodeSeriesEditorBody(r)
@@ -947,7 +949,30 @@ func SeriesEditorUpdateHandler(svc SeriesWriter, emitter SeriesEmitter) http.Han
 				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/editor: get %d: %w", id, err), nil)
 				return
 			}
+			oldPath := existing.Path
 			applySeriesEditorUpdate(existing, body)
+			// moveFiles cascade (C# BulkMoveSeriesCommand arm,
+			// SeriesEditorController.cs:60-102): when RootFolderPath is
+			// supplied AND MoveFiles is set, relocate the series folder on
+			// disk (newRoot/<existing folder name>) BEFORE persisting, so a
+			// move failure leaves the DB row unchanged — same ordering +
+			// disk path as the single-series ?moveFiles=true arm (5.D9b).
+			// Reuses the optional SeriesMover surface. Per-series folder name
+			// is the basename of the current path (the title is unchanged by
+			// a root-folder move); C# recomputes it from the naming config,
+			// which yields the same name for an unchanged title.
+			if body.MoveFiles && strings.TrimSpace(body.RootFolderPath) != "" && oldPath != "" {
+				newPath := filepath.Join(body.RootFolderPath, filepath.Base(oldPath))
+				if newPath != oldPath {
+					if mover, ok := svc.(SeriesMover); ok {
+						if mErr := mover.MoveFolder(r.Context(), oldPath, newPath); mErr != nil {
+							httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/editor: moveFolder %d %q→%q: %w", id, oldPath, newPath, mErr), nil)
+							return
+						}
+						existing.Path = newPath
+					}
+				}
+			}
 			if err := svc.Update(r.Context(), existing); err != nil {
 				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("series/editor: update %d: %w", id, err), nil)
 				return
@@ -1050,8 +1075,10 @@ func applySeriesEditorUpdate(existing *series.Series, body SeriesEditorResource)
 	}
 	if strings.TrimSpace(body.RootFolderPath) != "" {
 		existing.RootFolderPath = body.RootFolderPath
-		// C# also pushes a BulkMoveSeries entry here for the
-		// MoveFiles cascade. DEFERRED — see handler doc-comment.
+		// The on-disk move for the MoveFiles cascade is handled in
+		// SeriesEditorUpdateHandler (it needs the request context + the
+		// SeriesMover surface); this only updates the RootFolderPath
+		// column.
 	}
 	if body.Tags != nil {
 		switch body.ApplyTags {

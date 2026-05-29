@@ -20150,3 +20150,17 @@ C# ref: `src/Sonarr.Api.V3/Indexers/ReleaseResource.cs:148` (SceneMapping = remo
 - AUDIT (this slice, Tier-2 verification): HistoryResource (all C# fields present), BlocklistResource (all present + Title/Source extras), SeriesResource statistics + per-season statistics (J369) + images (J367) are ALL complete — the DEFERRED doc-notes are stale. The J234 route-audit.md is stale: history/failed, history/since, qualitydefinition/limits, indexerflag, parse, queue/status, episode/monitor, mediacover all already wired. Tier-2 resource projections are effectively drained.
 
 R: GET /api/v3+v5/release now emits sceneMapping (when the release matched via a scene alias). W: n/a. M: PROGRESS + this entry. Tests: sceneMappingToAlternateTitle (nil/fields/FilterRegex-fallback/blank) + handler flow-through. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).
+
+---
+
+## J438 — Tier-4: series/editor moveFiles → on-disk folder relocation
+
+C# ref: `src/Sonarr.Api.V5/Series/SeriesEditorController.cs:60-102` (the BulkMoveSeriesCommand arm: collect {SeriesId, SourcePath} when RootFolderPath set, push BulkMoveSeriesCommand when MoveFiles).
+
+- `SeriesEditorUpdateHandler` (v3; v5 delegates via v5util.RewriteAcceptedToOK): after applySeriesEditorUpdate, when `body.MoveFiles && body.RootFolderPath != "" && oldPath != ""`, compute `newPath = join(rootFolderPath, base(oldPath))` and, if changed, call the optional `SeriesMover.MoveFolder(old,new)` BEFORE svc.Update; on success set existing.Path=newPath. Move failure → 500 with the DB row untouched (move precedes Update) — identical ordering to the single-series ?moveFiles=true arm (5.D9b).
+- Reuses existing substrate: the SeriesMover surface (type-asserted off SeriesWriter) backed by the seriesMoveAdapter / MoveSeries+BulkMoveSeries command handlers (J393). No new deps.
+- Folder name = basename(oldPath): a root-folder move keeps the title, so this equals the C# naming-config recompute for an unchanged title. Documented.
+- Updated 2 stale DEFERRED doc-comments (handler + applySeriesEditorUpdate).
+- Tier-3 note: fresh C# v5 route diff (handles `[V5ApiController]` class-name default) = 79 C# v5 endpoints, ALL covered in go (203 go v5 route entries). v5 route long-tail is closed.
+
+R: n/a. W: PUT /series/editor + /api/v5/series/editor now physically relocate series folders on a root-folder change when moveFiles=true. M: PROGRESS + this entry. Tests: moveFiles-true fires mover + DB path/root updated; moveFiles-false root-only no move; no-rootFolder no move; move-error→500 + DB untouched. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).
