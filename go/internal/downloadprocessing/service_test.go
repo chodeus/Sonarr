@@ -277,6 +277,16 @@ func (f *fakeCompletePub) PublishDownloadCompleted(_ context.Context, ev tracked
 	return nil
 }
 
+// fakeProcessedPub captures published DownloadsProcessedEvents (J454).
+type fakeProcessedPub struct {
+	count int
+}
+
+func (f *fakeProcessedPub) PublishDownloadsProcessed(_ context.Context, _ trackeddownloads.DownloadsProcessedEvent) error {
+	f.count++
+	return nil
+}
+
 // importedResultWithFile returns an Imported result carrying an
 // EpisodeFile row (the file the writer produced), so the completion
 // event's EpisodeFiles slice can be asserted.
@@ -371,5 +381,36 @@ func TestProcess_CompletionPublishError_StaysImported_J449(t *testing.T) {
 	}
 	if td.State != trackeddownloads.StateImported {
 		t.Errorf("state = %v, want Imported (publish error is best-effort)", td.State)
+	}
+}
+
+// J454: a DownloadsProcessedEvent is published at the end of the pass
+// even when nothing imported (the marker drives the metadata batch).
+func TestProcess_PublishesDownloadsProcessed_EvenWhenEmpty_J454(t *testing.T) {
+	t.Parallel()
+	pub := &fakeProcessedPub{}
+	svc := newSvc(t, fakeStore{tds: nil}, &fakeImporter{})
+	svc.SetProcessedPublisher(pub)
+	svc.ProcessTrackedDownloads(context.Background())
+	if pub.count != 1 {
+		t.Errorf("DownloadsProcessed published %d times, want 1 (once per pass)", pub.count)
+	}
+}
+
+// J454: each pass publishes exactly one DownloadsProcessedEvent
+// (regardless of how many downloads imported).
+func TestProcess_PublishesDownloadsProcessed_OncePerPass_J454(t *testing.T) {
+	t.Parallel()
+	ser := &series.Series{ID: 1, Path: "/tv/Show"}
+	tds := []*trackeddownloads.TrackedDownload{
+		completedTD("dl1", ser, "/dl/a"),
+		completedTD("dl2", ser, "/dl/b"),
+	}
+	pub := &fakeProcessedPub{}
+	svc := newSvc(t, fakeStore{tds: tds}, &fakeImporter{results: []*episodeimport.ImportResult{importedResult()}})
+	svc.SetProcessedPublisher(pub)
+	svc.ProcessTrackedDownloads(context.Background())
+	if pub.count != 1 {
+		t.Errorf("DownloadsProcessed published %d times, want 1", pub.count)
 	}
 }

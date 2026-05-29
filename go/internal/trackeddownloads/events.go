@@ -249,6 +249,17 @@ type UntrackedDownloadCompletedEvent struct {
 	SourcePath string
 }
 
+// DownloadsProcessedEvent ports the C# `DownloadsProcessedEvent : IEvent`
+// at `src/NzbDrone.Core/Download/DownloadsProcessedEvent.cs:1-8` — a
+// payloadless marker published by `DownloadProcessingService` at the end
+// of every process pass (`DownloadProcessingService.cs:80`, after the
+// per-tracked-download import/fail loop). Subscribed-to by the
+// metadata/extras writer (`ExtraService.Handle(DownloadsProcessedEvent)`,
+// `ExtraService.cs:173-191`): it drains the set of series that had a file
+// imported since the previous pass and runs `CreateAfterEpisodesImported`
+// on each (the once-per-batch series-level metadata refresh).
+type DownloadsProcessedEvent struct{}
+
 // TrackedDownloadRefreshedEvent ports the C#
 // `TrackedDownloadRefreshedEvent : IEvent` at
 // `src/NzbDrone.Core/Download/TrackedDownloads/TrackedDownloadRefreshedEvent.cs:1-15`.

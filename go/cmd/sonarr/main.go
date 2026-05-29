@@ -3071,6 +3071,10 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	// notification/metadata subscribers). No publisher → import is silent
 	// (prior J399 behavior). Ports CompletedDownloadService.cs:229-234.
 	downloadProcessingSvc.SetCompletionPublisher(downloadCompletedPublisher{bus: bus})
+	// J454: publish a DownloadsProcessedEvent at the end of every process
+	// pass so the metadata writer's CreateAfterEpisodesImported batch
+	// fires once per pass per imported series (ports DownloadProcessingService.cs:80).
+	downloadProcessingSvc.SetProcessedPublisher(downloadsProcessedPublisher{bus: bus})
 	downloadMonitoringSvc.SetProcessor(downloadProcessingSvc)
 
 	// J401: auto-redownload-on-failure handler (ports

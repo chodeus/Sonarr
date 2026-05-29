@@ -20353,3 +20353,15 @@ Metadata side: added `MoveFilesAfterRename` to `metadataWriterDriver` + a 5th su
 Tests: rename handler publishes 2 file events (OriginalPath=/tv/Show/<rel>) + 1 series event (2 renamed files w/ prior paths); all-same-filename → no events. Metadata sub: SeriesRenamedEvent→MoveFilesAfterRename(7, 2 files); nil-series→no call.
 
 R: episodefiles/events.go (SeriesRenamedEvent+RenamedEpisodeFile), rename.go (RenameEventPublisher iface, RenameDeps.Publisher, renameEpisodeFiles publish + filepath import), metadata_subscriptions.go (driver method + subscription + doc), main.go (RenameDeps.Publisher wiring). A: rename_event_wiring.go. M: rename_test.go (2 tests + fakeRenamePublisher), metadata_subscriptions_test.go (2 tests + fake method/fields), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates green (build, vet, gofmt, test -race handlers+episodefiles+cmd/sonarr). Remaining Q1 tail: DownloadsProcessedEvent → CreateAfterEpisodesImported.
+
+---
+
+## J454 — Q1 tail COMPLETE: DownloadsProcessedEvent → CreateAfterEpisodesImported
+
+**Slice (5c): wire the last ExtraService event.** NEW payloadless `trackeddownloads.DownloadsProcessedEvent` (ports `DownloadsProcessedEvent.cs`). NEW optional `downloadprocessing.ProcessedPublisher` + `SetProcessedPublisher`; `ProcessTrackedDownloads` publishes the marker UNCONDITIONALLY at end of each pass (even zero imports — ports `DownloadProcessingService.cs:80`). NEW `downloadsProcessedPublisher{bus}` adapter wired in main.go alongside the completion publisher.
+
+Metadata side: ported C# ExtraService's stateful `_seriesWithImportedFiles` dict as NEW `importedSeriesAccumulator` (mutex-guarded map[int]*series.Series; `add` on each EpisodeImportedEvent — mirrors C# CreateAfterEpisodeImport's TryAdd — `drain` snapshots+clears). Added `CreateAfterEpisodesImported` to `metadataWriterDriver` + a 6th subscription: on DownloadsProcessedEvent drains the accumulator + calls CreateAfterEpisodesImported once per distinct series (ports `ExtraService.cs:173-191`). **All six C# ExtraService IHandle events now wired.**
+
+Tests: downloadprocessing publishes the marker once per pass (incl. empty pass); metadata accumulator dedups (2 imports series5 + 1 series9 → 2 distinct CreateAfterEpisodesImported), second DownloadsProcessed with no new imports drains nothing.
+
+R: trackeddownloads/events.go (DownloadsProcessedEvent), downloadprocessing/service.go (ProcessedPublisher iface/field/setter + end-of-pass publish), metadata_subscriptions.go (importedSeriesAccumulator, driver method, EpisodeImported accumulation, 6th subscription, doc), downloadprocessing_completion_wiring.go (adapter), main.go (SetProcessedPublisher). M: service_test.go (fakeProcessedPub + 2 tests), metadata_subscriptions_test.go (accumulator test + fake method/field + import), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. FULL SUITE green. **Q1 tail fully closed (J452 folder + J453 rename + J454 downloads-processed).**

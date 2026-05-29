@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"sync"
 
 	"sonarr.tv/sonarr/internal/episodefilemoving"
 	"sonarr.tv/sonarr/internal/episodefiles"
@@ -12,6 +13,7 @@ import (
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/metadatafiles"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/trackeddownloads"
 )
 
 // metadataWriterDriver is the narrow slice of *metadataservice.Service
@@ -23,6 +25,43 @@ type metadataWriterDriver interface {
 	CreateAfterSeriesScan(ctx context.Context, sr *series.Series, episodeFilesList []episodefiles.File) ([]metadatafiles.MetadataFile, error)
 	CreateAfterEpisodeFolder(ctx context.Context, sr *series.Series, seriesFolder, seasonFolder string) ([]metadatafiles.MetadataFile, error)
 	MoveFilesAfterRename(ctx context.Context, sr *series.Series, episodeFilesList []episodefiles.File) ([]metadatafiles.MetadataFile, error)
+	CreateAfterEpisodesImported(ctx context.Context, sr *series.Series) ([]metadatafiles.MetadataFile, error)
+}
+
+// importedSeriesAccumulator mirrors C# ExtraService's
+// `_seriesWithImportedFiles` dictionary (`ExtraService.cs:37,107-110`):
+// every series that had a file imported since the last
+// DownloadsProcessedEvent, deduped by id. `add` records on each
+// EpisodeImportedEvent; `drain` snapshots + clears on DownloadsProcessedEvent
+// so the once-per-pass CreateAfterEpisodesImported runs exactly once per
+// series per batch. Goroutine-safe (the bus may dispatch on different
+// goroutines).
+type importedSeriesAccumulator struct {
+	mu      sync.Mutex
+	pending map[int]*series.Series
+}
+
+func newImportedSeriesAccumulator() *importedSeriesAccumulator {
+	return &importedSeriesAccumulator{pending: map[int]*series.Series{}}
+}
+
+func (a *importedSeriesAccumulator) add(sr *series.Series) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, ok := a.pending[sr.ID]; !ok {
+		a.pending[sr.ID] = sr
+	}
+}
+
+func (a *importedSeriesAccumulator) drain() []*series.Series {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]*series.Series, 0, len(a.pending))
+	for _, sr := range a.pending {
+		out = append(out, sr)
+	}
+	a.pending = map[int]*series.Series{}
+	return out
 }
 
 // metadataScanFileLister loads a series' episode files for the
@@ -44,10 +83,12 @@ type metadataScanFileLister interface {
 //     folder is freshly created during a file move)
 //   - SeriesRenamedEvent        → MoveFilesAfterRename (J453 — published
 //     by the rename handler once per series after files are renamed)
+//   - DownloadsProcessedEvent   → CreateAfterEpisodesImported (J454 —
+//     published at the end of each download-process pass; drains the
+//     series accumulated from EpisodeImportedEvent and refreshes each
+//     once)
 //
-// The last one (DownloadsProcessedEvent → CreateAfterEpisodesImported) is
-// not yet defined/published in the Go port; its subscription follows when
-// the publisher lands (tracked in GAP_ANALYSIS Q1).
+// All six C# ExtraService IHandle events are now wired.
 //
 // Metadata is only actually written when a metadata consumer (e.g.
 // Kodi nfo) is enabled + registered; with none configured these
@@ -56,6 +97,10 @@ type metadataScanFileLister interface {
 // import/scan flow or sibling subscribers — mirrors the C#
 // per-consumer try/catch posture.
 func subscribeMetadataWriters(bus *messaging.Bus, svc metadataWriterDriver, files metadataScanFileLister, log *slog.Logger) {
+	// Accumulates series imported since the last DownloadsProcessedEvent
+	// (C# ExtraService `_seriesWithImportedFiles`).
+	importedSeries := newImportedSeriesAccumulator()
+
 	messaging.Subscribe(bus, "metadata.CreateAfterEpisodeImport",
 		func(ctx context.Context, ev episodeimport.EpisodeImportedEvent) error {
 			if ev.LocalEpisode == nil || ev.LocalEpisode.Series == nil || ev.EpisodeFile == nil {
@@ -64,6 +109,9 @@ func subscribeMetadataWriters(bus *messaging.Bus, svc metadataWriterDriver, file
 			if _, err := svc.CreateAfterEpisodeImport(ctx, ev.LocalEpisode.Series, ev.EpisodeFile); err != nil {
 				log.Warn("metadata: CreateAfterEpisodeImport failed", "series", ev.LocalEpisode.Series.ID, "err", err)
 			}
+			// Record for the next DownloadsProcessedEvent batch (C#
+			// CreateAfterEpisodeImport's _seriesWithImportedFiles.TryAdd).
+			importedSeries.add(ev.LocalEpisode.Series)
 			return nil
 		})
 	messaging.Subscribe(bus, "metadata.CreateAfterMediaCoverUpdate",
@@ -124,6 +172,22 @@ func subscribeMetadataWriters(bus *messaging.Bus, svc metadataWriterDriver, file
 			}
 			if _, err := svc.MoveFilesAfterRename(ctx, ev.Series, fs); err != nil {
 				log.Warn("metadata: MoveFilesAfterRename failed", "series", ev.Series.ID, "err", err)
+			}
+			return nil
+		})
+	// DownloadsProcessedEvent → CreateAfterEpisodesImported per accumulated
+	// series (C# ExtraService Handle(DownloadsProcessedEvent),
+	// `ExtraService.cs:173-191`): snapshot + clear the set under lock, then
+	// refresh each series' metadata once.
+	messaging.Subscribe(bus, "metadata.CreateAfterEpisodesImported",
+		func(ctx context.Context, _ trackeddownloads.DownloadsProcessedEvent) error {
+			for _, sr := range importedSeries.drain() {
+				if sr == nil {
+					continue
+				}
+				if _, err := svc.CreateAfterEpisodesImported(ctx, sr); err != nil {
+					log.Warn("metadata: CreateAfterEpisodesImported failed", "series", sr.ID, "err", err)
+				}
 			}
 			return nil
 		})

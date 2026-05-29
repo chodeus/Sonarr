@@ -23,3 +23,15 @@ type downloadCompletedPublisher struct {
 func (p downloadCompletedPublisher) PublishDownloadCompleted(ctx context.Context, ev trackeddownloads.DownloadCompletedEvent) error {
 	return messaging.Publish(ctx, p.bus, ev)
 }
+
+// downloadsProcessedPublisher adapts *messaging.Bus to the narrow
+// downloadprocessing.ProcessedPublisher interface (J454) — publishes the
+// end-of-pass DownloadsProcessedEvent consumed by the metadata writer's
+// CreateAfterEpisodesImported batch.
+type downloadsProcessedPublisher struct {
+	bus *messaging.Bus
+}
+
+func (p downloadsProcessedPublisher) PublishDownloadsProcessed(ctx context.Context, ev trackeddownloads.DownloadsProcessedEvent) error {
+	return messaging.Publish(ctx, p.bus, ev)
+}

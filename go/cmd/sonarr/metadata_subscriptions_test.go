@@ -16,6 +16,7 @@ import (
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/metadatafiles"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/trackeddownloads"
 )
 
 type fakeMetadataDriver struct {
@@ -30,6 +31,7 @@ type fakeMetadataDriver struct {
 	folderSeason      string
 	renameSeriesID    int
 	renameFileCount   int
+	importedBatch     []int
 	failEpisodeImport bool
 }
 
@@ -73,6 +75,13 @@ func (f *fakeMetadataDriver) MoveFilesAfterRename(_ context.Context, sr *series.
 	defer f.mu.Unlock()
 	f.renameSeriesID = sr.ID
 	f.renameFileCount = len(list)
+	return nil, nil
+}
+
+func (f *fakeMetadataDriver) CreateAfterEpisodesImported(_ context.Context, sr *series.Series) ([]metadatafiles.MetadataFile, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.importedBatch = append(f.importedBatch, sr.ID)
 	return nil, nil
 }
 
@@ -227,6 +236,48 @@ func TestSubscribeMetadataWriters_SeriesRenamed_NilSeries_J453(t *testing.T) {
 	_ = messaging.Publish(context.Background(), bus, episodefiles.SeriesRenamedEvent{})
 	if drv.renameSeriesID != 0 {
 		t.Errorf("nil-series SeriesRenamedEvent should not call driver, got series=%d", drv.renameSeriesID)
+	}
+}
+
+func TestSubscribeMetadataWriters_DownloadsProcessed_DrainsAccumulator_J454(t *testing.T) {
+	t.Parallel()
+	bus := newTestBus()
+	drv := &fakeMetadataDriver{}
+	subscribeMetadataWriters(bus, drv, fakeScanFileLister{}, discardLogger())
+	ctx := context.Background()
+
+	// Two imports for series 5, one for series 9 → 2 distinct series.
+	imp := func(seriesID, fileID int) episodeimport.EpisodeImportedEvent {
+		return episodeimport.EpisodeImportedEvent{
+			LocalEpisode: &episodeimport.LocalEpisode{Series: &series.Series{ID: seriesID}},
+			EpisodeFile:  &episodefiles.File{ID: fileID},
+		}
+	}
+	for _, ev := range []episodeimport.EpisodeImportedEvent{imp(5, 1), imp(5, 2), imp(9, 3)} {
+		if err := messaging.Publish(ctx, bus, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := messaging.Publish(ctx, bus, trackeddownloads.DownloadsProcessedEvent{}); err != nil {
+		t.Fatal(err)
+	}
+	// CreateAfterEpisodesImported called once per distinct series (5, 9).
+	if len(drv.importedBatch) != 2 {
+		t.Fatalf("CreateAfterEpisodesImported calls = %v, want 2 distinct series", drv.importedBatch)
+	}
+	got := map[int]bool{drv.importedBatch[0]: true, drv.importedBatch[1]: true}
+	if !got[5] || !got[9] {
+		t.Errorf("imported batch = %v, want series {5,9}", drv.importedBatch)
+	}
+
+	// A second DownloadsProcessedEvent with no new imports drains nothing.
+	drv.importedBatch = nil
+	if err := messaging.Publish(ctx, bus, trackeddownloads.DownloadsProcessedEvent{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(drv.importedBatch) != 0 {
+		t.Errorf("second pass should drain nothing, got %v", drv.importedBatch)
 	}
 }
 

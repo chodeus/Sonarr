@@ -86,14 +86,23 @@ type CompletionPublisher interface {
 	PublishDownloadCompleted(ctx context.Context, ev trackeddownloads.DownloadCompletedEvent) error
 }
 
+// ProcessedPublisher publishes a [trackeddownloads.DownloadsProcessedEvent]
+// at the end of each process pass (J454). A boot-time adapter over
+// *messaging.Bus satisfies it; tests fake it. Optional — when unset the
+// marker isn't published. Mirrors C# `DownloadProcessingService.cs:80`.
+type ProcessedPublisher interface {
+	PublishDownloadsProcessed(ctx context.Context, ev trackeddownloads.DownloadsProcessedEvent) error
+}
+
 // Service auto-imports completed tracked downloads and (J400) marks
 // failed ones Failed + publishes a DownloadFailedEvent.
 type Service struct {
-	tracked     TrackedDownloadStore
-	importer    Importer
-	failPub     FailurePublisher
-	completePub CompletionPublisher
-	log         *slog.Logger
+	tracked      TrackedDownloadStore
+	importer     Importer
+	failPub      FailurePublisher
+	completePub  CompletionPublisher
+	processedPub ProcessedPublisher
+	log          *slog.Logger
 }
 
 // SetFailurePublisher wires the optional [FailurePublisher] (J400). The
@@ -114,6 +123,16 @@ func (s *Service) SetFailurePublisher(p FailurePublisher) {
 func (s *Service) SetCompletionPublisher(p CompletionPublisher) {
 	if s != nil {
 		s.completePub = p
+	}
+}
+
+// SetProcessedPublisher wires the optional [ProcessedPublisher] (J454).
+// When set, a DownloadsProcessedEvent is published at the end of every
+// ProcessTrackedDownloads pass (mirrors C# `DownloadProcessingService.cs:80`);
+// unwired the marker isn't published. nil-safe.
+func (s *Service) SetProcessedPublisher(p ProcessedPublisher) {
+	if s != nil {
+		s.processedPub = p
 	}
 }
 
@@ -154,6 +173,15 @@ func (s *Service) ProcessTrackedDownloads(ctx context.Context) int {
 	if imported > 0 {
 		s.log.LogAttrs(ctx, slog.LevelInfo, "downloadprocessing: auto-imported completed downloads",
 			slog.Int("count", imported))
+	}
+	// End-of-pass marker (C# `DownloadProcessingService.cs:80`) —
+	// published unconditionally (even with zero imports) so the
+	// metadata/extras writer's CreateAfterEpisodesImported batch fires
+	// once per pass for every series that imported a file this cycle.
+	if s.processedPub != nil {
+		if err := s.processedPub.PublishDownloadsProcessed(ctx, trackeddownloads.DownloadsProcessedEvent{}); err != nil {
+			s.log.Warn("downloadprocessing: publish DownloadsProcessedEvent failed", "err", err)
+		}
 	}
 	return imported
 }
