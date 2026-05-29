@@ -61,22 +61,22 @@ func (f *fakeProv) DeleteEmptyFolders() bool                        { return f.d
 func (f *fakeProv) DownloadPropersAndRepacks() quality.ProperDownloadType {
 	return f.downloadPropers
 }
-func (f *fakeProv) EnableMediaInfo() bool       { return f.enableMediaInfo }
-func (f *fakeProv) EpisodeTitleRequired() string { return f.episodeTitleRequired }
-func (f *fakeProv) ExtraFileExtensions() string  { return f.extraFileExtensions }
-func (f *fakeProv) FileDate() string             { return f.fileDate }
-func (f *fakeProv) ImportExtraFiles() bool       { return f.importExtraFiles }
-func (f *fakeProv) MinimumFreeSpaceWhenImporting() int { return f.minimumFreeSpaceWhenImporting }
-func (f *fakeProv) RecycleBin() string                 { return f.recycleBin }
-func (f *fakeProv) RecycleBinCleanupDays() int         { return f.recycleBinCleanupDays }
-func (f *fakeProv) RescanAfterRefresh() string         { return f.rescanAfterRefresh }
-func (f *fakeProv) ScriptImportPath() string           { return f.scriptImportPath }
-func (f *fakeProv) SeasonPackUpgrade() string          { return f.seasonPackUpgrade }
-func (f *fakeProv) SeasonPackUpgradeThreshold() float64 { return f.seasonPackUpgradeThreshold }
-func (f *fakeProv) SetPermissionsLinux() bool           { return f.setPermissionsLinux }
+func (f *fakeProv) EnableMediaInfo() bool                 { return f.enableMediaInfo }
+func (f *fakeProv) EpisodeTitleRequired() string          { return f.episodeTitleRequired }
+func (f *fakeProv) ExtraFileExtensions() string           { return f.extraFileExtensions }
+func (f *fakeProv) FileDate() string                      { return f.fileDate }
+func (f *fakeProv) ImportExtraFiles() bool                { return f.importExtraFiles }
+func (f *fakeProv) MinimumFreeSpaceWhenImporting() int    { return f.minimumFreeSpaceWhenImporting }
+func (f *fakeProv) RecycleBin() string                    { return f.recycleBin }
+func (f *fakeProv) RecycleBinCleanupDays() int            { return f.recycleBinCleanupDays }
+func (f *fakeProv) RescanAfterRefresh() string            { return f.rescanAfterRefresh }
+func (f *fakeProv) ScriptImportPath() string              { return f.scriptImportPath }
+func (f *fakeProv) SeasonPackUpgrade() string             { return f.seasonPackUpgrade }
+func (f *fakeProv) SeasonPackUpgradeThreshold() float64   { return f.seasonPackUpgradeThreshold }
+func (f *fakeProv) SetPermissionsLinux() bool             { return f.setPermissionsLinux }
 func (f *fakeProv) SkipFreeSpaceCheckWhenImporting() bool { return f.skipFreeSpaceCheckWhenImporting }
-func (f *fakeProv) UseScriptImport() bool                { return f.useScriptImport }
-func (f *fakeProv) UserRejectedExtensions() string       { return f.userRejectedExtensions }
+func (f *fakeProv) UseScriptImport() bool                 { return f.useScriptImport }
+func (f *fakeProv) UserRejectedExtensions() string        { return f.userRejectedExtensions }
 
 func (f *fakeProv) set(name string) {
 	f.mu.Lock()

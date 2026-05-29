@@ -13,8 +13,8 @@ import (
 
 // fakeService implements Service.
 type fakeService struct {
-	rows    []commands.Command
-	cancels atomic.Int64
+	rows      []commands.Command
+	cancels   atomic.Int64
 	cancelErr error
 }
 

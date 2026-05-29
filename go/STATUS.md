@@ -19934,3 +19934,15 @@ NOT wrapped (documented no-ops): queue — `QueueHandlerV5` already parses `incl
 Tests: wanted scope-mapping (cutoff maps episodeFile=true, missing leaves it false); var→func alias smoke tests updated (ListHandler is now a func — assert it constructs a handler).
 
 R: v5 calendar/history/wanted GET honor the documented includeSubresources param. W: n/a. M: PROGRESS + this entry. Hard gates clean for touched files (build, race tests v5 + cmd/sonarr + contract, vet, gofmt on touched).
+
+---
+
+## J419 — repo-wide gofmt cleanup + gate-bug fix
+
+Fixed 11 pre-existing gofmt-dirty files repo-wide (pure formatting: newer-gofmt doc-comment list-item alignment + trailing blank-line removal at EOF; `git diff -w` shows only EOF blank-line drops — no logic change). Files: cmd/shadow-traffic-record/{proxy.go,proxy_test.go}, cmd/shadow-traffic-replay/replay.go, cmd/shadowtraffic-e2e/e2e_test.go, and internal/api/v5/{command,episodefile,health,localization,mediamanagementsettings,queuestatus,updatesettings} (test + source).
+
+ROOT CAUSE: the per-slice hard-gate ran `gofmt -l ./...`, but gofmt does NOT expand the `./...` Go-package glob — it treated `...` as a literal path and silently matched nothing, so every slice's gofmt gate was a no-op. The correct invocation is `gofmt -l .` (recursive) or explicit dirs. This drift accumulated unseen; J414's "tree clean" claim was false for the same reason. Going forward the gofmt gate must use `gofmt -l .`.
+
+`gofmt -l .` is now empty tree-wide. Build + tests green on all affected packages.
+
+R: n/a. W: n/a. M: this entry + PROGRESS + memory (gofmt-gate lesson). Hard gates clean (build, tests on affected pkgs, `gofmt -l .` empty).

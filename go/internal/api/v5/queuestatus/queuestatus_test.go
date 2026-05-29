@@ -29,9 +29,9 @@ func (f *fakePending) PendingCount(context.Context) (int, error) {
 }
 
 type fakePauser struct {
-	mu       sync.Mutex
-	pauseN   int
-	resumeN  int
+	mu      sync.Mutex
+	pauseN  int
+	resumeN int
 }
 
 func (f *fakePauser) Pause() {

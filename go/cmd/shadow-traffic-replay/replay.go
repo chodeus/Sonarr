@@ -259,4 +259,3 @@ func (r *Replayer) dispatch(ctx context.Context, e LogEntry) {
 		r.stats.StatusOther.Add(1)
 	}
 }
-

@@ -168,4 +168,3 @@ func decompressLimitFor(w *LogWriter) int64 {
 	}
 	return 8 * 1024 * 1024
 }
-

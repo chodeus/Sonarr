@@ -15,9 +15,9 @@
 //
 // Wire-format choices for the v5 surface:
 //   - `type`   — camelCase enum name via Result.String()
-//                ("ok" / "notice" / "warning" / "error").
+//     ("ok" / "notice" / "warning" / "error").
 //   - `reason` — camelCase enum name via Reason.String() (J254 added
-//                the reverse-lookup table to healthcheck/healthcheck.go).
+//     the reverse-lookup table to healthcheck/healthcheck.go).
 //
 // The v3 Go-port emits Type as string too (a pre-existing divergence
 // from C# v3's default int emission); v5 follows the openapi-v5 spec

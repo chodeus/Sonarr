@@ -116,7 +116,7 @@ func stopAndWait(t *testing.T, cmd *exec.Cmd, name string) {
 //  8. Wait for diff to flush reports (> -flush-interval).
 //  9. SIGTERM diff.
 //  10. Read the diff report; assert at least one LOW-severity row
-//      naming the value diff between C# and Go.
+//     naming the value diff between C# and Go.
 //
 // Proves: record's JSONL format = replay's input format = diff's
 // dispatch path = downstream backends' actual request shape. The

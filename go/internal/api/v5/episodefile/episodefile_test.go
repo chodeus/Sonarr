@@ -17,11 +17,11 @@ import (
 // the minimum surface DeleteHandler / BulkUpdateHandler / BulkDeleteHandler
 // need.
 type fakeWriter struct {
-	files       map[int]*episodefiles.File
-	getManyErr  error
-	deleted     []int
-	updated     []*episodefiles.File
-	updateErr   error
+	files      map[int]*episodefiles.File
+	getManyErr error
+	deleted    []int
+	updated    []*episodefiles.File
+	updateErr  error
 }
 
 func (f *fakeWriter) GetFile(_ context.Context, id int) (*episodefiles.File, error) {

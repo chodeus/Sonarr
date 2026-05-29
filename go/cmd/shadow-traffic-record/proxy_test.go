@@ -443,7 +443,6 @@ func TestRecordingProxy_LargeResponse_NotBuffered(t *testing.T) {
 	_ = writer.Close(context.Background())
 }
 
-
 func TestMaybeDecompressForLog_Gzip(t *testing.T) {
 	var gzbuf bytes.Buffer
 	gw := gzip.NewWriter(&gzbuf)

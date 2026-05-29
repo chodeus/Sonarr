@@ -40,14 +40,14 @@
 //  2. Two by-id endpoints are NEW in this slice. The C# v5 inherits
 //     them from RestController via `GetResourceById`:
 //     - `LanguageController.GetResourceById(id)` casts `(Language)id`
-//       which calls `Language.FindById(id)`; if the cast throws
-//       ArgumentException (unknown id), the framework projects to
-//       404 per openapi. Go port: use `language.FindByID(id)` and
-//       emit 404 on `!ok` (with id==0 returning Unknown per parity
-//       with C# `:196-199`).
+//     which calls `Language.FindById(id)`; if the cast throws
+//     ArgumentException (unknown id), the framework projects to
+//     404 per openapi. Go port: use `language.FindByID(id)` and
+//     emit 404 on `!ok` (with id==0 returning Unknown per parity
+//     with C# `:196-199`).
 //     - `LocalizationController.GetResourceById(id)` ignores the id
-//       and returns the same dict as the list endpoint (`:23-26`).
-//       Go port: ignore the id, write the dict.
+//     and returns the same dict as the list endpoint (`:23-26`).
+//     Go port: ignore the id, write the dict.
 //
 // Wave 3 v5 endpoint family port — 143 LOC C# source. J266.
 package localization

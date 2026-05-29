@@ -202,4 +202,3 @@ func write(w http.ResponseWriter, status int, res Resource) {
 	buf, _ := json.Marshal(res)
 	_, _ = w.Write(buf)
 }
-
