@@ -20393,3 +20393,15 @@ NEW `notifications.Service.HandleDownloadCompletedEvent` + `HandleUntrackedDownl
 Tests: DownloadCompleted→OnImportComplete fires on enabled provider (series/files/releaseGroup/downloadId asserted), OnImportComplete=false provider skipped; FullSeason→"Season N" message; nil RemoteEpisode→no dispatch; Untracked→fires with SourcePath/SourceTitle/files.
 
 R: notifications/service.go (2 handlers + helpers + Subscribe entries + doc), notifications/service_test.go (hookRecorder OnImportComplete capture + 4 tests + imports). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. FULL SUITE green.
+
+---
+
+## J457 — DownloadEventHub failed arm (auto-remove failed downloads from client)
+
+**Slice: complete the DownloadEventHub DownloadFailedEvent arm.** Closes a genuine gap — the Go failure arm (downloadprocessing.failOne / queue blocklist) published DownloadFailedEvent for blocklist/history/redownload but NEVER removed the failed download from the client, even with the client's RemoveFailedDownloads flag set. NEW `downloadeventhub.Service.HandleDownloadFailed` (ports `DownloadEventHub.cs:29-47`): nil-guard TrackedDownload (manual-failed pushes have none → skip, mirrors C# `td==null` guard), gate on item.CanBeRemoved, read the client's RemoveFailedDownloads flag (NEW `removeFailedFor`, same row-read as removeCompletedFor), then RemoveItem(deleteData=true)+StopTracking via the shared `removeFromClient`. NO mark-imported, no Downloading gate (matches C#). Subscribed in main.go. Faithful: the hub handles every DownloadFailedEvent regardless of source; a manual queue-delete that already removed the item just hits a swallowed not-found on the 2nd RemoveItem (C#-consistent).
+
+Tests: RemoveFailedDownloads=true→remove+stop+NO mark; flag off→nothing; !CanBeRemoved→nothing; nil TrackedDownload→no-op.
+
+Remaining DownloadEventHub follow-up: DownloadCanBeRemovedEvent + the RemoveCompletedDownloads SWEEP (DownloadProcessingService.cs:35-45) — not ported; J455 immediate-removal covers the common case.
+
+R: downloadeventhub.go (HandleDownloadFailed + removeFailedFor + doc). M: main.go (subscription), downloadeventhub_test.go (4 tests + failedEvent helper), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates green (build, vet, gofmt, test -race downloadeventhub+cmd/sonarr).

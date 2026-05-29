@@ -187,6 +187,86 @@ func TestHandle_ResolveErrorIsSwallowed(t *testing.T) {
 	}
 }
 
+func failedEvent(clientID int) *trackeddownloads.DownloadFailedEvent {
+	return &trackeddownloads.DownloadFailedEvent{
+		DownloadID: "dl1",
+		TrackedDownload: &trackeddownloads.TrackedDownload{
+			DownloadID:     "dl1",
+			DownloadClient: clientID,
+			DownloadItem:   &downloadclients.Item{DownloadID: "dl1", CanBeRemoved: true},
+		},
+	}
+}
+
+func TestHandleFailed_RemovesWhenConfigured(t *testing.T) {
+	t.Parallel()
+	prov := &fakeProvider{}
+	stopper := &fakeStopper{}
+	rows := []downloadclients.DownloadClient{{ID: 3, RemoveFailedDownloads: true}}
+	hub := newHub(t, prov, rows, stopper)
+
+	if err := hub.HandleDownloadFailed(context.Background(), failedEvent(3)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if prov.marked {
+		t.Error("failed arm must NOT MarkItemAsImported")
+	}
+	if !prov.removed || !prov.removedDeleteData {
+		t.Errorf("RemoveItem not called with deleteData=true (removed=%v deleteData=%v)", prov.removed, prov.removedDeleteData)
+	}
+	if len(stopper.stopped) != 1 || stopper.stopped[0] != "dl1" {
+		t.Errorf("StopTracking = %v, want [dl1]", stopper.stopped)
+	}
+}
+
+func TestHandleFailed_SkipsWhenConfigOff(t *testing.T) {
+	t.Parallel()
+	prov := &fakeProvider{}
+	stopper := &fakeStopper{}
+	rows := []downloadclients.DownloadClient{{ID: 3, RemoveFailedDownloads: false}}
+	hub := newHub(t, prov, rows, stopper)
+
+	if err := hub.HandleDownloadFailed(context.Background(), failedEvent(3)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if prov.removed || len(stopper.stopped) != 0 {
+		t.Errorf("RemoveFailedDownloads=false → no remove/stop (removed=%v stopped=%v)", prov.removed, stopper.stopped)
+	}
+}
+
+func TestHandleFailed_SkipsWhenNotRemovable(t *testing.T) {
+	t.Parallel()
+	prov := &fakeProvider{}
+	stopper := &fakeStopper{}
+	rows := []downloadclients.DownloadClient{{ID: 3, RemoveFailedDownloads: true}}
+	hub := newHub(t, prov, rows, stopper)
+
+	ev := failedEvent(3)
+	ev.TrackedDownload.DownloadItem.CanBeRemoved = false
+	if err := hub.HandleDownloadFailed(context.Background(), ev); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if prov.removed {
+		t.Error("CanBeRemoved=false → must not remove")
+	}
+}
+
+func TestHandleFailed_NilTrackedDownload(t *testing.T) {
+	t.Parallel()
+	prov := &fakeProvider{}
+	stopper := &fakeStopper{}
+	rows := []downloadclients.DownloadClient{{ID: 3, RemoveFailedDownloads: true}}
+	hub := newHub(t, prov, rows, stopper)
+
+	// Manual-failed push with no tracked record → skipped (can't resolve client).
+	if err := hub.HandleDownloadFailed(context.Background(), &trackeddownloads.DownloadFailedEvent{DownloadID: "x"}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if prov.removed || len(stopper.stopped) != 0 {
+		t.Error("nil TrackedDownload must be a no-op")
+	}
+}
+
 func TestHandle_NilGuards(t *testing.T) {
 	t.Parallel()
 	hub := newHub(t, &fakeProvider{}, nil, &fakeStopper{})

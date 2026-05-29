@@ -13,11 +13,21 @@
 //  3. When the client's RemoveCompletedDownloads flag is set, RemoveItem
 //     (deleteData=true) + StopTracking the download.
 //
-// The C# hub also handles DownloadFailedEvent (RemoveFailedDownloads) and
-// DownloadCanBeRemovedEvent; neither is ported here — the Go failure arm
-// drives blocklist/history/redownload via DownloadFailedEvent already,
-// and DownloadCanBeRemovedEvent / the RemoveCompletedDownloads sweep
-// aren't ported. Those are tracked as separate follow-ups.
+// J457 scope — the DownloadFailedEvent handler (`DownloadEventHub.cs:29-47`):
+// when the item is removable and the originating client's
+// RemoveFailedDownloads flag is set, RemoveItem (deleteData=true) +
+// StopTracking. No mark-imported, no Downloading gate. This closes the
+// gap where an auto-failed download (FailedDownloadService → the Go
+// failure arm) was never removed from the client. Faithful to C#, the
+// hub handles every DownloadFailedEvent regardless of source (the
+// RemoveFailedDownloads config flag governs); a manual queue-delete that
+// already removed the item just hits a swallowed not-found on the
+// second RemoveItem.
+//
+// The C# hub also handles DownloadCanBeRemovedEvent (the
+// RemoveCompletedDownloads sweep from DownloadProcessingService); that
+// event + sweep aren't ported in Go — the J455 immediate-removal covers
+// the common case. Tracked as a separate follow-up.
 package downloadeventhub
 
 import (
@@ -111,6 +121,40 @@ func (s *Service) HandleDownloadCompleted(ctx context.Context, ev *trackeddownlo
 	return nil
 }
 
+// HandleDownloadFailed ports `DownloadEventHub.Handle(DownloadFailedEvent)`
+// (`:29-47`): when the item is removable and the originating client's
+// RemoveFailedDownloads flag is set, remove it from the client +
+// StopTracking. Returns nil always (best-effort, like the completed
+// arm). A nil TrackedDownload (manual-failed push with no cache record)
+// is skipped — we can't resolve the client without it (mirrors the C#
+// `trackedDownload == null` guard).
+func (s *Service) HandleDownloadFailed(ctx context.Context, ev *trackeddownloads.DownloadFailedEvent) error {
+	if ev == nil || ev.TrackedDownload == nil || ev.TrackedDownload.DownloadItem == nil {
+		return nil
+	}
+	td := ev.TrackedDownload
+	if !td.DownloadItem.CanBeRemoved {
+		return nil
+	}
+	removeFailed, err := s.removeFailedFor(ctx, td.DownloadClient)
+	if err != nil {
+		s.log.Warn("downloadeventhub: read RemoveFailedDownloads failed",
+			"downloadClient", td.DownloadClient, "err", err)
+		return nil
+	}
+	if !removeFailed {
+		return nil
+	}
+	client, err := s.clients.ResolveClient(ctx, td.DownloadClient)
+	if err != nil {
+		s.log.Warn("downloadeventhub: resolve client failed (failed arm)",
+			"downloadClient", td.DownloadClient, "downloadId", td.DownloadID, "err", err)
+		return nil
+	}
+	s.removeFromClient(ctx, client, td)
+	return nil
+}
+
 // markImported runs MarkItemAsImported, mirroring the C# helper's
 // try/catch (`:104-117`): an unsupported client is a debug log, any
 // other failure an error log — never fatal.
@@ -148,6 +192,22 @@ func (s *Service) removeCompletedFor(ctx context.Context, clientID int) (bool, e
 	for i := range rows {
 		if rows[i].ID == clientID {
 			return rows[i].RemoveCompletedDownloads, nil
+		}
+	}
+	return false, nil
+}
+
+// removeFailedFor reports the originating client's RemoveFailedDownloads
+// flag (C# `definition.RemoveFailedDownloads`). A client id with no
+// matching row reports false.
+func (s *Service) removeFailedFor(ctx context.Context, clientID int) (bool, error) {
+	rows, err := s.config.All(ctx)
+	if err != nil {
+		return false, err
+	}
+	for i := range rows {
+		if rows[i].ID == clientID {
+			return rows[i].RemoveFailedDownloads, nil
 		}
 	}
 	return false, nil

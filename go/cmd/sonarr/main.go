@@ -3097,6 +3097,15 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		func(ctx context.Context, ev trackeddownloads.DownloadCompletedEvent) error {
 			return downloadEventHub.HandleDownloadCompleted(ctx, &ev)
 		})
+	// J457: DownloadEventHub failed arm — when the client's
+	// RemoveFailedDownloads flag is set, remove an auto-failed download
+	// from the client + StopTracking. Closes the gap where the Go failure
+	// arm left failed downloads in the client. Ports
+	// DownloadEventHub.Handle(DownloadFailedEvent).
+	messaging.Subscribe(bus, "downloadeventhub.HandleDownloadFailed",
+		func(ctx context.Context, ev trackeddownloads.DownloadFailedEvent) error {
+			return downloadEventHub.HandleDownloadFailed(ctx, &ev)
+		})
 
 	// J401: auto-redownload-on-failure handler (ports
 	// RedownloadFailedDownloadService). Subscribes to the same
