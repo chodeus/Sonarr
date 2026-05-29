@@ -19898,3 +19898,13 @@ The last unpopulated QueueResource extra. `cmd/sonarr` `projectQueueResource` no
 Tests: projectQueueResource full-season→IsFullSeason true; single-episode→false; nil RemoteEpisode→false; nil ParsedEpisodeInfo→false (no panic).
 
 R: v5 queue rows now report IsFullSeason. W: n/a. M: PROGRESS + this entry. Hard gates clean (build, race tests cmd/sonarr + api v3 + contract, vet, gofmt).
+
+---
+
+## J416 — v5 field-tail audit + stale-note fix (episodefile)
+
+Audit conclusion: the "v5 read field-widenings" direction is drained. Verified the two flagged OPEN items are already done — ReleaseResource.Languages is typed `[]LanguageRef` since J334; QueueResource extras (DownloadClientHasPostImportCategory/EpisodesWithFilesCount/CustomFormatScore) since J318/J349/J351, with IsFullSeason closed at J415. EpisodeFileResource's `ToEpisodeFileResource` already projects Languages + IndexerFlags + ReleaseType (J328), Quality (J373), MediaInfo, and CustomFormatScore + QualityCutoffNotMet via ApplyEpisodeFilePopulator (J375) — so the v5 episodefile package's DEFERRED note (which listed all five as pending the "populated mapper port") was fully stale. Corrected that doc-comment.
+
+Remaining v5 divergences are genuinely gated, not clean projections: the `includeSubresources[]` query-param-shape sub-resource hydration (deferred consistently on both v3+v5), and items needing a service/extraction subsystem. These + operator-driven resources + ResetApiKey are out of the clean autonomous tier.
+
+R: doc accuracy. W: n/a. M: this entry + PROGRESS. Hard gates clean (build, gofmt).

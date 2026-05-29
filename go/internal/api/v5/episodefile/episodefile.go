@@ -40,11 +40,12 @@ import (
 	"sonarr.tv/sonarr/internal/api/v5/internal/v5util"
 )
 
-// Resource is the v5 EpisodeFileResource — wire-identical to v3 at
-// the declared-shape level (customFormats[] + customFormatScore
-// widened at J298). Populated-row joins (Languages, Quality,
-// MediaInfo, IndexerFlags, ReleaseType) remain DEFERRED on both
-// surfaces pending the episode-file populated mapper port.
+// Resource is the v5 EpisodeFileResource — wire-identical to v3. The
+// populated-row fields are now all projected by v3's
+// ToEpisodeFileResource: Languages + IndexerFlags + ReleaseType (J328),
+// Quality (J373), MediaInfo, plus CustomFormatScore + QualityCutoffNotMet
+// via ApplyEpisodeFilePopulator (J375). v5 shares the v3 type, so it
+// inherits the full projection.
 type Resource = apiv3.EpisodeFileResource
 
 // Reader re-exports v3's read surface for GET list / GET /{id}.
