@@ -110,8 +110,13 @@ func TestEpisodeHandler_MissingEpisodeID_Returns400(t *testing.T) {
 
 func TestVariableAliases_NonNil(t *testing.T) {
 	t.Parallel()
-	if ListHandler == nil || SinceHandler == nil || SeriesHandler == nil {
+	if SinceHandler == nil || SeriesHandler == nil {
 		t.Error("path-alias handler vars must be non-nil")
+	}
+	// ListHandler is now a func (J418 includeSubresources translation) —
+	// assert it constructs a non-nil handler.
+	if ListHandler(nil) == nil {
+		t.Error("ListHandler must construct a handler")
 	}
 }
 

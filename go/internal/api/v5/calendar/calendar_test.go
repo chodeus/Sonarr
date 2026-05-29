@@ -139,8 +139,12 @@ func TestFeedHandler_EmptyCorpus_Returns200CalendarHeader(t *testing.T) {
 
 func TestVariableAliases_NonNil(t *testing.T) {
 	t.Parallel()
-	if ListHandler == nil || ByIDHandler == nil || FeedHandler == nil {
+	if ByIDHandler == nil || FeedHandler == nil {
 		t.Error("handler aliases must be non-nil")
+	}
+	// ListHandler is now a func (J418 includeSubresources translation).
+	if ListHandler(nil) == nil {
+		t.Error("ListHandler must construct a handler")
 	}
 }
 
@@ -153,4 +157,3 @@ func TestTypeAliasesMatchV3(t *testing.T) {
 	var _ FeedSeriesLister = (apiv3.CalendarFeedSeriesLister)(nil)
 	var _ EpisodeByIDGetter = (apiv3.EpisodeByIDGetter)(nil)
 }
-

@@ -78,11 +78,20 @@ type FailedDownloadMarker = apiv3.FailedDownloadMarker
 
 // ----- path-alias handlers (list/since/series) -----
 
+// historySubresourceMapping maps the v5 HistorySubresource enum tokens
+// (Series/Episode) onto the v3 include-flag query keys.
+var historySubresourceMapping = map[string]string{
+	"series":  "includeSeries",
+	"episode": "includeEpisode",
+}
+
 // ListHandler returns GET /api/v5/history. Same paged envelope +
-// default sort ("date" DESC) + status (200) as v3 at the empty-
-// corpus level. Filter divergence is invisible until the populated-
-// row mapping lands.
-var ListHandler = apiv3.HistoryHandler
+// default sort ("date" DESC) + status (200) as v3. Translates the v5
+// `?includeSubresources=series,episode` enum-array param onto v3's
+// include bools (J418).
+func ListHandler(lister apiv3.HistoryPagedLister) http.Handler {
+	return v5util.TranslateIncludeSubresources(apiv3.HistoryHandler(lister), historySubresourceMapping)
+}
 
 // SinceHandler returns GET /api/v5/history/since. Same `[]Resource`
 // envelope + required `date` query + status (200) as v3.

@@ -53,7 +53,10 @@
 package wanted
 
 import (
+	"net/http"
+
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
+	"sonarr.tv/sonarr/internal/api/v5/internal/v5util"
 )
 
 // Resource is an alias of the v3 wire shape.
@@ -82,12 +85,33 @@ type EpisodeLister = apiv3.WantedEpisodeLister
 // v3. Backs `ByIDHandler`.
 type EpisodeByIDGetter = apiv3.EpisodeByIDGetter
 
+// wantedMissingMapping / wantedCutoffMapping map the v5 Missing/Cutoff
+// Subresource enum tokens onto the v3 include-flag query keys. They
+// differ: MissingSubresource is {Series, Images}; CutoffSubresource is
+// {Series, EpisodeFile, Images}.
+var wantedMissingMapping = map[string]string{
+	"series": "includeSeries",
+	"images": "includeImages",
+}
+
+var wantedCutoffMapping = map[string]string{
+	"series":      "includeSeries",
+	"episodefile": "includeEpisodeFile",
+	"images":      "includeImages",
+}
+
 // ListHandler returns GET /api/v5/wanted/{missing,cutoff}. Same
-// envelope as v3, same status (200), same defaults. Sub-resource
-// hydration is a no-op at the empty-corpus level so the v5 query-
-// param shape divergence (`includeSubresources[]` vs v3's three
-// bools) is invisible on the wire. See package doc.
-var ListHandler = apiv3.WantedHandler
+// envelope/status/defaults as v3, translating the v5
+// `?includeSubresources=…` enum-array param onto v3's include bools
+// (J418). The token→flag mapping is scope-dependent (cutoff adds
+// episodeFile).
+func ListHandler(lister apiv3.WantedEpisodeLister, scope Scope) http.Handler {
+	mapping := wantedMissingMapping
+	if scope == apiv3.WantedCutoff {
+		mapping = wantedCutoffMapping
+	}
+	return v5util.TranslateIncludeSubresources(apiv3.WantedHandler(lister, scope), mapping)
+}
 
 // ByIDHandler returns GET /api/v5/wanted/{missing,cutoff}/{id}. The
 // v3 + v5 inherit GetResourceById from RestController — both 200 +

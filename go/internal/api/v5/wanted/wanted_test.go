@@ -124,3 +124,38 @@ func TestTypeAliasesMatchV3(t *testing.T) {
 	var _ Scope = apiv3.WantedMissing
 	var _ Scope = apiv3.WantedCutoff
 }
+
+// recordingLister captures the include-bool flags PagedWanted receives.
+type recordingLister struct {
+	gotEpisodeFile bool
+	gotSeries      bool
+}
+
+func (r *recordingLister) PagedWanted(_ context.Context, _ apiv3.PagingRequest, _ apiv3.WantedScope, includeSeries, includeEpisodeFile, _ bool) ([]apiv3.EpisodeResource, int, error) {
+	r.gotSeries = includeSeries
+	r.gotEpisodeFile = includeEpisodeFile
+	return nil, 0, nil
+}
+
+// J418: the cutoff scope maps `episodeFile` → includeEpisodeFile; the
+// missing scope has no episodeFile token, so it stays false.
+func TestListHandler_IncludeSubresources_ScopeMapping_J418(t *testing.T) {
+	t.Parallel()
+
+	cutoff := &recordingLister{}
+	req := httptest.NewRequest(http.MethodGet, "/api/v5/wanted/cutoff?includeSubresources=series,episodeFile", nil)
+	ListHandler(cutoff, ScopeCutoff).ServeHTTP(httptest.NewRecorder(), req)
+	if !cutoff.gotSeries || !cutoff.gotEpisodeFile {
+		t.Errorf("cutoff: gotSeries=%v gotEpisodeFile=%v, want both true", cutoff.gotSeries, cutoff.gotEpisodeFile)
+	}
+
+	missing := &recordingLister{}
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v5/wanted/missing?includeSubresources=series,episodeFile", nil)
+	ListHandler(missing, ScopeMissing).ServeHTTP(httptest.NewRecorder(), req2)
+	if !missing.gotSeries {
+		t.Errorf("missing: gotSeries=%v, want true", missing.gotSeries)
+	}
+	if missing.gotEpisodeFile {
+		t.Error("missing scope must NOT map episodeFile (not in MissingSubresource)")
+	}
+}

@@ -51,7 +51,10 @@
 package calendar
 
 import (
+	"net/http"
+
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
+	"sonarr.tv/sonarr/internal/api/v5/internal/v5util"
 )
 
 // EpisodeLister is an alias of the v3 read interface used by both
@@ -74,12 +77,23 @@ type Resource = apiv3.EpisodeResource
 
 // ----- handlers (all path-aliases — same shape + status as v3) -----
 
+// calendarSubresourceMapping maps the v5 CalendarSubresource enum tokens
+// (Series/EpisodeFile/Images, camelCase) onto the v3 include-flag query
+// keys the v3 calendar handler reads. Note: calendar's images flag is
+// `includeEpisodeImages` (not `includeImages`).
+var calendarSubresourceMapping = map[string]string{
+	"series":      "includeSeries",
+	"episodefile": "includeEpisodeFile",
+	"images":      "includeEpisodeImages",
+}
+
 // ListHandler returns GET /api/v5/calendar. Same envelope, sort
-// (AirDateUtc ASC), and status (200) as v3. Sub-resource hydration
-// is invisible at the empty-corpus level so the v5 query-param
-// shape divergence (`includeSubresources[]` vs v3's three bools)
-// doesn't manifest on the wire.
-var ListHandler = apiv3.CalendarHandler
+// (AirDateUtc ASC), and status (200) as v3. Translates the v5
+// `?includeSubresources=…` enum-array param onto v3's include bools
+// (J418); v3-style bools still pass through.
+func ListHandler(lister EpisodeLister) http.Handler {
+	return v5util.TranslateIncludeSubresources(apiv3.CalendarHandler(lister), calendarSubresourceMapping)
+}
 
 // ByIDHandler returns GET /api/v5/calendar/{id}. Inherited from
 // RestController via EpisodeControllerWithSignalR — both versions

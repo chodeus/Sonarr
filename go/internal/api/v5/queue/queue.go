@@ -74,6 +74,11 @@ type BulkDeleteResource = apiv3.QueueBulkDeleteResource
 // (`includeUnknownSeriesItems` / `protocol` / `seriesIds` /
 // `languages` / `quality` / `status` + the paging block) carry the
 // same DEFERRED-filter posture as the v3 handler.
+// ListHandler returns GET /api/v5/queue. QueueHandlerV5 already parses
+// the v5 `?includeSubresources=series,episodes` enum-array param
+// natively (J352) — unlike the other v5 GET surfaces it is a dedicated
+// v5-aware handler, not a v3-bool alias — so no translation wrapper is
+// needed here.
 var ListHandler = apiv3.QueueHandlerV5
 
 // DeleteHandler returns DELETE /api/v5/queue/{id}.

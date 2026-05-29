@@ -19922,3 +19922,15 @@ Remaining v5 resources with the same `includeSubresources[]` divergence (calenda
 Tests: v5util CSV translation + param-stripping / repeated+case-insensitive tokens + unknown-token-ignored / no-param passthrough; v5 episode handler tests still green.
 
 R: v5 episode GET honors the documented includeSubresources param. W: n/a. M: PROGRESS + this entry. Hard gates clean (build, race tests v5 + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J418 — v5 includeSubresources[] arc complete (calendar / history / wanted)
+
+Applied the J417 `v5util.TranslateIncludeSubresources` wrapper to the remaining v5 GET surfaces that alias v3's bool-based handlers: calendar (series→includeSeries / episodeFile→includeEpisodeFile / images→**includeEpisodeImages** — calendar's images flag differs), history (series→includeSeries / episode→includeEpisode), wanted (scope-dependent mapping — MissingSubresource {Series,Images}; CutoffSubresource {Series,EpisodeFile,Images}). v3-style bools still pass through when the param is absent.
+
+NOT wrapped (documented no-ops): queue — `QueueHandlerV5` already parses `includeSubresources` natively (J352), so I reverted the wrapper I'd briefly added (its test caught the double-strip); queuedetails — stub lister, reads no include flags; series — the v3 series handler accepts but ignores `includeSeasonImages` (season-image hydration deferred), so translation would be a no-op.
+
+Tests: wanted scope-mapping (cutoff maps episodeFile=true, missing leaves it false); var→func alias smoke tests updated (ListHandler is now a func — assert it constructs a handler).
+
+R: v5 calendar/history/wanted GET honor the documented includeSubresources param. W: n/a. M: PROGRESS + this entry. Hard gates clean for touched files (build, race tests v5 + cmd/sonarr + contract, vet, gofmt on touched).
