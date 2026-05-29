@@ -386,9 +386,9 @@ func applyShouldOverride(
 //
 //   - Subject.Series == nil:
 //     1. body.EpisodeId > 0 → single-episode lookup → series lookup
-//        via the episode's SeriesId → set Series + Episodes=[ep].
+//     via the episode's SeriesId → set Series + Episodes=[ep].
 //     2. body.SeriesId > 0 → series lookup → parsingService.GetEpisodes
-//        with sceneSource=true → 404 if empty.
+//     with sceneSource=true → 404 if empty.
 //     3. neither id → 404 "Unable to find matching series and episodes".
 //
 //   - Subject.Series != nil + len(Episodes) == 0:

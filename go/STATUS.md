@@ -19882,3 +19882,9 @@ Tests: `osValidateCertificate` valid-PEM (self-signed, generated in-test) / vali
 NOTE: pre-existing gofmt drift in `internal/api/v3/release.go` + `release_write.go` (committed unformatted before this slice, operator-driven release files) was flagged as a separate spawned task — deliberately NOT touched here (scope discipline).
 
 R: n/a. W: PUT /config/host now rejects SSL configs whose cert file isn't a loadable PEM/PKCS#12. M: matrix #9 + PROGRESS + this entry. Hard gates clean for touched files (build darwin/linux/windows, race tests api v3 + cmd/sonarr + contract, vet, gofmt on touched files).
+
+---
+
+## J414 — gofmt hygiene: re-format v3 release files
+
+Pure gofmt-whitespace fix for `internal/api/v3/release.go` + `release_write.go`, which had been committed not-gofmt-clean before this session (surfaced by the J413 gate). `git diff -w` is empty (whitespace-only; no logic change). `gofmt -l ./...` is now empty tree-wide. Makes the spawned "fix gofmt drift" task chip redundant (can be dismissed). Hard gates clean (build, test api v3, gofmt).
