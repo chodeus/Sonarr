@@ -177,3 +177,55 @@ func TestQueueRemoveAdapter_Blocklist_J396(t *testing.T) {
 		t.Fatal("no DownloadFailedEvent published")
 	}
 }
+
+// J439: the blocklist DownloadFailedEvent carries the release Indexer +
+// Size (via Data) so the blocklist row's columns are populated.
+func TestQueueRemoveAdapter_Blocklist_CarriesIndexerSize_J439(t *testing.T) {
+	t.Parallel()
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+
+	got := make(chan trackeddownloads.DownloadFailedEvent, 1)
+	messaging.Subscribe(bus, "test.blocklist.capture.j439",
+		func(_ context.Context, ev trackeddownloads.DownloadFailedEvent) error {
+			select {
+			case got <- ev:
+			default:
+			}
+			return nil
+		})
+
+	qs := queue.NewService()
+	qs.SetQueue([]queue.Queue{{ID: 1, DownloadID: "dl1"}})
+	tracked := trackeddownloads.NewService(slog.Default())
+	_ = tracked.Track(&trackeddownloads.TrackedDownload{
+		DownloadID:   "dl1",
+		DownloadItem: &downloadclients.Item{DownloadID: "dl1", Title: "T"},
+		IsTrackable:  true,
+		RemoteEpisode: &decisionengine.Subject{
+			Series:            &series.Series{ID: 42},
+			Episodes:          []episodes.Episode{{ID: 100}},
+			ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{ReleaseTitle: "T"},
+			Release:           &parser.ReleaseInfo{Indexer: "RARBG", Size: 2_500_000_000},
+		},
+	})
+
+	a := &queueRemoveAdapter{Service: qs, tracked: tracked, clients: fakeClientResolver{}, bus: bus, log: slog.Default()}
+	if _, err := a.RemoveQueueItem(t.Context(), 1, apiv3.QueueRemoveOptions{Blocklist: true}); err != nil {
+		t.Fatalf("RemoveQueueItem: %v", err)
+	}
+	bus.BeginShutdown()
+	bus.Wait()
+
+	select {
+	case ev := <-got:
+		if ev.Data["indexer"] != "RARBG" {
+			t.Errorf("Data[indexer] = %q, want RARBG", ev.Data["indexer"])
+		}
+		if ev.Data["size"] != "2500000000" {
+			t.Errorf("Data[size] = %q, want 2500000000", ev.Data["size"])
+		}
+	default:
+		t.Fatal("no DownloadFailedEvent published")
+	}
+}

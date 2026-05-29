@@ -20164,3 +20164,15 @@ C# ref: `src/Sonarr.Api.V5/Series/SeriesEditorController.cs:60-102` (the BulkMov
 - Tier-3 note: fresh C# v5 route diff (handles `[V5ApiController]` class-name default) = 79 C# v5 endpoints, ALL covered in go (203 go v5 route entries). v5 route long-tail is closed.
 
 R: n/a. W: PUT /series/editor + /api/v5/series/editor now physically relocate series folders on a root-folder change when moveFiles=true. M: PROGRESS + this entry. Tests: moveFiles-true fires mover + DB path/root updated; moveFiles-false root-only no move; no-rootFolder no move; move-error→500 + DB untouched. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).
+
+---
+
+## J439 — Tier-4: queue-remove blocklist carries release Indexer/Size
+
+C# ref: the blocklist `IHandle<DownloadFailedEvent>` reads `TrackedDownload.RemoteEpisode.Release.{Indexer,Size}` for the blocklist row; the go blocklisthandlers consumer reads them from `ev.Data["indexer"]`/`["size"]`.
+
+- GAP: `queueRemoveAdapter.blocklist` (cmd/sonarr/queue_remove_wiring.go) built the DownloadFailedEvent with only `Data["protocol"]` → manually-blocklisted queue items produced blocklist rows with empty Indexer + nil Size.
+- FIX: NEW `releaseInfoOf(any) *parser.ReleaseInfo` (handles *parser.ReleaseInfo + *parser.TorrentInfo embed); in the RemoteEpisode block, set `Data["indexer"]` (when non-empty) + `Data["size"]` from the Subject's Release. Updated the stale deferral doc-comment.
+- AUDIT (Tier-4 verification): queue DELETE side-effects are otherwise complete (J395/J396 — removeFromClient→RemoveItem, changeCategory→MarkItemAsImported, blocklist→DownloadFailedEvent+StopTracking; the "PARSED-AND-IGNORED/DEFERRED" handler doc-comment is STALE). ManualImport execute command (J386) is a real disk-move port (only post-import DownloadCompletedEvent publication + CF recalc deferred). Remaining deferred queue-remove arm: redownload-search consumer for !skipRedownload.
+
+R: n/a. W: manual queue-remove with blocklist=true now records the release Indexer + Size on the blocklist row. M: PROGRESS + this entry. Tests: published event Data carries indexer=RARBG + size=2500000000. Hard gates clean (full suite: build, vet, gofmt `.`, go test ./...).

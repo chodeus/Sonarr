@@ -24,9 +24,23 @@ import (
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/queue"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 )
+
+// releaseInfoOf extracts the base *parser.ReleaseInfo from a Subject's
+// `Release` (which is a *parser.ReleaseInfo or *parser.TorrentInfo).
+// Returns nil for any other/absent value.
+func releaseInfoOf(release any) *parser.ReleaseInfo {
+	switch r := release.(type) {
+	case *parser.ReleaseInfo:
+		return r
+	case *parser.TorrentInfo:
+		return &r.ReleaseInfo
+	}
+	return nil
+}
 
 // queueClientResolver builds the live download-client provider for a
 // config-row id (mirrors C# `_downloadClientProvider.Get(id)`). The
@@ -96,10 +110,10 @@ func (a *queueRemoveAdapter) RemoveQueueItem(ctx context.Context, id int, opts a
 // row. SkipRedownload is carried verbatim for the redownload-on-failure
 // consumer (when one is wired). No-op when no bus is available.
 //
-// Deferred: enriching the event Data with the release indexer/size from
-// the Subject's Release (the blocklist row's Indexer/Size stay empty);
-// and the redownload-search consumer for the !skipRedownload arm — both
-// follow-ups that don't affect the core "don't re-grab this release".
+// J439 enriches the event Data with the release indexer/size from the
+// Subject's Release so the blocklist row carries them. Still deferred:
+// the redownload-search consumer for the !skipRedownload arm — a
+// follow-up that doesn't affect the core "don't re-grab this release".
 func (a *queueRemoveAdapter) blocklist(ctx context.Context, td *trackeddownloads.TrackedDownload, skipRedownload bool) {
 	if a.bus == nil {
 		return
@@ -127,6 +141,17 @@ func (a *queueRemoveAdapter) blocklist(ctx context.Context, td *trackeddownloads
 			if len(ev.Languages) == 0 {
 				ev.Languages = r.ParsedEpisodeInfo.Languages
 			}
+		}
+		// J439: carry the release Indexer + Size so the
+		// blocklisthandlers consumer populates the blocklist row's
+		// Indexer/Size columns (it reads ev.Data["indexer"]/["size"]).
+		// Mirrors C# where the blocklist IHandle<DownloadFailedEvent>
+		// reads TrackedDownload.RemoteEpisode.Release.{Indexer,Size}.
+		if rel := releaseInfoOf(r.Release); rel != nil {
+			if rel.Indexer != "" {
+				ev.Data["indexer"] = rel.Indexer
+			}
+			ev.Data["size"] = strconv.FormatInt(rel.Size, 10)
 		}
 	}
 	if ev.SourceTitle == "" && td.DownloadItem != nil {
