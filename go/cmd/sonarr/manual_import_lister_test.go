@@ -7,13 +7,17 @@ import (
 	"testing"
 
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
+	"sonarr.tv/sonarr/internal/datastore/datastoretest"
 	"sonarr.tv/sonarr/internal/disk"
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/language"
+	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/trackeddownloads"
 )
 
 // J387a: mapDecision projects an ImportDecision → ManualImportResource.
@@ -138,6 +142,213 @@ func TestManualImportGetMediaFiles_Guards_J387a(t *testing.T) {
 	}
 	if got == nil || len(got) != 0 {
 		t.Errorf("nil-idm GetMediaFiles = %v, want non-nil empty", got)
+	}
+}
+
+// J387b: mapEpisodeFile projects an existing episode-file row (library
+// mode). Real temp file for size; asserts the persisted-quality decode,
+// language-id projection, EpisodeFileId, single-season, and the Episodes
+// embed filtered to those linked to this file.
+func TestManualImportMapEpisodeFile_J387b(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	rel := "Season 01/Show.S01E01.mkv"
+	if err := os.MkdirAll(filepath.Join(dir, "Season 01"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, rel), []byte("12345"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	fileID := 77
+	f := episodefiles.File{
+		ID: fileID, SeriesID: 42, SeasonNumber: 1, RelativePath: rel,
+		Quality:      `{"quality":1,"revision":{"version":1,"real":0,"isRepack":false}}`,
+		ReleaseGroup: "GRP", Languages: []int{1}, IndexerFlags: 4, ReleaseType: int(parser.ReleaseTypeSingleEpisode),
+	}
+	other := 99
+	allEps := []episodes.Episode{
+		{ID: 1, SeasonNumber: 1, EpisodeNumber: 1, EpisodeFileID: &fileID},
+		{ID: 2, SeasonNumber: 1, EpisodeNumber: 2, EpisodeFileID: &other}, // different file → excluded
+		{ID: 3, SeasonNumber: 1, EpisodeNumber: 3},                        // no file → excluded
+	}
+	a := manualImportDecisionAdapter{disk: disk.NewProvider(slog.Default()), log: slog.Default()}
+	res := a.mapEpisodeFile(f, &series.Series{ID: 42, Path: dir, Title: "Show"}, "ShowFolder", allEps)
+
+	if res.RelativePath != rel {
+		t.Errorf("RelativePath = %q", res.RelativePath)
+	}
+	if res.EpisodeFileID == nil || *res.EpisodeFileID != fileID {
+		t.Errorf("EpisodeFileID = %v, want %d", res.EpisodeFileID, fileID)
+	}
+	if res.SeasonNumber == nil || *res.SeasonNumber != 1 {
+		t.Errorf("SeasonNumber = %v, want 1", res.SeasonNumber)
+	}
+	if res.Size != 5 {
+		t.Errorf("Size = %d, want 5", res.Size)
+	}
+	if res.Quality == nil || res.Quality.Quality.ID != 1 {
+		t.Errorf("Quality = %+v, want id 1 (decoded from persisted column)", res.Quality)
+	}
+	if len(res.Languages) != 1 || res.Languages[0].ID != 1 {
+		t.Errorf("Languages = %v, want [id:1]", res.Languages)
+	}
+	if len(res.Episodes) != 1 || res.Episodes[0].ID != 1 {
+		t.Errorf("Episodes = %+v, want only the file-linked episode id 1", res.Episodes)
+	}
+	if res.ReleaseGroup != "GRP" || res.IndexerFlags != 4 {
+		t.Errorf("ReleaseGroup/IndexerFlags = %q/%d", res.ReleaseGroup, res.IndexerFlags)
+	}
+	if res.Series == nil || res.Series.Title != "Show" {
+		t.Errorf("Series = %+v", res.Series)
+	}
+}
+
+// J387b: mapUnmappedFile projects an on-disk file with no episode-file
+// row — Unknown quality + language, no season, no EpisodeFileId.
+func TestManualImportMapUnmappedFile_J387b(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	file := filepath.Join(dir, "stray.mkv")
+	if err := os.WriteFile(file, []byte("ab"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	a := manualImportDecisionAdapter{disk: disk.NewProvider(slog.Default()), log: slog.Default()}
+	res := a.mapUnmappedFile(file, &series.Series{ID: 1, Path: dir, Title: "S"}, "S")
+
+	if res.EpisodeFileID != nil {
+		t.Errorf("EpisodeFileID = %v, want nil for unmapped", res.EpisodeFileID)
+	}
+	if res.SeasonNumber != nil {
+		t.Errorf("SeasonNumber = %v, want nil for unmapped", res.SeasonNumber)
+	}
+	if res.Quality == nil || res.Quality.Quality.ID != 0 {
+		t.Errorf("Quality = %+v, want Unknown (id 0)", res.Quality)
+	}
+	if len(res.Languages) != 1 || res.Languages[0].ID != 0 {
+		t.Errorf("Languages = %v, want [Unknown]", res.Languages)
+	}
+	if res.Size != 2 {
+		t.Errorf("Size = %d, want 2", res.Size)
+	}
+	if res.Series == nil {
+		t.Error("Series should be set on unmapped item")
+	}
+}
+
+// J387b: library-mode round-trip on a real SQLite DB + real disk. Seeds a
+// series, one mapped episode file + its episode, and writes both the
+// mapped file and an unmapped file under the series folder. GetMediaFiles
+// (seriesId, no season) must return the mapped row (with its episode embed)
+// plus the unmapped stray as an Unknown-quality candidate.
+func TestManualImportLibraryMode_J387b(t *testing.T) {
+	t.Parallel()
+	db := datastoretest.OpenSQLite(t)
+	bus := messaging.New(slog.Default())
+	seriesRepo, err := series.NewRepo(db)
+	if err != nil {
+		t.Fatalf("series.NewRepo: %v", err)
+	}
+	seriesSvc, err := series.NewService(seriesRepo, bus)
+	if err != nil {
+		t.Fatalf("series.NewService: %v", err)
+	}
+	episodesRepo, err := episodes.NewRepo(db)
+	if err != nil {
+		t.Fatalf("episodes.NewRepo: %v", err)
+	}
+	episodesSvc, err := episodes.NewService(episodesRepo, bus)
+	if err != nil {
+		t.Fatalf("episodes.NewService: %v", err)
+	}
+	efRepo, err := episodefiles.NewRepo(db)
+	if err != nil {
+		t.Fatalf("episodefiles.NewRepo: %v", err)
+	}
+	efSvc, err := episodefiles.NewService(efRepo, bus)
+	if err != nil {
+		t.Fatalf("episodefiles.NewService: %v", err)
+	}
+	ctx := t.Context()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Show.S01E01.mkv"), []byte("mapped"), 0o644); err != nil {
+		t.Fatalf("write mapped: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Show.S01E02.mkv"), []byte("stray"), 0o644); err != nil {
+		t.Fatalf("write stray: %v", err)
+	}
+
+	ser := &series.Series{TvdbID: 5, Title: "Show", CleanTitle: "show", Path: dir, Monitored: true, Runtime: 30}
+	if _, err := seriesRepo.Insert(ctx, ser); err != nil {
+		t.Fatalf("insert series: %v", err)
+	}
+	stored, err := efSvc.Add(ctx, &episodefiles.File{
+		SeriesID: ser.ID, SeasonNumber: 1, RelativePath: "Show.S01E01.mkv",
+		Quality: `{"quality":1,"revision":{"version":1}}`, Languages: []int{1},
+	})
+	if err != nil {
+		t.Fatalf("add episodefile: %v", err)
+	}
+	if _, err := episodesRepo.Insert(ctx, &episodes.Episode{
+		SeriesID: ser.ID, SeasonNumber: 1, EpisodeNumber: 1, Title: "Pilot", EpisodeFileID: &stored.ID,
+	}); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+
+	a := manualImportDecisionAdapter{
+		series: seriesSvc, episodes: episodesSvc, episodeFiles: efSvc,
+		disk: disk.NewProvider(slog.Default()), log: slog.Default(),
+	}
+	res, err := a.GetMediaFiles(ctx, apiv3.ManualImportQuery{SeriesID: &ser.ID})
+	if err != nil {
+		t.Fatalf("GetMediaFiles: %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("got %d rows, want 2 (1 mapped + 1 unmapped); rows=%+v", len(res), res)
+	}
+
+	var mapped, unmapped *apiv3.ManualImportResource
+	for i := range res {
+		if res[i].EpisodeFileID != nil {
+			mapped = &res[i]
+		} else {
+			unmapped = &res[i]
+		}
+	}
+	if mapped == nil || mapped.RelativePath != "Show.S01E01.mkv" {
+		t.Fatalf("mapped row missing/wrong: %+v", mapped)
+	}
+	if len(mapped.Episodes) != 1 || mapped.Episodes[0].ID == 0 {
+		t.Errorf("mapped row Episodes = %+v, want the linked episode", mapped.Episodes)
+	}
+	if mapped.Quality == nil || mapped.Quality.Quality.ID != 1 {
+		t.Errorf("mapped Quality = %+v, want id 1", mapped.Quality)
+	}
+	if unmapped == nil || filepath.Base(unmapped.Path) != "Show.S01E02.mkv" {
+		t.Fatalf("unmapped row missing/wrong: %+v", unmapped)
+	}
+	if unmapped.Quality == nil || unmapped.Quality.Quality.ID != 0 {
+		t.Errorf("unmapped Quality = %+v, want Unknown", unmapped.Quality)
+	}
+}
+
+// J387b: downloadId mode with an empty tracked-download cache → Find
+// returns nil → empty list (the production-reachable path until Phase 4
+// download-client wiring populates the cache).
+func TestManualImportDownloadIdMode_NilTracked_J387b(t *testing.T) {
+	t.Parallel()
+	a := manualImportDecisionAdapter{
+		idm:     &episodeimport.ImportDecisionMaker{},
+		disk:    disk.NewProvider(slog.Default()),
+		tracked: trackeddownloads.NewService(slog.Default()),
+		log:     slog.Default(),
+	}
+	got, err := a.GetMediaFiles(t.Context(), apiv3.ManualImportQuery{DownloadID: "unknown"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Errorf("downloadId+empty-cache = %v, want non-nil empty", got)
 	}
 }
 

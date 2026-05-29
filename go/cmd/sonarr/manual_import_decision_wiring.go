@@ -28,6 +28,7 @@ import (
 	apiv3 "sonarr.tv/sonarr/internal/api/v3"
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/downloadclients"
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/language"
@@ -37,6 +38,7 @@ import (
 	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/trackeddownloads"
 )
 
 // manualImportDecisionAdapter satisfies
@@ -44,13 +46,15 @@ import (
 // ImportDecisionMaker + AggregationService + the series/episode/disk
 // lookups needed to assemble a LocalEpisode from a reprocess item.
 type manualImportDecisionAdapter struct {
-	idm      *episodeimport.ImportDecisionMaker
-	agg      *episodeimport.AggregationService
-	series   *series.Service
-	episodes *episodes.Service
-	disk     *disk.Provider
-	parsing  *parsingservice.Service
-	log      *slog.Logger
+	idm          *episodeimport.ImportDecisionMaker
+	agg          *episodeimport.AggregationService
+	series       *series.Service
+	episodes     *episodes.Service
+	episodeFiles *episodefiles.Service
+	tracked      *trackeddownloads.Service
+	disk         *disk.Provider
+	parsing      *parsingservice.Service
+	log          *slog.Logger
 }
 
 // ReprocessDecisionRejections assembles a LocalEpisode from the
@@ -177,64 +181,82 @@ func manualImportLanguages(refs []apiv3.LanguageRef) []language.Language {
 	return out
 }
 
-// GetMediaFiles ports the disk-mode arm of C#
-// `ManualImportService.GetMediaFiles(path, downloadId, seriesId,
-// filterExistingFiles)` (`ManualImportService.cs:116-142`) via the
-// controller dispatch at `ManualImportController.cs:25-35`.
+// GetMediaFiles ports C# `ManualImportService.GetMediaFiles` via the
+// controller dispatch at `ManualImportController.cs:25-35`:
 //
-// J387a scope — the series-resolved disk walk:
-//   - folder path → ProcessFolder: resolve series by parsing the folder
-//     name, scan video files, run GetImportDecisions, map each decision.
-//   - single file path → ProcessFile: resolve series by parsing the file
-//     name, run GetImportDecisions over the one file, map.
+//   - seriesId set + no downloadId → library mode (J387b): the series'
+//     existing episode files (by season or whole series) + the unmapped
+//     disk scan (whole-series only). C# `:81-114`.
+//   - downloadId set → disk mode rooted at the tracked download's output
+//     path (J387b). C# `:118-128`.
+//   - else → disk mode rooted at the `folder` query path (J387a).
 //
-// Deferred to J387b (each returns an empty list with a debug log here):
-//   - library mode (seriesId set + no downloadId → GetFilesBySeries/Season
-//   - unmapped disk scan; controller's first branch).
-//   - downloadId mode (tracked-download output path).
-//   - the unknown-series fallback (per-file UnknownSeries rejections +
-//     recursive subfolder descent + the >100-file ProcessDownloadDirectory
-//     short-circuit). When the series can't be resolved this returns `[]`,
-//     matching the pre-J387 stub for that case.
+// The disk walk resolves a series (explicit seriesId → folder-name parse
+// → tracked-download fallback), scans video files, runs GetImportDecisions,
+// and maps each decision. Still deferred: the unknown-series fallback
+// (per-file UnknownSeries rejections + recursive subfolder descent + the
+// >100-file ProcessDownloadDirectory short-circuit at C# `:270-291`) —
+// when the series can't be resolved this returns `[]`.
 func (a manualImportDecisionAdapter) GetMediaFiles(ctx context.Context, q apiv3.ManualImportQuery) ([]apiv3.ManualImportResource, error) {
 	empty := []apiv3.ManualImportResource{}
-	if a.idm == nil || a.disk == nil {
+	if a.disk == nil {
 		return empty, nil
 	}
 
-	// Controller dispatch: seriesId + no downloadId → library mode (J387b).
-	if q.SeriesID != nil && strings.TrimSpace(q.DownloadID) == "" {
-		a.log.Debug("manualImport.GetMediaFiles: library mode deferred to J387b", "seriesId", *q.SeriesID)
-		return empty, nil
+	downloadID := strings.TrimSpace(q.DownloadID)
+
+	// Controller dispatch: seriesId + no downloadId → library mode (uses
+	// episodeFiles/series/episodes + disk; does NOT need the idm).
+	if q.SeriesID != nil && downloadID == "" {
+		return a.libraryMediaFiles(ctx, *q.SeriesID, q.SeasonNumber), nil
 	}
-	// downloadId mode (J387b).
-	if strings.TrimSpace(q.DownloadID) != "" {
-		a.log.Debug("manualImport.GetMediaFiles: downloadId mode deferred to J387b", "downloadId", q.DownloadID)
+
+	// The disk-walk decision path needs the ImportDecisionMaker.
+	if a.idm == nil {
 		return empty, nil
 	}
 
+	// Disk mode. downloadId roots the walk at the tracked download's
+	// output path (C# `:118-128`); else the `folder` query param.
 	path := strings.TrimSpace(q.Folder)
+	var td *trackeddownloads.TrackedDownload
+	if downloadID != "" {
+		if a.tracked == nil {
+			return empty, nil
+		}
+		td = a.tracked.Find(downloadID)
+		if td == nil {
+			return empty, nil
+		}
+		switch {
+		case td.ImportItem != nil && td.ImportItem.OutputPath.FullPath() != "":
+			path = td.ImportItem.OutputPath.FullPath()
+		case td.DownloadItem != nil:
+			path = td.DownloadItem.OutputPath.FullPath()
+		}
+	}
+
 	if path == "" {
 		return empty, nil
 	}
 	if a.disk.FolderExists(path) {
-		return a.processManualFolder(ctx, path, q.FilterExistingFiles)
+		return a.processManualFolder(ctx, path, downloadID, q.SeriesID, td, q.FilterExistingFiles)
 	}
 	if a.disk.FileExists(path) {
-		return a.processManualFile(ctx, path)
+		return a.processManualFile(ctx, path, downloadID, td)
 	}
 	return empty, nil
 }
 
 // processManualFolder ports the series-resolved arm of C# ProcessFolder
 // (`ManualImportService.cs:293-298`).
-func (a manualImportDecisionAdapter) processManualFolder(ctx context.Context, folder string, filterExisting bool) ([]apiv3.ManualImportResource, error) {
+func (a manualImportDecisionAdapter) processManualFolder(ctx context.Context, folder, downloadID string, seriesIDOverride *int, td *trackeddownloads.TrackedDownload, filterExisting bool) ([]apiv3.ManualImportResource, error) {
 	empty := []apiv3.ManualImportResource{}
 	folderName := ospath.Base(folder)
 
-	ser := a.resolveSeries(ctx, folderName)
+	ser := a.resolveSeriesForDisk(ctx, folderName, seriesIDOverride, td)
 	if ser == nil {
-		a.log.Debug("manualImport: series unresolved from folder; unknown-series fallback deferred to J387b", "folder", folder)
+		a.log.Debug("manualImport: series unresolved from folder; unknown-series fallback deferred", "folder", folder)
 		return empty, nil
 	}
 
@@ -249,7 +271,10 @@ func (a manualImportDecisionAdapter) processManualFolder(ctx context.Context, fo
 		return empty, nil
 	}
 
+	dlItem, dlInfo := trackedDownloadInfo(td)
 	decisions, err := a.idm.GetImportDecisions(ctx, videoFiles, ser, episodeimport.GetImportDecisionsOptions{
+		DownloadItem:        dlItem,
+		DownloadItemInfo:    dlInfo,
 		FolderInfo:          parser.ParseTitle(folderName),
 		SceneSource:         a.sceneSource(ser, folder),
 		FilterExistingFiles: filterExisting,
@@ -257,28 +282,126 @@ func (a manualImportDecisionAdapter) processManualFolder(ctx context.Context, fo
 	if err != nil {
 		return empty, fmt.Errorf("GetImportDecisions: %w", err)
 	}
-	return a.mapDecisions(decisions, folder, "", folderName), nil
+	return a.mapDecisions(decisions, folder, downloadID, folderName), nil
 }
 
 // processManualFile ports the series-resolved arm of C# ProcessFile
 // (`ManualImportService.cs:349-361`) for a single file path.
-func (a manualImportDecisionAdapter) processManualFile(ctx context.Context, file string) ([]apiv3.ManualImportResource, error) {
+func (a manualImportDecisionAdapter) processManualFile(ctx context.Context, file, downloadID string, td *trackeddownloads.TrackedDownload) ([]apiv3.ManualImportResource, error) {
 	empty := []apiv3.ManualImportResource{}
 	rootFolder := filepath.Dir(file)
 
-	ser := a.resolveSeries(ctx, nameWithoutExt(file))
+	ser := a.resolveSeriesForDisk(ctx, nameWithoutExt(file), nil, td)
 	if ser == nil {
-		a.log.Debug("manualImport: series unresolved from file; unknown-series fallback deferred to J387b", "file", file)
+		a.log.Debug("manualImport: series unresolved from file; unknown-series fallback deferred", "file", file)
 		return empty, nil
 	}
 
+	dlItem, dlInfo := trackedDownloadInfo(td)
 	decisions, err := a.idm.GetImportDecisions(ctx, []string{file}, ser, episodeimport.GetImportDecisionsOptions{
-		SceneSource: a.sceneSource(ser, rootFolder),
+		DownloadItem:     dlItem,
+		DownloadItemInfo: dlInfo,
+		SceneSource:      a.sceneSource(ser, rootFolder),
 	})
 	if err != nil {
 		return empty, fmt.Errorf("GetImportDecisions: %w", err)
 	}
-	return a.mapDecisions(decisions, rootFolder, "", ""), nil
+	return a.mapDecisions(decisions, rootFolder, downloadID, ""), nil
+}
+
+// resolveSeriesForDisk resolves the series for the disk walk: explicit
+// seriesId (C# `:243-246`) → folder/file-name parse (C# `:249-256`) →
+// tracked-download RemoteEpisode fallback (C# `:264-267`).
+func (a manualImportDecisionAdapter) resolveSeriesForDisk(ctx context.Context, title string, seriesIDOverride *int, td *trackeddownloads.TrackedDownload) *series.Series {
+	if seriesIDOverride != nil {
+		if ser, err := a.series.GetSeries(ctx, *seriesIDOverride); err == nil && ser != nil {
+			return ser
+		}
+	}
+	if ser := a.resolveSeries(ctx, title); ser != nil {
+		return ser
+	}
+	if td != nil && td.RemoteEpisode != nil {
+		return td.RemoteEpisode.Series
+	}
+	return nil
+}
+
+// trackedDownloadInfo extracts the download item + its parsed title for
+// the GetImportDecisions options (C# `:293` downloadClientItem + info).
+func trackedDownloadInfo(td *trackeddownloads.TrackedDownload) (*downloadclients.Item, *parser.ParsedEpisodeInfo) {
+	if td == nil || td.DownloadItem == nil {
+		return nil, nil
+	}
+	return td.DownloadItem, parser.ParseTitle(td.DownloadItem.Title)
+}
+
+// libraryMediaFiles ports C# `GetMediaFiles(int seriesId, int? seasonNumber)`
+// at `ManualImportService.cs:81-114`: map the series' existing episode
+// files (by season or whole series), then (whole-series only) append the
+// unmapped video files found on disk under the series folder.
+func (a manualImportDecisionAdapter) libraryMediaFiles(ctx context.Context, seriesID int, seasonNumber *int) []apiv3.ManualImportResource {
+	empty := []apiv3.ManualImportResource{}
+	if a.episodeFiles == nil {
+		return empty
+	}
+	ser, err := a.series.GetSeries(ctx, seriesID)
+	if err != nil || ser == nil {
+		a.log.Debug("manualImport.library: series lookup failed", "seriesId", seriesID, "err", err)
+		return empty
+	}
+
+	var files []episodefiles.File
+	if seasonNumber != nil {
+		files, err = a.episodeFiles.GetFilesBySeason(ctx, seriesID, *seasonNumber)
+	} else {
+		files, err = a.episodeFiles.GetFilesBySeries(ctx, seriesID)
+	}
+	if err != nil {
+		a.log.Debug("manualImport.library: episode files lookup failed", "seriesId", seriesID, "err", err)
+		return empty
+	}
+
+	var eps []episodes.Episode
+	if a.episodes != nil {
+		eps, _ = a.episodes.GetEpisodesBySeries(ctx, seriesID)
+	}
+	folderName := ospath.Base(ser.Path)
+
+	out := make([]apiv3.ManualImportResource, 0, len(files))
+	for _, f := range files {
+		out = append(out, a.mapEpisodeFile(f, ser, folderName, eps))
+	}
+
+	// Whole-series request also surfaces unmapped on-disk files (C# `:90-110`).
+	if seasonNumber == nil {
+		out = append(out, a.unmappedLibraryFiles(ctx, ser, folderName)...)
+	}
+	return out
+}
+
+// unmappedLibraryFiles scans the series folder for video files not yet
+// represented by an episode-file row and maps each as an Unknown-quality
+// candidate (C# `:90-110`).
+func (a manualImportDecisionAdapter) unmappedLibraryFiles(ctx context.Context, ser *series.Series, folderName string) []apiv3.ManualImportResource {
+	videoFiles, err := mediafiles.GetVideoFiles(a.disk, ser.Path, true)
+	if err != nil {
+		return nil
+	}
+	videoFiles, err = mediafiles.FilterPaths(ser.Path, videoFiles, true)
+	if err != nil {
+		return nil
+	}
+	unmapped, err := a.episodeFiles.FilterExistingFiles(ctx, videoFiles, ser)
+	if err != nil {
+		a.log.Debug("manualImport.library: FilterExistingFiles failed", "seriesId", ser.ID, "err", err)
+		return nil
+	}
+	out := make([]apiv3.ManualImportResource, 0, len(unmapped))
+	for _, file := range unmapped {
+		out = append(out, a.mapUnmappedFile(file, ser, folderName))
+	}
+	return out
 }
 
 // resolveSeries runs the production parsing-service title resolution.
@@ -355,6 +478,81 @@ func (a manualImportDecisionAdapter) mapDecision(d *episodeimport.ImportDecision
 		res.Series = &sr
 	}
 	return res
+}
+
+// mapEpisodeFile ports the EpisodeFile overload of C#
+// `ManualImportService.MapItem(EpisodeFile, ...)` at `:461-483` — the
+// library-mode projection of an existing episode-file row. The persisted
+// Quality column (bare-int Model JSON) decodes via blocklistQualityResource;
+// CustomFormats (the formatCalculator pass) stays deferred.
+func (a manualImportDecisionAdapter) mapEpisodeFile(f episodefiles.File, ser *series.Series, folderName string, allEps []episodes.Episode) apiv3.ManualImportResource {
+	path := filepath.Join(ser.Path, f.RelativePath)
+	season := f.SeasonNumber
+	id := f.ID
+	res := apiv3.ManualImportResource{
+		ID:            hashInt31(path),
+		Path:          path,
+		RelativePath:  f.RelativePath,
+		FolderName:    folderName,
+		Name:          nameWithoutExt(path),
+		SeasonNumber:  &season,
+		EpisodeFileID: &id,
+		ReleaseGroup:  f.ReleaseGroup,
+		IndexerFlags:  f.IndexerFlags,
+		ReleaseType:   apiv3.CamelCaseEnumName(parser.ReleaseType(f.ReleaseType).String()),
+		Quality:       blocklistQualityResource(f.Quality),
+		Languages:     languageRefsFromIDs(f.Languages),
+		Episodes:      []apiv3.EpisodeResource{},
+		CustomFormats: []apiv3.CustomFormatResource{},
+		Rejections:    []apiv3.ManualImportRejectionResource{},
+	}
+	if size, err := a.disk.GetFileSize(path); err == nil {
+		res.Size = size
+	}
+	eps := make([]apiv3.EpisodeResource, 0)
+	for _, e := range allEps {
+		if e.EpisodeFileID != nil && *e.EpisodeFileID == f.ID {
+			eps = append(eps, apiv3.ToEpisodeResource(e))
+		}
+	}
+	res.Episodes = eps
+	sr := apiv3.ToSeriesResource(*ser)
+	res.Series = &sr
+	return res
+}
+
+// mapUnmappedFile ports the unmapped-file projection at C#
+// `ManualImportService.cs:96-110`: a video file on disk with no episode-
+// file row → Unknown quality + language, empty episodes, no season.
+func (a manualImportDecisionAdapter) mapUnmappedFile(file string, ser *series.Series, folderName string) apiv3.ManualImportResource {
+	res := apiv3.ManualImportResource{
+		ID:            hashInt31(file),
+		Path:          file,
+		RelativePath:  manualImportRelativePath(ser.Path, file),
+		FolderName:    folderName,
+		Name:          nameWithoutExt(file),
+		Quality:       apiv3.ToQualityModelResource(quality.NewModel(quality.Unknown)),
+		Languages:     []apiv3.LanguageRef{apiv3.ToLanguageRef(language.Unknown.ID)},
+		Episodes:      []apiv3.EpisodeResource{},
+		CustomFormats: []apiv3.CustomFormatResource{},
+		Rejections:    []apiv3.ManualImportRejectionResource{},
+	}
+	if size, err := a.disk.GetFileSize(file); err == nil {
+		res.Size = size
+	}
+	sr := apiv3.ToSeriesResource(*ser)
+	res.Series = &sr
+	return res
+}
+
+// languageRefsFromIDs projects persisted language ids (the episodefiles
+// row shape) to the wire `[{id,name}]` refs.
+func languageRefsFromIDs(ids []int) []apiv3.LanguageRef {
+	out := make([]apiv3.LanguageRef, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, apiv3.ToLanguageRef(id))
+	}
+	return out
 }
 
 // hashInt31 ports C# `HashConverter.GetHashInt31(s)`: SHA1(s) → first 4

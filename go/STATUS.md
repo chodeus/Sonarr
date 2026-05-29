@@ -19524,3 +19524,19 @@ Deferred to J387b (each returns `[]` + debug log): library mode (seriesId + no d
 Tests: api/v3 fake-lister (query→ManualImportQuery mapping, filterExistingFiles default/false, nil-result→`[]`) + 3 stub tests migrated to the `(lister)` signature; cmd/sonarr `mapDecision` with a REAL temp file (true GetFileSize), multi-season no-embed guard, nil-idm guard, helper units. v5 GetHandler + its test migrated.
 
 R: list (disk mode) WIRED. W: n/a. M: handler + adapter docs + this entry. Matrix row #1 stays open (downloadId/library/unknown-series → J387b; QualityWeight/episode projection → J387c). Hard gates clean (build, race tests on api v3 + v5 manualimport + cmd/sonarr + contract, vet, gofmt).
+
+---
+
+## J387b — Verticalization Arc: Manual Import LIST candidates, downloadId + library/unmapped modes (punch-list #1, slice b)
+
+Completes the C# `ManualImportController` dispatch beyond J387a. `GetMediaFiles` now routes:
+- **library mode** (`seriesId` + no `downloadId`, C# `GetMediaFiles(seriesId, seasonNumber)`): `GetFilesBySeason`/`GetFilesBySeries` → `mapEpisodeFile` (EpisodeFile `MapItem` overload — persisted Quality via `blocklistQualityResource`, `[]int` Languages, EpisodeFileId, single-season, Episodes filtered to the file's links), plus whole-series `unmappedLibraryFiles` (scan → `FilterPaths` → `episodeFiles.FilterExistingFiles` → `mapUnmappedFile` w/ Unknown quality+language).
+- **downloadId mode**: resolve walk root from `td.ImportItem/DownloadItem.OutputPath`, shared disk walk threading the download item + parsed title into `GetImportDecisions`, series fallback `td.RemoteEpisode.Series`.
+
+Refactored `processManualFolder`/`processManualFile` to `(downloadId, seriesIDOverride, td)`; new `resolveSeriesForDisk` + `trackedDownloadInfo`. Guard fix: universal precondition is `disk != nil`; `idm` gates only the disk-walk path (library mode no longer wrongly blocked). Adapter +`episodeFiles`/`tracked`, wired in main.go.
+
+Deferred (noted): unknown-series fallback (recursive subfolder descent + >100-file ProcessDownloadDirectory).
+
+Tests: `mapEpisodeFile`/`mapUnmappedFile` units (real temp file, persisted-quality decode, episode-link filter), real SQLite + real-disk `libraryMediaFiles` round-trip (mapped row w/ episode embed + unmapped Unknown row), downloadId+empty-cache nil-guard.
+
+R: list (library + downloadId modes) WIRED. W: n/a. M: adapter doc + this entry. Matrix row #1 still open → J387c (QualityWeight + fuller episode projection) then J388. Hard gates clean (build, race tests on api v3 + v5 manualimport + cmd/sonarr + contract, vet, gofmt).
