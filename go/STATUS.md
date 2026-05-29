@@ -19510,3 +19510,17 @@ Registered in `handlers.go` (new `ManualImportDeps`, guarded by `Importer!=nil`,
 Test (`manualimport_test.go`): recording-importer round-trip asserting decision contents (resolved series+episodes, re-applied quality/languages/releaseGroup) + untracked/existing/tracked routing + newDownload flag. The disk move + EpisodeFile insert side-effect lives in `ImportApprovedEpisodes.Import` and is covered by that package's temp-dir tests; the handler does no disk I/O of its own.
 
 DEFERRED vs C#: post-import UntrackedDownloadCompleted/DownloadCompleted event publication + tracked output-folder cleanup (event-bus arms unported); custom-format recalc. R: n/a (command). W: ManualImport execute WIRED. M: handler doc + this entry. Matrix row #2 → done (J386); row #1 (LIST) still open → J387. Hard gates clean (build, race tests on commands+cmd/sonarr+contract, vet, gofmt).
+
+---
+
+## J387a — Verticalization Arc: Manual Import LIST candidates, file/folder disk mode (punch-list #1, slice a)
+
+Replaces the `[]` GET stub (`manual_import.go:36`) for the disk-walk path. **api/v3**: new `ManualImportResource` (C# `ManualImportResource.cs:17-38`: `id=HashInt31(path)` + path/relativePath/folderName/name/size/series(base)/seasonNumber/episodes/releaseGroup/quality(expanded)/languages/indexerFlags/releaseType/rejections; qualityWeight + customFormats/score zero for now — J387c/deferred), `ManualImportQuery`, optional-extension `ManualImportLister`. `ManualImportHandler(lister)` parses the query (filterExistingFiles default true) and delegates; nil lister keeps `[]`.
+
+**cmd/sonarr**: extended `manualImportDecisionAdapter` (+`parsing *parsingservice.Service`) with `GetMediaFiles` = C# controller dispatch. `processManualFolder`: parse folder name → `GetSeriesFromTitle` → `mediafiles.GetVideoFiles`+`FilterPaths` → `idm.GetImportDecisions` → map. `processManualFile`: single-file analog. `mapDecision` ports C# `MapItem(decision,...)` (hashInt31, relpath, single-season Episodes embed, base Series, Quality/Languages/Rejections). Wired via type-assertion on the already-threaded rejector (same adapter satisfies both interfaces — no new buildHostServer param); v3 + v5 GET routes.
+
+Deferred to J387b (each returns `[]` + debug log): library mode (seriesId + no downloadId), downloadId mode (tracked-download output path), unknown-series fallback (recursive subfolder descent + >100-file ProcessDownloadDirectory).
+
+Tests: api/v3 fake-lister (query→ManualImportQuery mapping, filterExistingFiles default/false, nil-result→`[]`) + 3 stub tests migrated to the `(lister)` signature; cmd/sonarr `mapDecision` with a REAL temp file (true GetFileSize), multi-season no-embed guard, nil-idm guard, helper units. v5 GetHandler + its test migrated.
+
+R: list (disk mode) WIRED. W: n/a. M: handler + adapter docs + this entry. Matrix row #1 stays open (downloadId/library/unknown-series → J387b; QualityWeight/episode projection → J387c). Hard gates clean (build, race tests on api v3 + v5 manualimport + cmd/sonarr + contract, vet, gofmt).

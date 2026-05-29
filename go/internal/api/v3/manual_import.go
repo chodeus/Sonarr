@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -16,39 +17,133 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 )
 
+// ManualImportResource is the per-file wire shape for GET
+// /api/v3/manualimport. Mirrors C#
+// `src/Sonarr.Api.V3/ManualImport/ManualImportResource.cs:17-38`.
+//
+// `Id` is `HashConverter.GetHashInt31(Path)` — a stable per-path id the
+// React UI uses as the table-row key (the file has no DB row yet).
+// `Quality` / `Languages` use the same expanded wire shapes the
+// reprocess item carries (`*QualityModelResource`, `[]LanguageRef`) so
+// the UI round-trips them unchanged into the ManualImport command.
+//
+// J387a fills the disk-decision subset: Id / Path / RelativePath /
+// FolderName / Name / Size / Series / SeasonNumber / Episodes /
+// ReleaseGroup / Quality / Languages / IndexerFlags / ReleaseType /
+// Rejections. QualityWeight (J387c) and CustomFormats + CustomFormatScore
+// (the LocalEpisodeFormatCalculator pass — deferred) emit their zero
+// values for now.
+type ManualImportResource struct {
+	ID                int                             `json:"id"`
+	Path              string                          `json:"path"`
+	RelativePath      string                          `json:"relativePath"`
+	FolderName        string                          `json:"folderName"`
+	Name              string                          `json:"name"`
+	Size              int64                           `json:"size"`
+	Series            *SeriesResource                 `json:"series,omitempty"`
+	SeasonNumber      *int                            `json:"seasonNumber,omitempty"`
+	Episodes          []EpisodeResource               `json:"episodes"`
+	EpisodeFileID     *int                            `json:"episodeFileId,omitempty"`
+	ReleaseGroup      string                          `json:"releaseGroup"`
+	Quality           *QualityModelResource           `json:"quality,omitempty"`
+	Languages         []LanguageRef                   `json:"languages"`
+	QualityWeight     int                             `json:"qualityWeight"`
+	DownloadID        string                          `json:"downloadId,omitempty"`
+	CustomFormats     []CustomFormatResource          `json:"customFormats"`
+	CustomFormatScore int                             `json:"customFormatScore"`
+	IndexerFlags      int                             `json:"indexerFlags"`
+	ReleaseType       string                          `json:"releaseType"`
+	Rejections        []ManualImportRejectionResource `json:"rejections"`
+}
+
+// ManualImportQuery carries the parsed GET /api/v3/manualimport query
+// parameters into the [ManualImportLister]. Mirrors the C#
+// `ManualImportController.GetMediaFiles` signature at
+// `ManualImportController.cs:27`.
+type ManualImportQuery struct {
+	Folder              string
+	DownloadID          string
+	SeriesID            *int
+	SeasonNumber        *int
+	FilterExistingFiles bool
+}
+
+// ManualImportLister is the optional-extension surface for the GET
+// handler's disk-walk + decision evaluation. The cmd/sonarr wrapper
+// (which carries the production ImportDecisionMaker + AggregationService
+// + disk/parsing/series/episode lookups) implements it; the handler
+// discovers it via a nil-check so test fakes / hosts without the wiring
+// keep the pre-J387 `[]` behaviour. Returns wire resources directly so
+// the api/v3 layer stays free of episodeimport domain imports.
+type ManualImportLister interface {
+	GetMediaFiles(ctx context.Context, q ManualImportQuery) ([]ManualImportResource, error)
+}
+
 // ManualImportHandler returns GET /api/v3/manualimport. Mirrors C#
 // `ManualImportController.GetMediaFiles` at
 // `src/Sonarr.Api.V3/ManualImport/ManualImportController.cs:25-36`
 // which dispatches on (seriesId + seasonNumber) vs (folder/downloadId
-// /seriesId/filterExistingFiles) and returns ManualImportResource[]
-// — a per-file projection with quality/language inference + rejection
-// list.
+// /seriesId/filterExistingFiles) and returns ManualImportResource[].
 //
-// DEFERRED with rationale: the manual-import service that performs
-// the disk walk + parser + decision-engine evaluation isn't ported.
-// Today this handler emits `[]` matching the no-results wire shape
-// so the React UI's manual-import folder browser gets 200 instead of
-// 404. The POST companion (reprocessItem) is intentionally NOT
-// stubbed - silently no-opping a POST that the user expects to
-// import files would be misleading.
-//
-// Query params are validated but otherwise ignored.
-func ManualImportHandler() http.Handler {
+// When lister is nil the handler emits `[]` (the pre-J387 stub posture
+// — a 200 for the UI's folder browser). When wired, it parses the query
+// params and delegates the disk walk + decision evaluation + mapping to
+// the lister. `filterExistingFiles` defaults to true (C# default arg at
+// `ManualImportController.cs:27`).
+func ManualImportHandler(lister ManualImportLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		// Validate int params if present.
-		for _, key := range []string{"seriesId", "seasonNumber"} {
-			if v := q.Get(key); v != "" {
-				if _, err := strconv.Atoi(v); err != nil {
-					httperr.BadRequest(w, "manualimport: invalid "+key)
-					return
-				}
-			}
+		seriesID, ok := parseOptionalIntParam(w, q, "seriesId")
+		if !ok {
+			return
+		}
+		seasonNumber, ok := parseOptionalIntParam(w, q, "seasonNumber")
+		if !ok {
+			return
+		}
+
+		if lister == nil {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+
+		res, err := lister.GetMediaFiles(r.Context(), ManualImportQuery{
+			Folder:              q.Get("folder"),
+			DownloadID:          q.Get("downloadId"),
+			SeriesID:            seriesID,
+			SeasonNumber:        seasonNumber,
+			FilterExistingFiles: q.Get("filterExistingFiles") != "false",
+		})
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("manualimport: %w", err), nil)
+			return
+		}
+		if res == nil {
+			res = []ManualImportResource{}
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`[]`))
+		buf, _ := json.Marshal(res)
+		_, _ = w.Write(buf)
 	})
+}
+
+// parseOptionalIntParam reads an optional integer query param. Returns
+// (nil, true) when absent, (ptr, true) when a valid int, and writes a
+// 400 + returns (nil, false) when present but non-numeric.
+func parseOptionalIntParam(w http.ResponseWriter, q url.Values, key string) (*int, bool) {
+	v := q.Get(key)
+	if v == "" {
+		return nil, true
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		httperr.BadRequest(w, "manualimport: invalid "+key)
+		return nil, false
+	}
+	return &n, true
 }
 
 // ManualImportReprocessItem is the per-item wire shape for POST

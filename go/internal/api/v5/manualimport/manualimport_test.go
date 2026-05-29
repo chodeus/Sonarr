@@ -34,7 +34,7 @@ func TestGetHandler_EmptyCorpus_Returns200EmptyArray(t *testing.T) {
 	// at the v5 surface.
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v5/manualimport", nil)
-	GetHandler().ServeHTTP(rr, req)
+	GetHandler(nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200; body=%q", rr.Code, rr.Body.String())
 	}
@@ -50,7 +50,7 @@ func TestGetHandler_InvalidSeriesID_Returns400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v5/manualimport?seriesId=abc", nil)
-	GetHandler().ServeHTTP(rr, req)
+	GetHandler(nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d want 400", rr.Code)
 	}

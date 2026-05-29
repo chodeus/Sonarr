@@ -18,7 +18,7 @@ import (
 func TestManualImportHandler_EmptyArray(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	ManualImportHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/manualimport", nil))
+	ManualImportHandler(nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/manualimport", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
@@ -37,7 +37,7 @@ func TestManualImportHandler_QueryParamsAccepted(t *testing.T) {
 	}
 	for _, qs := range cases {
 		rr := httptest.NewRecorder()
-		ManualImportHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/manualimport"+qs, nil))
+		ManualImportHandler(nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/manualimport"+qs, nil))
 		if rr.Code != http.StatusOK || rr.Body.String() != "[]" {
 			t.Errorf("query %q: status=%d body=%q", qs, rr.Code, rr.Body.String())
 		}
@@ -48,10 +48,90 @@ func TestManualImportHandler_InvalidInt_400(t *testing.T) {
 	t.Parallel()
 	for _, key := range []string{"seriesId", "seasonNumber"} {
 		rr := httptest.NewRecorder()
-		ManualImportHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/manualimport?"+key+"=abc", nil))
+		ManualImportHandler(nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/manualimport?"+key+"=abc", nil))
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("%s=abc: status %d", key, rr.Code)
 		}
+	}
+}
+
+// fakeManualImportLister records the query it was called with and
+// returns a canned resource list.
+type fakeManualImportLister struct {
+	gotQuery ManualImportQuery
+	ret      []ManualImportResource
+}
+
+func (f *fakeManualImportLister) GetMediaFiles(_ context.Context, q ManualImportQuery) ([]ManualImportResource, error) {
+	f.gotQuery = q
+	return f.ret, nil
+}
+
+func TestManualImportHandler_Lister_MapsQueryAndProjects_J387a(t *testing.T) {
+	t.Parallel()
+	sn := 1
+	lister := &fakeManualImportLister{ret: []ManualImportResource{{
+		ID:           12345,
+		Path:         "/dl/Show.S01E01.mkv",
+		Name:         "Show.S01E01",
+		Size:         42,
+		SeasonNumber: &sn,
+		ReleaseGroup: "SONARR",
+		Episodes:     []EpisodeResource{},
+		Languages:    []LanguageRef{},
+		Rejections:   []ManualImportRejectionResource{},
+	}}}
+	rr := httptest.NewRecorder()
+	ManualImportHandler(lister).ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/api/v3/manualimport?folder=/dl&downloadId=abc&seriesId=7&seasonNumber=1", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	// Query mapping.
+	if lister.gotQuery.Folder != "/dl" || lister.gotQuery.DownloadID != "abc" {
+		t.Errorf("folder/downloadId = %q/%q", lister.gotQuery.Folder, lister.gotQuery.DownloadID)
+	}
+	if lister.gotQuery.SeriesID == nil || *lister.gotQuery.SeriesID != 7 {
+		t.Errorf("seriesId = %v, want 7", lister.gotQuery.SeriesID)
+	}
+	if lister.gotQuery.SeasonNumber == nil || *lister.gotQuery.SeasonNumber != 1 {
+		t.Errorf("seasonNumber = %v, want 1", lister.gotQuery.SeasonNumber)
+	}
+	if !lister.gotQuery.FilterExistingFiles {
+		t.Error("filterExistingFiles should default to true when absent")
+	}
+	// Projection.
+	var got []ManualImportResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != 12345 || got[0].Path != "/dl/Show.S01E01.mkv" {
+		t.Fatalf("resource = %+v", got)
+	}
+}
+
+func TestManualImportHandler_FilterExistingFilesFalse_J387a(t *testing.T) {
+	t.Parallel()
+	lister := &fakeManualImportLister{ret: []ManualImportResource{}}
+	rr := httptest.NewRecorder()
+	ManualImportHandler(lister).ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/api/v3/manualimport?folder=/dl&filterExistingFiles=false", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if lister.gotQuery.FilterExistingFiles {
+		t.Error("filterExistingFiles=false should parse to false")
+	}
+}
+
+func TestManualImportHandler_Lister_NilResultIsEmptyArray_J387a(t *testing.T) {
+	t.Parallel()
+	lister := &fakeManualImportLister{ret: nil}
+	rr := httptest.NewRecorder()
+	ManualImportHandler(lister).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/manualimport?folder=/dl", nil))
+	if rr.Code != http.StatusOK || rr.Body.String() != "[]" {
+		t.Errorf("status=%d body=%q, want 200 []", rr.Code, rr.Body.String())
 	}
 }
 

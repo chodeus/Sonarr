@@ -69,9 +69,10 @@ type EpisodeLookup = apiv3.ManualImportEpisodeLookup
 
 // ----- handlers (both path-aliases) -----
 
-// GetHandler returns GET /api/v5/manualimport. Same status + envelope
-// as v3 — v3 stub emits `[]` for empty corpus; populated-row mapping
-// awaits the manual-import service port.
+// GetHandler returns GET /api/v5/manualimport. Path-alias of the v3
+// handler; takes the same optional [apiv3.ManualImportLister] (J387a) —
+// nil keeps the `[]` stub posture, a wired lister returns the disk-walk
+// decision projection.
 var GetHandler = apiv3.ManualImportHandler
 
 // ReprocessHandler returns POST /api/v5/manualimport. Same status

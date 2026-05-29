@@ -2438,6 +2438,17 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		customFormatsSvc:   customFormatsSvc,
 		decisionRejector:   manualImportDecisionRejector,
 	}
+	// J387a: the ManualImport GET disk-walk lister. The same
+	// manualImportDecisionAdapter that satisfies ManualImportDecisionRejector
+	// also implements ManualImportLister (it already carries the
+	// ImportDecisionMaker + disk + parsing deps); discover it via the
+	// optional-extension type-assertion so the GET handler lights up
+	// without a new buildHostServer param. nil-tolerant: a rejector that
+	// doesn't implement the lister leaves the handler on its `[]` stub.
+	var manualImportLister apiv3.ManualImportLister
+	if l, ok := manualImportDecisionRejector.(apiv3.ManualImportLister); ok {
+		manualImportLister = l
+	}
 	// 5.I7: log-file adapter sources LogFolder = <AppData>/logs and
 	// URLBase from configfile.Provider. The folder string + URLBase
 	// are resolved at boot in buildHostServer and snapshot into the
@@ -3009,7 +3020,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// ReprocessResource adds `relativePath` field — empty-corpus
 		// replay never POSTs this field; real v5 frontend will hit
 		// v3's DisallowUnknownFields 400 (deferred follow-up).
-		{Method: "GET", Path: "/api/v5/manualimport", Handler: manualimportv5.GetHandler()},
+		{Method: "GET", Path: "/api/v5/manualimport", Handler: manualimportv5.GetHandler(manualImportLister)},
 		{Method: "POST", Path: "/api/v5/manualimport", Handler: manualimportv5.ReprocessHandler(seriesSvc, episodesSvc, parsingSvcWithPopulator)},
 		// J272 — v5 Command endpoint family (4 endpoints; 247 LOC C#).
 		// Resource shape identical to v3 (same fields, same JSON tags,
@@ -3200,7 +3211,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v3/log/file/update", Handler: apiv3.UpdateLogFileHandler(logFileSvc)},
 		{Method: "GET", Path: "/api/v3/log/file/update/{filename}", Handler: apiv3.UpdateLogFileByNameHandler(logFileSvc)},
 		{Method: "GET", Path: "/api/v3/log/file/{filename}", Handler: apiv3.LogFileByNameHandler(logFileSvc)},
-		{Method: "GET", Path: "/api/v3/manualimport", Handler: apiv3.ManualImportHandler()},
+		{Method: "GET", Path: "/api/v3/manualimport", Handler: apiv3.ManualImportHandler(manualImportLister)},
 		// J238 / C.1.i-follow-5b: manualimport POST reprocess endpoint.
 		{Method: "POST", Path: "/api/v3/manualimport", Handler: apiv3.ManualImportReprocessHandler(seriesSvc, episodesSvc, parsingSvcWithPopulator)},
 		{Method: "GET", Path: "/api/v3/mediacover/{seriesId}/{filename}", Handler: apiv3.MediaCoverHandler(mediaCoverSvc)},
