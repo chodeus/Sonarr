@@ -91,6 +91,7 @@ import (
 	"sonarr.tv/sonarr/internal/indexerstatus"
 	"sonarr.tv/sonarr/internal/instrumentation"
 	"sonarr.tv/sonarr/internal/lifecycle"
+	"sonarr.tv/sonarr/internal/logs"
 	"sonarr.tv/sonarr/internal/mediacover"
 	"sonarr.tv/sonarr/internal/mediafileattributes"
 	"sonarr.tv/sonarr/internal/mediafiles"
@@ -184,7 +185,7 @@ func run() error {
 		}
 	}
 
-	logger := instrumentation.NewLogger(os.Stderr, slog.LevelInfo)
+	logger, logFanout := instrumentation.NewLogger(os.Stderr, slog.LevelInfo)
 	slog.SetDefault(logger)
 	logger.Info("sonarr starting", "version", buildinfo.Version, "commit", buildinfo.Commit)
 	defer logger.Info("sonarr stopped")
@@ -192,7 +193,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := serve(ctx, logger); err != nil && !errors.Is(err, context.Canceled) {
+	if err := serve(ctx, logger, logFanout); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
 	return nil
@@ -201,7 +202,7 @@ func run() error {
 // serve is the top-level wiring point. As phases land, additional
 // subsystems (HTTP server, SignalR hub, job scheduler, providers)
 // are constructed here.
-func serve(ctx context.Context, logger *slog.Logger) error {
+func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.Fanout) error {
 	startup := appenv.ParseStartupArgs(os.Args[1:])
 
 	folder, err := appenv.DetectAppFolder(startup)
@@ -257,6 +258,37 @@ func serve(ctx context.Context, logger *slog.Logger) error {
 		"source", source,
 		"schemaVersion", version,
 		"instance", instanceName)
+
+	// Log database (RoleLog) + the async slog→DB sink (J406-J408 — the
+	// C# NLog DatabaseTarget equivalent, registered after the log DB is
+	// available, mirroring DatabaseTarget.Register). Opened separately
+	// from the main DB so backups can skip the noisy log table. When the
+	// log DB is disabled (Postgres without PostgresLogDb — the C#
+	// LogDbEnabled=false posture) the sink is simply not attached and
+	// the GET /log read returns empty, matching upstream. logRepo is
+	// kept in scope for the GET /log read + ClearLog wiring.
+	var logRepo *logs.Repo
+	if logCfg, logEnabled, lerr := buildLogDatastoreConfig(ctx, cfg, folder, instanceName); lerr != nil {
+		return fmt.Errorf("log datastore config: %w", lerr)
+	} else if logEnabled {
+		logDB, err := datastore.Open(ctx, logCfg)
+		if err != nil {
+			return fmt.Errorf("log datastore open: %w", err)
+		}
+		defer func() { _ = logDB.Close() }()
+		if err := datastore.Migrate(ctx, logDB); err != nil {
+			return fmt.Errorf("log datastore migrate: %w", err)
+		}
+		logRepo, err = logs.NewRepo(logDB)
+		if err != nil {
+			return fmt.Errorf("log repo: %w", err)
+		}
+		logSink := logs.NewSink(logRepo, slog.LevelInfo, 0)
+		defer func() { _ = logSink.Close() }()
+		logFanout.Attach(logSink)
+		logger.Info("log database ready", "role", string(logDB.Role))
+	}
+	_ = logRepo // consumed by the GET /log + ClearLog wiring (next slice)
 
 	// Commands + scheduled-tasks wiring (Phase 3.13). Build the
 	// service stack before the ApplicationStartedEvent fan-out so
@@ -3614,6 +3646,58 @@ func buildDatastoreConfig(ctx context.Context, cfg *configfile.Provider, folder 
 		Password: password,
 		Database: pgMain,
 	}, fmt.Sprintf("postgres://%s@%s:%d/%s", user, host, port, pgMain), nil
+}
+
+// buildLogDatastoreConfig builds the RoleLog datastore config, mirroring
+// the C# log-DB selection. SQLite always has a log DB (the logs.db file
+// next to the main DB). For Postgres the log DB is the separate
+// `PostgresLogDb` database; when that isn't configured the log DB is
+// disabled (the C# LogDbEnabled=false posture) and the bool is false so
+// the caller skips opening it + attaching the sink.
+func buildLogDatastoreConfig(ctx context.Context, cfg *configfile.Provider, folder appenv.AppFolderInfo, instance string) (datastore.Config, bool, error) {
+	pgMain, err := cfg.String(ctx, "PostgresMainDb", "", false)
+	if err != nil {
+		return datastore.Config{}, false, err
+	}
+	if pgMain == "" {
+		return datastore.Config{
+			Engine: datastore.EngineSQLite,
+			Role:   datastore.RoleLog,
+			Path:   folder.LogDBPath(instance),
+		}, true, nil
+	}
+	pgLog, err := cfg.String(ctx, "PostgresLogDb", "", false)
+	if err != nil {
+		return datastore.Config{}, false, err
+	}
+	if pgLog == "" {
+		return datastore.Config{}, false, nil // log DB disabled
+	}
+	host, err := cfg.String(ctx, "PostgresHost", "localhost", false)
+	if err != nil {
+		return datastore.Config{}, false, err
+	}
+	port, err := cfg.Int(ctx, "PostgresPort", 5432, false)
+	if err != nil {
+		return datastore.Config{}, false, err
+	}
+	user, err := cfg.String(ctx, "PostgresUser", "", false)
+	if err != nil {
+		return datastore.Config{}, false, err
+	}
+	password, err := cfg.String(ctx, "PostgresPassword", "", false)
+	if err != nil {
+		return datastore.Config{}, false, err
+	}
+	return datastore.Config{
+		Engine:   datastore.EnginePostgres,
+		Role:     datastore.RoleLog,
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+		Database: pgLog,
+	}, true, nil
 }
 
 // handlerEpisodeSearchAdapter narrows the indexersearch.Service

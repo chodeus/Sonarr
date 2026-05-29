@@ -19800,3 +19800,15 @@ NOT yet attached to the production logger — slice 3/4 adds a runtime-attachabl
 Tests: Enabled gate (Debug off, Info/Error on); Handle persists with mapped fields; exception mapping + message fold ("import failed: boom", type `*errors.errorString`); WithAttrs `component`→Logger; Close flushes all 20 buffered records; Close idempotent. All under `-race`.
 
 R: n/a. W: async log-persistence sink (not yet wired). M: PROGRESS + this entry. Hard gates clean (build, race tests logs, vet, gofmt).
+
+---
+
+## J408 — Log subsystem 3/4: fan-out logger + open RoleLog DB + attach the sink (logging-to-DB LIVE)
+
+NEW `internal/instrumentation/fanout.go`: `Fanout` is an slog.Handler that dispatches each record (cloned per sub-handler) to every registered handler and supports `Attach` at runtime (copy-on-write under a write lock; readers snapshot under a read lock). This is the Go analogue of the C# `DatabaseTarget.Register` pattern — the process builds its console/file logger at startup (before any DB is open) and attaches the DB sink later, once the RoleLog datastore is migrated. `WithAttrs`/`WithGroup` return snapshot Fanouts (a later root Attach doesn't propagate into already-derived loggers — fine because the only runtime Attach is the boot-time sink, before services derive loggers).
+
+`NewLogger` now returns `(*slog.Logger, *Fanout)` (callers: main.go + logger_test). `cmd/sonarr/main.go`: `serve` takes the fanout; right after the main DB is ready it opens the RoleLog DB via NEW `buildLogDatastoreConfig` (SQLite → always, `folder.LogDBPath`; Postgres → only when `PostgresLogDb` is set, else log DB disabled = the C# LogDbEnabled=false posture), migrates it, builds `logs.Repo` + `logs.NewSink(repo, slog.LevelInfo, 0)`, attaches the sink to the fanout, and defers sink.Close() + logDB.Close(). `logRepo` is held in scope for the next slice (GET /log read + ClearLog).
+
+Tests: fanout dispatch-to-all; attach-adds-handler (the pre-existing handler sees both records, the attached one only post-attach); Enabled reflects any sub-handler; per-handler level gate (Info record skips an Error-only handler); WithAttrs-derived still dispatches.
+
+R: n/a. W: application logs now persist to the log DB (Info+). M: PROGRESS + this entry. Hard gates clean (build, race tests instrumentation + logs + cmd/sonarr + contract, vet, gofmt).

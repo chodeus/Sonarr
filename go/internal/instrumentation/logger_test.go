@@ -22,7 +22,7 @@ func TestNewLoggerWritesAtLevel(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			logger := NewLogger(&buf, tc.level)
+			logger, _ := NewLogger(&buf, tc.level)
 			logger.Log(t.Context(), tc.emit, "hello", "k", "v")
 			got := strings.Contains(buf.String(), "hello")
 			if got != tc.expect {
