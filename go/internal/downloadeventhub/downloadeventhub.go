@@ -155,6 +155,39 @@ func (s *Service) HandleDownloadFailed(ctx context.Context, ev *trackeddownloads
 	return nil
 }
 
+// HandleDownloadCanBeRemoved ports `DownloadEventHub.Handle(DownloadCanBeRemovedEvent)`
+// (`:71-84`): the deferred-removal path. When the item is removable and
+// the client's RemoveCompletedDownloads flag is set, remove it +
+// StopTracking. Identical gate to the completed arm's removal half,
+// minus the mark-imported (already done at completion) and the
+// Downloading status gate (the sweep only emits for removable items).
+func (s *Service) HandleDownloadCanBeRemoved(ctx context.Context, ev *trackeddownloads.DownloadCanBeRemovedEvent) error {
+	if ev == nil || ev.TrackedDownload == nil || ev.TrackedDownload.DownloadItem == nil {
+		return nil
+	}
+	td := ev.TrackedDownload
+	if !td.DownloadItem.CanBeRemoved {
+		return nil
+	}
+	removeCompleted, err := s.removeCompletedFor(ctx, td.DownloadClient)
+	if err != nil {
+		s.log.Warn("downloadeventhub: read RemoveCompletedDownloads failed (can-be-removed arm)",
+			"downloadClient", td.DownloadClient, "err", err)
+		return nil
+	}
+	if !removeCompleted {
+		return nil
+	}
+	client, err := s.clients.ResolveClient(ctx, td.DownloadClient)
+	if err != nil {
+		s.log.Warn("downloadeventhub: resolve client failed (can-be-removed arm)",
+			"downloadClient", td.DownloadClient, "downloadId", td.DownloadID, "err", err)
+		return nil
+	}
+	s.removeFromClient(ctx, client, td)
+	return nil
+}
+
 // markImported runs MarkItemAsImported, mirroring the C# helper's
 // try/catch (`:104-117`): an unsupported client is a debug log, any
 // other failure an error log — never fatal.

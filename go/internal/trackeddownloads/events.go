@@ -249,6 +249,19 @@ type UntrackedDownloadCompletedEvent struct {
 	SourcePath string
 }
 
+// DownloadCanBeRemovedEvent ports the C# `DownloadCanBeRemovedEvent : IEvent`
+// at `src/NzbDrone.Core/Download/DownloadCanBeRemovedEvent.cs:1-15`.
+// Published by `DownloadProcessingService.RemoveCompletedDownloads`
+// (`:35-45`) once per process pass for every tracked download that is
+// Imported AND the client now reports removable — the deferred-removal
+// path for items that weren't removable at completion time (e.g. a
+// torrent still seeding). The DownloadEventHub consumer removes it from
+// the client when RemoveCompletedDownloads is set.
+type DownloadCanBeRemovedEvent struct {
+	// TrackedDownload — the Imported, now-removable download. Required.
+	TrackedDownload *TrackedDownload
+}
+
 // DownloadsProcessedEvent ports the C# `DownloadsProcessedEvent : IEvent`
 // at `src/NzbDrone.Core/Download/DownloadsProcessedEvent.cs:1-8` — a
 // payloadless marker published by `DownloadProcessingService` at the end

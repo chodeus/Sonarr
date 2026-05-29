@@ -287,6 +287,18 @@ func (f *fakeProcessedPub) PublishDownloadsProcessed(_ context.Context, _ tracke
 	return nil
 }
 
+// fakeCanRemovePub captures published DownloadCanBeRemovedEvents (J458).
+type fakeCanRemovePub struct {
+	ids []string
+}
+
+func (f *fakeCanRemovePub) PublishDownloadCanBeRemoved(_ context.Context, ev trackeddownloads.DownloadCanBeRemovedEvent) error {
+	if ev.TrackedDownload != nil {
+		f.ids = append(f.ids, ev.TrackedDownload.DownloadID)
+	}
+	return nil
+}
+
 // importedResultWithFile returns an Imported result carrying an
 // EpisodeFile row (the file the writer produced), so the completion
 // event's EpisodeFiles slice can be asserted.
@@ -395,6 +407,44 @@ func TestProcess_PublishesDownloadsProcessed_EvenWhenEmpty_J454(t *testing.T) {
 	if pub.count != 1 {
 		t.Errorf("DownloadsProcessed published %d times, want 1 (once per pass)", pub.count)
 	}
+}
+
+// J458: the end-of-pass sweep publishes DownloadCanBeRemovedEvent only
+// for tracked downloads that are Imported AND the client reports
+// removable — not for Downloading, not for not-removable Imported ones.
+func TestProcess_SweepRemovableImports_J458(t *testing.T) {
+	t.Parallel()
+	mk := func(id string, state trackeddownloads.State, removable bool) *trackeddownloads.TrackedDownload {
+		return &trackeddownloads.TrackedDownload{
+			DownloadID:   id,
+			State:        state,
+			DownloadItem: &downloadclients.Item{DownloadID: id, CanBeRemoved: removable, Status: downloadclients.DownloadItemStatusCompleted},
+		}
+	}
+	tds := []*trackeddownloads.TrackedDownload{
+		mk("imp-removable", trackeddownloads.StateImported, true),  // → swept
+		mk("imp-locked", trackeddownloads.StateImported, false),    // not removable → skip
+		mk("downloading", trackeddownloads.StateDownloading, true), // not Imported → skip
+	}
+	pub := &fakeCanRemovePub{}
+	svc := newSvc(t, fakeStore{tds: tds}, &fakeImporter{})
+	svc.SetCanBeRemovedPublisher(pub)
+	svc.ProcessTrackedDownloads(context.Background())
+	if len(pub.ids) != 1 || pub.ids[0] != "imp-removable" {
+		t.Errorf("swept = %v, want [imp-removable]", pub.ids)
+	}
+}
+
+// J458: with no publisher wired the sweep is a no-op (no panic).
+func TestProcess_SweepNoPublisher_J458(t *testing.T) {
+	t.Parallel()
+	td := &trackeddownloads.TrackedDownload{
+		DownloadID:   "x",
+		State:        trackeddownloads.StateImported,
+		DownloadItem: &downloadclients.Item{DownloadID: "x", CanBeRemoved: true},
+	}
+	svc := newSvc(t, fakeStore{tds: []*trackeddownloads.TrackedDownload{td}}, &fakeImporter{})
+	svc.ProcessTrackedDownloads(context.Background()) // must not panic
 }
 
 // J454: each pass publishes exactly one DownloadsProcessedEvent

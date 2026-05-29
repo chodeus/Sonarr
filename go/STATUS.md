@@ -20405,3 +20405,17 @@ Tests: RemoveFailedDownloads=true→remove+stop+NO mark; flag off→nothing; !Ca
 Remaining DownloadEventHub follow-up: DownloadCanBeRemovedEvent + the RemoveCompletedDownloads SWEEP (DownloadProcessingService.cs:35-45) — not ported; J455 immediate-removal covers the common case.
 
 R: downloadeventhub.go (HandleDownloadFailed + removeFailedFor + doc). M: main.go (subscription), downloadeventhub_test.go (4 tests + failedEvent helper), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates green (build, vet, gofmt, test -race downloadeventhub+cmd/sonarr).
+
+---
+
+## J458 — RemoveCompletedDownloads sweep + DownloadCanBeRemovedEvent (deferred removal)
+
+**Slice: complete the DownloadEventHub — the deferred-removal path.** Closes the last hub follow-up. NEW `trackeddownloads.DownloadCanBeRemovedEvent{TrackedDownload}` (ports `DownloadCanBeRemovedEvent.cs`). downloadprocessing: NEW optional `CanBeRemovedPublisher`+`SetCanBeRemovedPublisher`; `ProcessTrackedDownloads` runs `sweepRemovableImports` at end of pass (after the import/fail loop, before DownloadsProcessedEvent) — publishes DownloadCanBeRemovedEvent for every tracked download that is `State==Imported && DownloadItem.CanBeRemoved` (ports `DownloadProcessingService.RemoveCompletedDownloads:35-45`). NEW `downloadeventhub.HandleDownloadCanBeRemoved` (ports `DownloadEventHub.cs:71-84`): gate CanBeRemoved + client RemoveCompletedDownloads → RemoveItem+StopTracking (no mark, no Downloading gate). NEW `downloadCanBeRemovedPublisher` adapter; both wired/subscribed in main.go.
+
+This handles the torrent-still-seeding case: an item Imported in a prior pass with CanBeRemoved=false (J455 skipped removal, item stayed Imported+tracked) is swept once the client reports it removable. Items removed immediately at completion (J455) are already StopTracked, so the re-fetched snapshot won't re-publish them — no double-remove.
+
+Tests: sweep publishes only for Imported+removable (not Downloading, not Imported+locked); no-publisher→no-op; hub arm removes when RemoveCompletedDownloads=true / skips when off / skips when !CanBeRemoved / no mark-imported.
+
+**DownloadEventHub now fully ported** (completed J455 + failed J457 + can-be-removed J458). Completion arc + its side-effects comprehensively complete.
+
+R: trackeddownloads/events.go (DownloadCanBeRemovedEvent), downloadprocessing/service.go (sweep + publisher), downloadeventhub.go (HandleDownloadCanBeRemoved + doc), downloadprocessing_completion_wiring.go (adapter), main.go (publisher set + subscription). M: 2 test files, GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. FULL SUITE green.

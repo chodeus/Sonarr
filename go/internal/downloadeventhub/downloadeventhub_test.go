@@ -267,6 +267,65 @@ func TestHandleFailed_NilTrackedDownload(t *testing.T) {
 	}
 }
 
+func canBeRemovedEvent(clientID int, removable bool) *trackeddownloads.DownloadCanBeRemovedEvent {
+	return &trackeddownloads.DownloadCanBeRemovedEvent{
+		TrackedDownload: &trackeddownloads.TrackedDownload{
+			DownloadID:     "dl1",
+			DownloadClient: clientID,
+			State:          trackeddownloads.StateImported,
+			DownloadItem:   &downloadclients.Item{DownloadID: "dl1", CanBeRemoved: removable},
+		},
+	}
+}
+
+func TestHandleCanBeRemoved_RemovesWhenConfigured(t *testing.T) {
+	t.Parallel()
+	prov := &fakeProvider{}
+	stopper := &fakeStopper{}
+	rows := []downloadclients.DownloadClient{{ID: 3, RemoveCompletedDownloads: true}}
+	hub := newHub(t, prov, rows, stopper)
+
+	if err := hub.HandleDownloadCanBeRemoved(context.Background(), canBeRemovedEvent(3, true)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if prov.marked {
+		t.Error("can-be-removed arm must NOT MarkItemAsImported")
+	}
+	if !prov.removed || len(stopper.stopped) != 1 {
+		t.Errorf("expected remove+stop (removed=%v stopped=%v)", prov.removed, stopper.stopped)
+	}
+}
+
+func TestHandleCanBeRemoved_SkipsWhenConfigOff(t *testing.T) {
+	t.Parallel()
+	prov := &fakeProvider{}
+	stopper := &fakeStopper{}
+	rows := []downloadclients.DownloadClient{{ID: 3, RemoveCompletedDownloads: false}}
+	hub := newHub(t, prov, rows, stopper)
+
+	if err := hub.HandleDownloadCanBeRemoved(context.Background(), canBeRemovedEvent(3, true)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if prov.removed || len(stopper.stopped) != 0 {
+		t.Errorf("RemoveCompletedDownloads=false → no remove/stop")
+	}
+}
+
+func TestHandleCanBeRemoved_SkipsWhenNotRemovable(t *testing.T) {
+	t.Parallel()
+	prov := &fakeProvider{}
+	stopper := &fakeStopper{}
+	rows := []downloadclients.DownloadClient{{ID: 3, RemoveCompletedDownloads: true}}
+	hub := newHub(t, prov, rows, stopper)
+
+	if err := hub.HandleDownloadCanBeRemoved(context.Background(), canBeRemovedEvent(3, false)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if prov.removed {
+		t.Error("CanBeRemoved=false → must not remove")
+	}
+}
+
 func TestHandle_NilGuards(t *testing.T) {
 	t.Parallel()
 	hub := newHub(t, &fakeProvider{}, nil, &fakeStopper{})

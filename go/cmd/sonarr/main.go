@@ -3076,6 +3076,11 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	// pass so the metadata writer's CreateAfterEpisodesImported batch
 	// fires once per pass per imported series (ports DownloadProcessingService.cs:80).
 	downloadProcessingSvc.SetProcessedPublisher(downloadsProcessedPublisher{bus: bus})
+	// J458: RemoveCompletedDownloads sweep — at the end of each pass,
+	// publish DownloadCanBeRemovedEvent for every Imported + now-removable
+	// tracked download (the deferred-removal path for items that were
+	// still seeding at completion). Ports DownloadProcessingService.cs:35-45.
+	downloadProcessingSvc.SetCanBeRemovedPublisher(downloadCanBeRemovedPublisher{bus: bus})
 	downloadMonitoringSvc.SetProcessor(downloadProcessingSvc)
 
 	// J455: DownloadEventHub completion arm. On DownloadCompletedEvent
@@ -3105,6 +3110,12 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	messaging.Subscribe(bus, "downloadeventhub.HandleDownloadFailed",
 		func(ctx context.Context, ev trackeddownloads.DownloadFailedEvent) error {
 			return downloadEventHub.HandleDownloadFailed(ctx, &ev)
+		})
+	// J458: deferred-removal arm — the RemoveCompletedDownloads sweep's
+	// DownloadCanBeRemovedEvent removes a now-removable Imported download.
+	messaging.Subscribe(bus, "downloadeventhub.HandleDownloadCanBeRemoved",
+		func(ctx context.Context, ev trackeddownloads.DownloadCanBeRemovedEvent) error {
+			return downloadEventHub.HandleDownloadCanBeRemoved(ctx, &ev)
 		})
 
 	// J401: auto-redownload-on-failure handler (ports

@@ -35,3 +35,15 @@ type downloadsProcessedPublisher struct {
 func (p downloadsProcessedPublisher) PublishDownloadsProcessed(ctx context.Context, ev trackeddownloads.DownloadsProcessedEvent) error {
 	return messaging.Publish(ctx, p.bus, ev)
 }
+
+// downloadCanBeRemovedPublisher adapts *messaging.Bus to the narrow
+// downloadprocessing.CanBeRemovedPublisher interface (J458) — publishes
+// the RemoveCompletedDownloads sweep's DownloadCanBeRemovedEvent consumed
+// by the DownloadEventHub deferred-removal arm.
+type downloadCanBeRemovedPublisher struct {
+	bus *messaging.Bus
+}
+
+func (p downloadCanBeRemovedPublisher) PublishDownloadCanBeRemoved(ctx context.Context, ev trackeddownloads.DownloadCanBeRemovedEvent) error {
+	return messaging.Publish(ctx, p.bus, ev)
+}

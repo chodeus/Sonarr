@@ -94,6 +94,14 @@ type ProcessedPublisher interface {
 	PublishDownloadsProcessed(ctx context.Context, ev trackeddownloads.DownloadsProcessedEvent) error
 }
 
+// CanBeRemovedPublisher publishes a [trackeddownloads.DownloadCanBeRemovedEvent]
+// for each Imported, now-removable tracked download at the end of a pass
+// (J458, the RemoveCompletedDownloads sweep). Optional. Mirrors C#
+// `DownloadProcessingService.RemoveCompletedDownloads` (`:35-45`).
+type CanBeRemovedPublisher interface {
+	PublishDownloadCanBeRemoved(ctx context.Context, ev trackeddownloads.DownloadCanBeRemovedEvent) error
+}
+
 // Service auto-imports completed tracked downloads and (J400) marks
 // failed ones Failed + publishes a DownloadFailedEvent.
 type Service struct {
@@ -102,6 +110,7 @@ type Service struct {
 	failPub      FailurePublisher
 	completePub  CompletionPublisher
 	processedPub ProcessedPublisher
+	canRemovePub CanBeRemovedPublisher
 	log          *slog.Logger
 }
 
@@ -133,6 +142,16 @@ func (s *Service) SetCompletionPublisher(p CompletionPublisher) {
 func (s *Service) SetProcessedPublisher(p ProcessedPublisher) {
 	if s != nil {
 		s.processedPub = p
+	}
+}
+
+// SetCanBeRemovedPublisher wires the optional [CanBeRemovedPublisher]
+// (J458). When set, the end-of-pass RemoveCompletedDownloads sweep
+// publishes a DownloadCanBeRemovedEvent per Imported + removable tracked
+// download; unwired the sweep is skipped. nil-safe.
+func (s *Service) SetCanBeRemovedPublisher(p CanBeRemovedPublisher) {
+	if s != nil {
+		s.canRemovePub = p
 	}
 }
 
@@ -174,6 +193,14 @@ func (s *Service) ProcessTrackedDownloads(ctx context.Context) int {
 		s.log.LogAttrs(ctx, slog.LevelInfo, "downloadprocessing: auto-imported completed downloads",
 			slog.Int("count", imported))
 	}
+	// RemoveCompletedDownloads sweep (C# `DownloadProcessingService.cs:35-45`,
+	// run after the per-item loop): every Imported tracked download the
+	// client now reports removable gets a DownloadCanBeRemovedEvent — the
+	// deferred-removal path for items not removable at completion time
+	// (e.g. a torrent that was still seeding). Items removed immediately
+	// at completion (J455) are already StopTracked, so this re-fetched
+	// snapshot won't re-publish them.
+	s.sweepRemovableImports(ctx)
 	// End-of-pass marker (C# `DownloadProcessingService.cs:80`) —
 	// published unconditionally (even with zero imports) so the
 	// metadata/extras writer's CreateAfterEpisodesImported batch fires
@@ -184,6 +211,26 @@ func (s *Service) ProcessTrackedDownloads(ctx context.Context) int {
 		}
 	}
 	return imported
+}
+
+// sweepRemovableImports publishes a DownloadCanBeRemovedEvent for every
+// tracked download that is Imported and the client now reports removable.
+// Ports C# `DownloadProcessingService.RemoveCompletedDownloads` (`:35-45`).
+// No-op when no publisher is wired.
+func (s *Service) sweepRemovableImports(ctx context.Context) {
+	if s.canRemovePub == nil {
+		return
+	}
+	for _, td := range s.tracked.GetTrackedDownloads() {
+		if td == nil || td.DownloadItem == nil {
+			continue
+		}
+		if td.DownloadItem.CanBeRemoved && td.State == trackeddownloads.StateImported {
+			if err := s.canRemovePub.PublishDownloadCanBeRemoved(ctx, trackeddownloads.DownloadCanBeRemovedEvent{TrackedDownload: td}); err != nil {
+				s.log.Warn("downloadprocessing: publish DownloadCanBeRemovedEvent failed", "downloadId", td.DownloadID, "err", err)
+			}
+		}
+	}
 }
 
 // shouldImport reports whether a tracked download is a candidate for
