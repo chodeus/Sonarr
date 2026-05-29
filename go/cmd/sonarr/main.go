@@ -3412,6 +3412,9 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		// J410 (punch-list #6): ClearLog command → logs.Repo.Purge.
 		// nil when the log DB is disabled (skips registration).
 		ClearLog: logClearer,
+		// G2 (J421): CleanUpRecycleBin scheduled task → recyclebin.Service.
+		// Cleanup. Was unset → the 24h task ran a nil no-op stub.
+		CleanUpRecycleBin: recycleBinSvc,
 		// J399 (Phase-4 auto-import): ProcessMonitoredDownloads command.
 		ProcessMonitoredDownloads: downloadProcessingSvc,
 		Log:                       logger,

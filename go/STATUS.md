@@ -19946,3 +19946,11 @@ ROOT CAUSE: the per-slice hard-gate ran `gofmt -l ./...`, but gofmt does NOT exp
 `gofmt -l .` is now empty tree-wide. Build + tests green on all affected packages.
 
 R: n/a. W: n/a. M: this entry + PROGRESS + memory (gofmt-gate lesson). Hard gates clean (build, tests on affected pkgs, `gofmt -l .` empty).
+
+---
+
+## J421 — G2 fix: wire CleanUpRecycleBin scheduled task to recyclebin.Service
+
+Audit finding G2: the `CleanUpRecycleBin` 24h scheduled task registered `NewCleanUpRecycleBin(nil)` (a no-op stub) because `handlers.Deps.CleanUpRecycleBin` was never set in main.go — even though `recyclebin.Service.Cleanup(ctx)` is real + already constructed (`recycleBinSvc`). One-line fix: set `CleanUpRecycleBin: recycleBinSvc` in the Deps literal (the service satisfies the `CleanupRunner` interface). The scheduled recycle-bin cleanup (delete files past the configured retention) now actually runs.
+
+R: n/a. W: recycle-bin cleanup task now functional. M: GAP_ANALYSIS G2 + this entry. Hard gates clean (build, tests commands/handlers + cmd/sonarr, vet, gofmt).
