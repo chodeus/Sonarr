@@ -209,11 +209,22 @@ func (h *ManualImport) importOne(ctx context.Context, file *manualImportFile, mo
 
 	existingFile := ospath.IsParent(ser.Path, file.Path)
 
+	// Coalesce a nil parse to an empty ParsedEpisodeInfo, mirroring C#
+	// `:500` `?? new ParsedEpisodeInfo()`. This guarantees a non-nil
+	// parse-info source so Augment (aggregation.go:153) runs its full
+	// enrichment (size / mediainfo / scene name / aggregators) instead
+	// of short-circuiting with ErrAugmentingFailed — which matters for
+	// the oddly-named files manual import exists to handle.
+	fileEpisodeInfo := parser.ParsePath(file.Path)
+	if fileEpisodeInfo == nil {
+		fileEpisodeInfo = &parser.ParsedEpisodeInfo{}
+	}
+
 	le := episodeimport.NewLocalEpisode()
 	le.Path = file.Path
 	le.Series = ser
 	le.Episodes = eps
-	le.FileEpisodeInfo = parser.ParsePath(file.Path)
+	le.FileEpisodeInfo = fileEpisodeInfo
 	le.ExistingFile = existingFile
 	le.Size = 0
 

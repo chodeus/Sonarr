@@ -10,6 +10,8 @@ import (
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/language"
+	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 )
@@ -45,6 +47,23 @@ type passthroughAggregator struct {
 
 func (a *passthroughAggregator) Augment(le *episodeimport.LocalEpisode, _ *downloadclients.Item) (*episodeimport.LocalEpisode, error) {
 	a.calls++
+	return le, nil
+}
+
+// presettingAggregator stamps DIFFERENT quality/languages/releaseGroup
+// onto the LocalEpisode (as a real augmenter would) so a test can prove
+// the handler's re-apply pass OVERRIDES the augmented values with the
+// user's choices, rather than merely filling empty fields.
+type presettingAggregator struct{}
+
+func (presettingAggregator) Augment(le *episodeimport.LocalEpisode, _ *downloadclients.Item) (*episodeimport.LocalEpisode, error) {
+	if q, ok := quality.FindByID(1); ok { // SDTV — distinct from the user's id 7
+		le.Quality = quality.Model{Quality: q}
+	}
+	if l, ok := language.FindByID(2); ok { // French — distinct from the user's id 1
+		le.Languages = []language.Language{l}
+	}
+	le.ReleaseGroup = "AUGMENTED"
 	return le, nil
 }
 
@@ -175,6 +194,38 @@ func TestManualImport_Untracked_BuildsDecisionAndRoutes(t *testing.T) {
 	}
 	if le.ExistingFile {
 		t.Error("file outside series folder should have ExistingFile=false")
+	}
+}
+
+// Re-apply override: the aggregator stamps SDTV / French / "AUGMENTED",
+// but the user's body specifies quality id 7 + language id 1 +
+// "SONARR" — the handler's re-apply pass must win (C# `:537-543`).
+func TestManualImport_ReapplyOverridesAugmented(t *testing.T) {
+	t.Parallel()
+	ser := &series.Series{ID: 42, Path: "/tv/Show"}
+	imp := &recordingImporter{}
+	h := newTestManualImport(t, &stubSeriesGetter{ser: ser}, &stubEpisodeGetter{}, presettingAggregator{}, imp, nil)
+
+	body := `{"importMode":1,"files":[{
+		"path":"/downloads/Show.S01E01.mkv",
+		"seriesId":42,
+		"episodeIds":[100],
+		"quality":{"quality":{"id":7},"revision":{"version":1}},
+		"languages":[{"id":1,"name":"English"}],
+		"releaseGroup":"SONARR"
+	}]}`
+	if err := h.Execute(t.Context(), body); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	le := imp.gotDecisions[0].LocalEpisode
+	if le.Quality.Quality.ID != 7 {
+		t.Errorf("quality id = %d, want 7 (user override should beat augmented id 1)", le.Quality.Quality.ID)
+	}
+	if len(le.Languages) != 1 || le.Languages[0].ID != 1 {
+		t.Errorf("languages = %v, want [id:1] (user override should beat augmented id 2)", le.Languages)
+	}
+	if le.ReleaseGroup != "SONARR" {
+		t.Errorf("releaseGroup = %q, want SONARR (user override should beat AUGMENTED)", le.ReleaseGroup)
 	}
 }
 
