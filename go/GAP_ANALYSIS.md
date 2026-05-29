@@ -61,7 +61,7 @@ done, and some "done"-looking paths are actually stubbed).
 
 ### LOW — quality / latent
 
-**T1 — Flaky test `TestTriadComposesEndToEnd`** (cmd/shadowtraffic-e2e, dev tooling). Capture-enqueue-vs-shutdown-drain race: the 3rd captured entry can be enqueued after the SIGTERM drain starts → "got 0 log entries". Passes in isolation. Fix: have the record proxy fully drain pending captures before closing the log writer, or have the test poll the log for N entries with a timeout.
+**T1 — Flaky test `TestTriadComposesEndToEnd`** (cmd/shadowtraffic-e2e, dev tooling). Refined diagnosis (J428 audit): the test runs the record proxy as a SUBPROCESS with an async buffered LogWriter (flush-on-Close). Under full-suite parallel load the subprocess is starved, and `stopAndWait`'s graceful-shutdown window likely elapses → the proxy is force-killed before the drain goroutine flushes+fsyncs → "got 0 log entries". Passes 3/3 in isolation. Fix options: lengthen the subprocess shutdown grace in `stopAndWait`, or have the test poll the JSONL for N entries with a timeout before asserting. Dev-tooling only; not app behaviour.
 
 **Q1 — Metadata-writer orchestrator is latent** — built + reachable but no event source drives it (`metadataSvc` held via `_`). Metadata files (nfo/images) aren't written on import/rename yet.
 
