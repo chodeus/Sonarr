@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/decisionengine"
+	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/episodes"
@@ -18,6 +19,7 @@ import (
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/trackeddownloads"
 )
 
 // stubRecorder satisfies notifications.serviceRecorder (via duck-
@@ -49,18 +51,20 @@ func (s *stubRecorder) RecordFailure(_ context.Context, providerID int, _ time.D
 // service tests — each test builds Provider lookup via the
 // registry so the factory returns the right hookRecorder.
 type hookRecorder struct {
-	id              int
-	def             *notifications.Notification
-	failOn          map[string]error
-	mu              sync.Mutex
-	grabCalls       int
-	downloadCalls   int
-	seriesAddCalls  int
-	seriesDelCalls  int
-	episodeDelCalls int
-	healthCalls     int
-	healthRestored  int
-	processCalls    int
+	id                 int
+	def                *notifications.Notification
+	failOn             map[string]error
+	mu                 sync.Mutex
+	grabCalls          int
+	downloadCalls      int
+	seriesAddCalls     int
+	seriesDelCalls     int
+	episodeDelCalls    int
+	healthCalls        int
+	healthRestored     int
+	processCalls       int
+	importCompleteCall int
+	importCompleteMsg  notifications.ImportCompleteMessage
 }
 
 func (h *hookRecorder) Name() string                            { return "Stub" }
@@ -82,7 +86,16 @@ func (h *hookRecorder) OnDownload(_ context.Context, _ notifications.DownloadMes
 func (h *hookRecorder) OnRename(_ context.Context, _ notifications.RenameMessage) error {
 	return nil
 }
-func (h *hookRecorder) OnImportComplete(_ context.Context, _ notifications.ImportCompleteMessage) error {
+func (h *hookRecorder) OnImportComplete(_ context.Context, msg notifications.ImportCompleteMessage) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.failOn != nil {
+		if err := h.failOn["OnImportComplete"]; err != nil {
+			return err
+		}
+	}
+	h.importCompleteCall++
+	h.importCompleteMsg = msg
 	return nil
 }
 func (h *hookRecorder) OnEpisodeFileDelete(_ context.Context, _ notifications.EpisodeDeleteMessage) error {
@@ -565,4 +578,124 @@ func TestNilRecorder(t *testing.T) {
 		Episode: &decisionengine.Subject{Series: &series.Series{Title: "X"}, Episodes: []episodes.Episode{{}}},
 	})
 	_ = hookCount.Load() // touch
+}
+
+// --- J456: OnImportComplete dispatch ------------------------------
+
+func TestHandleDownloadCompletedEvent_FiresOnImportComplete(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Name: "ic-A", Implementation: "Stub", ConfigContract: stubContract(), OnImportComplete: true},
+		{ID: 2, Name: "skip", Implementation: "Stub", ConfigContract: stubContract(), OnGrab: true}, // OnImportComplete=false
+	}
+	svc, hooks, rec := buildService(t, rows, nil)
+	ev := trackeddownloads.DownloadCompletedEvent{
+		TrackedDownload: &trackeddownloads.TrackedDownload{
+			DownloadID:     "dl1",
+			DownloadClient: 5,
+			DownloadItem:   &downloadclients.Item{DownloadID: "dl1", Title: "Show.S01E01"},
+			RemoteEpisode: &decisionengine.Subject{
+				Series:            &series.Series{Title: "Show", Path: "/tv/Show"},
+				Episodes:          []episodes.Episode{{SeasonNumber: 1, EpisodeNumber: 1, Title: "Pilot"}},
+				ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{Quality: quality.Model{Quality: quality.SDTV, Revision: quality.NewRevision()}, ReleaseGroup: "RLSGRP"},
+			},
+		},
+		EpisodeFiles: []episodefiles.File{{ID: 7, RelativePath: "Season 01/ep.mkv"}},
+	}
+	if err := svc.HandleDownloadCompletedEvent(t.Context(), ev); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if hooks[1].importCompleteCall != 1 {
+		t.Fatalf("OnImportComplete calls = %d, want 1", hooks[1].importCompleteCall)
+	}
+	if _, ok := hooks[2]; ok {
+		t.Errorf("OnImportComplete=false provider should not be constructed")
+	}
+	msg := hooks[1].importCompleteMsg
+	if msg.Series == nil || msg.Series.Title != "Show" {
+		t.Errorf("msg.Series = %v", msg.Series)
+	}
+	if len(msg.EpisodeFiles) != 1 || msg.EpisodeFiles[0].ID != 7 {
+		t.Errorf("msg.EpisodeFiles = %+v, want [file 7]", msg.EpisodeFiles)
+	}
+	if msg.ReleaseGroup != "RLSGRP" || msg.DownloadID != "dl1" {
+		t.Errorf("msg ReleaseGroup=%q DownloadID=%q", msg.ReleaseGroup, msg.DownloadID)
+	}
+	if len(rec.successes) != 1 {
+		t.Errorf("recorder successes = %d, want 1", len(rec.successes))
+	}
+}
+
+func TestHandleDownloadCompletedEvent_FullSeasonMessage(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnImportComplete: true}}
+	svc, hooks, _ := buildService(t, rows, nil)
+	ev := trackeddownloads.DownloadCompletedEvent{
+		TrackedDownload: &trackeddownloads.TrackedDownload{
+			DownloadItem: &downloadclients.Item{},
+			RemoteEpisode: &decisionengine.Subject{
+				Series:            &series.Series{Title: "Show"},
+				Episodes:          []episodes.Episode{{SeasonNumber: 3, EpisodeNumber: 1}},
+				ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{FullSeason: true, Quality: quality.Model{Quality: quality.SDTV, Revision: quality.NewRevision()}},
+			},
+		},
+	}
+	if err := svc.HandleDownloadCompletedEvent(t.Context(), ev); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := hooks[1].importCompleteMsg.Message; !contains(got, "Season 3") {
+		t.Errorf("full-season message = %q, want it to mention 'Season 3'", got)
+	}
+}
+
+func TestHandleDownloadCompletedEvent_NilGuards(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnImportComplete: true}}
+	svc, hooks, _ := buildService(t, rows, nil)
+	// nil RemoteEpisode → no dispatch.
+	_ = svc.HandleDownloadCompletedEvent(t.Context(), trackeddownloads.DownloadCompletedEvent{
+		TrackedDownload: &trackeddownloads.TrackedDownload{DownloadItem: &downloadclients.Item{}},
+	})
+	if h, ok := hooks[1]; ok && h.importCompleteCall != 0 {
+		t.Errorf("nil RemoteEpisode should not dispatch, got %d", h.importCompleteCall)
+	}
+}
+
+func TestHandleUntrackedDownloadCompletedEvent_FiresOnImportComplete(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnImportComplete: true}}
+	svc, hooks, _ := buildService(t, rows, nil)
+	ev := trackeddownloads.UntrackedDownloadCompletedEvent{
+		Series:            &series.Series{Title: "Show", Path: "/tv/Show"},
+		Episodes:          []episodes.Episode{{SeasonNumber: 1, EpisodeNumber: 2, Title: "Two"}},
+		EpisodeFiles:      []episodefiles.File{{ID: 9, RelativePath: "Season 01/ep2.mkv"}},
+		ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{ReleaseTitle: "Show.S01E02", Quality: quality.Model{Quality: quality.SDTV, Revision: quality.NewRevision()}},
+		SourcePath:        "/downloads/Show.S01E02",
+	}
+	if err := svc.HandleUntrackedDownloadCompletedEvent(t.Context(), ev); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if hooks[1].importCompleteCall != 1 {
+		t.Fatalf("OnImportComplete calls = %d, want 1", hooks[1].importCompleteCall)
+	}
+	msg := hooks[1].importCompleteMsg
+	if msg.SourcePath != "/downloads/Show.S01E02" || msg.SourceTitle != "Show.S01E02" {
+		t.Errorf("msg SourcePath=%q SourceTitle=%q", msg.SourcePath, msg.SourceTitle)
+	}
+	if len(msg.EpisodeFiles) != 1 || msg.EpisodeFiles[0].ID != 9 {
+		t.Errorf("msg.EpisodeFiles = %+v, want [file 9]", msg.EpisodeFiles)
+	}
+}
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || (len(sub) > 0 && indexOf(s, sub) >= 0))
+}
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
 }

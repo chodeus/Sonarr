@@ -20379,3 +20379,17 @@ Tests: mark+remove+stop when RemoveCompletedDownloads=true; mark-only when flag 
 R: A internal/downloadeventhub/downloadeventhub.go (+_test). M: main.go (hub construct + subscription + import), GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. FULL SUITE green.
 
 **Arc status:** Q1 tail (J452-454) + Q3 (J449-451) DONE; J449 producer + J455 hub close the auto-import completion side-effects. Remaining arc residuals (separate, partly gated): NotificationService OnImportComplete (gated on RemoteEpisode rehydration / customformats), DownloadFailedEvent RemoveFailedDownloads arm, the RemoveCompletedDownloads sweep / DownloadCanBeRemovedEvent.
+
+---
+
+## J456 — NotificationService OnImportComplete handlers (Download + Untracked)
+
+**Slice (arc verify-6 follow-up): port the notification OnImportComplete dispatch.** The J455 verification flagged this as the other unported DownloadCompletedEvent consumer; its Go doc claimed it was gated on "C12 customformats port" — VERIFIED STALE/WRONG: C# `NotificationService.Handle(DownloadCompletedEvent)` (`:204-245`) reads ONLY the RemoteEpisode (series/episodes/parsed-info) + EpisodeFiles the event already carries — no custom-format dependency.
+
+NEW `notifications.Service.HandleDownloadCompletedEvent` + `HandleUntrackedDownloadCompletedEvent`: build an ImportCompleteMessage (full-season vs per-episode message via NEW `importCompleteMessageText`+`getFullSeasonMessage`; DestinationPath via NEW `longestCommonPath` over series.Path+RelativePath; SourcePath/DownloadClientInfo/DownloadID from the tracked item / the untracked SourcePath+ReleaseTitle) and fan out OnImportComplete to OnImportCompleteEnabled+tag-matched providers via the existing `fanOut`. Added both to `Service.Subscribe`. NEW `materialiseFiles` helper. Corrected the stale C12-gate doc.
+
+**IMPORTANT real gap found:** `notifications.Service` (the event-dispatch Service) is NEVER constructed/subscribed in cmd/sonarr — only notificationsRepo (CRUD API) + notificationStatusSvc are wired. So ALL notification dispatch handlers (OnGrab/OnDownload/OnImportComplete/health/...) are currently dormant in the running app. The J456 handlers join the existing defined-but-unsubscribed handlers (faithful + unit-tested, ready for when the Service is wired). Wiring `notificationsSvc.Subscribe(bus)` is a SEPARATE, larger initiative (activates many handlers; needs provider-construction verification) — OUT OF this download-completion arc. Flagged in GAP_ANALYSIS.
+
+Tests: DownloadCompleted→OnImportComplete fires on enabled provider (series/files/releaseGroup/downloadId asserted), OnImportComplete=false provider skipped; FullSeason→"Season N" message; nil RemoteEpisode→no dispatch; Untracked→fires with SourcePath/SourceTitle/files.
+
+R: notifications/service.go (2 handlers + helpers + Subscribe entries + doc), notifications/service_test.go (hookRecorder OnImportComplete capture + 4 tests + imports). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. FULL SUITE green.

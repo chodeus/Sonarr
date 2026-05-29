@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,8 +14,10 @@ import (
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/healthcheck"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
+	"sonarr.tv/sonarr/internal/trackeddownloads"
 )
 
 // Service ports the C# `NotificationService` IHandle<*Event>
@@ -100,11 +103,6 @@ func NewService(factory *Factory, recorder serviceRecorder, logger *slog.Logger)
 // these wires are tracked here for re-evaluation when the upstream
 // event lands):
 //
-//   - DownloadCompletedEvent — OnImportComplete batch dispatch.
-//     Needs trackeddownloads.TrackedDownload.RemoteEpisode rehydration
-//     which is gated on the C12 customformats port.
-//   - UntrackedDownloadCompletedEvent — OnImportComplete dispatch
-//     for the manual-import path. Same C12 gate.
 //   - UpdateInstalledEvent — OnApplicationUpdate dispatch. Waits on
 //     the update.Service port (no Go-tree equivalent yet).
 //   - ManualInteractionRequiredEvent — OnManualInteractionRequired
@@ -130,6 +128,8 @@ func (s *Service) Subscribe(bus *messaging.Bus) {
 	messaging.Subscribe(bus, "notifications.HandleSeriesAddedEvent", s.HandleSeriesAddedEvent)
 	messaging.Subscribe(bus, "notifications.HandleSeriesDeletedEvent", s.HandleSeriesDeletedEvent)
 	messaging.Subscribe(bus, "notifications.HandleEpisodeFileDeletedEvent", s.HandleEpisodeFileDeletedEvent)
+	messaging.Subscribe(bus, "notifications.HandleDownloadCompletedEvent", s.HandleDownloadCompletedEvent)
+	messaging.Subscribe(bus, "notifications.HandleUntrackedDownloadCompletedEvent", s.HandleUntrackedDownloadCompletedEvent)
 	messaging.Subscribe(bus, "notifications.HandleHealthCheckFailedEvent", s.HandleHealthCheckFailedEvent)
 	messaging.Subscribe(bus, "notifications.HandleHealthCheckRestoredEvent", s.HandleHealthCheckRestoredEvent)
 	messaging.SubscribeAsync(bus, "notifications.HandleHealthCheckCompleteEvent", s.HandleHealthCheckCompleteEvent)
@@ -250,6 +250,168 @@ func (s *Service) HandleEpisodeImportedEvent(ctx context.Context, ev episodeimpo
 		s.recordSuccess(ctx, def)
 	}
 	return nil
+}
+
+// HandleDownloadCompletedEvent ports C# `NotificationService.Handle(DownloadCompletedEvent)`
+// (`NotificationService.cs:204-245`). Builds an ImportCompleteMessage
+// from the tracked download's RemoteEpisode (series/episodes/parsed-info)
+// + the imported EpisodeFiles, and fans out OnImportComplete to every
+// enabled + tag-matched provider. No custom-format dependency — the C#
+// handler reads only the RemoteEpisode the event already carries.
+func (s *Service) HandleDownloadCompletedEvent(ctx context.Context, ev trackeddownloads.DownloadCompletedEvent) error {
+	td := ev.TrackedDownload
+	if td == nil || td.RemoteEpisode == nil || td.RemoteEpisode.Series == nil || td.RemoteEpisode.ParsedEpisodeInfo == nil {
+		return nil
+	}
+	re := td.RemoteEpisode
+	seriesRow := re.Series
+	eps := materialiseEpisodes(re.Episodes)
+	files := materialiseFiles(ev.EpisodeFiles)
+	pei := re.ParsedEpisodeInfo
+	q := pei.Quality
+
+	providers, err := s.factory.OnImportCompleteEnabled(ctx, true)
+	if err != nil {
+		s.logger.Warn("notifications: load OnImportComplete providers", slog.Any("err", err))
+		return nil
+	}
+
+	msg := ImportCompleteMessage{
+		Message:         importCompleteMessageText(seriesRow, eps, pei, &q),
+		Series:          seriesRow,
+		Episodes:        eps,
+		EpisodeFiles:    files,
+		Release:         ev.Release,
+		DestinationPath: destinationPath(seriesRow, files),
+		ReleaseGroup:    pei.ReleaseGroup,
+		ReleaseQuality:  &q,
+	}
+	if td.DownloadItem != nil {
+		msg.DownloadClientInfo = td.DownloadItem.DownloadClientInfo
+		msg.DownloadID = td.DownloadItem.DownloadID
+		msg.SourcePath = td.DownloadItem.OutputPath.FullPath()
+	}
+	s.fanOut(ctx, providers, seriesRow.Tags, "OnImportComplete", func(p Provider) error {
+		return p.OnImportComplete(ctx, msg)
+	})
+	return nil
+}
+
+// HandleUntrackedDownloadCompletedEvent ports C#
+// `NotificationService.Handle(UntrackedDownloadCompletedEvent)`
+// (`NotificationService.cs:248-287`) — the manual-import (untracked)
+// sibling of HandleDownloadCompletedEvent. Same ImportCompleteMessage +
+// OnImportComplete fan-out, sourced from the event's own series /
+// episodes / parsed-info / files / source path.
+func (s *Service) HandleUntrackedDownloadCompletedEvent(ctx context.Context, ev trackeddownloads.UntrackedDownloadCompletedEvent) error {
+	if ev.Series == nil || ev.ParsedEpisodeInfo == nil {
+		return nil
+	}
+	eps := materialiseEpisodes(ev.Episodes)
+	files := materialiseFiles(ev.EpisodeFiles)
+	pei := ev.ParsedEpisodeInfo
+	q := pei.Quality
+
+	providers, err := s.factory.OnImportCompleteEnabled(ctx, true)
+	if err != nil {
+		s.logger.Warn("notifications: load OnImportComplete providers", slog.Any("err", err))
+		return nil
+	}
+
+	msg := ImportCompleteMessage{
+		Message:         importCompleteMessageText(ev.Series, eps, pei, &q),
+		Series:          ev.Series,
+		Episodes:        eps,
+		EpisodeFiles:    files,
+		SourcePath:      ev.SourcePath,
+		SourceTitle:     pei.ReleaseTitle,
+		DestinationPath: destinationPath(ev.Series, files),
+		ReleaseGroup:    pei.ReleaseGroup,
+		ReleaseQuality:  &q,
+	}
+	s.fanOut(ctx, providers, ev.Series.Tags, "OnImportComplete", func(p Provider) error {
+		return p.OnImportComplete(ctx, msg)
+	})
+	return nil
+}
+
+// importCompleteMessageText picks the full-season vs per-episode message
+// shape (C# `NotificationService.cs:212-214`): a FullSeason parse with at
+// least one episode uses the "Season N" summary; otherwise the standard
+// per-episode message.
+func importCompleteMessageText(s *series.Series, eps []*episodes.Episode, pei *parser.ParsedEpisodeInfo, q *quality.Model) string {
+	if pei != nil && pei.FullSeason && len(eps) > 0 && eps[0] != nil {
+		return getFullSeasonMessage(s, eps[0].SeasonNumber, q)
+	}
+	return getMessage(s, eps, q)
+}
+
+// getFullSeasonMessage ports C# `GetFullSeasonMessage` (`NotificationService.cs:71-76`).
+func getFullSeasonMessage(s *series.Series, seasonNumber int, q *quality.Model) string {
+	if s == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s - Season %d [%s]", s.Title, seasonNumber, getQualityString(s, q))
+}
+
+// materialiseFiles converts the event's value-slice of EpisodeFiles into
+// the pointer-slice ImportCompleteMessage carries. Returns nil for empty
+// input.
+func materialiseFiles(fs []episodefiles.File) []*episodefiles.File {
+	if len(fs) == 0 {
+		return nil
+	}
+	out := make([]*episodefiles.File, 0, len(fs))
+	for i := range fs {
+		f := fs[i]
+		out = append(out, &f)
+	}
+	return out
+}
+
+// destinationPath mirrors C# `EpisodeFiles.Select(e => Path.Join(series.Path,
+// e.RelativePath)).ToList().GetLongestCommonPath()` — the common library
+// directory the batch imported into.
+func destinationPath(s *series.Series, files []*episodefiles.File) string {
+	if s == nil || len(files) == 0 {
+		return ""
+	}
+	paths := make([]string, 0, len(files))
+	for _, f := range files {
+		if f != nil {
+			paths = append(paths, filepath.Join(s.Path, f.RelativePath))
+		}
+	}
+	return longestCommonPath(paths)
+}
+
+// longestCommonPath ports C# `PathExtensions.GetLongestCommonPath`
+// (`PathExtensions.cs:271-296`): the longest common character prefix of
+// the inputs, truncated at the last separator. Empty input, or no common
+// separator, → "".
+func longestCommonPath(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	first := paths[0]
+	length := len(first)
+	for _, p := range paths[1:] {
+		if len(p) < length {
+			length = len(p)
+		}
+		for i := 0; i < length; i++ {
+			if p[i] != first[i] {
+				length = i
+				break
+			}
+		}
+	}
+	sub := first[:length]
+	idx := strings.LastIndexAny(sub, `/\`)
+	if idx < 0 {
+		return ""
+	}
+	return sub[:idx]
 }
 
 // materialiseDeletedFiles converts the event's value-slice into the

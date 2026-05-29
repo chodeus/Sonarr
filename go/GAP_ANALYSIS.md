@@ -134,6 +134,12 @@ After 19 slices, the clean / in-scope / ungated / non-cosmetic autonomous work i
 
 **RESUMING LATER:** the next genuinely-impactful work is the Phase-4 download-completion pipeline (`CompletedDownloadService` + its event publishers), which unblocks Q1 tail + Q3 — but that's a substantial subsystem port, not an autonomous-loop slice. Flag to the operator.
 
+## NOTIFICATION DISPATCH SERVICE UNWIRED (found J456 — FLAG for operator)
+
+`notifications.Service` (the event-driven dispatch orchestrator — OnGrab / OnDownload / OnImportComplete / OnSeriesAdd / health / etc.) is **never constructed or subscribed** in cmd/sonarr. Only `notificationsRepo` (the CRUD/API surface), `notificationStatusSvc`, and the schema/test path are wired. Evidence: `notifications.NewService` appears nowhere in cmd/sonarr (grep); no `notificationsSvc.Subscribe(bus)` call exists; the main.go:2734 comment claiming "notifications.Service … subscribed elsewhere" is STALE. **Consequence: the running Go app fires NO event-driven notifications at all** (email/Discord/webhook on grab/import/health). The per-event handlers (incl. the J456 OnImportComplete pair) are all defined + unit-tested but dormant.
+
+This is a sizeable, cross-cutting wiring slice (construct the Service with its Factory + recorder + provider Dependencies, then `Subscribe(bus)`), and activating it would light up many handlers at once — it needs its own verification pass (provider construction, dedupe vs SignalR, per-handler smoke). OUT OF the download-completion arc. **Flagged for the operator as the next high-impact item.**
+
 ## PHASE-4 DOWNLOAD-COMPLETION ARC (J449+ campaign — re-opened)
 
 Slice-1 arc map (verified against actual Go code, not doc-comments — C# `CompletedDownloadService.cs` + `DownloadProcessingService.cs`). The arc turned out **smaller than J448 feared**: the import gate, state→Imported transition, and the consumer are ALREADY ported; only the event *producer* + cleanup + a few event *types* are missing.
