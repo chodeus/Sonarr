@@ -5,7 +5,7 @@
 - **GAP1 — series-delete on-disk file cascade (recycle-bin-aware + guarded).** Premise was partly STALE (VERIFY-FIRST): the Go cascade ALREADY deletes the folder (host_wiring.go:982), but via a RAW permanent `disk.DeleteFolder(path,true)` that ignores a configured recycle bin AND lacks the C# parent/equal-path safety guard.
   - ✅ **J494 — recyclebin.Service.DeleteFolder** (slice 1/2). Ported `RecycleBinProvider.DeleteFolder` (RecycleBinProvider.cs:41-68): recycle-bin move-or-permanent-delete + recycle-time mtime refresh. NEW disk.Provider.FolderSetLastWriteTime; extended recyclebin.DiskOps. 4 tests.
   - ✅ **J495 — wire DeleteCascade + guards** (slice 2/2). seriesCascadeAdapter.DeleteCascade now routes the folder delete through recyclebin.Service.DeleteFolder + the C# `HandleAsync(SeriesDeletedEvent)` parent/equal-path guard (`safeToDeleteFolder` + new `pathEquals`); stale series.go:1180 doc fixed. 6 tests. **GAP1 DONE.**
-- **GAP2 — RemoveEmptySubfolders after EpisodeFileDeletedEvent** (LOW/clean/ungated): pending after GAP1.
+- ✅ **GAP2 — RemoveEmptySubfolders after EpisodeFileDeletedEvent** (J496). Ported `MediaFileDeletionService.Handle(EpisodeFileDeletedEvent)` (MediaFileDeletionService.cs:215-243); NEW cmd/sonarr/mediafile_deleted_folder_subscriber.go (config-gated, reason≠MissingFromDisk, walk-up-prune + empty-root delete), subscribed OrderLast. 6 tests. **GAP2 DONE.**
 
 ## AUTONOMOUS EXHAUSTION (J493, 2026-05-30) — campaign J484–J492 closed
 

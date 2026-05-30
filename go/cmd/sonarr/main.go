@@ -733,6 +733,12 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	// see no behaviour change until they explicitly enable
 	// CreateEmptySeriesFolders.
 	subscribeSeriesAddedFolderCreate(bus, configProv, diskProv, logger)
+	// GAP2 (J496): prune now-empty season/series subfolders after an
+	// episode file is deleted (config DeleteEmptyFolders, reason ≠
+	// MissingFromDisk). Ports MediaFileDeletionService.Handle(
+	// EpisodeFileDeletedEvent) — the file-delete sibling of the
+	// rename-path RemoveEmptySubfolders. Default-off; OrderLast.
+	subscribeMediaFileDeletedFolderCleanup(bus, configProv, diskProv, logger)
 	// Slice 3.AD: rootFoldersRepo construction relocated up here so
 	// the mediafiles.NewService call below can take a real
 	// [rootFolderHealthResolverAdapter] (slice 3.A8 — same shape as
