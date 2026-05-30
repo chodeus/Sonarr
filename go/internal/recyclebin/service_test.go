@@ -26,20 +26,24 @@ type fakeDisk struct {
 	deletedFolders []folderDel
 	created        []string
 	moves          []move
+	folderMoves    []move // MoveFolder calls
 	exists         map[string]bool
 	files          []string             // returned by GetFiles
 	mtimes         map[string]time.Time // for FileGetLastWrite
+	setMtimes      map[string]time.Time // recorded by File/FolderSetLastWriteTime
 	swept          []string             // RemoveEmptySubfolders calls
 	dirs           []string             // returned by GetDirectories
 
 	deleteErr        error
 	createErr        error
 	moveErr          error
+	moveFolderErr    error
 	getFilesErr      error
 	getDirsErr       error
 	deleteFolderErr  error
 	deleteFolderErrs map[string]error // per-path err for DeleteFolder
 	mtimeErr         map[string]error // per-path err for FileGetLastWrite
+	setMtimeErr      error            // err for File/FolderSetLastWriteTime
 	deleteErrs       map[string]error // per-path err for DeleteFile (for partial-failure tests)
 	sweepErr         error
 	existsHooks      func(path string) bool
@@ -127,6 +131,36 @@ func (f *fakeDisk) DeleteFolder(path string, recursive bool) error {
 		return f.deleteFolderErr
 	}
 	f.deletedFolders = append(f.deletedFolders, folderDel{path: path, recursive: recursive})
+	return nil
+}
+
+func (f *fakeDisk) MoveFolder(src, dst string) error {
+	if f.moveFolderErr != nil {
+		return f.moveFolderErr
+	}
+	f.folderMoves = append(f.folderMoves, move{src, dst})
+	return nil
+}
+
+func (f *fakeDisk) FolderSetLastWriteTime(path string, t time.Time) error {
+	if f.setMtimeErr != nil {
+		return f.setMtimeErr
+	}
+	if f.setMtimes == nil {
+		f.setMtimes = map[string]time.Time{}
+	}
+	f.setMtimes[path] = t
+	return nil
+}
+
+func (f *fakeDisk) FileSetLastWriteTime(path string, t time.Time) error {
+	if f.setMtimeErr != nil {
+		return f.setMtimeErr
+	}
+	if f.setMtimes == nil {
+		f.setMtimes = map[string]time.Time{}
+	}
+	f.setMtimes[path] = t
 	return nil
 }
 
@@ -651,3 +685,91 @@ func TestEmpty_ContextCancelled(t *testing.T) {
 // fakeDisk's GetFiles ignores the recursive flag because it just
 // returns f.files directly. The real disk.Provider's GetFiles
 // already enforces recursive=false at top-level (provider.go:93).
+
+// --- DeleteFolder ---------------------------------------------------
+
+// TestDeleteFolder_RecycleBinDisabled_PermanentDelete: when no recycle
+// bin is configured, DeleteFolder hard-deletes recursively (C# `:46-51`).
+func TestDeleteFolder_RecycleBinDisabled_PermanentDelete(t *testing.T) {
+	t.Parallel()
+	d := &fakeDisk{}
+	svc := recyclebin.NewService(stubConfig{bin: ""}, d, slog.Default())
+	if err := svc.DeleteFolder("/tv/Show"); err != nil {
+		t.Fatalf("DeleteFolder: %v", err)
+	}
+	if len(d.deletedFolders) != 1 {
+		t.Fatalf("want 1 folder delete, got %v", d.deletedFolders)
+	}
+	if got := d.deletedFolders[0]; got.path != "/tv/Show" || !got.recursive {
+		t.Errorf("DeleteFolder(%q, recursive=%v), want (/tv/Show, true)", got.path, got.recursive)
+	}
+	// Must NOT move anything when the bin is disabled.
+	if len(d.folderMoves) != 0 {
+		t.Errorf("unexpected folder moves: %v", d.folderMoves)
+	}
+}
+
+// TestDeleteFolder_RecycleBinEnabled_MovesToBin: when a bin is set, the
+// folder is moved to <bin>/<folder-name> and mtime-refreshed (C# `:53-66`).
+func TestDeleteFolder_RecycleBinEnabled_MovesToBin(t *testing.T) {
+	t.Parallel()
+	dest := filepath.Join("/recycle", "Show")
+	d := &fakeDisk{
+		files: []string{filepath.Join(dest, "S01", "ep.mkv")},
+	}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle"}, d, slog.Default())
+	if err := svc.DeleteFolder("/tv/Show"); err != nil {
+		t.Fatalf("DeleteFolder: %v", err)
+	}
+	if len(d.deletedFolders) != 0 {
+		t.Errorf("must not hard-delete when bin configured: %v", d.deletedFolders)
+	}
+	if len(d.folderMoves) != 1 || d.folderMoves[0].src != "/tv/Show" || d.folderMoves[0].dst != dest {
+		t.Fatalf("want move /tv/Show -> %q, got %v", dest, d.folderMoves)
+	}
+	// Recycle-time stamped on the dest folder + every file inside it.
+	if _, ok := d.setMtimes[dest]; !ok {
+		t.Errorf("dest folder mtime not stamped; setMtimes=%v", d.setMtimes)
+	}
+	if _, ok := d.setMtimes[filepath.Join(dest, "S01", "ep.mkv")]; !ok {
+		t.Errorf("recycled file mtime not stamped; setMtimes=%v", d.setMtimes)
+	}
+}
+
+// TestDeleteFolder_MoveFailure_WrapsRecycleBinError: a MoveFolder error
+// surfaces as a RecycleBinError (errors.Is ErrRecycleBin), matching the
+// C# RecycleBinException raise at `:53-66`.
+func TestDeleteFolder_MoveFailure_WrapsRecycleBinError(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("disk full")
+	d := &fakeDisk{moveFolderErr: boom}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle"}, d, slog.Default())
+	err := svc.DeleteFolder("/tv/Show")
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	if !errors.Is(err, recyclebin.ErrRecycleBin) {
+		t.Errorf("want errors.Is ErrRecycleBin, got %v", err)
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("want wrapped underlying err, got %v", err)
+	}
+}
+
+// TestDeleteFolder_MtimeRefreshBestEffort: a failing mtime refresh is
+// swallowed — the move still counts as a success (C# `SetLastWriteTime`
+// try/catch at `:202-218`).
+func TestDeleteFolder_MtimeRefreshBestEffort(t *testing.T) {
+	t.Parallel()
+	d := &fakeDisk{
+		files:       []string{"/recycle/Show/ep.mkv"},
+		setMtimeErr: errors.New("EPERM"),
+	}
+	svc := recyclebin.NewService(stubConfig{bin: "/recycle"}, d, slog.Default())
+	if err := svc.DeleteFolder("/tv/Show"); err != nil {
+		t.Fatalf("DeleteFolder should swallow mtime errors, got %v", err)
+	}
+	if len(d.folderMoves) != 1 {
+		t.Errorf("want the move to still happen, got %v", d.folderMoves)
+	}
+}

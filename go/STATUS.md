@@ -20755,3 +20755,13 @@ The FINAL fresh-audit round (3rd this campaign: media-management/rename/file-org
 - GAP4 import-list clean-on-delete: GATED (deferred CleanLibrary substrate).
 
 **To resume:** operator picks GAP1 (series-delete file cascade — destructive, needs recyclebin.DeleteFolder + the HandleAsync(SeriesDeletedEvent) cascade) or a LOW item (GAP2/GAP3) or the marginal SeasonMatch/SingleEpisode specs. Full breakdown in GAP_ANALYSIS.md "AUTONOMOUS EXHAUSTION (J493)".
+
+## RESUMED (J494+, 2026-05-30) — operator picked GAP1 + GAP2
+
+### J494 — recyclebin.Service.DeleteFolder (GAP1 substrate, slice 1/2)
+
+VERIFY-FIRST CORRECTION: the GAP1 premise was partly STALE. series.go:1180-1186 doc claims the physical-disk cascade is DEFERRED, but cmd/sonarr seriesCascadeAdapter.DeleteCascade (host_wiring.go:982) ALREADY deletes the folder — via a RAW permanent `disk.DeleteFolder(path, true)` (os.RemoveAll). The real GAP1: that path (a) IGNORES a configured recycle bin (silent data-loss divergence — C# routes through RecycleBinProvider.DeleteFolder) and (b) has NO C# parent/equal-path safety guard against clobbering a nested/sibling series' files.
+
+This slice lands the missing capability: ported `RecycleBinProvider.DeleteFolder` (`src/NzbDrone.Core/MediaFiles/RecycleBinProvider.cs:41-68`) → `recyclebin.Service.DeleteFolder(path)`: RecycleBin=="" → permanent `disk.DeleteFolder(path,true)`; else move to `<bin>/<base(path)>` via disk.MoveFolder + best-effort recycle-time mtime refresh on the dest folder + every file inside (so Cleanup's retention counts from recycle-time). MoveFolder failure → RecycleBinError (errors.Is ErrRecycleBin). Substrate: disk.Provider.MoveFolder already existed; added disk.Provider.FolderSetLastWriteTime (os.Chtimes, sibling of FileSetLastWriteTime). Extended recyclebin.DiskOps with MoveFolder/FolderSetLastWriteTime/FileSetLastWriteTime; updated the stale package "Deferred" doc.
+
+R: src RecycleBinProvider.cs:41-68, existing recyclebin DeleteFile. A: 4 DeleteFolder tests (bin-disabled permanent-delete, bin-enabled move+mtime-stamp, move-failure-wraps-ErrRecycleBin, mtime-best-effort). M: internal/recyclebin/service.go (+DeleteFolder, DiskOps×3, docs), internal/recyclebin/service_test.go (fakeDisk×4 methods), internal/disk/provider.go (+FolderSetLastWriteTime). NEXT J495: wire DeleteCascade → recyclebin.DeleteFolder + parent/equal-path guards. Gates: build ./… + recyclebin/disk/cmd/sonarr/contract -race + vet + gofmt clean.

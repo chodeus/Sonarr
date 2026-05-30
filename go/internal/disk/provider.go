@@ -299,6 +299,21 @@ func (p *Provider) FileSetLastWriteTime(path string, t time.Time) error {
 	return nil
 }
 
+// FolderSetLastWriteTime mirrors `IDiskProvider.FolderSetLastWriteTime`
+// at `Common/Disk/IDiskProvider.cs`. Used by the recycle-bin folder-move
+// path (`RecycleBinProvider.DeleteFolder` at
+// `src/NzbDrone.Core/MediaFiles/RecycleBinProvider.cs:59-60`) to stamp the
+// recycle-time onto the moved folder so the retention sweep counts the
+// window from when the folder was recycled. os.Chtimes operates on
+// directories the same as on files; the atime argument is set equal to
+// mtime (Sonarr does not track access times).
+func (p *Provider) FolderSetLastWriteTime(path string, t time.Time) error {
+	if err := os.Chtimes(path, t, t); err != nil {
+		return fmt.Errorf("disk: FolderSetLastWriteTime(%q): %w", path, err)
+	}
+	return nil
+}
+
 // GetDirectories ports `DiskProviderBase.cs:153-162`. Returns
 // absolute paths of every immediate subdirectory of path. Top-level
 // only — non-recursive — matching the C# `Directory.EnumerateDirectories(path, "*")`

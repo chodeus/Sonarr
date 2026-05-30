@@ -10,19 +10,14 @@
 // 3.72 noopRecycleBinProvider). Production wiring can now bind a
 // real Service in place of the noop default.
 //
-// # Deferred
-//
-//   - DeleteFolder (`RecycleBinProvider.cs:41-68`) — requires
-//     IDiskTransferService.TransferFolder which the Go disk port
-//     hasn't shipped (slice 3.74 only ported TransferFile, the file
-//     half of the C# DiskTransferService class). Lands when the
-//     folder-transfer surface ports.
-//
 // Slice 3.77 landed [Service.Cleanup] (`:162-200`); slice 3.78
 // landed [Service.Empty] (`:139-160`) alongside the
-// [disk.Provider.GetDirectories] primitive it needs. The remaining
-// deferred surface (DeleteFolder) is documented at type-level on
-// [Service] so a future slice has a clear plan-of-attack pointer.
+// [disk.Provider.GetDirectories] primitive it needs. Slice J494
+// landed [Service.DeleteFolder] (`:41-68`) once the disk port shipped
+// the folder-transfer surface ([disk.Provider.MoveFolder]) — it
+// powers the recycle-bin-aware series-delete file cascade
+// (cmd/sonarr seriesCascadeAdapter, the GAP1 fix), replacing the raw
+// permanent `disk.DeleteFolder` that ignored a configured recycle bin.
 //
 // # Wiring
 //
@@ -69,18 +64,19 @@ type ConfigReader interface {
 	RecycleBinCleanupDays() int
 }
 
-// DiskOps narrows `IDiskProvider` for the seven methods
-// [Service.DeleteFile] and [Service.Cleanup] reach for. Production
+// DiskOps narrows `IDiskProvider` for the methods [Service.DeleteFile],
+// [Service.DeleteFolder] and [Service.Cleanup] reach for. Production
 // binding wires `*disk.Provider` — every method exists at the disk
 // package after slice 3.74's transfer primitives landed.
 //
-// FileSetLastWriteTime is NOT included because the C# class's
-// SetLastWriteTime helper at `:202-218` is best-effort (any IO error
-// is swallowed). The Go port collapses the post-recycle mtime
-// update into a no-op until the disk port adds a
-// FileSetLastWriteTime primitive — the recycle-bin file shows up
-// with whatever mtime os.Rename / os.Link copied, which is exactly
-// the move-time mtime the operator expects.
+// The C# `RecycleBinProvider` post-recycle mtime refresh
+// (`FolderSetLastWriteTime` + per-file `SetLastWriteTime` at
+// `RecycleBinProvider.cs:59-64`) is implemented for the folder-move
+// path ([Service.DeleteFolder]) so the retention sweep counts the
+// cleanup window from when the folder was recycled — best-effort, IO
+// errors are swallowed exactly like the C# `SetLastWriteTime` helper at
+// `:202-218`. ([Service.DeleteFile] still skips its single-file
+// equivalent; see that method's doc.)
 type DiskOps interface {
 	// DeleteFile removes a regular file. Used by the
 	// "RecycleBin disabled" arm of DeleteFile, the per-file expiry
@@ -112,8 +108,21 @@ type DiskOps interface {
 	GetDirectories(path string) ([]string, error)
 	// DeleteFolder removes a directory. recursive=true removes the
 	// directory and everything under it. Used by Empty's
-	// folder-sweep arm.
+	// folder-sweep arm and [Service.DeleteFolder]'s hard-delete arm.
 	DeleteFolder(path string, recursive bool) error
+	// MoveFolder renames src → dst (entire-tree move, with a
+	// cross-device copy+delete fallback). Used by the
+	// "RecycleBin enabled" arm of [Service.DeleteFolder].
+	MoveFolder(src, dst string) error
+	// FolderSetLastWriteTime stamps a folder's mtime. Used by
+	// [Service.DeleteFolder] to record the recycle-time on the moved
+	// folder. Best-effort — the caller swallows the error.
+	FolderSetLastWriteTime(path string, t time.Time) error
+	// FileSetLastWriteTime stamps a file's mtime. Used by
+	// [Service.DeleteFolder] to record the recycle-time on every file
+	// inside the moved folder. Best-effort — the caller swallows the
+	// error.
+	FileSetLastWriteTime(path string, t time.Time) error
 }
 
 // RecycleBinError mirrors `RecycleBinException` raised at the C#
@@ -253,6 +262,81 @@ func (s *Service) DeleteFile(path, subfolder string) (string, error) {
 
 	s.log.Debug("recyclebin: file moved", "dst", dest)
 	return dest, nil
+}
+
+// DeleteFolder ports `RecycleBinProvider.cs:41-68`. Recycles a folder —
+// or hard-deletes it when the RecycleBin config is empty.
+//
+// Behaviour:
+//
+//   - RecycleBin == ""  → hard-delete via [DiskOps.DeleteFolder] with
+//     recursive=true. Mirrors C# `:46-51`.
+//
+//   - RecycleBin != ""  → move the folder to <bin>/<folder-name> via
+//     [DiskOps.MoveFolder], then best-effort stamp the recycle-time on
+//     the destination folder + every file inside it so the retention
+//     sweep ([Service.Cleanup]) counts the window from when the folder
+//     was recycled. Mirrors C# `:53-66`.
+//
+// The C# tree composes the destination as
+// `Path.Combine(recyclingBin, new DirectoryInfo(path).Name)` — the
+// folder keeps its own name inside the bin (NOT the series/season
+// subfolder structure the per-file [Service.DeleteFile] preserves).
+// The Go port mirrors that with `filepath.Join(bin, filepath.Base(path))`.
+//
+// Errors:
+//
+//   - hard-delete failure → propagated wrapped (the C# `:49` call
+//     doesn't wrap; the disk port's DeleteFolder already wraps).
+//   - MoveFolder failure → wrapped in [RecycleBinError] (Op="move-file"),
+//     so errors.Is(err, ErrRecycleBin) → true.
+//   - mtime-refresh failures are swallowed (best-effort) — matching the
+//     C# `SetLastWriteTime` try/catch at `:202-218`.
+//
+// now is injected for testability; production passes time.Now().UTC().
+func (s *Service) DeleteFolder(path string) error {
+	bin := strings.TrimSpace(s.cfg.RecycleBin())
+	if bin == "" {
+		s.log.Info("recyclebin: feature disabled, permanently deleting folder", "path", path)
+		if err := s.disk.DeleteFolder(path, true); err != nil {
+			return err
+		}
+		s.log.Debug("recyclebin: folder permanently deleted", "path", path)
+		return nil
+	}
+
+	dest := filepath.Join(bin, filepath.Base(path))
+
+	s.log.Debug("recyclebin: moving folder to bin", "src", path, "dst", dest)
+	if err := s.disk.MoveFolder(path, dest); err != nil {
+		s.log.Error("recyclebin: unable to move folder to bin",
+			"src", path, "dst", dest, "err", err)
+		return &RecycleBinError{
+			Op:  "move-file",
+			Src: path,
+			Dst: dest,
+			Err: errors.Join(ErrRecycleBin, err),
+		}
+	}
+
+	// Best-effort recycle-time refresh (C# `:59-64`). Swallow errors so a
+	// single unstampable inode doesn't fail the whole recycle.
+	now := time.Now().UTC()
+	if err := s.disk.FolderSetLastWriteTime(dest, now); err != nil {
+		s.log.Warn("recyclebin: failed to set folder mtime (continuing)", "dst", dest, "err", err)
+	}
+	files, err := s.disk.GetFiles(dest, true)
+	if err != nil {
+		s.log.Warn("recyclebin: failed to enumerate recycled files for mtime refresh (continuing)", "dst", dest, "err", err)
+	}
+	for _, f := range files {
+		if err := s.disk.FileSetLastWriteTime(f, now); err != nil {
+			s.log.Warn("recyclebin: failed to set file mtime (continuing)", "file", f, "err", err)
+		}
+	}
+
+	s.log.Debug("recyclebin: folder moved to bin", "dst", dest)
+	return nil
 }
 
 // Empty ports `RecycleBinProvider.cs:139-160`. Recursively deletes

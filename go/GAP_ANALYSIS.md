@@ -1,5 +1,12 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## RESUMED (J494+, 2026-05-30) — operator picked GAP1 + GAP2
+
+- **GAP1 — series-delete on-disk file cascade (recycle-bin-aware + guarded).** Premise was partly STALE (VERIFY-FIRST): the Go cascade ALREADY deletes the folder (host_wiring.go:982), but via a RAW permanent `disk.DeleteFolder(path,true)` that ignores a configured recycle bin AND lacks the C# parent/equal-path safety guard.
+  - ✅ **J494 — recyclebin.Service.DeleteFolder** (slice 1/2). Ported `RecycleBinProvider.DeleteFolder` (RecycleBinProvider.cs:41-68): recycle-bin move-or-permanent-delete + recycle-time mtime refresh. NEW disk.Provider.FolderSetLastWriteTime; extended recyclebin.DiskOps. 4 tests.
+  - ⏳ **J495 — wire DeleteCascade + guards** (slice 2/2): route seriesCascadeAdapter folder-delete through recyclebin.DeleteFolder; add the C# `HandleAsync(SeriesDeletedEvent)` parent/equal-path guard (don't delete when the series path is a parent of, or equal to, another series' path); update the stale series.go:1180 doc.
+- **GAP2 — RemoveEmptySubfolders after EpisodeFileDeletedEvent** (LOW/clean/ungated): pending after GAP1.
+
 ## AUTONOMOUS EXHAUSTION (J493, 2026-05-30) — campaign J484–J492 closed
 
 Resumed-after-J483 campaign: **9 slices (J484–J492) + 3 fresh-audit rounds**, all gates green, loop now STOPPED.
