@@ -15,6 +15,8 @@ import (
 	"sonarr.tv/sonarr/internal/episodeimport"
 	"sonarr.tv/sonarr/internal/extrafiles"
 	"sonarr.tv/sonarr/internal/extras"
+	"sonarr.tv/sonarr/internal/parser"
+	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/subtitlefiles"
 )
@@ -92,13 +94,52 @@ func (a extrasSampleAdapter) IsSampleVideo(ser *series.Series, path string) bool
 	return a.d.IsSampleForSeries(context.Background(), ser, path, false) == episodeimport.DetectSampleSample
 }
 
+// extrasEpisodeResolver bridges [extras.EpisodeFileResolver] to the
+// parsing service: parse the companion path, map it within the series, and
+// return the single EpisodeFile its episodes share (ambiguous / unmatched
+// → ok=false). Mirrors the C# ExistingExtraImporter's
+// AggregationService.Augment → single EpisodeFileId resolution.
+type extrasEpisodeResolver struct {
+	parsing *parsingservice.Service
+	log     *slog.Logger
+}
+
+func (a extrasEpisodeResolver) ResolveEpisodeFile(ctx context.Context, ser *series.Series, path string) (int, int, bool) {
+	parsed := parser.ParsePath(path)
+	if parsed == nil || a.parsing == nil {
+		return 0, 0, false
+	}
+	tvdb := 0
+	if ser != nil {
+		tvdb = ser.TvdbID
+	}
+	subj, err := a.parsing.Map(ctx, parsed, tvdb, 0, "", nil)
+	if err != nil || subj == nil || len(subj.Episodes) == 0 {
+		return 0, 0, false
+	}
+	fileID, season := 0, 0
+	for i := range subj.Episodes {
+		ef := subj.Episodes[i].EpisodeFileID
+		if ef == nil || *ef == 0 {
+			return 0, 0, false
+		}
+		if i == 0 {
+			fileID, season = *ef, subj.Episodes[i].SeasonNumber
+		} else if *ef != fileID {
+			// Companion maps to episodes spanning >1 file — ambiguous.
+			return 0, 0, false
+		}
+	}
+	return fileID, season, true
+}
+
 // extrasImporterAdapter implements [episodeimport.ExtrasImporter] over the
-// [extras.ExtraService] orchestrator. Only [ImportEpisode] (the main
-// auto-import path) is live; the script-import + post-rename arms remain
-// no-ops (a follow-up — they need the managers' MoveFilesAfterRename).
+// [extras.ExtraService] orchestrator (import + rename) plus the
+// [extras.ExistingExtraService] (script-import existing-file arm).
 type extrasImporterAdapter struct {
-	svc *extras.ExtraService
-	log *slog.Logger
+	svc      *extras.ExtraService
+	existing *extras.ExistingExtraService
+	log      *slog.Logger
 }
 
 func (a extrasImporterAdapter) ImportEpisode(le *episodeimport.LocalEpisode, file *episodefiles.File, copyOnly bool) error {
@@ -123,10 +164,16 @@ func (a extrasImporterAdapter) ImportEpisode(le *episodeimport.LocalEpisode, fil
 	return nil
 }
 
-// ImportExtraFiles is the script-import arm — deferred (the C# variant
-// re-runs the extras detection on the script result). No-op for now.
-func (extrasImporterAdapter) ImportExtraFiles(*episodeimport.LocalEpisode, []string, string) error {
-	return nil
+// ImportExtraFiles is the script-import arm (J482): track the companion
+// files a custom import script left on disk (PossibleExtraFiles), matched
+// to their EpisodeFile, without moving them. Ports
+// IExistingExtraFiles.ImportExtraFiles.
+func (a extrasImporterAdapter) ImportExtraFiles(le *episodeimport.LocalEpisode, possibleExtraFiles []string, _ string) error {
+	if le == nil || le.Series == nil || a.existing == nil || len(possibleExtraFiles) == 0 {
+		return nil
+	}
+	_, err := a.existing.ImportExisting(context.Background(), le.Series, possibleExtraFiles)
+	return err
 }
 
 // MoveFilesAfterRename relocates the imported companions when the import
@@ -150,18 +197,25 @@ func buildExtrasImporter(
 	subRepo *subtitlefiles.Repo,
 	diskProv *disk.Provider,
 	sampleDetector *episodeimport.SampleDetector,
+	parsing *parsingservice.Service,
 	cfg extrasConfig,
 	log *slog.Logger,
 ) (episodeimport.ExtrasImporter, *extras.ExtraService, error) {
 	tr := extrasTransferAdapter{fs: fs}
+	extraStore := extraFileStoreAdapter{repo: extraRepo}
+	subStore := subtitleFileStoreAdapter{repo: subRepo}
 	// diskProv satisfies extras.FileMover (MoveFile) for the post-rename move.
-	other := extras.NewOtherExtraManager(extraFileStoreAdapter{repo: extraRepo}, tr, diskProv, cfg, log)
-	sub := extras.NewSubtitleManager(subtitleFileStoreAdapter{repo: subRepo}, tr, diskProv, cfg, diskProv, extrasSampleAdapter{d: sampleDetector}, log)
+	other := extras.NewOtherExtraManager(extraStore, tr, diskProv, cfg, log)
+	sub := extras.NewSubtitleManager(subStore, tr, diskProv, cfg, diskProv, extrasSampleAdapter{d: sampleDetector}, log)
 	svc, err := extras.NewExtraService([]extras.Manager{sub, other}, diskProv, cfg, log)
 	if err != nil {
 		return nil, nil, err
 	}
-	return extrasImporterAdapter{svc: svc, log: log}, svc, nil
+	existing, err := extras.NewExistingExtraService(subStore, extraStore, extrasEpisodeResolver{parsing: parsing, log: log}, log)
+	if err != nil {
+		return nil, nil, err
+	}
+	return extrasImporterAdapter{svc: svc, existing: existing, log: log}, svc, nil
 }
 
 // Compile-time interface guards.

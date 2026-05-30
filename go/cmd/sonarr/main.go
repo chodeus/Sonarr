@@ -2337,7 +2337,7 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	if err != nil {
 		return fmt.Errorf("subtitlefiles repo: %w", err)
 	}
-	extrasImporter, extrasSvc, err := buildExtrasImporter(episodeFileMovingFs, extraFilesRepo, subtitleFilesRepo, diskProv, sampleDetector, configProv, logger)
+	extrasImporter, extrasSvc, err := buildExtrasImporter(episodeFileMovingFs, extraFilesRepo, subtitleFilesRepo, diskProv, sampleDetector, parsingSvc, configProv, logger)
 	if err != nil {
 		return fmt.Errorf("extras importer: %w", err)
 	}
