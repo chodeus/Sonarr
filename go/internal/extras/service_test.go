@@ -24,6 +24,7 @@ type claimManager struct {
 	claimExt  string // "" → claim everything
 	gotFiles  []string
 	importErr error
+	movedFor  int
 }
 
 func (m *claimManager) Order() int { return m.order }
@@ -33,6 +34,11 @@ func (m *claimManager) CanImportFile(_ string, extension string) bool {
 func (m *claimManager) ImportFiles(_ context.Context, _ ImportInput, files []string) (int, error) {
 	m.gotFiles = append(m.gotFiles, files...)
 	return len(files), m.importErr
+}
+
+func (m *claimManager) MoveFilesAfterRename(_ context.Context, in MoveInput) (int, error) {
+	m.movedFor += len(in.EpisodeFiles)
+	return len(in.EpisodeFiles), nil
 }
 
 func svcInput() ImportInput {

@@ -2,6 +2,7 @@ package extras
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -41,11 +42,28 @@ type ImportInput struct {
 	Recursive bool
 }
 
+// FileMover relocates an already-imported library file when its episode
+// file is renamed. *disk.Provider satisfies it via MoveFile. Distinct
+// from [FileTransferrer] (which handles the download→library import with
+// a copy/move/hardlink mode); a rename is always an in-library move.
+// Mirrors C# `IDiskProvider.MoveFile` used by `ExtraFileManager.MoveFile`.
+type FileMover interface {
+	MoveFile(src, dst string) error
+}
+
+// MoveInput is the per-rename context — the series plus the episode files
+// whose companions should follow them to their new names.
+type MoveInput struct {
+	Series       *series.Series
+	EpisodeFiles []*episodefiles.File
+}
+
 // Manager is the Go-port equivalent of C# `IManageExtraFiles` /
 // `ExtraFileManager<TExtraFile>`. The orchestrator asks each manager (in
 // [Manager.Order]) whether it claims a candidate file
 // ([Manager.CanImportFile]) — first claim wins — then hands each manager
-// the files it claimed via [Manager.ImportFiles].
+// the files it claimed via [Manager.ImportFiles]. On a rename it asks each
+// manager to relocate its persisted companions via [Manager.MoveFilesAfterRename].
 type Manager interface {
 	// Order is the deterministic claim order (lower = earlier). Mirrors
 	// C# `ExtraFileManager.Order` (Metadata=0, Subtitle=1, Other=2).
@@ -58,6 +76,34 @@ type Manager interface {
 	// imported. Per-file failures are logged and skipped (mirrors the C#
 	// per-file try/catch).
 	ImportFiles(ctx context.Context, in ImportInput, files []string) (int, error)
+	// MoveFilesAfterRename relocates this manager's persisted companion
+	// files to follow the renamed episode files, returning the count
+	// moved. Mirrors C# `ExtraFileManager.MoveFilesAfterRename`.
+	MoveFilesAfterRename(ctx context.Context, in MoveInput) (int, error)
+}
+
+// moveFile relocates one already-imported companion to follow its renamed
+// episode file and returns the new series-relative path (and whether a
+// move happened). Mirrors the shared C# helper `ExtraFileManager.MoveFile`
+// (`Extras/Files/ExtraFileManager.cs`): the new name is the episode file's
+// folder + stem + suffix + the companion's extension; a no-op (same path)
+// returns moved=false.
+func moveFile(m FileMover, seriesPath, episodeFileRelativePath, companionRelativePath, suffix, extension string) (string, bool, error) {
+	destFolder := filepath.Dir(filepath.Join(seriesPath, episodeFileRelativePath))
+	stem := strings.TrimSuffix(filepath.Base(episodeFileRelativePath), filepath.Ext(episodeFileRelativePath))
+	destPath := filepath.Join(destFolder, stem+suffix+extension)
+	srcPath := filepath.Join(seriesPath, companionRelativePath)
+	if destPath == srcPath {
+		return "", false, nil
+	}
+	if err := m.MoveFile(srcPath, destPath); err != nil {
+		return "", false, err
+	}
+	rel, err := filepath.Rel(seriesPath, destPath)
+	if err != nil {
+		return "", false, err
+	}
+	return rel, true, nil
 }
 
 // matchesEpisode reports whether an extra file belongs to the imported
@@ -99,10 +145,14 @@ func sameInts(a, b []int) bool {
 	return true
 }
 
-// ExtraFileStore persists "other" extra-file rows. Production binds an
-// adapter over `*extrafiles.Repo`. Mirrors C# `IOtherExtraFileService.Upsert`.
+// ExtraFileStore persists + reads "other" extra-file rows. Production
+// binds an adapter over `*extrafiles.Repo`. Upsert inserts a fresh import
+// row; AllBySeriesID + Update back the post-rename move pass. Mirrors C#
+// `IOtherExtraFileService` (Upsert / GetFilesBySeries).
 type ExtraFileStore interface {
 	Upsert(ctx context.Context, f *extrafiles.ExtraFile) error
+	AllBySeriesID(ctx context.Context, seriesID int) ([]extrafiles.ExtraFile, error)
+	Update(ctx context.Context, f *extrafiles.ExtraFile) error
 }
 
 // OtherExtraManager ports `Extras/Others/OtherExtraService.cs` — the
@@ -113,17 +163,18 @@ type ExtraFileStore interface {
 type OtherExtraManager struct {
 	store ExtraFileStore
 	t     FileTransferrer
+	mover FileMover
 	cfg   HardlinkConfig
 	log   *slog.Logger
 }
 
-// NewOtherExtraManager builds the manager. store / t / cfg MUST be
+// NewOtherExtraManager builds the manager. store / t / mover / cfg MUST be
 // non-nil; log defaults to [slog.Default].
-func NewOtherExtraManager(store ExtraFileStore, t FileTransferrer, cfg HardlinkConfig, log *slog.Logger) *OtherExtraManager {
+func NewOtherExtraManager(store ExtraFileStore, t FileTransferrer, mover FileMover, cfg HardlinkConfig, log *slog.Logger) *OtherExtraManager {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &OtherExtraManager{store: store, t: t, cfg: cfg, log: log}
+	return &OtherExtraManager{store: store, t: t, mover: mover, cfg: cfg, log: log}
 }
 
 // Order returns 2 (C# `OtherExtraService.Order`).
@@ -177,6 +228,47 @@ func (m *OtherExtraManager) ImportFiles(ctx context.Context, in ImportInput, fil
 			continue
 		}
 		count++
+	}
+	return count, nil
+}
+
+// MoveFilesAfterRename ports `OtherExtraService.MoveFilesAfterRename`.
+// Loads the series' other-extra rows, and for each renamed episode file
+// relocates its companions (no suffix) to the new name, persisting the
+// updated RelativePath.
+func (m *OtherExtraManager) MoveFilesAfterRename(ctx context.Context, in MoveInput) (int, error) {
+	if in.Series == nil || len(in.EpisodeFiles) == 0 {
+		return 0, nil
+	}
+	all, err := m.store.AllBySeriesID(ctx, in.Series.ID)
+	if err != nil {
+		return 0, fmt.Errorf("extras: other MoveFilesAfterRename: load: %w", err)
+	}
+	count := 0
+	for _, ef := range in.EpisodeFiles {
+		if ef == nil {
+			continue
+		}
+		for i := range all {
+			row := &all[i]
+			if row.EpisodeFileID != ef.ID {
+				continue
+			}
+			rel, moved, err := moveFile(m.mover, in.Series.Path, ef.RelativePath, row.RelativePath, "", row.Extension)
+			if err != nil {
+				m.log.Warn("extras: move other-extra after rename failed", "path", row.RelativePath, "err", err)
+				continue
+			}
+			if !moved {
+				continue
+			}
+			row.RelativePath = rel
+			if err := m.store.Update(ctx, row); err != nil {
+				m.log.Warn("extras: persist moved other-extra failed", "id", row.ID, "err", err)
+				continue
+			}
+			count++
+		}
 	}
 	return count, nil
 }

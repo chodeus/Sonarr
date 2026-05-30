@@ -13,11 +13,22 @@ import (
 )
 
 type stubSubStore struct {
-	rows []*subtitlefiles.SubtitleFile
+	rows     []*subtitlefiles.SubtitleFile
+	bySeries []subtitlefiles.SubtitleFile
+	updated  []*subtitlefiles.SubtitleFile
 }
 
 func (s *stubSubStore) Upsert(_ context.Context, f *subtitlefiles.SubtitleFile) error {
 	s.rows = append(s.rows, f)
+	return nil
+}
+
+func (s *stubSubStore) AllBySeriesID(_ context.Context, _ int) ([]subtitlefiles.SubtitleFile, error) {
+	return s.bySeries, nil
+}
+
+func (s *stubSubStore) Update(_ context.Context, f *subtitlefiles.SubtitleFile) error {
+	s.updated = append(s.updated, f)
 	return nil
 }
 
@@ -35,7 +46,7 @@ func subInput(sourcePath string) ImportInput {
 }
 
 func newSubMgr(store SubtitleStore, folders FolderVideoLister, samples SampleChecker) *SubtitleManager {
-	return NewSubtitleManager(store, &passthroughTransferrer{}, stubHardlinkCfg{}, folders, samples, slog.New(slog.DiscardHandler))
+	return NewSubtitleManager(store, &passthroughTransferrer{}, &recordingMover{}, stubHardlinkCfg{}, folders, samples, slog.New(slog.DiscardHandler))
 }
 
 func TestSubtitleManager_CanImportFile(t *testing.T) {
@@ -138,20 +149,49 @@ func TestGetSuffix(t *testing.T) {
 		copy  int
 		tags  []string
 		multi bool
+		title string
 		want  string
 	}{
-		{language.English, 1, nil, false, ".en"},
-		{language.English, 1, nil, true, ".1.en"},
-		{language.English, 2, nil, true, ".2.en"},
-		{language.English, 1, []string{"forced"}, false, ".en.forced"},
-		{language.English, 1, []string{"forced", "sdh"}, false, ".en.forced.sdh"},
-		{language.Unknown, 1, nil, false, ""},
-		{language.Unknown, 1, []string{"forced"}, false, ".forced"},
+		{language.English, 1, nil, false, "", ".en"},
+		{language.English, 1, nil, true, "", ".1.en"},
+		{language.English, 2, nil, true, "", ".2.en"},
+		{language.English, 1, []string{"forced"}, false, "", ".en.forced"},
+		{language.English, 1, []string{"forced", "sdh"}, false, "", ".en.forced.sdh"},
+		{language.Unknown, 1, nil, false, "", ""},
+		{language.Unknown, 1, []string{"forced"}, false, "", ".forced"},
+		// title path (post-rename): ".title" replaces the copy-number prefix.
+		{language.English, 1, nil, false, "Commentary", ".Commentary.en"},
+		{language.English, 2, nil, true, "Commentary", ".Commentary - 2.en"},
 	}
 	for _, c := range cases {
-		got := getSuffix(c.lang, c.copy, c.tags, c.multi)
+		got := getSuffix(c.lang, c.copy, c.tags, c.multi, c.title)
 		if got != c.want {
-			t.Errorf("getSuffix(%v,%d,%v,%v) = %q, want %q", c.lang, c.copy, c.tags, c.multi, got, c.want)
+			t.Errorf("getSuffix(%v,%d,%v,%v,%q) = %q, want %q", c.lang, c.copy, c.tags, c.multi, c.title, got, c.want)
 		}
+	}
+}
+
+func TestSubtitleManager_MoveFilesAfterRename(t *testing.T) {
+	t.Parallel()
+	store := &stubSubStore{bySeries: []subtitlefiles.SubtitleFile{
+		{ID: 1, SeriesID: 7, EpisodeFileID: 55, RelativePath: "Season 01/Old.en.srt", Extension: ".srt", Language: language.English.ID},
+		{ID: 2, SeriesID: 7, EpisodeFileID: 99, RelativePath: "Season 01/Unrelated.en.srt", Extension: ".srt", Language: language.English.ID},
+	}}
+	mover := &recordingMover{}
+	m := NewSubtitleManager(store, &passthroughTransferrer{}, mover, stubHardlinkCfg{}, nil, nil, slog.New(slog.DiscardHandler))
+	renamed := &episodefiles.File{ID: 55, RelativePath: "Season 01/Show.S01E02.mkv"}
+	n, err := m.MoveFilesAfterRename(context.Background(), MoveInput{
+		Series:       &series.Series{ID: 7, Path: "/tv/Show"},
+		EpisodeFiles: []*episodefiles.File{renamed},
+	})
+	if err != nil || n != 1 {
+		t.Fatalf("MoveFilesAfterRename = (%d,%v), want (1,nil)", n, err)
+	}
+	wantDst := "/tv/Show/Season 01/Show.S01E02.en.srt"
+	if len(mover.moves) != 1 || mover.moves[0][1] != wantDst {
+		t.Errorf("move = %v, want dst %q", mover.moves, wantDst)
+	}
+	if len(store.updated) != 1 || store.updated[0].RelativePath != "Season 01/Show.S01E02.en.srt" {
+		t.Errorf("updated = %+v", store.updated)
 	}
 }

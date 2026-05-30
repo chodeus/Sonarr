@@ -16,8 +16,10 @@ type stubHardlinkCfg struct{ hl bool }
 func (s stubHardlinkCfg) CopyUsingHardlinks() bool { return s.hl }
 
 type stubExtraStore struct {
-	rows []*extrafiles.ExtraFile
-	err  error
+	rows     []*extrafiles.ExtraFile
+	err      error
+	bySeries []extrafiles.ExtraFile
+	updated  []*extrafiles.ExtraFile
 }
 
 func (s *stubExtraStore) Upsert(_ context.Context, f *extrafiles.ExtraFile) error {
@@ -25,6 +27,15 @@ func (s *stubExtraStore) Upsert(_ context.Context, f *extrafiles.ExtraFile) erro
 		return s.err
 	}
 	s.rows = append(s.rows, f)
+	return nil
+}
+
+func (s *stubExtraStore) AllBySeriesID(_ context.Context, _ int) ([]extrafiles.ExtraFile, error) {
+	return s.bySeries, nil
+}
+
+func (s *stubExtraStore) Update(_ context.Context, f *extrafiles.ExtraFile) error {
+	s.updated = append(s.updated, f)
 	return nil
 }
 
@@ -47,7 +58,7 @@ func otherInput(sourcePath string, season int, eps ...int) ImportInput {
 
 func TestOtherExtraManager_Metadata(t *testing.T) {
 	t.Parallel()
-	m := NewOtherExtraManager(&stubExtraStore{}, &passthroughTransferrer{}, stubHardlinkCfg{}, slog.New(slog.DiscardHandler))
+	m := NewOtherExtraManager(&stubExtraStore{}, &passthroughTransferrer{}, &recordingMover{}, stubHardlinkCfg{}, slog.New(slog.DiscardHandler))
 	if m.Order() != 2 {
 		t.Errorf("Order = %d, want 2", m.Order())
 	}
@@ -60,7 +71,7 @@ func TestOtherExtraManager_FilenamePrefixMatch(t *testing.T) {
 	t.Parallel()
 	store := &stubExtraStore{}
 	tr := &passthroughTransferrer{}
-	m := NewOtherExtraManager(store, tr, stubHardlinkCfg{}, slog.New(slog.DiscardHandler))
+	m := NewOtherExtraManager(store, tr, &recordingMover{}, stubHardlinkCfg{}, slog.New(slog.DiscardHandler))
 	// source stem "Show.S01E02.WEBDL"; companion shares the prefix.
 	in := otherInput("/dl/Show.S01E02.WEBDL.mkv", 1, 2)
 	n, err := m.ImportFiles(context.Background(), in, []string{"/dl/Show.S01E02.WEBDL.txt"})
@@ -79,7 +90,7 @@ func TestOtherExtraManager_FilenamePrefixMatch(t *testing.T) {
 func TestOtherExtraManager_EpisodeParseMatch(t *testing.T) {
 	t.Parallel()
 	store := &stubExtraStore{}
-	m := NewOtherExtraManager(store, &passthroughTransferrer{}, stubHardlinkCfg{}, slog.New(slog.DiscardHandler))
+	m := NewOtherExtraManager(store, &passthroughTransferrer{}, &recordingMover{}, stubHardlinkCfg{}, slog.New(slog.DiscardHandler))
 	// Different prefix, but parses to S01E02 → matches via the parse arm.
 	in := otherInput("/dl/Show.S01E02.WEBDL.mkv", 1, 2)
 	n, _ := m.ImportFiles(context.Background(), in, []string{"/dl/Show.S01E02.1080p.nfo"})
@@ -91,7 +102,7 @@ func TestOtherExtraManager_EpisodeParseMatch(t *testing.T) {
 func TestOtherExtraManager_NoMatch_Skipped(t *testing.T) {
 	t.Parallel()
 	store := &stubExtraStore{}
-	m := NewOtherExtraManager(store, &passthroughTransferrer{}, stubHardlinkCfg{}, slog.New(slog.DiscardHandler))
+	m := NewOtherExtraManager(store, &passthroughTransferrer{}, &recordingMover{}, stubHardlinkCfg{}, slog.New(slog.DiscardHandler))
 	in := otherInput("/dl/Show.S01E02.mkv", 1, 2)
 	// A file for a different episode + no shared prefix → no match.
 	n, _ := m.ImportFiles(context.Background(), in, []string{"/dl/Other.S05E09.txt"})
@@ -103,7 +114,7 @@ func TestOtherExtraManager_NoMatch_Skipped(t *testing.T) {
 func TestOtherExtraManager_NfoDedup(t *testing.T) {
 	t.Parallel()
 	store := &stubExtraStore{}
-	m := NewOtherExtraManager(store, &passthroughTransferrer{}, stubHardlinkCfg{}, slog.New(slog.DiscardHandler))
+	m := NewOtherExtraManager(store, &passthroughTransferrer{}, &recordingMover{}, stubHardlinkCfg{}, slog.New(slog.DiscardHandler))
 	in := otherInput("/dl/Show.S01E02", 1, 2)
 	// Two matching .nfo files — only the FIRST is considered.
 	n, _ := m.ImportFiles(context.Background(), in, []string{
@@ -112,5 +123,33 @@ func TestOtherExtraManager_NfoDedup(t *testing.T) {
 	})
 	if n != 1 || len(store.rows) != 1 {
 		t.Errorf("nfo de-dup: expected 1 imported, got %d rows=%d", n, len(store.rows))
+	}
+}
+
+func TestOtherExtraManager_MoveFilesAfterRename(t *testing.T) {
+	t.Parallel()
+	store := &stubExtraStore{bySeries: []extrafiles.ExtraFile{
+		{ID: 1, SeriesID: 7, EpisodeFileID: 55, RelativePath: "Season 01/Old.Name.nfo", Extension: ".nfo"},
+		{ID: 2, SeriesID: 7, EpisodeFileID: 99, RelativePath: "Season 01/Unrelated.nfo", Extension: ".nfo"},
+	}}
+	mover := &recordingMover{}
+	m := NewOtherExtraManager(store, &passthroughTransferrer{}, mover, stubHardlinkCfg{}, slog.New(slog.DiscardHandler))
+	renamed := &episodefiles.File{ID: 55, RelativePath: "Season 01/New.Name.mkv"}
+	n, err := m.MoveFilesAfterRename(context.Background(), MoveInput{
+		Series:       &series.Series{ID: 7, Path: "/tv/Show"},
+		EpisodeFiles: []*episodefiles.File{renamed},
+	})
+	if err != nil || n != 1 {
+		t.Fatalf("MoveFilesAfterRename = (%d,%v), want (1,nil)", n, err)
+	}
+	if len(mover.moves) != 1 {
+		t.Fatalf("mover calls = %d, want 1 (only the matching episode file)", len(mover.moves))
+	}
+	wantDst := "/tv/Show/Season 01/New.Name.nfo"
+	if mover.moves[0][1] != wantDst {
+		t.Errorf("move dst = %q, want %q", mover.moves[0][1], wantDst)
+	}
+	if len(store.updated) != 1 || store.updated[0].RelativePath != "Season 01/New.Name.nfo" {
+		t.Errorf("updated rows = %+v", store.updated)
 	}
 }

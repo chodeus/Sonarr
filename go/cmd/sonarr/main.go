@@ -2337,10 +2337,33 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	if err != nil {
 		return fmt.Errorf("subtitlefiles repo: %w", err)
 	}
-	extrasImporter, err := buildExtrasImporter(episodeFileMovingFs, extraFilesRepo, subtitleFilesRepo, diskProv, sampleDetector, configProv, logger)
+	extrasImporter, extrasSvc, err := buildExtrasImporter(episodeFileMovingFs, extraFilesRepo, subtitleFilesRepo, diskProv, sampleDetector, configProv, logger)
 	if err != nil {
 		return fmt.Errorf("extras importer: %w", err)
 	}
+	// J481: when a series/its files are renamed, move the imported
+	// subtitle/.nfo companions to follow the new names. Ports C#
+	// ExtraService IHandle<SeriesRenamedEvent>. The Go SeriesRenamedEvent
+	// carries the post-move EpisodeFile rows (new RelativePath).
+	messaging.Subscribe(bus, "extras.MoveFilesAfterRename",
+		func(ctx context.Context, ev episodefiles.SeriesRenamedEvent) error {
+			if ev.Series == nil || len(ev.RenamedFiles) == 0 {
+				return nil
+			}
+			files := make([]*episodefiles.File, 0, len(ev.RenamedFiles))
+			for i := range ev.RenamedFiles {
+				if ev.RenamedFiles[i].EpisodeFile != nil {
+					files = append(files, ev.RenamedFiles[i].EpisodeFile)
+				}
+			}
+			if len(files) == 0 {
+				return nil
+			}
+			if _, err := extrasSvc.MoveFilesAfterRename(ctx, ev.Series, files); err != nil {
+				logger.Warn("extras: MoveFilesAfterRename on SeriesRenamed failed", "seriesId", ev.Series.ID, "err", err)
+			}
+			return nil
+		})
 
 	importApprovedSvc, err := episodeimport.NewImportApprovedEpisodes(
 		episodeFilesSvc,      // files (MediaFileWriter — Add + GetFilesWithRelativePath + Delete)

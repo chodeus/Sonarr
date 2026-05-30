@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -15,10 +16,14 @@ import (
 	"sonarr.tv/sonarr/internal/subtitlefiles"
 )
 
-// SubtitleStore persists subtitle-file rows. Production binds an adapter
-// over `*subtitlefiles.Repo`. Mirrors C# `ISubtitleFileService.Upsert`.
+// SubtitleStore persists + reads subtitle-file rows. Production binds an
+// adapter over `*subtitlefiles.Repo`. Upsert inserts a fresh import row;
+// AllBySeriesID + Update back the post-rename move pass. Mirrors C#
+// `ISubtitleFileService` (Upsert / GetFilesBySeries).
 type SubtitleStore interface {
 	Upsert(ctx context.Context, f *subtitlefiles.SubtitleFile) error
+	AllBySeriesID(ctx context.Context, seriesID int) ([]subtitlefiles.SubtitleFile, error)
+	Update(ctx context.Context, f *subtitlefiles.SubtitleFile) error
 }
 
 // FolderVideoLister enumerates files under a folder. *disk.Provider
@@ -44,20 +49,21 @@ type SampleChecker interface {
 type SubtitleManager struct {
 	store   SubtitleStore
 	t       FileTransferrer
+	mover   FileMover
 	cfg     HardlinkConfig
 	folders FolderVideoLister // optional (single-video fallback)
 	samples SampleChecker     // optional
 	log     *slog.Logger
 }
 
-// NewSubtitleManager builds the manager. store / t / cfg MUST be non-nil;
-// folders + samples are optional (nil disables the single-video
+// NewSubtitleManager builds the manager. store / t / mover / cfg MUST be
+// non-nil; folders + samples are optional (nil disables the single-video
 // fallback). log defaults to [slog.Default].
-func NewSubtitleManager(store SubtitleStore, t FileTransferrer, cfg HardlinkConfig, folders FolderVideoLister, samples SampleChecker, log *slog.Logger) *SubtitleManager {
+func NewSubtitleManager(store SubtitleStore, t FileTransferrer, mover FileMover, cfg HardlinkConfig, folders FolderVideoLister, samples SampleChecker, log *slog.Logger) *SubtitleManager {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &SubtitleManager{store: store, t: t, cfg: cfg, folders: folders, samples: samples, log: log}
+	return &SubtitleManager{store: store, t: t, mover: mover, cfg: cfg, folders: folders, samples: samples, log: log}
 }
 
 // Order returns 1 (C# `SubtitleService.Order`).
@@ -148,7 +154,7 @@ func (m *SubtitleManager) ImportFiles(ctx context.Context, in ImportInput, files
 		multi := len(g) > 1
 		copyNo := 1
 		for _, r := range g {
-			suffix := getSuffix(r.lang, copyNo, r.tags, multi)
+			suffix := getSuffix(r.lang, copyNo, r.tags, multi, "")
 			rel, err := importFile(m.t, m.cfg.CopyUsingHardlinks(), in.Series.Path, in.EpisodeFile.RelativePath, r.path, suffix, r.ext, in.ReadOnly)
 			if err != nil {
 				m.log.Warn("extras: import subtitle failed", "file", r.path, "err", err)
@@ -205,14 +211,21 @@ func (m *SubtitleManager) singleVideoInFolder(ser *series.Series, folder string)
 	return len(videos) == 1
 }
 
-// getSuffix ports `SubtitleService.GetSuffix` (`:241-275`) for the
-// ImportFiles call site (title is always nil there): an optional copy
-// number (when the language+tags group has multiple files), the
+// getSuffix ports `SubtitleService.GetSuffix` (`:241-275`): an optional
+// title (or, when no title, a copy number for multi-copy groups), the
 // language's two-letter ISO code, then any language tags — each
-// dot-prefixed.
-func getSuffix(lang language.Language, copyNo int, tags []string, multipleCopies bool) string {
+// dot-prefixed. The ImportFiles path passes title="" (C# null); the
+// post-rename path passes the persisted SubtitleFile.Title.
+func getSuffix(lang language.Language, copyNo int, tags []string, multipleCopies bool, title string) string {
 	var b strings.Builder
-	if multipleCopies {
+	if title != "" {
+		b.WriteString(".")
+		b.WriteString(title)
+		if multipleCopies {
+			b.WriteString(" - ")
+			b.WriteString(strconv.Itoa(copyNo))
+		}
+	} else if multipleCopies {
 		b.WriteString(".")
 		b.WriteString(strconv.Itoa(copyNo))
 	}
@@ -227,6 +240,74 @@ func getSuffix(lang language.Language, copyNo int, tags []string, multipleCopies
 		b.WriteString(strings.Join(tags, "."))
 	}
 	return b.String()
+}
+
+// MoveFilesAfterRename ports `SubtitleService.MoveFilesAfterRename`. For
+// each renamed episode file it groups that file's subtitle rows by
+// (language, title, tags, ext), (re)numbers copies in a multi-copy group,
+// recomputes the suffix, and moves each companion to the new name —
+// persisting the updated RelativePath (+ Copy).
+func (m *SubtitleManager) MoveFilesAfterRename(ctx context.Context, in MoveInput) (int, error) {
+	if in.Series == nil || len(in.EpisodeFiles) == 0 {
+		return 0, nil
+	}
+	all, err := m.store.AllBySeriesID(ctx, in.Series.ID)
+	if err != nil {
+		return 0, fmt.Errorf("extras: subtitle MoveFilesAfterRename: load: %w", err)
+	}
+
+	count := 0
+	for _, ef := range in.EpisodeFiles {
+		if ef == nil {
+			continue
+		}
+		// Group this episode file's subtitle rows by AggregateString,
+		// preserving first-seen order (C# `:212-215`).
+		order := make([]string, 0)
+		groups := make(map[string][]*subtitlefiles.SubtitleFile)
+		for i := range all {
+			row := &all[i]
+			if row.EpisodeFileID != ef.ID {
+				continue
+			}
+			key := fmt.Sprintf("%d\x00%s\x00%s\x00%s", row.Language, row.Title, strings.Join(row.LanguageTags, "\x00"), row.Extension)
+			if _, ok := groups[key]; !ok {
+				order = append(order, key)
+			}
+			groups[key] = append(groups[key], row)
+		}
+
+		for _, key := range order {
+			g := groups[key]
+			multi := len(g) > 1
+			copyNo := g[0].Copy // C# `group.First().Copy`
+			ordered := append([]*subtitlefiles.SubtitleFile(nil), g...)
+			sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Copy > ordered[j].Copy })
+			for _, row := range ordered {
+				if multi && row.Copy == 0 {
+					copyNo++
+					row.Copy = copyNo
+				}
+				lang, _ := language.FindByID(row.Language)
+				suffix := getSuffix(lang, row.Copy, row.LanguageTags, multi, row.Title)
+				rel, moved, err := moveFile(m.mover, in.Series.Path, ef.RelativePath, row.RelativePath, suffix, row.Extension)
+				if err != nil {
+					m.log.Warn("extras: move subtitle after rename failed", "path", row.RelativePath, "err", err)
+					continue
+				}
+				if !moved {
+					continue
+				}
+				row.RelativePath = rel
+				if err := m.store.Update(ctx, row); err != nil {
+					m.log.Warn("extras: persist moved subtitle failed", "id", row.ID, "err", err)
+					continue
+				}
+				count++
+			}
+		}
+	}
+	return count, nil
 }
 
 // Compile-time interface satisfaction.

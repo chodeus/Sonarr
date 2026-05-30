@@ -60,12 +60,28 @@ func (a extraFileStoreAdapter) Upsert(ctx context.Context, f *extrafiles.ExtraFi
 	return err
 }
 
+func (a extraFileStoreAdapter) AllBySeriesID(ctx context.Context, seriesID int) ([]extrafiles.ExtraFile, error) {
+	return a.repo.AllBySeriesID(ctx, seriesID)
+}
+
+func (a extraFileStoreAdapter) Update(ctx context.Context, f *extrafiles.ExtraFile) error {
+	return a.repo.Update(ctx, f)
+}
+
 // subtitleFileStoreAdapter persists subtitle-file rows (Insert, as above).
 type subtitleFileStoreAdapter struct{ repo *subtitlefiles.Repo }
 
 func (a subtitleFileStoreAdapter) Upsert(ctx context.Context, f *subtitlefiles.SubtitleFile) error {
 	_, err := a.repo.Insert(ctx, f)
 	return err
+}
+
+func (a subtitleFileStoreAdapter) AllBySeriesID(ctx context.Context, seriesID int) ([]subtitlefiles.SubtitleFile, error) {
+	return a.repo.AllBySeriesID(ctx, seriesID)
+}
+
+func (a subtitleFileStoreAdapter) Update(ctx context.Context, f *subtitlefiles.SubtitleFile) error {
+	return a.repo.Update(ctx, f)
 }
 
 // extrasSampleAdapter bridges [extras.SampleChecker] to the existing
@@ -113,10 +129,15 @@ func (extrasImporterAdapter) ImportExtraFiles(*episodeimport.LocalEpisode, []str
 	return nil
 }
 
-// MoveFilesAfterRename is the post-rename companion-move arm — deferred
-// (needs the managers' MoveFilesAfterRename). No-op for now.
-func (extrasImporterAdapter) MoveFilesAfterRename(*episodeimport.LocalEpisode, *episodefiles.File) error {
-	return nil
+// MoveFilesAfterRename relocates the imported companions when the import
+// script renamed the file (J481). Delegates to the orchestrator's
+// per-manager MoveFilesAfterRename for this single episode file.
+func (a extrasImporterAdapter) MoveFilesAfterRename(le *episodeimport.LocalEpisode, file *episodefiles.File) error {
+	if le == nil || le.Series == nil || file == nil {
+		return nil
+	}
+	_, err := a.svc.MoveFilesAfterRename(context.Background(), le.Series, []*episodefiles.File{file})
+	return err
 }
 
 // buildExtrasImporter wires the extras subsystem into an
@@ -131,15 +152,16 @@ func buildExtrasImporter(
 	sampleDetector *episodeimport.SampleDetector,
 	cfg extrasConfig,
 	log *slog.Logger,
-) (episodeimport.ExtrasImporter, error) {
+) (episodeimport.ExtrasImporter, *extras.ExtraService, error) {
 	tr := extrasTransferAdapter{fs: fs}
-	other := extras.NewOtherExtraManager(extraFileStoreAdapter{repo: extraRepo}, tr, cfg, log)
-	sub := extras.NewSubtitleManager(subtitleFileStoreAdapter{repo: subRepo}, tr, cfg, diskProv, extrasSampleAdapter{d: sampleDetector}, log)
+	// diskProv satisfies extras.FileMover (MoveFile) for the post-rename move.
+	other := extras.NewOtherExtraManager(extraFileStoreAdapter{repo: extraRepo}, tr, diskProv, cfg, log)
+	sub := extras.NewSubtitleManager(subtitleFileStoreAdapter{repo: subRepo}, tr, diskProv, cfg, diskProv, extrasSampleAdapter{d: sampleDetector}, log)
 	svc, err := extras.NewExtraService([]extras.Manager{sub, other}, diskProv, cfg, log)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return extrasImporterAdapter{svc: svc, log: log}, nil
+	return extrasImporterAdapter{svc: svc, log: log}, svc, nil
 }
 
 // Compile-time interface guards.

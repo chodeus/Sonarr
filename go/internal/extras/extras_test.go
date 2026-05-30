@@ -61,6 +61,20 @@ func (r *recordingTransferrer) TransferFile(src, dst string, mode TransferMode) 
 	return r.err
 }
 
+// recordingMover records MoveFile calls (shared across the extras tests).
+type recordingMover struct {
+	moves [][2]string
+	err   error
+}
+
+func (m *recordingMover) MoveFile(src, dst string) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.moves = append(m.moves, [2]string{src, dst})
+	return nil
+}
+
 func TestImportFile_NamingAndMode(t *testing.T) {
 	t.Parallel()
 	seriesPath := "/tv/Show"

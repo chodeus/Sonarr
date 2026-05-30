@@ -6,6 +6,9 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
+
+	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 // ExtraConfig narrows the `IConfigService` settings the orchestrator
@@ -109,6 +112,26 @@ func (s *ExtraService) ImportEpisode(ctx context.Context, in ImportInput) (int, 
 		n, err := m.ImportFiles(ctx, in, managed[i])
 		if err != nil {
 			s.log.Warn("extras: manager ImportFiles failed", "order", m.Order(), "err", err)
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// MoveFilesAfterRename relocates every manager's persisted companions to
+// follow the renamed episode files. Ports `ExtraService.MoveFilesAfterRename`
+// (`:152-160` + the SeriesRenamed fan-out at `:162-170`). Best-effort:
+// per-manager errors are logged, never propagated to the rename.
+func (s *ExtraService) MoveFilesAfterRename(ctx context.Context, ser *series.Series, episodeFiles []*episodefiles.File) (int, error) {
+	if s == nil || len(s.managers) == 0 || ser == nil || len(episodeFiles) == 0 {
+		return 0, nil
+	}
+	in := MoveInput{Series: ser, EpisodeFiles: episodeFiles}
+	total := 0
+	for _, m := range s.managers {
+		n, err := m.MoveFilesAfterRename(ctx, in)
+		if err != nil {
+			s.log.Warn("extras: manager MoveFilesAfterRename failed", "order", m.Order(), "err", err)
 		}
 		total += n
 	}
