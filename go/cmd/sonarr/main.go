@@ -3538,6 +3538,21 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	importListSyncSvc.SetItemPersister(importListItemPersister{svc: importListItemsSvc})
 	importListSyncSvc.SetListStatusUpdater(importListStatusSvc)
 
+	// J501 (queue [I4c]): wire the clean-library deps. Ports C#
+	// ImportListSyncService.TryCleanLibrary/CleanLibrary — after a clean
+	// all-lists sync with a pending removal, series no longer on any
+	// list are unmonitored / tagged / logged per config.ListSyncLevel
+	// (default Disabled → full no-op). NEVER deletes series rows.
+	// configProv satisfies cleanLibraryConfig (ListSyncLevel/ListSyncTag);
+	// importListStatusSvc satisfies cleanStatusGate
+	// (AllListsSuccessfulWithAPendingClean/MarkListsAsCleaned).
+	importListSyncSvc.SetCleanLibrary(
+		configProv,
+		importListItemLister{svc: importListItemsSvc},
+		importListSeriesCleaner{svc: seriesSvc},
+		importListStatusSvc,
+	)
+
 	// Slice 5.J191 wires the RefreshSeries handler with a real
 	// refreshseries.Service. The service satisfies
 	// handlers.RefreshSeriesRunner structurally via Refresh(ctx, id)

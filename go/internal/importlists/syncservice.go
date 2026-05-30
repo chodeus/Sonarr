@@ -56,6 +56,10 @@ type SyncService struct {
 	idTranslator  IDTranslator
 	itemPersister itemPersister
 	statusUpdater listStatusUpdater
+	cleanConfig   cleanLibraryConfig
+	itemLister    libraryItemLister
+	seriesCleaner librarySeriesCleaner
+	cleanGate     cleanStatusGate
 	logger        *slog.Logger
 }
 
@@ -219,6 +223,18 @@ func (s *SyncService) SetItemPersister(p itemPersister) { s.itemPersister = p }
 // SetItemPersister. *importliststatus.Service satisfies the interface.
 func (s *SyncService) SetListStatusUpdater(u listStatusUpdater) { s.statusUpdater = u }
 
+// SetCleanLibrary wires the clean-library dependencies (queue [I4c] —
+// C# TryCleanLibrary/CleanLibrary). All four are required together;
+// passing any nil leaves the whole clean-library feature disabled (a
+// no-op), which is also the default pre-wiring posture. Assigned
+// post-construction in main.go — see SetItemPersister for the rationale.
+func (s *SyncService) SetCleanLibrary(cfg cleanLibraryConfig, items libraryItemLister, series librarySeriesCleaner, gate cleanStatusGate) {
+	s.cleanConfig = cfg
+	s.itemLister = items
+	s.seriesCleaner = series
+	s.cleanGate = gate
+}
+
 // Sync ports C# `SyncAll` at `ImportListSyncService.cs:85-103`.
 // Fans out AutomaticAddEnabled lists, processes items, dispatches
 // to SeriesAdder. Returns a SyncResult with per-pass stats.
@@ -235,7 +251,13 @@ func (s *SyncService) Sync(ctx context.Context) (SyncResult, error) {
 		return SyncResult{}, nil
 	}
 	s.logger.Info("importlists: sync: starting", slog.Int("lists", len(providers)))
-	return s.fanOutAndProcess(ctx, providers)
+	result, err := s.fanOutAndProcess(ctx, providers)
+	if err != nil {
+		return result, err
+	}
+	// C# SyncAll calls TryCleanLibrary() last (ImportListSyncService.cs:102).
+	s.tryCleanLibrary(ctx)
+	return result, nil
 }
 
 // SyncList ports C# `SyncList(definition)` at
@@ -256,7 +278,13 @@ func (s *SyncService) SyncList(ctx context.Context, listID int) (SyncResult, err
 	for _, p := range providers {
 		if p.Definition() != nil && p.Definition().ID == listID {
 			s.logger.Info("importlists: refresh", slog.Int("list_id", listID), slog.String("list_name", p.Definition().Name))
-			return s.fanOutAndProcess(ctx, []Provider{p})
+			result, err := s.fanOutAndProcess(ctx, []Provider{p})
+			if err != nil {
+				return result, err
+			}
+			// C# SyncList calls TryCleanLibrary() last (ImportListSyncService.cs:115).
+			s.tryCleanLibrary(ctx)
+			return result, nil
 		}
 	}
 	return SyncResult{}, fmt.Errorf("importlists: syncList: list id %d not found", listID)

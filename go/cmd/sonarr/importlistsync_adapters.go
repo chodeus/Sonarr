@@ -31,6 +31,75 @@ type importListItemPersister struct {
 	svc *importlistitems.Service
 }
 
+// importListItemLister satisfies the importlists.SyncService
+// `libraryItemLister` narrow interface (queue [I4c] — CleanLibrary). It
+// reads every persisted candidate and projects it onto the minimal
+// [importlists.LibraryItem] (NULL ids → 0/""), replicating the C# match
+// where unset ImportListItemInfo int ids are zero.
+type importListItemLister struct {
+	svc *importlistitems.Service
+}
+
+// AllItems projects every persisted import-list candidate.
+func (a importListItemLister) AllItems(ctx context.Context) ([]importlists.LibraryItem, error) {
+	items, err := a.svc.All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]importlists.LibraryItem, 0, len(items))
+	for i := range items {
+		it := items[i]
+		out = append(out, importlists.LibraryItem{
+			TvdbID:    it.TvdbID,
+			ImdbID:    derefStr(it.ImdbID),
+			TmdbID:    derefInt(it.TmdbID),
+			MalID:     derefInt(it.MalID),
+			AniListID: derefInt(it.AniListID),
+		})
+	}
+	return out, nil
+}
+
+// importListSeriesCleaner satisfies the importlists.SyncService
+// `librarySeriesCleaner` narrow interface (queue [I4c]). Reads the full
+// library via GetAllSeries and persists the unmonitor/tag mutations via
+// the bulk UpdateMany (C# `_seriesService.UpdateSeries(list, true)`).
+type importListSeriesCleaner struct {
+	svc *series.Service
+}
+
+// AllSeries forwards to GetAllSeries.
+func (a importListSeriesCleaner) AllSeries(ctx context.Context) ([]series.Series, error) {
+	return a.svc.GetAllSeries(ctx)
+}
+
+// UpdateSeries persists the clean-library mutations (useExistingRelativeFolder=true).
+func (a importListSeriesCleaner) UpdateSeries(ctx context.Context, batch []series.Series) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	ptrs := make([]*series.Series, 0, len(batch))
+	for i := range batch {
+		ptrs = append(ptrs, &batch[i])
+	}
+	_, err := a.svc.UpdateMany(ctx, ptrs, true)
+	return err
+}
+
+func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func derefStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
 // SyncSeriesForList maps the fetched candidate set and reconciles it.
 func (a importListItemPersister) SyncSeriesForList(ctx context.Context, items []importlists.ItemInfo, listID int) (int, error) {
 	rows := make([]importlistitems.Item, 0, len(items))
