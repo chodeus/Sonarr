@@ -13,6 +13,7 @@ import (
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/parser"
+	"sonarr.tv/sonarr/internal/pendingreleases"
 	"sonarr.tv/sonarr/internal/providerstatus"
 )
 
@@ -70,6 +71,7 @@ type ProcessDownloadDecisions struct {
 	bus         *messaging.Bus
 	recorder    providerstatus.Recorder
 	fetcher     BodyFetcher
+	pending     PendingWriter
 	log         *slog.Logger
 }
 
@@ -165,6 +167,25 @@ func (p *ProcessDownloadDecisions) SetBodyFetcher(f BodyFetcher) *ProcessDownloa
 	return p
 }
 
+// SetPendingWriter wires the [PendingWriter] (production:
+// *pendingreleases.Service) the orchestrator persists the per-batch
+// pending-release queue to. Ports the C# `IPendingReleaseService`
+// dependency `ProcessDownloadDecisions` uses to call `AddMany` at
+// `ProcessDownloadDecisions.cs:119-121`. Optional dep — when nil,
+// ProcessDecisions still buckets decisions into ProcessedDecisions.Pending
+// (the in-memory result) but does NOT persist them to the
+// PendingReleases table; the table-backed retry / queue-display /
+// remove-on-grab paths stay inert. Production wiring at
+// cmd/sonarr/main.go MUST call SetPendingWriter so delayed +
+// download-client-unavailable releases survive a restart and surface in
+// the queue. Unit tests may leave it nil.
+//
+// Returns the receiver for chainable construction.
+func (p *ProcessDownloadDecisions) SetPendingWriter(w PendingWriter) *ProcessDownloadDecisions {
+	p.pending = w
+	return p
+}
+
 // ProcessDecisions iterates approved + temporarily-rejected
 // decisions in priority order (per the wired [DecisionPrioritizer];
 // input order if none), classifying each into Grabbed/Pending/
@@ -180,6 +201,10 @@ func (p *ProcessDownloadDecisions) ProcessDecisions(ctx context.Context, decisio
 		usenetFailed  bool
 		torrentFailed bool
 	)
+	// pendingAdd accumulates the persistence batch for the wired
+	// PendingWriter — flushed once after the loop via persistPending.
+	// Mirrors the C# `pendingAddQueue` at `ProcessDownloadDecisions.cs:46`.
+	var pendingAdd []pendingreleases.AddItem
 
 	// Slice 4.BP (C-cleanup [C8]): apply the prioritization sort
 	// before iteration so higher-ranked candidates for the same
@@ -215,16 +240,18 @@ func (p *ProcessDownloadDecisions) ProcessDecisions(ctx context.Context, decisio
 		}
 
 		// Bucket 4: TemporarilyRejected → Pending (delayed). C# `:61-65`.
+		// Persisted with reason Delay (the DelayProfile-driven wait).
 		if decision.TemporarilyRejected() {
-			out.Pending = append(out.Pending, decision)
+			p.preparePending(&pendingAdd, out, decision, pendingreleases.ReasonDelay)
 			continue
 		}
 
 		// Bucket 5: per-protocol short-circuit. C# `:67-72`.
+		// Persisted with reason DownloadClientUnavailable.
 		protocol, _ := p.protocolOf(&decision)
 		if (protocol == indexers.DownloadProtocolUsenet && usenetFailed) ||
 			(protocol == indexers.DownloadProtocolTorrent && torrentFailed) {
-			out.Pending = append(out.Pending, decision)
+			p.preparePending(&pendingAdd, out, decision, pendingreleases.ReasonDownloadClientUnavailable)
 			continue
 		}
 
@@ -234,11 +261,19 @@ func (p *ProcessDownloadDecisions) ProcessDecisions(ctx context.Context, decisio
 		case ResultGrabbed:
 			out.Grabbed = append(out.Grabbed, decision)
 		case ResultPending:
-			out.Pending = append(out.Pending, decision)
+			// ResultPending only arises from a body pre-fetch failure
+			// (the indexer host is transiently unreachable). C# has no
+			// pre-fetch step; its `case Pending` maps to Delay (`:84-88`),
+			// but we tag DownloadClientUnavailable so the
+			// CleanupDownloadClientUnavailablePendingReleases housekeeper
+			// can purge a stale row (it preserves Delay rows forever).
+			p.preparePending(&pendingAdd, out, decision, pendingreleases.ReasonDownloadClientUnavailable)
 		case ResultRejected:
 			out.Rejected = append(out.Rejected, decision)
 		case ResultFailed:
-			out.Pending = append(out.Pending, decision)
+			// C# `:96-110`: reason DownloadClientUnavailable + trip the
+			// per-protocol short-circuit.
+			p.preparePending(&pendingAdd, out, decision, pendingreleases.ReasonDownloadClientUnavailable)
 			switch protocol {
 			case indexers.DownloadProtocolUsenet:
 				usenetFailed = true
@@ -249,6 +284,9 @@ func (p *ProcessDownloadDecisions) ProcessDecisions(ctx context.Context, decisio
 			// drop silently — already logged at dispatch site.
 		}
 	}
+
+	// C# `:119-122`: flush the accumulated pending-release batch.
+	p.persistPending(ctx, pendingAdd)
 
 	return out
 }

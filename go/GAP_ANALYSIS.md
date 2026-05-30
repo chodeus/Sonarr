@@ -1,5 +1,15 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## DELAY/PENDING SUBSYSTEM (J484+, 2026-05-30) — resumed after exhaustion
+
+Operator picked the next-largest remaining item (DelaySpecification + PendingSpecification). **VERIFY-FIRST VERDICT: NOT BLOCKED.** The "complex side-effecting substrate" framing was overbroad — `internal/pendingreleases` is heavily built (Service.Add/AddMany; remove.go RemoveGrabbed/RemoveRejected/OldestPending/DeleteBySeriesIDs/RemoveByQueueID; pendingreleaseshandlers; CleanupDownloadClientUnavailable housekeeper; api/v3 queue/grab re-hydration + queue/status count). The real gap was a classic SILENT-DROP: `download.ProcessDownloadDecisions.ProcessDecisions` builds the Pending bucket but the C# `AddMany` flush (`ProcessDownloadDecisions.cs:119-121`) was DEFERRED → the table was never populated; the entire subsystem was inert.
+
+Decomposition (multi-slice):
+- ✅ **J484 — persist the Pending bucket** (PreparePending `:178-194` + AddMany `:119-122`). Optional `PendingWriter` dep + SetPendingWriter; reason mapping Delay/DownloadClientUnavailable/Fallback; main.go now constructs the full `pendingreleases.Service`. Activates queue display + restart survival for temp-rejected (MinimumAge) + client-unavailable + failed-dispatch releases.
+- **J485 (NEXT) — wire pendingreleaseshandlers.** RemoveGrabbed (EpisodeGrabbedEvent) / RemoveRejected (RssSyncCompleteEvent) / DeleteBySeriesIDs (SeriesDeletedEvent) are all written but UNSUBSCRIBED (only a comment ref at main.go:2833). Without them a persisted Delay row lingers after the release later grabs. Maintenance half of the table.
+- **J486 — DelaySpecification** (`RssSync/DelaySpecification.cs`). Temporary-reject spec: delay-profile wait, with bypasses (proper/repack, highest-quality, custom-format-score) + the OldestPendingRelease age-bypass (needs an `OldestPendingRelease(seriesID, episodeIDs)` query helper on the Service — remove.go has `OldestPending`; verify shape). Now MEANINGFUL because J484 persists its temporary rejects.
+- **J487 — PendingSpecification** (`RssSync/PendingSpecification.cs`). Separate spec (NOT merged into Delay): blocks a pushed/search release when a matching release is already pending (RSS-source + user-search bypass). Needs a GetPendingQueue projection.
+
 ## AUTONOMOUS EXHAUSTION (J475, 2026-05-30, campaign J460–J475)
 
 After 16 slices + a fresh full audit across every high-yield dimension, the clean / in-scope / ungated / non-cosmetic / non-large autonomous work is **drained**. The loop is stopped (no further wakeup scheduled) per the operator's exhaustion clause.

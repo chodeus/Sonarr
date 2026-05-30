@@ -2998,10 +2998,24 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	if err != nil {
 		return fmt.Errorf("download.ProcessDownloadDecisions: %w", err)
 	}
+	// J484 (Delay/Pending substrate): construct the full
+	// pendingreleases.Service (write side) so ProcessDecisions persists
+	// its Pending bucket. Previously only the Repo was wired (for the
+	// queue/status count); the Service AddMany path was DEFERRED, so
+	// temporarily-rejected + download-client-unavailable releases were
+	// computed but silently dropped (never reached the PendingReleases
+	// table). Ports the C# IPendingReleaseService dependency
+	// ProcessDownloadDecisions calls AddMany on at
+	// ProcessDownloadDecisions.cs:119-121.
+	pendingReleasesSvc, err := pendingreleases.NewService(pendingReleasesRepo, bus, logger)
+	if err != nil {
+		return fmt.Errorf("pendingreleases service: %w", err)
+	}
 	processDownloadDecisions.
 		SetBus(bus).
 		SetRecorder(downloadClientStatusSvc).
-		SetBodyFetcher(&download.HTTPBodyFetcher{})
+		SetBodyFetcher(&download.HTTPBodyFetcher{}).
+		SetPendingWriter(pendingReleasesSvc)
 	// Slice 6.A6d (queue [15]): processDownloadDecisions is consumed
 	// by the RssSync handler wired below via handlers.Deps.RssSyncGrabber.
 	// The 4 setters above establish the dispatch + event-publish +
