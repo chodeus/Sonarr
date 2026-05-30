@@ -293,6 +293,12 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 	}
 	specs = append(specs, minAge)
 
+	// J466: MonitoredEpisodeSpecification — rejects releases for an
+	// unmonitored series, or where one+ matched episode is unmonitored
+	// (the core "only download what I monitor" RSS-sync gate). Skips the
+	// check only on a search with MonitoredEpisodesOnly=false. Ports
+	// DecisionEngine/Specifications/RssSync/MonitoredEpisodeSpecification.cs.
+	specs = append(specs, decisionengine.NewMonitoredEpisodeSpecification(d.log))
 	specs = append(specs, decisionengine.NewMultiSeasonSpecification(d.log))
 	specs = append(specs, decisionengine.NewNotSampleSpecification(d.log))
 

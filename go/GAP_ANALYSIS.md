@@ -1,5 +1,18 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## PHASE-2 FRESH AUDIT (J466, 2026-05-30) — download/import decision specs
+
+Two Explore agents + one focused verification agent diffed C# `IDecisionEngineSpecification` (grab) + `IImportDecisionEngineSpecification` (import) vs Go.
+- **Import-decision specs: 14/14 ported + wired — COMPLETE.** (FullSeason, Split, UnverifiedSceneNumbering, HasAudioTrack, MatchesGrab, NotSample, SameEpisodesImport, FreeSpace, NotUnpacking, AbsoluteEpisodeNumber, EpisodeTitle, AlreadyImported, MatchesFolder, Upgrade — all in main.go's importDecisionSpecs chain.)
+- **Download-decision specs: ~26 wired; several genuinely absent. MonitoredEpisode → FIXED J466.** Verified findings:
+  - ✅ **MonitoredEpisodeSpecification** — was missing → FIXED J466 (RSS sync grabbed unmonitored episodes). Reason codes pre-existed unused.
+  - **NOT a gap: SeriesSpecification** — enforced elsewhere (parsingservice.findSeries leaves Episodes empty when the parsed series ≠ searched series → decision maker rejects UnknownEpisode).
+  - **GENUINELY ABSENT (follow-up candidates, verify substrate before porting):**
+    - **Search-match specs** (next-highest value, bounded): `SeasonMatchSpecification`, `SingleEpisodeSearchMatchSpecification`, `EpisodeRequestedSpecification` — Go search path does NOT verify the parsed season/episode matches what was searched (indexers return junk → wrong episodes can be grabbed in search). `parsingservice.Map` sets `EpisodeRequested=true` but nothing checks it. These compare Subject.Episodes vs SearchCriteria.Episodes — bounded, portable.
+    - **DelaySpecification** (RSS) — delay-profile wait/pending-release hold. Needs delay-profile + pending-release substrate; verify before porting (may be BLOCKED).
+    - **HistorySpecification** (RSS) — reject re-grab at/below cutoff quality recently. Needs history-query + upgradable substrate.
+    - **PendingSpecification / ProperSpecification / IndexerTagSpecification / DeletedEpisodeFileSpecification / SceneMappingSpecification** — verify each (some need pending-queue / indexer-tag / scenemappings.Service substrate; SceneMapping noted BLOCKED at decisionengine_wiring.go:227 on the scenemappings.Service signature).
+
 ## PHASE-2 FRESH AUDIT (J464, 2026-05-30) — health checks + housekeepers
 
 Two Explore agents diffed C# `IProvideHealthCheck` + `IHousekeepingTask` impls vs Go (ported AND wired).

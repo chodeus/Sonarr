@@ -20489,3 +20489,11 @@ Ported `TrimLogDatabase.cs`: NEW `internal/housekeeping/trim_log_database.go` (T
 R: cmd/sonarr/main.go (refactored houseTasks slice + conditional append). A: internal/housekeeping/trim_log_database.go (+ test: nil-guard, Clean-calls-Trim with UTC now, error propagation). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; housekeeping + logs + cmd/sonarr + contract -race green.
 
 **Phase-2 health-check + housekeeper audit DRAINED: both gaps closed (J464 DownloadClientStatusCheck + J465 TrimLogDatabase).**
+
+## J466 — MonitoredEpisodeSpecification (download-decision spec: the "only download what I monitor" gate)
+
+Phase-2 fresh audit (download-decision + import-decision spec coverage via 2 Explore agents + a focused verification agent). Import-decision specs: 14/14 ported+wired — COMPLETE, no gap. Download-decision specs: verification found several genuinely-absent specs; the highest-value bounded one = **MonitoredEpisodeSpecification** (the C# decisionengine had it; the Go chain did not). Without it, RSS sync GRABBED UNMONITORED series/episodes — a core Sonarr safety behavior was missing. Verify-first: the reason codes ReasonSeriesNotMonitored/ReasonEpisodeNotMonitored already existed unused (same pattern as J464); SeriesSpecification IS enforced elsewhere (parsingservice.findSeries) so it's NOT a gap.
+
+Ported `RssSync/MonitoredEpisodeSpecification.cs`: NEW `internal/decisionengine/spec_monitored_episode.go` (skip on search w/ MonitoredEpisodesOnly=false; reject unmonitored series → SeriesNotMonitored; reject if any matched episode unmonitored → EpisodeNotMonitored, single-vs-multi message split). Wired into buildDecisionEngineSpecs (cmd/sonarr/decisionengine_wiring.go). 8-case test.
+
+R: internal/decisionengine/spec_monitored_episode.go (new spec), cmd/sonarr/decisionengine_wiring.go (wire). A: spec_monitored_episode_test.go. M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; decisionengine + cmd/sonarr + contract -race green.
