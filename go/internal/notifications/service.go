@@ -125,10 +125,9 @@ func NewService(factory *Factory, recorder serviceRecorder, logger *slog.Logger)
 //     wired J520)
 //   - RenameCompletedEvent → episodefiles.RenameCompletedEvent (drains
 //     ProcessQueue at the end of a rename command — wired J521)
-//   - DeleteCompletedEvent — drains ProcessQueue. The Go event
-//     type/producer doesn't exist yet (the media-file batch-delete flow
-//     doesn't publish a batch-complete event); this drain lands when
-//     that producer event ports.
+//   - DeleteCompletedEvent → episodefiles.DeleteCompletedEvent (drains
+//     ProcessQueue after a manual episode-file delete — wired J522;
+//     the ProcessQueue-drain trio is now complete)
 //
 // Subscribe is idempotent only insofar as messaging.Subscribe is —
 // calling it twice on the same bus produces two subscriptions.
@@ -161,6 +160,8 @@ func (s *Service) Subscribe(bus *messaging.Bus) {
 	messaging.SubscribeAsync(bus, "notifications.HandleDownloadsProcessedEvent", s.HandleDownloadsProcessedEvent)
 	// ProcessQueue drain on the end-of-rename-command RenameCompletedEvent (J521).
 	messaging.SubscribeAsync(bus, "notifications.HandleRenameCompletedEvent", s.HandleRenameCompletedEvent)
+	// ProcessQueue drain on the episode-file DeleteCompletedEvent (J522).
+	messaging.SubscribeAsync(bus, "notifications.HandleDeleteCompletedEvent", s.HandleDeleteCompletedEvent)
 }
 
 // HandleEpisodeGrabbedEvent ports the C# `Handle(EpisodeGrabbedEvent)`
@@ -679,6 +680,15 @@ func (s *Service) HandleDownloadsProcessedEvent(ctx context.Context, _ trackeddo
 // — drains every provider's ProcessQueue after a rename command
 // (the event RenameEpisodeFileService publishes, J521).
 func (s *Service) HandleRenameCompletedEvent(ctx context.Context, _ episodefiles.RenameCompletedEvent) error {
+	s.processQueue(ctx)
+	return nil
+}
+
+// HandleDeleteCompletedEvent ports the C#
+// `IHandleAsync<DeleteCompletedEvent>` (`NotificationService.cs:525-528`)
+// — drains every provider's ProcessQueue after an episode-file delete
+// (the event the episode-file delete path publishes, J522).
+func (s *Service) HandleDeleteCompletedEvent(ctx context.Context, _ episodefiles.DeleteCompletedEvent) error {
 	s.processQueue(ctx)
 	return nil
 }

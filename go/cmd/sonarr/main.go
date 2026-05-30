@@ -3748,12 +3748,13 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	// the API delete handlers discover the disk arm via type-assertion,
 	// and the DeleteSeriesFiles command handler calls DeleteSeriesFiles.
 	episodeFileDeleter := &episodeFileDeleteAdapter{
-		Service:     episodeFilesSvc,
-		series:      seriesSvc,
-		rootFolders: rootFoldersSvc,
-		recycleBin:  recycleBinSvc,
-		disk:        diskProv,
-		log:         logger,
+		Service:            episodeFilesSvc,
+		series:             seriesSvc,
+		rootFolders:        rootFoldersSvc,
+		recycleBin:         recycleBinSvc,
+		disk:               diskProv,
+		log:                logger,
+		deleteCompletedPub: deleteCompletedBusPublisher{bus: bus},
 	}
 
 	// J393 (punch-list #6): MoveSeries + BulkMoveSeries command mover —

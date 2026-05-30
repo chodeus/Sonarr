@@ -58,6 +58,16 @@ type episodeFileDeleteAdapter struct {
 	recycleBin  efDeleteRecycleBin
 	disk        efDeleteDisk
 	log         *slog.Logger
+	// deleteCompletedPub publishes episodefiles.DeleteCompletedEvent after a
+	// manual single-file delete (C# MediaFileDeletionService.cs:99 →
+	// notifications ProcessQueue drain). Optional; nil → not published.
+	deleteCompletedPub deleteCompletedPublisher
+}
+
+// deleteCompletedPublisher publishes the once-per-manual-delete
+// DeleteCompletedEvent. A bus adapter satisfies it; nil-tolerant.
+type deleteCompletedPublisher interface {
+	PublishDeleteCompleted(ctx context.Context, ev episodefiles.DeleteCompletedEvent) error
 }
 
 // DeleteEpisodeFileWithDisk ports C# MediaFileDeletionService.DeleteEpisodeFile.
@@ -73,7 +83,17 @@ func (a *episodeFileDeleteAdapter) DeleteEpisodeFileWithDisk(ctx context.Context
 		return err
 	}
 	// Delete the DB row even if the file was already gone (C# `:60`).
-	return a.Service.Delete(ctx, f, reason)
+	if err := a.Service.Delete(ctx, f, reason); err != nil {
+		return err
+	}
+	// C# MediaFileDeletionService.cs:99 — fire DeleteCompletedEvent after a
+	// manual single-file delete (→ notifications ProcessQueue drain).
+	if a.deleteCompletedPub != nil {
+		if err := a.deleteCompletedPub.PublishDeleteCompleted(ctx, episodefiles.DeleteCompletedEvent{}); err != nil {
+			a.log.Warn("episodefile delete: publish DeleteCompletedEvent failed", "err", err)
+		}
+	}
+	return nil
 }
 
 // DeleteSeriesFiles ports C# `MediaFileDeletionService.Execute(DeleteSeriesFilesCommand)`

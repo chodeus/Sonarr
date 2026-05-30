@@ -144,6 +144,21 @@ type SeriesRenamedEvent struct {
 // coalescing buffers after a rename batch). Carries no payload.
 type RenameCompletedEvent struct{}
 
+// DeleteCompletedEvent ports the C# `DeleteCompletedEvent : IEvent`
+// (`src/NzbDrone.Core/MediaFiles/Events/DeleteCompletedEvent.cs`).
+// Published by `MediaFileDeletionService` after a manual single
+// episode-file delete (`:99`) and after the series-delete cascade
+// folder removal (`:210`). Its sole consumer is the notifications
+// ProcessQueue drain. Carries no payload.
+//
+// Go-port divergence (unobservable): the Go port publishes this from the
+// manual single-file delete path only (episodeFileDeleteAdapter); the
+// series-delete cascade does not emit it. Because the only consumer is
+// the ProcessQueue drain — a no-op for every currently-ported provider
+// (webhook/Discord ProcessQueue are no-ops; the buffering Plex/Kodi/Emby
+// providers aren't ported) — the difference has no observable effect.
+type DeleteCompletedEvent struct{}
+
 // EpisodeFileUpdatedEvent is a Go-port additive event fired by
 // [Service.Update] / [Service.UpdateMany] after a successful repo
 // update. C# Sonarr emits the equivalent signal via Dapper's

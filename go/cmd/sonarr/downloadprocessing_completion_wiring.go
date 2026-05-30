@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 
+	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 )
@@ -58,5 +59,17 @@ type manualInteractionPublisher struct {
 }
 
 func (p manualInteractionPublisher) PublishManualInteractionRequired(ctx context.Context, ev trackeddownloads.ManualInteractionRequiredEvent) error {
+	return messaging.Publish(ctx, p.bus, ev)
+}
+
+// deleteCompletedBusPublisher adapts *messaging.Bus to the
+// episodeFileDeleteAdapter's deleteCompletedPublisher (J522) —
+// publishes episodefiles.DeleteCompletedEvent → notifications
+// ProcessQueue drain.
+type deleteCompletedBusPublisher struct {
+	bus *messaging.Bus
+}
+
+func (p deleteCompletedBusPublisher) PublishDeleteCompleted(ctx context.Context, ev episodefiles.DeleteCompletedEvent) error {
 	return messaging.Publish(ctx, p.bus, ev)
 }

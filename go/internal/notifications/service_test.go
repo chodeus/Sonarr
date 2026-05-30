@@ -799,6 +799,20 @@ func TestHandleRenameCompletedEvent_DrainsProcessQueue_J521(t *testing.T) {
 	}
 }
 
+func TestHandleDeleteCompletedEvent_DrainsProcessQueue_J522(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Implementation: "Stub", ConfigContract: stubContract()},
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	if err := svc.HandleDeleteCompletedEvent(t.Context(), episodefiles.DeleteCompletedEvent{}); err != nil {
+		t.Fatalf("HandleDeleteCompletedEvent: %v", err)
+	}
+	if hooks[1].processCalls != 1 {
+		t.Errorf("ProcessQueue drain = %d, want 1", hooks[1].processCalls)
+	}
+}
+
 // TestNilRecorder verifies that nil recorder is tolerated — the
 // dispatcher invokes the hook without crashing on the recorder
 // call.

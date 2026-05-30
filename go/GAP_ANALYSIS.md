@@ -1,5 +1,13 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## OFFLINE-WORK EXHAUSTION (J522, 2026-05-30) — import-blocked subsystem + ProcessQueue drains DONE; only LIVE work remains; loop STOPPED
+
+Operator greenlit porting ALL remaining OFFLINE subsystems until only LIVE work (Docker image + the flagged updater wiring) remains. Campaign J515–J522:
+- **Import-blocked / rejection-handling state machine — COMPLETE (J515–J519).** Closed J504-exhaustion gate #2 — OnManualInteractionRequired notification is LIVE. TrackedDownload.Warn/Fail (J515) + RejectedImportService + ManualInteractionRequiredEvent (J516) + importOne state-machine rewrite with the already-imported-in-history double-check (J517) + notifications handler (J518) + cmd/sonarr wiring (J519).
+- **Notification ProcessQueue-drain trio — COMPLETE (J520–J522).** DownloadsProcessedEvent (J520) + RenameCompletedEvent (J521) + DeleteCompletedEvent (J522). Faithful scaffolding — the drain is inert for every currently-ported provider (webhook/Discord ProcessQueue no-ops; Plex/Kodi/Emby unported).
+
+A fresh verify-first bounded audit (Explore over unsubscribed-but-tested handlers; constructed-but-uncalled methods across 12 subsystems; C# command-set vs the Go registry; spec/aggregator/health-check/housekeeper list completeness; unassigned any-deps; dropped mutation events) found **NO clean offline ungated gap**. The ONLY remaining work is LIVE and must NOT be done autonomously: (1) build a Docker image; (2) the FLAGGED live updater command-wiring (real self-replace+restart); (3) any real network/deploy/restart. Per the operator's directive → FLAG + loop STOPPED (no wakeup). To resume: operator greenlights a LIVE step.
+
 ## AUTONOMOUS EXHAUSTION (J514, 2026-05-30) — updater subsystem complete; loop STOPPED
 
 J514 wired the GET /api/v3/update (+v5, same handler) InstalledOn arm — a clean gap directly unblocked by the J505 UpdateHistoryService port. A fresh verify-first bounded audit (unsubscribed-but-tested event handlers; constructed-but-never-called service methods across blocklist/history/queue/trackeddownloads/downloadhistory/faileddownloads/housekeeping/scheduledtasks; registry/list completeness vs C#; unassigned `any`-deps fields) found **NO clean ungated gap**. The updatehistory/update services are fully consumed (prevVersion J505, OnApplicationUpdate J506, InstalledOn v3+v5 J514). Remaining work, none autonomously actionable:
