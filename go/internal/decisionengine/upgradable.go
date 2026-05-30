@@ -90,6 +90,34 @@ func (v *ProfileView) FirstAllowedQuality() (quality.Quality, bool) {
 	return quality.Unknown, false
 }
 
+// LastAllowedQuality returns the last (highest) quality in the view
+// whose `Allowed=true`. Mirrors the C# `QualityProfile.LastAllowedQuality()`
+// at `src/NzbDrone.Core/Profiles/Qualities/QualityProfile.cs` —
+// `Items.Last(q => q.Allowed)`, returning the group's last member
+// quality when the last-allowed item is a group (C# `lastAllowed.Items.Last().Quality`).
+//
+// Returns `quality.Unknown` and false when no allowed quality exists
+// (the same explicit-miss signal as [ProfileView.FirstAllowedQuality]).
+func (v *ProfileView) LastAllowedQuality() (quality.Quality, bool) {
+	var found quality.Quality
+	var ok bool
+	for _, item := range v.Items {
+		if !item.Allowed {
+			continue
+		}
+		if !item.IsGroup() {
+			found, ok = item.Quality, true
+			continue
+		}
+		// Group: C# returns the LAST member's quality unconditionally
+		// (`lastAllowed.Items.Last().Quality`).
+		if n := len(item.Items); n > 0 {
+			found, ok = item.Items[n-1].Quality, true
+		}
+	}
+	return found, ok
+}
+
 // CompareQualityModels mirrors the C# `QualityModelComparer.Compare`
 // at `QualityModelComparer.cs:45-55`. Returns -1/0/+1.
 //

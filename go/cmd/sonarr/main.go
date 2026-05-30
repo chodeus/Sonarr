@@ -680,6 +680,19 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	if err != nil {
 		return fmt.Errorf("pendingreleases repo: %w", err)
 	}
+	// J484/J486 (Delay/Pending substrate): construct the full
+	// pendingreleases.Service here (early) so its three consumers can
+	// all reference it: the grab pipeline's pending-bucket persistence
+	// (SetPendingWriter, J484), the EpisodeGrabbed/SeriesDeleted
+	// maintenance handlers (J485), and the DelaySpecification
+	// OldestPending age-bypass (J486, via decisionEngineDeps which is
+	// built before the grabber). Previously only the Repo was wired
+	// (queue/status count); the Service AddMany/remove paths were
+	// DEFERRED.
+	pendingReleasesSvc, err := pendingreleases.NewService(pendingReleasesRepo, bus, logger)
+	if err != nil {
+		return fmt.Errorf("pendingreleases service: %w", err)
+	}
 	// Naming-config wiring (Phase 3.94). Singleton-row Service that
 	// the slice-3.94 fileNamerAdapter reaches for to compute
 	// RequiresAbsoluteEpisodeNumber / RequiresEpisodeTitle for the
@@ -2571,6 +2584,7 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		cdhCfg:         configProv,
 		historyByEp:    historySvc,
 		delayProfiles:  delayProfilesSvc,
+		pending:        pendingReleasesSvc,
 		releaseProfile: releaseProfilesSvc,
 		matcher:        matcherSvc,
 		blocklistRepo:  blocklistRepo,
@@ -2999,19 +3013,11 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	if err != nil {
 		return fmt.Errorf("download.ProcessDownloadDecisions: %w", err)
 	}
-	// J484 (Delay/Pending substrate): construct the full
-	// pendingreleases.Service (write side) so ProcessDecisions persists
-	// its Pending bucket. Previously only the Repo was wired (for the
-	// queue/status count); the Service AddMany path was DEFERRED, so
-	// temporarily-rejected + download-client-unavailable releases were
-	// computed but silently dropped (never reached the PendingReleases
-	// table). Ports the C# IPendingReleaseService dependency
-	// ProcessDownloadDecisions calls AddMany on at
-	// ProcessDownloadDecisions.cs:119-121.
-	pendingReleasesSvc, err := pendingreleases.NewService(pendingReleasesRepo, bus, logger)
-	if err != nil {
-		return fmt.Errorf("pendingreleases service: %w", err)
-	}
+	// J484: ProcessDecisions persists its Pending bucket via the
+	// pendingReleasesSvc constructed earlier (SetPendingWriter below) —
+	// temporarily-rejected + download-client-unavailable + failed
+	// releases reach the PendingReleases table. Ports the C#
+	// IPendingReleaseService.AddMany call at ProcessDownloadDecisions.cs:119-121.
 	processDownloadDecisions.
 		SetBus(bus).
 		SetRecorder(downloadClientStatusSvc).

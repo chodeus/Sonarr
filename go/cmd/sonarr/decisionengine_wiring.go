@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -28,6 +29,8 @@ import (
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/indexers"
+	"sonarr.tv/sonarr/internal/parser"
+	"sonarr.tv/sonarr/internal/pendingreleases"
 	"sonarr.tv/sonarr/internal/providerstatus"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
@@ -106,6 +109,35 @@ func (a delayProfileResolverAdapter) BestForTags(ctx context.Context, tagIDs []i
 	return *p, true, nil
 }
 
+// oldestPendingAgeAdapter wraps `*pendingreleases.Service.OldestPending`
+// and translates the matched row into the publish-date age (minutes)
+// the [decisionengine.PendingReleaseAgeReader] (DelaySpecification's
+// OldestPending bypass, J486) consumes. The pending row stores the
+// indexer ReleaseInfo as an opaque JSON blob; we unmarshal it to
+// recover PublishDate and return AgeMinutes — keeping the decisionengine
+// package off the pendingreleases import path. A no-match or a malformed
+// stored blob maps to found=false (no bypass; defensive).
+type oldestPendingAgeAdapter struct {
+	svc *pendingreleases.Service
+}
+
+func (a oldestPendingAgeAdapter) OldestPendingAgeMinutes(ctx context.Context, seriesID, seasonNumber int, episodeNumbers []int) (float64, bool, error) {
+	row, err := a.svc.OldestPending(ctx, seriesID, seasonNumber, episodeNumbers)
+	if err != nil {
+		return 0, false, err
+	}
+	if row == nil {
+		return 0, false, nil
+	}
+	var ri parser.ReleaseInfo
+	if uerr := json.Unmarshal([]byte(row.ReleaseInfo), &ri); uerr != nil {
+		// Malformed stored blob — treat as no usable pending age rather
+		// than poisoning the spec evaluation.
+		return 0, false, nil
+	}
+	return ri.AgeMinutes(), true, nil
+}
+
 // customFormatForFileAdapter wraps `*customformats.Service.All` +
 // the package-level `customformats.ParseCustomFormatForFile` free fn
 // (slice 3.AP) to satisfy [decisionengine.UpgradeAllowedFormatCalculator]
@@ -182,8 +214,10 @@ var (
 	_ decisionengine.UpgradeAllowedProfileReader          = profileViewLookupAdapter{}
 	_ decisionengine.UpgradeDiskProfileReader             = profileViewLookupAdapter{}
 	_ decisionengine.QueueProfileReader                   = profileViewLookupAdapter{}
+	_ decisionengine.DelayProfileViewReader               = profileViewLookupAdapter{}
 	_ decisionengine.AcceptableSizeEpisodeFinder          = firstEpisodeOfSeasonAdapter{}
 	_ decisionengine.DelayProfileResolver                 = delayProfileResolverAdapter{}
+	_ decisionengine.PendingReleaseAgeReader              = oldestPendingAgeAdapter{}
 	_ decisionengine.UpgradeAllowedFormatCalculator       = customFormatForFileAdapter{}
 	_ decisionengine.UpgradeDiskFormatCalculator          = customFormatForFileAdapter{}
 	_ decisionengine.UpgradeDiskSeasonReader              = seasonPackConfigAdapter{}
@@ -207,6 +241,7 @@ type decisionEngineDeps struct {
 	cdhCfg         decisionengine.AlreadyImportedCDHReader      // *config.Provider
 	historyByEp    decisionengine.HistoryByEpisodeFinder        // *history.Service
 	delayProfiles  *delayprofiles.Service
+	pending        *pendingreleases.Service // DelaySpecification OldestPending age-bypass (J486)
 	releaseProfile *releaseprofiles.Service
 	matcher        *releaseprofiles.MatcherService
 	blocklistRepo  *blocklist.Repo
@@ -386,6 +421,27 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 		return nil, err
 	}
 	specs = append(specs, proper)
+
+	// J486: DelaySpecification — TEMPORARY-rejects a release younger than
+	// the series' delay-profile wait so a better-quality / preferred-
+	// protocol release can appear first; the temporary reject routes the
+	// release to the pending-release queue (J484 persistence). Bypasses:
+	// user-search, delay==0, preferred-protocol proper upgrade,
+	// highest-quality-in-profile, custom-format-score, and "oldest
+	// pending already waited longer than the delay". Ports
+	// DecisionEngine/Specifications/RssSync/DelaySpecification.cs. pending
+	// may be nil (queue/status-only boots); the OldestPending bypass then
+	// no-ops.
+	var pendingAge decisionengine.PendingReleaseAgeReader
+	if d.pending != nil {
+		pendingAge = oldestPendingAgeAdapter{svc: d.pending}
+	}
+	delaySpec, err := decisionengine.NewDelaySpecification(
+		delayResolver, profileLookup, d.upgradable, d.configCfg, d.episodeFiles, pendingAge, d.log)
+	if err != nil {
+		return nil, err
+	}
+	specs = append(specs, delaySpec)
 
 	retention, err := decisionengine.NewRetentionSpecification(d.retentionCfg, d.log)
 	if err != nil {
