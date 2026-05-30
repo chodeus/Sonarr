@@ -299,6 +299,12 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 	// check only on a search with MonitoredEpisodesOnly=false. Ports
 	// DecisionEngine/Specifications/RssSync/MonitoredEpisodeSpecification.cs.
 	specs = append(specs, decisionengine.NewMonitoredEpisodeSpecification(d.log))
+	// J467: EpisodeRequestedSpecification — search-only gate rejecting
+	// releases whose matched episodes don't intersect the searched
+	// episode set (indexers return junk for a query). No-op on RSS (nil
+	// SearchCriteria). Ports
+	// DecisionEngine/Specifications/Search/EpisodeRequestedSpecification.cs.
+	specs = append(specs, decisionengine.NewEpisodeRequestedSpecification(d.log))
 	specs = append(specs, decisionengine.NewMultiSeasonSpecification(d.log))
 	specs = append(specs, decisionengine.NewNotSampleSpecification(d.log))
 

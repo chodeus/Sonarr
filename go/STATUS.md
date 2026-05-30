@@ -20497,3 +20497,13 @@ Phase-2 fresh audit (download-decision + import-decision spec coverage via 2 Exp
 Ported `RssSync/MonitoredEpisodeSpecification.cs`: NEW `internal/decisionengine/spec_monitored_episode.go` (skip on search w/ MonitoredEpisodesOnly=false; reject unmonitored series → SeriesNotMonitored; reject if any matched episode unmonitored → EpisodeNotMonitored, single-vs-multi message split). Wired into buildDecisionEngineSpecs (cmd/sonarr/decisionengine_wiring.go). 8-case test.
 
 R: internal/decisionengine/spec_monitored_episode.go (new spec), cmd/sonarr/decisionengine_wiring.go (wire). A: spec_monitored_episode_test.go. M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; decisionengine + cmd/sonarr + contract -race green.
+
+## J467 — EpisodeRequestedSpecification (search-only: reject releases the search didn't ask for)
+
+Phase-2 download-decision spec audit follow-up (2nd of the genuinely-absent search-match specs). The Go search grab path did NOT verify a release's matched episodes intersect the searched episode set — indexers return unrelated releases for a query, so wrong episodes could be grabbed during search. Reason code ReasonWrongEpisode pre-existed; SearchCriteria.Episodes already carried the requested set.
+
+Ported `Search/EpisodeRequestedSpecification.cs`: NEW `internal/decisionengine/spec_episode_requested.go` (no-op on RSS/nil-criteria; intersect searched episode IDs with the release's matched IDs; reject WrongEpisode with the release's sorted episode-span message when empty). Wired into buildDecisionEngineSpecs. 6-case test (incl. the exact "SxE" / "SxE-E" / bare message branches).
+
+R: internal/decisionengine/spec_episode_requested.go (new spec), cmd/sonarr/decisionengine_wiring.go (wire). A: spec_episode_requested_test.go. M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; decisionengine + cmd/sonarr + contract -race green.
+
+Remaining download-spec gaps: SeasonMatch + SingleEpisodeSearchMatch (need search-kind discrimination — C# uses criteria subtypes; Go has a unified SearchCriteria; verify a kind/season/episode field exists before porting), and Delay/History/Pending/Proper/IndexerTag/DeletedEpisodeFile/SceneMapping (need deeper substrate — verify each).
