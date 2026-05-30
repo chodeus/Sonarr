@@ -82,14 +82,39 @@ type BranchProvider interface {
 	Branch(ctx context.Context) string
 }
 
+// PrevVersionProvider supplies the previously-installed version for the
+// recent-updates feed's `prevVersion` query param (C#
+// `UpdatePackageProvider.GetRecentUpdates` reads it from
+// `UpdateHistoryService.PreviouslyInstalled()`). Production binds
+// *updatehistory.Service.PreviouslyInstalled via a small adapter; when
+// unset the param is omitted (the pre-J505 behaviour, faithful to C#
+// passing `previousVersion = null` when no history exists).
+type PrevVersionProvider interface {
+	PreviouslyInstalled(ctx context.Context) string
+}
+
 // Service ports `CheckUpdateService` at `:13-30`. Goroutine-safe:
 // stateless beyond construction-time deps.
 type Service struct {
-	http    Doer
-	branch  BranchProvider
-	version string
-	baseURL string
-	timeout time.Duration
+	http     Doer
+	branch   BranchProvider
+	version  string
+	baseURL  string
+	timeout  time.Duration
+	prevVers PrevVersionProvider
+}
+
+// SetPrevVersionProvider wires the optional previously-installed-version
+// source for the recent-updates feed. Set post-construction so
+// [NewService]'s signature stays stable; nil-tolerant (passing a nil
+// provider leaves the prevVersion param omitted). Not goroutine-safe
+// with concurrent RecentUpdates calls — wire it once at startup before
+// serving.
+func (s *Service) SetPrevVersionProvider(p PrevVersionProvider) {
+	if s == nil {
+		return
+	}
+	s.prevVers = p
 }
 
 // NewService binds the HTTP doer + branch provider + the current
@@ -189,10 +214,13 @@ func (s *Service) AvailableUpdate(ctx context.Context) (*Package, error) {
 // and returns the full list of recent release packages (each with its
 // changelog) — the feed GET /api/v3/update projects to UpdateResource.
 //
-// DEFERRED relative to C#: the `prevVersion` query param (C# sends it
-// from `UpdateHistoryService.PreviouslyInstalled()` when LogDbEnabled)
-// — the Go tree has no UpdateHistoryService yet, so the param is
-// omitted; the server returns the standard recent list without it.
+// The `prevVersion` query param (C# sends it from
+// `UpdateHistoryService.PreviouslyInstalled()` when LogDbEnabled) is
+// sent when an optional [PrevVersionProvider] is wired via
+// [Service.SetPrevVersionProvider] (J505 — bound to
+// *updatehistory.Service). When unwired (log DB disabled, no history
+// recorded) the param is omitted and the server returns the standard
+// recent list.
 func (s *Service) RecentUpdates(ctx context.Context) ([]Package, error) {
 	if s == nil {
 		return nil, nil
@@ -207,6 +235,15 @@ func (s *Service) RecentUpdates(ctx context.Context) ([]Package, error) {
 	q.Set("os", goosToServiceOs(runtime.GOOS))
 	q.Set("arch", runtime.GOARCH)
 	q.Set("runtime", "netcore")
+
+	// prevVersion arm (C# `UpdatePackageProvider.GetRecentUpdates:75-78`):
+	// only sent when a prior install is recorded AND it differs from the
+	// running version.
+	if s.prevVers != nil {
+		if prev := strings.TrimSpace(s.prevVers.PreviouslyInstalled(ctx)); prev != "" && prev != s.version {
+			q.Set("prevVersion", prev)
+		}
+	}
 
 	u := fmt.Sprintf("%s/update/%s/changes?%s", strings.TrimRight(s.baseURL, "/"), url.PathEscape(br), q.Encode())
 

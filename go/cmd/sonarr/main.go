@@ -129,6 +129,7 @@ import (
 	"sonarr.tv/sonarr/internal/tags"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 	"sonarr.tv/sonarr/internal/update"
+	"sonarr.tv/sonarr/internal/updatehistory"
 	"sonarr.tv/sonarr/internal/upgrademediafiles"
 	"sonarr.tv/sonarr/internal/users"
 	"sonarr.tv/sonarr/internal/videofileinforeader"
@@ -284,6 +285,12 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	// the GET /log read returns empty, matching upstream. logRepo is
 	// kept in scope for the GET /log read + ClearLog wiring.
 	var logRepo *logs.Repo
+	// updateHistorySvc records the running version on ApplicationStarted
+	// and feeds the recent-updates prevVersion arm. Like C#
+	// UpdateHistoryService it lives in the RoleLog DB, so it is built
+	// only when the log DB is enabled (the C# !LogDbEnabled early-return
+	// is realised here as "never constructed"). Nil-tolerant downstream.
+	var updateHistorySvc *updatehistory.Service
 	if logCfg, logEnabled, lerr := buildLogDatastoreConfig(ctx, cfg, folder, instanceName); lerr != nil {
 		return fmt.Errorf("log datastore config: %w", lerr)
 	} else if logEnabled {
@@ -302,6 +309,18 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		logSink := logs.NewSink(logRepo, slog.LevelInfo, 0)
 		defer func() { _ = logSink.Close() }()
 		logFanout.Attach(logSink)
+
+		updateHistoryRepo, err := updatehistory.NewRepo(logDB)
+		if err != nil {
+			return fmt.Errorf("update-history repo: %w", err)
+		}
+		updateHistorySvc = updatehistory.NewService(updateHistoryRepo, buildinfo.Version, logger)
+		// Record the running version on startup (C#
+		// UpdateHistoryService.Handle(ApplicationStartedEvent)).
+		// Subscribed synchronously so the recorded prevVersion is set
+		// before the ApplicationStartedEvent fan-out completes.
+		messaging.Subscribe(bus, "updatehistory.HandleApplicationStarted", updateHistorySvc.HandleApplicationStarted)
+
 		logger.Info("log database ready", "role", string(logDB.Role))
 	}
 	// logRepo (nil when the log DB is disabled) feeds the GET /log read
@@ -2076,6 +2095,14 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		update.DefaultServicesBaseURL,
 		10*time.Second,
 	)
+	// Wire the recent-updates prevVersion arm only when the
+	// update-history service exists (log DB enabled). Guard against the
+	// typed-nil-into-interface trap: a nil *updatehistory.Service
+	// assigned to the PrevVersionProvider interface is NOT == nil and
+	// would panic on the first RecentUpdates call.
+	if updateHistorySvc != nil {
+		updateSvc.SetPrevVersionProvider(updateHistorySvc)
+	}
 	if err != nil {
 		return fmt.Errorf("update service: %w", err)
 	}

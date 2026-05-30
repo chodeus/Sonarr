@@ -1,5 +1,13 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## UPDATE-INSTALL PIPELINE (J505+, 2026-05-30) — RESUMED; operator greenlit the J504-gated subsystem
+
+The operator greenlit porting the in-app updater INSTALL pipeline. This directly attacks the J504-exhaustion gate "OnApplicationUpdate ← UpdateInstalledEvent (internal/update install pipeline not ported)". Safe-first decomposition:
+
+- **J505 ✅ — UpdateHistory persistence.** NEW `internal/updatehistory` (EventType/History/Repo-over-RoleLog/Service). Records the running version on ApplicationStarted, exposes PreviouslyInstalled, and remembers PrevVersion for the J506 event. Wired the previously-DEFERRED recent-updates `prevVersion` query arm. Verify-first corrections to the operator's checklist: UpdateHistory table ALREADY existed (log migration 141); DeploymentInfoProvider ALREADY existed; notification OnApplicationUpdate provider+message+factory ALREADY existed; ApplicationCheckUpdate ALREADY wired (read-side). **UpdateVerification is a SHA256 hash compare, NOT GPG** — no OpenPGP dependency required.
+- **J506 ⏳ NEXT — UpdateInstalledEvent + notification OnApplicationUpdate dispatch.** Closes the J503/J504-gated OnApplicationUpdate hook.
+- **J507+ ⏳ — InstallUpdateService core + ApplicationUpdateCommand + sonarr-update helper.** The high-risk download/verify/extract/self-replace path, gated on UpdateMechanism (BuiltIn installs; Script delegates; External/Apt/Docker no-op). Absent substrate to port as sub-slices: config UpdateMechanism/UpdateAutomatically/UpdateScriptPath getters, ProcessProvider, RuntimeInfo.ExecutingApplication, GetUpdateClientFolder/ExePath, disk TransferFolder, tar.gz extract. SAFETY: temp-dir + stub-HTTP tests only; never executes a real update.
+
 ## AUTONOMOUS EXHAUSTION (J504, 2026-05-30) — download-decision spec chain COMPLETE; loop STOPPED
 
 Resumed on the operator's "continue" + greenlight. **J503** wired notification OnRename (the "gated on batch-rename event" label was stale — `episodefiles.SeriesRenamedEvent` published since J453, all substrate pre-existed). **J504** ported the last two marginal download-decision specs (SeasonMatch + SingleEpisodeSearchMatch) via the operator-greenlit SearchCriteria criteria-discriminator refactor — implemented as a LOW-RISK seam (stamp `SearchKind`+Season/EpisodeNumber/AnimeIsSeasonSearch onto the base inside the 3 relevant typed `*Criteria.Base()` methods, not at the 8 construction sites). **The download-decision spec chain is now COMPLETE vs C#.**
