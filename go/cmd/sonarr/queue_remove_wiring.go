@@ -95,6 +95,14 @@ func (a *queueRemoveAdapter) RemoveQueueItem(ctx context.Context, id int, opts a
 			if opts.Blocklist {
 				a.blocklist(ctx, td, opts.SkipRedownload)
 			}
+			// C# QueueController.Remove (`:355-358`): the no-flags delete
+			// (!removeFromClient && !blocklist && !changeCategory) is an
+			// "ignore" — IgnoredDownloadService.IgnoreDownload publishes a
+			// DownloadIgnoredEvent so the subscribed history +
+			// downloadhistory handlers record the "Manually ignored" rows.
+			if !opts.RemoveFromClient && !opts.Blocklist && !opts.ChangeCategory {
+				a.ignore(ctx, td)
+			}
 			a.tracked.StopTracking(td.DownloadID)
 		}
 	}
@@ -161,6 +169,52 @@ func (a *queueRemoveAdapter) blocklist(ctx context.Context, td *trackeddownloads
 	}
 	if err := messaging.Publish(ctx, a.bus, ev); err != nil {
 		a.log.Warn("queue remove: blocklist publish failed", "downloadId", td.DownloadID, "err", err)
+	}
+}
+
+// ignore publishes a DownloadIgnoredEvent for the tracked download.
+// Mirrors C# `IgnoredDownloadService.IgnoreDownload(trackedDownload)`
+// (`src/NzbDrone.Core/Download/IgnoredDownloadService.cs:26-52`), which
+// `QueueController.Remove` invokes on the no-flags delete branch
+// (`QueueController.cs:355-358`). The already-subscribed history +
+// downloadhistory `HandleDownloadIgnored` consumers (main.go) record the
+// "Manually ignored" rows. C# skips the publish (and returns false) when
+// the series is unknown; StopTracking + the queue-row removal happen
+// regardless because the caller ignores the return value
+// (`QueueController.cs:94-95`). No-op when no bus is available.
+func (a *queueRemoveAdapter) ignore(ctx context.Context, td *trackeddownloads.TrackedDownload) {
+	if a.bus == nil {
+		return
+	}
+	r := td.RemoteEpisode
+	if r == nil || r.Series == nil {
+		// C# warns "Unable to ignore download for unknown series" and
+		// returns false without publishing (IgnoredDownloadService.cs:30-34).
+		a.log.Warn("queue remove: cannot ignore download for unknown series", "downloadId", td.DownloadID)
+		return
+	}
+	ev := trackeddownloads.DownloadIgnoredEvent{
+		SeriesID:        r.Series.ID,
+		Languages:       r.Languages,
+		TrackedDownload: td,
+		DownloadID:      td.DownloadID,
+		Message:         "Manually ignored",
+	}
+	for _, e := range r.Episodes {
+		ev.EpisodeIDs = append(ev.EpisodeIDs, e.ID)
+	}
+	if r.ParsedEpisodeInfo != nil {
+		ev.Quality = r.ParsedEpisodeInfo.Quality
+		if len(ev.Languages) == 0 {
+			ev.Languages = r.ParsedEpisodeInfo.Languages
+		}
+	}
+	if td.DownloadItem != nil {
+		ev.SourceTitle = td.DownloadItem.Title
+		ev.DownloadClientInfo = td.DownloadItem.DownloadClientInfo
+	}
+	if err := messaging.Publish(ctx, a.bus, ev); err != nil {
+		a.log.Warn("queue remove: ignore publish failed", "downloadId", td.DownloadID, "err", err)
 	}
 }
 

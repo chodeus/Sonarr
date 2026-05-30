@@ -20451,3 +20451,13 @@ Phase-1 follow-up #2. Verify-first trace of the manual queue-delete path (`cmd/s
 Added `cmd/sonarr/queue_remove_hub_interaction_test.go`: wires the REAL queueRemoveAdapter + REAL downloadeventhub.Service on one bus (shared recording client) and asserts the 3 cases — RemoveFailedDownloads off → MarkItemAsImported only (no removal, changeCategory intent preserved); on + CanBeRemoved → both run (C#-faithful); on + !CanBeRemoved → import only (CanBeRemoved gate).
 
 R: (none — verification slice). A: cmd/sonarr/queue_remove_hub_interaction_test.go. M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; cmd/sonarr + downloadeventhub + contract -race green.
+
+## J462 — queue-delete no-flags "ignore" path: publish DownloadIgnoredEvent (dead-consumer producer gap closed)
+
+Phase-1 #3 pattern-audit win (the J449/J459-class "consumer wired, producer missing" bug). An Explore fan-out over every messaging.Subscribe vs messaging.Publish found exactly ONE dead consumer: `trackeddownloads.DownloadIgnoredEvent` had TWO subscribed handlers (history.HandleDownloadIgnored main.go:1089 + downloadhistory.HandleDownloadIgnored main.go:1098) but NO production publisher. (0 unwired services — all Subscribe(bus) services are called.)
+
+Root cause: C# QueueController.Remove treats a delete with no removeFromClient/blocklist/changeCategory as an "ignore" and calls `IgnoredDownloadService.IgnoreDownload` (`IgnoredDownloadService.cs:26-52`), which publishes DownloadIgnoredEvent. The Go queue-remove no-flags branch only StopTracking'd + removed the row — it never published, so the two handlers could never fire (no "Manually ignored" history/downloadhistory rows).
+
+Fix: NEW `queueRemoveAdapter.ignore()` publishes DownloadIgnoredEvent (SeriesID/EpisodeIDs/Languages/Quality/SourceTitle/DownloadClientInfo/Message="Manually ignored") from the tracked download; called on the no-flags branch. Skips publish + warns on unknown series (C# returns false there); StopTracking + row removal still run (C# ignores the return value, QueueController.cs:94-95).
+
+R: cmd/sonarr/queue_remove_wiring.go (ignore producer + branch). A: 2 tests (no-flags publishes; unknown-series skips). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; cmd/sonarr + historyhandlers + downloadhistoryhandlers + contract -race green.

@@ -134,6 +134,16 @@ After 19 slices, the clean / in-scope / ungated / non-cosmetic autonomous work i
 
 **RESUMING LATER:** the next genuinely-impactful work is the Phase-4 download-completion pipeline (`CompletedDownloadService` + its event publishers), which unblocks Q1 tail + Q3 — but that's a substantial subsystem port, not an autonomous-loop slice. Flag to the operator.
 
+## EVENT PRODUCER/CONSUMER PATTERN AUDIT — DONE J462 (Phase-1 #3)
+
+Explore fan-out over the whole tree cross-referencing every `messaging.Subscribe` consumer against every non-test `messaging.Publish` producer (incl. optional-publisher adapters wired in cmd/sonarr), plus every `internal/*` service with a `Subscribe(bus)` method vs cmd/sonarr call sites.
+
+- **Class A (dead consumers — subscribed, never produced): 1 found + FIXED J462.** `trackeddownloads.DownloadIgnoredEvent` had two subscribed handlers (`history.HandleDownloadIgnored` main.go:1089, `downloadhistory.HandleDownloadIgnored` main.go:1098) but NO production publisher. Root cause: the C# queue-delete no-flags "ignore" path (`QueueController.Remove` → `IgnoredDownloadService.IgnoreDownload`, `IgnoredDownloadService.cs:26-52`) was unported on the producer side. FIXED by `queueRemoveAdapter.ignore()` (cmd/sonarr/queue_remove_wiring.go) publishing the event on the no-flags branch. See J462.
+- **Class B (unwired services — Subscribe(bus)/Handle never called): 0 found.** All services exposing `Subscribe(bus)` are wired (`config.Provider` main.go:625, `namingconfig.Service` :699, `healthcheck.Service` :2081, `notifications.Service` :2680); all Handle* arms are subscribed at their wiring sites.
+- Verified NOT dead (published via optional-publisher adapters, not direct messaging.Publish): EpisodeFileRenamedEvent/SeriesRenamedEvent (renameEventPublisher main.go:3520), EpisodeImportedEvent (importEventPublisherAdapter :2340), DownloadCanBeRemovedEvent (:3119), DownloadCompletedEvent (:3110), EpisodeFolderCreatedEvent (downloadedimport_wiring.go:901), EpisodeGrabbedEvent (process_decisions.go:478).
+
+Pattern audit DRAINED — only the one DownloadIgnoredEvent gap, now closed.
+
 ## QUEUE-DELETE changeCategory+blocklist × HUB FAILED-ARM — VERIFIED FAITHFUL J461 (Phase-1 #2)
 
 Traced the manual queue-delete (`cmd/sonarr/queue_remove_wiring.go`: `applyClientSideEffects` + `blocklist`) against C# `QueueController.Remove` (`QueueController.cs:333-372`), `FailedDownloadService.MarkAsFailed`, and `DownloadEventHub.Handle(DownloadFailedEvent)` (`DownloadEventHub.cs:29-47`). **No bug — faithful to C#.** The J457 hub failed-arm does NOT remove on every DownloadFailedEvent (the J457 doc-comment framing "handles every DownloadFailedEvent regardless of source" is about the *source* gate, not the side-effect gate); `HandleDownloadFailed` gates on `td.DownloadItem.CanBeRemoved` AND the client's `RemoveFailedDownloads` flag — identical to C#. changeCategory+blocklist therefore runs MarkItemAsImported (recategorize) then publishes DownloadFailedEvent; the hub removes-from-client only when the client is configured to remove failed downloads AND the item is removable. Pinned by `cmd/sonarr/queue_remove_hub_interaction_test.go` (REAL adapter + REAL hub on one bus, 3 gating cases). No follow-up.

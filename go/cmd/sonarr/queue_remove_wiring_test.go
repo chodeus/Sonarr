@@ -178,6 +178,114 @@ func TestQueueRemoveAdapter_Blocklist_J396(t *testing.T) {
 	}
 }
 
+// J462: the no-flags delete (no removeFromClient/blocklist/changeCategory)
+// is an "ignore" — it must publish a DownloadIgnoredEvent built from the
+// tracked download's RemoteEpisode, mirroring C#
+// IgnoredDownloadService.IgnoreDownload (QueueController.cs:355-358).
+// Before J462 the two DownloadIgnored consumers (history +
+// downloadhistory) had no producer — dead consumers.
+func TestQueueRemoveAdapter_NoFlags_PublishesIgnored_J462(t *testing.T) {
+	t.Parallel()
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+
+	got := make(chan trackeddownloads.DownloadIgnoredEvent, 1)
+	messaging.Subscribe(bus, "test.ignored.capture.j462",
+		func(_ context.Context, ev trackeddownloads.DownloadIgnoredEvent) error {
+			select {
+			case got <- ev:
+			default:
+			}
+			return nil
+		})
+
+	qs := queue.NewService()
+	qs.SetQueue([]queue.Queue{{ID: 1, DownloadID: "dl1"}})
+	tracked := trackeddownloads.NewService(slog.Default())
+	_ = tracked.Track(&trackeddownloads.TrackedDownload{
+		DownloadID:   "dl1",
+		DownloadItem: &downloadclients.Item{DownloadID: "dl1", Title: "Show.S01E01"},
+		IsTrackable:  true,
+		RemoteEpisode: &decisionengine.Subject{
+			Series:            &series.Series{ID: 42},
+			Episodes:          []episodes.Episode{{ID: 100}, {ID: 101}},
+			ParsedEpisodeInfo: &parser.ParsedEpisodeInfo{ReleaseTitle: "Show.S01E01"},
+		},
+	})
+
+	a := &queueRemoveAdapter{Service: qs, tracked: tracked, clients: fakeClientResolver{}, bus: bus, log: slog.Default()}
+	if _, err := a.RemoveQueueItem(t.Context(), 1, apiv3.QueueRemoveOptions{}); err != nil {
+		t.Fatalf("RemoveQueueItem: %v", err)
+	}
+	bus.BeginShutdown()
+	bus.Wait()
+
+	select {
+	case ev := <-got:
+		if ev.SeriesID != 42 {
+			t.Errorf("ev.SeriesID = %d, want 42", ev.SeriesID)
+		}
+		if len(ev.EpisodeIDs) != 2 || ev.EpisodeIDs[0] != 100 || ev.EpisodeIDs[1] != 101 {
+			t.Errorf("ev.EpisodeIDs = %v, want [100 101]", ev.EpisodeIDs)
+		}
+		if ev.SourceTitle != "Show.S01E01" {
+			t.Errorf("ev.SourceTitle = %q", ev.SourceTitle)
+		}
+		if ev.Message != "Manually ignored" {
+			t.Errorf("ev.Message = %q, want 'Manually ignored'", ev.Message)
+		}
+	default:
+		t.Fatal("no DownloadIgnoredEvent published on the no-flags delete")
+	}
+}
+
+// J462: the ignore path skips publishing (and logs) when the series is
+// unknown — mirrors C# IgnoredDownloadService returning false without an
+// event (IgnoredDownloadService.cs:30-34). StopTracking + queue removal
+// still happen.
+func TestQueueRemoveAdapter_NoFlags_UnknownSeries_NoIgnored_J462(t *testing.T) {
+	t.Parallel()
+	bus := messaging.New(slog.Default())
+	t.Cleanup(func() { bus.BeginShutdown(); bus.Wait() })
+
+	got := make(chan trackeddownloads.DownloadIgnoredEvent, 1)
+	messaging.Subscribe(bus, "test.ignored.capture.unknown.j462",
+		func(_ context.Context, ev trackeddownloads.DownloadIgnoredEvent) error {
+			select {
+			case got <- ev:
+			default:
+			}
+			return nil
+		})
+
+	qs := queue.NewService()
+	qs.SetQueue([]queue.Queue{{ID: 1, DownloadID: "dl1"}})
+	tracked := trackeddownloads.NewService(slog.Default())
+	_ = tracked.Track(&trackeddownloads.TrackedDownload{
+		DownloadID:   "dl1",
+		DownloadItem: &downloadclients.Item{DownloadID: "dl1", Title: "Unknown"},
+		IsTrackable:  true,
+		// RemoteEpisode with no Series → unknown series.
+		RemoteEpisode: &decisionengine.Subject{},
+	})
+
+	a := &queueRemoveAdapter{Service: qs, tracked: tracked, clients: fakeClientResolver{}, bus: bus, log: slog.Default()}
+	if _, err := a.RemoveQueueItem(t.Context(), 1, apiv3.QueueRemoveOptions{}); err != nil {
+		t.Fatalf("RemoveQueueItem: %v", err)
+	}
+	if tracked.Find("dl1") != nil || qs.Find(1) != nil {
+		t.Error("unknown-series ignore must still StopTracking + remove the queue row")
+	}
+	bus.BeginShutdown()
+	bus.Wait()
+
+	select {
+	case ev := <-got:
+		t.Errorf("unexpected DownloadIgnoredEvent for unknown series: %+v", ev)
+	default:
+	}
+}
+
 // J439: the blocklist DownloadFailedEvent carries the release Indexer +
 // Size (via Data) so the blocklist row's columns are populated.
 func TestQueueRemoveAdapter_Blocklist_CarriesIndexerSize_J439(t *testing.T) {
