@@ -79,6 +79,18 @@ func runRepoSuite(t *testing.T, db *datastore.DB) {
 		t.Errorf("sparse LanguageTags: %v, want empty slice", gotSparse.LanguageTags)
 	}
 
+	// AllBySeriesID (J480): both rows for series 50, none for an unknown.
+	bySeries, err := repo.AllBySeriesID(t.Context(), 50)
+	if err != nil {
+		t.Fatalf("AllBySeriesID: %v", err)
+	}
+	if len(bySeries) != 2 {
+		t.Errorf("AllBySeriesID(50) = %d rows, want 2", len(bySeries))
+	}
+	if none, err := repo.AllBySeriesID(t.Context(), 999); err != nil || len(none) != 0 {
+		t.Errorf("AllBySeriesID(999) = (%d rows, %v), want (0, nil)", len(none), err)
+	}
+
 	if err := repo.Update(t.Context(), &subtitlefiles.SubtitleFile{ID: 99999, LastUpdated: now}); !errors.Is(err, subtitlefiles.ErrNotFound) {
 		t.Errorf("Update(missing): %v", err)
 	}

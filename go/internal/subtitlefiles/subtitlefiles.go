@@ -16,6 +16,7 @@
 package subtitlefiles
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -124,4 +125,31 @@ func marshalStrings(xs []string) string {
 		return `<marshal-error: ` + err.Error() + `>`
 	}
 	return out
+}
+
+// AllBySeriesID returns every SubtitleFile for the given series, ordered
+// by Id. Ports the C# `ISubtitleFileService.GetFilesBySeries` — the source
+// the post-rename companion-move pass reads (J480).
+func (r *Repo) AllBySeriesID(ctx context.Context, seriesID int) ([]SubtitleFile, error) {
+	db := r.DB()
+	q := fmt.Sprintf(
+		`SELECT "Id","SeriesId","SeasonNumber","EpisodeFileId","RelativePath","Extension","Added","LastUpdated","Language","LanguageTags","Title","Copy" FROM "SubtitleFiles" WHERE "SeriesId" = %s ORDER BY "Id"`,
+		datastore.Placeholder(db.Engine, 1))
+	rows, err := db.SQL.QueryContext(ctx, q, seriesID)
+	if err != nil {
+		return nil, fmt.Errorf("subtitlefiles: allBySeriesID(%d): %w", seriesID, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SubtitleFile
+	for rows.Next() {
+		var f SubtitleFile
+		if err := mapper.Scan(&f, rows); err != nil {
+			return nil, fmt.Errorf("subtitlefiles: allBySeriesID scan: %w", err)
+		}
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("subtitlefiles: allBySeriesID rows: %w", err)
+	}
+	return out, nil
 }
