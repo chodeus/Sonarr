@@ -1190,6 +1190,17 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		// log+nil to match the narrow interface's ctx-less + errorless
 		// surface.
 		episodeimport.NewAggregateEpisodes(episodeParsingServiceAdapter{svc: parsingSvc, log: logger}),
+		// J471: AggregateReleaseGroup + AggregateReleaseHash were ported
+		// (aggregation.go) but never added to this chain, so imported files
+		// got an EMPTY ReleaseGroup + ReleaseHash (LocalEpisode.ReleaseGroup
+		// is set nowhere else; local_episode_to_file.go:73 copies it onto the
+		// EpisodeFile). That broke the `{Release Group}` naming token, the
+		// release-group UI column/filter, and release-group custom formats.
+		// Both are zero-dependency aggregators reading the already-parsed
+		// File/Folder/DownloadClient episode infos. Ports
+		// Aggregators/AggregateReleaseGroup.cs + AggregateReleaseHash.cs.
+		episodeimport.AggregateReleaseGroup{},
+		episodeimport.AggregateReleaseHash{},
 	}
 	// Slice 3.AG: AggregationService.cfg arg now wires *config.Provider
 	// (EnableMediaInfo getter) so user toggles via the Config table

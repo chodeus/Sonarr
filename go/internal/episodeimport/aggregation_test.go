@@ -1176,3 +1176,38 @@ func TestAugmentQualityFromReleaseName(t *testing.T) {
 		}
 	})
 }
+
+// TestAggregationService_DispatchesReleaseGroupAndHash_J471 pins the J471
+// wiring fix: the AggregationService must dispatch AggregateReleaseGroup +
+// AggregateReleaseHash so an imported LocalEpisode gets a populated
+// ReleaseGroup + ReleaseHash. Before J471 both aggregators were ported but
+// omitted from the production chain, so imported files had an empty
+// ReleaseGroup (breaking the {Release Group} naming token + release-group
+// custom formats) and empty ReleaseHash.
+func TestAggregationService_DispatchesReleaseGroupAndHash_J471(t *testing.T) {
+	t.Parallel()
+	svc, err := episodeimport.NewAggregationService(
+		[]episodeimport.LocalEpisodeAggregator{
+			episodeimport.AggregateReleaseGroup{},
+			episodeimport.AggregateReleaseHash{},
+		},
+		stubFileSize{size: 1000}, nil, nil, slog.New(slog.DiscardHandler),
+	)
+	if err != nil {
+		t.Fatalf("NewAggregationService: %v", err)
+	}
+	le := episodeimport.NewLocalEpisode()
+	le.Path = "/tv/Show/Show.S01E01.WEBDL-1080p-RLSGRP.mkv"
+	le.FileEpisodeInfo = &parser.ParsedEpisodeInfo{ReleaseGroup: "RLSGRP", ReleaseHash: "ABCD1234"}
+
+	out, err := svc.Augment(le, nil)
+	if err != nil {
+		t.Fatalf("Augment: %v", err)
+	}
+	if out.ReleaseGroup != "RLSGRP" {
+		t.Errorf("ReleaseGroup = %q, want RLSGRP (AggregateReleaseGroup not dispatched)", out.ReleaseGroup)
+	}
+	if out.ReleaseHash != "ABCD1234" {
+		t.Errorf("ReleaseHash = %q, want ABCD1234 (AggregateReleaseHash not dispatched)", out.ReleaseHash)
+	}
+}
