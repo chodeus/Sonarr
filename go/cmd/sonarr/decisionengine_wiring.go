@@ -282,9 +282,10 @@ func (a indexerTagFinderAdapter) IndexerTags(ctx context.Context, indexerID int)
 //
 // Spec coverage as of slice 4.P: 25 of ~25 specs. Slice 3.BF added
 // QueueSpec; slice 4.P (queue [8]) adds BlockedIndexer +
-// TorrentSeeding. The remaining gap is SceneMappingSpec, which
-// gates on a scenemappings.Service signature shape that's
-// orthogonal to this loop.
+// TorrentSeeding. J486/J487 added Delay + Pending. J488 added
+// SceneMapping (the old "BLOCKED on scenemappings.Service signature"
+// note was STALE — the C# spec is logger-only and reads the Subject's
+// already-resolved SceneMapping, no service dependency).
 func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specification, error) {
 	profileLookup := profileViewLookupAdapter{svc: d.qualityProfile}
 	episodeFinder := firstEpisodeOfSeasonAdapter{svc: d.episodes}
@@ -455,6 +456,13 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 		return nil, err
 	}
 	specs = append(specs, pendingSpec)
+
+	// J488: SceneMappingSpecification — TEMPORARILY rejects a release
+	// whose matched scene mapping has an explicitly "mixed" scene origin
+	// (ambiguous multi-scheme numbering). Logger-only — reads the
+	// Subject's already-resolved SceneMapping (set by parsingservice).
+	// Ports DecisionEngine/Specifications/SceneMappingSpecification.cs.
+	specs = append(specs, decisionengine.NewSceneMappingSpecification(d.log))
 
 	retention, err := decisionengine.NewRetentionSpecification(d.retentionCfg, d.log)
 	if err != nil {

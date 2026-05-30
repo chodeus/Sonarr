@@ -26,7 +26,7 @@ After 16 slices + a fresh full audit across every high-yield dimension, the clea
 **REMAINING (all out-of-scope for the autonomous loop):**
 - **LARGE / operator-flagged:** the extras-IMPORT subsystem (SubtitleService + OtherExtraService + the ExtraService orchestrator) — subtitles/sidecars adjacent to a download are not imported. Substantial subsystem port.
 - **COMPLEX / deferred (side-effecting substrate):** DelaySpecification + PendingSpecification (route a release to the pending-release queue / hold for the delay-profile wait); the documented release-push / manual-import follow-up arms (ShouldOverride, full ImportDecisionMaker pipeline rejections, indexer/dc name→id resolve) — tracked, not silent stubs.
-- **BLOCKED:** SceneMappingSpecification (decisionengine_wiring.go:227, scenemappings.Service signature).
+- ~~**BLOCKED:** SceneMappingSpecification~~ → **FIXED J488.** The "blocked on scenemappings.Service signature" label was STALE — the C# spec is logger-only (reads Subject.SceneMapping, no service dep). Ported + wired.
 - **MARGINAL (skipped, documented):** SeasonMatchSpecification + SingleEpisodeSearchMatchSpecification (EpisodeRequested J467 covers the bulk; faithful port needs a risky SearchCriteria criteria-discriminator refactor for one narrow case).
 - **LOW:** trackeddownloads EpisodeInfoRefreshedEvent handler (removed-episode-id match, rare); DownloadMonitoring event-driven refresh (optimization over the 1-min scheduled task); v3-over-emits-v5-fields shared-struct tradeoffs.
 
