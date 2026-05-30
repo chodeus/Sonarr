@@ -248,6 +248,46 @@ func (t *TrackedDownload) Fail() {
 // `Subject.Release` is `any` — the field carries a `*parser.ReleaseInfo`
 // or a `*parser.TorrentInfo` depending on protocol. Both shapes embed
 // IndexerFlags identically; the type-switch covers both.
+// ReleaseIndexerID returns the IndexerId of the wrapped release, or 0
+// when no remote episode / release is attached. Mirrors the C#
+// `trackedDownload.RemoteEpisode.Release.IndexerId` access used by
+// RejectedImportService. Type-switches the `any`-typed Release the same
+// way [IndexerFlags] does (*parser.ReleaseInfo or *parser.TorrentInfo,
+// which embeds ReleaseInfo).
+func (t *TrackedDownload) ReleaseIndexerID() int {
+	if t == nil || t.RemoteEpisode == nil || t.RemoteEpisode.Release == nil {
+		return 0
+	}
+	switch r := t.RemoteEpisode.Release.(type) {
+	case *parser.ReleaseInfo:
+		if r == nil {
+			return 0
+		}
+		return r.IndexerID
+	case *parser.TorrentInfo:
+		if r == nil {
+			return 0
+		}
+		return r.IndexerID
+	}
+	return 0
+}
+
+// HasRelease reports whether a parsed release is attached (the C#
+// `RemoteEpisode?.Release != null` guard).
+func (t *TrackedDownload) HasRelease() bool {
+	if t == nil || t.RemoteEpisode == nil || t.RemoteEpisode.Release == nil {
+		return false
+	}
+	switch r := t.RemoteEpisode.Release.(type) {
+	case *parser.ReleaseInfo:
+		return r != nil
+	case *parser.TorrentInfo:
+		return r != nil
+	}
+	return false
+}
+
 func (t *TrackedDownload) IndexerFlags() parser.IndexerFlags {
 	if t == nil || t.RemoteEpisode == nil || t.RemoteEpisode.Release == nil {
 		return 0

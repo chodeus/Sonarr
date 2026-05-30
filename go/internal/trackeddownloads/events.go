@@ -209,6 +209,24 @@ type DownloadCompletedEvent struct {
 	Release *episodeimport.GrabbedReleaseInfo
 }
 
+// ManualInteractionRequiredEvent ports the C#
+// `ManualInteractionRequiredEvent : IEvent`
+// (`src/NzbDrone.Core/Download/ManualInteractionRequiredEvent.cs`).
+// Published by the download-completion flow when a completed download
+// can't be auto-imported and needs the user to intervene (the tracked
+// download transitions to ImportBlocked — see
+// downloadprocessing.Service's SetStateToImportBlocked). Subscribed by
+// notifications.Service to fire the OnManualInteractionRequired hook.
+type ManualInteractionRequiredEvent struct {
+	// TrackedDownload — the stalled download. Required.
+	TrackedDownload *TrackedDownload
+
+	// Release — originating GrabbedReleaseInfo, recovered from grabbed
+	// history. Optional / nil when no grabbed history exists (faithful
+	// to C# passing null when `grabbedHistories.Count == 0`).
+	Release *episodeimport.GrabbedReleaseInfo
+}
+
 // UntrackedDownloadCompletedEvent ports the C#
 // `UntrackedDownloadCompletedEvent : IEvent` at
 // `src/NzbDrone.Core/Download/UntrackedDownloadCompletedEvent.cs:9-25`.
