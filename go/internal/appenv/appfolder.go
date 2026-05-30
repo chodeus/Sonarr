@@ -58,6 +58,39 @@ func (a AppFolderInfo) UpdateSandboxFolder() string {
 	return filepath.Join(a.Temp, "sonarr_update")
 }
 
+// UpdatePackageFolder is the extracted-package subtree inside the
+// sandbox. Mirrors `PathExtensions.GetUpdatePackageFolder` (`:368-371`):
+// `Path.Combine(GetUpdateSandboxFolder(), "Sonarr")`.
+func (a AppFolderInfo) UpdatePackageFolder() string {
+	return filepath.Join(a.UpdateSandboxFolder(), "Sonarr")
+}
+
+// UpdateClientFolder is where the `Sonarr.Update` helper binary is
+// extracted. Mirrors `PathExtensions.GetUpdateClientFolder` (`:373-376`):
+// `Path.Combine(GetUpdatePackageFolder(), "Sonarr.Update")`.
+func (a AppFolderInfo) UpdateClientFolder() string {
+	return filepath.Join(a.UpdatePackageFolder(), "Sonarr.Update")
+}
+
+// UpdateClientExePath is the path the in-place updater spawns. Mirrors
+// `PathExtensions.GetUpdateClientExePath` (`:378-381`):
+// `Path.Combine(GetUpdateSandboxFolder(), "Sonarr.Update").ProcessNameToExe()`
+// — note this resolves directly inside the sandbox root (the helper is
+// moved there from UpdateClientFolder by the install transfer step), with
+// a `.exe` suffix on Windows.
+func (a AppFolderInfo) UpdateClientExePath() string {
+	return processNameToExe(filepath.Join(a.UpdateSandboxFolder(), "Sonarr.Update"))
+}
+
+// processNameToExe ports `PathExtensions.ProcessNameToExe` (`:298-306`):
+// appends `.exe` on Windows, otherwise returns the name unchanged.
+func processNameToExe(processName string) string {
+	if CurrentOs == OsWindows {
+		return processName + ".exe"
+	}
+	return processName
+}
+
 // DetectAppFolder builds an AppFolderInfo for the current process.
 // startupCtx may be nil; if it carries a `data` arg, that path
 // becomes AppData verbatim. Otherwise the OS-conventional location

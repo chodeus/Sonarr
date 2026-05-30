@@ -144,6 +144,59 @@ func (p *Provider) MoveFolder(src, dst string) error {
 	return nil
 }
 
+// TransferFolder moves the CONTENTS of src into dst (creating dst if
+// needed), then removes the now-empty src. Ports the move-mode of C#
+// `DiskTransferService.TransferFolder(src, dst, TransferMode.Move)`
+// (`Common/Disk/DiskTransferService.cs`) as used by the in-place updater
+// to merge the extracted update-client tree into the sandbox root.
+//
+// Unlike [MoveFolder] (which renames src→dst and requires dst not to
+// exist), TransferFolder merges into an EXISTING dst: each direct child
+// of src is moved to dst/<name>. Subdirectories that already exist in
+// dst are merged recursively; files are moved (cross-device-safe via
+// [MoveFile]/[MoveFolder]). An existing dst FILE that collides with a
+// src file is overwritten (the updater intends to replace it).
+func (p *Provider) TransferFolder(src, dst string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return fmt.Errorf("disk: TransferFolder(%q, %q): mkdir dst: %w", src, dst, err)
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return fmt.Errorf("disk: TransferFolder(%q, %q): read src: %w", src, dst, err)
+	}
+	for _, e := range entries {
+		s := filepath.Join(src, e.Name())
+		d := filepath.Join(dst, e.Name())
+		if e.IsDir() {
+			if _, derr := os.Stat(d); derr == nil {
+				// dst subdir exists — merge recursively.
+				if merr := p.TransferFolder(s, d); merr != nil {
+					return merr
+				}
+				continue
+			}
+			if merr := p.MoveFolder(s, d); merr != nil {
+				return merr
+			}
+			continue
+		}
+		// Regular file (or symlink): overwrite an existing dst.
+		if _, derr := os.Stat(d); derr == nil {
+			if rerr := os.Remove(d); rerr != nil {
+				return fmt.Errorf("disk: TransferFolder(%q, %q): clear existing %q: %w", src, dst, d, rerr)
+			}
+		}
+		if merr := p.MoveFile(s, d); merr != nil {
+			return merr
+		}
+	}
+	// Remove the now-(recursively-)empty src tree.
+	if rerr := os.RemoveAll(src); rerr != nil {
+		return fmt.Errorf("disk: TransferFolder(%q, %q): remove src: %w", src, dst, rerr)
+	}
+	return nil
+}
+
 // copyFolderRecursive walks src and replicates the directory tree
 // rooted at dst, copying every regular file via CopyFile. Symlinks
 // inside the tree are NOT followed — they're recreated as symlinks
