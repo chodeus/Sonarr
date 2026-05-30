@@ -313,11 +313,10 @@ func FormatTimeLeft(d *time.Duration) string {
 
 // QueueDetailsLister narrows the queue read for the /queue/details
 // endpoint. Returns flat (unpaged) QueueResource rows optionally
-// filtered by seriesId or episodeIds. Today the production wiring
-// substitutes an empty implementation matching the recorded
-// empty-DB shape — populated-row projection requires the same
-// tracked-downloads / pending-release join the /queue paged surface
-// needs, which is DEFERRED.
+// filtered by seriesId or episodeIds. The production adapter
+// (queueDetailsAdapter) projects the in-memory tracked-download queue
+// AND folds in pending-release rows (J489) via the pendingqueue
+// projector — mirroring the C# `queue.Concat(pending)` merge.
 type QueueDetailsLister interface {
 	QueueDetails(ctx context.Context, seriesID *int, episodeIDs []int) ([]QueueResource, error)
 }

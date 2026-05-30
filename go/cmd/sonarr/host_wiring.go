@@ -103,6 +103,7 @@ import (
 	"sonarr.tv/sonarr/internal/notifications"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/parsingservice"
+	"sonarr.tv/sonarr/internal/pendingqueue"
 	"sonarr.tv/sonarr/internal/pendingreleases"
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/qualitydefinitions"
@@ -303,10 +304,36 @@ type queuePagedAdapter struct {
 	// profile rather than the decision-time precomputed score). nil →
 	// the precomputed score is kept (defensive fallback).
 	qualityProfiles *qualityprofiles.Service
+	// pending (J489) projects pending-release rows into queue rows so
+	// delayed releases surface in Activity → Queue, mirroring the C#
+	// QueueController.GetQueue `queue.Concat(pending)` merge. nil →
+	// no pending rows (silent degrade, like the queue/status count).
+	pending pendingQueueProjector
+}
+
+// pendingQueueProjector is the narrow surface the queue adapters use to
+// fold pending-release rows into the queue listing.
+// *pendingqueue.Projector satisfies it.
+type pendingQueueProjector interface {
+	Project(ctx context.Context) ([]queue.Queue, error)
+}
+
+// withPending concatenates the projected pending-release rows onto the
+// tracked-download queue (C# `filteredQueue.Concat(pending)`). A nil
+// projector or a projection error degrades to the tracked queue alone.
+func withPending(ctx context.Context, rows []queue.Queue, pending pendingQueueProjector) []queue.Queue {
+	if pending == nil {
+		return rows
+	}
+	prows, err := pending.Project(ctx)
+	if err != nil || len(prows) == 0 {
+		return rows
+	}
+	return append(rows, prows...)
 }
 
 func (a queuePagedAdapter) PagedQueue(ctx context.Context, req apiv3.PagingRequest, filter apiv3.QueueFilter) ([]apiv3.QueueResource, int, error) {
-	rows := a.svc.GetQueue()
+	rows := withPending(ctx, a.svc.GetQueue(), a.pending)
 	// J358 — apply the C# filter surface (seriesIds / protocol /
 	// languages / quality / status + includeUnknownSeriesItems) BEFORE
 	// sort + pagination. TotalRecords reflects the FILTERED count (C#
@@ -593,17 +620,19 @@ func projectQueueResource(q queue.Queue) apiv3.QueueResource {
 // episodeIds, projected via projectQueueResource. Ports
 // `QueueDetailsController.GetQueue` (`src/Sonarr.Api.V5/Queue/
 // QueueDetailsController.cs`) — seriesId takes precedence over
-// episodeIds, else the full queue. DEFERRED (documented): the C#
-// `fullQueue = queue.Concat(pending)` pending-release concat — the
-// Go-port /queue list endpoint also omits pending, so /queue/details
-// stays consistent; pending lands when the pending→queue projection
-// does. Sub-resource gating (includeSubresources) is not applied —
+// episodeIds, else the full queue. J489 wired the C#
+// `fullQueue = queue.Concat(pending)` pending-release concat via
+// withPending (the pendingqueue.Projector), so delayed releases now
+// appear here + in the paged /queue. Sub-resource gating (includeSubresources) is not applied —
 // projectQueueResource hydrates Series+Episodes; details returns them
 // (benign over-inclusion vs the C# enum gate).
-type queueDetailsAdapter struct{ svc *queue.Service }
+type queueDetailsAdapter struct {
+	svc     *queue.Service
+	pending pendingQueueProjector // J489 — pending-release rows in /queue/details
+}
 
-func (a queueDetailsAdapter) QueueDetails(_ context.Context, seriesID *int, episodeIDs []int) ([]apiv3.QueueResource, error) {
-	rows := a.svc.GetQueue()
+func (a queueDetailsAdapter) QueueDetails(ctx context.Context, seriesID *int, episodeIDs []int) ([]apiv3.QueueResource, error) {
+	rows := withPending(ctx, a.svc.GetQueue(), a.pending)
 	var epSet map[int]bool
 	if seriesID == nil && len(episodeIDs) > 0 {
 		epSet = make(map[int]bool, len(episodeIDs))
@@ -626,6 +655,29 @@ func (a queueDetailsAdapter) QueueDetails(_ context.Context, seriesID *int, epis
 		out = append(out, projectQueueResource(q))
 	}
 	return out, nil
+}
+
+// pendingQueueDelayAdapter satisfies pendingqueue.DelayProfileResolver:
+// resolves the per-protocol delay (minutes) of the best delay profile
+// for a series' tags. Mirrors C# DelayProfile.GetProtocolDelay
+// (Torrent→TorrentDelay, else UsenetDelay). ErrNotFound → found=false.
+type pendingQueueDelayAdapter struct{ svc *delayprofiles.Service }
+
+func (a pendingQueueDelayAdapter) ProtocolDelay(ctx context.Context, tagIDs []int, protocol indexers.DownloadProtocol) (int, bool, error) {
+	p, err := a.svc.BestForTags(ctx, tagIDs)
+	if err != nil {
+		if errors.Is(err, delayprofiles.ErrNotFound) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	if p == nil {
+		return 0, false, nil
+	}
+	if protocol == indexers.DownloadProtocolTorrent {
+		return p.TorrentDelay, true, nil
+	}
+	return p.UsenetDelay, true, nil
 }
 
 // queueRowMatchesEpisodes reports whether any of the row's episodes is in
@@ -2691,6 +2743,20 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 	// matches C# wire shape on empty DB (`[]`) and gives populated
 	// DBs the right entries for the UI's "free space" widget.
 	diskSpaceLister := diskSpaceAdapter{svc: rootFoldersSvc, disk: diskProv}
+
+	// J489 — the pending-release → queue projector folds delayed /
+	// download-client-unavailable releases (now persisted by J484) into
+	// the /queue + /queue/details listings, mirroring C#
+	// QueueController.GetQueue's `queue.Concat(pending)`. A construction
+	// error degrades to no pending rows (nil projector → silent skip).
+	var pendingQueueProj pendingQueueProjector
+	if p, err := pendingqueue.NewProjector(
+		pendingReleasesRepo, seriesSvc, episodesSvc,
+		pendingQueueDelayAdapter{svc: delayProfilesSvc}, configProv, taskSvc, nil, nil,
+	); err == nil {
+		pendingQueueProj = p
+	}
+
 	return []host.Route{
 		{Method: "GET", Path: "/api/v3/autotagging", Handler: apiv3.AutoTaggingHandler(autoTagsSvc)},
 		{Method: "GET", Path: "/api/v3/autotagging/{id}", Handler: apiv3.AutoTaggingByIDHandler(autoTagsSvc)},
@@ -2921,7 +2987,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// `includeSubresources` query param accepted but ignored at
 		// the stub level (same as v3's includeSeries/includeEpisode
 		// bools). Re-uses emptyQueueDetailsLister stub adapter.
-		{Method: "GET", Path: "/api/v5/queue/details", Handler: queuedetailsv5.GetHandler(queueDetailsAdapter{svc: queueSvc})},
+		{Method: "GET", Path: "/api/v5/queue/details", Handler: queuedetailsv5.GetHandler(queueDetailsAdapter{svc: queueSvc, pending: pendingQueueProj})},
 		// J291 — v5 QueueStatus endpoint family (1 endpoint; 80 LOC C#
 		// — QueueStatusController only). Pure path-alias slice. v3
 		// already exposes /api/v3/queue/status via apiv3.QueueStatusHandler
@@ -2944,7 +3010,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		// upstream-client side-effects; v5 inherits via the wrapper).
 		// SignalR queue/deleted broadcast fires only on actual remove
 		// (silent-skip on missing id matches v3 queue_write.go:109-117).
-		{Method: "GET", Path: "/api/v5/queue", Handler: queuev5.ListHandler(queuePagedAdapter{svc: queueSvc, qualityDefs: qualityDefSvc, qualityProfiles: qualityProfilesSvc})},
+		{Method: "GET", Path: "/api/v5/queue", Handler: queuev5.ListHandler(queuePagedAdapter{svc: queueSvc, qualityDefs: qualityDefSvc, qualityProfiles: qualityProfilesSvc, pending: pendingQueueProj})},
 		{Method: "DELETE", Path: "/api/v5/queue/{id}", Handler: queuev5.DeleteHandler(queueRemover, nil)},
 		{Method: "DELETE", Path: "/api/v5/queue/bulk", Handler: queuev5.BulkDeleteHandler(queueRemover, nil)},
 		// J292 — v5 Episode endpoint family (4 endpoints; 85 LOC C#).
@@ -3469,8 +3535,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v3/qualityprofile", Handler: apiv3.QualityProfileCreateHandler(qualityProfilesSvc, customFormatsSvc)},
 		{Method: "PUT", Path: "/api/v3/qualityprofile/{id}", Handler: apiv3.QualityProfileUpdateHandler(qualityProfilesSvc, customFormatsSvc)},
 		{Method: "DELETE", Path: "/api/v3/qualityprofile/{id}", Handler: apiv3.QualityProfileDeleteHandler(qualityProfilesSvc)},
-		{Method: "GET", Path: "/api/v3/queue", Handler: apiv3.QueueHandler(queuePagedAdapter{svc: queueSvc, qualityDefs: qualityDefSvc, qualityProfiles: qualityProfilesSvc})},
-		{Method: "GET", Path: "/api/v3/queue/details", Handler: apiv3.QueueDetailsHandler(queueDetailsAdapter{svc: queueSvc})},
+		{Method: "GET", Path: "/api/v3/queue", Handler: apiv3.QueueHandler(queuePagedAdapter{svc: queueSvc, qualityDefs: qualityDefSvc, qualityProfiles: qualityProfilesSvc, pending: pendingQueueProj})},
+		{Method: "GET", Path: "/api/v3/queue/details", Handler: apiv3.QueueDetailsHandler(queueDetailsAdapter{svc: queueSvc, pending: pendingQueueProj})},
 		{Method: "GET", Path: "/api/v3/queue/status", Handler: apiv3.QueueStatusHandler(queueSvc, pendingCountLister{repo: pendingReleasesRepo}, queueStatusPauser)},
 		{Method: "DELETE", Path: "/api/v3/queue/bulk", Handler: apiv3.QueueBulkDeleteHandler(queueRemover, nil)},
 		{Method: "DELETE", Path: "/api/v3/queue/{id}", Handler: apiv3.QueueDeleteHandler(queueRemover, nil)},
