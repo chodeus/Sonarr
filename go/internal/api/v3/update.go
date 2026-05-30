@@ -18,11 +18,10 @@ import (
 // Mirrors `src/Sonarr.Api.V3/Update/UpdateResource.cs`. Each entry
 // describes one release package the auto-updater knows about.
 //
-// This slice ships the wire-shape skeleton; populated-row mapping
-// awaits the Update package consumer port (RecentUpdateProvider +
-// UpdateHistoryService — neither is in the Go tree yet). The empty-
-// DB recording has zero records so the gap is unobservable today
-// (DEFERRED — STATUS line 9 carries a note).
+// The populated-row mapping awaits the RecentUpdateProvider consumer
+// port (cmd/sonarr substitutes an empty fixture today), so the marking
+// is inert in production until that lands; the projection is correct the
+// moment the lister returns real rows.
 //
 // Field-source mapping (C# → Go):
 //
@@ -32,7 +31,8 @@ import (
 //	fileName      → UpdatePackage.FileName
 //	url           → UpdatePackage.Url
 //	installed     → BuildInfo.Version == package.Version (J403 marking)
-//	installedOn   → UpdateHistory.Date (nullable, omitempty; DEFERRED)
+//	installedOn   → UpdateHistory.Date (nullable, omitempty; J514 — set
+//	                from the InstallHistoryLister when the log DB is on)
 //	installable   → highest row when newer than the build (J403 marking)
 //	latest        → set on the highest-version row in the list (J403)
 //	changes       → UpdateChanges{ New: []string, Fixed: []string }
@@ -69,6 +69,25 @@ type UpdateLister interface {
 	RecentUpdates(ctx context.Context) ([]UpdateResource, error)
 }
 
+// InstalledVersion is one previously-installed version + the date it was
+// installed, supplied by [InstallHistoryLister] for the InstalledOn arm.
+type InstalledVersion struct {
+	Version string
+	Date    time.Time
+}
+
+// InstallHistoryLister is the OPTIONAL capability the update lister may
+// also expose: the recorded install history (C#
+// `UpdateHistoryService.InstalledSince`). [UpdateHandler] type-asserts
+// the lister for it and, when present, stamps each update row's
+// InstalledOn. Production binds *updatehistory.Service (only when the
+// log DB is enabled — the C# `LogDbEnabled` gate), via the same adapter
+// that satisfies [UpdateLister]; when the log DB is disabled the adapter
+// returns no history so the arm is skipped.
+type InstallHistoryLister interface {
+	InstalledSince(ctx context.Context, since time.Time) []InstalledVersion
+}
+
 // UpdateHandler returns the http.Handler for GET /api/v3/update.
 // Mirrors `UpdateController.GetRecentUpdates` at
 // `src/Sonarr.Api.V3/Update/UpdateController.cs:27-49`: sort the
@@ -82,9 +101,13 @@ type UpdateLister interface {
 // is still the empty fixture (the RecentUpdateProvider isn't ported
 // — see [UpdateLister]), so the marking is inert in production until
 // that provider lands; it is exercised here by the unit tests and is
-// correct the moment the lister returns real rows. The InstalledOn
-// arm (C# `:50-66` UpdateHistoryService / LogDbEnabled branch) stays
-// DEFERRED — no UpdateHistoryService in the Go tree yet.
+// correct the moment the lister returns real rows.
+//
+// J514 wires the InstalledOn arm (C# `:50-66`): when the lister also
+// exposes [InstallHistoryLister] (the log-DB-backed
+// updatehistory.Service, ported at J505), each row whose version was
+// previously installed is stamped with its install date. The arm is
+// skipped when no history is exposed (log DB disabled).
 func UpdateHandler(lister UpdateLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rows, err := lister.RecentUpdates(r.Context())
@@ -96,11 +119,41 @@ func UpdateHandler(lister UpdateLister) http.Handler {
 			rows = []UpdateResource{}
 		}
 		rows = markRecentUpdates(rows, buildinfo.Version)
+		if hist, ok := lister.(InstallHistoryLister); ok {
+			applyInstalledOn(r.Context(), rows, hist)
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		buf, _ := json.Marshal(rows)
 		_, _ = w.Write(buf)
 	})
+}
+
+// applyInstalledOn ports the InstalledOn projection of
+// `UpdateController.GetRecentUpdates` (`:55-65`). rows must already be
+// sorted version-descending (so the last row carries the oldest
+// ReleaseDate, the `InstalledSince` lower bound). For each row whose
+// version matches a recorded install, InstalledOn is set to the EARLIEST
+// such install date (C# `DistinctBy(Version)` over the Date-ascending
+// history keeps the first occurrence). Version equality follows
+// System.Version semantics ("4.0.1" == "4.0.1.0") via [compareVersions].
+func applyInstalledOn(ctx context.Context, rows []UpdateResource, hist InstallHistoryLister) {
+	if len(rows) == 0 {
+		return
+	}
+	history := hist.InstalledSince(ctx, rows[len(rows)-1].ReleaseDate)
+	if len(history) == 0 {
+		return
+	}
+	for i := range rows {
+		for _, h := range history {
+			if compareVersions(h.Version, rows[i].Version) == 0 {
+				d := h.Date
+				rows[i].InstalledOn = &d
+				break
+			}
+		}
+	}
 }
 
 // markRecentUpdates ports the marking logic of

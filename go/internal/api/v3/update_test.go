@@ -2,10 +2,12 @@ package v3
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 type fakeUpdateLister struct {
@@ -15,6 +17,78 @@ type fakeUpdateLister struct {
 
 func (f *fakeUpdateLister) RecentUpdates(context.Context) ([]UpdateResource, error) {
 	return f.rows, f.err
+}
+
+// fakeUpdateHistoryLister also exposes install history (the J514
+// InstalledOn capability).
+type fakeUpdateHistoryLister struct {
+	rows    []UpdateResource
+	history []InstalledVersion
+	since   time.Time // captured lower bound
+}
+
+func (f *fakeUpdateHistoryLister) RecentUpdates(context.Context) ([]UpdateResource, error) {
+	return f.rows, nil
+}
+
+func (f *fakeUpdateHistoryLister) InstalledSince(_ context.Context, since time.Time) []InstalledVersion {
+	f.since = since
+	return f.history
+}
+
+func TestUpdateHandler_InstalledOn_J514(t *testing.T) {
+	t.Parallel()
+	oldest := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	installed511 := time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC)
+	f := &fakeUpdateHistoryLister{
+		rows: []UpdateResource{
+			{Version: "5.1.0.1", ReleaseDate: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+			{Version: "5.0.0.9", ReleaseDate: oldest},
+		},
+		history: []InstalledVersion{
+			// System.Version equality: "5.1.0.1" matches even if recorded short.
+			{Version: "5.1.0.1", Date: installed511},
+			// earliest-wins: a later duplicate must NOT override.
+			{Version: "5.1.0.1", Date: installed511.Add(48 * time.Hour)},
+		},
+	}
+	rr := httptest.NewRecorder()
+	UpdateHandler(f).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/update", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d", rr.Code)
+	}
+	// InstalledSince was called with the OLDEST row's ReleaseDate.
+	if !f.since.Equal(oldest) {
+		t.Errorf("InstalledSince since=%v, want oldest %v", f.since, oldest)
+	}
+	var out []UpdateResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	// Sorted desc → out[0] = 5.1.0.1 (installed), out[1] = 5.0.0.9 (not).
+	if out[0].InstalledOn == nil || !out[0].InstalledOn.Equal(installed511) {
+		t.Errorf("5.1.0.1 InstalledOn = %v, want %v (earliest)", out[0].InstalledOn, installed511)
+	}
+	if out[1].InstalledOn != nil {
+		t.Errorf("5.0.0.9 InstalledOn = %v, want nil (never installed)", out[1].InstalledOn)
+	}
+}
+
+func TestUpdateHandler_InstalledOn_SkippedWhenNoHistoryCapability_J514(t *testing.T) {
+	t.Parallel()
+	// A plain UpdateLister (no InstallHistoryLister) → InstalledOn stays nil.
+	f := &fakeUpdateLister{rows: []UpdateResource{
+		{Version: "5.1.0.1", ReleaseDate: time.Now()},
+	}}
+	rr := httptest.NewRecorder()
+	UpdateHandler(f).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/update", nil))
+	var out []UpdateResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out[0].InstalledOn != nil {
+		t.Errorf("InstalledOn should be nil without history capability, got %v", out[0].InstalledOn)
+	}
 }
 
 func TestUpdateHandler_EmptyList(t *testing.T) {

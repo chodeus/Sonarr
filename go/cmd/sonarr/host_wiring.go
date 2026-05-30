@@ -119,6 +119,7 @@ import (
 	"sonarr.tv/sonarr/internal/signalr"
 	"sonarr.tv/sonarr/internal/tags"
 	"sonarr.tv/sonarr/internal/update"
+	"sonarr.tv/sonarr/internal/updatehistory"
 )
 
 // buildHostServer assembles the *host.Server from the runtime
@@ -227,6 +228,10 @@ func (emptyTagDetailLister) TagDetail(context.Context, int) (*apiv3.TagDetailsRe
 // byte-eq-safe posture the old emptyUpdateLister stub gave.
 type recentUpdateLister struct {
 	svc *update.Service
+	// history is the optional install-history source for the InstalledOn
+	// arm (J514). Non-nil only when the log DB is enabled (the C#
+	// LogDbEnabled gate); nil → the arm is skipped.
+	history *updatehistory.Service
 }
 
 // logLister adapts *logs.Repo to apiv3.LogLister (J409): runs the paged
@@ -258,6 +263,22 @@ func (l logLister) PagedLogs(ctx context.Context, page, pageSize int, sortKey st
 		})
 	}
 	return out, pg.TotalRecords, nil
+}
+
+// InstalledSince satisfies apiv3.InstallHistoryLister (J514) — the
+// optional capability the update handler uses for the InstalledOn arm.
+// Returns nil when no history service is wired (log DB disabled), which
+// the handler treats as "skip the arm" (faithful to C# LogDbEnabled).
+func (l recentUpdateLister) InstalledSince(ctx context.Context, since time.Time) []apiv3.InstalledVersion {
+	if l.history == nil {
+		return nil
+	}
+	rows := l.history.InstalledSince(ctx, since)
+	out := make([]apiv3.InstalledVersion, 0, len(rows))
+	for _, h := range rows {
+		out = append(out, apiv3.InstalledVersion{Version: h.Version, Date: h.Date})
+	}
+	return out
 }
 
 func (l recentUpdateLister) RecentUpdates(ctx context.Context) ([]apiv3.UpdateResource, error) {
