@@ -3076,10 +3076,19 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	if err != nil {
 		return fmt.Errorf("housekeeping service: %w", err)
 	}
+	// J472: MapCoversToLocal feeds the metadata writers' series-cover
+	// image path (Xbmc/Roksbox/Wdtv SeriesImages → folder.jpg). The
+	// providers cast deps.MapCoversToLocal to a CoverPathLookup
+	// (GetCoverPath); a nil dep silently yields no series images. The
+	// field was left unset here ("bound when the cover-cache service
+	// lands"); mediaCoverSvc (a *mediacover.Service with GetCoverPath,
+	// built above) is that service. Mirrors C# IMapCoversToLocal injected
+	// into the metadata consumers.
 	metadataWriterDeps := metadata.Dependencies{
-		HTTPClient:   httpClient,
-		DiskProvider: diskProv,
-		Logger:       logger,
+		HTTPClient:       httpClient,
+		DiskProvider:     diskProv,
+		MapCoversToLocal: mediaCoverSvc,
+		Logger:           logger,
 	}
 	metadataSvc, err := metadataservice.NewService(metadataservice.Deps{
 		Disk:         newMetadataDiskAdapter(diskProv),

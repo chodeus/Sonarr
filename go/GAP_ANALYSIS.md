@@ -1,5 +1,12 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## PHASE-2 FRESH AUDIT (J472, 2026-05-30) — metadata consumers + extra-file importers
+
+Two Explore agents.
+- **Metadata writers: 4/4 ported + registered (Xbmc/Roksbox/Wdtv/Plex). GAP: `MapCoversToLocal` dep UNWIRED → FIXED J472.** The provider constructors cast `deps.MapCoversToLocal.(CoverPathLookup)` (non-panicking); main.go's metadataWriterDeps never set it → series cover images (folder.jpg) silently not written for Xbmc/Roksbox/Wdtv. Fixed by `MapCoversToLocal: mediaCoverSvc` (mediacover.Service.GetCoverPath matches the interface). Construct-seam pin test.
+  - **DEFERRED (medium): EpisodeLookup + FolderLister deps** are not on `metadata.Dependencies` (marked TODO "queue [W6]" in the providers) → Xbmc/Roksbox/Wdtv EPISODE images + Roksbox/Wdtv SEASON images degrade to empty. Needs a struct addition + adapters (episode-by-file lookup over episodes.Service; directory lister over disk.Provider). Bounded follow-up.
+- **Extra-file IMPORT subsystem: LARGE GAP (genuinely unported).** C# `ExtraService` orchestrates 3 `IManageExtraFiles` (MetadataService order 0, SubtitleService order 1, OtherExtraService order 2) to import sidecar files (subtitles/.nfo/artwork) adjacent to a downloaded episode. The Go import path wires the extras importer as `nil → noopExtrasImporter` (import_approved.go:155; main.go:2331). subtitlefiles/metadatafiles/extrafiles packages are persistence-only — no importer. So **subtitles + other extra files adjacent to a download are NOT imported** alongside the episode. Substantial subsystem port (SubtitleService + OtherExtraService + the ExtraService orchestrator + the import-time CanImportFile/ImportFiles chain) — NOT an autonomous-loop slice. FLAGGED for the operator.
+
 ## PHASE-2 FRESH AUDIT (J471, 2026-05-30) — import-time LocalEpisode aggregation
 
 Explore agent diffed C# `IAggregateLocalEpisode` augmenters vs Go (ported AND wired into the import aggregation chain at main.go:1149).
