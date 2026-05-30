@@ -11,7 +11,9 @@ import (
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/download"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
+	"sonarr.tv/sonarr/internal/series"
 )
 
 // stubRssDecider returns a fixed decision slice. Slice 6.A6d test
@@ -200,6 +202,51 @@ func TestRssSync_Execute_GrabberReceivesDecisionsAndCountsFlowToEvent(t *testing
 	}
 	if got.PendingDecisions != 1 {
 		t.Errorf("PendingDecisions = %d, want 1", got.PendingDecisions)
+	}
+}
+
+// J490: the permanently-rejected releases from ProcessDecisions are
+// surfaced as match-tuples on the event so the RemoveRejected
+// subscriber can purge matching pending rows.
+func TestRssSync_Execute_RejectedReleasesFlowToEvent(t *testing.T) {
+	sub := decisionengine.NewSubject()
+	sub.Series = &series.Series{ID: 5}
+	sub.Release = &parser.ReleaseInfo{Title: "Rejected.Release", Indexer: "nzbIndexer"}
+	rejected := decisionengine.Decision{
+		Subject:    sub,
+		Rejections: []decisionengine.Rejection{decisionengine.NewRejection(decisionengine.ReasonUnknown, "spec failed")},
+	}
+
+	bus := messaging.New(nil)
+	var got handlers.RssSyncCompleteEvent
+	var fired sync.WaitGroup
+	fired.Add(1)
+	messaging.Subscribe(bus, "test", func(_ context.Context, ev handlers.RssSyncCompleteEvent) error {
+		got = ev
+		fired.Done()
+		return nil
+	})
+
+	fetcher := &stubRssFetcher{releases: []any{"r1"}}
+	decider := &stubRssDecider{decisions: []decisionengine.Decision{rejected}}
+	grabber := &stubGrabber{result: &download.ProcessedDecisions{
+		Rejected: []decisionengine.Decision{rejected},
+	}}
+
+	h, err := handlers.NewRssSync(fetcher, decider, grabber, bus, nil)
+	if err != nil {
+		t.Fatalf("NewRssSync: %v", err)
+	}
+	if err := h.Execute(context.Background(), ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	fired.Wait()
+
+	if len(got.RejectedReleases) != 1 {
+		t.Fatalf("RejectedReleases = %d, want 1", len(got.RejectedReleases))
+	}
+	if got.RejectedReleases[0].SeriesID != 5 || got.RejectedReleases[0].MatchTitle != "Rejected.Release" || got.RejectedReleases[0].MatchIndexer != "nzbIndexer" {
+		t.Errorf("RejectedReleases[0] = %+v", got.RejectedReleases[0])
 	}
 }
 

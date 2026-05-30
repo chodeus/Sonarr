@@ -45,6 +45,7 @@ import (
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/download"
 	"sonarr.tv/sonarr/internal/messaging"
+	"sonarr.tv/sonarr/internal/pendingreleases"
 	"sonarr.tv/sonarr/internal/scheduledtasks"
 )
 
@@ -135,6 +136,15 @@ type RssSyncCompleteEvent struct {
 	StartedAt time.Time
 	// CompletedAt is the wall-clock time the handler returned.
 	CompletedAt time.Time
+	// RejectedReleases carries the (SeriesID, Title, PublishDate,
+	// Indexer) match-tuples of the PERMANENTLY-rejected decisions in
+	// this sync. The pendingreleases RemoveRejected subscriber uses
+	// them to purge any previously-pending release that is now rejected
+	// (e.g. a delayed release the user has since made unwanted via a
+	// profile edit). Mirrors C# `RssSyncCompleteEvent.ProcessedDecisions.Rejected`
+	// which `PendingReleaseService.Handle` feeds to RemoveRejected
+	// (`PendingReleaseService.cs:673-676`). Empty when no grabber ran.
+	RejectedReleases []pendingreleases.RejectedInput
 }
 
 // RssSync is the IExecute<RssSyncCommand> port. fetcher MUST be
@@ -192,6 +202,7 @@ func (h *RssSync) Execute(ctx context.Context, _ string) error {
 	// orchestrator so approved candidates dispatch to the configured
 	// download clients.
 	var approved, rejected, grabbed, pending int
+	var rejectedReleases []pendingreleases.RejectedInput
 	if h.decider != nil && len(rs) > 0 {
 		decisions := h.decider.GetRssDecision(ctx, rs, false)
 		for _, d := range decisions {
@@ -206,6 +217,14 @@ func (h *RssSync) Execute(ctx context.Context, _ string) error {
 			if processed != nil {
 				grabbed = len(processed.Grabbed)
 				pending = len(processed.Pending)
+				// Collect the permanently-rejected releases' match-tuples
+				// so the RemoveRejected subscriber can purge any matching
+				// pending row (C# Handle(RssSyncCompleteEvent) → RemoveRejected).
+				for _, d := range processed.Rejected {
+					if ri, ok := download.RejectedInputFrom(d); ok {
+						rejectedReleases = append(rejectedReleases, ri)
+					}
+				}
 			}
 		}
 	}
@@ -233,6 +252,7 @@ func (h *RssSync) Execute(ctx context.Context, _ string) error {
 			PendingDecisions:  pending,
 			StartedAt:         started,
 			CompletedAt:       completed,
+			RejectedReleases:  rejectedReleases,
 		}); pubErr != nil {
 			h.log.Warn("RSS sync: publish RssSyncCompleteEvent failed",
 				slog.Any("err", pubErr))

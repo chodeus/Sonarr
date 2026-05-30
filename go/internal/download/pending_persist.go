@@ -115,6 +115,34 @@ func buildPendingItem(decision *decisionengine.Decision, reason pendingreleases.
 	return pendingreleases.AddItem{Input: in, Reason: reason}, true
 }
 
+// RejectedInputFrom extracts the (SeriesID, Title, PublishDate,
+// Indexer) match-tuple a pending-release REMOVAL keys on, from a
+// PERMANENTLY-rejected decision's Subject. Returns (zero, false) when
+// the Subject is malformed / has no matched Series or resolvable
+// ReleaseInfo.
+//
+// Mirrors the tuple C# `RemoveRejected` reads off each rejected
+// `DownloadDecision.RemoteEpisode.Release` via MatchingReleasePredicate
+// (`src/NzbDrone.Core/Download/Pending/PendingReleaseService.cs:597-612`).
+// Shares [releaseInfoOf] with [buildPendingItem] so the add-side and
+// remove-side match tuples can never drift apart.
+func RejectedInputFrom(decision decisionengine.Decision) (pendingreleases.RejectedInput, bool) {
+	sub, ok := decision.Subject.(*decisionengine.Subject)
+	if !ok || sub == nil || sub.Series == nil {
+		return pendingreleases.RejectedInput{}, false
+	}
+	ri := releaseInfoOf(sub.Release)
+	if ri == nil {
+		return pendingreleases.RejectedInput{}, false
+	}
+	return pendingreleases.RejectedInput{
+		SeriesID:     sub.Series.ID,
+		MatchTitle:   ri.Title,
+		MatchPubDate: ri.PublishDate,
+		MatchIndexer: ri.Indexer,
+	}, true
+}
+
 // releaseInfoOf resolves the base [parser.ReleaseInfo] out of the
 // Subject's `any`-typed Release (which is either *parser.ReleaseInfo
 // or *parser.TorrentInfo). Returns nil for any other shape.

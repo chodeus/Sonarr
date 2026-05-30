@@ -151,6 +151,32 @@ func TestProcessDecisions_NoPendingWriterIsInert(t *testing.T) {
 	}
 }
 
+// TestRejectedInputFrom — extracts the (SeriesID, Title, Indexer)
+// match-tuple from a rejected decision's Subject (J490).
+func TestRejectedInputFrom(t *testing.T) {
+	t.Parallel()
+	dec := mkRejected("rej.release", indexers.DownloadProtocolUsenet, 100)
+	ri, ok := download.RejectedInputFrom(dec)
+	if !ok {
+		t.Fatal("RejectedInputFrom returned ok=false for a valid rejected decision")
+	}
+	if ri.SeriesID != 1 || ri.MatchTitle != "rej.release" {
+		t.Errorf("RejectedInput = %+v, want SeriesID=1 Title=rej.release", ri)
+	}
+}
+
+func TestRejectedInputFrom_Malformed(t *testing.T) {
+	t.Parallel()
+	// No Subject.
+	if _, ok := download.RejectedInputFrom(decisionengine.Decision{}); ok {
+		t.Error("want ok=false for a decision with no Subject")
+	}
+	// Subject with nil Series.
+	if _, ok := download.RejectedInputFrom(decisionengine.Decision{Subject: decisionengine.NewSubject()}); ok {
+		t.Error("want ok=false for a Subject with nil Series")
+	}
+}
+
 // TestProcessDecisions_PendingWriteErrorSwallowed — an AddMany failure
 // is logged, not propagated: the already-computed buckets are still
 // returned (irreversible grabs in the batch must not be unwound).

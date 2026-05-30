@@ -3047,6 +3047,20 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		func(ctx context.Context, ev series.SeriesDeletedEvent) error {
 			return pendingreleaseshandlers.HandleSeriesDeleted(ctx, pendingReleasesSvc, &ev)
 		})
+	// J490: RemoveRejected on RssSyncCompleteEvent — purge any pending
+	// row whose release is now permanently rejected. Completes the
+	// pending-maintenance trio (RemoveGrabbed + DeleteBySeriesIDs above).
+	// Ports C# PendingReleaseService.Handle(RssSyncCompleteEvent) →
+	// RemoveRejected (PendingReleaseService.cs:673-676). The match-tuples
+	// ride on the event (populated by the RssSync handler from
+	// processed.Rejected).
+	messaging.Subscribe(bus, "pendingreleases.HandleRssSyncComplete",
+		func(ctx context.Context, ev handlers.RssSyncCompleteEvent) error {
+			if len(ev.RejectedReleases) == 0 {
+				return nil
+			}
+			return pendingReleasesSvc.RemoveRejected(ctx, ev.RejectedReleases)
+		})
 	// Slice 6.A6d (queue [15]): processDownloadDecisions is consumed
 	// by the RssSync handler wired below via handlers.Deps.RssSyncGrabber.
 	// The 4 setters above establish the dispatch + event-publish +
