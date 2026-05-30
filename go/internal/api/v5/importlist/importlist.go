@@ -102,8 +102,8 @@ var RequestActionHandler = apiv3.ImportListRequestActionHandler
 // Implementation: delegate to the v3 handler (which preserves the
 // SignalR Deleted broadcast + error-path semantics) and rewrite the
 // successful-200-with-`{}`-body to 204-empty.
-func DeleteHandler(svc Writer, emitter Emitter) http.Handler {
-	return v5util.RewriteSuccessTo204(apiv3.ImportListDeleteHandler(svc, emitter))
+func DeleteHandler(svc Writer, emitter Emitter, onDeleted ...apiv3.ImportListDeletedHook) http.Handler {
+	return v5util.RewriteSuccessTo204(apiv3.ImportListDeleteHandler(svc, emitter, onDeleted...))
 }
 
 // TestHandler returns POST /api/v5/importlist/test.
@@ -140,8 +140,8 @@ func BulkUpdateHandler(svc Writer, emitter Emitter) http.Handler {
 //
 // Implementation: delegate to v3 and rewrite the successful-200-with-
 // `{}`-body to 204-empty (same pattern as DeleteHandler / TestHandler).
-func BulkDeleteHandler(svc Writer, emitter Emitter) http.Handler {
-	return v5util.RewriteSuccessTo204(apiv3.ImportListBulkDeleteHandler(svc, emitter))
+func BulkDeleteHandler(svc Writer, emitter Emitter, onDeleted ...apiv3.ImportListDeletedHook) http.Handler {
+	return v5util.RewriteSuccessTo204(apiv3.ImportListBulkDeleteHandler(svc, emitter, onDeleted...))
 }
 
 // Response-rewriting middleware moved to internal/api/v5/internal/v5util

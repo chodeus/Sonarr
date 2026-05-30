@@ -3553,6 +3553,30 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		importListStatusSvc,
 	)
 
+	// J502 (queue [I4c]): subscribe the C# ProviderDeletedEvent<IImportList>
+	// fan-out to importlists.ListDeletedEvent (published by the v3/v5
+	// import-list DELETE handlers). One sync handler runs the three C#
+	// IHandleAsync handlers in order: delete the list's persisted items
+	// (ImportListItemService), delete its status row (ImportListStatusService
+	// base), then TryCleanLibrary (ImportListSyncService) — which now sees
+	// the item union WITHOUT the deleted list's rows. Best-effort: cleanup
+	// errors are logged, not propagated (the row is already gone). C# runs
+	// these async/post-response; the Go port runs them inline on the
+	// publishing goroutine — same end state.
+	messaging.Subscribe(bus, "importlists.ListDeletedEvent",
+		func(ctx context.Context, ev importlists.ListDeletedEvent) error {
+			if err := importListItemsSvc.DeleteForList(ctx, ev.ProviderID); err != nil {
+				logger.Warn("importlists: delete-event item cleanup failed",
+					slog.Int("list_id", ev.ProviderID), slog.Any("err", err))
+			}
+			if err := importListStatusSvc.OnProviderDeleted(ctx, ev.ProviderID); err != nil {
+				logger.Warn("importlists: delete-event status cleanup failed",
+					slog.Int("list_id", ev.ProviderID), slog.Any("err", err))
+			}
+			importListSyncSvc.HandleImportListDeleted(ctx)
+			return nil
+		})
+
 	// Slice 5.J191 wires the RefreshSeries handler with a real
 	// refreshseries.Service. The service satisfies
 	// handlers.RefreshSeriesRunner structurally via Refresh(ctx, id)

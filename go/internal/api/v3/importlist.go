@@ -208,9 +208,17 @@ func ImportListUpdateHandler(svc ImportListWriter, emitter ImportListEmitter) ht
 	})
 }
 
+// ImportListDeletedHook is the optional post-delete callback fired by
+// the DELETE handlers after a row is actually deleted (queue [I4c]). It
+// carries the deleted list id and is used to publish the C#
+// ProviderDeletedEvent<IImportList> analogue ([importlists.ListDeletedEvent])
+// onto the bus so the item/status cleanup + clean-library trigger run.
+// Variadic + optional so existing call sites (and v5) compile unchanged.
+type ImportListDeletedHook = func(ctx context.Context, id int)
+
 // ImportListDeleteHandler returns DELETE /api/v3/importlist/{id}.
 // Mirrors `ProviderControllerBase.DeleteProvider` at C# :181-186.
-func ImportListDeleteHandler(svc ImportListWriter, emitter ImportListEmitter) http.Handler {
+func ImportListDeleteHandler(svc ImportListWriter, emitter ImportListEmitter, onDeleted ...ImportListDeletedHook) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.PathValue("id"))
 		if err != nil || id <= 0 {
@@ -228,6 +236,7 @@ func ImportListDeleteHandler(svc ImportListWriter, emitter ImportListEmitter) ht
 			signalr.FireAndLog(httperr.LoggerFromRequest(r), "importlist", "deleted", func() error {
 				return emitter.Deleted(r.Context(), ImportListResource{providerResourceCore: providerResourceCore{ID: id}})
 			})
+			fireImportListDeleted(r.Context(), id, onDeleted)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -437,9 +446,20 @@ func ImportListBulkUpdateHandler(svc ImportListWriter, emitter ImportListEmitter
 	})
 }
 
+// fireImportListDeleted invokes the first wired post-delete hook (if
+// any). Helper so the single + bulk handlers share the nil-guard.
+func fireImportListDeleted(ctx context.Context, id int, hooks []ImportListDeletedHook) {
+	for _, h := range hooks {
+		if h != nil {
+			h(ctx, id)
+			return
+		}
+	}
+}
+
 // ImportListBulkDeleteHandler returns DELETE /api/v3/importlist/bulk.
 // Same shape as IndexerBulkDeleteHandler.
-func ImportListBulkDeleteHandler(svc ImportListWriter, emitter ImportListEmitter) http.Handler {
+func ImportListBulkDeleteHandler(svc ImportListWriter, emitter ImportListEmitter, onDeleted ...ImportListDeletedHook) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := decodeImportListBulkBody(r)
 		if err != nil {
@@ -463,6 +483,7 @@ func ImportListBulkDeleteHandler(svc ImportListWriter, emitter ImportListEmitter
 			signalr.FireAndLog(httperr.LoggerFromRequest(r), "importlist", "deleted", func() error {
 				return emitter.Deleted(r.Context(), ImportListResource{providerResourceCore: providerResourceCore{ID: id}})
 			})
+			fireImportListDeleted(r.Context(), id, onDeleted)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)

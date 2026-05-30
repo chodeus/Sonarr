@@ -2624,6 +2624,13 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 	// subset-4 follow-up (c) more providers will land later). 5.C3b
 	// will wire a tester adapter on top of importlists.Factory.Test.
 	importListEmitter := signalr.NewV3Emitter[apiv3.ImportListResource](signalRHub, "importlist")
+	// J502 (queue [I4c]): on import-list delete, publish the C#
+	// ProviderDeletedEvent<IImportList> analogue so the subscribed
+	// handlers (item-cleanup + status-delete + TryCleanLibrary, wired in
+	// main.go) run. Passed to both the v3 + v5 single/bulk delete handlers.
+	importListDeletedHook := func(ctx context.Context, id int) {
+		_ = messaging.Publish(ctx, bus, importlists.ListDeletedEvent{ProviderID: id})
+	}
 	// 5.C3b: per-row Provider.Test() adapter for importlist family.
 	// Unlike indexers (5.C2b), importlists ships a populated registry
 	// today (Sonarr + Plex providers from Phase 4 subset 4).
@@ -3528,9 +3535,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v3/importlist/testall", Handler: apiv3.ImportListTestAllHandler(importListsRepo, importListTester)},
 		{Method: "POST", Path: "/api/v3/importlist/action/{name}", Handler: apiv3.ImportListRequestActionHandler(importListTester)},
 		{Method: "PUT", Path: "/api/v3/importlist/bulk", Handler: apiv3.ImportListBulkUpdateHandler(importListsRepo, importListEmitter)},
-		{Method: "DELETE", Path: "/api/v3/importlist/bulk", Handler: apiv3.ImportListBulkDeleteHandler(importListsRepo, importListEmitter)},
+		{Method: "DELETE", Path: "/api/v3/importlist/bulk", Handler: apiv3.ImportListBulkDeleteHandler(importListsRepo, importListEmitter, importListDeletedHook)},
 		{Method: "PUT", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListUpdateHandler(importListsRepo, importListEmitter)},
-		{Method: "DELETE", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListDeleteHandler(importListsRepo, importListEmitter)},
+		{Method: "DELETE", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListDeleteHandler(importListsRepo, importListEmitter, importListDeletedHook)},
 		// v5 ImportList — same wire shape as v3, tightened status
 		// codes on DELETE /{id} (204), POST /test (204), PUT /bulk (200),
 		// DELETE /bulk (204 empty). Audit row C.1.c — closed 5.J223.
@@ -3542,9 +3549,9 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v5/importlist/testall", Handler: importlistv5.TestAllHandler(importListsRepo, importListTester)},
 		{Method: "POST", Path: "/api/v5/importlist/action/{name}", Handler: importlistv5.RequestActionHandler(importListTester)},
 		{Method: "PUT", Path: "/api/v5/importlist/bulk", Handler: importlistv5.BulkUpdateHandler(importListsRepo, importListEmitter)},
-		{Method: "DELETE", Path: "/api/v5/importlist/bulk", Handler: importlistv5.BulkDeleteHandler(importListsRepo, importListEmitter)},
+		{Method: "DELETE", Path: "/api/v5/importlist/bulk", Handler: importlistv5.BulkDeleteHandler(importListsRepo, importListEmitter, importListDeletedHook)},
 		{Method: "PUT", Path: "/api/v5/importlist/{id}", Handler: importlistv5.UpdateHandler(importListsRepo, importListEmitter)},
-		{Method: "DELETE", Path: "/api/v5/importlist/{id}", Handler: importlistv5.DeleteHandler(importListsRepo, importListEmitter)},
+		{Method: "DELETE", Path: "/api/v5/importlist/{id}", Handler: importlistv5.DeleteHandler(importListsRepo, importListEmitter, importListDeletedHook)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion", Handler: apiv3.ImportListExclusionHandler(importListExclusionsRepo)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion/paged", Handler: apiv3.ImportListExclusionPagedHandler(importListExclusionsRepo)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion/{id}", Handler: apiv3.ImportListExclusionByIDHandler(importListExclusionsRepo)},

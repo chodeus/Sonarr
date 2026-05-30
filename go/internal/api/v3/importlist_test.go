@@ -288,6 +288,40 @@ func TestImportListDeleteHandler_Success(t *testing.T) {
 	}
 }
 
+// TestImportListDeleteHandler_FiresHookOnSuccess — J502: the post-delete
+// hook (→ ListDeletedEvent publish) fires with the deleted id only on an
+// actual delete, never on a missing-id swallow.
+func TestImportListDeleteHandler_FiresHookOnSuccess(t *testing.T) {
+	t.Parallel()
+	w := &fakeImportListWriter{rows: []importlists.ImportList{{ID: 7, Name: "victim"}}}
+	em := &fakeImportListEmitter{}
+	var fired []int
+	hook := func(_ context.Context, id int) { fired = append(fired, id) }
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/importlist/7", nil)
+	req.SetPathValue("id", "7")
+	rr := httptest.NewRecorder()
+	ImportListDeleteHandler(w, em, hook).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(fired) != 1 || fired[0] != 7 {
+		t.Errorf("hook fired: %v want [7]", fired)
+	}
+}
+
+func TestImportListDeleteHandler_NoHookOnMissing(t *testing.T) {
+	t.Parallel()
+	var fired []int
+	hook := func(_ context.Context, id int) { fired = append(fired, id) }
+	req := httptest.NewRequest(http.MethodDelete, "/api/v3/importlist/999", nil)
+	req.SetPathValue("id", "999")
+	rr := httptest.NewRecorder()
+	ImportListDeleteHandler(&fakeImportListWriter{}, &fakeImportListEmitter{}, hook).ServeHTTP(rr, req)
+	if len(fired) != 0 {
+		t.Errorf("hook must not fire on missing-id swallow, got %v", fired)
+	}
+}
+
 // TestImportListDeleteHandler_Idempotent — C.1.i-follow-4 (J232). 200 + `{}` on missing id.
 func TestImportListDeleteHandler_Idempotent(t *testing.T) {
 	t.Parallel()

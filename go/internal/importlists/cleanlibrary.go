@@ -24,6 +24,25 @@ const (
 	listSyncLevelKeepAndTag       = "KeepAndTag"
 )
 
+// ListDeletedEvent is the Go analogue of the C# generic
+// `ProviderDeletedEvent<IImportList>` (ThingiProvider.Events). It is
+// published when an import list is deleted (single or bulk) so the
+// three C# IHandleAsync handlers can run: delete the list's persisted
+// items (importlistitems), delete its status row (importliststatus),
+// and TryCleanLibrary (this service). ProviderID is the deleted list's
+// row id.
+type ListDeletedEvent struct {
+	ProviderID int
+}
+
+// HandleImportListDeleted ports C#
+// `ImportListSyncService.HandleAsync(ProviderDeletedEvent<IImportList>)`
+// at `ImportListSyncService.cs:338-341` — it simply runs TryCleanLibrary.
+// Subscribed to [ListDeletedEvent] in main.go.
+func (s *SyncService) HandleImportListDeleted(ctx context.Context) {
+	s.tryCleanLibrary(ctx)
+}
+
 // cleanLibraryConfig reads the clean-library mode + tag. Satisfied by
 // *config.Provider (ListSyncLevel/ListSyncTag).
 type cleanLibraryConfig interface {
