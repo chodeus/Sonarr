@@ -20587,3 +20587,9 @@ RESUMED after the J475 exhaustion flag, on the operator's "resume" → starting 
 Slice 1 (pure, no deps on episodeimport): NEW `internal/extras/extras.go` — subtitle extension set (`IsSubtitleExtension`, ports SubtitleFileExtensions.cs), `ParseExtraFileExtensions` (comma-split+normalize, ExtraService.cs:70-73), the `TransferMode`+`FileTransferrer` seam, and the shared `importFile` helper (dest = episode-file folder + stem + suffix + ext; Move on normal import, Copy/HardLinkOrCopy when readOnly; returns series-relative path — ports ExtraFileManager.ImportFile:57-87). 5 test funcs (ext membership, config parse+dedup, importFile naming/mode/relpath, nil+error).
 
 Plan: 2=managers base+Other, 3=Subtitle, 4=orchestrator+wire into ImportApprovedEpisodes (replace noop). R: (none). A: internal/extras/{extras.go,extras_test.go}. M: STATUS/PROGRESS/GAP. Gates: build/vet/gofmt clean; extras -race green.
+
+## J477 — extras-import slice 2/N: Manager interface + matching + OtherExtraService
+
+NEW `internal/extras/manager.go`: the `Manager` interface (Order/CanImportFile/ImportFiles, ports C# IManageExtraFiles), the shared `matchesEpisode` helper (filename-stem-prefix OR ParsePath season+episode match — ports OtherExtraService.cs:115-133), `ImportInput` (the LocalEpisode/EpisodeFile subset the managers need), the `ExtraFileStore` narrow persistence seam, and `OtherExtraManager` (order 2, catch-all: claims all, imports matching files with single-.nfo de-dup, persists extrafiles.ExtraFile rows) — ports OtherExtraService.cs:89-156. 6 test funcs (metadata, filename-prefix match, parse match, no-match skip, nfo-dedup).
+
+R: (none). A: internal/extras/{manager.go,manager_test.go}. M: STATUS/PROGRESS. Gates: build/vet/gofmt clean; extras -race green. Next: SubtitleManager (slice 3) then the ExtraService orchestrator + wire (slice 4).
