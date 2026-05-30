@@ -107,6 +107,7 @@ import (
 	"sonarr.tv/sonarr/internal/notificationstatus"
 	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/pendingreleases"
+	"sonarr.tv/sonarr/internal/pendingreleaseshandlers"
 	"sonarr.tv/sonarr/internal/qualitydefinitions"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
@@ -3016,6 +3017,30 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		SetRecorder(downloadClientStatusSvc).
 		SetBodyFetcher(&download.HTTPBodyFetcher{}).
 		SetPendingWriter(pendingReleasesSvc)
+
+	// J485 (Delay/Pending substrate slice 2): wire the pending-release
+	// maintenance handlers — previously the handler functions existed
+	// (internal/pendingreleaseshandlers) but were never subscribed, so
+	// once J484 began populating the PendingReleases table the rows
+	// would never be cleaned. Ports the IHandle declarations on C#
+	// PendingReleaseService at PendingReleaseService.cs:660-671:
+	//   - EpisodeGrabbedEvent → RemoveGrabbed: clears a pending row once
+	//     a matching (or higher-quality) release for the same episodes
+	//     actually grabs (the J484 lingering-Delay-row fix).
+	//   - SeriesDeletedEvent → DeleteBySeriesIDs: purges a deleted
+	//     series' pending rows.
+	// RemoveRejected (Handle(RssSyncCompleteEvent), :655-658) stays
+	// DEFERRED — the Go RssSyncCompleteEvent carries only counts, not
+	// the rejected decisions' (Title,PublishDate,Indexer) tuples
+	// RemoveRejected needs; enriching that event is a separate slice.
+	messaging.Subscribe(bus, "pendingreleases.HandleEpisodeGrabbed",
+		func(ctx context.Context, ev decisionengine.EpisodeGrabbedEvent) error {
+			return pendingreleaseshandlers.HandleEpisodeGrabbed(ctx, pendingReleasesSvc, &ev)
+		})
+	messaging.Subscribe(bus, "pendingreleases.HandleSeriesDeleted",
+		func(ctx context.Context, ev series.SeriesDeletedEvent) error {
+			return pendingreleaseshandlers.HandleSeriesDeleted(ctx, pendingReleasesSvc, &ev)
+		})
 	// Slice 6.A6d (queue [15]): processDownloadDecisions is consumed
 	// by the RssSync handler wired below via handlers.Deps.RssSyncGrabber.
 	// The 4 setters above establish the dispatch + event-publish +

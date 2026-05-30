@@ -20647,3 +20647,15 @@ NEW optional `PendingWriter` dep on ProcessDownloadDecisions + chainable `SetPen
 NEXT: J485 wire pendingreleaseshandlers (RemoveGrabbed on EpisodeGrabbed / RemoveRejected on RssSyncComplete / DeleteBySeriesIDs on SeriesDeleted — currently UNSUBSCRIBED, so a persisted Delay row lingers after the release later grabs); then J486 DelaySpecification, J487 PendingSpecification.
 
 R: internal/download/process_decisions.go, internal/pendingreleases/{service,remove}.go (read-side contract), api/v3/queue_grab.go (round-trip contract), src ProcessDownloadDecisions.cs. A: internal/download/pending_persist.go + pending_persist_test.go (5 tests: Delay/DownloadClientUnavailable/Fallback reasons, nil-writer inert, write-error swallowed), main.go wiring. M: STATUS/PROGRESS/GAP. Gates: build/vet/gofmt + download/pendingreleases/cmd/sonarr/contract -race all green.
+
+## J485 — Delay/Pending substrate slice 2/N: wire the pending-release maintenance handlers
+
+Verify-first follow-up to J484. `internal/pendingreleaseshandlers` had two complete, unit-tested (with stub removers) handler funcs — `HandleEpisodeGrabbed` (→`Service.RemoveGrabbed`) and `HandleSeriesDeleted` (→`DeleteBySeriesIDs`) — but cmd/sonarr **never subscribed them** (only a comment ref at main.go:2833). Consequence after J484: a persisted Delay/Fallback pending row would linger forever once its release later grabbed (or its series was deleted), since nothing cleaned the table.
+
+Ported the C# `IHandle` decls on `PendingReleaseService` (`PendingReleaseService.cs:660-671`): subscribed both handlers to the bus immediately after constructing `pendingReleasesSvc` —
+- `EpisodeGrabbedEvent` → `RemoveGrabbed` (quality-gated: deletes pending rows for the grabbed episodes whose stored Quality ≤ the grabbed Quality; preserves higher-quality pending rows for a retry).
+- `SeriesDeletedEvent` → `DeleteBySeriesIDs`.
+
+`RemoveRejected` (C# `Handle(RssSyncCompleteEvent)`, `:655-658`) stays DEFERRED: the Go `RssSyncCompleteEvent` (commands/handlers/rsssync.go) carries only aggregate counts, not the rejected decisions' (Title, PublishDate, Indexer) match-tuples that `RemoveRejected` needs. Enriching that event + republishing the rejected list is its own slice — logged in GAP.
+
+A: internal/pendingreleaseshandlers/integration_test.go (2 tests) — real messaging.Bus + the production Subscribe closures + the real Service over SQLite; publishes EpisodeGrabbedEvent / SeriesDeletedEvent and asserts the matching pending row is removed (exercises RemoveGrabbed + DeleteBySeriesIDs end-to-end, not stubs). M: cmd/sonarr/main.go (2 Subscribe calls + import), STATUS/PROGRESS/GAP. Gates: build/vet/gofmt + pendingreleaseshandlers/cmd/sonarr/contract -race all green.
