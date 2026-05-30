@@ -20740,3 +20740,18 @@ NEW `customFormatForHistoryAdapter` (svc.All + ParseCustomFormatForHistory) + `H
 2nd-audit other findings = NOT real gaps (verified): TestCommand/UnknownCommand framework-only; SeriesSpecification a documented not-a-gap (parsingservice.findSeries enforces it); ManualInteractionRequiredEvent/TrackedDownloadsRemovedEvent = the LOW DownloadMonitoring event-driven-refresh optimization (events undefined in Go; the 1-min RefreshMonitoredDownloads scheduled task covers it); SkyHook check exists (extra); import→history/downloadhistory correlation fully wired.
 
 R: src HistorySpecification.cs, spec_already_imported.go (template + FindByEpisodeId/sameQualityModel), upgradable.go (CutoffNotMet/IsUpgradable/UpgradeableRejectReason), customformats.ParseCustomFormatForHistory. A: internal/decisionengine/{spec_history.go, spec_history_test.go (8 tests)}. M: cmd/sonarr/decisionengine_wiring.go (adapter + spec wiring + import + 2 pins), STATUS/PROGRESS/GAP. Gates: FULL SUITE green (build ./… + vet ./… + gofmt -l . empty + go test ./…).
+
+## AUTONOMOUS EXHAUSTION (J493, 2026-05-30) — loop STOPPED after campaign J484–J492
+
+The FINAL fresh-audit round (3rd this campaign: media-management/rename/file-organization, import-list processing, API write-path side-effects) found NO clean high-value ungated gap. Per the operator's exhaustion clause ("after this round, lean strongly toward stopping unless a clearly-high-value clean gap is mid-flight"), the loop is STOPPED — no further wakeup scheduled.
+
+**Campaign J484–J492 (9 slices, all gates green):** Delay/Pending subsystem end-to-end (J484 persist Pending bucket; J485 RemoveGrabbed+DeleteBySeriesIDs handlers; J486 DelaySpecification; J487 PendingSpecification; J489 pending-queue DISPLAY; J490 RemoveRejected); SceneMappingSpecification (J488, stale-BLOCKED); SceneMappingService on-demand UpdateMappings handlers (J491, stale-"wired"-doc); HistorySpecification (J492, last missing download-decision spec). Three fresh-audit rounds; rounds 1+2 each found+fixed exactly 1 real gap (J491, J492); round 3 (this one) found only deferred/gated/low-value work.
+
+**Final-round findings (none actioned — all deferred/gated/low/marginal/destructive):**
+- API write-path (v3+v5 POST/PUT/DELETE action endpoints): **CLEAN** — every audited endpoint performs its side effect; remaining items (queue-delete client flags, series moveFiles/delete physical cascade, release override) are all DOCUMENTED-DEFERRED, not stubs.
+- GAP1 series-delete on-disk file cascade (HIGH-impact): DOCUMENTED-DEFERRED (series.go:1183/1318) + needs NEW recyclebin.DeleteFolder + DESTRUCTIVE → flagged for operator (see GAP_ANALYSIS).
+- GAP2 RemoveEmptySubfolders-after-EpisodeFileDeletedEvent: clean+ungated but LOW/cosmetic (J463-style follow-up available).
+- GAP3 FileDate-on-scan: LOW (FileDate default None) + needs disk-mtime substrate.
+- GAP4 import-list clean-on-delete: GATED (deferred CleanLibrary substrate).
+
+**To resume:** operator picks GAP1 (series-delete file cascade — destructive, needs recyclebin.DeleteFolder + the HandleAsync(SeriesDeletedEvent) cascade) or a LOW item (GAP2/GAP3) or the marginal SeasonMatch/SingleEpisode specs. Full breakdown in GAP_ANALYSIS.md "AUTONOMOUS EXHAUSTION (J493)".

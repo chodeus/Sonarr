@@ -1,5 +1,27 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## AUTONOMOUS EXHAUSTION (J493, 2026-05-30) — campaign J484–J492 closed
+
+Resumed-after-J483 campaign: **9 slices (J484–J492) + 3 fresh-audit rounds**, all gates green, loop now STOPPED.
+
+**DONE (J484–J492):**
+- **Delay/Pending subsystem, end-to-end (J484–J490):** persist the Pending bucket (J484 — `ProcessDecisions` never called `AddMany`); maintenance trio RemoveGrabbed + DeleteBySeriesIDs (J485) + RemoveRejected (J490 — written-but-unwired); DelaySpecification (J486); PendingSpecification (J487); pending-queue DISPLAY projection so delayed releases appear in Activity→Queue (J489 — C# `queue.Concat(pending)` merge the Go adapter omitted).
+- **SceneMappingService on-demand UpdateMappings handlers (J491)** — unwired + the doc falsely claimed wired; fresh/restarted installs had empty TheXEM mappings until the daily task.
+- **SceneMappingSpecification (J488)** — the "BLOCKED on scenemappings.Service signature" label was stale; the spec is logger-only.
+- **HistorySpecification (J492)** — last missing download-decision spec; RSS grab→import re-grab guard. Substrate ("needs history+upgradable") was stale — all present.
+
+**REMAINING — none is a clean high-value ungated slice (why the loop stopped):**
+- **GAP1 (HIGH-impact, DEFERRED + DESTRUCTIVE + needs substrate):** series-delete with `deleteFiles=true` leaves the on-disk folder in place. C# `MediaFileDeletionService.HandleAsync(SeriesDeletedEvent)` → `RecycleBinProvider.DeleteFolder(series.Path)`. Go documents this as DEFERRED (series.go:1183/1318); needs a NEW `recyclebin.Service.DeleteFolder` (only `DeleteFile` exists) + the SeriesDeletedEvent file-delete cascade. Flagged for the operator — destructive (deletes user media), so not autonomously rushed.
+- **GAP2 (LOW/cosmetic, clean+ungated):** `MediaFileDeletionService.Handle(EpisodeFileDeletedEvent)` prunes empty parent folders (config `DeleteEmptyFolders`) after a file delete. Go has no handler. Substrate exists (config.DeleteEmptyFolders + disk.RemoveEmptySubfolders) — a small J463-style slice if the operator wants it; low value (empty folders left after manual delete).
+- **GAP3 (LOW):** `UpdateEpisodeFileService.Handle(SeriesScannedEvent)` sets on-disk file mtime to air-date per config `FileDate` (defaults to None → no-op for most users); needs a disk mtime-change helper.
+- **GAP4 (GATED):** import-list clean-library on list-delete (`ImportListSyncService.HandleAsync(ProviderDeletedEvent<IImportList>)`) — gated on the deferred CleanLibrary substrate (config.ListSyncLevel/importlistitems unported, sub-arc I4c).
+- **MARGINAL:** SeasonMatchSpecification + SingleEpisodeSearchMatchSpecification (risky SearchCriteria criteria-discriminator refactor; EpisodeRequested J467 covers the bulk).
+- **NOTIFICATION (gated-deferred):** OnRename / OnApplicationUpdate / OnManualInteractionRequired + 3 ProcessQueue drains — gated on update.Service / trackeddownloads manual-emit / batch-rename event.
+
+**VERIFIED CLEAN this campaign (no gaps):** event subscribe-vs-publish sweep; `any`-typed nil-cast deps (metadata/importlists/notifications/downloadclients); trackeddownloads import→history/downloadhistory correlation; API v3/v5 write-path side-effects; registry counts (import-decision specs 14/14, aggregators, health checks, housekeepers, scheduled tasks, commands, provider catalogs).
+
+**KEY LESSON (reinforced ~17×):** the dominant gap class remains "silently MISSING from a list/registry/deps-bundle/subscription/merge in cmd/sonarr" — a Service constructed but a method never called (J484/J490 AddMany/RemoveRejected), a handler written+tested but never Subscribe'd (J485/J491), a feature labelled BLOCKED with no blocker (J488), a read-side merge the adapter omits (J489), a doc claiming wired when it isn't (J491), a spec missing from the chain (J492). Doc-comments/"needs substrate"/BLOCKED notes are stale in BOTH directions — always grep the real wiring.
+
 ## DELAY/PENDING SUBSYSTEM (J484+, 2026-05-30) — resumed after exhaustion
 
 Operator picked the next-largest remaining item (DelaySpecification + PendingSpecification). **VERIFY-FIRST VERDICT: NOT BLOCKED.** The "complex side-effecting substrate" framing was overbroad — `internal/pendingreleases` is heavily built (Service.Add/AddMany; remove.go RemoveGrabbed/RemoveRejected/OldestPending/DeleteBySeriesIDs/RemoveByQueueID; pendingreleaseshandlers; CleanupDownloadClientUnavailable housekeeper; api/v3 queue/grab re-hydration + queue/status count). The real gap was a classic SILENT-DROP: `download.ProcessDownloadDecisions.ProcessDecisions` builds the Pending bucket but the C# `AddMany` flush (`ProcessDownloadDecisions.cs:119-121`) was DEFERRED → the table was never populated; the entire subsystem was inert.
