@@ -108,9 +108,6 @@ func NewService(factory *Factory, recorder serviceRecorder, logger *slog.Logger)
 //   - ManualInteractionRequiredEvent — OnManualInteractionRequired
 //     dispatch. Waits on the trackeddownloads manual-interaction
 //     emit point.
-//   - SeriesRenamedEvent (batch) — OnRename dispatch. The per-file
-//     episodefiles.EpisodeFileRenamedEvent exists; the C# event is
-//     the batch-summary shape — defers until the batch event lands.
 //   - DeleteCompletedEvent / DownloadsProcessedEvent /
 //     RenameCompletedEvent — drain ProcessQueue.
 //     HealthCheckCompleteEvent already covers the
@@ -128,6 +125,7 @@ func (s *Service) Subscribe(bus *messaging.Bus) {
 	messaging.Subscribe(bus, "notifications.HandleSeriesAddedEvent", s.HandleSeriesAddedEvent)
 	messaging.Subscribe(bus, "notifications.HandleSeriesDeletedEvent", s.HandleSeriesDeletedEvent)
 	messaging.Subscribe(bus, "notifications.HandleEpisodeFileDeletedEvent", s.HandleEpisodeFileDeletedEvent)
+	messaging.Subscribe(bus, "notifications.HandleSeriesRenamedEvent", s.HandleSeriesRenamedEvent)
 	messaging.Subscribe(bus, "notifications.HandleDownloadCompletedEvent", s.HandleDownloadCompletedEvent)
 	messaging.Subscribe(bus, "notifications.HandleUntrackedDownloadCompletedEvent", s.HandleUntrackedDownloadCompletedEvent)
 	messaging.Subscribe(bus, "notifications.HandleHealthCheckFailedEvent", s.HandleHealthCheckFailedEvent)
@@ -475,6 +473,45 @@ func (s *Service) HandleSeriesDeletedEvent(ctx context.Context, ev series.Series
 			return p.OnSeriesDelete(ctx, msg)
 		})
 	}
+	return nil
+}
+
+// HandleSeriesRenamedEvent ports the C# `Handle(SeriesRenamedEvent)` at
+// `NotificationService.cs:290-308`. Fans out one OnRename dispatch per
+// renamed series to every OnRenameEnabled provider, gated by
+// ShouldHandleSeries.
+//
+// VERIFY-FIRST (J503): this was long doc-flagged "defers until the
+// batch event lands" — but episodefiles.SeriesRenamedEvent has been
+// defined + published since J453 (the extras MoveFilesAfterRename
+// consumer), and the provider OnRename method + Factory.OnRenameEnabled
+// + the OnRename config flag + ShouldHandleSeries all pre-existed. The
+// only missing piece was this wire — so OnRename notifications were
+// silently never sent.
+func (s *Service) HandleSeriesRenamedEvent(ctx context.Context, ev episodefiles.SeriesRenamedEvent) error {
+	if ev.Series == nil {
+		return nil
+	}
+	providers, err := s.factory.OnRenameEnabled(ctx, true)
+	if err != nil {
+		s.logger.Warn("notifications: load OnRename providers", slog.Any("err", err))
+		return nil
+	}
+	// Pack the typed renamed-file records into the []any the
+	// RenameMessage carries (mirrors the OnGrab/OnDownload pattern of
+	// passing the internal model straight through to the payload
+	// builder).
+	renamed := make([]any, len(ev.RenamedFiles))
+	for i := range ev.RenamedFiles {
+		renamed[i] = ev.RenamedFiles[i]
+	}
+	msg := RenameMessage{
+		Series:       ev.Series,
+		RenamedFiles: renamed,
+	}
+	s.fanOut(ctx, providers, ev.Series.Tags, "OnRename", func(p Provider) error {
+		return p.OnRename(ctx, msg)
+	})
 	return nil
 }
 

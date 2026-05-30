@@ -8,9 +8,13 @@ A fresh verify-first bounded audit (the "silently-missing-from-a-list/registry/s
 
 **Remaining = the same marginal/gated set the operator flagged "do NOT attempt unless real distinct value":**
 - **MARGINAL** SeasonMatchSpecification + SingleEpisodeSearchMatchSpecification — need a risky SearchCriteria criteria-discriminator refactor; EpisodeRequested (J467) covers the bulk; prior analysis doubted the value.
-- **GATED** notification OnRename/OnApplicationUpdate/OnManualInteractionRequired + 3 ProcessQueue drains — gated on update.Service / trackeddownloads manual-emit / batch-rename event (unported substrate); DownloadMonitoring event-driven-refresh (events undefined in Go; the 1-min RefreshMonitoredDownloads task covers it).
+- **GATED** notification OnApplicationUpdate/OnManualInteractionRequired + 3 ProcessQueue drains — gated on update.Service install/UpdateHistory publish + trackeddownloads manual-interaction emit (unported event TYPES + producers); DownloadMonitoring event-driven-refresh (events undefined in Go; the 1-min RefreshMonitoredDownloads task covers it).
 
 Per the operator's exhaustion clause the loop is **STOPPED** (no further wakeup scheduled). To resume: the operator must pick the marginal SearchCriteria refactor or one of the gated items (each blocked on a separate unported subsystem).
+
+### J503 (2026-05-30) — RESUMED on "continue": notification OnRename wired (stale-gated DISPROVEN)
+
+VERIFY-FIRST WIN: the "GATED notification OnRename (batch-rename event)" label above was STALE — `episodefiles.SeriesRenamedEvent` (Series + RenamedFiles) has been defined + published since J453, and the provider OnRename method + Factory.OnRenameEnabled + OnRename config flag + ShouldHandleSeries all pre-existed. Only the NotificationService handler+subscription was missing (OnRename notifications silently never sent on rename). Ported `NotificationService.Handle(SeriesRenamedEvent)` (NotificationService.cs:290-308) → NEW HandleSeriesRenamedEvent + Subscribe; 3 tests. The remaining two notification handlers (OnApplicationUpdate ← UpdateInstalledEvent, OnManualInteractionRequired ← ManualInteractionRequiredEvent) verified GENUINELY GATED — neither event TYPE nor PRODUCER exists in Go (update.Service read-only; trackeddownloads has only the HasNotified flag). So the notification subsystem's only wirable gap is now closed; the rest is genuinely gated on unported producers.
 
 ## RESUMED (J498–J502, 2026-05-30) — GAP4 / I4c import-list clean-library arc (DONE)
 

@@ -59,6 +59,8 @@ type hookRecorder struct {
 	downloadCalls      int
 	seriesAddCalls     int
 	seriesDelCalls     int
+	renameCalls        int
+	renameMsg          notifications.RenameMessage
 	episodeDelCalls    int
 	healthCalls        int
 	healthRestored     int
@@ -83,8 +85,12 @@ func (h *hookRecorder) OnDownload(_ context.Context, _ notifications.DownloadMes
 	h.downloadCalls++
 	return h.failOn["OnDownload"]
 }
-func (h *hookRecorder) OnRename(_ context.Context, _ notifications.RenameMessage) error {
-	return nil
+func (h *hookRecorder) OnRename(_ context.Context, msg notifications.RenameMessage) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.renameCalls++
+	h.renameMsg = msg
+	return h.failOn["OnRename"]
 }
 func (h *hookRecorder) OnImportComplete(_ context.Context, msg notifications.ImportCompleteMessage) error {
 	h.mu.Lock()
@@ -384,6 +390,64 @@ func TestHandleSeriesDeletedEvent_FiresPerSeries(t *testing.T) {
 	})
 	if hooks[1].seriesDelCalls != 2 {
 		t.Errorf("OnSeriesDelete: got %d want 2 (one per series in batch)", hooks[1].seriesDelCalls)
+	}
+}
+
+func TestHandleSeriesRenamedEvent_FiresOnRename(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnRename: true},
+		{ID: 2, Implementation: "Stub", ConfigContract: stubContract(), OnRename: false}, // not enabled → never fires
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	ev := episodefiles.SeriesRenamedEvent{
+		Series: &series.Series{Title: "Renamed Show"},
+		RenamedFiles: []episodefiles.RenamedEpisodeFile{
+			{EpisodeFile: &episodefiles.File{}, PreviousPath: "/old/a.mkv"},
+			{EpisodeFile: &episodefiles.File{}, PreviousPath: "/old/b.mkv"},
+		},
+	}
+	if err := svc.HandleSeriesRenamedEvent(t.Context(), ev); err != nil {
+		t.Fatalf("HandleSeriesRenamedEvent: %v", err)
+	}
+	if hooks[1].renameCalls != 1 {
+		t.Errorf("OnRename: got %d want 1", hooks[1].renameCalls)
+	}
+	if len(hooks[1].renameMsg.RenamedFiles) != 2 {
+		t.Errorf("RenamedFiles forwarded: got %d want 2", len(hooks[1].renameMsg.RenamedFiles))
+	}
+	if h, ok := hooks[2]; ok && h.renameCalls != 0 {
+		t.Errorf("OnRename must NOT fire for an OnRename=false provider, got %d", h.renameCalls)
+	}
+}
+
+func TestHandleSeriesRenamedEvent_NilSeries_NoOp(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnRename: true},
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	if err := svc.HandleSeriesRenamedEvent(t.Context(), episodefiles.SeriesRenamedEvent{Series: nil}); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if h, ok := hooks[1]; ok && h.renameCalls != 0 {
+		t.Errorf("nil series must no-op, got %d", h.renameCalls)
+	}
+}
+
+func TestHandleSeriesRenamedEvent_TagGate(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnRename: true, Tags: []int{5}},
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	// Series tags don't intersect the provider's tag filter → skipped.
+	ev := episodefiles.SeriesRenamedEvent{Series: &series.Series{Title: "X", Tags: []int{9}}}
+	if err := svc.HandleSeriesRenamedEvent(t.Context(), ev); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if hooks[1].renameCalls != 0 {
+		t.Errorf("tag-mismatched provider must be skipped, got %d", hooks[1].renameCalls)
 	}
 }
 
