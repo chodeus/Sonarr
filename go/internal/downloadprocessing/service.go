@@ -112,6 +112,31 @@ type Service struct {
 	processedPub ProcessedPublisher
 	canRemovePub CanBeRemovedPublisher
 	log          *slog.Logger
+
+	// Import-blocked state-machine seams (J517). All optional; the
+	// faithful CompletedDownloadService.Import blocking behaviour is
+	// active only when manualInteractionPub is wired (the wiring slice
+	// sets all three together). Until then importOne keeps the legacy
+	// "leave Downloading, retry next cycle" behaviour for partial imports.
+	historyReader        HistoryByDownloadReader
+	rejectedImport       *RejectedImportService
+	manualInteractionPub ManualInteractionPublisher
+}
+
+// SetImportBlockedDeps wires the import-blocked state-machine seams
+// (J517). history feeds the already-imported-in-history double-check
+// (prevents a re-processed already-imported download from being
+// spuriously blocked); rejected classifies single-file rejections into
+// Fail vs Warn; pub publishes the ManualInteractionRequiredEvent. When
+// pub is non-nil the faithful CompletedDownloadService.Import blocking
+// behaviour activates. nil-safe.
+func (s *Service) SetImportBlockedDeps(history HistoryByDownloadReader, rejected *RejectedImportService, pub ManualInteractionPublisher) {
+	if s == nil {
+		return
+	}
+	s.historyReader = history
+	s.rejectedImport = rejected
+	s.manualInteractionPub = pub
 }
 
 // SetFailurePublisher wires the optional [FailurePublisher] (J400). The
@@ -257,8 +282,16 @@ func (s *Service) shouldImport(td *trackeddownloads.TrackedDownload) bool {
 	return true
 }
 
-// importOne runs the import for one completed download and marks it
-// Imported when every result imported. Returns true on full import.
+// importOne runs the import for one completed download. Ports the body
+// of C# `CompletedDownloadService.Import`: imports via ProcessPath, then
+// VerifyImport marks it Imported (this run OR already-in-history) and
+// publishes DownloadCompletedEvent. Returns true only on full import.
+//
+// When the import-blocked state machine is wired (J517 —
+// [Service.SetImportBlockedDeps]) an incomplete import is routed to
+// ImportPending/ImportBlocked + a one-time ManualInteractionRequiredEvent
+// (faithful to C#). Until wired, an incomplete import keeps the legacy
+// "leave Downloading, retry next cycle" behaviour.
 func (s *Service) importOne(ctx context.Context, td *trackeddownloads.TrackedDownload) bool {
 	outputPath := td.DownloadItem.OutputPath.FullPath()
 	if outputPath == "" {
@@ -266,21 +299,21 @@ func (s *Service) importOne(ctx context.Context, td *trackeddownloads.TrackedDow
 		return false
 	}
 	results := s.importer.ProcessPath(outputPath, episodeimport.ImportModeAuto, td.RemoteEpisode.Series, td.DownloadItem)
-	if len(results) == 0 {
-		s.log.Debug("downloadprocessing: no importable files found", "path", outputPath, "downloadId", td.DownloadID)
-		return false
+
+	if s.verifyImport(ctx, td, results) {
+		s.log.LogAttrs(ctx, slog.LevelInfo, "downloadprocessing: imported",
+			slog.String("downloadId", td.DownloadID), slog.String("path", outputPath))
+		return true
 	}
-	if !allImported(results) {
-		// Partial / rejected — leave Downloading for the next cycle (the
-		// rejection-handling state machine is a documented follow-up).
+
+	if !s.importBlockedActive() {
+		// Legacy fallback (pre-J517): leave Downloading for the next cycle.
 		s.log.Debug("downloadprocessing: not all files imported; leaving for retry", "downloadId", td.DownloadID)
 		return false
 	}
-	td.State = trackeddownloads.StateImported
-	s.log.LogAttrs(ctx, slog.LevelInfo, "downloadprocessing: imported",
-		slog.String("downloadId", td.DownloadID), slog.String("path", outputPath))
-	s.publishCompleted(ctx, td, results)
-	return true
+
+	s.handleIncompleteImport(ctx, td, outputPath, results)
+	return false
 }
 
 // publishCompleted publishes a DownloadCompletedEvent for a fully-
