@@ -315,6 +315,12 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 			return fmt.Errorf("update-history repo: %w", err)
 		}
 		updateHistorySvc = updatehistory.NewService(updateHistoryRepo, buildinfo.Version, logger)
+		// Publish UpdateInstalledEvent on an actual upgrade (C#
+		// UpdateHistoryService.HandleAsync). notifications.Service
+		// subscribes asynchronously to drive OnApplicationUpdate.
+		updateHistorySvc.SetPublisher(func(ctx context.Context, ev updatehistory.UpdateInstalledEvent) error {
+			return messaging.Publish(ctx, bus, ev)
+		})
 		// Record the running version on startup (C#
 		// UpdateHistoryService.Handle(ApplicationStartedEvent)).
 		// Subscribed synchronously so the recorded prevVersion is set

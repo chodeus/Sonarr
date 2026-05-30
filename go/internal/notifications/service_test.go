@@ -20,6 +20,7 @@ import (
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
+	"sonarr.tv/sonarr/internal/updatehistory"
 )
 
 // stubRecorder satisfies notifications.serviceRecorder (via duck-
@@ -67,6 +68,8 @@ type hookRecorder struct {
 	processCalls       int
 	importCompleteCall int
 	importCompleteMsg  notifications.ImportCompleteMessage
+	appUpdateCalls     int
+	appUpdateMsg       notifications.ApplicationUpdateMessage
 }
 
 func (h *hookRecorder) Name() string                            { return "Stub" }
@@ -134,8 +137,12 @@ func (h *hookRecorder) OnHealthRestored(_ context.Context, _ notifications.Healt
 	h.healthRestored++
 	return h.failOn["OnHealthRestored"]
 }
-func (h *hookRecorder) OnApplicationUpdate(_ context.Context, _ notifications.ApplicationUpdateMessage) error {
-	return nil
+func (h *hookRecorder) OnApplicationUpdate(_ context.Context, msg notifications.ApplicationUpdateMessage) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.appUpdateCalls++
+	h.appUpdateMsg = msg
+	return h.failOn["OnApplicationUpdate"]
 }
 func (h *hookRecorder) OnManualInteractionRequired(_ context.Context, _ notifications.ManualInteractionRequiredMessage) error {
 	return nil
@@ -448,6 +455,48 @@ func TestHandleSeriesRenamedEvent_TagGate(t *testing.T) {
 	}
 	if hooks[1].renameCalls != 0 {
 		t.Errorf("tag-mismatched provider must be skipped, got %d", hooks[1].renameCalls)
+	}
+}
+
+func TestHandleApplicationUpdate_FiresOnEnabled(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnApplicationUpdate: true},
+		{ID: 2, Implementation: "Stub", ConfigContract: stubContract(), OnApplicationUpdate: false}, // not enabled → never fires
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	ev := updatehistory.UpdateInstalledEvent{PreviousVersion: "5.0.0.4", NewVersion: "5.0.0.5"}
+	if err := svc.HandleApplicationUpdate(t.Context(), ev); err != nil {
+		t.Fatalf("HandleApplicationUpdate: %v", err)
+	}
+	if hooks[1].appUpdateCalls != 1 {
+		t.Errorf("OnApplicationUpdate: got %d want 1", hooks[1].appUpdateCalls)
+	}
+	if got := hooks[1].appUpdateMsg.Message; got != "Sonarr updated from 5.0.0.4 to 5.0.0.5" {
+		t.Errorf("message = %q, want %q", got, "Sonarr updated from 5.0.0.4 to 5.0.0.5")
+	}
+	if hooks[1].appUpdateMsg.PreviousVersion != "5.0.0.4" || hooks[1].appUpdateMsg.NewVersion != "5.0.0.5" {
+		t.Errorf("version fields = %+v", hooks[1].appUpdateMsg)
+	}
+	if h, ok := hooks[2]; ok && h.appUpdateCalls != 0 {
+		t.Errorf("OnApplicationUpdate must NOT fire for a disabled provider, got %d", h.appUpdateCalls)
+	}
+}
+
+func TestHandleApplicationUpdate_NoTagGate(t *testing.T) {
+	t.Parallel()
+	// A tagged provider must STILL fire — OnApplicationUpdate is a
+	// global notification with no series-tag filter (faithful to C#).
+	rows := []notifications.Notification{
+		{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnApplicationUpdate: true, Tags: []int{5}},
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	ev := updatehistory.UpdateInstalledEvent{PreviousVersion: "5.0.0.4", NewVersion: "5.0.0.5"}
+	if err := svc.HandleApplicationUpdate(t.Context(), ev); err != nil {
+		t.Fatalf("HandleApplicationUpdate: %v", err)
+	}
+	if hooks[1].appUpdateCalls != 1 {
+		t.Errorf("tagged provider must still fire (no tag gate), got %d", hooks[1].appUpdateCalls)
 	}
 }
 

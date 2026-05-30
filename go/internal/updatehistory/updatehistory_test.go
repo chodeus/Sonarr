@@ -196,6 +196,45 @@ func TestServiceSkipsDevBuild(t *testing.T) {
 	}
 }
 
+func TestServicePublishesOnlyOnUpgrade(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Fresh install (no prior version) → no publish.
+	r1 := newRepo(t)
+	var fresh []updatehistory.UpdateInstalledEvent
+	svc1 := updatehistory.NewService(r1, "5.0.0.5", nil)
+	svc1.SetPublisher(func(_ context.Context, ev updatehistory.UpdateInstalledEvent) error {
+		fresh = append(fresh, ev)
+		return nil
+	})
+	if err := svc1.HandleApplicationStarted(ctx, lifecycle.ApplicationStartedEvent{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fresh) != 0 {
+		t.Fatalf("fresh install published %d events, want 0", len(fresh))
+	}
+
+	// Upgrade (prior version recorded) → one publish with both versions.
+	r2 := newRepo(t)
+	_ = r2.Insert(ctx, &updatehistory.History{Date: time.Now().Add(-time.Hour), Version: "5.0.0.4", EventType: updatehistory.EventTypeInstalled})
+	var got []updatehistory.UpdateInstalledEvent
+	svc2 := updatehistory.NewService(r2, "5.0.0.5", nil)
+	svc2.SetPublisher(func(_ context.Context, ev updatehistory.UpdateInstalledEvent) error {
+		got = append(got, ev)
+		return nil
+	})
+	if err := svc2.HandleApplicationStarted(ctx, lifecycle.ApplicationStartedEvent{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("upgrade published %d events, want 1", len(got))
+	}
+	if got[0].PreviousVersion != "5.0.0.4" || got[0].NewVersion != "5.0.0.5" {
+		t.Fatalf("event = %+v, want {5.0.0.4 5.0.0.5}", got[0])
+	}
+}
+
 func TestServicePreviouslyInstalled(t *testing.T) {
 	t.Parallel()
 	r := newRepo(t)

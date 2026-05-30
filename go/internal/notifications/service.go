@@ -18,6 +18,7 @@ import (
 	"sonarr.tv/sonarr/internal/quality"
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
+	"sonarr.tv/sonarr/internal/updatehistory"
 )
 
 // Service ports the C# `NotificationService` IHandle<*Event>
@@ -86,25 +87,34 @@ func NewService(factory *Factory, recorder serviceRecorder, logger *slog.Logger)
 // Mapping table (C# event → Go event):
 //
 //   - EpisodeGrabbedEvent → decisionengine.EpisodeGrabbedEvent
+//
 //   - EpisodeImportedEvent → episodeimport.EpisodeImportedEvent
 //     (slice 4.BU / C-cleanup [C6]). Fires OnDownload per imported
 //     file. OnImportComplete batch dispatch waits on the
 //     DownloadCompletedEvent upstream port.
+//
 //   - SeriesAddCompletedEvent → series.SeriesAddedEvent
+//
 //   - SeriesDeletedEvent → series.SeriesDeletedEvent
+//
 //   - EpisodeFileDeletedEvent → episodefiles.EpisodeFileDeletedEvent
+//
 //   - HealthCheckFailedEvent → healthcheck.FailedEvent
+//
 //   - HealthCheckRestoredEvent → healthcheck.RestoredEvent
+//
 //   - HealthCheckCompleteEvent (async) → healthcheck.CompleteEvent
 //     (drives ProcessQueue drain)
+//
+//   - UpdateInstalledEvent → updatehistory.UpdateInstalledEvent
+//     (drives OnApplicationUpdate; published on an actual upgrade by
+//     updatehistory.Service on ApplicationStarted — wired J506)
 //
 // Deferred until upstream events port (slice 4.BU C-cleanup [C6]
 // closure note — the Go tree has no equivalent event type yet, so
 // these wires are tracked here for re-evaluation when the upstream
 // event lands):
 //
-//   - UpdateInstalledEvent — OnApplicationUpdate dispatch. Waits on
-//     the update.Service port (no Go-tree equivalent yet).
 //   - ManualInteractionRequiredEvent — OnManualInteractionRequired
 //     dispatch. Waits on the trackeddownloads manual-interaction
 //     emit point.
@@ -131,6 +141,11 @@ func (s *Service) Subscribe(bus *messaging.Bus) {
 	messaging.Subscribe(bus, "notifications.HandleHealthCheckFailedEvent", s.HandleHealthCheckFailedEvent)
 	messaging.Subscribe(bus, "notifications.HandleHealthCheckRestoredEvent", s.HandleHealthCheckRestoredEvent)
 	messaging.SubscribeAsync(bus, "notifications.HandleHealthCheckCompleteEvent", s.HandleHealthCheckCompleteEvent)
+	// Async — OnApplicationUpdate dispatch may make network calls; the
+	// publisher (updatehistory.Service) fires it from the synchronous
+	// ApplicationStarted handler, so async keeps startup non-blocking
+	// (mirrors C# IHandleAsync ordering for the update notification).
+	messaging.SubscribeAsync(bus, "notifications.HandleApplicationUpdate", s.HandleApplicationUpdate)
 }
 
 // HandleEpisodeGrabbedEvent ports the C# `Handle(EpisodeGrabbedEvent)`
@@ -641,6 +656,40 @@ func (s *Service) HandleHealthCheckCompleteEvent(ctx context.Context, _ healthch
 				slog.String("provider_name", def.Name),
 				slog.Any("err", err))
 		}
+	}
+	return nil
+}
+
+// HandleApplicationUpdate ports the C# `Handle(UpdateInstalledEvent)`
+// at `NotificationService.cs:310-330`. Fired once on startup after the
+// in-process updater installed a new version (the
+// updatehistory.Service publishes UpdateInstalledEvent on an actual
+// upgrade). Fans out an [ApplicationUpdateMessage] to every
+// OnApplicationUpdate-enabled provider. Unlike the per-series hooks
+// there is NO tag gate (this is a global, series-independent
+// notification — matches C# which loops OnApplicationUpdateEnabled with
+// no ShouldHandleSeries check).
+func (s *Service) HandleApplicationUpdate(ctx context.Context, ev updatehistory.UpdateInstalledEvent) error {
+	providers, err := s.factory.OnApplicationUpdateEnabled(ctx, true)
+	if err != nil {
+		s.logger.Warn("notifications: load OnApplicationUpdate providers", slog.Any("err", err))
+		return nil
+	}
+	msg := ApplicationUpdateMessage{
+		Message:         fmt.Sprintf("Sonarr updated from %s to %s", ev.PreviousVersion, ev.NewVersion),
+		PreviousVersion: ev.PreviousVersion,
+		NewVersion:      ev.NewVersion,
+	}
+	for _, p := range providers {
+		def := p.Definition()
+		if def == nil {
+			continue
+		}
+		if err := p.OnApplicationUpdate(ctx, msg); err != nil {
+			s.recordFailure(ctx, def, "OnApplicationUpdate", err)
+			continue
+		}
+		s.recordSuccess(ctx, def)
 	}
 	return nil
 }

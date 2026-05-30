@@ -34,13 +34,25 @@ type repo interface {
 // Service is simply never created and no history is recorded (faithful:
 // C# returns early, leaving `_prevVersion` null).
 type Service struct {
-	repo    repo
-	version string
-	now     func() time.Time
-	logger  *slog.Logger
+	repo      repo
+	version   string
+	now       func() time.Time
+	logger    *slog.Logger
+	publisher Publisher
 
 	mu          sync.Mutex
 	prevVersion string
+}
+
+// SetPublisher wires the optional UpdateInstalledEvent publisher. Set
+// post-construction so NewService's signature stays stable. When unset
+// no event is published (the recording still happens). Wire once at
+// startup before ApplicationStartedEvent fires.
+func (s *Service) SetPublisher(p Publisher) {
+	if s == nil {
+		return
+	}
+	s.publisher = p
 }
 
 // NewService binds the repo + the running build's version string.
@@ -149,6 +161,18 @@ func (s *Service) HandleApplicationStarted(ctx context.Context, _ lifecycle.Appl
 		EventType: EventTypeInstalled,
 	}); err != nil {
 		s.logger.Warn("updatehistory: failed to record installed version", slog.Any("err", err))
+	}
+
+	// Publish UpdateInstalledEvent only on an actual upgrade (prior
+	// version recorded), mirroring C#
+	// `UpdateHistoryService.HandleAsync(ApplicationStartedEvent)`
+	// (`:95-101`) which publishes only when `_prevVersion != null`.
+	// Drives the OnApplicationUpdate notification. The consumer
+	// subscribes asynchronously so this does not block startup.
+	if prev != "" && s.publisher != nil {
+		if err := s.publisher(ctx, UpdateInstalledEvent{PreviousVersion: prev, NewVersion: s.version}); err != nil {
+			s.logger.Warn("updatehistory: publish UpdateInstalledEvent", slog.Any("err", err))
+		}
 	}
 	return nil
 }
