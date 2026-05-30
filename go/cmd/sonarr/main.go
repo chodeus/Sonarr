@@ -3088,7 +3088,15 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		HTTPClient:       httpClient,
 		DiskProvider:     diskProv,
 		MapCoversToLocal: mediaCoverSvc,
-		Logger:           logger,
+		// J473: EpisodeLookup feeds the writers' EpisodeImages (episode
+		// thumbnails) — *episodes.Repo.AllByFileID. FolderLister feeds
+		// Roksbox/Wdtv SeasonImages (season posters) — *disk.Provider.
+		// GetDirectories. Both were left nil ("queue [W6]"); the providers
+		// cast them non-panickingly, so a nil silently dropped those
+		// images. Mirror C# episodeFile.Episodes.Value + IDiskProvider.
+		EpisodeLookup: episodesRepo,
+		FolderLister:  diskProv,
+		Logger:        logger,
 	}
 	metadataSvc, err := metadataservice.NewService(metadataservice.Deps{
 		Disk:         newMetadataDiskAdapter(diskProv),

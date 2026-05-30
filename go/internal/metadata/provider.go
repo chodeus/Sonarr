@@ -305,4 +305,19 @@ type Dependencies struct {
 	// `MetadataBase.cs` (via the base class). Nil-tolerated: when
 	// nil, the Go port falls back to the English template.
 	LocalizationService any
+
+	// EpisodeLookup resolves the episodes linked to an EpisodeFile by
+	// id — the Go-port equivalent of the C# `episodeFile.Episodes.Value`
+	// lazy-load the writers use in EpisodeImages / EpisodeMetadata.
+	// Bound to `*episodes.Repo` (AllByFileID) in production. Each
+	// concrete writer casts this to its own narrow EpisodeLookup
+	// (AllByFileID). Nil → EpisodeImages degrades to empty (J473).
+	EpisodeLookup any
+
+	// FolderLister enumerates the season directories under a series
+	// folder — the C# `IDiskProvider.GetDirectories(seriesPath)` the
+	// Roksbox/Wdtv writers use in SeasonImages. Bound to `*disk.Provider`
+	// (GetDirectories) in production. Nil → SeasonImages degrades to
+	// empty (J473).
+	FolderLister any
 }

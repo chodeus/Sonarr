@@ -554,15 +554,11 @@ func constructFromDependencies(definition *metadata.Metadata, deps metadata.Depe
 		xbmcDeps.CoverPath = cp
 	}
 
-	// HTTPClient field hosts EpisodeLookup adapter in the Go port.
-	// Documented divergence: the [metadata.Dependencies] bundle does
-	// not yet have a dedicated EpisodeLookup field; the orchestrator
-	// (queue [W6]) will add one. For now the constructor leaves
-	// Episodes nil — EpisodeImages degrades to empty until W6
-	// threads the lookup through.
-	//
-	// TODO (queue [W6]): add metadata.Dependencies.EpisodeLookup and
-	// wire it here.
+	// EpisodeLookup → EpisodeLookup (episode-by-file). Optional; nil →
+	// EpisodeImages degrades to empty. J473 wired the bundle field.
+	if el, ok := deps.EpisodeLookup.(EpisodeLookup); ok {
+		xbmcDeps.Episodes = el
+	}
 
 	return NewXbmcMetadata(definition, settings, xbmcDeps)
 }

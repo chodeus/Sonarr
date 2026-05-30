@@ -428,7 +428,14 @@ func constructFromDependencies(definition *metadata.Metadata, deps metadata.Depe
 	if cp, ok := deps.MapCoversToLocal.(CoverPathLookup); ok {
 		wdtvDeps.CoverPath = cp
 	}
-	// TODO (queue [W6]): thread EpisodeLookup + FolderLister.
+	// J473: thread EpisodeLookup (episode images) + FolderLister (season
+	// images) from the bundle. Both optional — nil degrades to empty.
+	if el, ok := deps.EpisodeLookup.(EpisodeLookup); ok {
+		wdtvDeps.Episodes = el
+	}
+	if fl, ok := deps.FolderLister.(FolderLister); ok {
+		wdtvDeps.Folders = fl
+	}
 	return NewWdtvMetadata(definition, settings, wdtvDeps)
 }
 

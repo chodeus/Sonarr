@@ -20549,3 +20549,11 @@ Pinned by a construct-seam test (metadata.Default().Construct → constructFromD
 R: cmd/sonarr/main.go (1 field). A: metadata/xbmc/construct_mapcovers_test.go. M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; metadata + cmd/sonarr + contract -race green.
 
 DEFERRED (documented in GAP): (a) metadata EpisodeLookup + FolderLister deps not on the Dependencies struct → episode/season images for Xbmc/Roksbox/Wdtv degrade to empty (struct addition needed). (b) LARGE: the extras-IMPORT subsystem (SubtitleService + OtherExtraService) is genuinely unported — extras importer is wired as nil→noopExtrasImporter, so subtitles/other-extras adjacent to a download are NOT imported. Substantial subsystem port, flagged.
+
+## J473 — wire metadata EpisodeLookup + FolderLister (episode/season images were silently dropped)
+
+Bounded follow-up to the J472 metadata audit. The Xbmc/Roksbox/Wdtv writers degraded EpisodeImages (all 3) + SeasonImages (Roksbox/Wdtv) to empty because `metadata.Dependencies` had NO EpisodeLookup/FolderLister field — the providers' constructFromDependencies left the typed Deps.Episodes/Folders nil (TODO "queue [W6]"). Same silent-degrade class as J472. Verify-first: all 3 providers' EpisodeLookup interface is identical (`AllByFileID(ctx,fileID)([]episodes.Episode,error)`) and FolderLister is identical (`GetDirectories(string)([]string,error)`); *episodes.Repo.AllByFileID + *disk.Provider.GetDirectories already satisfy them and episodesRepo/diskProv are in scope at the wiring site.
+
+Fix: added `EpisodeLookup any` + `FolderLister any` to metadata.Dependencies; cast them in xbmc (EpisodeLookup) / roksbox+wdtv (both) constructFromDependencies; wired `EpisodeLookup: episodesRepo, FolderLister: diskProv` into metadataWriterDeps. Construct-seam pin (EpisodeImages emits the screenshot when wired, empty when nil). Metadata-writer subsystem now fully wired (covers + episode + season images).
+
+R: internal/metadata/provider.go (2 fields), xbmc/roksbox/wdtv constructFromDependencies (casts), cmd/sonarr/main.go (wire). A: xbmc/construct_mapcovers_test.go (EpisodeLookup pin). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; metadata/{xbmc,roksbox,wdtv} + cmd/sonarr + contract -race green.
