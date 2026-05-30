@@ -532,3 +532,156 @@ func TestSync_CrossListDedup(t *testing.T) {
 		t.Errorf("dedup: kept %+v", adder.batch)
 	}
 }
+
+// --- I4c per-list persistence + status wiring (J500) ---
+
+type persistCall struct {
+	listID int
+	items  []importlists.ItemInfo
+}
+
+type stubItemPersister struct {
+	calls   []persistCall
+	removed map[int]int // listID → removed count to report
+	err     map[int]error
+}
+
+func (s *stubItemPersister) SyncSeriesForList(_ context.Context, items []importlists.ItemInfo, listID int) (int, error) {
+	s.calls = append(s.calls, persistCall{listID: listID, items: items})
+	if s.err != nil {
+		if e := s.err[listID]; e != nil {
+			return 0, e
+		}
+	}
+	if s.removed != nil {
+		return s.removed[listID], nil
+	}
+	return 0, nil
+}
+
+type statusCall struct {
+	listID  int
+	removed bool
+}
+
+type stubStatusUpdater struct {
+	calls []statusCall
+}
+
+func (s *stubStatusUpdater) UpdateListSyncStatus(_ context.Context, listID int, removed bool) error {
+	s.calls = append(s.calls, statusCall{listID: listID, removed: removed})
+	return nil
+}
+
+func TestSync_PersistsCleanlyFetchedLists(t *testing.T) {
+	t.Parallel()
+	rows := []importlists.ImportList{
+		makeRow(1, "A", boolPtr(true)),
+		makeRow(2, "B", boolPtr(true)),
+	}
+	fetchByID := map[int]importlists.FetchResult{
+		1: {Series: []importlists.ItemInfo{{TvdbID: 100, Title: "X", ImportListID: 1}}},
+		2: {Series: []importlists.ItemInfo{{TvdbID: 200, Title: "Y", ImportListID: 2}}},
+	}
+	factory := buildSyncFactory(t, rows, fetchByID, nil)
+	svc := newSync(t, factory, &stubExclusions{}, &stubSeriesLookup{}, &stubSeriesAdder{}, nil)
+	persister := &stubItemPersister{removed: map[int]int{1: 0, 2: 3}}
+	status := &stubStatusUpdater{}
+	svc.SetItemPersister(persister)
+	svc.SetListStatusUpdater(status)
+
+	if _, err := svc.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	if len(persister.calls) != 2 {
+		t.Fatalf("persist calls: got %d, want 2", len(persister.calls))
+	}
+	if len(status.calls) != 2 {
+		t.Fatalf("status calls: got %d, want 2", len(status.calls))
+	}
+	// Status must report removed>0 only for list 2 (removed=3).
+	got := map[int]bool{}
+	for _, c := range status.calls {
+		got[c.listID] = c.removed
+	}
+	if got[1] != false || got[2] != true {
+		t.Errorf("removed flags: %+v want {1:false, 2:true}", got)
+	}
+}
+
+func TestSync_DoesNotPersistFailedFetch(t *testing.T) {
+	t.Parallel()
+	rows := []importlists.ImportList{
+		makeRow(1, "Broken", boolPtr(true)),
+		makeRow(2, "Healthy", boolPtr(true)),
+	}
+	fetchByID := map[int]importlists.FetchResult{
+		2: {Series: []importlists.ItemInfo{{TvdbID: 200, Title: "Y", ImportListID: 2}}},
+	}
+	fetchErrByID := map[int]error{1: errors.New("transport")}
+	factory := buildSyncFactory(t, rows, fetchByID, fetchErrByID)
+	svc := newSync(t, factory, &stubExclusions{}, &stubSeriesLookup{}, &stubSeriesAdder{}, nil)
+	persister := &stubItemPersister{}
+	status := &stubStatusUpdater{}
+	svc.SetItemPersister(persister)
+	svc.SetListStatusUpdater(status)
+
+	if _, err := svc.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	// Only the healthy list (2) is persisted; the broken list (1) is not.
+	if len(persister.calls) != 1 || persister.calls[0].listID != 2 {
+		t.Errorf("persist calls: %+v want only list 2", persister.calls)
+	}
+	if len(status.calls) != 1 || status.calls[0].listID != 2 {
+		t.Errorf("status calls: %+v want only list 2", status.calls)
+	}
+}
+
+func TestSync_DoesNotPersistPartialFailure(t *testing.T) {
+	t.Parallel()
+	rows := []importlists.ImportList{makeRow(1, "L", boolPtr(true))}
+	fetchByID := map[int]importlists.FetchResult{
+		1: {Series: []importlists.ItemInfo{{TvdbID: 100, Title: "X", ImportListID: 1}}, AnyFailure: true},
+	}
+	factory := buildSyncFactory(t, rows, fetchByID, nil)
+	svc := newSync(t, factory, &stubExclusions{}, &stubSeriesLookup{}, &stubSeriesAdder{}, nil)
+	persister := &stubItemPersister{}
+	status := &stubStatusUpdater{}
+	svc.SetItemPersister(persister)
+	svc.SetListStatusUpdater(status)
+
+	if _, err := svc.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	// A list that reported AnyFailure must NOT be persisted (a transient
+	// failure returning fewer items must not wipe persisted rows).
+	if len(persister.calls) != 0 {
+		t.Errorf("persist calls: %+v want none on partial failure", persister.calls)
+	}
+	if len(status.calls) != 0 {
+		t.Errorf("status calls: %+v want none on partial failure", status.calls)
+	}
+}
+
+func TestSync_PersistError_SkipsStatusUpdate(t *testing.T) {
+	t.Parallel()
+	rows := []importlists.ImportList{makeRow(1, "L", boolPtr(true))}
+	fetchByID := map[int]importlists.FetchResult{
+		1: {Series: []importlists.ItemInfo{{TvdbID: 100, Title: "X", ImportListID: 1}}},
+	}
+	factory := buildSyncFactory(t, rows, fetchByID, nil)
+	svc := newSync(t, factory, &stubExclusions{}, &stubSeriesLookup{}, &stubSeriesAdder{}, nil)
+	persister := &stubItemPersister{err: map[int]error{1: errors.New("db down")}}
+	status := &stubStatusUpdater{}
+	svc.SetItemPersister(persister)
+	svc.SetListStatusUpdater(status)
+
+	if _, err := svc.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err) // best-effort: persist error is swallowed
+	}
+	if len(status.calls) != 0 {
+		t.Errorf("status must not be updated when persist failed: %+v", status.calls)
+	}
+}

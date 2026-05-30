@@ -85,6 +85,7 @@ import (
 	"sonarr.tv/sonarr/internal/housekeeping"
 	"sonarr.tv/sonarr/internal/httpclient"
 	"sonarr.tv/sonarr/internal/importlistexclusions"
+	"sonarr.tv/sonarr/internal/importlistitems"
 	"sonarr.tv/sonarr/internal/importlists"
 	"sonarr.tv/sonarr/internal/importliststatus"
 	"sonarr.tv/sonarr/internal/indexers"
@@ -3517,6 +3518,25 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	if err != nil {
 		return fmt.Errorf("importlists sync service: %w", err)
 	}
+
+	// J500 (queue [I4c]): wire per-list ImportListItems persistence +
+	// sync-status bookkeeping into the orchestrator. Ports the C#
+	// FetchAndParseImportListService per-list SyncSeriesForList +
+	// UpdateListSyncStatus calls. Without these the fetched candidates
+	// were aggregated in memory only and never persisted, so the
+	// clean-library trigger (J501) would have read an empty table and
+	// mass-unmonitored every series. importListStatusSvc already
+	// satisfies the listStatusUpdater interface (UpdateListSyncStatus).
+	importListItemsRepo, err := importlistitems.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("importlistitems repo: %w", err)
+	}
+	importListItemsSvc, err := importlistitems.NewService(importListItemsRepo)
+	if err != nil {
+		return fmt.Errorf("importlistitems service: %w", err)
+	}
+	importListSyncSvc.SetItemPersister(importListItemPersister{svc: importListItemsSvc})
+	importListSyncSvc.SetListStatusUpdater(importListStatusSvc)
 
 	// Slice 5.J191 wires the RefreshSeries handler with a real
 	// refreshseries.Service. The service satisfies

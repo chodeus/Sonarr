@@ -49,12 +49,36 @@ import (
 // processListItems helper. The ID translation, exclusion check,
 // and existing-TvdbID gate happen per-item in the helper.
 type SyncService struct {
-	factory      *Factory
-	exclusions   exclusionLister
-	seriesLookup seriesLookup
-	seriesAdder  seriesAdder
-	idTranslator IDTranslator
-	logger       *slog.Logger
+	factory       *Factory
+	exclusions    exclusionLister
+	seriesLookup  seriesLookup
+	seriesAdder   seriesAdder
+	idTranslator  IDTranslator
+	itemPersister itemPersister
+	statusUpdater listStatusUpdater
+	logger        *slog.Logger
+}
+
+// itemPersister persists one list's freshly-fetched candidate set into
+// the ImportListItems table and reports how many stale rows were
+// removed. Mirrors C# `IImportListItemService.SyncSeriesForList` at
+// `FetchAndParseImportListService.cs:80`. Optional — when nil, no items
+// are persisted (and therefore the clean-library trigger, which reads
+// that table, can never fire). The concrete adapter maps ItemInfo →
+// internal/importlistitems.Item, keeping this package free of that
+// dependency.
+type itemPersister interface {
+	SyncSeriesForList(ctx context.Context, items []ItemInfo, listID int) (removed int, err error)
+}
+
+// listStatusUpdater records a per-list sync completion (LastInfoSync =
+// now) plus whether that sync removed any items. Mirrors C#
+// `IImportListStatusService.UpdateListSyncStatus` at
+// `FetchAndParseImportListService.cs:81`. Optional — when nil, the
+// per-list sync bookkeeping the clean-library gate reads is skipped.
+// *importliststatus.Service satisfies this directly.
+type listStatusUpdater interface {
+	UpdateListSyncStatus(ctx context.Context, importListID int, removedItems bool) error
 }
 
 // exclusionLister is the narrow interface SyncService needs from
@@ -184,6 +208,17 @@ func NewSyncService(
 	}, nil
 }
 
+// SetItemPersister wires the per-list ImportListItems persistence
+// (queue [I4c]). Optional — assigned post-construction in main.go so the
+// NewSyncService signature stays stable and the typed-nil-into-interface
+// trap is avoided (only ever assign a non-nil concrete adapter).
+func (s *SyncService) SetItemPersister(p itemPersister) { s.itemPersister = p }
+
+// SetListStatusUpdater wires the per-list sync-status bookkeeping
+// (queue [I4c]). Optional — same post-construction rationale as
+// SetItemPersister. *importliststatus.Service satisfies the interface.
+func (s *SyncService) SetListStatusUpdater(u listStatusUpdater) { s.statusUpdater = u }
+
 // Sync ports C# `SyncAll` at `ImportListSyncService.cs:85-103`.
 // Fans out AutomaticAddEnabled lists, processes items, dispatches
 // to SeriesAdder. Returns a SyncResult with per-pass stats.
@@ -253,6 +288,17 @@ func (s *SyncService) fanOutAndProcess(ctx context.Context, providers []Provider
 		}
 		if res.AnyFailure {
 			anyFailure = true
+		} else {
+			// Clean fetch — persist this list's candidate set + record
+			// the sync. Mirrors the C# gate at
+			// `FetchAndParseImportListService.cs:76-82`: SyncSeriesForList
+			// + UpdateListSyncStatus run ONLY for a list that fetched
+			// without failure, so a transient error returning an empty
+			// set can't wipe the list's persisted items and spuriously
+			// trigger a clean.
+			if def := p.Definition(); def != nil {
+				s.persistList(ctx, def.ID, res.Series)
+			}
 		}
 		aggregate = append(aggregate, res.Series...)
 	}
@@ -263,6 +309,37 @@ func (s *SyncService) fanOutAndProcess(ctx context.Context, providers []Provider
 	}
 	result.AnyFailure = anyFailure
 	return result, nil
+}
+
+// persistList reconciles one cleanly-fetched list's candidate set into
+// the ImportListItems table and records the sync outcome. Ports the C#
+// per-list body at `FetchAndParseImportListService.cs:78-81`:
+// SyncSeriesForList returns the removed count, then UpdateListSyncStatus
+// stamps LastInfoSync (always, on a clean fetch) and OR-accumulates the
+// removed>0 flag the clean-library gate consults.
+//
+// Best-effort: a persistence or status error is logged and swallowed so
+// one list's DB hiccup doesn't abort the whole sync (matches the C#
+// per-list try/catch). When itemPersister is nil the whole step is a
+// no-op (pre-I4c-wiring posture). Status is updated only after a
+// successful persist — mirroring the C# ordering where an exception in
+// SyncSeriesForList skips UpdateListSyncStatus.
+func (s *SyncService) persistList(ctx context.Context, listID int, items []ItemInfo) {
+	if s.itemPersister == nil {
+		return
+	}
+	removed, err := s.itemPersister.SyncSeriesForList(ctx, items, listID)
+	if err != nil {
+		s.logger.Warn("importlists: persist list items failed",
+			slog.Int("list_id", listID), slog.Any("err", err))
+		return
+	}
+	if s.statusUpdater != nil {
+		if err := s.statusUpdater.UpdateListSyncStatus(ctx, listID, removed > 0); err != nil {
+			s.logger.Warn("importlists: update list sync status failed",
+				slog.Int("list_id", listID), slog.Any("err", err))
+		}
+	}
 }
 
 // processListItems ports C# `ProcessListItems` at

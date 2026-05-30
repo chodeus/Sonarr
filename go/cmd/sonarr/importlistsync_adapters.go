@@ -9,11 +9,66 @@ import (
 	"time"
 
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/importlistitems"
+	"sonarr.tv/sonarr/internal/importlists"
 	"sonarr.tv/sonarr/internal/metadatasource"
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/organizer"
 	"sonarr.tv/sonarr/internal/series"
 )
+
+// importListItemPersister satisfies the importlists.SyncService
+// `itemPersister` narrow interface (queue [I4c]). It maps the sync
+// orchestrator's transient [importlists.ItemInfo] candidates onto
+// persisted [importlistitems.Item] rows and delegates the per-list
+// insert/update/delete diff to [*importlistitems.Service.SyncSeriesForList].
+//
+// The mapping mirrors C# `ImportListItemInfo`: the nullable external
+// ids (Year/TmdbId/ImdbId/MalId/AniListId) and ReleaseDate are stored
+// as NULL when the provider left them unset (zero / "" / zero-time),
+// matching the Go importlistitems.Item *pointer* model.
+type importListItemPersister struct {
+	svc *importlistitems.Service
+}
+
+// SyncSeriesForList maps the fetched candidate set and reconciles it.
+func (a importListItemPersister) SyncSeriesForList(ctx context.Context, items []importlists.ItemInfo, listID int) (int, error) {
+	rows := make([]importlistitems.Item, 0, len(items))
+	for i := range items {
+		it := items[i]
+		row := importlistitems.Item{
+			ImportListID: listID,
+			Title:        it.Title,
+			TvdbID:       it.TvdbID,
+		}
+		if it.Year != 0 {
+			y := it.Year
+			row.Year = &y
+		}
+		if it.TmdbID != 0 {
+			v := it.TmdbID
+			row.TmdbID = &v
+		}
+		if it.ImdbID != "" {
+			v := it.ImdbID
+			row.ImdbID = &v
+		}
+		if it.MalID != 0 {
+			v := it.MalID
+			row.MalID = &v
+		}
+		if it.AniListID != 0 {
+			v := it.AniListID
+			row.AniListID = &v
+		}
+		if !it.ReleaseDate.IsZero() {
+			v := it.ReleaseDate
+			row.ReleaseDate = &v
+		}
+		rows = append(rows, row)
+	}
+	return a.svc.SyncSeriesForList(ctx, rows, listID)
+}
 
 // episodeSeeder is the narrow slice of [*episodes.Repo] the
 // import-list adder reaches for to bulk-insert episode rows freshly
