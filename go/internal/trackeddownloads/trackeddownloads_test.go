@@ -6,9 +6,60 @@ import (
 	"testing"
 
 	"sonarr.tv/sonarr/internal/decisionengine"
+	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 )
+
+func TestWarnSetsWarningStatusAndMessages(t *testing.T) {
+	td := &trackeddownloads.TrackedDownload{State: trackeddownloads.StateImporting}
+	td.Warn("file a: rejected", "file b: rejected")
+	if td.Status != trackeddownloads.StatusWarning {
+		t.Errorf("Status = %v, want Warning", td.Status)
+	}
+	if len(td.StatusMessages) != 2 || td.StatusMessages[0] != "file a: rejected" {
+		t.Errorf("StatusMessages = %v", td.StatusMessages)
+	}
+	// Warn REPLACES (not appends), matching C# Warn(params...).
+	td.Warn("only this")
+	if len(td.StatusMessages) != 1 || td.StatusMessages[0] != "only this" {
+		t.Errorf("Warn should replace, got %v", td.StatusMessages)
+	}
+	if td.State != trackeddownloads.StateImporting {
+		t.Errorf("Warn must not change State, got %v", td.State)
+	}
+}
+
+func TestWarnfFormats(t *testing.T) {
+	td := &trackeddownloads.TrackedDownload{}
+	td.Warnf("no files in %q", "/x/y")
+	if td.StatusMessages[0] != `no files in "/x/y"` {
+		t.Errorf("Warnf = %q", td.StatusMessages[0])
+	}
+}
+
+func TestFailSetsErrorStateAndCanBeRemoved(t *testing.T) {
+	item := &downloadclients.Item{}
+	td := &trackeddownloads.TrackedDownload{State: trackeddownloads.StateImporting, DownloadItem: item}
+	td.Fail()
+	if td.Status != trackeddownloads.StatusError {
+		t.Errorf("Status = %v, want Error", td.Status)
+	}
+	if td.State != trackeddownloads.StateFailedPending {
+		t.Errorf("State = %v, want FailedPending", td.State)
+	}
+	if !item.CanBeRemoved {
+		t.Error("Fail should set DownloadItem.CanBeRemoved")
+	}
+}
+
+func TestFailNilItemNoPanic(t *testing.T) {
+	td := &trackeddownloads.TrackedDownload{}
+	td.Fail()
+	if td.State != trackeddownloads.StateFailedPending {
+		t.Errorf("State = %v, want FailedPending", td.State)
+	}
+}
 
 // --- enum String() coverage ---------------------------------------
 

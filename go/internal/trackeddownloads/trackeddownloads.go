@@ -201,6 +201,40 @@ type TrackedDownload struct {
 	HasNotifiedManualInteractionRequired bool
 }
 
+// Warn marks the download as needing attention. Ports C#
+// `TrackedDownload.Warn(params TrackedDownloadStatusMessage[])`
+// (`TrackedDownload.cs:31-35`): sets Status=Warning and REPLACES the
+// per-download status messages with the supplied ones.
+//
+// The Go port keeps the established `[]string` simplification of the
+// C# `TrackedDownloadStatusMessage[]` (Title+Messages) shape — each
+// argument is one flattened message line (callers prefix the filename
+// where C# would set the per-file Title). The typed message struct is a
+// separate queue/UI-display concern.
+func (t *TrackedDownload) Warn(messages ...string) {
+	t.Status = StatusWarning
+	t.StatusMessages = append([]string(nil), messages...)
+}
+
+// Warnf is the format-string convenience matching C#
+// `TrackedDownload.Warn(string message, params object[] args)`
+// (`TrackedDownload.cs:26-30`).
+func (t *TrackedDownload) Warnf(format string, args ...any) {
+	t.Warn(fmt.Sprintf(format, args...))
+}
+
+// Fail marks the download as failed. Ports C# `TrackedDownload.Fail()`
+// (`TrackedDownload.cs:37-44`): Status=Error, State=FailedPending, and
+// the client item is flagged CanBeRemoved so the failed download can be
+// cleaned up.
+func (t *TrackedDownload) Fail() {
+	t.Status = StatusError
+	t.State = StateFailedPending
+	if t.DownloadItem != nil {
+		t.DownloadItem.CanBeRemoved = true
+	}
+}
+
 // IndexerFlags returns the per-release IndexerFlags from the wrapped
 // RemoteEpisode.Release, or zero when no remote episode / release is
 // attached.
