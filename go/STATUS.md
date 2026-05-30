@@ -20579,3 +20579,11 @@ R: cmd/sonarr/download_tracker_wiring.go (refreshTracked helper + RefreshTracked
 Campaign J460–J475 (16 slices) + a fresh full audit across every high-yield dimension drained the clean/in-scope/ungated/non-cosmetic/non-large work. Final API write/action endpoint audit = NO MATERIAL GAPS (command dispatch, release/queue grab, series editor, provider Test/Action, manual import all execute their side-effects). Deps-bundle silent-nil sweep CLEAN. Commands + scheduled tasks all registered. Full breakdown (done / large / complex-deferred / blocked / marginal / LOW) in GAP_ANALYSIS.md "AUTONOMOUS EXHAUSTION (J475)".
 
 Remaining = LARGE (extras-import subsystem), complex side-effecting (Delay/Pending specs + documented release-push/manual-import arms), BLOCKED (SceneMapping spec), marginal (SeasonMatch/SingleEpisodeSearchMatch), LOW (EpisodeInfoRefreshed handler, monitoring event-refresh optimization). None is an autonomous-loop slice — flagged for operator decision. No further wakeup scheduled.
+
+## J476 — extras-import subsystem, slice 1/N: foundation (internal/extras)
+
+RESUMED after the J475 exhaustion flag, on the operator's "resume" → starting the LARGE extras-IMPORT subsystem port (C# `Extras/`; the import side was wired as noopExtrasImporter). Mapped C# + Go substrate (substrate is mostly present: subtitlefiles/extrafiles repos, config ImportExtraFiles/ExtraFileExtensions/CopyUsingHardlinks, episodefilemoving transfer, parser subtitle fns, LocalEpisode.PossibleExtraFiles/FileNameBeforeRename/ShouldImportExtras).
+
+Slice 1 (pure, no deps on episodeimport): NEW `internal/extras/extras.go` — subtitle extension set (`IsSubtitleExtension`, ports SubtitleFileExtensions.cs), `ParseExtraFileExtensions` (comma-split+normalize, ExtraService.cs:70-73), the `TransferMode`+`FileTransferrer` seam, and the shared `importFile` helper (dest = episode-file folder + stem + suffix + ext; Move on normal import, Copy/HardLinkOrCopy when readOnly; returns series-relative path — ports ExtraFileManager.ImportFile:57-87). 5 test funcs (ext membership, config parse+dedup, importFile naming/mode/relpath, nil+error).
+
+Plan: 2=managers base+Other, 3=Subtitle, 4=orchestrator+wire into ImportApprovedEpisodes (replace noop). R: (none). A: internal/extras/{extras.go,extras_test.go}. M: STATUS/PROGRESS/GAP. Gates: build/vet/gofmt clean; extras -race green.
