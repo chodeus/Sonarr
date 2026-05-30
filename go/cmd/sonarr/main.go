@@ -1983,6 +1983,20 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		return fmt.Errorf("healthcheck indexerDownloadClient: %w", err)
 	}
 
+	// J464: DownloadClientStatusCheck — warns when enabled download
+	// clients are inside their back-off window (some → Warning, all →
+	// Error). Sibling of the indexer/importlist/notification status
+	// checks (the reason codes already existed but no check used them).
+	// Ports DownloadClientStatusCheck.cs (joins enabled clients with
+	// downloadClientStatusSvc.GetBlockedProviders, no recency window).
+	downloadClientStatusCheck, err := healthcheck.NewDownloadClientStatusCheck(
+		newEnabledDownloadClientStatusListerAdapter(downloadClientsRepo),
+		downloadClientStatusSvc,
+	)
+	if err != nil {
+		return fmt.Errorf("healthcheck downloadClientStatus: %w", err)
+	}
+
 	// Slice 5.J142: PackageGlobalMessageCheck wired against the
 	// deploymentinfo.Provider built from the binary's startup
 	// folder. The Provider tolerates missing package_info /
@@ -2066,6 +2080,7 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		indexerJackettAllCheck,
 		indexerDCCheck,
 		indexerLongTermStatusCheck,
+		downloadClientStatusCheck,
 		downloadClientSortingCheck,
 		downloadClientRemovesCompletedCheck,
 		downloadClientRootFolderCheck,

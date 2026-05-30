@@ -1,5 +1,11 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## PHASE-2 FRESH AUDIT (J464, 2026-05-30) — health checks + housekeepers
+
+Two Explore agents diffed C# `IProvideHealthCheck` + `IHousekeepingTask` impls vs Go (ported AND wired).
+- **Health checks: 25/26 ported+wired; 1 gap = `DownloadClientStatusCheck` → FIXED J464.** Reason codes pre-existed unused; ported faithfully (sibling of indexer/importlist/notification status checks). Go also has an extra `SkyHookCheck` (intentional, no C# parallel).
+- **Housekeepers: 30/31 ported+wired; 1 gap = `TrimLogDatabase` (BLOCKED-ish/LOW).** C# `TrimLogDatabase.cs` calls `_logRepository.Trim()` on the Housekeeping run when the log DB is enabled, bounding the Logs table growth. The Go log-DB is a separate datastore; the J410 ClearLog command used `logs.Repo.Purge` (full purge), but a bounded TRIM (keep last N / age-based, matching C# `LogRepository.Trim`) is not wired into the housekeeping sweep. **Follow-up candidate** — verify the Go logs.Repo has (or needs) a Trim-equivalent + wire a housekeeper. All other 30 housekeepers (orphan cleanups, fix-future-status-times ×4, singleton cleanups, metadata cleanups, etc.) are ported + registered in housekeeping.NewService (main.go:3006+).
+
 > **Fix status (updated through J429):**
 > - ✅ **G1** search→grab — FIXED J423 (search adapters now feed the grabber).
 > - ✅ **G2** CleanUpRecycleBin stub — FIXED J421 (dep wired).

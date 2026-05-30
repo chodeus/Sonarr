@@ -20469,3 +20469,13 @@ Phase-1 #4 (LOW residual, completed — quick + real value). The Go rename handl
 Fix: NEW optional `EmptySubfolderRemover` dep on RenameDeps (`RemoveEmptySubfolders(path) error`; *disk.Provider satisfies it); called on the `len(renamed) > 0` branch before the SeriesRenamedEvent publish, matching C# ordering. Wired `Disk: diskProv` at the cmd/sonarr RenameDeps construction site. Optional (nil → skip) so existing tests/handlers unaffected.
 
 R: internal/commands/handlers/rename.go (interface + call), cmd/sonarr/main.go (wire diskProv). A: 2 tests (cleanup runs once with series.Path before the event; skipped when no file renamed). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; handlers + cmd/sonarr + contract -race green.
+
+## J464 — DownloadClientStatusCheck (missing health check ported + wired)
+
+Phase-2 fresh audit (health-check + housekeeper coverage sweep via two Explore agents). Health-check audit: 25/26 C# checks ported+wired; the ONE gap = `DownloadClientStatusCheck`. Verify-first confirmed genuinely missing: the reason codes `ReasonDownloadClientStatusAllClients/SingleClient` already existed in healthcheck.go but NO check used them (grep: zero refs outside the enum), and notification_status.go's doc even cited `DownloadClientStatusBlockedLister` as a precedent that didn't exist.
+
+Ported `DownloadClientStatusCheck.cs` (joins enabled download clients with `downloadclientstatus.Service.GetBlockedProviders` — no recency window, exactly like NotificationStatusCheck; some-blocked → Warning + names, all-blocked → Error). NEW `internal/healthcheck/downloadclient_status.go` (mirrors notification_status.go) + `enabledDownloadClientStatusListerAdapter` (healthcheck_wiring.go, projects enabled DC rows → ID/Name) + construction & registration in serve()'s healthSvc check list. Without it, users whose download clients are in backoff saw NO health warning (the other 3 provider families do).
+
+R: internal/healthcheck/downloadclient_status.go (new check), cmd/sonarr/healthcheck_wiring.go (adapter), cmd/sonarr/main.go (construct+register). A: downloadclient_status_test.go (7 cases: nil-guard, no-enabled OK, all-healthy OK, some→Warning, all→Error, name-sort, lister-errors-warn, metadata). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; healthcheck + cmd/sonarr + contract -race green.
+
+Housekeeper audit (parallel agent): TrimLogDatabase is the only missing housekeeper (logs DB grows unbounded) — flagged in GAP_ANALYSIS for a follow-up slice; needs a logRepo.Trim equivalent.

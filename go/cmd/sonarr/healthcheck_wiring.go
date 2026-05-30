@@ -121,6 +121,42 @@ func notificationEnabled(n *notifications.Notification) bool {
 	return false
 }
 
+// enabledDownloadClientStatusListerAdapter implements
+// healthcheck.EnabledDownloadClientStatusLister — the "list every
+// enabled download client" projection the DownloadClientStatusCheck
+// consumes. Wraps the download-client repo's All and applies the C#
+// `DownloadClientDefinition.Enable` predicate (the `Enable` column) at
+// the boundary.
+//
+// C# parallel: `DownloadClientStatusCheck.cs:28` —
+// `_providerFactory.GetAvailableProviders()` returns the enabled
+// subset; the Go port flattens to (ID, Name).
+type enabledDownloadClientStatusListerAdapter struct {
+	repo downloadClientRowLister
+}
+
+// newEnabledDownloadClientStatusListerAdapter binds the dependency.
+func newEnabledDownloadClientStatusListerAdapter(repo downloadClientRowLister) enabledDownloadClientStatusListerAdapter {
+	return enabledDownloadClientStatusListerAdapter{repo: repo}
+}
+
+// EnabledDownloadClientsForStatus implements
+// healthcheck.EnabledDownloadClientStatusLister.
+func (a enabledDownloadClientStatusListerAdapter) EnabledDownloadClientsForStatus(ctx context.Context) ([]healthcheck.EnabledDownloadClient, error) {
+	rows, err := a.repo.All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("downloadclients.All: %w", err)
+	}
+	out := make([]healthcheck.EnabledDownloadClient, 0, len(rows))
+	for i := range rows {
+		if !rows[i].Enable {
+			continue
+		}
+		out = append(out, healthcheck.EnabledDownloadClient{ID: rows[i].ID, Name: rows[i].Name})
+	}
+	return out, nil
+}
+
 // importListListerAdapter implements both
 // [healthcheck.EnabledImportListLister] and
 // [healthcheck.AllImportListLister] — the projections slice 4.AQ
