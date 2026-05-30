@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -214,12 +215,15 @@ func (p *Provider) SslCertPassword(ctx context.Context) (string, error) {
 	return p.String(ctx, "SslCertPassword", "", true)
 }
 
-// UpdateAutomatically mirrors `ConfigFileProvider.cs:309`. C# uses
-// `OsInfo.IsWindows` as the default — the Go port pins false (matches
-// the non-Windows recording host); a follow-up can introduce host-
-// platform-aware defaulting when needed.
+// UpdateAutomatically mirrors `ConfigFileProvider.cs:309` —
+// `GetValueBoolean("UpdateAutomatically", OsInfo.IsWindows, false)`. The
+// default is platform-aware: true on Windows (where the built-in updater
+// is the norm), false elsewhere (most non-Windows installs are managed
+// externally — Docker/apt/package manager). Realised in Go as
+// `runtime.GOOS == "windows"`. J507 corrected the earlier pinned-false
+// default which diverged from C# on Windows.
 func (p *Provider) UpdateAutomatically(ctx context.Context) (bool, error) {
-	return p.Bool(ctx, "UpdateAutomatically", false, false)
+	return p.Bool(ctx, "UpdateAutomatically", runtime.GOOS == "windows", false)
 }
 
 // UpdateMechanism mirrors `ConfigFileProvider.cs:311-314`. Returns

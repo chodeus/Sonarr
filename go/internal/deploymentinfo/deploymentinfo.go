@@ -76,6 +76,16 @@ func (m UpdateMechanism) String() string {
 	}
 }
 
+// ParseUpdateMechanism is the exported form of [parseUpdateMechanism] —
+// the case-insensitive `Enum.TryParse<UpdateMechanism>` used by the
+// config getter `configfile.Provider.UpdateMechanism` (C#
+// `ConfigFileProvider.UpdateMechanism` parses the config value via
+// `GetValueEnum`). Returns false on unrecognized input so callers can
+// apply the BuiltIn default.
+func ParseUpdateMechanism(s string) (UpdateMechanism, bool) {
+	return parseUpdateMechanism(s)
+}
+
 // parseUpdateMechanism mirrors the C# `Enum.TryParse<T>(value, true, out ...)`
 // case-insensitive parse. Returns false on unrecognized input.
 func parseUpdateMechanism(s string) (UpdateMechanism, bool) {
