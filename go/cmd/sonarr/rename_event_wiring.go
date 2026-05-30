@@ -26,3 +26,9 @@ func (p renameEventPublisher) PublishEpisodeFileRenamed(ctx context.Context, ev 
 func (p renameEventPublisher) PublishSeriesRenamed(ctx context.Context, ev episodefiles.SeriesRenamedEvent) error {
 	return messaging.Publish(ctx, p.bus, ev)
 }
+
+// PublishRenameCompleted publishes the once-per-command
+// episodefiles.RenameCompletedEvent (J521) → notifications ProcessQueue drain.
+func (p renameEventPublisher) PublishRenameCompleted(ctx context.Context, ev episodefiles.RenameCompletedEvent) error {
+	return messaging.Publish(ctx, p.bus, ev)
+}

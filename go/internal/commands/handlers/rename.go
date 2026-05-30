@@ -68,6 +68,9 @@ type EpisodeFileRowUpdater interface {
 type RenameEventPublisher interface {
 	PublishEpisodeFileRenamed(ctx context.Context, ev episodefiles.EpisodeFileRenamedEvent) error
 	PublishSeriesRenamed(ctx context.Context, ev episodefiles.SeriesRenamedEvent) error
+	// PublishRenameCompleted fires once per rename command (C#
+	// `RenameEpisodeFileService.cs:190,206`) → notifications ProcessQueue drain.
+	PublishRenameCompleted(ctx context.Context, ev episodefiles.RenameCompletedEvent) error
 }
 
 // EmptySubfolderRemover prunes now-empty directories left under the
@@ -137,6 +140,7 @@ func (h *RenameFiles) Execute(ctx context.Context, body string) error {
 		return fmt.Errorf("handlers: RenameFiles: load files: %w", err)
 	}
 	renameEpisodeFiles(ctx, h.deps, ser, files, h.log)
+	publishRenameCompleted(ctx, h.deps, h.log)
 	return nil
 }
 
@@ -180,7 +184,21 @@ func (h *RenameSeries) Execute(ctx context.Context, body string) error {
 		}
 		renameEpisodeFiles(ctx, h.deps, ser, files, h.log)
 	}
+	publishRenameCompleted(ctx, h.deps, h.log)
 	return nil
+}
+
+// publishRenameCompleted fires the once-per-command RenameCompletedEvent
+// (C# `RenameEpisodeFileService.cs:190,206` — published unconditionally
+// at the end of each rename command, even when nothing was renamed).
+// Gated on the optional publisher.
+func publishRenameCompleted(ctx context.Context, deps RenameDeps, log *slog.Logger) {
+	if deps.Publisher == nil {
+		return
+	}
+	if err := deps.Publisher.PublishRenameCompleted(ctx, episodefiles.RenameCompletedEvent{}); err != nil {
+		log.Warn("rename: publish RenameCompletedEvent failed", "err", err)
+	}
 }
 
 // renameEpisodeFiles ports the per-file loop of C# `RenameFiles(...)`

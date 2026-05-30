@@ -123,10 +123,12 @@ func NewService(factory *Factory, recorder serviceRecorder, logger *slog.Logger)
 //   - DownloadsProcessedEvent → trackeddownloads.DownloadsProcessedEvent
 //     (drains ProcessQueue at the end of each download-processing pass —
 //     wired J520)
-//   - DeleteCompletedEvent / RenameCompletedEvent — drain ProcessQueue.
-//     The Go event types/producers don't exist yet (the media-file
-//     delete + rename flows don't publish a batch-complete event); these
-//     drains land when those producer events port.
+//   - RenameCompletedEvent → episodefiles.RenameCompletedEvent (drains
+//     ProcessQueue at the end of a rename command — wired J521)
+//   - DeleteCompletedEvent — drains ProcessQueue. The Go event
+//     type/producer doesn't exist yet (the media-file batch-delete flow
+//     doesn't publish a batch-complete event); this drain lands when
+//     that producer event ports.
 //
 // Subscribe is idempotent only insofar as messaging.Subscribe is —
 // calling it twice on the same bus produces two subscriptions.
@@ -157,6 +159,8 @@ func (s *Service) Subscribe(bus *messaging.Bus) {
 	// ProcessQueue drain on the end-of-pass DownloadsProcessedEvent (the
 	// event downloadprocessing already publishes, J454).
 	messaging.SubscribeAsync(bus, "notifications.HandleDownloadsProcessedEvent", s.HandleDownloadsProcessedEvent)
+	// ProcessQueue drain on the end-of-rename-command RenameCompletedEvent (J521).
+	messaging.SubscribeAsync(bus, "notifications.HandleRenameCompletedEvent", s.HandleRenameCompletedEvent)
 }
 
 // HandleEpisodeGrabbedEvent ports the C# `Handle(EpisodeGrabbedEvent)`
@@ -666,6 +670,15 @@ func (s *Service) HandleHealthCheckCompleteEvent(ctx context.Context, _ healthch
 // HandleHealthCheckCompleteEvent; both are async coalescing-buffer
 // flushes for the Plex/Kodi/Emby providers.
 func (s *Service) HandleDownloadsProcessedEvent(ctx context.Context, _ trackeddownloads.DownloadsProcessedEvent) error {
+	s.processQueue(ctx)
+	return nil
+}
+
+// HandleRenameCompletedEvent ports the C#
+// `IHandleAsync<RenameCompletedEvent>` (`NotificationService.cs:535-538`)
+// — drains every provider's ProcessQueue after a rename command
+// (the event RenameEpisodeFileService publishes, J521).
+func (s *Service) HandleRenameCompletedEvent(ctx context.Context, _ episodefiles.RenameCompletedEvent) error {
 	s.processQueue(ctx)
 	return nil
 }

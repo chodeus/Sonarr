@@ -61,8 +61,9 @@ func renameDeps(mover *fakeMover, upd *fakeRowUpdater, fl fakeRenameFiles) handl
 }
 
 type fakeRenamePublisher struct {
-	fileEvents   []episodefiles.EpisodeFileRenamedEvent
-	seriesEvents []episodefiles.SeriesRenamedEvent
+	fileEvents     []episodefiles.EpisodeFileRenamedEvent
+	seriesEvents   []episodefiles.SeriesRenamedEvent
+	completedCount int
 }
 
 func (p *fakeRenamePublisher) PublishEpisodeFileRenamed(_ context.Context, ev episodefiles.EpisodeFileRenamedEvent) error {
@@ -72,6 +73,11 @@ func (p *fakeRenamePublisher) PublishEpisodeFileRenamed(_ context.Context, ev ep
 
 func (p *fakeRenamePublisher) PublishSeriesRenamed(_ context.Context, ev episodefiles.SeriesRenamedEvent) error {
 	p.seriesEvents = append(p.seriesEvents, ev)
+	return nil
+}
+
+func (p *fakeRenamePublisher) PublishRenameCompleted(_ context.Context, _ episodefiles.RenameCompletedEvent) error {
+	p.completedCount++
 	return nil
 }
 
@@ -184,6 +190,9 @@ func TestRenameFiles_PublishesEvents_J453(t *testing.T) {
 	if se.RenamedFiles[0].PreviousRelativePath != "a.mkv" || se.RenamedFiles[0].PreviousPath != "/tv/Show/a.mkv" {
 		t.Errorf("renamed[0] prior paths = %q / %q", se.RenamedFiles[0].PreviousRelativePath, se.RenamedFiles[0].PreviousPath)
 	}
+	if pub.completedCount != 1 {
+		t.Errorf("RenameCompletedEvent fired %d times, want 1", pub.completedCount)
+	}
 }
 
 func TestRenameFiles_NoFilesRenamed_NoSeriesEvent_J453(t *testing.T) {
@@ -200,6 +209,11 @@ func TestRenameFiles_NoFilesRenamed_NoSeriesEvent_J453(t *testing.T) {
 	}
 	if len(pub.fileEvents) != 0 || len(pub.seriesEvents) != 0 {
 		t.Errorf("no files renamed → expected no events, got file=%d series=%d", len(pub.fileEvents), len(pub.seriesEvents))
+	}
+	// RenameCompletedEvent fires UNCONDITIONALLY at the end of the command
+	// (C# publishes it even when nothing was renamed).
+	if pub.completedCount != 1 {
+		t.Errorf("RenameCompletedEvent should fire once even with no renames, got %d", pub.completedCount)
 	}
 }
 

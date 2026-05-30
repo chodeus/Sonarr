@@ -136,6 +136,14 @@ type SeriesRenamedEvent struct {
 	RenamedFiles []RenamedEpisodeFile
 }
 
+// RenameCompletedEvent ports the C# `RenameCompletedEvent : IEvent`
+// (`src/NzbDrone.Core/MediaFiles/Events/RenameCompletedEvent.cs`).
+// Published once at the end of a RenameFiles / RenameSeries command
+// (`RenameEpisodeFileService.cs:190,206`). Its sole consumer is the
+// notifications ProcessQueue drain (flushes the Plex/Kodi/Emby
+// coalescing buffers after a rename batch). Carries no payload.
+type RenameCompletedEvent struct{}
+
 // EpisodeFileUpdatedEvent is a Go-port additive event fired by
 // [Service.Update] / [Service.UpdateMany] after a successful repo
 // update. C# Sonarr emits the equivalent signal via Dapper's
