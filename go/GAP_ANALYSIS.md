@@ -1,6 +1,18 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
-## RESUMED (J498+, 2026-05-30) — GAP4 / I4c import-list clean-library arc
+## AUTONOMOUS EXHAUSTION (J502, 2026-05-30) — GAP4 / I4c CLOSED; loop STOPPED
+
+Resumed to close GAP4 (import-list clean-library), the last non-marginal item. **GAP4 / I4c FULLY CLOSED in 5 clean slices (J498–J502)** — items persistence + status pending-clean + sync-flow wiring + CleanLibrary core + ProviderDeleted-on-delete; the whole clean-library subsystem now matches C# (default-Disabled → inert for typical installs, correctness-when-enabled). FULL SUITE green (build ./… + vet ./… + gofmt -l . empty + go test ./…).
+
+A fresh verify-first bounded audit (the "silently-missing-from-a-list/registry/subscription" highest-yield class — notification handlers, import-list subsystem, download-decision specs, queue handler, metadata Dependencies `any` fields, all provider registries) found **NO clean, high-value, ungated gap**. Everything constructed is wired; no handler-with-tests is unsubscribed; no registry is short an entry; no `any`-deps field is unassigned. Also verified: NO `CleanupOrphanedImportListItems` housekeeper exists in C# either (the ImportListItems table is reconciled by SyncSeriesForList's per-list diff + the J502 DeleteForList-on-delete — no orphan sweep needed).
+
+**Remaining = the same marginal/gated set the operator flagged "do NOT attempt unless real distinct value":**
+- **MARGINAL** SeasonMatchSpecification + SingleEpisodeSearchMatchSpecification — need a risky SearchCriteria criteria-discriminator refactor; EpisodeRequested (J467) covers the bulk; prior analysis doubted the value.
+- **GATED** notification OnRename/OnApplicationUpdate/OnManualInteractionRequired + 3 ProcessQueue drains — gated on update.Service / trackeddownloads manual-emit / batch-rename event (unported substrate); DownloadMonitoring event-driven-refresh (events undefined in Go; the 1-min RefreshMonitoredDownloads task covers it).
+
+Per the operator's exhaustion clause the loop is **STOPPED** (no further wakeup scheduled). To resume: the operator must pick the marginal SearchCriteria refactor or one of the gated items (each blocked on a separate unported subsystem).
+
+## RESUMED (J498–J502, 2026-05-30) — GAP4 / I4c import-list clean-library arc (DONE)
 
 Operator resumed the loop to close GAP4 (the only remaining non-marginal item). **VERIFY-FIRST CORRECTION of the J497 "gated/missing" labels:** most substrate already exists and the J497 breakdown was partly stale —
 - `importlistitems.All()` (cross-list) ALREADY exists via the embedded `repo.Repository[Item]` (J497 said "NO global All()" — wrong).

@@ -20782,7 +20782,17 @@ Ported C# `MediaFileDeletionService.Handle(EpisodeFileDeletedEvent)` (`src/NzbDr
 
 R: src MediaFileDeletionService.cs:215-243, seriesadded_folder_subscriber.go (pattern). A: cmd/sonarr/mediafile_deleted_folder_subscriber.go + _test.go (6 tests: gate-off no-op, MissingFromDisk no-op, nil-series no-op, prune-up-to-root, delete-empty-root, file-in-root). M: cmd/sonarr/main.go (+1 subscribe call). **GAP2 DONE.** Gates: FULL SUITE green (build ./… + vet ./… + gofmt -l . empty + go test ./…).
 
-## RESUMED (J498+, 2026-05-30) — GAP4 / I4c import-list clean-library arc
+## AUTONOMOUS EXHAUSTION (J502, 2026-05-30) — GAP4 / I4c CLOSED; loop STOPPED
+
+Resumed-after-J497 (operator picked GAP4, the last non-marginal item). **GAP4 / I4c import-list clean-library FULLY CLOSED in 5 clean slices (J498–J502)** — see the per-slice entries below + the GAP_ANALYSIS.md "AUTONOMOUS EXHAUSTION (J502)" section. FULL SUITE green (build ./… + vet ./… + gofmt -l . empty + go test ./…).
+
+VERIFY-FIRST payoff: J497's GAP4 breakdown was partly STALE in BOTH directions — `importlistitems.All()` already existed (embedded generic repo) and `importliststatus.Status` already carried the `LastInfoSync`+`HasRemovedItemSinceLastClean` columns/fields (no migration needed). But J497 MISSED the real blocker: the Go sync flow aggregated fetched items in memory and NEVER persisted them to the ImportListItems table → CleanLibrary would have read an empty table and mass-unmonitored the whole library. Persisting items first (J498+J500) was the safety-critical prerequisite.
+
+A fresh bounded verify-first audit (the "silently-missing-from-a-list/registry/subscription in cmd/sonarr" highest-yield class) found **NO clean high-value ungated gap**: notification handlers all wired (Subscribe active, 25 providers), import-list subsystem fully integrated (persister/status/clean/delete setters + ListDeletedEvent subscriber all present), download-decision specs complete, queue handler subscribed, metadata Dependencies `any` fields all assigned, every provider registry populated. Also confirmed: C# has no `CleanupOrphanedImportListItems` housekeeper (the table is reconciled by SyncSeriesForList's per-list diff + J502's DeleteForList — no orphan sweep needed).
+
+**Remaining = the same marginal/gated set the operator flagged "do NOT attempt unless real distinct value":** MARGINAL SeasonMatch/SingleEpisodeSearchMatch (risky SearchCriteria refactor, doubted value); GATED notification OnRename/OnApplicationUpdate/OnManualInteractionRequired + 3 ProcessQueue drains + DownloadMonitoring event-driven-refresh (each blocked on a separate unported subsystem). Per the operator's exhaustion clause the loop is **STOPPED** — no further wakeup. To resume: the operator picks the SearchCriteria refactor or one of the gated items.
+
+## RESUMED (J498–J502, 2026-05-30) — GAP4 / I4c import-list clean-library arc (DONE)
 
 Operator resumed to close GAP4 (the only remaining non-marginal item). VERIFY-FIRST corrected J497's labels: `importlistitems.All()` already exists (embedded generic repo); `importliststatus.Status` already has `LastInfoSync`+`HasRemovedItemSinceLastClean` columns/fields (no schema add). The real blocker J497 missed: the Go sync flow aggregates fetched items IN MEMORY ONLY and never persists them to the `importlistitems` table (no port of C# `ImportListItemService.SyncSeriesForList`) → table permanently empty → CleanLibrary would mass-unmonitor EVERYTHING. So the persistence is ported first (safety prerequisite). Decomposition: J498 items-persistence · J499 status pending-clean · J500 wire persistence+status into sync · J501 CleanLibrary core · J502 ProviderDeleted on delete.
 
