@@ -75,6 +75,61 @@ func (p *fakeRenamePublisher) PublishSeriesRenamed(_ context.Context, ev episode
 	return nil
 }
 
+type fakeEmptySubfolderRemover struct {
+	paths []string
+	err   error
+}
+
+func (f *fakeEmptySubfolderRemover) RemoveEmptySubfolders(path string) error {
+	f.paths = append(f.paths, path)
+	return f.err
+}
+
+// TestRenameFiles_RemovesEmptySubfolders_J463 pins the C# `:173`
+// post-rename cleanup: after at least one file is renamed,
+// RemoveEmptySubfolders(series.Path) runs exactly once, before the
+// SeriesRenamedEvent (the ordering C# uses).
+func TestRenameFiles_RemovesEmptySubfolders_J463(t *testing.T) {
+	t.Parallel()
+	mover := &fakeMover{}
+	upd := &fakeRowUpdater{}
+	fl := fakeRenameFiles{byIDs: []episodefiles.File{{ID: 10, SeriesID: 1, RelativePath: "a.mkv"}}}
+	disk := &fakeEmptySubfolderRemover{}
+	pub := &fakeRenamePublisher{}
+	deps := renameDeps(mover, upd, fl)
+	deps.Disk = disk
+	deps.Publisher = pub
+	h, _ := handlers.NewRenameFiles(deps, slog.Default())
+	if err := h.Execute(t.Context(), `{"seriesId":1,"files":[10]}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(disk.paths) != 1 || disk.paths[0] != "/tv/Show" {
+		t.Errorf("RemoveEmptySubfolders calls = %v, want [/tv/Show]", disk.paths)
+	}
+	if len(pub.seriesEvents) != 1 {
+		t.Errorf("SeriesRenamedEvent should still fire after cleanup; got %d", len(pub.seriesEvents))
+	}
+}
+
+// TestRenameFiles_NoRename_NoSubfolderCleanup_J463 pins that the cleanup
+// is gated on at least one rename (C# `:172` `if (renamed.Any())`).
+func TestRenameFiles_NoRename_NoSubfolderCleanup_J463(t *testing.T) {
+	t.Parallel()
+	mover := &fakeMover{sameForID: map[int]bool{10: true}} // same-filename → no move
+	upd := &fakeRowUpdater{}
+	fl := fakeRenameFiles{byIDs: []episodefiles.File{{ID: 10, SeriesID: 1, RelativePath: "a.mkv"}}}
+	disk := &fakeEmptySubfolderRemover{}
+	deps := renameDeps(mover, upd, fl)
+	deps.Disk = disk
+	h, _ := handlers.NewRenameFiles(deps, slog.Default())
+	if err := h.Execute(t.Context(), `{"seriesId":1,"files":[10]}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(disk.paths) != 0 {
+		t.Errorf("no rename → no subfolder cleanup; got %v", disk.paths)
+	}
+}
+
 func TestRename_NilDeps(t *testing.T) {
 	t.Parallel()
 	if _, err := handlers.NewRenameFiles(handlers.RenameDeps{}, nil); err == nil {

@@ -134,6 +134,10 @@ After 19 slices, the clean / in-scope / ungated / non-cosmetic autonomous work i
 
 **RESUMING LATER:** the next genuinely-impactful work is the Phase-4 download-completion pipeline (`CompletedDownloadService` + its event publishers), which unblocks Q1 tail + Q3 — but that's a substantial subsystem port, not an autonomous-loop slice. Flag to the operator.
 
+## RENAME PATH RemoveEmptySubfolders — DONE J463 (Phase-1 #4)
+
+The Go rename handler (`internal/commands/handlers/rename.go`) published the rename events but never pruned the now-empty directories files moved out of. C# `RenameEpisodeFileService.RenameFiles:173` calls `_diskProvider.RemoveEmptySubfolders(series.Path)` once after the per-file loop (gated on `renamed.Any()`), before publishing SeriesRenamedEvent. FIXED J463: optional `EmptySubfolderRemover` dep on RenameDeps (*disk.Provider), called on the `len(renamed) > 0` branch before the event publish; wired `Disk: diskProv` at the cmd/sonarr construction site. **Phase-1 follow-ups #1–4 all drained (J460–J463).**
+
 ## EVENT PRODUCER/CONSUMER PATTERN AUDIT — DONE J462 (Phase-1 #3)
 
 Explore fan-out over the whole tree cross-referencing every `messaging.Subscribe` consumer against every non-test `messaging.Publish` producer (incl. optional-publisher adapters wired in cmd/sonarr), plus every `internal/*` service with a `Subscribe(bus)` method vs cmd/sonarr call sites.

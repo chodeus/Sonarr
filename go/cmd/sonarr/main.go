@@ -3518,6 +3518,9 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 			// MoveFilesAfterRename). Without this the rename moved files
 			// silently and both consumers stayed dormant.
 			Publisher: renameEventPublisher{bus: bus},
+			// J463: prune empty subfolders left after renames
+			// (C# RenameEpisodeFileService.cs:173). *disk.Provider.
+			Disk: diskProv,
 		},
 		// J393 (punch-list #6): MoveSeries/BulkMoveSeries commands.
 		SeriesMover: seriesMover,

@@ -70,6 +70,16 @@ type RenameEventPublisher interface {
 	PublishSeriesRenamed(ctx context.Context, ev episodefiles.SeriesRenamedEvent) error
 }
 
+// EmptySubfolderRemover prunes now-empty directories left under the
+// series folder after files are renamed/moved out of them. *disk.Provider
+// satisfies it. Optional — when nil the cleanup is skipped. Ports the C#
+// `_diskProvider.RemoveEmptySubfolders(series.Path)` call in
+// `RenameEpisodeFileService.RenameFiles` (`:173`), which runs once after
+// the per-file loop when at least one file was renamed.
+type EmptySubfolderRemover interface {
+	RemoveEmptySubfolders(path string) error
+}
+
 // RenameDeps bundles the collaborators both rename handlers share.
 type RenameDeps struct {
 	Series  RenameSeriesLookup
@@ -78,6 +88,9 @@ type RenameDeps struct {
 	Updater EpisodeFileRowUpdater
 	// Publisher is optional (J453); nil disables rename-event publication.
 	Publisher RenameEventPublisher
+	// Disk is optional (J463); nil disables the post-rename
+	// empty-subfolder cleanup (C# RenameEpisodeFileService.cs:173).
+	Disk EmptySubfolderRemover
 }
 
 func (d RenameDeps) valid() bool {
@@ -209,8 +222,19 @@ func renameEpisodeFiles(ctx context.Context, deps RenameDeps, ser *series.Series
 			}
 		}
 	}
+	if len(renamed) == 0 {
+		return
+	}
+	// C# RenameEpisodeFileService.cs:173 — after at least one rename,
+	// prune empty directories left behind (e.g. an old season folder the
+	// files moved out of), BEFORE publishing SeriesRenamedEvent.
+	if deps.Disk != nil {
+		if err := deps.Disk.RemoveEmptySubfolders(ser.Path); err != nil {
+			log.Warn("rename: remove empty subfolders failed", "seriesId", ser.ID, "path", ser.Path, "err", err)
+		}
+	}
 	// Per-series event (C# `:172-176`) → metadata/extras MoveFilesAfterRename.
-	if len(renamed) > 0 && deps.Publisher != nil {
+	if deps.Publisher != nil {
 		ev := episodefiles.SeriesRenamedEvent{Series: ser, RenamedFiles: renamed}
 		if err := deps.Publisher.PublishSeriesRenamed(ctx, ev); err != nil {
 			log.Warn("rename: publish SeriesRenamedEvent failed", "seriesId", ser.ID, "err", err)

@@ -20461,3 +20461,11 @@ Root cause: C# QueueController.Remove treats a delete with no removeFromClient/b
 Fix: NEW `queueRemoveAdapter.ignore()` publishes DownloadIgnoredEvent (SeriesID/EpisodeIDs/Languages/Quality/SourceTitle/DownloadClientInfo/Message="Manually ignored") from the tracked download; called on the no-flags branch. Skips publish + warns on unknown series (C# returns false there); StopTracking + row removal still run (C# ignores the return value, QueueController.cs:94-95).
 
 R: cmd/sonarr/queue_remove_wiring.go (ignore producer + branch). A: 2 tests (no-flags publishes; unknown-series skips). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; cmd/sonarr + historyhandlers + downloadhistoryhandlers + contract -race green.
+
+## J463 — rename path: RemoveEmptySubfolders after renames (C# RenameEpisodeFileService.cs:173)
+
+Phase-1 #4 (LOW residual, completed — quick + real value). The Go rename handler (`internal/commands/handlers/rename.go` renameEpisodeFiles) moved files + published EpisodeFileRenamed/SeriesRenamed events but never pruned the now-empty old directories the files moved out of — C# `RenameEpisodeFileService.RenameFiles:173` calls `_diskProvider.RemoveEmptySubfolders(series.Path)` once after the per-file loop (gated on `renamed.Any()`), BEFORE publishing SeriesRenamedEvent. Without it the Go port left empty season/source folders behind after a rename.
+
+Fix: NEW optional `EmptySubfolderRemover` dep on RenameDeps (`RemoveEmptySubfolders(path) error`; *disk.Provider satisfies it); called on the `len(renamed) > 0` branch before the SeriesRenamedEvent publish, matching C# ordering. Wired `Disk: diskProv` at the cmd/sonarr RenameDeps construction site. Optional (nil → skip) so existing tests/handlers unaffected.
+
+R: internal/commands/handlers/rename.go (interface + call), cmd/sonarr/main.go (wire diskProv). A: 2 tests (cleanup runs once with series.Path before the event; skipped when no file renamed). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; handlers + cmd/sonarr + contract -race green.
