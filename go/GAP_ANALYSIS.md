@@ -1,5 +1,25 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## AUTONOMOUS EXHAUSTION (J475, 2026-05-30, campaign J460–J475)
+
+After 16 slices + a fresh full audit across every high-yield dimension, the clean / in-scope / ungated / non-cosmetic / non-large autonomous work is **drained**. The loop is stopped (no further wakeup scheduled) per the operator's exhaustion clause.
+
+**DONE this campaign (J460–J475):**
+- Phase-1 follow-ups (J460–J463): notification InstanceName fix (Discord/Telegram) + 25-provider coverage; queue-delete×hub faithful pin; **DownloadIgnoredEvent producer** (dead-consumer); rename RemoveEmptySubfolders.
+- Subsystem audits (each found+fixed its gaps): health checks (J464 DownloadClientStatusCheck), housekeepers (J465 TrimLogDatabase), notification providers (J460), metadata writers (J472 MapCoversToLocal + J473 EpisodeLookup/FolderLister — covers/episode/season images), import aggregators (J471 ReleaseGroup/ReleaseHash).
+- Download-decision specs: 5 ported (J466 MonitoredEpisode — RSS grabbed unmonitored; J467 EpisodeRequested; J468 IndexerTag; J469 Proper; J470 DeletedEpisodeFile).
+- Event consumers: trackeddownloads series-cache-refresh fully ported (J474 SeriesEdited/Deleted + J475 SeriesBulkEdited/Added).
+- **Verified CLEAN (no gaps):** provider deps-bundle silent-nil sweep (importlists/indexers/downloadclients); all user-facing commands registered; all 11 scheduled tasks registered; import-decision specs (14/14); V3/V5 API write/action endpoint side-effects (command dispatch, release grab, queue grab, series editor, provider Test/Action, manual import, series import — all execute, no stubs).
+
+**REMAINING (all out-of-scope for the autonomous loop):**
+- **LARGE / operator-flagged:** the extras-IMPORT subsystem (SubtitleService + OtherExtraService + the ExtraService orchestrator) — subtitles/sidecars adjacent to a download are not imported. Substantial subsystem port.
+- **COMPLEX / deferred (side-effecting substrate):** DelaySpecification + PendingSpecification (route a release to the pending-release queue / hold for the delay-profile wait); the documented release-push / manual-import follow-up arms (ShouldOverride, full ImportDecisionMaker pipeline rejections, indexer/dc name→id resolve) — tracked, not silent stubs.
+- **BLOCKED:** SceneMappingSpecification (decisionengine_wiring.go:227, scenemappings.Service signature).
+- **MARGINAL (skipped, documented):** SeasonMatchSpecification + SingleEpisodeSearchMatchSpecification (EpisodeRequested J467 covers the bulk; faithful port needs a risky SearchCriteria criteria-discriminator refactor for one narrow case).
+- **LOW:** trackeddownloads EpisodeInfoRefreshedEvent handler (removed-episode-id match, rare); DownloadMonitoring event-driven refresh (optimization over the 1-min scheduled task); v3-over-emits-v5-fields shared-struct tradeoffs.
+
+**KEY LESSON (this campaign):** the highest-yield gap class by far was "an entry/field SILENTLY MISSING from a list / registry / deps-bundle assembled in cmd/sonarr" — especially non-panicking `any`-field type-asserts that yield nil and silently disable a feature (J459 dispatch, J460 ConfigProvider, J462 producer, J464/J465 registry entries, J471 aggregators, J472/J473 metadata deps). Audit every such assembly site. The port's DEFERRED/"unported" doc-comments are SYSTEMATICALLY STALE — verify against code first.
+
 ## PHASE-2 CONFIRMATION AUDIT (J474, 2026-05-30) — commands / scheduled tasks / event consumers
 
 Broad maturity check (Explore). **Commands: all user-facing C# commands registered in Go** (out-of-scope: ResetApiKey, ApplicationUpdate install, framework Test/Unknown). **Scheduled tasks: all 11 registered.** **Event consumers:** found `TrackedDownloadService`'s `IHandle<SeriesEditedEvent>/<SeriesDeletedEvent>` (+ SeriesAdded/BulkEdited/EpisodeInfoRefreshed) cache-refresh handlers UNPORTED.

@@ -20573,3 +20573,9 @@ Finishes the J474 unit. Verify-first: series.SeriesBulkEditedEvent ([]Series, pu
 Deferred LOW: EpisodeInfoRefreshedEvent handler (matches by removed-episode-id; rare, different match shape) — documented, not wired.
 
 R: cmd/sonarr/download_tracker_wiring.go (refreshTracked helper + RefreshTrackedForAddedSeries), cmd/sonarr/main.go (2 subscriptions). A: download_tracker_wiring_test.go (added-series variant). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; cmd/sonarr + contract -race green.
+
+## AUTONOMOUS EXHAUSTION FLAGGED (J475, 2026-05-30) — loop stopped
+
+Campaign J460–J475 (16 slices) + a fresh full audit across every high-yield dimension drained the clean/in-scope/ungated/non-cosmetic/non-large work. Final API write/action endpoint audit = NO MATERIAL GAPS (command dispatch, release/queue grab, series editor, provider Test/Action, manual import all execute their side-effects). Deps-bundle silent-nil sweep CLEAN. Commands + scheduled tasks all registered. Full breakdown (done / large / complex-deferred / blocked / marginal / LOW) in GAP_ANALYSIS.md "AUTONOMOUS EXHAUSTION (J475)".
+
+Remaining = LARGE (extras-import subsystem), complex side-effecting (Delay/Pending specs + documented release-push/manual-import arms), BLOCKED (SceneMapping spec), marginal (SeasonMatch/SingleEpisodeSearchMatch), LOW (EpisodeInfoRefreshed handler, monitoring event-refresh optimization). None is an autonomous-loop slice — flagged for operator decision. No further wakeup scheduled.
