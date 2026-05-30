@@ -109,6 +109,7 @@ import (
 	"sonarr.tv/sonarr/internal/qualitydefinitions"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
+	"sonarr.tv/sonarr/internal/recyclebin"
 	"sonarr.tv/sonarr/internal/releasecache"
 	"sonarr.tv/sonarr/internal/releaseprofiles"
 	"sonarr.tv/sonarr/internal/remotepathmappings"
@@ -845,14 +846,25 @@ func blocklistQualityResource(raw string) *apiv3.QualityModelResource {
 // indirection into stdlib calls via the helper functions in
 // internal/api/v3/system_backup.go.
 // seriesFolderCleaner narrows the disk.Provider surface to the
-// methods seriesCascadeAdapter actually uses (DeleteFolder for the
-// cascade-delete path, MoveFolder for the moveFiles=true path).
+// methods seriesCascadeAdapter actually uses: FolderExists to gate the
+// cascade-delete (C# `:205`), MoveFolder for the moveFiles=true path.
+// (The recycle-or-permanent folder delete now routes through
+// seriesFolderRecycler — see DeleteCascade.)
 // Production wires *disk.Provider; tests pass a recording fake.
 // nil-safe — when the adapter holds a nil cleaner, the disk steps
 // are skipped.
 type seriesFolderCleaner interface {
+	FolderExists(path string) bool
 	DeleteFolder(path string, recursive bool) error
 	MoveFolder(src, dst string) error
+}
+
+// seriesFolderRecycler narrows recyclebin.Service.DeleteFolder — the
+// recycle-bin-aware (move-or-permanent) folder delete the J495
+// series-delete cascade routes through (GAP1). Production wires
+// *recyclebin.Service; tests pass a recording fake. nil-safe.
+type seriesFolderRecycler interface {
+	DeleteFolder(path string) error
 }
 
 // seriesCascadeAdapter bundles series + episodes + episodefiles
@@ -878,6 +890,7 @@ type seriesCascadeAdapter struct {
 	episodes     *episodes.Service
 	episodefiles *episodefiles.Service
 	disk         seriesFolderCleaner
+	recycleBin   seriesFolderRecycler
 	exclusions   *importlistexclusions.Service
 	logger       *slog.Logger
 }
@@ -955,12 +968,18 @@ func (a *seriesCascadeAdapter) AddImportListExclusion(ctx context.Context, id in
 // Order:
 //
 //  1. Load the series row to read Path (the on-disk folder location).
-//  2. If Path is non-empty and a disk cleaner is wired, call
-//     DeleteFolder(Path, recursive=true). Errors are LOGGED + the
-//     cascade continues — matches C# DiskProvider behaviour where
-//     on-disk delete failures (permission, in-use file) don't abort
-//     the DB-row cleanup. Operators can manually remove leftover
-//     files later; the database state stays consistent.
+//  2. Recycle-or-delete the on-disk folder (GAP1, J495). Ports C#
+//     `MediaFileDeletionService.HandleAsync(SeriesDeletedEvent)`
+//     (`src/NzbDrone.Core/MediaFiles/MediaFileDeletionService.cs:177-211`):
+//     FIRST guard against clobbering another series whose folder is
+//     nested under / identical to this one (safeToDeleteFolder); then,
+//     when the folder exists, route through the recycle-bin-aware
+//     [recyclebin.Service.DeleteFolder] (move to the configured recycle
+//     bin, or permanent-delete when unset) instead of the old raw
+//     permanent os.RemoveAll. Errors are LOGGED + the cascade continues
+//     — on-disk delete failures (permission, in-use file) don't abort
+//     the DB-row cleanup; operators can manually remove leftover files
+//     later and the database state stays consistent.
 //  3. Bulk-delete episodefiles for the series.
 //  4. Bulk-delete episodes for the series.
 //  5. Delete the series row itself.
@@ -978,12 +997,16 @@ func (a *seriesCascadeAdapter) DeleteCascade(ctx context.Context, id int) error 
 	if err != nil {
 		return err
 	}
-	// Step 2: on-disk folder delete (best-effort, logged on failure).
-	if a.disk != nil && row.Path != "" {
-		if dErr := a.disk.DeleteFolder(row.Path, true); dErr != nil {
-			if a.logger != nil {
-				a.logger.Warn("series cascade: on-disk DeleteFolder failed; continuing with DB cleanup",
-					"id", id, "path", row.Path, "err", dErr)
+	// Step 2: recycle-or-delete the on-disk folder (best-effort, logged
+	// on failure), guarded against deleting another series' files.
+	if a.recycleBin != nil && row.Path != "" && a.safeToDeleteFolder(ctx, id, row.Path) {
+		// Mirror C# `:205` — only act when the folder is actually there.
+		if a.disk == nil || a.disk.FolderExists(row.Path) {
+			if dErr := a.recycleBin.DeleteFolder(row.Path); dErr != nil {
+				if a.logger != nil {
+					a.logger.Warn("series cascade: on-disk folder recycle/delete failed; continuing with DB cleanup",
+						"id", id, "path", row.Path, "err", dErr)
+				}
 			}
 		}
 	}
@@ -995,6 +1018,51 @@ func (a *seriesCascadeAdapter) DeleteCascade(ctx context.Context, id int) error 
 		return fmt.Errorf("series cascade: episodes: %w", err)
 	}
 	return a.Delete(ctx, id)
+}
+
+// safeToDeleteFolder ports the C# parent/equal-path guard from
+// `MediaFileDeletionService.HandleAsync` (`:183-203`): the on-disk
+// folder is NOT deleted when this series' path is a parent of, or
+// identical to, ANOTHER series' path — otherwise the recursive delete
+// would clobber the other series' files. Returns true when the delete
+// is safe.
+//
+// Conservative divergence: if the all-series-paths enumeration fails we
+// SKIP the destructive delete (return false) rather than risk deleting
+// the wrong thing — the DB-row cascade still proceeds, so the series is
+// removed and any leftover files can be cleaned manually (consistent
+// with the step-2 "on-disk failure is non-fatal" posture). C# would let
+// the GetAllSeriesPaths exception unwind; the Go port treats it as
+// "unsafe, don't delete".
+func (a *seriesCascadeAdapter) safeToDeleteFolder(ctx context.Context, id int, path string) bool {
+	paths, err := a.AllSeriesPaths(ctx)
+	if err != nil {
+		if a.logger != nil {
+			a.logger.Warn("series cascade: can't enumerate series paths; skipping on-disk folder delete",
+				"id", id, "path", path, "err", err)
+		}
+		return false
+	}
+	for otherID, otherPath := range paths {
+		if otherID == id {
+			continue
+		}
+		if isParentPath(path, otherPath) {
+			if a.logger != nil {
+				a.logger.Error("series cascade: series path is a parent of another series, not deleting files",
+					"id", id, "path", path, "otherId", otherID, "otherPath", otherPath)
+			}
+			return false
+		}
+		if pathEquals(path, otherPath) {
+			if a.logger != nil {
+				a.logger.Error("series cascade: series path is the same as another series, not deleting files",
+					"id", id, "path", path, "otherId", otherID, "otherPath", otherPath)
+			}
+			return false
+		}
+	}
+	return true
 }
 
 type backupAdmin struct{ svc *backup.Service }
@@ -2610,6 +2678,12 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 	// 5.D10: importlistexclusions.Service for ?addImportListExclusion=true
 	// + body.AddImportListExclusion=true on the editor delete.
 	exclusionsSvc := importlistexclusions.NewService(importListExclusionsRepo)
+	// J495 (GAP1): recycle-bin-aware folder delete for the cascade.
+	// recyclebin.Service is stateless — construct inline here (same idiom
+	// as exclusionsSvc / episodeMonitoredSvc below) rather than thread it
+	// through v3Routes' already-huge param list. configProv/diskProv/logger
+	// are all in scope. Mirrors C# MediaFileDeletionService routing the
+	// SeriesDeletedEvent folder delete through RecycleBinProvider.
 	seriesWriter := &seriesCascadeAdapter{
 		Service:      seriesSvc,
 		episodes:     episodesSvc,
@@ -2617,6 +2691,13 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		disk:         diskProv,
 		exclusions:   exclusionsSvc,
 		logger:       logger,
+	}
+	// Assign the recycle-bin only when NewService returned a real value —
+	// a typed-nil *recyclebin.Service stored in the interface field would
+	// read as non-nil and panic in DeleteCascade. configProv+diskProv are
+	// non-nil in production so this binds the real service.
+	if seriesFolderRecycleBin := recyclebin.NewService(configProv, diskProv, logger); seriesFolderRecycleBin != nil {
+		seriesWriter.recycleBin = seriesFolderRecycleBin
 	}
 	// J214 — episodemonitored.Service satisfies
 	// apiv3.EpisodeMonitorCascader for the SeasonPassHandler. The

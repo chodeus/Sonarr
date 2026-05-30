@@ -200,6 +200,17 @@ func isParentPath(parent, child string) bool {
 	return rel != "" && !strings.HasPrefix(rel, "..")
 }
 
+// pathEquals reports whether two paths refer to the same directory
+// after normalization. Ports C# `PathExtensions.PathEquals`
+// (`src/NzbDrone.Common/Extensions/PathExtensions.cs`) — the Linux
+// build is case-sensitive, so a cleaned-string compare is faithful
+// (C# uses OrdinalIgnoreCase only on the Windows DiskProvider, which
+// the Go port doesn't target as a first-class platform). Used by the
+// series-delete cascade guard (seriesCascadeAdapter.safeToDeleteFolder).
+func pathEquals(a, b string) bool {
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
 // defaultIfEmpty returns `s` when non-empty, else `fallback`.
 func defaultIfEmpty(s, fallback string) string {
 	if strings.TrimSpace(s) == "" {

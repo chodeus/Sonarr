@@ -1177,13 +1177,16 @@ type SeriesExclusionAdder interface {
 // the plain svc.Delete path when the flag is false or the impl
 // doesn't satisfy SeriesCascader.
 //
-// IMPORTANT: this slice (5.D5) only cascades DB ROWS (episodes +
-// episodefiles + series tables). The C# tree also calls
-// DiskProvider.DeleteFolder to remove the on-disk series folder
-// when ?deleteFiles=true. That physical-disk cascade is DEFERRED
-// — the API-level flag is now honoured for DB rows but the
-// actual files remain on disk. A follow-up slice will port the
-// DiskProvider wire-through.
+// The cascade-delete impl (cmd/sonarr seriesCascadeAdapter.DeleteCascade)
+// removes BOTH the DB rows (episodes + episodefiles + series tables) AND
+// the on-disk series folder when ?deleteFiles=true. As of J495 the
+// on-disk delete routes through the recycle-bin-aware
+// recyclebin.Service.DeleteFolder (move to the configured recycle bin,
+// or permanent-delete when unset) and is guarded against clobbering a
+// nested/sibling series' folder — porting C#
+// MediaFileDeletionService.HandleAsync(SeriesDeletedEvent). (Tests that
+// supply a DB-only SeriesWriter still fall back to plain svc.Delete via
+// the type-assertion.)
 type SeriesCascader interface {
 	DeleteCascade(ctx context.Context, id int) error
 }
