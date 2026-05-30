@@ -22,11 +22,16 @@ func (s stubChecker) AvailableUpdate(context.Context) (*update.Package, error) {
 }
 
 type stubConfig struct {
-	auto      bool
-	mechanism string
-	branch    string
-	savedTo   string
-	saveErr   error
+	auto       bool
+	mechanism  string
+	branch     string
+	scriptPath string
+	savedTo    string
+	saveErr    error
+}
+
+func (s *stubConfig) UpdateScriptPath(context.Context) (string, error) {
+	return s.scriptPath, nil
 }
 
 func (s *stubConfig) UpdateAutomatically(context.Context) (bool, error) {

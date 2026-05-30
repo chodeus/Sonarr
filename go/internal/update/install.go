@@ -41,6 +41,7 @@ type Checker interface {
 type InstallConfig interface {
 	UpdateAutomatically(ctx context.Context) (bool, error)
 	UpdateMechanism(ctx context.Context) (string, error)
+	UpdateScriptPath(ctx context.Context) (string, error)
 	Branch(ctx context.Context) (string, error)
 	SetBranch(ctx context.Context, branch string) error
 }
@@ -63,6 +64,7 @@ type Installer struct {
 	appDataDir   string
 	buildVersion string
 	logger       *slog.Logger
+	run          *RunDeps // wired via SetRunDeps; nil until the install path is needed
 }
 
 // NewInstaller binds the decision-layer deps. checker/cfg/deployment are

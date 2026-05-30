@@ -82,6 +82,22 @@ func ParseStartupArgs(argv []string) *StartupContext {
 	return ctx
 }
 
+// PreservedArguments ports `StartupContext.PreservedArguments`
+// (`EnvironmentInfo/StartupContext.cs:61-79`) — the subset of startup
+// arguments that must survive an in-place update restart: the `/data`
+// path override and the `/nobrowser` flag. Returned as a single
+// command-line fragment the updater appends when relaunching the app.
+func (c *StartupContext) PreservedArguments() string {
+	args := ""
+	if v, ok := c.Args[StartupArgData]; ok {
+		args = "/" + StartupArgData + "=" + v
+	}
+	if c.HasFlag(StartupFlagNoBrowser) {
+		args += " /" + StartupFlagNoBrowser
+	}
+	return strings.TrimSpace(args)
+}
+
 // HasFlag reports whether name is set as a boolean flag. Case-insensitive.
 func (c *StartupContext) HasFlag(name string) bool {
 	_, ok := c.Flags[strings.ToLower(name)]
