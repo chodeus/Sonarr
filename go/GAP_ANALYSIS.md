@@ -1,5 +1,14 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## AUTONOMOUS EXHAUSTION (J497, 2026-05-30) — GAP1+GAP2 closed; GAP3 already done; GAP4 gated; loop STOPPED
+
+Resumed-after-J493 to close the operator-picked gaps. **GAP1 (J494+J495) + GAP2 (J496) DONE.** Fresh verify-first pass on the rest:
+- **GAP3 — already DONE (stale label).** UpdateEpisodeFileService.HandleSeriesScanned (FileDate-on-scan) ported + wired since J212 (main.go:2183-2187). No work needed.
+- **GAP4 — GATED/LARGE.** Core substrate now exists (config.ListSyncLevel/ListSyncTag + internal/importlistitems) but still missing: importliststatus AllListsSuccessfulWithAPendingClean/MarkListsAsCleaned "pending clean" bookkeeping, importlistitems global All(), and a ProviderDeletedEvent producer on import-list delete. Multi-piece "I4c" arc, default-Disabled → left GATED with evidence.
+- **MARGINAL** SeasonMatch/SingleEpisodeSearchMatch unchanged (risky SearchCriteria refactor; doubted value).
+
+Per the operator's exhaustion clause the loop is STOPPED (no further wakeup). Detail in STATUS.md "AUTONOMOUS EXHAUSTION (J497)".
+
 ## RESUMED (J494+, 2026-05-30) — operator picked GAP1 + GAP2
 
 - **GAP1 — series-delete on-disk file cascade (recycle-bin-aware + guarded).** Premise was partly STALE (VERIFY-FIRST): the Go cascade ALREADY deletes the folder (host_wiring.go:982), but via a RAW permanent `disk.DeleteFolder(path,true)` that ignores a configured recycle bin AND lacks the C# parent/equal-path safety guard.
