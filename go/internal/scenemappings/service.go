@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"sonarr.tv/sonarr/internal/messaging"
 	"sonarr.tv/sonarr/internal/parser"
@@ -49,11 +51,13 @@ type MappingsReader interface {
 // `DataAugmentation/Scene/SceneMappingService.cs:15-340`. Five
 // methods today, with two persistent caches (parseTerm-keyed +
 // tvdbId-keyed) populated lazily on first read. Subsequent reads
-// hit the cache; [Service.RefreshCache] re-reads from the repo
-// (production wiring calls this on the SeriesRefreshStartingEvent /
-// SeriesAddedEvent / SeriesImportedEvent / UpdateSceneMappingCommand
-// hooks the C# subscribers handle — those subscribers are deferred
-// to a later slice).
+// hit the cache; [Service.RefreshCache] re-reads from the repo.
+// The C# IHandle<SeriesRefreshStartingEvent/SeriesAddedEvent/
+// SeriesImportedEvent> hooks (which fetch fresh mappings from the
+// providers on demand) are wired in J491 via
+// [Service.HandleSeriesRefreshStarting] + [Service.HandleSeriesAddedOrImported],
+// subscribed in cmd/sonarr; the UpdateSceneMappingCommand drives the
+// periodic [Service.UpdateMappings].
 //
 // Goroutine-safe: every read takes the RWMutex's read lock; every
 // populate takes the write lock. Concurrent readers don't block each
@@ -102,11 +106,25 @@ type Service struct {
 	// downstream subscribers care.
 	bus *messaging.Bus
 
+	// now is the clock used for the manual-refresh cache-staleness
+	// check. Defaults to time.Now; overridable via WithClock for tests.
+	now func() time.Time
+	// updatedAfterStartup mirrors the C# `_updatedAfterStartup` flag —
+	// set true once UpdateMappings has run since process start. Gates
+	// the on-demand SeriesAdded/Imported/RefreshStarting fetch handlers
+	// (SceneMappingService.cs:312-328). atomic so the bus-dispatched
+	// handlers read it without taking mu.
+	updatedAfterStartup atomic.Bool
+
 	mu sync.RWMutex
 	// populated tracks whether the cache has been filled at least
 	// once. First read populates; later reads check this flag and
 	// skip the populate when true.
 	populated bool
+	// lastRefresh is the wall-clock time RefreshCache last rebuilt the
+	// caches. Drives cacheExpired for the manual-refresh handler (the
+	// C# `_findByTvdbIdCache.IsExpired(1min)` check). Zero = never.
+	lastRefresh time.Time
 	// byParseTerm groups mappings by `parser.CleanSeriesTitle(Title)`
 	// for the FindSceneMapping lookup. Mirrors C#
 	// `_getTvdbIdCache.Update(mappings.GroupBy(v => v.ParseTerm))`
@@ -170,7 +188,20 @@ func NewService(repo MappingsReader, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Service{repo: repo, log: log}
+	return &Service{repo: repo, log: log, now: time.Now}
+}
+
+// WithClock overrides the staleness clock (cacheExpired). Returns the
+// same Service for chaining. nil restores time.Now. Test seam.
+func (s *Service) WithClock(now func() time.Time) *Service {
+	if s == nil {
+		return nil
+	}
+	if now == nil {
+		now = time.Now
+	}
+	s.now = now
+	return s
 }
 
 // RefreshCache re-reads every Mapping from the repo and rebuilds
@@ -201,6 +232,9 @@ func (s *Service) RefreshCache(ctx context.Context) error {
 	s.byParseTerm = byParse
 	s.byTvdbID = byID
 	s.populated = true
+	if s.now != nil {
+		s.lastRefresh = s.now()
+	}
 	s.mu.Unlock()
 	return nil
 }
@@ -610,7 +644,10 @@ func (s *Service) UpdateMappings(ctx context.Context) error {
 	if len(s.providers) == 0 {
 		s.log.Warn("scenemappings: UpdateMappings called without providers; skipping")
 		// Not an error — production wiring may legitimately skip
-		// providers during early-boot or in degraded modes.
+		// providers during early-boot or in degraded modes. Mark
+		// updated-after-startup so the on-demand handlers stop retrying
+		// an unconfigured fetch on every series add.
+		s.updatedAfterStartup.Store(true)
 		return nil
 	}
 
@@ -638,12 +675,64 @@ func (s *Service) UpdateMappings(ctx context.Context) error {
 		return fmt.Errorf("scenemappings: UpdateMappings: cache refresh: %w", err)
 	}
 
+	// C# `_updatedAfterStartup = true` after a completed UpdateMappings
+	// (SceneMappingService.cs) — set once the provider loop + RefreshCache
+	// succeeded, so the on-demand handlers fetch at most once after startup.
+	s.updatedAfterStartup.Store(true)
+
 	if s.bus != nil {
 		if err := messaging.Publish(ctx, s.bus, UpdatedEvent{}); err != nil {
 			// Publish errors aren't fatal — they indicate a subscriber
 			// failed, not that the refresh itself broke. Log + return nil.
 			s.log.Warn("scenemappings: UpdatedEvent publish error", "err", err)
 		}
+	}
+	return nil
+}
+
+// cacheExpired reports whether the cache hasn't been refreshed within
+// the given window. Mirrors the C# `_findByTvdbIdCache.IsExpired(d)`
+// check the manual-refresh handler gates on. A never-refreshed cache
+// (zero lastRefresh) is treated as expired.
+func (s *Service) cacheExpired(d time.Duration) bool {
+	s.mu.RLock()
+	last := s.lastRefresh
+	s.mu.RUnlock()
+	if last.IsZero() {
+		return true
+	}
+	return s.now().Sub(last) > d
+}
+
+// HandleSeriesRefreshStarting ports C#
+// `SceneMappingService.Handle(SeriesRefreshStartingEvent)` at
+// `SceneMappingService.cs:311-316`: on a MANUAL refresh, re-fetch the
+// scene mappings from the providers when the cache is stale (>1min) or
+// hasn't been updated since startup. Non-manual (scheduled / per-id
+// background) refreshes are a no-op — the daily UpdateSceneMapping task
+// owns the periodic refresh.
+func (s *Service) HandleSeriesRefreshStarting(ctx context.Context, manualTrigger bool) error {
+	if s == nil {
+		return nil
+	}
+	if manualTrigger && (s.cacheExpired(time.Minute) || !s.updatedAfterStartup.Load()) {
+		return s.UpdateMappings(ctx)
+	}
+	return nil
+}
+
+// HandleSeriesAddedOrImported ports C#
+// `SceneMappingService.Handle(SeriesAddedEvent)` + `Handle(SeriesImportedEvent)`
+// at `SceneMappingService.cs:319-329`: ensure the scene mappings have
+// been fetched from the providers at least once since startup, so a
+// series added/imported before the daily UpdateSceneMapping task can
+// still match scene-numbered releases. No-op once updatedAfterStartup.
+func (s *Service) HandleSeriesAddedOrImported(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	if !s.updatedAfterStartup.Load() {
+		return s.UpdateMappings(ctx)
 	}
 	return nil
 }

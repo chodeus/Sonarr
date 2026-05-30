@@ -1974,6 +1974,28 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	}
 	scenemappingsSvc.WithProviders(scenemappingsProxy)
 
+	// J491: wire the SceneMappingService on-demand UpdateMappings
+	// handlers (C# IHandle<SeriesRefreshStartingEvent/SeriesAddedEvent/
+	// SeriesImportedEvent> at SceneMappingService.cs:311-329). These
+	// were UNWIRED — the service's RefreshCache doc-comment claimed
+	// production wired them, but no subscription existed, so on a fresh
+	// / restarted install the TheXEM scene mappings stayed empty until
+	// the daily UpdateSceneMapping task ran. Now adding/importing/
+	// manually-refreshing a series fetches the mappings on demand
+	// (gated once-after-startup; manual refresh re-fetches if >1min stale).
+	messaging.Subscribe(bus, "scenemappings.HandleSeriesRefreshStarting",
+		func(ctx context.Context, ev series.SeriesRefreshStartingEvent) error {
+			return scenemappingsSvc.HandleSeriesRefreshStarting(ctx, ev.ManualTrigger)
+		})
+	messaging.Subscribe(bus, "scenemappings.HandleSeriesAdded",
+		func(ctx context.Context, _ series.SeriesAddedEvent) error {
+			return scenemappingsSvc.HandleSeriesAddedOrImported(ctx)
+		})
+	messaging.Subscribe(bus, "scenemappings.HandleSeriesImported",
+		func(ctx context.Context, _ series.SeriesImportedEvent) error {
+			return scenemappingsSvc.HandleSeriesAddedOrImported(ctx)
+		})
+
 	// Slice 4.EJ wires three additional checks the C# tree fires on a
 	// fresh DB: IndexerRssCheck (no indexers with RSS enabled →
 	// Error), DownloadClientCheck (no clients → Warning),
