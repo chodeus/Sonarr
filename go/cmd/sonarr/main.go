@@ -3413,6 +3413,20 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	// tracked download (the deferred-removal path for items that were
 	// still seeding at completion). Ports DownloadProcessingService.cs:35-45.
 	downloadProcessingSvc.SetCanBeRemovedPublisher(downloadCanBeRemovedPublisher{bus: bus})
+	// J519: activate the import-blocked / rejection-handling state machine
+	// (ports CompletedDownloadService.Import). Wires the history reader
+	// (already-imported-in-history double-check, prevents spurious
+	// blocking of a re-processed download), the RejectedImportService
+	// (dangerous/executable/user-rejected files → Fail when the indexer is
+	// configured to, else Warn), and the ManualInteractionRequiredEvent
+	// publisher (→ notifications OnManualInteractionRequired, J518). With
+	// these wired, an incomplete import now blocks for manual interaction
+	// instead of silently retrying.
+	downloadProcessingSvc.SetImportBlockedDeps(
+		historyRepo,
+		downloadprocessing.NewRejectedImportService(cachedIndexerSettingsProv, logger),
+		manualInteractionPublisher{bus: bus},
+	)
 	downloadMonitoringSvc.SetProcessor(downloadProcessingSvc)
 
 	// J455: DownloadEventHub completion arm. On DownloadCompletedEvent

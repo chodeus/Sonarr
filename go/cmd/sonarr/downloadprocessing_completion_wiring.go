@@ -47,3 +47,16 @@ type downloadCanBeRemovedPublisher struct {
 func (p downloadCanBeRemovedPublisher) PublishDownloadCanBeRemoved(ctx context.Context, ev trackeddownloads.DownloadCanBeRemovedEvent) error {
 	return messaging.Publish(ctx, p.bus, ev)
 }
+
+// manualInteractionPublisher adapts *messaging.Bus to the narrow
+// downloadprocessing.ManualInteractionPublisher interface (J519) —
+// publishes the ManualInteractionRequiredEvent the import-blocked state
+// machine fires, consumed by notifications.Service's async
+// HandleManualInteractionRequiredEvent (J518 → OnManualInteractionRequired).
+type manualInteractionPublisher struct {
+	bus *messaging.Bus
+}
+
+func (p manualInteractionPublisher) PublishManualInteractionRequired(ctx context.Context, ev trackeddownloads.ManualInteractionRequiredEvent) error {
+	return messaging.Publish(ctx, p.bus, ev)
+}
