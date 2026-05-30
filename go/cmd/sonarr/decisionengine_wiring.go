@@ -443,6 +443,19 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 	}
 	specs = append(specs, delaySpec)
 
+	// J487: PendingSpecification — TEMPORARILY rejects a PUSHED / non-user
+	// search release when a release for the same episodes is already
+	// pending, so a manual push doesn't jump ahead of one waiting out a
+	// delay. RSS + user-invoked-search bypass. Reuses the same
+	// pendingAge reader (its `found` bool = "a matching pending release
+	// exists"). Ports
+	// DecisionEngine/Specifications/RssSync/PendingSpecification.cs.
+	pendingSpec, err := decisionengine.NewPendingSpecification(pendingAge, d.log)
+	if err != nil {
+		return nil, err
+	}
+	specs = append(specs, pendingSpec)
+
 	retention, err := decisionengine.NewRetentionSpecification(d.retentionCfg, d.log)
 	if err != nil {
 		return nil, err
