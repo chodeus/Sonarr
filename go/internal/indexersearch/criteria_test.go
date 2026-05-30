@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/series"
 )
 
@@ -96,6 +97,40 @@ func TestSingleEpisodeCriteria_String(t *testing.T) {
 	}
 	if got := c.String(); got != "[Show : S01E02]" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// TestBase_StampsSearchKindDiscriminator (J504) verifies the typed
+// criteria's Base() stamps the search-kind discriminator + numbers onto
+// the unified CriteriaBase the decision engine receives — the hot-path
+// wiring the SeasonMatch / SingleEpisodeSearchMatch specs depend on.
+func TestBase_StampsSearchKindDiscriminator(t *testing.T) {
+	single := SingleEpisodeCriteria{SeasonNumber: 3, EpisodeNumber: 7}.Base()
+	if single.Kind != decisionengine.SearchKindSingleEpisode || single.SeasonNumber != 3 || single.EpisodeNumber != 7 {
+		t.Errorf("single: kind=%v season=%d episode=%d", single.Kind, single.SeasonNumber, single.EpisodeNumber)
+	}
+
+	season := SeasonCriteria{SeasonNumber: 4}.Base()
+	if season.Kind != decisionengine.SearchKindSeason || season.SeasonNumber != 4 {
+		t.Errorf("season: kind=%v season=%d", season.Kind, season.SeasonNumber)
+	}
+
+	anime := AnimeEpisodeCriteria{SeasonNumber: 1, EpisodeNumber: 12, IsSeasonSearch: true}.Base()
+	if anime.Kind != decisionengine.SearchKindAnimeEpisode || anime.SeasonNumber != 1 ||
+		anime.EpisodeNumber != 12 || !anime.AnimeIsSeasonSearch {
+		t.Errorf("anime: %+v", anime)
+	}
+
+	// AnimeSeasonCriteria must NOT be a SeasonSearch (it's a distinct C#
+	// subtype) — SeasonMatch must not act on it.
+	animeSeason := AnimeSeasonCriteria{SeasonNumber: 2}.Base()
+	if animeSeason.Kind != decisionengine.SearchKindOther {
+		t.Errorf("animeSeason kind: got %v want SearchKindOther", animeSeason.Kind)
+	}
+
+	// Daily / special stay SearchKindOther.
+	if (DailyEpisodeCriteria{}).Base().Kind != decisionengine.SearchKindOther {
+		t.Error("default kind should be SearchKindOther")
 	}
 }
 

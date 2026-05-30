@@ -550,12 +550,29 @@ type criteriaWithBase interface {
 }
 
 // Base returns the embedded CriteriaBase so dispatchSearch can read
-// the typed criteria's shared fields generically. Pure projection;
-// every concrete criteria type from criteria.go gets one.
-func (c SingleEpisodeCriteria) Base() CriteriaBase { return c.CriteriaBase }
+// the typed criteria's shared fields generically. The three search
+// shapes the search-match download-decision specs discriminate on
+// (single-episode, season, anime-episode) stamp the criteria's Kind +
+// season/episode numbers onto the returned base so those specs — which
+// only ever see the unified CriteriaBase via the decision engine — can
+// recover the C# subtype + numbers (J504). The other shapes leave Kind
+// at SearchKindOther (both specs Accept). Pure projection otherwise.
+func (c SingleEpisodeCriteria) Base() CriteriaBase {
+	b := c.CriteriaBase
+	b.Kind = decisionengine.SearchKindSingleEpisode
+	b.SeasonNumber = c.SeasonNumber
+	b.EpisodeNumber = c.EpisodeNumber
+	return b
+}
 
-// Base — see SingleEpisodeCriteria.Base.
-func (c SeasonCriteria) Base() CriteriaBase { return c.CriteriaBase }
+// Base — see SingleEpisodeCriteria.Base. Stamps SearchKindSeason +
+// the searched season (C# SeasonSearchCriteria).
+func (c SeasonCriteria) Base() CriteriaBase {
+	b := c.CriteriaBase
+	b.Kind = decisionengine.SearchKindSeason
+	b.SeasonNumber = c.SeasonNumber
+	return b
+}
 
 // Base — see SingleEpisodeCriteria.Base.
 func (c DailyEpisodeCriteria) Base() CriteriaBase { return c.CriteriaBase }
@@ -563,10 +580,20 @@ func (c DailyEpisodeCriteria) Base() CriteriaBase { return c.CriteriaBase }
 // Base — see SingleEpisodeCriteria.Base.
 func (c DailySeasonCriteria) Base() CriteriaBase { return c.CriteriaBase }
 
-// Base — see SingleEpisodeCriteria.Base.
-func (c AnimeEpisodeCriteria) Base() CriteriaBase { return c.CriteriaBase }
+// Base — see SingleEpisodeCriteria.Base. Stamps SearchKindAnimeEpisode +
+// the searched season/episode + IsSeasonSearch (C# AnimeEpisodeSearchCriteria).
+func (c AnimeEpisodeCriteria) Base() CriteriaBase {
+	b := c.CriteriaBase
+	b.Kind = decisionengine.SearchKindAnimeEpisode
+	b.SeasonNumber = c.SeasonNumber
+	b.EpisodeNumber = c.EpisodeNumber
+	b.AnimeIsSeasonSearch = c.IsSeasonSearch
+	return b
+}
 
-// Base — see SingleEpisodeCriteria.Base.
+// Base — see SingleEpisodeCriteria.Base. AnimeSeasonCriteria maps to the
+// C# AnimeSeasonSearchCriteria, which is NOT a SeasonSearchCriteria — so
+// it stays SearchKindOther and SeasonMatch does NOT act on it.
 func (c AnimeSeasonCriteria) Base() CriteriaBase { return c.CriteriaBase }
 
 // Base — see SingleEpisodeCriteria.Base.

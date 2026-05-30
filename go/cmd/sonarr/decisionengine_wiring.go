@@ -403,6 +403,18 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 	// SearchCriteria). Ports
 	// DecisionEngine/Specifications/Search/EpisodeRequestedSpecification.cs.
 	specs = append(specs, decisionengine.NewEpisodeRequestedSpecification(d.log))
+	// J504: the two search-match specs (logger-only — the C# ctors take
+	// ISceneMappingService but never use it). They read the search-kind
+	// discriminator (Kind + Season/EpisodeNumber + AnimeIsSeasonSearch)
+	// the typed indexersearch.*Criteria.Base() methods now stamp onto the
+	// unified SearchCriteria; no-op on RSS (nil criteria) + non-search
+	// kinds. SeasonMatch rejects a wrong-season pack during a season
+	// search; SingleEpisodeSearchMatch rejects a wrong-season / full-season
+	// / wrong-episode result during a single-episode (or anime) search.
+	// Ports DecisionEngine/Specifications/Search/SeasonMatchSpecification.cs
+	// + SingleEpisodeSearchMatchSpecification.cs.
+	specs = append(specs, decisionengine.NewSeasonMatchSpecification(d.log))
+	specs = append(specs, decisionengine.NewSingleEpisodeSearchMatchSpecification(d.log))
 	specs = append(specs, decisionengine.NewMultiSeasonSpecification(d.log))
 	specs = append(specs, decisionengine.NewNotSampleSpecification(d.log))
 

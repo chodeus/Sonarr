@@ -72,7 +72,47 @@ type SearchCriteria struct {
 	// `ReleaseSourceInteractiveSearch`. Mirrors C#
 	// `SearchCriteriaBase.InteractiveSearch`.
 	InteractiveSearch bool
+
+	// Kind discriminates which C# SearchCriteriaBase subtype this
+	// criteria represents. The C# tree models each search shape as a
+	// distinct subclass (SingleEpisodeSearchCriteria, SeasonSearchCriteria,
+	// AnimeEpisodeSearchCriteria, …); the Go port unifies them into this
+	// one struct, so Kind + the SeasonNumber/EpisodeNumber/
+	// AnimeIsSeasonSearch fields below carry the per-subtype data the
+	// search-match specs (SeasonMatch / SingleEpisodeSearchMatch) need to
+	// discriminate. Populated by the typed `indexersearch.*Criteria.Base()`
+	// methods; defaults to [SearchKindOther] (those specs Accept).
+	Kind SearchKind
+	// SeasonNumber is the searched season — meaningful only when Kind is
+	// SearchKindSeason / SearchKindSingleEpisode / SearchKindAnimeEpisode.
+	SeasonNumber int
+	// EpisodeNumber is the searched episode — meaningful only when Kind
+	// is SearchKindSingleEpisode / SearchKindAnimeEpisode.
+	EpisodeNumber int
+	// AnimeIsSeasonSearch mirrors C# `AnimeEpisodeSearchCriteria.IsSeasonSearch`
+	// — meaningful only when Kind is SearchKindAnimeEpisode.
+	AnimeIsSeasonSearch bool
 }
+
+// SearchKind discriminates the C# SearchCriteriaBase subtype carried in
+// a unified [SearchCriteria]. Only the values the search-match specs
+// branch on are modelled; every other C# subtype (daily, anime-season,
+// special, daily-season) maps to [SearchKindOther], for which both
+// search-match specs Accept.
+type SearchKind int
+
+const (
+	// SearchKindOther is the default — not a subtype the search-match
+	// specs act on (RSS, daily, anime-season, special, …).
+	SearchKindOther SearchKind = iota
+	// SearchKindSingleEpisode is the C# SingleEpisodeSearchCriteria.
+	SearchKindSingleEpisode
+	// SearchKindSeason is the C# SeasonSearchCriteria (standard full
+	// season — NOT AnimeSeasonSearchCriteria).
+	SearchKindSeason
+	// SearchKindAnimeEpisode is the C# AnimeEpisodeSearchCriteria.
+	SearchKindAnimeEpisode
+)
 
 // SeasonPackOnlySpecification rejects single-episode releases for a
 // season whose latest episode aired more than

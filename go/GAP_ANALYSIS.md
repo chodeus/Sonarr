@@ -6,8 +6,8 @@ Resumed to close GAP4 (import-list clean-library), the last non-marginal item. *
 
 A fresh verify-first bounded audit (the "silently-missing-from-a-list/registry/subscription" highest-yield class — notification handlers, import-list subsystem, download-decision specs, queue handler, metadata Dependencies `any` fields, all provider registries) found **NO clean, high-value, ungated gap**. Everything constructed is wired; no handler-with-tests is unsubscribed; no registry is short an entry; no `any`-deps field is unassigned. Also verified: NO `CleanupOrphanedImportListItems` housekeeper exists in C# either (the ImportListItems table is reconciled by SyncSeriesForList's per-list diff + the J502 DeleteForList-on-delete — no orphan sweep needed).
 
-**Remaining = the same marginal/gated set the operator flagged "do NOT attempt unless real distinct value":**
-- **MARGINAL** SeasonMatchSpecification + SingleEpisodeSearchMatchSpecification — need a risky SearchCriteria criteria-discriminator refactor; EpisodeRequested (J467) covers the bulk; prior analysis doubted the value.
+**Remaining (after J504 closed the SeasonMatch/SingleEpisode specs):**
+- ✅ **J504 — SeasonMatchSpecification + SingleEpisodeSearchMatchSpecification DONE** (operator greenlit the hot-path refactor). Added a faithful `SearchKind` discriminator + Season/EpisodeNumber/AnimeIsSeasonSearch to the unified SearchCriteria, stamped by the 3 typed `*Criteria.Base()` methods (low-risk seam). Both logger-only (zero deps). **Download-decision spec chain now COMPLETE vs C#.**
 - **GATED** notification OnApplicationUpdate/OnManualInteractionRequired + 3 ProcessQueue drains — gated on update.Service install/UpdateHistory publish + trackeddownloads manual-interaction emit (unported event TYPES + producers); DownloadMonitoring event-driven-refresh (events undefined in Go; the 1-min RefreshMonitoredDownloads task covers it).
 
 Per the operator's exhaustion clause the loop is **STOPPED** (no further wakeup scheduled). To resume: the operator must pick the marginal SearchCriteria refactor or one of the gated items (each blocked on a separate unported subsystem).
