@@ -4,7 +4,9 @@
 
 Two Explore agents diffed C# `IProvideHealthCheck` + `IHousekeepingTask` impls vs Go (ported AND wired).
 - **Health checks: 25/26 ported+wired; 1 gap = `DownloadClientStatusCheck` → FIXED J464.** Reason codes pre-existed unused; ported faithfully (sibling of indexer/importlist/notification status checks). Go also has an extra `SkyHookCheck` (intentional, no C# parallel).
-- **Housekeepers: 30/31 ported+wired; 1 gap = `TrimLogDatabase` (BLOCKED-ish/LOW).** C# `TrimLogDatabase.cs` calls `_logRepository.Trim()` on the Housekeeping run when the log DB is enabled, bounding the Logs table growth. The Go log-DB is a separate datastore; the J410 ClearLog command used `logs.Repo.Purge` (full purge), but a bounded TRIM (keep last N / age-based, matching C# `LogRepository.Trim`) is not wired into the housekeeping sweep. **Follow-up candidate** — verify the Go logs.Repo has (or needs) a Trim-equivalent + wire a housekeeper. All other 30 housekeepers (orphan cleanups, fix-future-status-times ×4, singleton cleanups, metadata cleanups, etc.) are ported + registered in housekeeping.NewService (main.go:3006+).
+- **Housekeepers: 30/31 ported+wired; 1 gap = `TrimLogDatabase` → FIXED J465.** Verify-first: `logs.Repo.Trim(ctx, now)` already existed (logs.go:194, deletes >7d rows, matches C# `LogRepository.Trim`) but was never wired into the housekeeping sweep ("method exists, not wired"). Ported `TrimLogDatabase.cs` as `internal/housekeeping/trim_log_database.go`, registered in houseSvc tasks only when `logRepo != nil` (the Go equivalent of the C# `LogDbEnabled` gate). C# post-trim `Vacuum()` deferred (no logs.Repo.Vacuum surface; space-reclaim only). All other 30 housekeepers ported + registered.
+
+**PHASE-2 health-check + housekeeper audit DRAINED — both gaps closed (J464 + J465).**
 
 > **Fix status (updated through J429):**
 > - ✅ **G1** search→grab — FIXED J423 (search adapters now feed the grabber).

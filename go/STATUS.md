@@ -20479,3 +20479,13 @@ Ported `DownloadClientStatusCheck.cs` (joins enabled download clients with `down
 R: internal/healthcheck/downloadclient_status.go (new check), cmd/sonarr/healthcheck_wiring.go (adapter), cmd/sonarr/main.go (construct+register). A: downloadclient_status_test.go (7 cases: nil-guard, no-enabled OK, all-healthy OK, some→Warning, all→Error, name-sort, lister-errors-warn, metadata). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; healthcheck + cmd/sonarr + contract -race green.
 
 Housekeeper audit (parallel agent): TrimLogDatabase is the only missing housekeeper (logs DB grows unbounded) — flagged in GAP_ANALYSIS for a follow-up slice; needs a logRepo.Trim equivalent.
+
+## J465 — TrimLogDatabase housekeeper (wire the existing logs.Repo.Trim into the housekeeping sweep)
+
+Phase-2 audit follow-up (the 2nd of 2 gaps the housekeeper coverage sweep found). Verify-first refined the agent's "not ported" claim: `logs.Repo.Trim(ctx, now)` ALREADY EXISTS (logs.go:194, deletes Logs rows older than 7 days — matches C# LogRepository.Trim) but was NEVER wired into the housekeeping sweep — the classic "method exists, not wired" gap. So the Logs table grew unbounded on long-running instances.
+
+Ported `TrimLogDatabase.cs`: NEW `internal/housekeeping/trim_log_database.go` (Task wrapping a `LogTrimmer`; *logs.Repo satisfies it). Registered in the houseSvc Task slice ONLY when `logRepo != nil` — that nil-check is the Go port's exact equivalent of the C# `_configFileProvider.LogDbEnabled` gate (main.go builds logRepo only inside the log-DB-enabled branch). C# also Vacuum()s post-trim; the Go logs repo has no Vacuum surface — documented as a deferred space-reclaim, not a correctness gap.
+
+R: cmd/sonarr/main.go (refactored houseTasks slice + conditional append). A: internal/housekeeping/trim_log_database.go (+ test: nil-guard, Clean-calls-Trim with UTC now, error propagation). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; housekeeping + logs + cmd/sonarr + contract -race green.
+
+**Phase-2 health-check + housekeeper audit DRAINED: both gaps closed (J464 DownloadClientStatusCheck + J465 TrimLogDatabase).**

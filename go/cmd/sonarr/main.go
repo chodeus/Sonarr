@@ -3018,7 +3018,7 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	if err != nil {
 		return fmt.Errorf("housekeeping badMediaCovers: %w", err)
 	}
-	houseSvc, err = housekeeping.NewService([]housekeeping.Task{
+	houseTasks := []housekeeping.Task{
 		fixFuture,
 		orphanEpisodes,
 		orphanFiles,
@@ -3048,7 +3048,19 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		fixNotificationStatus,
 		cleanupTags,
 		cleanupQPFormat,
-	}, logger)
+	}
+	// J465: TrimLogDatabase — deletes Logs rows older than 7 days
+	// (C# TrimLogDatabase.cs → LogRepository.Trim). Registered ONLY when
+	// the log DB is enabled (logRepo != nil); that nil-check is the Go
+	// port's equivalent of the C# `_configFileProvider.LogDbEnabled` gate.
+	if logRepo != nil {
+		trimLogDB, err := housekeeping.NewTrimLogDatabase(logRepo, logger)
+		if err != nil {
+			return fmt.Errorf("housekeeping trimLogDatabase: %w", err)
+		}
+		houseTasks = append(houseTasks, trimLogDB)
+	}
+	houseSvc, err = housekeeping.NewService(houseTasks, logger)
 	if err != nil {
 		return fmt.Errorf("housekeeping service: %w", err)
 	}
