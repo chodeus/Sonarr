@@ -35,6 +35,10 @@ type ImportInput struct {
 	FileInfo *parser.ParsedEpisodeInfo
 	// ReadOnly mirrors the C# `isReadOnly` import flag (copy vs move).
 	ReadOnly bool
+	// Recursive mirrors the C# `folderSearchOption =
+	// localEpisode.FolderEpisodeInfo != null` — whether the source-folder
+	// enumeration descends into subfolders.
+	Recursive bool
 }
 
 // Manager is the Go-port equivalent of C# `IManageExtraFiles` /

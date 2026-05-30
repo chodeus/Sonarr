@@ -123,6 +123,7 @@ import (
 	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/seriesadd"
 	"sonarr.tv/sonarr/internal/signalr"
+	"sonarr.tv/sonarr/internal/subtitlefiles"
 	"sonarr.tv/sonarr/internal/tags"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 	"sonarr.tv/sonarr/internal/update"
@@ -2328,11 +2329,24 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	// construction time. historySvc is reused below by the slice-3.A1
 	// historyGrabFinderForImportAdapter.
 
+	// J479: wire the extra-file import subsystem (`internal/extras`) —
+	// imports subtitles / .nfo / artwork companions next to the imported
+	// episode file (gated by config.ImportExtraFiles + ExtraFileExtensions).
+	// Replaces the prior noopExtrasImporter.
+	subtitleFilesRepo, err := subtitlefiles.NewRepo(db)
+	if err != nil {
+		return fmt.Errorf("subtitlefiles repo: %w", err)
+	}
+	extrasImporter, err := buildExtrasImporter(episodeFileMovingFs, extraFilesRepo, subtitleFilesRepo, diskProv, sampleDetector, configProv, logger)
+	if err != nil {
+		return fmt.Errorf("extras importer: %w", err)
+	}
+
 	importApprovedSvc, err := episodeimport.NewImportApprovedEpisodes(
 		episodeFilesSvc,      // files (MediaFileWriter — Add + GetFilesWithRelativePath + Delete)
 		diskProv,             // disk (FileSizeReader — GetFileSize)
 		upgradeMediaFilesSvc, // upgrader — slice-3.97; recycles + replaces existing files
-		nil,                  // extras → noopExtrasImporter (C# IExtraService unported)
+		extrasImporter,       // J479: extra-file import (subtitles/.nfo/artwork)
 		// Slice 3.A1: HistoryGrabFinderForImport wired via the new
 		// historyGrabFinderForImportAdapter (downloadedimport_wiring.go) —
 		// delegates to *history.Service.Find with the typed
