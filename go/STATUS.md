@@ -20507,3 +20507,11 @@ Ported `Search/EpisodeRequestedSpecification.cs`: NEW `internal/decisionengine/s
 R: internal/decisionengine/spec_episode_requested.go (new spec), cmd/sonarr/decisionengine_wiring.go (wire). A: spec_episode_requested_test.go. M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; decisionengine + cmd/sonarr + contract -race green.
 
 Remaining download-spec gaps: SeasonMatch + SingleEpisodeSearchMatch (need search-kind discrimination — C# uses criteria subtypes; Go has a unified SearchCriteria; verify a kind/season/episode field exists before porting), and Delay/History/Pending/Proper/IndexerTag/DeletedEpisodeFile/SceneMapping (need deeper substrate — verify each).
+
+## J468 — IndexerTagSpecification (reject releases from tag-scoped indexers that don't match the series)
+
+Phase-2 download-decision spec audit (3rd slice). VERIFY-FIRST refined the audit's "needs substrate" claim: ReasonNoMatchingTag + indexers.Indexer.Tags + series.Tags + indexers.Repo.Get(id) all already exist — clean port via the existing finder-injection pattern. (Also discovered: decisionEngineDeps ALREADY wires delayProfiles + historyByEp, but delayProfiles feeds ProtocolSpecification not a DelaySpec; DelaySpecification genuinely needs the unported pending-release-queue substrate — deferred.)
+
+Ported `RssSync/IndexerTagSpecification.cs`: NEW `internal/decisionengine/spec_indexer_tag.go` (Accept on no-release/IndexerId==0/indexer-not-found/untagged-indexer/matching-tag; Reject NoMatchingTag when a tagged indexer shares no tag with the series). Tag-less series correctly rejected by a tagged indexer (C#-behavioral, not the literal null-guard). NEW `indexerTagFinderAdapter` (indexers.Repo.Get→Tags; ErrNotFound→found=false) wired into decisionEngineDeps. 8-case test.
+
+R: internal/decisionengine/spec_indexer_tag.go (new spec), cmd/sonarr/decisionengine_wiring.go (adapter+wire+imports), cmd/sonarr/main.go (populate dep). A: spec_indexer_tag_test.go. M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; decisionengine + cmd/sonarr + contract -race green.

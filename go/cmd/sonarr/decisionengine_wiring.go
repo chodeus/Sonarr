@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"sonarr.tv/sonarr/internal/blocklist"
@@ -26,6 +27,7 @@ import (
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/providerstatus"
 	"sonarr.tv/sonarr/internal/qualityprofiles"
 	"sonarr.tv/sonarr/internal/queue"
@@ -213,7 +215,28 @@ type decisionEngineDeps struct {
 	queueSvc       *queue.Service
 	blockedView    providerstatus.BlockedView          // *indexerstatus.Service (slice 4.P queue [8])
 	minSeeders     decisionengine.MinimumSeedersReader // minimumSeedersAdapter (slice 4.P queue [8])
+	indexerTags    decisionengine.IndexerTagFinder     // indexerTagFinderAdapter (J468)
 	log            *slog.Logger
+}
+
+// indexerTagFinderAdapter implements decisionengine.IndexerTagFinder —
+// resolves an indexer's tag set by id for the IndexerTagSpecification
+// (J468). Mirrors C# `IIndexerFactory.Get(id).Tags`
+// (IndexerTagSpecification.cs:35). A missing indexer maps to found=false
+// (the C# ModelNotFoundException → skip path).
+type indexerTagFinderAdapter struct {
+	repo *indexers.Repo
+}
+
+func (a indexerTagFinderAdapter) IndexerTags(ctx context.Context, indexerID int) ([]int, bool, error) {
+	row, err := a.repo.Get(ctx, indexerID)
+	if err != nil {
+		if errors.Is(err, indexers.ErrNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("indexers.Get(%d): %w", indexerID, err)
+	}
+	return row.Tags, true, nil
 }
 
 // buildDecisionEngineSpecs constructs every ported decisionengine
@@ -298,6 +321,15 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 	// (the core "only download what I monitor" RSS-sync gate). Skips the
 	// check only on a search with MonitoredEpisodesOnly=false. Ports
 	// DecisionEngine/Specifications/RssSync/MonitoredEpisodeSpecification.cs.
+	// J468: IndexerTagSpecification — rejects releases from an indexer
+	// whose tags don't intersect the series' tags (a tag-scoped indexer
+	// shouldn't feed every series). Ports
+	// DecisionEngine/Specifications/RssSync/IndexerTagSpecification.cs.
+	indexerTag, err := decisionengine.NewIndexerTagSpecification(d.indexerTags, d.log)
+	if err != nil {
+		return nil, err
+	}
+	specs = append(specs, indexerTag)
 	specs = append(specs, decisionengine.NewMonitoredEpisodeSpecification(d.log))
 	// J467: EpisodeRequestedSpecification — search-only gate rejecting
 	// releases whose matched episodes don't intersect the searched

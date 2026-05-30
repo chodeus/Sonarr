@@ -2530,6 +2530,7 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 		queueSvc:       queueSvc,
 		blockedView:    indexerStatusSvc,
 		minSeeders:     newMinimumSeedersAdapter(indexersRepo),
+		indexerTags:    indexerTagFinderAdapter{repo: indexersRepo},
 		log:            logger,
 	})
 	if err != nil {
