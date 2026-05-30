@@ -65,6 +65,22 @@ func (a AppFolderInfo) UpdatePackageFolder() string {
 	return filepath.Join(a.UpdateSandboxFolder(), "Sonarr")
 }
 
+// UpdateBackupFolder is where the updater backs up the existing
+// installation before copying the new build over it. Mirrors
+// `PathExtensions.GetUpdateBackUpFolder` (`:348-351`):
+// `Path.Combine(GetUpdateSandboxFolder(), "sonarr_backup")`.
+func (a AppFolderInfo) UpdateBackupFolder() string {
+	return filepath.Join(a.UpdateSandboxFolder(), "sonarr_backup")
+}
+
+// UpdateBackupAppDataFolder is where the updater backs up the config +
+// database before the upgrade. Mirrors
+// `PathExtensions.GetUpdateBackUpAppDataFolder` (`:353-356`):
+// `Path.Combine(GetUpdateSandboxFolder(), "sonarr_appdata_backup")`.
+func (a AppFolderInfo) UpdateBackupAppDataFolder() string {
+	return filepath.Join(a.UpdateSandboxFolder(), "sonarr_appdata_backup")
+}
+
 // UpdateClientFolder is where the `Sonarr.Update` helper binary is
 // extracted. Mirrors `PathExtensions.GetUpdateClientFolder` (`:373-376`):
 // `Path.Combine(GetUpdatePackageFolder(), "Sonarr.Update")`.

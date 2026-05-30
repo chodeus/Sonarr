@@ -20794,6 +20794,14 @@ Operator GREENLIT the SearchCriteria criteria-discriminator refactor flagged mar
 
 R: src SeasonMatchSpecification.cs + SingleEpisodeSearchMatchSpecification.cs. A: internal/decisionengine/spec_season_match.go + _test.go (7 tests), spec_single_episode_search_match.go + _test.go (10 tests); internal/indexersearch/criteria_test.go (+1 Base()-discriminator test). M: internal/decisionengine/spec_season_pack_only.go (SearchKind enum + 4 fields on SearchCriteria); internal/indexersearch/search.go (3 Base() methods stamp the discriminator); cmd/sonarr/decisionengine_wiring.go (+2 specs). Gates: FULL SUITE green (build ./… + vet ./… + gofmt -l . empty + go test ./…). **Download-decision spec chain now COMPLETE vs the C# set.**
 
+## UPDATER INSTALL PIPELINE — RESUMED on operator "continue" → porting the cmd/sonarr-update UpdateEngine behind stubbed process seams (J511+, 2026-05-30)
+
+Operator "continue" = greenlight to port the flagged "slice 6" UpdateEngine faithfully behind a stubbed ProcessController seam, testing the file-move/backup logic against temp dirs ONLY (per the operator's slice-6 instruction). NO real update/kill/restart is executed — the process ops are stubbed in tests; the production os/exec adapter exists but is invoked only by the gated BuiltIn path, never autonomously.
+
+### J511 — disk.MirrorFolder substrate + appenv backup-folder path helpers
+
+NEW disk.Provider.MirrorFolder(src, dst) (int, error) ports `DiskTransferService.MirrorFolder` — makes dst an EXACT copy of src: deletes target subfolders/files absent from source, mirrors source subfolders recursively, copies source files over (overwrite) skipping byte-identical ones (compareFiles: size + 64KiB-chunk content compare), returns the count copied. The C# ShouldIgnore filter is preserved (skip `.nfs*` folders/files, `debug.log`, `*.socket`). This is the operation the updater uses to back up the install, copy the new build over it, and roll back on failure. NEW appenv.AppFolderInfo.UpdateBackupFolder (sandbox/sonarr_backup) + UpdateBackupAppDataFolder (sandbox/sonarr_appdata_backup) ports PathExtensions.GetUpdateBackUpFolder/GetUpdateBackUpAppDataFolder (:348-356). 4 MirrorFolder tests (mirror-with-deletes-and-overwrites / skip-identical / create-target / ignore-runtime-artefacts) + path-helper coverage. Gates green. NEXT: J512 internal/updateengine package (Engine.Start orchestration + BackupAndRestore + BackupAppData + DetectExistingVersion + AppType + stubbed ProcessController seam; file ops tested against temp dirs, process kill/restart stubbed).
+
 ## UPDATER INSTALL PIPELINE — main-app side COMPLETE; cmd/sonarr-update UpdateEngine FLAGGED for operator review; loop STOPPED (J510, 2026-05-30)
 
 Resumed on the operator's greenlight of the in-app updater INSTALL pipeline (the J504-exhaustion-gated subsystem). **The entire MAIN-APP side is now ported, faithful, gated, and fully tested with NO real side effects — 6 clean slices J505–J510:**
