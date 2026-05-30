@@ -110,14 +110,16 @@ func NewService(factory *Factory, recorder serviceRecorder, logger *slog.Logger)
 //     (drives OnApplicationUpdate; published on an actual upgrade by
 //     updatehistory.Service on ApplicationStarted — wired J506)
 //
+//   - ManualInteractionRequiredEvent →
+//     trackeddownloads.ManualInteractionRequiredEvent (drives
+//     OnManualInteractionRequired; published when the import-blocked
+//     state machine blocks a download — wired J518)
+//
 // Deferred until upstream events port (slice 4.BU C-cleanup [C6]
 // closure note — the Go tree has no equivalent event type yet, so
 // these wires are tracked here for re-evaluation when the upstream
 // event lands):
 //
-//   - ManualInteractionRequiredEvent — OnManualInteractionRequired
-//     dispatch. Waits on the trackeddownloads manual-interaction
-//     emit point.
 //   - DeleteCompletedEvent / DownloadsProcessedEvent /
 //     RenameCompletedEvent — drain ProcessQueue.
 //     HealthCheckCompleteEvent already covers the
@@ -146,6 +148,10 @@ func (s *Service) Subscribe(bus *messaging.Bus) {
 	// ApplicationStarted handler, so async keeps startup non-blocking
 	// (mirrors C# IHandleAsync ordering for the update notification).
 	messaging.SubscribeAsync(bus, "notifications.HandleApplicationUpdate", s.HandleApplicationUpdate)
+	// Async — OnManualInteractionRequired is published from the
+	// download-processing loop; async keeps that loop non-blocking while
+	// the notification (potential network I/O) fans out.
+	messaging.SubscribeAsync(bus, "notifications.HandleManualInteractionRequiredEvent", s.HandleManualInteractionRequiredEvent)
 }
 
 // HandleEpisodeGrabbedEvent ports the C# `Handle(EpisodeGrabbedEvent)`
@@ -691,6 +697,73 @@ func (s *Service) HandleApplicationUpdate(ctx context.Context, ev updatehistory.
 		}
 		s.recordSuccess(ctx, def)
 	}
+	return nil
+}
+
+// HandleManualInteractionRequiredEvent ports the C#
+// `Handle(ManualInteractionRequiredEvent)` at
+// `NotificationService.cs:332-382`. Fired when a completed download
+// can't be auto-imported and is blocked for manual interaction (the
+// downloadprocessing import-blocked state machine, J517). Builds a
+// [ManualInteractionRequiredMessage] and fans out to every
+// OnManualInteraction-enabled provider, gated by ShouldHandleSeries.
+//
+// Message text: the per-episode title (when a series is matched), else
+// the download item title; an empty message suppresses the notification
+// entirely (C# `:347-350`).
+func (s *Service) HandleManualInteractionRequiredEvent(ctx context.Context, ev trackeddownloads.ManualInteractionRequiredEvent) error {
+	td := ev.TrackedDownload
+	if td == nil {
+		return nil
+	}
+	sub := td.RemoteEpisode
+
+	var ser *series.Series
+	var qual *quality.Model
+	var msg string
+	if sub != nil && sub.Series != nil {
+		ser = sub.Series
+		eps := materialiseEpisodes(sub.Episodes)
+		if pe := sub.ParsedEpisodeInfo; pe != nil {
+			q := pe.Quality
+			qual = &q
+		}
+		msg = getMessage(ser, eps, qual)
+	}
+	if strings.TrimSpace(msg) == "" && td.DownloadItem != nil {
+		msg = td.DownloadItem.Title
+	}
+	if strings.TrimSpace(msg) == "" {
+		return nil
+	}
+
+	providers, err := s.factory.OnManualInteractionEnabled(ctx, true)
+	if err != nil {
+		s.logger.Warn("notifications: load OnManualInteraction providers", slog.Any("err", err))
+		return nil
+	}
+
+	downloadID := td.DownloadID
+	if td.DownloadItem != nil && td.DownloadItem.DownloadID != "" {
+		downloadID = td.DownloadItem.DownloadID
+	}
+	message := ManualInteractionRequiredMessage{
+		Message:         msg,
+		Series:          ser,
+		Quality:         qual,
+		Episode:         sub,
+		TrackedDownload: td,
+		DownloadID:      downloadID,
+		Release:         ev.Release,
+	}
+
+	var tags []int
+	if ser != nil {
+		tags = ser.Tags
+	}
+	s.fanOut(ctx, providers, tags, "OnManualInteractionRequired", func(p Provider) error {
+		return p.OnManualInteractionRequired(ctx, message)
+	})
 	return nil
 }
 

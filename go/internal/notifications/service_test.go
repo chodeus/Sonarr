@@ -70,6 +70,8 @@ type hookRecorder struct {
 	importCompleteMsg  notifications.ImportCompleteMessage
 	appUpdateCalls     int
 	appUpdateMsg       notifications.ApplicationUpdateMessage
+	manualCalls        int
+	manualMsg          notifications.ManualInteractionRequiredMessage
 }
 
 func (h *hookRecorder) Name() string                            { return "Stub" }
@@ -144,8 +146,12 @@ func (h *hookRecorder) OnApplicationUpdate(_ context.Context, msg notifications.
 	h.appUpdateMsg = msg
 	return h.failOn["OnApplicationUpdate"]
 }
-func (h *hookRecorder) OnManualInteractionRequired(_ context.Context, _ notifications.ManualInteractionRequiredMessage) error {
-	return nil
+func (h *hookRecorder) OnManualInteractionRequired(_ context.Context, msg notifications.ManualInteractionRequiredMessage) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.manualCalls++
+	h.manualMsg = msg
+	return h.failOn["OnManualInteractionRequired"]
 }
 func (h *hookRecorder) ProcessQueue(_ context.Context) error {
 	h.mu.Lock()
@@ -497,6 +503,96 @@ func TestHandleApplicationUpdate_NoTagGate(t *testing.T) {
 	}
 	if hooks[1].appUpdateCalls != 1 {
 		t.Errorf("tagged provider must still fire (no tag gate), got %d", hooks[1].appUpdateCalls)
+	}
+}
+
+func TestHandleManualInteractionRequired_FiresWithSeriesMessage_J518(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnManualInteractionRequired: true},
+		{ID: 2, Implementation: "Stub", ConfigContract: stubContract(), OnManualInteractionRequired: false}, // disabled
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	td := &trackeddownloads.TrackedDownload{
+		DownloadID:    "abc",
+		DownloadItem:  &downloadclients.Item{DownloadID: "abc", Title: "Show.S01E01"},
+		RemoteEpisode: &decisionengine.Subject{Series: &series.Series{Title: "Show"}},
+	}
+	ev := trackeddownloads.ManualInteractionRequiredEvent{TrackedDownload: td}
+	if err := svc.HandleManualInteractionRequiredEvent(t.Context(), ev); err != nil {
+		t.Fatalf("HandleManualInteractionRequiredEvent: %v", err)
+	}
+	if hooks[1].manualCalls != 1 {
+		t.Errorf("OnManualInteractionRequired: got %d want 1", hooks[1].manualCalls)
+	}
+	if hooks[1].manualMsg.Message == "" {
+		t.Error("message should be populated from the series")
+	}
+	if hooks[1].manualMsg.TrackedDownload != td {
+		t.Error("message should carry the tracked download")
+	}
+	if h, ok := hooks[2]; ok && h.manualCalls != 0 {
+		t.Errorf("disabled provider must not fire, got %d", h.manualCalls)
+	}
+}
+
+func TestHandleManualInteractionRequired_FallsBackToDownloadTitle_J518(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnManualInteractionRequired: true},
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	// No matched series → message falls back to the download item title.
+	td := &trackeddownloads.TrackedDownload{
+		DownloadID:   "x",
+		DownloadItem: &downloadclients.Item{DownloadID: "x", Title: "Unmatched.Release.720p"},
+	}
+	ev := trackeddownloads.ManualInteractionRequiredEvent{TrackedDownload: td}
+	if err := svc.HandleManualInteractionRequiredEvent(t.Context(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if hooks[1].manualCalls != 1 {
+		t.Fatalf("should fire with title fallback, got %d", hooks[1].manualCalls)
+	}
+	if hooks[1].manualMsg.Message != "Unmatched.Release.720p" {
+		t.Errorf("message = %q, want the download title", hooks[1].manualMsg.Message)
+	}
+}
+
+func TestHandleManualInteractionRequired_EmptyMessage_NoFire_J518(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnManualInteractionRequired: true},
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	// No series + no title → empty message → suppressed.
+	td := &trackeddownloads.TrackedDownload{DownloadID: "x", DownloadItem: &downloadclients.Item{}}
+	ev := trackeddownloads.ManualInteractionRequiredEvent{TrackedDownload: td}
+	if err := svc.HandleManualInteractionRequiredEvent(t.Context(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if h, ok := hooks[1]; ok && h.manualCalls != 0 {
+		t.Errorf("empty message must suppress the notification, got %d", h.manualCalls)
+	}
+}
+
+func TestHandleManualInteractionRequired_TagGate_J518(t *testing.T) {
+	t.Parallel()
+	rows := []notifications.Notification{
+		{ID: 1, Implementation: "Stub", ConfigContract: stubContract(), OnManualInteractionRequired: true, Tags: []int{5}},
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	td := &trackeddownloads.TrackedDownload{
+		DownloadID:    "abc",
+		DownloadItem:  &downloadclients.Item{Title: "Show.S01E01"},
+		RemoteEpisode: &decisionengine.Subject{Series: &series.Series{Title: "Show", Tags: []int{9}}}, // tag mismatch
+	}
+	ev := trackeddownloads.ManualInteractionRequiredEvent{TrackedDownload: td}
+	if err := svc.HandleManualInteractionRequiredEvent(t.Context(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if hooks[1].manualCalls != 0 {
+		t.Errorf("tag-mismatched provider must be skipped, got %d", hooks[1].manualCalls)
 	}
 }
 
