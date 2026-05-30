@@ -302,6 +302,17 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 	}
 	specs = append(specs, freeSpace)
 
+	// J470: DeletedEpisodeFileSpecification — temporarily skips a release
+	// for an episode whose file exists in the DB but is missing on disk
+	// (when AutoUnmonitorPreviouslyDownloadedEpisodes is on); the next
+	// disk scan unmonitors it. RSS-only. Ports
+	// DecisionEngine/Specifications/RssSync/DeletedEpisodeFileSpecification.cs.
+	deletedEpisodeFile, err := decisionengine.NewDeletedEpisodeFileSpecification(d.configProvider, d.disk, d.episodeFiles, d.log)
+	if err != nil {
+		return nil, err
+	}
+	specs = append(specs, deletedEpisodeFile)
+
 	specs = append(specs, decisionengine.NewFullSeasonSpecification(nil, d.log))
 
 	maxSize, err := decisionengine.NewMaximumSizeSpecification(d.maxSizeCfg, d.log)

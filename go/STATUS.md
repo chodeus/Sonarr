@@ -20523,3 +20523,11 @@ Phase-2 download-decision spec audit (4th slice). VERIFY-FIRST confirmed ALL sub
 Ported `RssSync/ProperSpecification.cs`: NEW `internal/decisionengine/spec_proper.go` (search-skip; DoNotPrefer→Accept; per-episode-file revision-upgrade check → DoNotUpgrade rejects PropersDisabled, file added >7d ago rejects ProperForOldFile). Same 3 deps as RepackSpecification + an injectable clock for the 7-day cutoff (C# DateTime.Today.AddDays(-7)). Wired next to repack. 8-case test.
 
 R: internal/decisionengine/spec_proper.go (new spec), cmd/sonarr/decisionengine_wiring.go (wire). A: spec_proper_test.go (reuses repack-test stubs). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; decisionengine + cmd/sonarr + contract -race green.
+
+## J470 — DeletedEpisodeFileSpecification (don't re-grab episodes whose files were deleted on disk)
+
+Phase-2 download-decision spec audit (5th slice). VERIFY-FIRST: pendingreleases package EXISTS (Delay/Pending are NOT substrate-blocked, just complex side-effecting specs — deferred). All DeletedEpisodeFile substrate present: config.Provider.AutoUnmonitorPreviouslyDownloadedEpisodes(), disk.Provider.FileExists, EpisodeFileResolver, series.Path, EpisodeFile.RelativePath, ReasonEpisodeNotMonitored (J466).
+
+Ported `RssSync/DeletedEpisodeFileSpecification.cs`: NEW `internal/decisionengine/spec_deleted_episode_file.go` (TEMPORARY rejection, Disk priority). When AutoUnmonitorPreviouslyDownloadedEpisodes is on + not searching: if any episode's DB file row is missing on disk → Reject (the next disk scan will unmonitor it, so re-grabbing now fights the user's delete intent). NEW AutoUnmonitorReader + FileExistenceChecker narrow interfaces (config.Provider + disk.Provider satisfy them). Wired near free_space. 7-case test.
+
+R: internal/decisionengine/spec_deleted_episode_file.go (new spec), cmd/sonarr/decisionengine_wiring.go (wire). A: spec_deleted_episode_file_test.go. M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; decisionengine + cmd/sonarr + contract -race green.
