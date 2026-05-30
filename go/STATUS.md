@@ -20627,3 +20627,11 @@ R: internal/extras/{manager.go,subtitle.go,service.go}, cmd/sonarr/{extras_wirin
 Wraps up the second-to-last extras follow-up. The ExtrasImporter.ImportExtraFiles seam (script-import path, import_approved.go:521) was a no-op. Ports the C# IExistingExtraFiles.ImportExtraFiles → ExistingExtra*Importer.ProcessFiles chain: NEW `internal/extras/existing.go` ExistingExtraService — for each companion file a custom import script left on disk (PossibleExtraFiles), resolve its EpisodeFile via an EpisodeFileResolver (single-file match; ambiguous/unmatched skipped), then track it WITHOUT moving (subtitle ext → subtitlefiles row w/ parsed language+tags; else → extrafiles row). NEW cmd/sonarr extrasEpisodeResolver over parsingSvc (ParsePath→Map→single EpisodeFileID); wired into the extrasImporterAdapter; buildExtrasImporter builds it (gets parsingSvc). 2 tests (nil-deps, subtitle/other/unmatched/no-ext classification).
 
 R: cmd/sonarr/extras_wiring.go (resolver + adapter + buildExtrasImporter), cmd/sonarr/main.go (parsingSvc arg). A: internal/extras/{existing.go,existing_test.go}. M: STATUS/PROGRESS/GAP. Gates: FULL SUITE green. Remaining extras follow-up: file-permissions only (J483, LOW).
+
+## J483 — extras file-permissions (final extras follow-up): chmod imported companions
+
+Last extras item. C# calls _mediaFileAttributeService.SetFilePermissions after each extra ImportFile; the Go managers skipped it. Added an optional `FilePermissionSetter` dep (nil-tolerant) to OtherExtraManager + SubtitleManager + a shared `setExtraPermissions` helper, called after each successful importFile on the IMPORTED (dest) path — corrects the latent C# behavior of chmod-ing the moved-away source. Wired `mediaFileAttrsSvc` (*mediafileattributes.Service, already wired for the main episode-file import) through buildExtrasImporter. Best-effort (a nil setter / error is non-fatal; the extra is still tracked). 1 test (perms applied to the dest full path).
+
+**EXTRAS-IMPORT SUBSYSTEM FULLY COMPLETE (J476-J483):** foundation + Other + Subtitle managers + orchestrator (import) + post-rename moves + script-import existing-file arm + file-permissions. All three ExtrasImporter seam methods live.
+
+R: internal/extras/{manager.go,subtitle.go}, cmd/sonarr/{extras_wiring.go,main.go}. A: manager_test.go (perms test). M: STATUS/PROGRESS/GAP. Gates: FULL SUITE green.

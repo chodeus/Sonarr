@@ -46,7 +46,7 @@ func subInput(sourcePath string) ImportInput {
 }
 
 func newSubMgr(store SubtitleStore, folders FolderVideoLister, samples SampleChecker) *SubtitleManager {
-	return NewSubtitleManager(store, &passthroughTransferrer{}, &recordingMover{}, stubHardlinkCfg{}, folders, samples, slog.New(slog.DiscardHandler))
+	return NewSubtitleManager(store, &passthroughTransferrer{}, &recordingMover{}, nil, stubHardlinkCfg{}, folders, samples, slog.New(slog.DiscardHandler))
 }
 
 func TestSubtitleManager_CanImportFile(t *testing.T) {
@@ -178,7 +178,7 @@ func TestSubtitleManager_MoveFilesAfterRename(t *testing.T) {
 		{ID: 2, SeriesID: 7, EpisodeFileID: 99, RelativePath: "Season 01/Unrelated.en.srt", Extension: ".srt", Language: language.English.ID},
 	}}
 	mover := &recordingMover{}
-	m := NewSubtitleManager(store, &passthroughTransferrer{}, mover, stubHardlinkCfg{}, nil, nil, slog.New(slog.DiscardHandler))
+	m := NewSubtitleManager(store, &passthroughTransferrer{}, mover, nil, stubHardlinkCfg{}, nil, nil, slog.New(slog.DiscardHandler))
 	renamed := &episodefiles.File{ID: 55, RelativePath: "Season 01/Show.S01E02.mkv"}
 	n, err := m.MoveFilesAfterRename(context.Background(), MoveInput{
 		Series:       &series.Series{ID: 7, Path: "/tv/Show"},

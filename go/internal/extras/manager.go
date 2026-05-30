@@ -42,6 +42,14 @@ type ImportInput struct {
 	Recursive bool
 }
 
+// FilePermissionSetter applies the configured file mode (chmod) to a
+// freshly-imported companion. Optional (nil → skipped). *mediafileattributes.Service
+// satisfies it. Mirrors C# `_mediaFileAttributeService.SetFilePermissions`
+// called after each extra ImportFile.
+type FilePermissionSetter interface {
+	SetFilePermissions(path string) error
+}
+
 // FileMover relocates an already-imported library file when its episode
 // file is renamed. *disk.Provider satisfies it via MoveFile. Distinct
 // from [FileTransferrer] (which handles the download→library import with
@@ -106,6 +114,20 @@ func moveFile(m FileMover, seriesPath, episodeFileRelativePath, companionRelativ
 	return rel, true, nil
 }
 
+// setExtraPermissions applies the configured chmod to a freshly-imported
+// companion (best-effort; a nil setter or an error is non-fatal — the
+// extra is still tracked). Mirrors the C# post-ImportFile
+// `_mediaFileAttributeService.SetFilePermissions`, but on the imported
+// (dest) path rather than the C#'s moved-away source path.
+func setExtraPermissions(p FilePermissionSetter, seriesPath, relativePath string, log *slog.Logger) {
+	if p == nil {
+		return
+	}
+	if err := p.SetFilePermissions(filepath.Join(seriesPath, relativePath)); err != nil {
+		log.Debug("extras: SetFilePermissions failed", "path", relativePath, "err", err)
+	}
+}
+
 // matchesEpisode reports whether an extra file belongs to the imported
 // episode. Mirrors the shared C# matching in
 // `OtherExtraService.ImportFiles` (`:115-133`) + `SubtitleService`:
@@ -164,17 +186,18 @@ type OtherExtraManager struct {
 	store ExtraFileStore
 	t     FileTransferrer
 	mover FileMover
+	perms FilePermissionSetter // optional
 	cfg   HardlinkConfig
 	log   *slog.Logger
 }
 
 // NewOtherExtraManager builds the manager. store / t / mover / cfg MUST be
-// non-nil; log defaults to [slog.Default].
-func NewOtherExtraManager(store ExtraFileStore, t FileTransferrer, mover FileMover, cfg HardlinkConfig, log *slog.Logger) *OtherExtraManager {
+// non-nil; perms is optional (nil skips chmod); log defaults to [slog.Default].
+func NewOtherExtraManager(store ExtraFileStore, t FileTransferrer, mover FileMover, perms FilePermissionSetter, cfg HardlinkConfig, log *slog.Logger) *OtherExtraManager {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &OtherExtraManager{store: store, t: t, mover: mover, cfg: cfg, log: log}
+	return &OtherExtraManager{store: store, t: t, mover: mover, perms: perms, cfg: cfg, log: log}
 }
 
 // Order returns 2 (C# `OtherExtraService.Order`).
@@ -216,6 +239,7 @@ func (m *OtherExtraManager) ImportFiles(ctx context.Context, in ImportInput, fil
 			m.log.Warn("extras: import other-extra failed", "file", f, "err", err)
 			continue
 		}
+		setExtraPermissions(m.perms, in.Series.Path, rel, m.log)
 		row := &extrafiles.ExtraFile{
 			SeriesID:      in.Series.ID,
 			SeasonNumber:  in.EpisodeFile.SeasonNumber,

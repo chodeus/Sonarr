@@ -198,6 +198,7 @@ func buildExtrasImporter(
 	diskProv *disk.Provider,
 	sampleDetector *episodeimport.SampleDetector,
 	parsing *parsingservice.Service,
+	perms extras.FilePermissionSetter,
 	cfg extrasConfig,
 	log *slog.Logger,
 ) (episodeimport.ExtrasImporter, *extras.ExtraService, error) {
@@ -205,8 +206,8 @@ func buildExtrasImporter(
 	extraStore := extraFileStoreAdapter{repo: extraRepo}
 	subStore := subtitleFileStoreAdapter{repo: subRepo}
 	// diskProv satisfies extras.FileMover (MoveFile) for the post-rename move.
-	other := extras.NewOtherExtraManager(extraStore, tr, diskProv, cfg, log)
-	sub := extras.NewSubtitleManager(subStore, tr, diskProv, cfg, diskProv, extrasSampleAdapter{d: sampleDetector}, log)
+	other := extras.NewOtherExtraManager(extraStore, tr, diskProv, perms, cfg, log)
+	sub := extras.NewSubtitleManager(subStore, tr, diskProv, perms, cfg, diskProv, extrasSampleAdapter{d: sampleDetector}, log)
 	svc, err := extras.NewExtraService([]extras.Manager{sub, other}, diskProv, cfg, log)
 	if err != nil {
 		return nil, nil, err

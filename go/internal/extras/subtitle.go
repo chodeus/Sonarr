@@ -50,6 +50,7 @@ type SubtitleManager struct {
 	store   SubtitleStore
 	t       FileTransferrer
 	mover   FileMover
+	perms   FilePermissionSetter // optional
 	cfg     HardlinkConfig
 	folders FolderVideoLister // optional (single-video fallback)
 	samples SampleChecker     // optional
@@ -57,13 +58,14 @@ type SubtitleManager struct {
 }
 
 // NewSubtitleManager builds the manager. store / t / mover / cfg MUST be
-// non-nil; folders + samples are optional (nil disables the single-video
-// fallback). log defaults to [slog.Default].
-func NewSubtitleManager(store SubtitleStore, t FileTransferrer, mover FileMover, cfg HardlinkConfig, folders FolderVideoLister, samples SampleChecker, log *slog.Logger) *SubtitleManager {
+// non-nil; perms is optional (nil skips chmod); folders + samples are
+// optional (nil disables the single-video fallback). log defaults to
+// [slog.Default].
+func NewSubtitleManager(store SubtitleStore, t FileTransferrer, mover FileMover, perms FilePermissionSetter, cfg HardlinkConfig, folders FolderVideoLister, samples SampleChecker, log *slog.Logger) *SubtitleManager {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &SubtitleManager{store: store, t: t, mover: mover, cfg: cfg, folders: folders, samples: samples, log: log}
+	return &SubtitleManager{store: store, t: t, mover: mover, perms: perms, cfg: cfg, folders: folders, samples: samples, log: log}
 }
 
 // Order returns 1 (C# `SubtitleService.Order`).
@@ -160,6 +162,7 @@ func (m *SubtitleManager) ImportFiles(ctx context.Context, in ImportInput, files
 				m.log.Warn("extras: import subtitle failed", "file", r.path, "err", err)
 				continue
 			}
+			setExtraPermissions(m.perms, in.Series.Path, rel, m.log)
 			row := &subtitlefiles.SubtitleFile{
 				SeriesID:      in.Series.ID,
 				SeasonNumber:  in.EpisodeFile.SeasonNumber,
