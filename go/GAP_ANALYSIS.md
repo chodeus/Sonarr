@@ -1,5 +1,11 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## PHASE-2 CONFIRMATION AUDIT (J474, 2026-05-30) — commands / scheduled tasks / event consumers
+
+Broad maturity check (Explore). **Commands: all user-facing C# commands registered in Go** (out-of-scope: ResetApiKey, ApplicationUpdate install, framework Test/Unknown). **Scheduled tasks: all 11 registered.** **Event consumers:** found `TrackedDownloadService`'s `IHandle<SeriesEditedEvent>/<SeriesDeletedEvent>` (+ SeriesAdded/BulkEdited/EpisodeInfoRefreshed) cache-refresh handlers UNPORTED.
+- **FIXED J474 (SeriesEdited + SeriesDeleted):** the tracker keeps the cached RemoteEpisode (existing-item arm) + the queue renders from it → after a series rename/delete the queue/activity view showed the stale/dangling title permanently. NEW `RefreshTrackedForSeries` re-resolves matching tracked downloads (ParseTitle+Map) on those events. The doc's "unported event shapes" note was STALE (events published at series/mutations.go:355,490).
+- **LOW residual (deferred):** the SeriesAdded / SeriesBulkEdited / EpisodeInfoRefreshed handlers (same UpdateCachedItem fan-out) — lower value (add = re-resolve previously-unknown series; bulk = batch of the edited path; episodeInfo = title refresh). Wire if a producer/need surfaces. Also DownloadMonitoringService's event-driven refresh triggers (EpisodeGrabbed/Imported→refresh) are an optimization over the 1-min RefreshMonitoredDownloads scheduled task; PendingReleaseService handlers are part of the deferred Delay/Pending subsystem.
+
 ## PHASE-2 FRESH AUDIT (J472, 2026-05-30) — metadata consumers + extra-file importers
 
 Two Explore agents.

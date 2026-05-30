@@ -3137,11 +3137,56 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	}
 	// J394: populate the tracked-download cache (and thus the queue) from
 	// each Refresh poll by mapping polled items → TrackedDownloads.
-	downloadMonitoringSvc.SetTracker(downloadItemTrackerAdapter{
+	downloadTracker := downloadItemTrackerAdapter{
 		parsing: parsingSvc,
 		tracked: trackedDownloadsSvc,
 		log:     logger,
-	})
+	}
+	downloadMonitoringSvc.SetTracker(downloadTracker)
+
+	// J474: refresh tracked downloads' cached RemoteEpisode when a series
+	// is edited or deleted, so the queue/activity view reflects the new
+	// title instead of the stale one captured at track time. Ports the C#
+	// TrackedDownloadService IHandle<SeriesEditedEvent>/<SeriesDeletedEvent>
+	// fan-out (TrackedDownloadService.cs:310-360). Publishes
+	// TrackedDownloadRefreshedEvent so the SignalR/queue layer re-renders.
+	messaging.Subscribe(bus, "trackeddownloads.RefreshOnSeriesEdited",
+		func(ctx context.Context, ev series.SeriesEditedEvent) error {
+			if ev.Series == nil {
+				return nil
+			}
+			edited := ev.Series
+			if downloadTracker.RefreshTrackedForSeries(ctx, func(id, tvdbID int) bool {
+				return id == edited.ID || (edited.TvdbID != 0 && tvdbID == edited.TvdbID)
+			}) {
+				_ = messaging.Publish(ctx, bus, trackeddownloads.TrackedDownloadRefreshedEvent{
+					TrackedDownloads: trackedDownloadsSvc.GetTrackedDownloads(),
+				})
+			}
+			return nil
+		})
+	messaging.Subscribe(bus, "trackeddownloads.RefreshOnSeriesDeleted",
+		func(ctx context.Context, ev series.SeriesDeletedEvent) error {
+			if len(ev.Series) == 0 {
+				return nil
+			}
+			ids := make(map[int]bool, len(ev.Series))
+			tvdbs := make(map[int]bool, len(ev.Series))
+			for i := range ev.Series {
+				ids[ev.Series[i].ID] = true
+				if ev.Series[i].TvdbID != 0 {
+					tvdbs[ev.Series[i].TvdbID] = true
+				}
+			}
+			if downloadTracker.RefreshTrackedForSeries(ctx, func(id, tvdbID int) bool {
+				return ids[id] || (tvdbID != 0 && tvdbs[tvdbID])
+			}) {
+				_ = messaging.Publish(ctx, bus, trackeddownloads.TrackedDownloadRefreshedEvent{
+					TrackedDownloads: trackedDownloadsSvc.GetTrackedDownloads(),
+				})
+			}
+			return nil
+		})
 	// J399: auto-import completed downloads. The processor reads the
 	// tracked-download cache the tracker populated above + imports
 	// completed ones via the existing downloadedimport pipeline. Run on

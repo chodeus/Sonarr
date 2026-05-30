@@ -24,12 +24,19 @@ import (
 	"sonarr.tv/sonarr/internal/decisionengine"
 	"sonarr.tv/sonarr/internal/downloadclients"
 	"sonarr.tv/sonarr/internal/parser"
-	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/trackeddownloads"
 )
 
+// remoteEpisodeMapper is the narrow surface the tracker needs from
+// *parsingservice.Service — parse-result → RemoteEpisode mapping. Defined
+// as an interface so the series-refresh fan-out (J474) is unit-testable
+// with a stub. *parsingservice.Service satisfies it structurally.
+type remoteEpisodeMapper interface {
+	Map(ctx context.Context, parsedInfo *parser.ParsedEpisodeInfo, tvdbID, tvRageID int, imdbID string, searchCriteria *decisionengine.SearchCriteria) (*decisionengine.Subject, error)
+}
+
 type downloadItemTrackerAdapter struct {
-	parsing *parsingservice.Service
+	parsing remoteEpisodeMapper
 	tracked *trackeddownloads.Service
 	log     *slog.Logger
 }
@@ -48,14 +55,7 @@ func (a downloadItemTrackerAdapter) TrackDownload(ctx context.Context, client do
 		return existing
 	}
 
-	var remote *decisionengine.Subject
-	if parsed := parser.ParseTitle(item.Title); parsed != nil && a.parsing != nil {
-		if r, err := a.parsing.Map(ctx, parsed, 0, 0, "", nil); err == nil {
-			remote = r
-		} else {
-			a.log.Debug("download tracker: Map failed", "title", item.Title, "err", err)
-		}
-	}
+	remote := a.resolveRemote(ctx, item.Title)
 
 	clientID := 0
 	if def := client.Definition(); def != nil {
@@ -77,4 +77,55 @@ func (a downloadItemTrackerAdapter) TrackDownload(ctx context.Context, client do
 		return nil
 	}
 	return td
+}
+
+// resolveRemote parses a download title and maps it to a RemoteEpisode
+// (nil when the title doesn't parse / map). Shared by the initial
+// TrackDownload + the series-edit refresh (J474). Mirrors the C#
+// `ParseTitle` + `_parsingService.Map(...)` pair used in both
+// `TrackedDownloadService.TrackDownload` and `UpdateCachedItem`.
+func (a downloadItemTrackerAdapter) resolveRemote(ctx context.Context, title string) *decisionengine.Subject {
+	if a.parsing == nil {
+		return nil
+	}
+	parsed := parser.ParseTitle(title)
+	if parsed == nil {
+		return nil
+	}
+	r, err := a.parsing.Map(ctx, parsed, 0, 0, "", nil)
+	if err != nil {
+		a.log.Debug("download tracker: Map failed", "title", title, "err", err)
+		return nil
+	}
+	return r
+}
+
+// RefreshTrackedForSeries re-resolves the cached RemoteEpisode of every
+// tracked download whose matched series satisfies `match` (by id/tvdbId),
+// so the queue/activity view reflects renamed/edited/deleted series
+// instead of the stale title captured when the download was first
+// tracked. Returns true when at least one was refreshed (the caller then
+// publishes [trackeddownloads.TrackedDownloadRefreshedEvent]).
+//
+// Ports the fan-out the C# `TrackedDownloadService` performs from its
+// `IHandle<SeriesEditedEvent>` / `IHandle<SeriesDeletedEvent>` handlers
+// via `UpdateCachedItem` (`TrackedDownloadService.cs:245-360`). The Go
+// port had deferred these handlers (the trackeddownloads doc-comment's
+// "unported event shapes" note is stale — series.SeriesEditedEvent /
+// SeriesDeletedEvent are ported + published at series/mutations.go:355,490).
+func (a downloadItemTrackerAdapter) RefreshTrackedForSeries(ctx context.Context, match func(seriesID, tvdbID int) bool) bool {
+	updated := false
+	for _, td := range a.tracked.GetTrackedDownloads() {
+		if td == nil || td.RemoteEpisode == nil || td.RemoteEpisode.Series == nil || td.DownloadItem == nil {
+			continue
+		}
+		if !match(td.RemoteEpisode.Series.ID, td.RemoteEpisode.Series.TvdbID) {
+			continue
+		}
+		// Re-parse + re-map (C# UpdateCachedItem: RemoteEpisode becomes
+		// nil when the title no longer maps — e.g. the series was deleted).
+		td.RemoteEpisode = a.resolveRemote(ctx, td.DownloadItem.Title)
+		updated = true
+	}
+	return updated
 }
