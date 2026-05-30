@@ -9,7 +9,7 @@ Operator resumed the loop to close GAP4 (the only remaining non-marginal item). 
 
 Slices:
 - ✅ **J498 — importlistitems persistence foundation.** NEW `importlistitems.Service` (All + SyncSeriesForList + DeleteForList) porting C# `ImportListItemService.SyncSeriesForList:26-62` (per-list insert/update/delete diff + `FindItem:80-111` multi-id matching) and `HandleAsync(ProviderDeletedEvent):74-78`. NEW Repo batch helpers InsertMany/UpdateMany/DeleteMany + DeleteByImportListID. 6 tests on real SQLite. NOT yet wired into the sync flow (J500).
-- ⬜ **J499 — importliststatus pending-clean bookkeeping** (GetListStatus / UpdateListSyncStatus / MarkListsAsCleaned / AllListsSuccessfulWithAPendingClean — fields already exist).
+- ✅ **J499 — importliststatus pending-clean bookkeeping.** Added GetListStatus / UpdateListSyncStatus(removedItems) / MarkListsAsCleaned / AllListsSuccessfulWithAPendingClean to importliststatus.Service (fields/columns pre-existed). Ports C# `ImportListStatusService.cs:25-57` + the `AllListsSuccessfulWithAPendingClean:58-83` predicate (caller supplies the auto-add list ids). 5 tests (LastInfoSync+sticky flag, default-when-absent, predicate gates [never-synced/disabled/no-removal], MarkListsAsCleaned clears flag but keeps LastInfoSync). NOT yet called by the sync flow (J500).
 - ⬜ **J500 — wire per-list persistence + UpdateListSyncStatus into SyncService.fanOutAndProcess** + cmd/sonarr (populates the table — safe, no clean yet).
 - ⬜ **J501 — TryCleanLibrary/CleanLibrary core** + wire into Sync/SyncList completion (4 ListSyncLevel modes; DESTRUCTIVE KeepAndUnmonitor path — thorough tests).
 - ⬜ **J502 — ProviderDeletedEvent on import-list DELETE** (item-cleanup + status-delete + TryCleanLibrary) + wiring.

@@ -129,6 +129,107 @@ func (s *Service) RecordConnectionFailure(ctx context.Context, providerID int) e
 	})
 }
 
+// GetListStatus ports C# `ImportListStatusService.GetListStatus` at
+// `ImportLists/ImportListStatusService.cs:25-28` (→ GetProviderStatus).
+// Returns the persisted status row, or a zero-valued status (with
+// ProviderID set) when none exists yet — matching the C# base which
+// never returns null.
+func (s *Service) GetListStatus(ctx context.Context, importListID int) (*Status, error) {
+	row, err := s.repo.GetByProviderID(ctx, importListID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return &Status{ProviderID: importListID}, nil
+	case err != nil:
+		return nil, fmt.Errorf("importliststatus: getListStatus(%d): %w", importListID, err)
+	}
+	return row, nil
+}
+
+// UpdateListSyncStatus ports C#
+// `ImportListStatusService.UpdateListSyncStatus` at `:30-41`. Records
+// that the list completed a sync (LastInfoSync = now) and
+// OR-accumulates whether that sync removed any items
+// (HasRemovedItemSinceLastClean) — the flag the clean-library trigger
+// later consults via [AllListsSuccessfulWithAPendingClean]. The other
+// status fields (back-off state) round-trip untouched.
+func (s *Service) UpdateListSyncStatus(ctx context.Context, importListID int, removedItems bool) error {
+	if importListID <= 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, err := s.repo.GetByProviderID(ctx, importListID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		row = &Status{ProviderID: importListID}
+	case err != nil:
+		return fmt.Errorf("importliststatus: updateListSyncStatus load(%d): %w", importListID, err)
+	}
+	now := s.now()
+	row.LastInfoSync = &now
+	row.HasRemovedItemSinceLastClean = row.HasRemovedItemSinceLastClean || removedItems
+	if err := s.repo.Upsert(ctx, row); err != nil {
+		return fmt.Errorf("importliststatus: updateListSyncStatus upsert(%d): %w", importListID, err)
+	}
+	return nil
+}
+
+// MarkListsAsCleaned ports C#
+// `ImportListStatusService.MarkListsAsCleaned` at `:43-57`. Clears
+// HasRemovedItemSinceLastClean on every status row — called by
+// CleanLibrary after it has processed a pending clean. Rows already
+// clear are skipped (avoids a redundant write; observable state is
+// identical to the C# blanket UpdateMany).
+func (s *Service) MarkListsAsCleaned(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all, err := s.repo.All(ctx)
+	if err != nil {
+		return fmt.Errorf("importliststatus: markListsAsCleaned load: %w", err)
+	}
+	for i := range all {
+		if !all[i].HasRemovedItemSinceLastClean {
+			continue
+		}
+		row := all[i]
+		row.HasRemovedItemSinceLastClean = false
+		if err := s.repo.Upsert(ctx, &row); err != nil {
+			return fmt.Errorf("importliststatus: markListsAsCleaned upsert(%d): %w", row.ProviderID, err)
+		}
+	}
+	return nil
+}
+
+// AllListsSuccessfulWithAPendingClean ports C#
+// `ImportListSyncService.AllListsSuccessfulWithAPendingClean` at
+// `ImportListSyncService.cs:58-83`. The caller passes the ids of the
+// auto-add-enabled lists (C# `_importListFactory.AutomaticAddEnabled(
+// false)`). Returns true only when EVERY such list has synced at least
+// once (LastInfoSync set) AND none currently sits in a back-off window
+// (DisabledTill set — i.e. its last sync failed and hasn't recovered)
+// AND at least one list has removed an item since the last clean. That
+// last condition is the "pending clean" — there's nothing to clean up
+// unless a list dropped a series.
+func (s *Service) AllListsSuccessfulWithAPendingClean(ctx context.Context, listIDs []int) (bool, error) {
+	anyRemoved := false
+	for _, id := range listIDs {
+		st, err := s.GetListStatus(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		if st.DisabledTill != nil {
+			// list failed the last time it was synced.
+			return false, nil
+		}
+		if st.LastInfoSync == nil {
+			// list has never been synced.
+			return false, nil
+		}
+		anyRemoved = anyRemoved || st.HasRemovedItemSinceLastClean
+	}
+	return anyRemoved, nil
+}
+
 // OnProviderDeleted removes the status row for the given provider.
 func (s *Service) OnProviderDeleted(ctx context.Context, providerID int) error {
 	if err := s.repo.DeleteByProviderID(ctx, providerID); err != nil {

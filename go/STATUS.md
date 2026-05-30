@@ -20792,6 +20792,12 @@ Ported C# `ImportListItemService` (`src/NzbDrone.Core/ImportLists/ImportListItem
 
 R: src ImportListItemService.cs:17-112; episodes/mutations.go (InsertMany idiom). A: internal/importlistitems/service.go + service_test.go (6 SQLite tests: insert/update/delete diff + removed count, per-list isolation, ImportListID stamping, DeleteForList idempotent, match-by-Tmdb/Mal). M: internal/importlistitems/importlistitems.go (+4 Repo methods). Gates: go build ./… + go test -race importlistitems + go vet + gofmt -l (empty).
 
+### J499 — importliststatus pending-clean bookkeeping (I4c slice 2/5)
+
+Ported the four semantic methods C# `ImportListStatusService` adds over the shared `ProviderStatusServiceBase` (`ImportLists/ImportListStatusService.cs:25-57`) plus the predicate that lives on `ImportListSyncService` (`:58-83`). Added to internal/importliststatus/service.go: `GetListStatus` (→ persisted row or zero-status with ProviderID, never nil); `UpdateListSyncStatus(importListID, removedItems)` (under mu: LastInfoSync=now, HasRemovedItemSinceLastClean |= removedItems, Upsert — the sticky pending-clean flag); `MarkListsAsCleaned` (clear the flag on every row; skip already-clear rows — same observable state as the C# blanket UpdateMany); `AllListsSuccessfulWithAPendingClean(listIDs)` (caller passes the auto-add list ids — C# `AutomaticAddEnabled(false)`; true iff every list has LastInfoSync set AND DisabledTill nil AND ≥1 list has a pending clean). The `Status.LastInfoSync`/`HasRemovedItemSinceLastClean` columns+fields already existed — J497's "verify whether a schema add is needed" doubt resolved: NO migration needed. NOT yet wired into the sync flow (J500).
+
+R: src ImportListStatusService.cs:25-57, ImportListSyncService.cs:58-83. A: internal/importliststatus/service_test.go (+5 tests: LastInfoSync+sticky-flag accumulate, default-when-absent, predicate gates [empty/never-synced/disabled/pending-clean], MarkListsAsCleaned clears flag but preserves LastInfoSync). M: internal/importliststatus/service.go (+4 methods). Gates: go build ./… + go test -race importliststatus + go vet + gofmt (empty).
+
 ## AUTONOMOUS EXHAUSTION (J497, 2026-05-30) — GAP1+GAP2 closed; GAP3 was already done; GAP4 gated; loop STOPPED
 
 Resumed-after-J493 (operator picked GAP1+GAP2). Closed both, verified GAP3/GAP4, and a fresh verify-first pass now finds only gated/marginal/large work → loop STOPPED per the operator's exhaustion clause (no further wakeup).

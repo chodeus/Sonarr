@@ -160,3 +160,126 @@ func TestService_NoTunablesOverride_MatchesCSharpParity(t *testing.T) {
 			got.EscalationLevel, providerstatus.MaxEscalationLevel)
 	}
 }
+
+// --- I4c clean-library pending-clean bookkeeping (J499) ---
+
+func TestService_UpdateListSyncStatus_SetsLastInfoSyncAndFlag(t *testing.T) {
+	t.Parallel()
+	svc := newService(t)
+	ctx := t.Context()
+
+	// First sync removed nothing.
+	if err := svc.UpdateListSyncStatus(ctx, 3, false); err != nil {
+		t.Fatalf("UpdateListSyncStatus: %v", err)
+	}
+	st, err := svc.GetListStatus(ctx, 3)
+	if err != nil {
+		t.Fatalf("GetListStatus: %v", err)
+	}
+	if st.LastInfoSync == nil || !st.LastInfoSync.Equal(refNow) {
+		t.Errorf("LastInfoSync: got %v, want %v", st.LastInfoSync, refNow)
+	}
+	if st.HasRemovedItemSinceLastClean {
+		t.Errorf("flag should be false after a no-removal sync")
+	}
+
+	// Second sync removed an item — flag OR-accumulates to true.
+	if err := svc.UpdateListSyncStatus(ctx, 3, true); err != nil {
+		t.Fatalf("UpdateListSyncStatus 2: %v", err)
+	}
+	st, _ = svc.GetListStatus(ctx, 3)
+	if !st.HasRemovedItemSinceLastClean {
+		t.Errorf("flag should be true after a removal sync")
+	}
+
+	// Third sync removed nothing — flag STAYS true (sticky until cleaned).
+	if err := svc.UpdateListSyncStatus(ctx, 3, false); err != nil {
+		t.Fatalf("UpdateListSyncStatus 3: %v", err)
+	}
+	st, _ = svc.GetListStatus(ctx, 3)
+	if !st.HasRemovedItemSinceLastClean {
+		t.Errorf("flag must remain true until MarkListsAsCleaned")
+	}
+}
+
+func TestService_GetListStatus_DefaultsWhenAbsent(t *testing.T) {
+	t.Parallel()
+	svc := newService(t)
+	st, err := svc.GetListStatus(t.Context(), 42)
+	if err != nil {
+		t.Fatalf("GetListStatus: %v", err)
+	}
+	if st == nil || st.ProviderID != 42 || st.LastInfoSync != nil || st.HasRemovedItemSinceLastClean {
+		t.Errorf("absent status should default: %+v", st)
+	}
+}
+
+func TestService_AllListsSuccessfulWithAPendingClean(t *testing.T) {
+	t.Parallel()
+	svc := newService(t)
+	ctx := t.Context()
+
+	// Empty id set: vacuously all-successful but nothing removed → false.
+	if ok, err := svc.AllListsSuccessfulWithAPendingClean(ctx, nil); err != nil || ok {
+		t.Errorf("empty: got (%v,%v), want (false,nil)", ok, err)
+	}
+
+	// List 1 never synced → false.
+	if ok, _ := svc.AllListsSuccessfulWithAPendingClean(ctx, []int{1}); ok {
+		t.Errorf("never-synced list should gate to false")
+	}
+
+	// Both synced, list 1 removed an item → pending clean → true.
+	if err := svc.UpdateListSyncStatus(ctx, 1, true); err != nil {
+		t.Fatalf("sync 1: %v", err)
+	}
+	if err := svc.UpdateListSyncStatus(ctx, 2, false); err != nil {
+		t.Fatalf("sync 2: %v", err)
+	}
+	if ok, err := svc.AllListsSuccessfulWithAPendingClean(ctx, []int{1, 2}); err != nil || !ok {
+		t.Errorf("both synced + one pending clean: got (%v,%v), want (true,nil)", ok, err)
+	}
+
+	// List 2 now in a back-off window (last sync failed) → false even
+	// though list 1 has a pending clean.
+	if err := svc.RecordFailure(ctx, 2, 0); err != nil {
+		t.Fatalf("RecordFailure: %v", err)
+	}
+	if ok, _ := svc.AllListsSuccessfulWithAPendingClean(ctx, []int{1, 2}); ok {
+		t.Errorf("a disabled list must gate to false")
+	}
+}
+
+func TestService_MarkListsAsCleaned_ClearsFlag(t *testing.T) {
+	t.Parallel()
+	svc := newService(t)
+	ctx := t.Context()
+
+	if err := svc.UpdateListSyncStatus(ctx, 1, true); err != nil {
+		t.Fatalf("sync 1: %v", err)
+	}
+	if err := svc.UpdateListSyncStatus(ctx, 2, true); err != nil {
+		t.Fatalf("sync 2: %v", err)
+	}
+	if ok, _ := svc.AllListsSuccessfulWithAPendingClean(ctx, []int{1, 2}); !ok {
+		t.Fatalf("precondition: should have a pending clean")
+	}
+
+	if err := svc.MarkListsAsCleaned(ctx); err != nil {
+		t.Fatalf("MarkListsAsCleaned: %v", err)
+	}
+	for _, id := range []int{1, 2} {
+		st, _ := svc.GetListStatus(ctx, id)
+		if st.HasRemovedItemSinceLastClean {
+			t.Errorf("list %d flag not cleared", id)
+		}
+		// LastInfoSync must survive the clean.
+		if st.LastInfoSync == nil {
+			t.Errorf("list %d LastInfoSync wiped by clean", id)
+		}
+	}
+	// No pending clean remains.
+	if ok, _ := svc.AllListsSuccessfulWithAPendingClean(ctx, []int{1, 2}); ok {
+		t.Errorf("after clean there should be no pending clean")
+	}
+}
