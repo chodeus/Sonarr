@@ -20433,3 +20433,13 @@ End-to-end VERIFIED: NEW `dispatch_integration_test.go` exercises the real path 
 Now LIVE end-to-end: grab/import/download-completed/health events → enabled notification providers (email/Discord/webhook/etc.). This also activates the J456 OnImportComplete handlers + J453's per-file rename consumer path for notifications.
 
 R: main.go (factory+service+Subscribe wiring). A: notifications/dispatch_integration_test.go. M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md, memories. FULL SUITE green.
+
+## J460 — notification ConfigProvider InstanceName fix (Discord author + Telegram title) + 25-provider coverage sweep
+
+Phase-1 follow-up #1 (provider coverage sweep after J459 wired the dispatch service). Verify-first finding: the dispatch wiring is robust (all 22 HTTP providers self-heal a nil doer to `http.DefaultClient`, so a wrong-typed HTTPClient degrades the timeout but never "sends nothing"; email/customscript take no HTTP dep), BUT one real faithfulness gap: `deps.ConfigProvider` was wired to the app-config `config.Provider`, which has NO `InstanceName` accessor. Discord (`Discord.cs:43`) and Telegram (`Telegram.cs:23`) read `_configFileProvider.InstanceName`; the Go providers narrow `interface{ InstanceName() string }` off deps.ConfigProvider → the assertion always failed → Discord embed author + Telegram title suffix always fell back to the literal "Sonarr" instead of the user's configured instance name.
+
+Fix: `notificationConfigAdapter` (cmd/sonarr/main.go) adapts the configfile provider's `InstanceName(ctx)(string,error)` to the `InstanceName() string` surface the providers assert, reading the live value (defensive product-name fallback on err/empty). Wired into notificationDeps.ConfigProvider in serve() (was `configProv`; nothing else reads ConfigProvider).
+
+Coverage: catalog-completeness test (exactly 25 providers in Default(), exact impl/contract set) + construct-every-provider sweep through the real registry with the production Dependencies shape + behavioral Discord author pin (httptest send asserts author == configured instance) + internal Telegram applyBrandAndInstance pin + cmd/sonarr adapter unit test (configured/default/err/empty + compile-time surface guard).
+
+R: cmd/sonarr/main.go (adapter + wiring). A: notifications/provider_coverage_test.go, notifications/telegram/instance_name_test.go, cmd/sonarr/notification_config_adapter_test.go. M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; notifications/... + cmd/sonarr + contract -race green.

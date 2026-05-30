@@ -2655,9 +2655,16 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 	// provider tests passing `httptest.Server.Client()`), then subscribe
 	// the dispatchers to the bus. notificationStatusSvc backs both the
 	// Factory blocked-filter and the per-dispatch success/failure recorder.
+	// ConfigProvider feeds the Discord author name + Telegram title
+	// suffix from the configured InstanceName (Discord.cs:43,
+	// Telegram.cs:23). The providers assert `InstanceName() string`;
+	// the app-config config.Provider has no such accessor (the value
+	// lives on the configfile provider), so it is adapted here.
+	// Passing configProv (the prior wiring) made both providers fall
+	// back to the literal "Sonarr".
 	notificationDeps := notifications.Dependencies{
 		HTTPClient:        &http.Client{Timeout: 30 * time.Second},
-		ConfigProvider:    configProv,
+		ConfigProvider:    notificationConfigAdapter{src: cfg},
 		Logger:            logger,
 		StatusService:     notificationStatusSvc,
 		NotificationsRepo: notificationsRepo,
@@ -3943,6 +3950,45 @@ func (a updateBranchAdapter) Branch(ctx context.Context) string {
 		return "main"
 	}
 	return v
+}
+
+// notificationInstanceNamer is the narrow surface
+// [notificationConfigAdapter] reads its instance name from — the
+// configfile accessor returns (string, error). Declared here (the
+// consumer side) so the adapter can be unit-tested with a fake.
+type notificationInstanceNamer interface {
+	InstanceName(ctx context.Context) (string, error)
+}
+
+// notificationConfigAdapter adapts the configfile InstanceName
+// accessor to the `InstanceName() string` surface the Discord and
+// Telegram notification providers narrow off
+// notifications.Dependencies.ConfigProvider.
+//
+// C# injects IConfigFileProvider into both providers and reads
+// `_configFileProvider.InstanceName` — Discord author name at
+// `src/NzbDrone.Core/Notifications/Discord/Discord.cs:43` (and :146,
+// :260, :367) and Telegram title suffix at
+// `src/NzbDrone.Core/Notifications/Telegram/Telegram.cs:23,28`.
+// The Go providers assert `interface{ InstanceName() string }`
+// (discord.go:85 / telegram.go instanceNamer). The app-config
+// config.Provider previously wired into deps.ConfigProvider has no
+// InstanceName accessor at all, so both providers silently fell back
+// to the literal "Sonarr" instead of the user's configured instance
+// name. This adapter sources the live value from the configfile
+// provider (the same source C# reads). The configfile accessor
+// already defaults to the product name, so the err/empty fallback is
+// purely defensive.
+type notificationConfigAdapter struct {
+	src notificationInstanceNamer
+}
+
+func (a notificationConfigAdapter) InstanceName() string {
+	name, err := a.src.InstanceName(context.Background())
+	if err != nil || name == "" {
+		return configfile.AppName
+	}
+	return name
 }
 
 // updateCheckerAdapter narrows *update.Service for the
