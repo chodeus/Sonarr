@@ -768,6 +768,23 @@ func TestHandleHealthCheckCompleteEvent_DrainsProcessQueue(t *testing.T) {
 	}
 }
 
+func TestHandleDownloadsProcessedEvent_DrainsProcessQueue_J520(t *testing.T) {
+	t.Parallel()
+	// Drains ALL configured providers regardless of OnX flags (matches
+	// C# GetAvailableProviders) — neither row sets any OnX flag.
+	rows := []notifications.Notification{
+		{ID: 1, Implementation: "Stub", ConfigContract: stubContract()},
+		{ID: 2, Implementation: "Stub", ConfigContract: stubContract()},
+	}
+	svc, hooks, _ := buildService(t, rows, nil)
+	if err := svc.HandleDownloadsProcessedEvent(t.Context(), trackeddownloads.DownloadsProcessedEvent{}); err != nil {
+		t.Fatalf("HandleDownloadsProcessedEvent: %v", err)
+	}
+	if hooks[1].processCalls != 1 || hooks[2].processCalls != 1 {
+		t.Errorf("ProcessQueue drain: 1=%d 2=%d (want 1,1)", hooks[1].processCalls, hooks[2].processCalls)
+	}
+}
+
 // TestNilRecorder verifies that nil recorder is tolerated — the
 // dispatcher invokes the hook without crashing on the recorder
 // call.

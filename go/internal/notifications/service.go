@@ -120,11 +120,13 @@ func NewService(factory *Factory, recorder serviceRecorder, logger *slog.Logger)
 // these wires are tracked here for re-evaluation when the upstream
 // event lands):
 //
-//   - DeleteCompletedEvent / DownloadsProcessedEvent /
-//     RenameCompletedEvent — drain ProcessQueue.
-//     HealthCheckCompleteEvent already covers the
-//     ProcessQueue-drain pattern; the additional drains land when
-//     their upstream events port.
+//   - DownloadsProcessedEvent → trackeddownloads.DownloadsProcessedEvent
+//     (drains ProcessQueue at the end of each download-processing pass —
+//     wired J520)
+//   - DeleteCompletedEvent / RenameCompletedEvent — drain ProcessQueue.
+//     The Go event types/producers don't exist yet (the media-file
+//     delete + rename flows don't publish a batch-complete event); these
+//     drains land when those producer events port.
 //
 // Subscribe is idempotent only insofar as messaging.Subscribe is —
 // calling it twice on the same bus produces two subscriptions.
@@ -152,6 +154,9 @@ func (s *Service) Subscribe(bus *messaging.Bus) {
 	// download-processing loop; async keeps that loop non-blocking while
 	// the notification (potential network I/O) fans out.
 	messaging.SubscribeAsync(bus, "notifications.HandleManualInteractionRequiredEvent", s.HandleManualInteractionRequiredEvent)
+	// ProcessQueue drain on the end-of-pass DownloadsProcessedEvent (the
+	// event downloadprocessing already publishes, J454).
+	messaging.SubscribeAsync(bus, "notifications.HandleDownloadsProcessedEvent", s.HandleDownloadsProcessedEvent)
 }
 
 // HandleEpisodeGrabbedEvent ports the C# `Handle(EpisodeGrabbedEvent)`
@@ -649,10 +654,35 @@ func (s *Service) HandleHealthCheckRestoredEvent(ctx context.Context, ev healthc
 // are no-ops so this is effectively a no-op until those providers
 // port.
 func (s *Service) HandleHealthCheckCompleteEvent(ctx context.Context, _ healthcheck.CompleteEvent) error {
-	providers, err := s.factory.OnHealthIssueEnabled(ctx, false)
+	s.processQueue(ctx)
+	return nil
+}
+
+// HandleDownloadsProcessedEvent ports the C#
+// `IHandleAsync<DownloadsProcessedEvent>` (`NotificationService.cs:530-533`)
+// — drains every provider's ProcessQueue at the end of each
+// download-processing pass (the event downloadprocessing publishes via
+// PublishDownloadsProcessed, J454). Same drain as
+// HandleHealthCheckCompleteEvent; both are async coalescing-buffer
+// flushes for the Plex/Kodi/Emby providers.
+func (s *Service) HandleDownloadsProcessedEvent(ctx context.Context, _ trackeddownloads.DownloadsProcessedEvent) error {
+	s.processQueue(ctx)
+	return nil
+}
+
+// processQueue ports C# `NotificationService.ProcessQueue`
+// (`:545-558`): iterate every available provider and flush its
+// ProcessQueue coalescing buffer, logging per-provider failures without
+// aborting. Shared by the IHandleAsync drain handlers
+// (HealthCheckComplete / DownloadsProcessed; DeleteCompleted +
+// RenameCompleted land when their producer events port). Provider source
+// is [Factory.Available] (all configured providers — matching C#
+// `GetAvailableProviders`).
+func (s *Service) processQueue(ctx context.Context) {
+	providers, err := s.factory.Available(ctx, false)
 	if err != nil {
 		s.logger.Warn("notifications: load providers for ProcessQueue", slog.Any("err", err))
-		return nil
+		return
 	}
 	for _, p := range providers {
 		def := p.Definition()
@@ -663,7 +693,6 @@ func (s *Service) HandleHealthCheckCompleteEvent(ctx context.Context, _ healthch
 				slog.Any("err", err))
 		}
 	}
-	return nil
 }
 
 // HandleApplicationUpdate ports the C# `Handle(UpdateInstalledEvent)`

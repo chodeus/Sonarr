@@ -204,6 +204,16 @@ func (f *Factory) OnManualInteractionEnabled(ctx context.Context, filterBlocked 
 	return f.enabled(ctx, func(n *Notification) bool { return n.OnManualInteractionRequired }, filterBlocked)
 }
 
+// Available returns every configured provider, regardless of its OnX
+// flags. Mirrors C# `ProviderFactory.GetAvailableProviders`
+// (`ProviderFactory.cs:89-92` = `Active().Select(GetInstance)`) — the
+// source the notification ProcessQueue drain iterates. The Go port has
+// no per-provider enable/disable flag, so every configured row is
+// "available".
+func (f *Factory) Available(ctx context.Context, filterBlocked bool) ([]Provider, error) {
+	return f.enabled(ctx, func(*Notification) bool { return true }, filterBlocked)
+}
+
 // ShouldHandleSeries ports the C# helper at
 // `NotificationService.cs:97-113`. Returns true when the provider
 // definition has NO tags configured (no per-series filter), OR
