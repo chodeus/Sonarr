@@ -28,6 +28,7 @@ import (
 	"sonarr.tv/sonarr/internal/disk"
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/episodes"
+	"sonarr.tv/sonarr/internal/history"
 	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/pendingreleases"
@@ -159,6 +160,22 @@ func (a customFormatForFileAdapter) ParseCustomFormat(ctx context.Context, file 
 	return customformats.ParseCustomFormatForFile(file, ser, all), nil
 }
 
+// customFormatForHistoryAdapter satisfies
+// [decisionengine.HistoryFormatCalculator] — parses the custom formats
+// of a history grab row for HistorySpecification (J492). Mirrors C#
+// `ICustomFormatCalculationService.ParseCustomFormat(EpisodeHistory, Series)`.
+type customFormatForHistoryAdapter struct {
+	svc *customformats.Service
+}
+
+func (a customFormatForHistoryAdapter) ParseCustomFormat(ctx context.Context, entry *history.Entry, ser *series.Series) ([]customformats.CustomFormat, error) {
+	all, err := a.svc.All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return customformats.ParseCustomFormatForHistory(entry, ser, all), nil
+}
+
 // seasonPackConfigAdapter wraps `*config.Provider` to satisfy
 // [decisionengine.UpgradeDiskSeasonReader]. Translates the raw `string`
 // SeasonPackUpgrade getter via [decisionengine.ParseSeasonPackUpgradeType]
@@ -218,6 +235,8 @@ var (
 	_ decisionengine.AcceptableSizeEpisodeFinder          = firstEpisodeOfSeasonAdapter{}
 	_ decisionengine.DelayProfileResolver                 = delayProfileResolverAdapter{}
 	_ decisionengine.PendingReleaseAgeReader              = oldestPendingAgeAdapter{}
+	_ decisionengine.HistoryFormatCalculator              = customFormatForHistoryAdapter{}
+	_ decisionengine.HistoryProfileViewReader             = profileViewLookupAdapter{}
 	_ decisionengine.UpgradeAllowedFormatCalculator       = customFormatForFileAdapter{}
 	_ decisionengine.UpgradeDiskFormatCalculator          = customFormatForFileAdapter{}
 	_ decisionengine.UpgradeDiskSeasonReader              = seasonPackConfigAdapter{}
@@ -456,6 +475,20 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 		return nil, err
 	}
 	specs = append(specs, pendingSpec)
+
+	// J492: HistorySpecification — RSS-only Permanent reject when the
+	// episode's most recent history event is a Grabbed that already
+	// satisfies the profile (recent <12h, or CDH disabled). Guards the
+	// grab→import window. Ports DecisionEngine/Specifications/RssSync/
+	// HistorySpecification.cs. Reuses historyByEp + upgradable + cdhCfg +
+	// profileLookup; NEW customFormatForHistoryAdapter for the grab-row CFs.
+	historySpec, err := decisionengine.NewHistorySpecification(
+		d.historyByEp, d.upgradable, profileLookup,
+		customFormatForHistoryAdapter{svc: d.customFormats}, d.cdhCfg, nil, d.log)
+	if err != nil {
+		return nil, err
+	}
+	specs = append(specs, historySpec)
 
 	// J488: SceneMappingSpecification — TEMPORARILY rejects a release
 	// whose matched scene mapping has an explicitly "mixed" scene origin
