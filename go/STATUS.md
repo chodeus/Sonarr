@@ -20515,3 +20515,11 @@ Phase-2 download-decision spec audit (3rd slice). VERIFY-FIRST refined the audit
 Ported `RssSync/IndexerTagSpecification.cs`: NEW `internal/decisionengine/spec_indexer_tag.go` (Accept on no-release/IndexerId==0/indexer-not-found/untagged-indexer/matching-tag; Reject NoMatchingTag when a tagged indexer shares no tag with the series). Tag-less series correctly rejected by a tagged indexer (C#-behavioral, not the literal null-guard). NEW `indexerTagFinderAdapter` (indexers.Repo.Get→Tags; ErrNotFound→found=false) wired into decisionEngineDeps. 8-case test.
 
 R: internal/decisionengine/spec_indexer_tag.go (new spec), cmd/sonarr/decisionengine_wiring.go (adapter+wire+imports), cmd/sonarr/main.go (populate dep). A: spec_indexer_tag_test.go. M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; decisionengine + cmd/sonarr + contract -race green.
+
+## J469 — ProperSpecification (reject propers when disabled or for old files)
+
+Phase-2 download-decision spec audit (4th slice). VERIFY-FIRST confirmed ALL substrate pre-existed (the audit's "needs history substrate" was wrong): UpgradableSpecification.IsRevisionUpgrade, the shared EpisodeFileResolver + decodeFileQuality (spec_repack.go), PropersAndRepacksConfigReader, ReasonPropersDisabled/ReasonProperForOldFile, episodefiles.File.DateAdded — all present. Proper does NOT need history; it compares the candidate revision vs the on-disk file + the file's DateAdded.
+
+Ported `RssSync/ProperSpecification.cs`: NEW `internal/decisionengine/spec_proper.go` (search-skip; DoNotPrefer→Accept; per-episode-file revision-upgrade check → DoNotUpgrade rejects PropersDisabled, file added >7d ago rejects ProperForOldFile). Same 3 deps as RepackSpecification + an injectable clock for the 7-day cutoff (C# DateTime.Today.AddDays(-7)). Wired next to repack. 8-case test.
+
+R: internal/decisionengine/spec_proper.go (new spec), cmd/sonarr/decisionengine_wiring.go (wire). A: spec_proper_test.go (reuses repack-test stubs). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; decisionengine + cmd/sonarr + contract -race green.

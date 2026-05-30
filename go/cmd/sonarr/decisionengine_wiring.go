@@ -366,6 +366,16 @@ func buildDecisionEngineSpecs(d decisionEngineDeps) ([]decisionengine.Specificat
 	}
 	specs = append(specs, repack)
 
+	// J469: ProperSpecification — rejects a proper (revision upgrade) when
+	// auto-downloading propers is disabled, or the existing file is >7d
+	// old (RSS-only). Same deps as RepackSpecification. Ports
+	// DecisionEngine/Specifications/RssSync/ProperSpecification.cs.
+	proper, err := decisionengine.NewProperSpecification(d.upgradable, d.configCfg, d.episodeFiles, nil, d.log)
+	if err != nil {
+		return nil, err
+	}
+	specs = append(specs, proper)
+
 	retention, err := decisionengine.NewRetentionSpecification(d.retentionCfg, d.log)
 	if err != nil {
 		return nil, err
