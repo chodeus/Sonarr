@@ -1,5 +1,15 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## AUTONOMOUS EXHAUSTION (J514, 2026-05-30) — updater subsystem complete; loop STOPPED
+
+J514 wired the GET /api/v3/update (+v5, same handler) InstalledOn arm — a clean gap directly unblocked by the J505 UpdateHistoryService port. A fresh verify-first bounded audit (unsubscribed-but-tested event handlers; constructed-but-never-called service methods across blocklist/history/queue/trackeddownloads/downloadhistory/faileddownloads/housekeeping/scheduledtasks; registry/list completeness vs C#; unassigned `any`-deps fields) found **NO clean ungated gap**. The updatehistory/update services are fully consumed (prevVersion J505, OnApplicationUpdate J506, InstalledOn v3+v5 J514). Remaining work, none autonomously actionable:
+- **FLAGGED (operator execution-review):** the LIVE cmd/sonarr updater wiring (real self-replace+restart) — operator chose to keep the updater DORMANT this session.
+- **GATED:** OnManualInteractionRequired ← ManualInteractionRequiredEvent; the 3 ProcessQueue drains — each on a separate unported producer.
+- **MARGINAL:** none outstanding.
+
+Per the operator's exhaustion clause → loop STOPPED, no wakeup. To resume: operator greenlights the flagged live updater wiring or a gated producer-subsystem port.
+
+
 ## UPDATE-INSTALL PIPELINE (J505+, 2026-05-30) — RESUMED; operator greenlit the J504-gated subsystem
 
 The operator greenlit porting the in-app updater INSTALL pipeline. This directly attacks the J504-exhaustion gate "OnApplicationUpdate ← UpdateInstalledEvent (internal/update install pipeline not ported)". Safe-first decomposition:
