@@ -126,6 +126,81 @@ func (r *Repo) AllByImportListID(ctx context.Context, importListID int) ([]Item,
 	return out, nil
 }
 
+// InsertMany ports the C# `ImportListItemRepository.InsertMany` call at
+// `ImportListItemService.cs:57`. Per-row Insert in a loop (mirrors the
+// episodes.Repo.InsertMany idiom — the generic repo has no batch
+// statement). Each row's ID is assigned in place by Insert.
+func (r *Repo) InsertMany(ctx context.Context, list []*Item) error {
+	if len(list) == 0 {
+		return nil
+	}
+	for i, it := range list {
+		if it == nil {
+			return fmt.Errorf("importlistitems: InsertMany: nil item at idx %d", i)
+		}
+		if _, err := r.Insert(ctx, it); err != nil {
+			return fmt.Errorf("importlistitems: InsertMany(idx=%d): %w", i, err)
+		}
+	}
+	return nil
+}
+
+// UpdateMany ports the C# `ImportListItemRepository.UpdateMany` call at
+// `ImportListItemService.cs:58`. Per-row Update in a loop.
+func (r *Repo) UpdateMany(ctx context.Context, list []*Item) error {
+	if len(list) == 0 {
+		return nil
+	}
+	for i, it := range list {
+		if it == nil {
+			return fmt.Errorf("importlistitems: UpdateMany: nil item at idx %d", i)
+		}
+		if err := r.Update(ctx, it); err != nil {
+			return fmt.Errorf("importlistitems: UpdateMany(idx=%d,id=%d): %w", i, it.ID, err)
+		}
+	}
+	return nil
+}
+
+// DeleteMany ports the C# `ImportListItemRepository.DeleteMany` call at
+// `ImportListItemService.cs:59`. Per-row Delete in a loop; tolerates
+// ErrNotFound (idempotent) so a concurrent prune doesn't fail the batch.
+func (r *Repo) DeleteMany(ctx context.Context, list []Item) error {
+	if len(list) == 0 {
+		return nil
+	}
+	for i := range list {
+		if err := r.Delete(ctx, list[i].ID); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return fmt.Errorf("importlistitems: DeleteMany(idx=%d,id=%d): %w", i, list[i].ID, err)
+		}
+	}
+	return nil
+}
+
+// DeleteByImportListID removes every row attached to the given
+// ImportListId in one statement and returns the affected count. Backs
+// the C# `ImportListItemService.HandleAsync(ProviderDeletedEvent)` path
+// at `ImportListItemService.cs:74-78` (GetAllForLists + DeleteMany),
+// collapsed into a single DELETE since the rows are discarded wholesale.
+func (r *Repo) DeleteByImportListID(ctx context.Context, importListID int) (int64, error) {
+	db := r.DB()
+	q := fmt.Sprintf(
+		`DELETE FROM "ImportListItems" WHERE "ImportListId" = %s`,
+		datastore.Placeholder(db.Engine, 1))
+	res, err := db.SQL.ExecContext(ctx, q, importListID)
+	if err != nil {
+		return 0, fmt.Errorf("importlistitems: deleteByImportListID(%d): %w", importListID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return n, nil
+}
+
 func nullableInt(p *int) sql.NullInt64 {
 	if p == nil {
 		return sql.NullInt64{}

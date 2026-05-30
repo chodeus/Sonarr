@@ -1,5 +1,19 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## RESUMED (J498+, 2026-05-30) — GAP4 / I4c import-list clean-library arc
+
+Operator resumed the loop to close GAP4 (the only remaining non-marginal item). **VERIFY-FIRST CORRECTION of the J497 "gated/missing" labels:** most substrate already exists and the J497 breakdown was partly stale —
+- `importlistitems.All()` (cross-list) ALREADY exists via the embedded `repo.Repository[Item]` (J497 said "NO global All()" — wrong).
+- `importliststatus.Status` ALREADY carries `LastInfoSync` + `HasRemovedItemSinceLastClean` columns/fields + Upsert (J497 implied a schema add might be needed — it is NOT).
+- **The REAL blocker J497 missed:** the Go sync flow (`SyncService.fanOutAndProcess`) fetches items per-list and aggregates them **in memory only** — it NEVER persists them to the `importlistitems` table (no port of C# `ImportListItemService.SyncSeriesForList`). So the table is permanently empty → CleanLibrary would see "no series on any list" and mass-unmonitor EVERYTHING. Persisting fetched items per-list is the safety-critical prerequisite, ported first.
+
+Slices:
+- ✅ **J498 — importlistitems persistence foundation.** NEW `importlistitems.Service` (All + SyncSeriesForList + DeleteForList) porting C# `ImportListItemService.SyncSeriesForList:26-62` (per-list insert/update/delete diff + `FindItem:80-111` multi-id matching) and `HandleAsync(ProviderDeletedEvent):74-78`. NEW Repo batch helpers InsertMany/UpdateMany/DeleteMany + DeleteByImportListID. 6 tests on real SQLite. NOT yet wired into the sync flow (J500).
+- ⬜ **J499 — importliststatus pending-clean bookkeeping** (GetListStatus / UpdateListSyncStatus / MarkListsAsCleaned / AllListsSuccessfulWithAPendingClean — fields already exist).
+- ⬜ **J500 — wire per-list persistence + UpdateListSyncStatus into SyncService.fanOutAndProcess** + cmd/sonarr (populates the table — safe, no clean yet).
+- ⬜ **J501 — TryCleanLibrary/CleanLibrary core** + wire into Sync/SyncList completion (4 ListSyncLevel modes; DESTRUCTIVE KeepAndUnmonitor path — thorough tests).
+- ⬜ **J502 — ProviderDeletedEvent on import-list DELETE** (item-cleanup + status-delete + TryCleanLibrary) + wiring.
+
 ## AUTONOMOUS EXHAUSTION (J497, 2026-05-30) — GAP1+GAP2 closed; GAP3 already done; GAP4 gated; loop STOPPED
 
 Resumed-after-J493 to close the operator-picked gaps. **GAP1 (J494+J495) + GAP2 (J496) DONE.** Fresh verify-first pass on the rest:

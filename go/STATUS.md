@@ -20782,6 +20782,16 @@ Ported C# `MediaFileDeletionService.Handle(EpisodeFileDeletedEvent)` (`src/NzbDr
 
 R: src MediaFileDeletionService.cs:215-243, seriesadded_folder_subscriber.go (pattern). A: cmd/sonarr/mediafile_deleted_folder_subscriber.go + _test.go (6 tests: gate-off no-op, MissingFromDisk no-op, nil-series no-op, prune-up-to-root, delete-empty-root, file-in-root). M: cmd/sonarr/main.go (+1 subscribe call). **GAP2 DONE.** Gates: FULL SUITE green (build ./… + vet ./… + gofmt -l . empty + go test ./…).
 
+## RESUMED (J498+, 2026-05-30) — GAP4 / I4c import-list clean-library arc
+
+Operator resumed to close GAP4 (the only remaining non-marginal item). VERIFY-FIRST corrected J497's labels: `importlistitems.All()` already exists (embedded generic repo); `importliststatus.Status` already has `LastInfoSync`+`HasRemovedItemSinceLastClean` columns/fields (no schema add). The real blocker J497 missed: the Go sync flow aggregates fetched items IN MEMORY ONLY and never persists them to the `importlistitems` table (no port of C# `ImportListItemService.SyncSeriesForList`) → table permanently empty → CleanLibrary would mass-unmonitor EVERYTHING. So the persistence is ported first (safety prerequisite). Decomposition: J498 items-persistence · J499 status pending-clean · J500 wire persistence+status into sync · J501 CleanLibrary core · J502 ProviderDeleted on delete.
+
+### J498 — importlistitems persistence foundation (I4c slice 1/5)
+
+Ported C# `ImportListItemService` (`src/NzbDrone.Core/ImportLists/ImportListItems/ImportListItemService.cs:17-112`). NEW internal/importlistitems/service.go: `Service` (over the existing `*Repo`) with `All` (`:64-67`, cross-list read CleanLibrary walks), `SyncSeriesForList` (`:26-62` — per-list diff: load existing AllByImportListID, match each fetched item via ported `FindItem:80-111` multi-id matching [TvdbId/ImdbId/TmdbId/MalId/AniListId, each guarded], insert unmatched, update matched [copy mutable fields], delete the unmatched-existing leftovers; returns the removed count that drives HasRemovedItemSinceLastClean; stamps ImportListID on every row), `DeleteForList` (`HandleAsync(ProviderDeletedEvent):74-78` — drop a deleted list's rows). NEW Repo helpers in importlistitems.go: InsertMany/UpdateMany/DeleteMany (per-row loop, episodes.Repo idiom) + DeleteByImportListID (single DELETE, returns affected count). NOT yet wired into the sync flow (J500).
+
+R: src ImportListItemService.cs:17-112; episodes/mutations.go (InsertMany idiom). A: internal/importlistitems/service.go + service_test.go (6 SQLite tests: insert/update/delete diff + removed count, per-list isolation, ImportListID stamping, DeleteForList idempotent, match-by-Tmdb/Mal). M: internal/importlistitems/importlistitems.go (+4 Repo methods). Gates: go build ./… + go test -race importlistitems + go vet + gofmt -l (empty).
+
 ## AUTONOMOUS EXHAUSTION (J497, 2026-05-30) — GAP1+GAP2 closed; GAP3 was already done; GAP4 gated; loop STOPPED
 
 Resumed-after-J493 (operator picked GAP1+GAP2). Closed both, verified GAP3/GAP4, and a fresh verify-first pass now finds only gated/marginal/large work → loop STOPPED per the operator's exhaustion clause (no further wakeup).
