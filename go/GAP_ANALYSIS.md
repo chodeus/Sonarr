@@ -1,5 +1,16 @@
 # Sonarr Go-Port — Gap Analysis (audit @ J419, 2026-05-29)
 
+## AUTONOMOUS EXHAUSTION (J504, 2026-05-30) — download-decision spec chain COMPLETE; loop STOPPED
+
+Resumed on the operator's "continue" + greenlight. **J503** wired notification OnRename (the "gated on batch-rename event" label was stale — `episodefiles.SeriesRenamedEvent` published since J453, all substrate pre-existed). **J504** ported the last two marginal download-decision specs (SeasonMatch + SingleEpisodeSearchMatch) via the operator-greenlit SearchCriteria criteria-discriminator refactor — implemented as a LOW-RISK seam (stamp `SearchKind`+Season/EpisodeNumber/AnimeIsSeasonSearch onto the base inside the 3 relevant typed `*Criteria.Base()` methods, not at the 8 construction sites). **The download-decision spec chain is now COMPLETE vs C#.**
+
+A fresh bounded verify-first audit confirms a genuine exhaustion point:
+- **Download-decision spec chain COMPLETE** — every C# spec (base + Search/) has a wired Go equivalent; C# SeriesSpecification is dead-code in C# too (correctly not ported).
+- **Highest-yield unwired sweep = CLEAN** — no Service-constructed-but-method-never-called, no handler-with-tests-unsubscribed, no registry short an entry, no unassigned `any`-deps field, across trackeddownloads/queue/history/blocklist/downloadprocessing/scheduledtasks/housekeeping. All 10 default scheduled tasks + 28 command handlers have real bodies.
+- **The 2 remaining notification producers GENUINELY GATED** (not stale): OnApplicationUpdate ← UpdateInstalledEvent (the `internal/update` install/apply pipeline is intentionally NOT ported — read-side only, doc'd at update.go:1-14); OnManualInteractionRequired ← ManualInteractionRequiredEvent (Go has only the `HasNotifiedManualInteractionRequired` flag; no download-lifecycle emission point). Plus the 3 ProcessQueue drains (DeleteCompleted/DownloadsProcessed/RenameCompleted events unported) + DownloadMonitoring event-driven-refresh (events undefined; 1-min task covers it).
+
+Everything left requires porting a LARGE producer subsystem (update install pipeline / download-lifecycle manual-interaction detection) — multi-slice, not a loop slice. Per the operator's exhaustion clause the loop is **STOPPED** (no further wakeup). To resume the operator must greenlight one of those producer-subsystem ports.
+
 ## AUTONOMOUS EXHAUSTION (J502, 2026-05-30) — GAP4 / I4c CLOSED; loop STOPPED
 
 Resumed to close GAP4 (import-list clean-library), the last non-marginal item. **GAP4 / I4c FULLY CLOSED in 5 clean slices (J498–J502)** — items persistence + status pending-clean + sync-flow wiring + CleanLibrary core + ProviderDeleted-on-delete; the whole clean-library subsystem now matches C# (default-Disabled → inert for typical installs, correctness-when-enabled). FULL SUITE green (build ./… + vet ./… + gofmt -l . empty + go test ./…).
