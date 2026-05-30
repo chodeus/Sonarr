@@ -3187,6 +3187,43 @@ func serve(ctx context.Context, logger *slog.Logger, logFanout *instrumentation.
 			}
 			return nil
 		})
+	// J475: complete the family — SeriesBulkEdited (same multi-series
+	// match as delete) + SeriesAdded (re-resolve nil-series or tvdb-match,
+	// C# TrackedDownloadService.cs:294-336).
+	messaging.Subscribe(bus, "trackeddownloads.RefreshOnSeriesBulkEdited",
+		func(ctx context.Context, ev series.SeriesBulkEditedEvent) error {
+			if len(ev.Series) == 0 {
+				return nil
+			}
+			ids := make(map[int]bool, len(ev.Series))
+			tvdbs := make(map[int]bool, len(ev.Series))
+			for i := range ev.Series {
+				ids[ev.Series[i].ID] = true
+				if ev.Series[i].TvdbID != 0 {
+					tvdbs[ev.Series[i].TvdbID] = true
+				}
+			}
+			if downloadTracker.RefreshTrackedForSeries(ctx, func(id, tvdbID int) bool {
+				return ids[id] || (tvdbID != 0 && tvdbs[tvdbID])
+			}) {
+				_ = messaging.Publish(ctx, bus, trackeddownloads.TrackedDownloadRefreshedEvent{
+					TrackedDownloads: trackedDownloadsSvc.GetTrackedDownloads(),
+				})
+			}
+			return nil
+		})
+	messaging.Subscribe(bus, "trackeddownloads.RefreshOnSeriesAdded",
+		func(ctx context.Context, ev series.SeriesAddedEvent) error {
+			if ev.Series == nil {
+				return nil
+			}
+			if downloadTracker.RefreshTrackedForAddedSeries(ctx, ev.Series.TvdbID) {
+				_ = messaging.Publish(ctx, bus, trackeddownloads.TrackedDownloadRefreshedEvent{
+					TrackedDownloads: trackedDownloadsSvc.GetTrackedDownloads(),
+				})
+			}
+			return nil
+		})
 	// J399: auto-import completed downloads. The processor reads the
 	// tracked-download cache the tracker populated above + imports
 	// completed ones via the existing downloadedimport pipeline. Run on

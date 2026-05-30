@@ -114,16 +114,40 @@ func (a downloadItemTrackerAdapter) resolveRemote(ctx context.Context, title str
 // "unported event shapes" note is stale — series.SeriesEditedEvent /
 // SeriesDeletedEvent are ported + published at series/mutations.go:355,490).
 func (a downloadItemTrackerAdapter) RefreshTrackedForSeries(ctx context.Context, match func(seriesID, tvdbID int) bool) bool {
+	return a.refreshTracked(ctx, func(td *trackeddownloads.TrackedDownload) bool {
+		r := td.RemoteEpisode
+		return r != nil && r.Series != nil && match(r.Series.ID, r.Series.TvdbID)
+	})
+}
+
+// RefreshTrackedForAddedSeries re-resolves tracked downloads that either
+// have no mapped series yet (one tracked before the series existed may
+// now map) OR already match the added series' tvdbId. Ports C#
+// `TrackedDownloadService.Handle(SeriesAddedEvent)` (`:294-307`).
+func (a downloadItemTrackerAdapter) RefreshTrackedForAddedSeries(ctx context.Context, tvdbID int) bool {
+	return a.refreshTracked(ctx, func(td *trackeddownloads.TrackedDownload) bool {
+		r := td.RemoteEpisode
+		if r == nil || r.Series == nil {
+			return true
+		}
+		return tvdbID != 0 && r.Series.TvdbID == tvdbID
+	})
+}
+
+// refreshTracked re-resolves the cached RemoteEpisode (via [resolveRemote]:
+// ParseTitle + Map, C# UpdateCachedItem) of every tracked download for
+// which `should` returns true, returning whether any changed. Shared by
+// the series event handlers (J474/J475). A re-resolve that no longer maps
+// (e.g. deleted series) sets RemoteEpisode to nil, matching C#.
+func (a downloadItemTrackerAdapter) refreshTracked(ctx context.Context, should func(*trackeddownloads.TrackedDownload) bool) bool {
 	updated := false
 	for _, td := range a.tracked.GetTrackedDownloads() {
-		if td == nil || td.RemoteEpisode == nil || td.RemoteEpisode.Series == nil || td.DownloadItem == nil {
+		if td == nil || td.DownloadItem == nil {
 			continue
 		}
-		if !match(td.RemoteEpisode.Series.ID, td.RemoteEpisode.Series.TvdbID) {
+		if !should(td) {
 			continue
 		}
-		// Re-parse + re-map (C# UpdateCachedItem: RemoteEpisode becomes
-		// nil when the title no longer maps — e.g. the series was deleted).
 		td.RemoteEpisode = a.resolveRemote(ctx, td.DownloadItem.Title)
 		updated = true
 	}

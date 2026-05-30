@@ -176,3 +176,41 @@ func TestRefreshTrackedForSeries_DeletedSeries_J474(t *testing.T) {
 		t.Error("deleted-series tracked download should have nil RemoteEpisode after refresh")
 	}
 }
+
+// TestRefreshTrackedForAddedSeries_J475 pins the SeriesAdded variant:
+// re-resolves tracked downloads that have no mapped series yet (may map
+// now) OR match the added series' tvdbId; leaves unrelated mapped
+// downloads untouched. Mirrors C# TrackedDownloadService.cs:294-307.
+func TestRefreshTrackedForAddedSeries_J475(t *testing.T) {
+	t.Parallel()
+	tracked := trackeddownloads.NewService(slog.Default())
+	// Unmapped download (no series yet) — should be re-resolved.
+	_ = tracked.Track(&trackeddownloads.TrackedDownload{
+		DownloadID:    "dl1",
+		DownloadItem:  &downloadclients.Item{DownloadID: "dl1", Title: "New.Show.S01E01"},
+		RemoteEpisode: nil,
+	})
+	// Mapped to a different series (tvdb 200) — should be untouched.
+	_ = tracked.Track(&trackeddownloads.TrackedDownload{
+		DownloadID:    "dl2",
+		DownloadItem:  &downloadclients.Item{DownloadID: "dl2", Title: "Other.S01E01"},
+		RemoteEpisode: &decisionengine.Subject{Series: &series.Series{ID: 9, TvdbID: 200, Title: "Other"}},
+	})
+
+	fresh := &decisionengine.Subject{Series: &series.Series{ID: 5, TvdbID: 100, Title: "New Show"}}
+	mapper := &stubRemoteMapper{out: fresh}
+	a := downloadItemTrackerAdapter{parsing: mapper, tracked: tracked, log: slog.Default()}
+
+	if !a.RefreshTrackedForAddedSeries(t.Context(), 100) {
+		t.Fatal("expected an update (the unmapped download)")
+	}
+	if tracked.Find("dl1").RemoteEpisode == nil || tracked.Find("dl1").RemoteEpisode.Series.TvdbID != 100 {
+		t.Errorf("dl1 (unmapped) should have been re-resolved to the added series")
+	}
+	if got := tracked.Find("dl2").RemoteEpisode.Series.Title; got != "Other" {
+		t.Errorf("dl2 (tvdb 200, unrelated) should be untouched, got %q", got)
+	}
+	if mapper.hits != 1 {
+		t.Errorf("mapper hit %d times, want 1 (only the unmapped download)", mapper.hits)
+	}
+}

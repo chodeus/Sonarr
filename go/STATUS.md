@@ -20565,3 +20565,11 @@ Final confirmation audit (commands all registered, scheduled tasks all registere
 Ported the C# `UpdateCachedItem` fan-out (`TrackedDownloadService.cs:245-360`): NEW `downloadItemTrackerAdapter.RefreshTrackedForSeries` re-resolves the cached RemoteEpisode (shared `resolveRemote` = ParseTitle+Map, same as initial tracking) for tracked downloads matching the edited/deleted series (by id or tvdbId); refactored `parsing` to a narrow `remoteEpisodeMapper` interface for testability. Subscribed both events in serve(); publishes TrackedDownloadRefreshedEvent when any refreshed. Deleted-series → RemoteEpisode becomes nil (title no longer maps), matching C#.
 
 R: cmd/sonarr/download_tracker_wiring.go (resolveRemote+RefreshTrackedForSeries+iface), cmd/sonarr/main.go (extract adapter var + 2 subscriptions). A: download_tracker_wiring_test.go (refresh filter/re-resolve + deleted-series nil). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; cmd/sonarr + trackeddownloads + contract -race green.
+
+## J475 — complete the trackeddownloads series-refresh family (SeriesBulkEdited + SeriesAdded)
+
+Finishes the J474 unit. Verify-first: series.SeriesBulkEditedEvent ([]Series, published mutations.go:452) + series.SeriesAddedEvent (*Series, published mutations.go:163) both exist + fire in production. Ported the remaining C# TrackedDownloadService handlers: SeriesBulkEdited → RefreshTrackedForSeries with a multi-series id/tvdb match (same as SeriesDeleted); SeriesAdded → NEW RefreshTrackedForAddedSeries (re-resolve tracked downloads with nil mapped-series OR matching tvdbId — a download tracked before its series existed now maps; C# :294-307). Refactored the loop into a shared `refreshTracked(should)` predicate helper. Subscribed both in serve() next to the J474 pair; publish TrackedDownloadRefreshedEvent on change.
+
+Deferred LOW: EpisodeInfoRefreshedEvent handler (matches by removed-episode-id; rare, different match shape) — documented, not wired.
+
+R: cmd/sonarr/download_tracker_wiring.go (refreshTracked helper + RefreshTrackedForAddedSeries), cmd/sonarr/main.go (2 subscriptions). A: download_tracker_wiring_test.go (added-series variant). M: GAP_ANALYSIS.md, PROGRESS.md, STATUS.md. Gates: build/vet/gofmt clean; cmd/sonarr + contract -race green.
