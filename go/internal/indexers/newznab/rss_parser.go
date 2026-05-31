@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/parser"
 )
@@ -253,6 +254,12 @@ func processItem(it xmlItem, opts *ParseOptions) (*parser.ReleaseInfo, error) {
 		InfoURL:     getInfoURL(it, opts),
 		CommentURL:  getCommentURL(it, opts),
 		Languages:   getLanguages(it),
+		// Newznab is Usenet-only (rss_parser only accepts the NZB
+		// enclosure mime type). Stamp the protocol so the grab path can
+		// match a usenet download client — without it the release
+		// defaulted to DownloadProtocolUnknown and ProcessDecisions
+		// reported "no client available for protocol".
+		DownloadProtocol: indexers.DownloadProtocolUsenet,
 	}
 	r.Size = getSize(it)
 	r.TvdbID = getIntAttr(it, "tvdbid")

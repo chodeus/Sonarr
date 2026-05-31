@@ -253,6 +253,29 @@ func TestGen_AnimeSeasonStandardNumber(t *testing.T) {
 	}
 }
 
+// TestGen_AcceptsValueCriteria locks in the runtime fix: the production
+// dispatcher (indexersearch.Service.dispatchSearch) passes criteria BY
+// VALUE, not by pointer. Before criteriaToPointer, a value-typed criteria
+// fell through to the default arm ("unsupported criteria type") and every
+// real newznab/torznab search produced zero results — a bug only the
+// integration path hit, since these unit tests passed pointers.
+func TestGen_AcceptsValueCriteria(t *testing.T) {
+	g := newTestGenerator()
+	// NOTE: value, not &.
+	c := indexersearch.SingleEpisodeCriteria{
+		CriteriaBase:  indexersearch.CriteriaBase{Series: defaultSeries(), SceneTitles: []string{"Monkey Island"}},
+		SeasonNumber:  1,
+		EpisodeNumber: 2,
+	}
+	chain, err := g.GetSearchRequests(context.Background(), c)
+	if err != nil {
+		t.Fatalf("value criteria rejected: %v", err)
+	}
+	if len(chain.AllTiers()) == 0 {
+		t.Fatal("value criteria produced no request streams")
+	}
+}
+
 // should_not_search_by_rid_if_not_supported
 func TestGen_NotByRidWhenUnsupported(t *testing.T) {
 	g := newTestGenerator()

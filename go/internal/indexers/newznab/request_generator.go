@@ -161,6 +161,14 @@ func (g *RequestGenerator) GetRecentRequests(ctx context.Context) (*PageableRequ
 // GetSearchRequests dispatches on the typed criteria value. Mirrors the
 // seven `GetSearchRequests(<TCriteria>)` overloads at C# :214-495.
 func (g *RequestGenerator) GetSearchRequests(ctx context.Context, criteria any) (*PageableRequestChain, error) {
+	// The production dispatcher (indexersearch.Service.dispatchSearch)
+	// passes criteria BY VALUE, but this type switch (and the per-builder
+	// methods) operate on pointers. Normalize a by-value criteria to its
+	// pointer form so both shapes match. Without this, every value-typed
+	// search fell through to the default arm and produced zero results —
+	// newznab/torznab search silently never worked at runtime (only the
+	// pointer-passing unit tests ever exercised it).
+	criteria = criteriaToPointer(criteria)
 	switch c := criteria.(type) {
 	case *indexersearch.SingleEpisodeCriteria:
 		return g.getSingleEpisode(ctx, c)
@@ -178,6 +186,30 @@ func (g *RequestGenerator) GetSearchRequests(ctx context.Context, criteria any) 
 		return g.getSpecial(ctx, c)
 	default:
 		return NewPageableRequestChain(), fmt.Errorf("newznab: unsupported criteria type %T", criteria)
+	}
+}
+
+// criteriaToPointer converts a by-value indexersearch criteria into its
+// pointer form (the shape GetSearchRequests' type switch expects).
+// Already-pointer and unknown types pass through unchanged.
+func criteriaToPointer(criteria any) any {
+	switch c := criteria.(type) {
+	case indexersearch.SingleEpisodeCriteria:
+		return &c
+	case indexersearch.SeasonCriteria:
+		return &c
+	case indexersearch.DailyEpisodeCriteria:
+		return &c
+	case indexersearch.DailySeasonCriteria:
+		return &c
+	case indexersearch.AnimeEpisodeCriteria:
+		return &c
+	case indexersearch.AnimeSeasonCriteria:
+		return &c
+	case indexersearch.SpecialEpisodeCriteria:
+		return &c
+	default:
+		return criteria
 	}
 }
 

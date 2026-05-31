@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"sonarr.tv/sonarr/internal/indexers"
 	"sonarr.tv/sonarr/internal/parser"
 )
 
@@ -32,6 +33,13 @@ func TestParseRSS_NzbSuFixture_ParsesItems(t *testing.T) {
 	first := releases[0]
 	if first.Title != "White.Collar.S03E05.720p.HDTV.X264-DIMENSION" {
 		t.Errorf("title = %q", first.Title)
+	}
+	// Newznab is usenet-only; every parsed release must carry the usenet
+	// protocol so the grab path can match a usenet download client.
+	// Without this stamp ProcessDecisions reported "no client available
+	// for protocol" (DownloadProtocolUnknown) and never grabbed.
+	if first.DownloadProtocol != indexers.DownloadProtocolUsenet {
+		t.Errorf("DownloadProtocol = %v, want usenet", first.DownloadProtocol)
 	}
 	if first.Guid != "http://nzb.su/details/24967ef4c2e26296c65d3bbfa97aa8fe" {
 		t.Errorf("guid = %q", first.Guid)
