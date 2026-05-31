@@ -411,6 +411,29 @@ func TestSeriesCreateHandler_PathMissing_400(t *testing.T) {
 	}
 }
 
+// TestSeriesCreateHandler_PathEmptyWithRootFolder_OK locks in the
+// gap-A fix: the React add wizard sends rootFolderPath and never path
+// (the server derives Path from it, mirroring C# AddSeriesService →
+// SeriesPathBuilder). The handler must accept such a body rather than
+// 400 on the missing Path.
+func TestSeriesCreateHandler_PathEmptyWithRootFolder_OK(t *testing.T) {
+	t.Parallel()
+	w := &fakeSeriesWriter{}
+	em := &fakeSeriesEmitter{}
+	body := validSeriesBody()
+	body.Path = ""
+	body.RootFolderPath = "/tv"
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesCreateHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/series", bytes.NewReader(buf)))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.rows) != 1 || w.rows[0].RootFolderPath != "/tv" {
+		t.Errorf("row not inserted with rootFolderPath: %+v", w.rows)
+	}
+}
+
 func TestSeriesCreateHandler_QualityProfileMissing_400(t *testing.T) {
 	t.Parallel()
 	body := validSeriesBody()

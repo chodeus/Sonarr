@@ -1,6 +1,11 @@
 package metadatasource
 
-import "time"
+import (
+	"bytes"
+	"encoding/json"
+	"strconv"
+	"time"
+)
 
 // This file ports the wire-format DTOs at
 // `src/NzbDrone.Core/MetadataSource/SkyHook/Resource/`. These are the
@@ -185,6 +190,51 @@ type ImageResource struct {
 type RatingResource struct {
 	Count int     `json:"count"`
 	Value float64 `json:"value"`
+}
+
+// UnmarshalJSON mirrors the leniency of the C# SkyHook client, which
+// deserializes the response with Newtonsoft.Json (`Json.Deserialize<T>`
+// at `src/NzbDrone.Common/Http/HttpResponse.cs:109`). Newtonsoft parses
+// a JSON number *or* a quoted numeric string into a `decimal`, so the
+// C# `RatingResource.Value` (a `decimal`) decodes both transparently.
+//
+// The live SkyHook service emits `value` as a quoted string today
+// (e.g. `"rating":{"count":2622341,"value":"9.5"}`). The strict
+// `float64` default could not unmarshal that string, failing the entire
+// ShowResource decode at `skyhook.go` and surfacing — misleadingly — as
+// `ErrServiceUnavailable` ("SkyHook unavailable"), which blocked every
+// series add / search / refresh. This decoder accepts a JSON number, a
+// quoted number, or null (→ zero), restoring parity with C#.
+func (r *RatingResource) UnmarshalJSON(data []byte) error {
+	type rawRating struct {
+		Count int             `json:"count"`
+		Value json.RawMessage `json:"value"`
+	}
+	var raw rawRating
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	r.Count = raw.Count
+
+	v := bytes.TrimSpace(raw.Value)
+	if len(v) == 0 || string(v) == "null" {
+		r.Value = 0
+		return nil
+	}
+	// Strip surrounding quotes if SkyHook sent the value as a string.
+	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+		v = v[1 : len(v)-1]
+	}
+	if len(v) == 0 {
+		r.Value = 0
+		return nil
+	}
+	f, err := strconv.ParseFloat(string(v), 64)
+	if err != nil {
+		return err
+	}
+	r.Value = f
+	return nil
 }
 
 // TimeOfDayResource ports `TimeOfDayResource` at

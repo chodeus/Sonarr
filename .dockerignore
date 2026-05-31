@@ -1,0 +1,22 @@
+# Keep the docker build context lean. The Go-port image only needs the
+# frontend sources (for the web stage) and go/ (for the build stage).
+
+.git
+node_modules
+**/node_modules
+_output
+_data
+*.db
+*.db-shm
+*.db-wal
+
+# C#/.NET tree — not used by the Go-port image.
+src/
+*.sln
+
+# Locally-staged embed bundle: the web stage rebuilds the UI and the
+# build stage copies it into this dir, so the host copy is excluded.
+go/internal/frontend/bundle/
+
+# Go build/test scratch.
+go/**/*.test

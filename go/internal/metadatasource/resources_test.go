@@ -228,3 +228,71 @@ func TestShowResource_OmittedNullables(t *testing.T) {
 		t.Errorf("Runtime = %v, want nil", show.Runtime)
 	}
 }
+
+// TestRatingResource_LenientValue locks in the Newtonsoft-parity fix:
+// SkyHook's `rating.value` may arrive as a JSON number or a quoted
+// numeric string (the live service emits `"value":"9.5"` today). Both
+// must decode; null/absent → zero. A strict float64 broke on the string
+// form and failed the whole ShowResource decode, masquerading as
+// "SkyHook unavailable" and blocking every series add/search/refresh.
+func TestRatingResource_LenientValue(t *testing.T) {
+	cases := []struct {
+		name      string
+		payload   string
+		wantCount int
+		wantValue float64
+	}{
+		{"number", `{"count": 12345, "value": 9.4}`, 12345, 9.4},
+		{"quoted string (live SkyHook)", `{"count": 2622341, "value": "9.5"}`, 2622341, 9.5},
+		{"integer string", `{"count": 7, "value": "8"}`, 7, 8},
+		{"null value", `{"count": 3, "value": null}`, 3, 0},
+		{"absent value", `{"count": 4}`, 4, 0},
+		{"empty string value", `{"count": 5, "value": ""}`, 5, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var r RatingResource
+			if err := json.Unmarshal([]byte(c.payload), &r); err != nil {
+				t.Fatalf("unmarshal %s: unexpected error %v", c.name, err)
+			}
+			if r.Count != c.wantCount {
+				t.Errorf("Count = %d, want %d", r.Count, c.wantCount)
+			}
+			if r.Value != c.wantValue {
+				t.Errorf("Value = %v, want %v", r.Value, c.wantValue)
+			}
+		})
+	}
+
+	// A genuinely non-numeric value is still an error (not silently zero)
+	// so real corruption surfaces rather than hides.
+	var bad RatingResource
+	if err := json.Unmarshal([]byte(`{"count": 1, "value": "abc"}`), &bad); err == nil {
+		t.Errorf("expected error for non-numeric value, got nil (Value=%v)", bad.Value)
+	}
+}
+
+// TestShowResource_LiveRatingShape decodes a ShowResource whose rating
+// uses the quoted-string value form, proving the top-level decode that
+// drives GetSeriesInfo no longer fails on the live wire shape.
+func TestShowResource_LiveRatingShape(t *testing.T) {
+	payload := []byte(`{
+		"tvdbId": 81189,
+		"title": "Breaking Bad",
+		"rating": {"count": 2622341, "value": "9.5"},
+		"episodes": [
+			{"tvdbId": 1, "seasonNumber": 1, "episodeNumber": 1, "runtime": 47,
+			 "rating": {"count": 100, "value": "8.7"}}
+		]
+	}`)
+	var show ShowResource
+	if err := json.Unmarshal(payload, &show); err != nil {
+		t.Fatalf("decode live-shaped ShowResource: %v", err)
+	}
+	if show.Rating == nil || show.Rating.Value != 9.5 {
+		t.Errorf("show rating Value = %v, want 9.5", show.Rating)
+	}
+	if len(show.Episodes) != 1 || show.Episodes[0].Rating == nil || show.Episodes[0].Rating.Value != 8.7 {
+		t.Errorf("episode rating not decoded: %+v", show.Episodes)
+	}
+}

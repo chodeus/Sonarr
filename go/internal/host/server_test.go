@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -54,6 +55,52 @@ func TestServer_RunListenAndShutdown(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatalf("Run did not return after context cancel")
+	}
+}
+
+func TestLowercaseAPIPath(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		path      string
+		rawQuery  string
+		wantPath  string
+		wantQuery string
+	}{
+		{"camelCase api lowercased", "/api/v3/customFilter", "", "/api/v3/customfilter", ""},
+		{"camelCase v5 api lowercased", "/api/v5/indexerFlag", "", "/api/v5/indexerflag", ""},
+		{"already lowercase api untouched", "/api/v3/series", "", "/api/v3/series", ""},
+		{"numeric id preserved", "/api/v3/episodeFile/123", "", "/api/v3/episodefile/123", ""},
+		{"mediacover filename case preserved", "/api/v3/mediacover/1/Poster.jpg", "", "/api/v3/mediacover/1/Poster.jpg", ""},
+		{"non-api path untouched (webpack chunk)", "/frontend_src_Components_Page_Header.js", "", "/frontend_src_Components_Page_Header.js", ""},
+		{"spa root untouched", "/", "", "/", ""},
+		{"query string case preserved", "/api/v3/customFilter", "path=/Foo/Bar", "/api/v3/customfilter", "path=/Foo/Bar"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			var gotPath, gotQuery string
+			inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				gotQuery = r.URL.RawQuery
+			})
+			target := c.path
+			if c.rawQuery != "" {
+				target += "?" + c.rawQuery
+			}
+			req := httptest.NewRequest(http.MethodGet, target, nil)
+			rr := httptest.NewRecorder()
+			lowercaseAPIPath(inner).ServeHTTP(rr, req)
+
+			if gotPath != c.wantPath {
+				t.Errorf("path = %q, want %q", gotPath, c.wantPath)
+			}
+			if gotQuery != c.wantQuery {
+				t.Errorf("query = %q, want %q", gotQuery, c.wantQuery)
+			}
+		})
 	}
 }
 

@@ -1407,7 +1407,13 @@ func validateSeriesResource(body SeriesResource) []httperr.Failure {
 	if strings.TrimSpace(body.Title) == "" {
 		failures = append(failures, httperr.Failure{PropertyName: "Title", ErrorMessage: "'Title' must not be empty.", Severity: "error"})
 	}
-	if strings.TrimSpace(body.Path) == "" {
+	// C# SeriesValidator requires RootFolderPath and derives Path
+	// server-side (AddSeriesService → SeriesPathBuilder). The React add
+	// wizard (AddNewSeriesModalContent) sends rootFolderPath, never path.
+	// So accept either: an explicit Path (the edit/PUT case, where the
+	// UI sends the existing path) OR a RootFolderPath the add pipeline
+	// expands into Path. Only when BOTH are empty is this a real error.
+	if strings.TrimSpace(body.Path) == "" && strings.TrimSpace(body.RootFolderPath) == "" {
 		failures = append(failures, httperr.Failure{PropertyName: "Path", ErrorMessage: "'Path' must not be empty.", Severity: "error"})
 	}
 	if body.QualityProfileID <= 0 {

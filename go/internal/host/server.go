@@ -248,7 +248,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux := s.buildMux()
 
 	srv := &http.Server{
-		Handler:           mux,
+		Handler:           lowercaseAPIPath(mux),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 
@@ -300,7 +300,7 @@ func (s *Server) Run(ctx context.Context) error {
 // outside the prefix 404 (matches the C# Kestrel UsePathBase
 // semantic).
 func (s *Server) Handler() http.Handler {
-	h := http.Handler(s.buildMux())
+	h := lowercaseAPIPath(s.buildMux())
 	if s.urlBase != "" {
 		h = stripURLBase(s.urlBase, h)
 	}
@@ -336,6 +336,45 @@ func stripURLBase(prefix string, next http.Handler) http.Handler {
 		default:
 			http.NotFound(w, r)
 		}
+	})
+}
+
+// lowercaseAPIPath makes API route matching case-insensitive, mirroring
+// the ASP.NET Core routing the React frontend was written against. Go's
+// net/http.ServeMux matches paths case-sensitively, so the camelCase
+// URLs the UI issues — /api/v3/customFilter, /rootFolder, /episodeFile,
+// /autoTagging, /indexerFlag (and their /api/v5 forms) — would 404
+// against the lowercase patterns the routes register under, breaking the
+// UI's bootstrap (it renders "Failed to load custom filters from API").
+//
+// Every Sonarr API route literal is lowercase and every path parameter
+// is a numeric id, so lowercasing the whole /api/ path matches the same
+// route while being a no-op on already-correct requests. Two things are
+// deliberately left untouched, where case is load-bearing:
+//
+//   - The mediacover subtree (/api/vN/mediacover/...) serves on-disk
+//     filenames; skipped so a case-sensitive filename round-trips intact.
+//   - Non-/api/ paths — the SPA shell and webpack chunk filenames such as
+//     frontend_src_Components_Page_Header_fuse_worker_ts.js contain
+//     capitals and must reach the static handler verbatim.
+//
+// Query strings live in r.URL.RawQuery (not Path), so case-sensitive
+// query params like ?path=/Foo are unaffected.
+func lowercaseAPIPath(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lower := strings.ToLower(r.URL.Path)
+		if lower != r.URL.Path &&
+			strings.HasPrefix(lower, "/api/") &&
+			!strings.Contains(lower, "/mediacover/") {
+			r2 := *r
+			u := *r.URL
+			u.Path = lower
+			u.RawPath = "" // Path is canonical now; drop the cased raw form.
+			r2.URL = &u
+			next.ServeHTTP(w, &r2)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

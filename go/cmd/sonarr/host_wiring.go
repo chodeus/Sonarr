@@ -71,6 +71,7 @@ import (
 	"sonarr.tv/sonarr/internal/backup"
 	"sonarr.tv/sonarr/internal/blocklist"
 	"sonarr.tv/sonarr/internal/commands"
+	"sonarr.tv/sonarr/internal/commands/handlers"
 	"sonarr.tv/sonarr/internal/config"
 	"sonarr.tv/sonarr/internal/configfile"
 	"sonarr.tv/sonarr/internal/customfilters"
@@ -101,6 +102,7 @@ import (
 	"sonarr.tv/sonarr/internal/metadata"
 	"sonarr.tv/sonarr/internal/namingconfig"
 	"sonarr.tv/sonarr/internal/notifications"
+	"sonarr.tv/sonarr/internal/organizer"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/parsingservice"
 	"sonarr.tv/sonarr/internal/pendingqueue"
@@ -914,6 +916,77 @@ type seriesCascadeAdapter struct {
 	recycleBin   seriesFolderRecycler
 	exclusions   *importlistexclusions.Service
 	logger       *slog.Logger
+	// namingCfg + cmdSvc back the add pipeline in Insert (path
+	// derivation + RefreshSeries enqueue). Both are non-nil in
+	// production; Insert degrades gracefully when either is nil.
+	namingCfg *namingconfig.Service
+	cmdSvc    *commands.Service
+}
+
+// Insert ports the user-facing slice of C# AddSeriesService.AddSeries
+// for POST /api/v3/series (+ /api/v5/series). The embedded
+// series.Service.Insert is a bare row write; this override runs the add
+// pipeline the React wizard depends on:
+//
+//  1. Path derivation — the add wizard (AddNewSeriesModalContent) sends
+//     rootFolderPath, never path. series.PrepareForAdd expands
+//     RootFolderPath + the naming-config series folder into Path (and
+//     stamps CleanTitle / SortTitle / Added / Monitored), matching C#
+//     SetPropertiesAndValidate → SeriesPathBuilder.
+//  2. series.Service.AddSeries — inserts, refetches, and publishes
+//     SeriesAddedEvent (→ the folder-creation subscriber).
+//  3. RefreshSeries enqueue — mirrors C# SeriesAddedHandler pushing
+//     RefreshSeriesCommand. Without it a freshly-added series shows 0
+//     episodes until a manual/scheduled refresh; the command fetches
+//     seasons + episodes from SkyHook.
+func (a *seriesCascadeAdapter) Insert(ctx context.Context, row *series.Series) (*series.Series, error) {
+	series.PrepareForAdd(row, time.Now().UTC(), a.seriesFolderName(ctx))
+	stored, err := a.Service.AddSeries(ctx, row)
+	if err != nil {
+		return nil, err
+	}
+	a.queueRefreshSeries(ctx, stored.ID)
+	return stored, nil
+}
+
+// seriesFolderName returns the folder-name builder PrepareForAdd uses to
+// expand RootFolderPath into Path. Mirrors the import-list adder's
+// folderNameForSeries: pull the naming-config formats, fall back to the
+// "{Series Title}" default if the config can't be read so Path is never
+// left empty for a rootFolderPath-only add.
+func (a *seriesCascadeAdapter) seriesFolderName(ctx context.Context) func(*series.Series) string {
+	opts := organizer.FolderOptions{
+		SeriesFolderFormat: "{Series Title}",
+		Clean:              organizer.CleanNameOptions{ReplaceIllegalCharacters: true},
+	}
+	if a.namingCfg != nil {
+		if cfg, err := a.namingCfg.GetConfig(ctx); err == nil && cfg != nil {
+			opts.SeriesFolderFormat = cfg.SeriesFolderFormat
+			opts.SeasonFolderFormat = cfg.SeasonFolderFormat
+			opts.SpecialsFolderFormat = cfg.SpecialsFolderFormat
+		} else if err != nil {
+			a.logger.LogAttrs(ctx, slog.LevelWarn,
+				"series add: namingconfig.GetConfig failed; using default series folder format",
+				slog.Any("err", err))
+		}
+	}
+	return func(s *series.Series) string { return organizer.GetSeriesFolder(s, opts) }
+}
+
+// queueRefreshSeries pushes a scoped RefreshSeries command for the
+// freshly-added series. Errors degrade to a warn — the row is already
+// persisted, and a scheduled RefreshSeries sweep will reconcile it.
+func (a *seriesCascadeAdapter) queueRefreshSeries(ctx context.Context, seriesID int) {
+	if a.cmdSvc == nil || seriesID <= 0 {
+		return
+	}
+	body := fmt.Sprintf(`{"seriesIds":[%d]}`, seriesID)
+	if _, err := a.cmdSvc.Push(ctx, handlers.RefreshSeriesName, body, commands.PriorityNormal, commands.TriggerUnspecified); err != nil {
+		a.logger.LogAttrs(ctx, slog.LevelWarn,
+			"series add: failed to enqueue RefreshSeries (episodes will populate on next scheduled refresh)",
+			slog.Int("seriesId", seriesID),
+			slog.Any("err", err))
+	}
 }
 
 // MoveFolder satisfies apiv3.SeriesMover. Delegates to the bundled
@@ -2728,6 +2801,8 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, authSvc *au
 		disk:         diskProv,
 		exclusions:   exclusionsSvc,
 		logger:       logger,
+		namingCfg:    namingConfigSvc,
+		cmdSvc:       cmdSvc,
 	}
 	// Assign the recycle-bin only when NewService returned a real value —
 	// a typed-nil *recyclebin.Service stored in the interface field would
