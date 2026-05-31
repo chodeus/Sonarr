@@ -434,6 +434,33 @@ func TestSeriesCreateHandler_PathEmptyWithRootFolder_OK(t *testing.T) {
 	}
 }
 
+// TestSeriesCreateHandler_PersistsAddOptions locks in the gap-C1 fix:
+// the create path must carry the body's addOptions onto the stored row
+// so the post-add pipeline (SeriesScannedHandler → EpisodeMonitoredService)
+// can apply the user's monitor selection. Previously fromSeriesResource
+// only copied AddOptions from an existing row (update), so create dropped
+// it and every freshly-added series landed fully unmonitored.
+func TestSeriesCreateHandler_PersistsAddOptions(t *testing.T) {
+	t.Parallel()
+	w := &fakeSeriesWriter{}
+	em := &fakeSeriesEmitter{}
+	body := validSeriesBody()
+	raw := json.RawMessage(`{"monitor":"all","searchForMissingEpisodes":true}`)
+	body.AddOptions = &raw
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	SeriesCreateHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/series", bytes.NewReader(buf)))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(w.rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(w.rows))
+	}
+	if !strings.Contains(w.rows[0].AddOptions, `"monitor":"all"`) {
+		t.Errorf("AddOptions not persisted on create: %q", w.rows[0].AddOptions)
+	}
+}
+
 func TestSeriesCreateHandler_QualityProfileMissing_400(t *testing.T) {
 	t.Parallel()
 	body := validSeriesBody()

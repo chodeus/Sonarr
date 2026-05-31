@@ -1461,6 +1461,17 @@ func fromSeriesResource(res SeriesResource, existing *series.Series) *series.Ser
 	if row.Tags == nil {
 		row.Tags = []int{}
 	}
+	// AddOptions is an add-only directive (monitor selection + post-add
+	// search flags). The create path must persist it from the body so the
+	// post-add pipeline (SeriesScannedHandler → EpisodeMonitoredService)
+	// can apply it; without this it was silently dropped and every
+	// freshly-added series landed fully unmonitored. On update the body
+	// carries no addOptions, so the existing-branch below restores the
+	// stored value (the add flow clears it via RemoveAddOptions once the
+	// post-add actions complete).
+	if res.AddOptions != nil {
+		row.AddOptions = string(*res.AddOptions)
+	}
 	if existing != nil {
 		// Carry forward the opaque-JSON columns + the time-typed
 		// columns the wire SeriesResource doesn't represent yet.
