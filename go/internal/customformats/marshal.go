@@ -71,6 +71,14 @@ type sizeSpecBody struct {
 	Max float64 `json:"max"`
 }
 
+// channelsSpecBody is the wire body for AudioChannelsSpecification —
+// inclusive integer channel-count bounds (MediaInfo-based, new family).
+type channelsSpecBody struct {
+	baseBody
+	Min int `json:"min"`
+	Max int `json:"max"`
+}
+
 // UnmarshalSpecs parses a JSON-encoded Specifications array into a
 // typed `[]Specification` slice. Mirrors the C# `Read` half of
 // `CustomFormatSpecificationListConverter`. Returns an error if the
@@ -167,9 +175,33 @@ func decodeSpec(env specEnvelope) (Specification, error) {
 			return nil, err
 		}
 		return &LanguageSpec{BaseSpecification: bodyToBase(b.baseBody), Value: b.Value, ExceptLanguage: b.ExceptLanguage}, nil
+	case "HdrFormatSpecification":
+		return decodeIntValueSpec(env.Body, func(b intValueSpecBody) Specification {
+			return &HdrFormatSpec{BaseSpecification: bodyToBase(b.baseBody), Value: b.Value}
+		})
+	case "AudioCodecSpecification":
+		return decodeAudioCodecSpec(env.Body)
+	case "AudioChannelsSpecification":
+		var b channelsSpecBody
+		if err := json.Unmarshal(env.Body, &b); err != nil {
+			return nil, err
+		}
+		return &AudioChannelsSpec{BaseSpecification: bodyToBase(b.baseBody), Min: b.Min, Max: b.Max}, nil
 	default:
 		return nil, fmt.Errorf("unknown discriminator")
 	}
+}
+
+func decodeAudioCodecSpec(body []byte) (Specification, error) {
+	var b regexSpecBody
+	if err := json.Unmarshal(body, &b); err != nil {
+		return nil, err
+	}
+	spec := &AudioCodecSpec{BaseSpecification: bodyToBase(b.baseBody)}
+	if err := spec.SetPattern(b.Value); err != nil {
+		return nil, err
+	}
+	return spec, nil
 }
 
 func decodeReleaseTitleSpec(body []byte) (Specification, error) {
@@ -245,6 +277,19 @@ func encodeSpec(spec Specification) (string, map[string]any, error) {
 		return "LanguageSpecification", baseToMap(s.BaseSpecification, map[string]any{
 			"value":          s.Value,
 			"exceptLanguage": s.ExceptLanguage,
+		}), nil
+	case *HdrFormatSpec:
+		return "HdrFormatSpecification", baseToMap(s.BaseSpecification, map[string]any{
+			"value": s.Value,
+		}), nil
+	case *AudioCodecSpec:
+		return "AudioCodecSpecification", baseToMap(s.BaseSpecification, map[string]any{
+			"value": s.Pattern(),
+		}), nil
+	case *AudioChannelsSpec:
+		return "AudioChannelsSpecification", baseToMap(s.BaseSpecification, map[string]any{
+			"min": s.Min,
+			"max": s.Max,
 		}), nil
 	default:
 		return "", nil, fmt.Errorf("customformats: unknown spec type %T", spec)

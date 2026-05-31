@@ -91,6 +91,9 @@ var customFormatSchemas = func() []CustomFormatSpecificationSchemaResource {
 		sizeSchema(),
 		releaseGroupSchema(),
 		releaseTypeSchema(),
+		hdrFormatSchema(),
+		audioCodecSchema(),
+		audioChannelsSchema(),
 	}
 	// Top-level schemas always emit `"presets":[…]` on the wire (the
 	// C# `.ToList()` on the filtered preset enumeration yields a
@@ -351,6 +354,80 @@ func releaseTypeOptions() []SelectOption {
 		{Value: 1, Name: "Single Episode", Order: 9, Hint: "(1)"},
 		{Value: 2, Name: "Multi-Episode", Order: 12, Hint: "(2)"},
 		{Value: 3, Name: "Season Pack", Order: 15, Hint: "(3)"},
+	}
+}
+
+// hdrFormatSchema is the schema for the MediaInfo-based HDR Format
+// condition (net-new family, see internal/customformats/spec_mediainfo.go).
+// Value is the mediainfo.HdrFormat int enum.
+func hdrFormatSchema() CustomFormatSpecificationSchemaResource {
+	return CustomFormatSpecificationSchemaResource{
+		Implementation:     "HdrFormatSpecification",
+		ImplementationName: "HDR Format",
+		InfoLink:           customFormatInfoLink,
+		Fields: []FieldDef{
+			{
+				Order: 0, Name: "value", Label: "HDR Format", Type: "select",
+				HelpText: "Matches the dynamic range probed from the file (post-download only)",
+				Privacy:  "normal", SelectOptions: hdrFormatOptions(),
+				Value: 0, ValueSet: true,
+			},
+		},
+	}
+}
+
+// hdrFormatOptions mirrors the `mediainfo.HdrFormat` enum
+// (internal/mediainfo/mediainfo.go) — Value is the int enum, Name a
+// friendly label. Order matches Value.
+func hdrFormatOptions() []SelectOption {
+	return []SelectOption{
+		{Value: 0, Name: "None", Order: 0},
+		{Value: 1, Name: "Unknown HDR", Order: 1},
+		{Value: 2, Name: "PQ10", Order: 2},
+		{Value: 3, Name: "HDR10", Order: 3},
+		{Value: 4, Name: "HDR10+", Order: 4},
+		{Value: 5, Name: "HLG", Order: 5},
+		{Value: 6, Name: "Dolby Vision", Order: 6},
+		{Value: 7, Name: "Dolby Vision + HDR10", Order: 7},
+		{Value: 8, Name: "Dolby Vision + SDR", Order: 8},
+		{Value: 9, Name: "Dolby Vision + HLG", Order: 9},
+		{Value: 10, Name: "Dolby Vision + HDR10+", Order: 10},
+	}
+}
+
+// audioCodecSchema is the schema for the MediaInfo-based Audio Codec
+// condition — a regex matched against any probed audio stream's format.
+func audioCodecSchema() CustomFormatSpecificationSchemaResource {
+	return CustomFormatSpecificationSchemaResource{
+		Implementation:     "AudioCodecSpecification",
+		ImplementationName: "Audio Codec",
+		InfoLink:           customFormatInfoLink,
+		Fields:             []FieldDef{regexValueField},
+	}
+}
+
+// audioChannelsSchema is the schema for the MediaInfo-based Audio
+// Channels condition — an inclusive integer channel-count range matched
+// against any probed audio stream (6 = 5.1, 8 = 7.1).
+func audioChannelsSchema() CustomFormatSpecificationSchemaResource {
+	return CustomFormatSpecificationSchemaResource{
+		Implementation:     "AudioChannelsSpecification",
+		ImplementationName: "Audio Channels",
+		InfoLink:           customFormatInfoLink,
+		Fields: []FieldDef{
+			{
+				Order: 0, Name: "min", Label: "Minimum Channels",
+				HelpText: "An audio stream must have at least this many channels (6 = 5.1, 8 = 7.1)",
+				Type:     "number", Privacy: "normal",
+				Value: 0, ValueSet: true,
+			},
+			{
+				Order: 1, Name: "max", Label: "Maximum Channels",
+				HelpText: "An audio stream must have at most this many channels",
+				Type:     "number", Privacy: "normal",
+				Value: 0, ValueSet: true,
+			},
+		},
 	}
 }
 

@@ -132,6 +132,17 @@ func Calculate(input CustomFormatInput, formats []*Format) []*Format {
 		if f == nil {
 			continue
 		}
+		// Skip the whole format when any of its specs is inapplicable to
+		// this input (a MediaInfo spec pre-download, where MediaInfo is
+		// nil). This is deliberately conservative: a format must NOT
+		// match on its title-based specs alone while a MediaInfo
+		// condition can't yet be verified, or a release title could
+		// over-promise a MediaInfo attribute it doesn't deliver. Formats
+		// with no evaluable (MediaInfo) specs are always applicable, so
+		// the existing title/quality/size/etc. path is unchanged.
+		if !formatApplicable(f, input) {
+			continue
+		}
 		groups := groupSpecsByType(f.Specifications, input)
 		if allGroupsMatched(groups) {
 			matched = append(matched, f)
@@ -143,6 +154,23 @@ func Calculate(input CustomFormatInput, formats []*Format) []*Format {
 		return matched[i].Name < matched[j].Name
 	})
 	return matched
+}
+
+// formatApplicable reports whether every spec in the format can be
+// evaluated for this input. A spec that implements [evaluable] (the
+// MediaInfo specs) reports applicability via Evaluate; when MediaInfo is
+// absent (pre-download) it is inapplicable and the whole format is
+// skipped. Non-evaluable specs are always applicable, so non-MediaInfo
+// formats take a byte-identical path (this returns true for them).
+func formatApplicable(f *Format, input CustomFormatInput) bool {
+	for _, spec := range f.Specifications {
+		if e, ok := spec.(evaluable); ok {
+			if _, applicable := e.Evaluate(input); !applicable {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func groupSpecsByType(specs []Specification, input CustomFormatInput) []SpecificationGroup {

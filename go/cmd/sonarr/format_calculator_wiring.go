@@ -147,6 +147,9 @@ func (a localEpisodeFormatParserAdapter) ParseCustomFormat(le *episodeimport.Loc
 		Languages:    cloneLanguages(le.Languages),
 		Filename:     fileName,
 		ReleaseType:  le.ReleaseType,
+		// POST-download: the probed MediaInfo (populated by
+		// AggregateMediaInfo) drives the MediaInfo-based specs.
+		MediaInfo: le.MediaInfo,
 	}
 	matched := customformats.Calculate(input, formats)
 	out := make([]customformats.CustomFormat, 0, len(matched))

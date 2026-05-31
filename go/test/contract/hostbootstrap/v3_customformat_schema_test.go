@@ -7,10 +7,16 @@ import (
 )
 
 // TestV3CustomFormatSchemaContract pins /api/v3/customformat/schema
-// to the C#-recorded golden — 8 specification schemas (ordered by
-// `ICustomFormatSpecification.Order` ascending) with the
-// ReleaseTitleSpecification carrying its 6 hard-coded regex
-// presets.
+// to the C#-recorded golden for the 8 C# specification schemas
+// (ordered by `ICustomFormatSpecification.Order` ascending) with the
+// ReleaseTitleSpecification carrying its 6 hard-coded regex presets,
+// PLUS 3 Go-only MediaInfo-based conditions appended at the end
+// (HdrFormatSpecification, AudioCodecSpecification,
+// AudioChannelsSpecification — Slice A forward-divergence; see
+// internal/customformats/spec_mediainfo.go). The golden's first 8
+// entries remain byte-identical to the C# recording; the 3 trailing
+// entries are the documented intentional divergence (current C# has no
+// MediaInfo CF specs — tracks Sonarr/Sonarr#5598).
 //
 // The Go side substitutes a reflection-derived schema with a hand-
 // rolled `customFormatSchemas` table — same wire shape, no C#

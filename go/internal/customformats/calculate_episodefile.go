@@ -74,6 +74,9 @@ func ParseCustomFormatForFile(file *episodefiles.File, series *series.Series, al
 		Languages:    languagesFromIDs(file.Languages),
 		Filename:     filepath.Base(file.RelativePath),
 		ReleaseType:  parser.ReleaseType(file.ReleaseType),
+		// POST-download: the persisted probe (nil for pre-225 rows /
+		// files never probed) drives the MediaInfo-based specs.
+		MediaInfo: file.MediaInfo,
 	}
 	matched := Calculate(input, allFormats)
 	out := make([]CustomFormat, 0, len(matched))

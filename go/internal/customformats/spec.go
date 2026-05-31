@@ -4,6 +4,7 @@ import (
 	"regexp"
 
 	"sonarr.tv/sonarr/internal/language"
+	"sonarr.tv/sonarr/internal/mediainfo"
 	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/series"
 )
@@ -44,6 +45,15 @@ type CustomFormatInput struct {
 	Languages    []language.Language
 	Filename     string
 	ReleaseType  parser.ReleaseType
+
+	// MediaInfo carries the probed ffprobe MediaInfo for the
+	// MediaInfo-based specs (HDR / audio codec / audio channels). It is
+	// ONLY available POST-download — pre-download (grab decision) it is
+	// nil, and [Calculate] then skips any format carrying a MediaInfo
+	// condition (see formatApplicable + spec_mediainfo.go). Forward-
+	// divergence from current C# (which has no MediaInfo CF specs); the
+	// upstreamable shape adds the same nullable ref to `CustomFormatInput.cs`.
+	MediaInfo *mediainfo.Model
 }
 
 // Specification ports `ICustomFormatSpecification.cs:5-19`. Each

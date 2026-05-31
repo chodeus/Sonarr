@@ -80,7 +80,28 @@ func TestCustomFormatSchema_PresetItemOmitsPresets(t *testing.T) {
 
 func TestCustomFormatSchema_PinnedCount(t *testing.T) {
 	t.Parallel()
-	if got := len(customFormatSchemas); got != 8 {
-		t.Errorf("customFormatSchemas count: got %d want 8", got)
+	// 8 ported HEAD specs + 3 MediaInfo-based conditions (HDR Format,
+	// Audio Codec, Audio Channels — Slice A forward-divergence).
+	if got := len(customFormatSchemas); got != 11 {
+		t.Errorf("customFormatSchemas count: got %d want 11", got)
+	}
+}
+
+func TestCustomFormatSchema_MediaInfoSpecsPresent(t *testing.T) {
+	t.Parallel()
+	want := map[string]bool{
+		"HdrFormatSpecification":     false,
+		"AudioCodecSpecification":    false,
+		"AudioChannelsSpecification": false,
+	}
+	for _, s := range customFormatSchemas {
+		if _, ok := want[s.Implementation]; ok {
+			want[s.Implementation] = true
+		}
+	}
+	for impl, found := range want {
+		if !found {
+			t.Errorf("customFormatSchemas missing MediaInfo spec %q", impl)
+		}
 	}
 }
