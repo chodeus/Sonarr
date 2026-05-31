@@ -140,7 +140,7 @@ func TestImportListCreateHandler_Success(t *testing.T) {
 	body := validImportListBody()
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	ImportListCreateHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist", bytes.NewReader(buf)))
+	ImportListCreateHandler(w, em, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist", bytes.NewReader(buf)))
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -160,13 +160,52 @@ func TestImportListCreateHandler_Success(t *testing.T) {
 	}
 }
 
+func TestImportListCreateHandler_PreSaveTestGate(t *testing.T) {
+	t.Parallel()
+	t.Run("failure blocks insert", func(t *testing.T) {
+		w := &fakeImportListWriter{}
+		tester := &fakeImportListTester{result: []importlists.TestFailure{{PropertyName: "BaseUrl", ErrorMessage: "bad"}}}
+		buf, _ := json.Marshal(validImportListBody()) // EnableAutomaticAdd=true
+		rr := httptest.NewRecorder()
+		ImportListCreateHandler(w, &fakeImportListEmitter{}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist", bytes.NewReader(buf)))
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status: %d want 400; body=%s", rr.Code, rr.Body.String())
+		}
+		if tester.seen == nil || len(w.rows) != 0 {
+			t.Errorf("expected test invoked + no insert: seen=%v rows=%d", tester.seen != nil, len(w.rows))
+		}
+	})
+	t.Run("forceSave skips test", func(t *testing.T) {
+		w := &fakeImportListWriter{}
+		tester := &fakeImportListTester{result: []importlists.TestFailure{{PropertyName: "BaseUrl", ErrorMessage: "bad"}}}
+		buf, _ := json.Marshal(validImportListBody())
+		rr := httptest.NewRecorder()
+		ImportListCreateHandler(w, &fakeImportListEmitter{}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist?forceSave=true", bytes.NewReader(buf)))
+		if rr.Code != http.StatusCreated || tester.seen != nil || len(w.rows) != 1 {
+			t.Errorf("forceSave should skip test and insert: code=%d seen=%v rows=%d", rr.Code, tester.seen != nil, len(w.rows))
+		}
+	})
+	t.Run("disabled skips test", func(t *testing.T) {
+		w := &fakeImportListWriter{}
+		tester := &fakeImportListTester{result: []importlists.TestFailure{{PropertyName: "BaseUrl", ErrorMessage: "bad"}}}
+		body := validImportListBody()
+		body.EnableAutomaticAdd = false
+		buf, _ := json.Marshal(body)
+		rr := httptest.NewRecorder()
+		ImportListCreateHandler(w, &fakeImportListEmitter{}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist", bytes.NewReader(buf)))
+		if rr.Code != http.StatusCreated || tester.seen != nil {
+			t.Errorf("disabled provider should skip test: code=%d seen=%v", rr.Code, tester.seen != nil)
+		}
+	})
+}
+
 func TestImportListCreateHandler_NameMissing_400(t *testing.T) {
 	t.Parallel()
 	body := validImportListBody()
 	body.Name = ""
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	ImportListCreateHandler(&fakeImportListWriter{}, &fakeImportListEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist", bytes.NewReader(buf)))
+	ImportListCreateHandler(&fakeImportListWriter{}, &fakeImportListEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist", bytes.NewReader(buf)))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
 	}
@@ -178,7 +217,7 @@ func TestImportListCreateHandler_DuplicateName_400(t *testing.T) {
 	body := validImportListBody()
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	ImportListCreateHandler(w, &fakeImportListEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist", bytes.NewReader(buf)))
+	ImportListCreateHandler(w, &fakeImportListEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist", bytes.NewReader(buf)))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -187,7 +226,7 @@ func TestImportListCreateHandler_DuplicateName_400(t *testing.T) {
 func TestImportListCreateHandler_MalformedJSON_400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	ImportListCreateHandler(&fakeImportListWriter{}, &fakeImportListEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist", bytes.NewReader([]byte(`{bad`))))
+	ImportListCreateHandler(&fakeImportListWriter{}, &fakeImportListEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/importlist", bytes.NewReader([]byte(`{bad`))))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
 	}
@@ -206,7 +245,7 @@ func TestImportListUpdateHandler_Success(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/v3/importlist/42", bytes.NewReader(buf))
 	req.SetPathValue("id", "42")
 	rr := httptest.NewRecorder()
-	ImportListUpdateHandler(w, em).ServeHTTP(rr, req)
+	ImportListUpdateHandler(w, em, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -226,7 +265,7 @@ func TestImportListUpdateHandler_NotFound_404(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/v3/importlist/999", bytes.NewReader(buf))
 	req.SetPathValue("id", "999")
 	rr := httptest.NewRecorder()
-	ImportListUpdateHandler(&fakeImportListWriter{}, &fakeImportListEmitter{}).ServeHTTP(rr, req)
+	ImportListUpdateHandler(&fakeImportListWriter{}, &fakeImportListEmitter{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status: %d", rr.Code)
 	}
@@ -242,7 +281,7 @@ func TestImportListUpdateHandler_BodyIDFallback(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/v3/importlist/999", bytes.NewReader(buf))
 	req.SetPathValue("id", "999")
 	rr := httptest.NewRecorder()
-	ImportListUpdateHandler(w, &fakeImportListEmitter{}).ServeHTTP(rr, req)
+	ImportListUpdateHandler(w, &fakeImportListEmitter{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -260,7 +299,7 @@ func TestImportListUpdateHandler_OmittedFields_KeepsSettings(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/v3/importlist/1", bytes.NewReader(buf))
 	req.SetPathValue("id", "1")
 	rr := httptest.NewRecorder()
-	ImportListUpdateHandler(w, &fakeImportListEmitter{}).ServeHTTP(rr, req)
+	ImportListUpdateHandler(w, &fakeImportListEmitter{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d", rr.Code)
 	}

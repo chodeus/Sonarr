@@ -157,7 +157,7 @@ func buildHostServer(ctx context.Context, cfg *configfile.Provider, authSvc *aut
 		// default path.
 		{Method: "GET", Path: "/initialize.json", Handler: host.InitializeJSONHandler(cfg), Anonymous: true},
 	}
-	v3 := v3Routes(configProv, cfg, indexerSearchSvc, logger, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, mediaCoverConvertSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, cmdRegistry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, parsingSvc, manualImportDecisionRejector, episodeFileDeleter, queueRemover, recentUpdates, logReader, seriesSearcher, backupTempPath, logFolderPath)
+	v3 := v3Routes(configProv, cfg, authSvc, indexerSearchSvc, logger, qualityDefSvc, qualityProfilesSvc, tagsSvc, autoTagsSvc, releaseProfilesSvc, customFormatsSvc, delayProfilesSvc, customFiltersSvc, queueSvc, rootFoldersSvc, remotePathMappingsSvc, namingConfigSvc, notificationsRepo, indexersRepo, importListsRepo, importListExclusionsRepo, downloadClientsRepo, episodesSvc, episodesRepo, seriesSvc, mediaCoverConvertSvc, healthSvc, metadataRepo, signalRHub, queueStatusPauser, systemStatus, pendingReleasesRepo, blocklistRepo, historyRepo, lifecycleSvc, cmdSvc, cmdRegistry, failedDownloadsSvc, taskSvc, backupSvc, episodeFilesSvc, diskProv, bus, processDownloadDecisions, downloadDecider, releaseCache, parsingSvc, manualImportDecisionRejector, episodeFileDeleter, queueRemover, recentUpdates, logReader, seriesSearcher, backupTempPath, logFolderPath)
 	opts := []host.Option{
 		host.WithRoutes(append(loginRoutes, v3...)...),
 	}
@@ -2364,8 +2364,17 @@ func (u uiConfigGetter) SetTheme(ctx context.Context, v string) error {
 // services (IConfigFileProvider + IConfigService) are collapsed into
 // one getter at the Go REST boundary.
 type hostConfigGetter struct {
-	cfg    *config.Provider
-	xmlCfg *configfile.Provider
+	cfg     *config.Provider
+	xmlCfg  *configfile.Provider
+	authSvc *auth.Service
+}
+
+// UpsertUser persists the Forms-auth credentials via the auth service's
+// PBKDF2 hash-aware Upsert (ports C# `UserService.Upsert`). Returns the
+// error only — the handler doesn't need the persisted user row.
+func (h hostConfigGetter) UpsertUser(ctx context.Context, username, password string) error {
+	_, err := h.authSvc.Upsert(ctx, username, password)
+	return err
 }
 
 func (h hostConfigGetter) BindAddress(ctx context.Context) (string, error) {
@@ -2564,7 +2573,7 @@ func (h hostConfigGetter) SetProxyBypassLocalAddresses(ctx context.Context, v bo
 // autoTagsSvc + releaseProfilesSvc own their respective tables; both
 // expose All directly via Go's structural typing on the Lister
 // interfaces.
-func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSearchSvc *indexersearch.Service, logger *slog.Logger, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, mediaCoverConvertSvc *mediacover.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, diskProv *disk.Provider, bus *messaging.Bus, processDownloadDecisions *download.ProcessDownloadDecisions, downloadDecider *decisionengine.DownloadDecisionMaker, releaseCache *releasecache.Cache, parsingSvc *parsingservice.Service, manualImportDecisionRejector apiv3.ManualImportDecisionRejector, episodeFileDeleter *episodeFileDeleteAdapter, queueRemover apiv3.QueueWriter, recentUpdates apiv3.UpdateLister, logReader apiv3.LogLister, seriesSearcher apiv3.SeriesSearcher, backupTempPath, logFolderPath string) []host.Route {
+func v3Routes(configProv *config.Provider, cfg *configfile.Provider, authSvc *auth.Service, indexerSearchSvc *indexersearch.Service, logger *slog.Logger, qualityDefSvc *qualitydefinitions.Service, qualityProfilesSvc *qualityprofiles.Service, tagsSvc *tags.Service, autoTagsSvc *autotagging.Service, releaseProfilesSvc *releaseprofiles.Service, customFormatsSvc *customformats.Service, delayProfilesSvc *delayprofiles.Service, customFiltersSvc *customfilters.Service, queueSvc *queue.Service, rootFoldersSvc *rootfolders.Service, remotePathMappingsSvc *remotepathmappings.Service, namingConfigSvc *namingconfig.Service, notificationsRepo *notifications.Repo, indexersRepo *indexers.Repo, importListsRepo *importlists.Repo, importListExclusionsRepo *importlistexclusions.Repo, downloadClientsRepo *downloadclients.Repo, episodesSvc *episodes.Service, episodesRepo *episodes.Repo, seriesSvc *series.Service, mediaCoverConvertSvc *mediacover.Service, healthSvc *healthcheck.Service, metadataRepo *metadata.Repo, signalRHub *signalr.Hub, queueStatusPauser apiv3.Pauser, systemStatus apiv3.SystemStatusContext, pendingReleasesRepo *pendingreleases.Repo, blocklistRepo *blocklist.Repo, historyRepo *history.Repo, lifecycleSvc *lifecycle.Service, cmdSvc *commands.Service, cmdRegistry *commands.CommandRegistry, failedDownloadsSvc *faileddownloads.Service, taskSvc *scheduledtasks.Service, backupSvc *backup.Service, episodeFilesSvc *episodefiles.Service, diskProv *disk.Provider, bus *messaging.Bus, processDownloadDecisions *download.ProcessDownloadDecisions, downloadDecider *decisionengine.DownloadDecisionMaker, releaseCache *releasecache.Cache, parsingSvc *parsingservice.Service, manualImportDecisionRejector apiv3.ManualImportDecisionRejector, episodeFileDeleter *episodeFileDeleteAdapter, queueRemover apiv3.QueueWriter, recentUpdates apiv3.UpdateLister, logReader apiv3.LogLister, seriesSearcher apiv3.SeriesSearcher, backupTempPath, logFolderPath string) []host.Route {
 	langs := language.All()
 	localizationSvc := localization.NewService()
 	// J367: the series read handlers (v3 + v5 GET list/by-id) discover
@@ -2589,7 +2598,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 	// is unset.
 	tagDetailLister := newTagDetailLister(tagsSvc, delayProfilesSvc, importListsRepo, notificationsRepo, releaseProfilesSvc, seriesSvc, indexersRepo, autoTagsSvc, downloadClientsRepo)
 	uiCfg := uiConfigGetter{cfg: configProv, xmlCfg: cfg}
-	hostCfg := hostConfigGetter{cfg: configProv, xmlCfg: cfg}
+	hostCfg := hostConfigGetter{cfg: configProv, xmlCfg: cfg, authSvc: authSvc}
 	// 5.B2: per-resource SignalR emitter for the rootfolder writes.
 	// The rootfolder controller in C# extends RestControllerWithSignalR
 	// which auto-broadcasts on Create/Delete; the Go port fires the
@@ -3333,13 +3342,13 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/indexer", Handler: indexerv5.ListHandler(indexersRepo)},
 		{Method: "GET", Path: "/api/v5/indexer/schema", Handler: indexerv5.SchemaHandler()},
 		{Method: "GET", Path: "/api/v5/indexer/{id}", Handler: indexerv5.ByIDHandler(indexersRepo)},
-		{Method: "POST", Path: "/api/v5/indexer", Handler: indexerv5.CreateHandler(indexersRepo, indexerEmitter)},
+		{Method: "POST", Path: "/api/v5/indexer", Handler: indexerv5.CreateHandler(indexersRepo, indexerEmitter, indexerTester)},
 		{Method: "POST", Path: "/api/v5/indexer/test", Handler: indexerv5.TestHandler(indexerTester)},
 		{Method: "POST", Path: "/api/v5/indexer/testall", Handler: indexerv5.TestAllHandler(indexersRepo, indexerTester)},
 		{Method: "POST", Path: "/api/v5/indexer/action/{name}", Handler: indexerv5.RequestActionHandler(indexerTester)},
 		{Method: "PUT", Path: "/api/v5/indexer/bulk", Handler: indexerv5.BulkUpdateHandler(indexersRepo, indexerEmitter)},
 		{Method: "DELETE", Path: "/api/v5/indexer/bulk", Handler: indexerv5.BulkDeleteHandler(indexersRepo, indexerEmitter)},
-		{Method: "PUT", Path: "/api/v5/indexer/{id}", Handler: indexerv5.UpdateHandler(indexersRepo, indexerEmitter)},
+		{Method: "PUT", Path: "/api/v5/indexer/{id}", Handler: indexerv5.UpdateHandler(indexersRepo, indexerEmitter, indexerTester)},
 		{Method: "DELETE", Path: "/api/v5/indexer/{id}", Handler: indexerv5.DeleteHandler(indexersRepo, indexerEmitter)},
 		{Method: "GET", Path: "/api/v5/indexerflag", Handler: indexerv5.FlagsHandler()},
 		// J266 — v5 Localization endpoint family (5 endpoints; 143 LOC
@@ -3525,17 +3534,18 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v3/downloadclient", Handler: apiv3.DownloadClientHandler(downloadClientsRepo)},
 		{Method: "GET", Path: "/api/v3/downloadclient/schema", Handler: apiv3.DownloadClientSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientByIDHandler(downloadClientsRepo)},
-		{Method: "POST", Path: "/api/v3/downloadclient", Handler: apiv3.DownloadClientCreateHandler(downloadClientsRepo, downloadClientEmitter)},
+		{Method: "POST", Path: "/api/v3/downloadclient", Handler: apiv3.DownloadClientCreateHandler(downloadClientsRepo, downloadClientEmitter, downloadClientTester)},
 		{Method: "POST", Path: "/api/v3/downloadclient/test", Handler: apiv3.DownloadClientTestHandler(downloadClientTester)},
 		{Method: "POST", Path: "/api/v3/downloadclient/testall", Handler: apiv3.DownloadClientTestAllHandler(downloadClientsRepo, downloadClientTester)},
 		{Method: "POST", Path: "/api/v3/downloadclient/action/{name}", Handler: apiv3.DownloadClientRequestActionHandler(downloadClientTester)},
 		{Method: "PUT", Path: "/api/v3/downloadclient/bulk", Handler: apiv3.DownloadClientBulkUpdateHandler(downloadClientsRepo, downloadClientEmitter)},
 		{Method: "DELETE", Path: "/api/v3/downloadclient/bulk", Handler: apiv3.DownloadClientBulkDeleteHandler(downloadClientsRepo, downloadClientEmitter)},
-		{Method: "PUT", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientUpdateHandler(downloadClientsRepo, downloadClientEmitter)},
+		{Method: "PUT", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientUpdateHandler(downloadClientsRepo, downloadClientEmitter, downloadClientTester)},
 		{Method: "DELETE", Path: "/api/v3/downloadclient/{id}", Handler: apiv3.DownloadClientDeleteHandler(downloadClientsRepo, downloadClientEmitter)},
 		{Method: "GET", Path: "/api/v3/episode", Handler: apiv3.EpisodeListHandler(episodesSvcWithEpisodeFile)},
 		{Method: "GET", Path: "/api/v3/episode/{id}", Handler: apiv3.EpisodeByIDHandler(episodesSvcWithEpisodeFile)},
 		{Method: "PUT", Path: "/api/v3/episode/monitor", Handler: apiv3.EpisodeMonitorHandler(episodesSvc)},
+		{Method: "PUT", Path: "/api/v3/episode/{id}", Handler: apiv3.EpisodeByIDPutHandler(episodesSvc)},
 		{Method: "GET", Path: "/api/v3/episodefile", Handler: apiv3.EpisodeFileListHandler(episodeFilesSvcPopulated, seriesSvc)},
 		{Method: "GET", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileByIDHandler(episodeFilesSvcPopulated)},
 		{Method: "PUT", Path: "/api/v3/episodefile/{id}", Handler: apiv3.EpisodeFileUpdateHandler(episodeFilesSvcPopulated)},
@@ -3551,13 +3561,13 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v3/importlist", Handler: apiv3.ImportListHandler(importListsRepo)},
 		{Method: "GET", Path: "/api/v3/importlist/schema", Handler: apiv3.ImportListSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListByIDHandler(importListsRepo)},
-		{Method: "POST", Path: "/api/v3/importlist", Handler: apiv3.ImportListCreateHandler(importListsRepo, importListEmitter)},
+		{Method: "POST", Path: "/api/v3/importlist", Handler: apiv3.ImportListCreateHandler(importListsRepo, importListEmitter, importListTester)},
 		{Method: "POST", Path: "/api/v3/importlist/test", Handler: apiv3.ImportListTestHandler(importListTester)},
 		{Method: "POST", Path: "/api/v3/importlist/testall", Handler: apiv3.ImportListTestAllHandler(importListsRepo, importListTester)},
 		{Method: "POST", Path: "/api/v3/importlist/action/{name}", Handler: apiv3.ImportListRequestActionHandler(importListTester)},
 		{Method: "PUT", Path: "/api/v3/importlist/bulk", Handler: apiv3.ImportListBulkUpdateHandler(importListsRepo, importListEmitter)},
 		{Method: "DELETE", Path: "/api/v3/importlist/bulk", Handler: apiv3.ImportListBulkDeleteHandler(importListsRepo, importListEmitter, importListDeletedHook)},
-		{Method: "PUT", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListUpdateHandler(importListsRepo, importListEmitter)},
+		{Method: "PUT", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListUpdateHandler(importListsRepo, importListEmitter, importListTester)},
 		{Method: "DELETE", Path: "/api/v3/importlist/{id}", Handler: apiv3.ImportListDeleteHandler(importListsRepo, importListEmitter, importListDeletedHook)},
 		// v5 ImportList — same wire shape as v3, tightened status
 		// codes on DELETE /{id} (204), POST /test (204), PUT /bulk (200),
@@ -3565,13 +3575,13 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v5/importlist", Handler: importlistv5.ListHandler(importListsRepo)},
 		{Method: "GET", Path: "/api/v5/importlist/schema", Handler: importlistv5.SchemaHandler()},
 		{Method: "GET", Path: "/api/v5/importlist/{id}", Handler: importlistv5.ByIDHandler(importListsRepo)},
-		{Method: "POST", Path: "/api/v5/importlist", Handler: importlistv5.CreateHandler(importListsRepo, importListEmitter)},
+		{Method: "POST", Path: "/api/v5/importlist", Handler: importlistv5.CreateHandler(importListsRepo, importListEmitter, importListTester)},
 		{Method: "POST", Path: "/api/v5/importlist/test", Handler: importlistv5.TestHandler(importListTester)},
 		{Method: "POST", Path: "/api/v5/importlist/testall", Handler: importlistv5.TestAllHandler(importListsRepo, importListTester)},
 		{Method: "POST", Path: "/api/v5/importlist/action/{name}", Handler: importlistv5.RequestActionHandler(importListTester)},
 		{Method: "PUT", Path: "/api/v5/importlist/bulk", Handler: importlistv5.BulkUpdateHandler(importListsRepo, importListEmitter)},
 		{Method: "DELETE", Path: "/api/v5/importlist/bulk", Handler: importlistv5.BulkDeleteHandler(importListsRepo, importListEmitter, importListDeletedHook)},
-		{Method: "PUT", Path: "/api/v5/importlist/{id}", Handler: importlistv5.UpdateHandler(importListsRepo, importListEmitter)},
+		{Method: "PUT", Path: "/api/v5/importlist/{id}", Handler: importlistv5.UpdateHandler(importListsRepo, importListEmitter, importListTester)},
 		{Method: "DELETE", Path: "/api/v5/importlist/{id}", Handler: importlistv5.DeleteHandler(importListsRepo, importListEmitter, importListDeletedHook)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion", Handler: apiv3.ImportListExclusionHandler(importListExclusionsRepo)},
 		{Method: "GET", Path: "/api/v3/importlistexclusion/paged", Handler: apiv3.ImportListExclusionPagedHandler(importListExclusionsRepo)},
@@ -3583,16 +3593,17 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "GET", Path: "/api/v3/indexer", Handler: apiv3.IndexerHandler(indexersRepo)},
 		{Method: "GET", Path: "/api/v3/indexer/schema", Handler: apiv3.IndexerSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerByIDHandler(indexersRepo)},
-		{Method: "POST", Path: "/api/v3/indexer", Handler: apiv3.IndexerCreateHandler(indexersRepo, indexerEmitter)},
+		{Method: "POST", Path: "/api/v3/indexer", Handler: apiv3.IndexerCreateHandler(indexersRepo, indexerEmitter, indexerTester)},
 		{Method: "POST", Path: "/api/v3/indexer/test", Handler: apiv3.IndexerTestHandler(indexerTester)},
 		{Method: "POST", Path: "/api/v3/indexer/testall", Handler: apiv3.IndexerTestAllHandler(indexersRepo, indexerTester)},
 		{Method: "POST", Path: "/api/v3/indexer/action/{name}", Handler: apiv3.IndexerRequestActionHandler(indexerTester)},
 		{Method: "PUT", Path: "/api/v3/indexer/bulk", Handler: apiv3.IndexerBulkUpdateHandler(indexersRepo, indexerEmitter)},
 		{Method: "DELETE", Path: "/api/v3/indexer/bulk", Handler: apiv3.IndexerBulkDeleteHandler(indexersRepo, indexerEmitter)},
-		{Method: "PUT", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerUpdateHandler(indexersRepo, indexerEmitter)},
+		{Method: "PUT", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerUpdateHandler(indexersRepo, indexerEmitter, indexerTester)},
 		{Method: "DELETE", Path: "/api/v3/indexer/{id}", Handler: apiv3.IndexerDeleteHandler(indexersRepo, indexerEmitter)},
 		{Method: "GET", Path: "/api/v3/indexerflag", Handler: apiv3.IndexerFlagHandler()},
 		{Method: "GET", Path: "/api/v3/language", Handler: apiv3.LanguageHandler(langs)},
+		{Method: "GET", Path: "/api/v3/language/{id}", Handler: apiv3.LanguageByIDHandler(langs)},
 		{Method: "GET", Path: "/api/v3/languageprofile", Handler: apiv3.LanguageProfileHandler()},
 		{Method: "GET", Path: "/api/v3/languageprofile/schema", Handler: apiv3.LanguageProfileSchemaHandler()},
 		{Method: "GET", Path: "/api/v3/languageprofile/{id}", Handler: apiv3.LanguageProfileByIDHandler()},
@@ -3689,6 +3700,7 @@ func v3Routes(configProv *config.Provider, cfg *configfile.Provider, indexerSear
 		{Method: "POST", Path: "/api/v3/system/backup/restore/{id}", Handler: apiv3.BackupRestoreHandler(backupAdmin{svc: backupSvc})},
 		{Method: "POST", Path: "/api/v3/system/backup/restore/upload", Handler: apiv3.BackupRestoreUploadHandler(backupUploader{svc: backupSvc, tempPath: backupTempPath})},
 		{Method: "POST", Path: "/api/v3/system/restart", Handler: apiv3.SystemRestartHandler(lifecycleSvc)},
+		{Method: "GET", Path: "/api/v3/system/routes", Handler: apiv3.SystemRoutesHandler()},
 		{Method: "GET", Path: "/api/v3/system/routes/duplicate", Handler: apiv3.SystemRoutesDuplicateHandler()},
 		{Method: "POST", Path: "/api/v3/system/shutdown", Handler: apiv3.SystemShutdownHandler(lifecycleSvc)},
 		{Method: "GET", Path: "/api/v3/system/status", Handler: apiv3.SystemStatusHandler(systemStatus, cfg)},

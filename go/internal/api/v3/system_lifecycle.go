@@ -69,6 +69,19 @@ func SystemRoutesDuplicateHandler() http.Handler {
 	})
 }
 
+// SystemRoutesHandler returns GET /api/v3/system/routes. Mirrors
+// `SystemController.GetRoutes` at `:97-107` which writes the ASP.NET
+// DFA endpoint graph to a StringWriter and returns it as text/plain.
+// The Go-port has no DfaGraphWriter equivalent, so this emits empty
+// text/plain to pin the wire surface — same approach as the v5
+// RoutesHandler (internal/api/v5/system/system.go:203).
+func SystemRoutesHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+	})
+}
+
 // SystemRestartHandler returns POST /api/v3/system/restart. Mirrors
 // `SystemController.Restart` at `:123-128`. Same fire-and-forget
 // pattern as Shutdown — the Restart() call sets RestartPending=true

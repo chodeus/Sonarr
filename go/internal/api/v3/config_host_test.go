@@ -52,7 +52,18 @@ type fakeHostConfig struct {
 	proxyBypassFilter         string
 	proxyBypassLocalAddresses bool
 
+	upsertedUser string
+	upsertedPass string
+	upsertCalls  int
+
 	callCount int
+}
+
+func (f *fakeHostConfig) UpsertUser(_ context.Context, username, password string) error {
+	f.upsertCalls++
+	f.upsertedUser = username
+	f.upsertedPass = password
+	return nil
 }
 
 func (f *fakeHostConfig) BindAddress(_ context.Context) (string, error) { return f.bindAddress, nil }
@@ -373,6 +384,38 @@ func TestHostConfigUpdateHandler_FormsRequiresUsername_400(t *testing.T) {
 	HostConfigUpdateHandler(&fakeHostConfig{}).ServeHTTP(rr, putHostReq(body))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
+	}
+}
+
+func TestHostConfigUpdateHandler_UpsertsCredentialsWhenBothPresent(t *testing.T) {
+	t.Parallel()
+	w := &fakeHostConfig{}
+	rr := httptest.NewRecorder()
+	// Set matching username/password/passwordConfirmation so validation
+	// passes and the upsert fires.
+	body := hostBody()
+	body = strings.Replace(body, `"username":"","password":"","passwordConfirmation":"",`,
+		`"username":"admin","password":"s3cret","passwordConfirmation":"s3cret",`, 1)
+	HostConfigUpdateHandler(w).ServeHTTP(rr, putHostReq(body))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if w.upsertCalls != 1 || w.upsertedUser != "admin" || w.upsertedPass != "s3cret" {
+		t.Errorf("upsert: calls=%d user=%q pass=%q; want 1/admin/s3cret", w.upsertCalls, w.upsertedUser, w.upsertedPass)
+	}
+}
+
+func TestHostConfigUpdateHandler_NoUpsertWhenCredentialsEmpty(t *testing.T) {
+	t.Parallel()
+	w := &fakeHostConfig{}
+	rr := httptest.NewRecorder()
+	// Default hostBody() has empty username/password.
+	HostConfigUpdateHandler(w).ServeHTTP(rr, putHostReq(hostBody()))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if w.upsertCalls != 0 {
+		t.Errorf("upsert must not fire for empty credentials; calls=%d", w.upsertCalls)
 	}
 }
 

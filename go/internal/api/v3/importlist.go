@@ -119,7 +119,7 @@ type ImportListEmitter interface {
 // endpoint — the registry exists but the concrete providers don't
 // all register today (only Sonarr + Plex are wired per Phase-4
 // subset-4 follow-up (c)).
-func ImportListCreateHandler(svc ImportListWriter, emitter ImportListEmitter) http.Handler {
+func ImportListCreateHandler(svc ImportListWriter, emitter ImportListEmitter, tester ImportListTester) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := decodeImportListBody(r)
 		if err != nil {
@@ -134,6 +134,13 @@ func ImportListCreateHandler(svc ImportListWriter, emitter ImportListEmitter) ht
 		if err != nil {
 			httperr.BadRequest(w, fmt.Sprintf("importlist: invalid fields: %v", err))
 			return
+		}
+		// Pre-save Test when enabled and forceSave isn't set (C# parity).
+		forceSave, _ := strconv.ParseBool(r.URL.Query().Get("forceSave"))
+		if tester != nil && importListEnabled(row) && !forceSave {
+			if runImportListSaveTest(w, r, tester, row, body) {
+				return
+			}
 		}
 		saved, err := svc.Insert(r.Context(), row)
 		if err != nil {
@@ -154,7 +161,7 @@ func ImportListCreateHandler(svc ImportListWriter, emitter ImportListEmitter) ht
 // ImportListUpdateHandler returns PUT /api/v3/importlist/{id}.
 // Mirrors `ProviderControllerBase.UpdateProvider(id, resource)` at
 // C# :98-125. Body-Id fallback preserved.
-func ImportListUpdateHandler(svc ImportListWriter, emitter ImportListEmitter) http.Handler {
+func ImportListUpdateHandler(svc ImportListWriter, emitter ImportListEmitter, tester ImportListTester) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.PathValue("id"))
 		if err != nil || id <= 0 {
@@ -193,6 +200,14 @@ func ImportListUpdateHandler(svc ImportListWriter, emitter ImportListEmitter) ht
 			return
 		}
 		row.ID = id
+		// Pre-save Test when enabled, forceSave unset, and connection
+		// config changed (C# parity).
+		forceSave, _ := strconv.ParseBool(r.URL.Query().Get("forceSave"))
+		if tester != nil && importListEnabled(row) && !forceSave && importListConnectionChanged(existing, row) {
+			if runImportListSaveTest(w, r, tester, row, body) {
+				return
+			}
+		}
 		if err := svc.Update(r.Context(), row); err != nil {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlist: update %d: %w", id, err), nil)
 			return
@@ -337,6 +352,44 @@ func fromImportListResource(res ImportListResource, existing *importlists.Import
 // implementation" until they port.
 type ImportListTester interface {
 	Test(ctx context.Context, n *importlists.ImportList) ([]importlists.TestFailure, error)
+}
+
+// importListEnabled mirrors C# `ImportListDefinition.Enable`
+// (`EnableAutomaticAdd`).
+func importListEnabled(row *importlists.ImportList) bool {
+	return row.EnableAutomaticAdd != nil && *row.EnableAutomaticAdd
+}
+
+// importListConnectionChanged reports whether the connection-relevant
+// fields differ — see indexerConnectionChanged for the rationale.
+func importListConnectionChanged(existing, row *importlists.ImportList) bool {
+	return derefStr(existing.Settings) != derefStr(row.Settings) ||
+		existing.Implementation != row.Implementation ||
+		derefStr(existing.ConfigContract) != derefStr(row.ConfigContract)
+}
+
+// runImportListSaveTest runs the pre-save provider Test and writes the
+// matching error response on failure. Returns true when a response was
+// written. Mirrors ImportListTestHandler's projection.
+func runImportListSaveTest(w http.ResponseWriter, r *http.Request, tester ImportListTester, row *importlists.ImportList, body ImportListResource) bool {
+	failures, err := tester.Test(r.Context(), row)
+	if err != nil {
+		if errors.Is(err, importlists.ErrNotRegistered) {
+			httperr.WriteValidation(w, []httperr.Failure{{
+				PropertyName: "Implementation",
+				ErrorMessage: fmt.Sprintf("Unknown implementation %q (configContract %q)", body.Implementation, body.ConfigContract),
+				Severity:     "error",
+			}})
+			return true
+		}
+		httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("importlist: test: %w", err), nil)
+		return true
+	}
+	if len(failures) > 0 {
+		httperr.WriteValidation(w, importListTestFailuresToFluentArray(failures))
+		return true
+	}
+	return false
 }
 
 // ImportListTestHandler returns POST /api/v3/importlist/test. Same

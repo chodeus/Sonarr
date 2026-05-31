@@ -333,6 +333,112 @@ func (f *fakeEpisodeMonitorWriter) SetMonitored(_ context.Context, ids []int, mo
 	return f.err
 }
 
+// fakeEpisodeMultiLister implements every branch of EpisodeListHandler
+// and records which one fired so the dispatch precedence can be pinned.
+type fakeEpisodeMultiLister struct {
+	called string
+	gotInt int
+	gotIDs []int
+	rows   []episodes.Episode
+}
+
+func (f *fakeEpisodeMultiLister) GetEpisodesBySeries(_ context.Context, id int) ([]episodes.Episode, error) {
+	f.called, f.gotInt = "bySeries", id
+	return f.rows, nil
+}
+func (f *fakeEpisodeMultiLister) GetEpisodesBySeason(_ context.Context, seriesID, season int) ([]episodes.Episode, error) {
+	f.called, f.gotInt = "bySeason", season
+	return f.rows, nil
+}
+func (f *fakeEpisodeMultiLister) GetEpisodes(_ context.Context, ids []int) ([]episodes.Episode, error) {
+	f.called, f.gotIDs = "byIDs", append([]int(nil), ids...)
+	return f.rows, nil
+}
+func (f *fakeEpisodeMultiLister) GetEpisodesByFileID(_ context.Context, fileID int) ([]episodes.Episode, error) {
+	f.called, f.gotInt = "byFile", fileID
+	return f.rows, nil
+}
+
+func TestEpisodeListHandler_DispatchBranches(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		query      string
+		wantCalled string
+		wantCode   int
+	}{
+		{"seriesId only", "seriesId=3", "bySeries", http.StatusOK},
+		{"seriesId+seasonNumber", "seriesId=3&seasonNumber=2", "bySeason", http.StatusOK},
+		{"episodeIds repeated", "episodeIds=4&episodeIds=5", "byIDs", http.StatusOK},
+		{"episodeIds comma", "episodeIds=4,5", "byIDs", http.StatusOK},
+		{"episodeFileId", "episodeFileId=9", "byFile", http.StatusOK},
+		{"none → 400", "", "", http.StatusBadRequest},
+		{"bad seriesId → 400", "seriesId=x", "", http.StatusBadRequest},
+		{"bad seasonNumber → 400", "seriesId=3&seasonNumber=x", "", http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeEpisodeMultiLister{rows: []episodes.Episode{{ID: 1, SeriesID: 3}}}
+			req := httptest.NewRequest(http.MethodGet, "/api/v3/episode?"+tc.query, nil)
+			rr := httptest.NewRecorder()
+			EpisodeListHandler(f).ServeHTTP(rr, req)
+			if rr.Code != tc.wantCode {
+				t.Fatalf("status: got %d want %d (body=%s)", rr.Code, tc.wantCode, rr.Body)
+			}
+			if tc.wantCalled != "" && f.called != tc.wantCalled {
+				t.Errorf("dispatch: got %q want %q", f.called, tc.wantCalled)
+			}
+		})
+	}
+}
+
+func TestEpisodeByIDPutHandler_SetsMonitoredAndReturnsRow(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeMonitorWriter{rows: []episodes.Episode{{ID: 7, SeriesID: 1, Monitored: false}}}
+	rr := httptest.NewRecorder()
+	// Full EpisodeResource-shaped body: only `monitored` is read, the
+	// extra fields must not trip a strict-decode rejection.
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episode/7", strings.NewReader(`{"id":7,"seriesId":1,"monitored":false,"title":"x"}`))
+	req.SetPathValue("id", "7")
+	EpisodeByIDPutHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d want 202; body=%s", rr.Code, rr.Body.String())
+	}
+	if w.setOne == nil || *w.setOne != 7 || w.setOneVal == nil || *w.setOneVal {
+		t.Errorf("SetEpisodeMonitored not called for id=7,false: %+v %+v", w.setOne, w.setOneVal)
+	}
+	var got EpisodeResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ID != 7 {
+		t.Errorf("response row: %+v", got)
+	}
+}
+
+func TestEpisodeByIDPutHandler_InvalidID_400(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episode/abc", strings.NewReader(`{"monitored":true}`))
+	req.SetPathValue("id", "abc")
+	EpisodeByIDPutHandler(&fakeEpisodeMonitorWriter{}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d want 400", rr.Code)
+	}
+}
+
+func TestEpisodeByIDPutHandler_NotFound_404(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeMonitorWriter{err: episodes.ErrNotFound}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episode/9", strings.NewReader(`{"monitored":true}`))
+	req.SetPathValue("id", "9")
+	EpisodeByIDPutHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status: %d want 404; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestEpisodeMonitorHandler_SingleID(t *testing.T) {
 	t.Parallel()
 	w := &fakeEpisodeMonitorWriter{rows: []episodes.Episode{{ID: 5, SeriesID: 1, Monitored: true}}}

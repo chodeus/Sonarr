@@ -124,6 +124,43 @@ func TestListAll_NameLower(t *testing.T) {
 	}
 }
 
+func TestLanguageByIDHandler(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		id       string
+		wantCode int
+		wantBody *LanguageResource
+	}{
+		{"found English", "1", http.StatusOK, &LanguageResource{ID: 1, Name: "English", NameLower: "english"}},
+		{"unknown id 0 resolves via registry", "0", http.StatusOK, &LanguageResource{ID: 0, Name: "Unknown", NameLower: "unknown"}},
+		{"missing id → 404", "99999", http.StatusNotFound, nil},
+		{"non-numeric → 400", "abc", http.StatusBadRequest, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v3/language/"+tc.id, nil)
+			req.SetPathValue("id", tc.id)
+			rr := httptest.NewRecorder()
+			// Pass the full registry so 0/Unknown resolves; the handler
+			// also has a global fallback for partial slices.
+			LanguageByIDHandler(language.All()).ServeHTTP(rr, req)
+			if rr.Code != tc.wantCode {
+				t.Fatalf("status: got %d want %d (body=%s)", rr.Code, tc.wantCode, rr.Body)
+			}
+			if tc.wantBody != nil {
+				var got LanguageResource
+				if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+					t.Fatalf("unmarshal: %v", err)
+				}
+				if got != *tc.wantBody {
+					t.Errorf("body: got %+v want %+v", got, *tc.wantBody)
+				}
+			}
+		})
+	}
+}
+
 func TestLanguageHandler_BodyShape(t *testing.T) {
 	t.Parallel()
 	req := httptest.NewRequest(http.MethodGet, "/api/v3/language", nil)

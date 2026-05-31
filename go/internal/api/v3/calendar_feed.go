@@ -31,8 +31,10 @@ type CalendarFeedSeriesLister interface {
 //   - unmonitored (default false) — include monitored=false episodes
 //   - premieresOnly (default false) — keep only seasonNumber>0 + episodeNumber==1
 //   - asAllDay (default false) — emit DATE (no time) rather than DATETIME
-//   - tags (default "")        — comma-separated tag-id list. DEFERRED:
-//     resolving tag-by-name + filtering by series tag intersection.
+//   - tags (default "")        — comma-separated tag-id list; an event
+//     is kept only when its series shares at least one tag (mirrors C#
+//     `parsedTags.Any() && parsedTags.None(series.Tags.Contains)`).
+//     Label-form tags are not resolved (the frontend sends ids).
 //
 // Output is RFC 5545 text/calendar with CRLF line endings. The Go
 // port does NOT fold lines >75 chars (RFC 5545 §3.1 recommends; most
@@ -47,6 +49,7 @@ func CalendarFeedHandler(epLister CalendarEpisodeLister, srLister CalendarFeedSe
 		unmonitored := strings.EqualFold(q.Get("unmonitored"), "true")
 		premieresOnly := strings.EqualFold(q.Get("premieresOnly"), "true")
 		asAllDay := strings.EqualFold(q.Get("asAllDay"), "true")
+		parsedTags := parseTagIDs(q.Get("tags"))
 
 		today := startOfDay(time.Now().UTC())
 		start := today.AddDate(0, 0, -pastDays)
@@ -93,6 +96,10 @@ func CalendarFeedHandler(epLister CalendarEpisodeLister, srLister CalendarFeedSe
 				continue
 			}
 			if premieresOnly && (ep.SeasonNumber == 0 || ep.EpisodeNumber != 1) {
+				continue
+			}
+			// Tag filter: keep only when the series shares a requested tag.
+			if len(parsedTags) > 0 && !anyTagMatches(s.Tags, parsedTags) {
 				continue
 			}
 			if ep.AirDateUtc == nil {

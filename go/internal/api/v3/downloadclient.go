@@ -110,7 +110,7 @@ type DownloadClientEmitter interface {
 // DownloadClientCreateHandler returns POST /api/v3/downloadclient.
 // Same shape as IndexerCreateHandler / ImportListCreateHandler.
 // Registry membership check deferred to 5.C4b's test endpoint.
-func DownloadClientCreateHandler(svc DownloadClientWriter, emitter DownloadClientEmitter) http.Handler {
+func DownloadClientCreateHandler(svc DownloadClientWriter, emitter DownloadClientEmitter, tester DownloadClientTester) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := decodeDownloadClientBody(r)
 		if err != nil {
@@ -125,6 +125,13 @@ func DownloadClientCreateHandler(svc DownloadClientWriter, emitter DownloadClien
 		if err != nil {
 			httperr.BadRequest(w, fmt.Sprintf("downloadclient: invalid fields: %v", err))
 			return
+		}
+		// Pre-save Test when enabled and forceSave isn't set (C# parity).
+		forceSave, _ := strconv.ParseBool(r.URL.Query().Get("forceSave"))
+		if tester != nil && row.Enable && !forceSave {
+			if runDownloadClientSaveTest(w, r, tester, row, body) {
+				return
+			}
 		}
 		saved, err := svc.Insert(r.Context(), row)
 		if err != nil {
@@ -143,7 +150,7 @@ func DownloadClientCreateHandler(svc DownloadClientWriter, emitter DownloadClien
 }
 
 // DownloadClientUpdateHandler returns PUT /api/v3/downloadclient/{id}.
-func DownloadClientUpdateHandler(svc DownloadClientWriter, emitter DownloadClientEmitter) http.Handler {
+func DownloadClientUpdateHandler(svc DownloadClientWriter, emitter DownloadClientEmitter, tester DownloadClientTester) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.PathValue("id"))
 		if err != nil || id <= 0 {
@@ -182,6 +189,14 @@ func DownloadClientUpdateHandler(svc DownloadClientWriter, emitter DownloadClien
 			return
 		}
 		row.ID = id
+		// Pre-save Test when enabled, forceSave unset, and connection
+		// config changed (C# parity).
+		forceSave, _ := strconv.ParseBool(r.URL.Query().Get("forceSave"))
+		if tester != nil && row.Enable && !forceSave && downloadClientConnectionChanged(existing, row) {
+			if runDownloadClientSaveTest(w, r, tester, row, body) {
+				return
+			}
+		}
 		if err := svc.Update(r.Context(), row); err != nil {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient: update %d: %w", id, err), nil)
 			return
@@ -306,6 +321,39 @@ func fromDownloadClientResource(res DownloadClientResource, existing *downloadcl
 // port them.
 type DownloadClientTester interface {
 	Test(ctx context.Context, n *downloadclients.DownloadClient) ([]downloadclients.TestFailure, error)
+}
+
+// downloadClientConnectionChanged reports whether the connection-
+// relevant fields differ — see indexerConnectionChanged for the
+// rationale. DownloadClient's Settings/ConfigContract are plain strings.
+func downloadClientConnectionChanged(existing, row *downloadclients.DownloadClient) bool {
+	return existing.Settings != row.Settings ||
+		existing.Implementation != row.Implementation ||
+		existing.ConfigContract != row.ConfigContract
+}
+
+// runDownloadClientSaveTest runs the pre-save provider Test and writes
+// the matching error response on failure. Returns true when a response
+// was written. Mirrors DownloadClientTestHandler's projection.
+func runDownloadClientSaveTest(w http.ResponseWriter, r *http.Request, tester DownloadClientTester, row *downloadclients.DownloadClient, body DownloadClientResource) bool {
+	failures, err := tester.Test(r.Context(), row)
+	if err != nil {
+		if errors.Is(err, downloadclients.ErrNotRegistered) {
+			httperr.WriteValidation(w, []httperr.Failure{{
+				PropertyName: "Implementation",
+				ErrorMessage: fmt.Sprintf("Unknown implementation %q (configContract %q)", body.Implementation, body.ConfigContract),
+				Severity:     "error",
+			}})
+			return true
+		}
+		httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("downloadclient: test: %w", err), nil)
+		return true
+	}
+	if len(failures) > 0 {
+		httperr.WriteValidation(w, downloadClientTestFailuresToFluentArray(failures))
+		return true
+	}
+	return false
 }
 
 // DownloadClientTestHandler returns POST /api/v3/downloadclient/test.

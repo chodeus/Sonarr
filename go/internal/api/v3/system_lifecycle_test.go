@@ -110,6 +110,21 @@ func TestSystemRoutesDuplicateHandler_EmptyArray(t *testing.T) {
 	}
 }
 
+func TestSystemRoutesHandler_EmptyTextPlain(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	SystemRoutesHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v3/system/routes", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d want 200", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("content-type: got %q want text/plain; charset=utf-8", ct)
+	}
+	if rr.Body.Len() != 0 {
+		t.Errorf("body: got %q want empty", rr.Body.String())
+	}
+}
+
 // Errors from the lifecycle service must not affect the HTTP response
 // (the response is sent BEFORE the goroutine runs). The handler logs
 // the failure via the request-scoped logger.

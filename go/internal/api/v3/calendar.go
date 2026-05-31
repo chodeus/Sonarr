@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,10 +37,14 @@ type CalendarEpisodeLister interface {
 // images param `includeEpisodeImages` here (not `includeImages` like the
 // Episode controller). The Series/EpisodeFile embeds light up only when
 // the lister ALSO implements the EpisodeSeriesLookup / EpisodeFileLookup
-// optional extensions (the cmd/sonarr composite does). Tag filtering +
-// AirDateUtc ordering remain DEFERRED (separate from the projection
-// branches); the empty-DB recording has zero rows so the gap is
-// unobservable in the goldens.
+// optional extensions (the cmd/sonarr composite does).
+//
+// Tag filtering + AirDateUtc ordering are now ported (mirrors C#
+// `parsedTags.Any() && parsedTags.None(series.Tags.Contains)` keep-on-
+// any-match, then `OrderBy(e => e.AirDateUtc)`). The tag-set is read
+// from the `tags` query param as a comma-separated list of tag IDs;
+// label-form tags (C# `TagService.GetTag` resolves non-digit names via
+// the repo) are not resolved here — the frontend sends IDs.
 func CalendarHandler(lister CalendarEpisodeLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -52,6 +58,14 @@ func CalendarHandler(lister CalendarEpisodeLister) http.Handler {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("calendar: %w", err), nil)
 			return
 		}
+		// C#: when tags are supplied, keep an episode only if its series
+		// shares at least one tag. Resolved via the optional series
+		// lookup (production's composite implements it).
+		if tagIDs := parseTagIDs(q.Get("tags")); len(tagIDs) > 0 {
+			rows = filterEpisodesBySeriesTags(r.Context(), rows, lister, tagIDs)
+		}
+		// C#: OrderBy(e => e.AirDateUtc) — ascending, nil sorts first.
+		sortEpisodesByAirDateUtc(rows)
 		includeSeries := q.Get("includeSeries") == "true"
 		includeEpisodeFile := q.Get("includeEpisodeFile") == "true"
 		includeEpisodeImages := q.Get("includeEpisodeImages") == "true"
@@ -90,4 +104,79 @@ func dateOrDefault(s string, def time.Time) time.Time {
 
 func startOfDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+// parseTagIDs parses the comma-separated `tags` query param into a
+// tag-id slice. Mirrors the digit branch of C# `TagService.GetTag`
+// (non-digit label resolution is not ported — the frontend sends ids).
+func parseTagIDs(s string) []int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	out := make([]int, 0, 4)
+	for _, part := range strings.Split(s, ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(part)); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// anyTagMatches reports whether have and want share any id. Mirrors
+// C# `!parsedTags.None(series.Tags.Contains)` (keep when ANY match).
+func anyTagMatches(have, want []int) bool {
+	for _, w := range want {
+		for _, h := range have {
+			if h == w {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// filterEpisodesBySeriesTags drops episodes whose owning series shares
+// none of the requested tag ids. Mirrors the C# calendar tag loop,
+// including its `series == null → skip` behaviour (an episode whose
+// series can't be resolved is dropped). Series tags are fetched via the
+// optional EpisodeSeriesLookup; when the lister doesn't implement it the
+// rows pass through unfiltered (production always implements it).
+func filterEpisodesBySeriesTags(ctx context.Context, rows []episodes.Episode, lister any, tagIDs []int) []episodes.Episode {
+	lookup, ok := lister.(EpisodeSeriesLookup)
+	if !ok {
+		return rows
+	}
+	tagsBySeries := make(map[int][]int)
+	seen := make(map[int]bool)
+	out := make([]episodes.Episode, 0, len(rows))
+	for _, ep := range rows {
+		if !seen[ep.SeriesID] {
+			seen[ep.SeriesID] = true
+			if s, err := lookup.GetSeries(ctx, ep.SeriesID); err == nil && s != nil {
+				tagsBySeries[ep.SeriesID] = s.Tags
+			}
+		}
+		// Missing series → nil tags → no match → skipped (matches C#).
+		if anyTagMatches(tagsBySeries[ep.SeriesID], tagIDs) {
+			out = append(out, ep)
+		}
+	}
+	return out
+}
+
+// sortEpisodesByAirDateUtc orders rows ascending by AirDateUtc; a nil
+// AirDateUtc collapses to the zero time (sorts first), matching the
+// feed handler's defensive posture for C# `OrderBy(e => e.AirDateUtc)`.
+func sortEpisodesByAirDateUtc(rows []episodes.Episode) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		var ai, aj time.Time
+		if rows[i].AirDateUtc != nil {
+			ai = *rows[i].AirDateUtc
+		}
+		if rows[j].AirDateUtc != nil {
+			aj = *rows[j].AirDateUtc
+		}
+		return ai.Before(aj)
+	})
 }

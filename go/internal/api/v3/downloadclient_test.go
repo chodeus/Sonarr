@@ -134,7 +134,7 @@ func TestDownloadClientCreateHandler_Success(t *testing.T) {
 	body := validDownloadClientBody()
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	DownloadClientCreateHandler(w, em).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient", bytes.NewReader(buf)))
+	DownloadClientCreateHandler(w, em, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient", bytes.NewReader(buf)))
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -160,7 +160,7 @@ func TestDownloadClientCreateHandler_NameMissing_400(t *testing.T) {
 	body.Name = ""
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	DownloadClientCreateHandler(&fakeDownloadClientWriter{}, &fakeDownloadClientEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient", bytes.NewReader(buf)))
+	DownloadClientCreateHandler(&fakeDownloadClientWriter{}, &fakeDownloadClientEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient", bytes.NewReader(buf)))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
 	}
@@ -172,7 +172,7 @@ func TestDownloadClientCreateHandler_DuplicateName_400(t *testing.T) {
 	body := validDownloadClientBody()
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	DownloadClientCreateHandler(w, &fakeDownloadClientEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient", bytes.NewReader(buf)))
+	DownloadClientCreateHandler(w, &fakeDownloadClientEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient", bytes.NewReader(buf)))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -181,7 +181,7 @@ func TestDownloadClientCreateHandler_DuplicateName_400(t *testing.T) {
 func TestDownloadClientCreateHandler_MalformedJSON_400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	DownloadClientCreateHandler(&fakeDownloadClientWriter{}, &fakeDownloadClientEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient", bytes.NewReader([]byte(`{bad`))))
+	DownloadClientCreateHandler(&fakeDownloadClientWriter{}, &fakeDownloadClientEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/downloadclient", bytes.NewReader([]byte(`{bad`))))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
 	}
@@ -199,7 +199,7 @@ func TestDownloadClientUpdateHandler_Success(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/v3/downloadclient/42", bytes.NewReader(buf))
 	req.SetPathValue("id", "42")
 	rr := httptest.NewRecorder()
-	DownloadClientUpdateHandler(w, em).ServeHTTP(rr, req)
+	DownloadClientUpdateHandler(w, em, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -219,7 +219,7 @@ func TestDownloadClientUpdateHandler_NotFound_404(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/v3/downloadclient/999", bytes.NewReader(buf))
 	req.SetPathValue("id", "999")
 	rr := httptest.NewRecorder()
-	DownloadClientUpdateHandler(&fakeDownloadClientWriter{}, &fakeDownloadClientEmitter{}).ServeHTTP(rr, req)
+	DownloadClientUpdateHandler(&fakeDownloadClientWriter{}, &fakeDownloadClientEmitter{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status: %d", rr.Code)
 	}
@@ -235,7 +235,7 @@ func TestDownloadClientUpdateHandler_BodyIDFallback(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/v3/downloadclient/999", bytes.NewReader(buf))
 	req.SetPathValue("id", "999")
 	rr := httptest.NewRecorder()
-	DownloadClientUpdateHandler(w, &fakeDownloadClientEmitter{}).ServeHTTP(rr, req)
+	DownloadClientUpdateHandler(w, &fakeDownloadClientEmitter{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -252,7 +252,7 @@ func TestDownloadClientUpdateHandler_OmittedFields_KeepsSettings(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/v3/downloadclient/1", bytes.NewReader(buf))
 	req.SetPathValue("id", "1")
 	rr := httptest.NewRecorder()
-	DownloadClientUpdateHandler(w, &fakeDownloadClientEmitter{}).ServeHTTP(rr, req)
+	DownloadClientUpdateHandler(w, &fakeDownloadClientEmitter{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d", rr.Code)
 	}

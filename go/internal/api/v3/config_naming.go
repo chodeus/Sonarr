@@ -6,9 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 
+	"sonarr.tv/sonarr/internal/episodefiles"
+	"sonarr.tv/sonarr/internal/episodes"
 	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/namingconfig"
+	"sonarr.tv/sonarr/internal/organizer"
+	"sonarr.tv/sonarr/internal/quality"
+	"sonarr.tv/sonarr/internal/series"
 	"sonarr.tv/sonarr/internal/validation"
 )
 
@@ -165,33 +172,198 @@ func NamingConfigUpdateHandler(svc NamingConfigWriter) http.Handler {
 }
 
 // NamingConfigExamplesHandler returns GET /api/v3/config/naming/examples.
-// Mirrors `NamingConfigController.GetExamples` at `:67-117`. C# accepts
-// the format strings as query parameters (?standardEpisodeFormat=...
-// etc) and renders sample filenames using IFilenameSampleService.
+// Mirrors `NamingConfigController.GetExamples` at `:67-117`. C# binds
+// the format strings from the query (`[FromQuery]NamingConfigResource`)
+// and renders sample filenames via IFilenameSampleService; when the
+// bound `id == 0` it falls back to the persisted config entirely.
 //
-// Body shape: NamingExampleResource with one string-or-null field per
-// example category. C# returns null when the format fails validation;
-// the Go port returns nil/omitted for the same case.
+// The Go port reproduces the IFilenameSampleService fixtures (the
+// static Standard/Daily/Anime series + episodes + files from
+// `FileNameSampleService.cs:44-208`) and renders each example through
+// the ported organizer.BuildFileName / GetSeriesFolder / GetSeasonFolder.
+// Folder examples are omitted (null) when their format is blank,
+// matching C# `IsNullOrWhiteSpace ? null : ...`.
 //
-// DEFERRED: the actual rendering. The Go organizer package has the
-// underlying BuildFileName/BuildFilePath primitives, but the C#
-// IFilenameSampleService pre-builds reference Episode/Series/File
-// fixtures (with hand-picked titles, qualities, languages, etc.)
-// against which to render the format strings. Porting those
-// fixtures + the per-format validator chain is significant work
-// and is gated on the per-format validator slice. Until then, this
-// handler returns an empty NamingExampleResource (all fields
-// omitted) which matches the C# null-on-validation-failure shape —
-// the React UI degrades gracefully to "no examples available"
-// rather than showing stale rendered strings.
+// Two documented divergences from C# (both minor, render best-effort
+// rather than null):
+//   - The FileNameValidationService gate (which nulls an example whose
+//     rendered name fails to round-trip through the episode parser) is
+//     not ported — a malformed format renders a best-effort string
+//     instead of null. The empty-on-NamingFormatException case is still
+//     matched (BuildFileName's error → "").
+//   - MediaInfo tokens render empty (BuildOptions.MediaInfo left nil):
+//     the default formats carry no {MediaInfo ...} tokens, so this only
+//     affects a custom format that references them.
 func NamingConfigExamplesHandler(svc NamingConfigGetter) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		res := parseNamingExampleQuery(r)
+		// C#: when the bound resource's Id is 0, replace it wholesale
+		// with the persisted config (the query format strings are
+		// ignored in that case).
+		if res.ID == 0 {
+			cfg, err := svc.GetConfig(r.Context())
+			if err != nil || cfg == nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("namingconfig: load persisted: %w", err), nil)
+				return
+			}
+			res = toNamingConfigResource(cfg)
+		}
+		out := renderNamingExamples(namingExampleBuildOptions(&res))
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		buf, _ := json.Marshal(NamingExampleResource{})
+		buf, _ := json.Marshal(out)
 		_, _ = w.Write(buf)
 	})
 }
+
+// parseNamingExampleQuery binds the NamingConfigResource fields the
+// renderer consults from the query string, mirroring ASP.NET's
+// `[FromQuery]NamingConfigResource` binding. Parsing is lenient —
+// empty/invalid numeric or bool params default to their zero value
+// rather than 400, since the examples endpoint is a best-effort
+// preview.
+func parseNamingExampleQuery(r *http.Request) NamingConfigResource {
+	q := r.URL.Query()
+	atoi := func(key string) int { n, _ := strconv.Atoi(q.Get(key)); return n }
+	abool := func(key string) bool { b, _ := strconv.ParseBool(q.Get(key)); return b }
+	return NamingConfigResource{
+		ID:                           atoi("id"),
+		MultiEpisodeStyle:            atoi("multiEpisodeStyle"),
+		RenameEpisodes:               abool("renameEpisodes"),
+		StandardEpisodeFormat:        q.Get("standardEpisodeFormat"),
+		DailyEpisodeFormat:           q.Get("dailyEpisodeFormat"),
+		SeasonFolderFormat:           q.Get("seasonFolderFormat"),
+		SeriesFolderFormat:           q.Get("seriesFolderFormat"),
+		AnimeEpisodeFormat:           q.Get("animeEpisodeFormat"),
+		ReplaceIllegalCharacters:     abool("replaceIllegalCharacters"),
+		SpecialsFolderFormat:         q.Get("specialsFolderFormat"),
+		ColonReplacementFormat:       atoi("colonReplacementFormat"),
+		CustomColonReplacementFormat: q.Get("customColonReplacementFormat"),
+	}
+}
+
+// namingExampleBuildOptions maps a NamingConfigResource to the
+// organizer.BuildOptions the renderer feeds to BuildFileName — the
+// same mapping the production nameBuilderAdapter.buildOptions uses
+// (cmd/sonarr/downloadedimport_wiring.go). MediaInfo / QualityResolver
+// / CustomFormats are left nil (see handler doc).
+func namingExampleBuildOptions(res *NamingConfigResource) organizer.BuildOptions {
+	return organizer.BuildOptions{
+		RenameEpisodes:               res.RenameEpisodes,
+		StandardEpisodeFormat:        res.StandardEpisodeFormat,
+		DailyEpisodeFormat:           res.DailyEpisodeFormat,
+		AnimeEpisodeFormat:           res.AnimeEpisodeFormat,
+		SeriesFolderFormat:           res.SeriesFolderFormat,
+		SeasonFolderFormat:           res.SeasonFolderFormat,
+		SpecialsFolderFormat:         res.SpecialsFolderFormat,
+		MultiEpisodeStyle:            organizer.MultiEpisodeStyle(res.MultiEpisodeStyle),
+		ReplaceIllegalCharacters:     res.ReplaceIllegalCharacters,
+		ColonReplacementFormat:       organizer.ColonReplacementFormat(res.ColonReplacementFormat),
+		CustomColonReplacementFormat: res.CustomColonReplacementFormat,
+	}
+}
+
+// renderNamingExamples reproduces the eight IFilenameSampleService
+// outputs against the static fixtures. Each episode example renders
+// via organizer.BuildFileName with extension "" (matching C#
+// BuildSample); folder examples use GetSeriesFolder / GetSeasonFolder
+// and are emitted only when their format is non-blank.
+func renderNamingExamples(opts organizer.BuildOptions) NamingExampleResource {
+	std := sampleSeries(series.SeriesTypeStandard)
+	daily := sampleSeries(series.SeriesTypeDaily)
+	anime := sampleSeries(series.SeriesTypeAnime)
+	single := sampleSingleEpisode()
+	multi := sampleMultiEpisodes()
+
+	var res NamingExampleResource
+	res.SingleEpisodeExample = renderEpisodeExample(single, std, sampleFile("The.Series.Title's!.S01E01.1080p.WEBDL.x264-EVOLVE"), opts)
+	res.MultiEpisodeExample = renderEpisodeExample(multi, std, sampleFile("The.Series.Title's!.S01E01-E03.1080p.WEBDL.x264-EVOLVE"), opts)
+	res.DailyEpisodeExample = renderEpisodeExample(single, daily, sampleFile("The.Series.Title's!.2013.10.30.1080p.WEBDL.x264-EVOLVE"), opts)
+	res.AnimeEpisodeExample = renderEpisodeExample(single, anime, sampleFile("[RlsGroup] The Series Title's! - 001 [1080P]"), opts)
+	res.AnimeMultiEpisodeExample = renderEpisodeExample(multi, anime, sampleFile("[RlsGroup] The Series Title's! - 001 - 103 [1080p]"), opts)
+
+	folderOpts := opts.FolderOptions()
+	if strings.TrimSpace(opts.SeriesFolderFormat) != "" {
+		res.SeriesFolderExample = organizer.GetSeriesFolder(std, folderOpts)
+	}
+	if strings.TrimSpace(opts.SeasonFolderFormat) != "" {
+		res.SeasonFolderExample = organizer.GetSeasonFolder(std, 1, folderOpts)
+	}
+	if strings.TrimSpace(opts.SpecialsFolderFormat) != "" {
+		res.SpecialsFolderExample = organizer.GetSeasonFolder(std, 0, folderOpts)
+	}
+	return res
+}
+
+// renderEpisodeExample renders one episode-filename sample. A
+// NamingFormatException-equivalent (BuildFileName error) collapses to
+// "" — matching C# BuildSample's catch.
+func renderEpisodeExample(eps []episodes.Episode, s *series.Series, file *episodefiles.File, opts organizer.BuildOptions) string {
+	name, err := organizer.BuildFileName(eps, s, file, "", opts)
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
+// sampleSeries reproduces the static FileNameSampleService series
+// fixture (`FileNameSampleService.cs:46-77`) for the given type.
+func sampleSeries(seriesType int) *series.Series {
+	return &series.Series{
+		SeriesType: seriesType,
+		Title:      "The Series Title's!",
+		Year:       2010,
+		ImdbID:     "tt12345",
+		TvdbID:     12345,
+		TvMazeID:   54321,
+		TmdbID:     11223,
+	}
+}
+
+// sampleSingleEpisode / sampleMultiEpisodes reproduce the static
+// episode fixtures (`FileNameSampleService.cs:79-108`).
+func sampleSingleEpisode() []episodes.Episode {
+	return []episodes.Episode{sampleEpisode(1, "Episode Title (1)", "2013-10-30")}
+}
+
+func sampleMultiEpisodes() []episodes.Episode {
+	return []episodes.Episode{
+		sampleEpisode(1, "Episode Title (1)", "2013-10-30"),
+		sampleEpisode(2, "Episode Title (2)", ""),
+		sampleEpisode(3, "Episode Title (3)", ""),
+	}
+}
+
+func sampleEpisode(n int, title, airDate string) episodes.Episode {
+	abs := n
+	return episodes.Episode{
+		SeasonNumber:          1,
+		EpisodeNumber:         n,
+		Title:                 title,
+		AirDate:               airDate,
+		AbsoluteEpisodeNumber: &abs,
+	}
+}
+
+// sampleFile reproduces an EpisodeFile fixture with the given scene
+// name. Quality is WEBDL-1080p v2; ReleaseGroup "RlsGrp" — matching
+// `FileNameSampleService.cs:160-208`. RelativePath = sceneName + .mkv.
+func sampleFile(sceneName string) *episodefiles.File {
+	return &episodefiles.File{
+		Quality:      sampleQualityJSON,
+		SceneName:    sceneName,
+		ReleaseGroup: "RlsGrp",
+		RelativePath: sceneName + ".mkv",
+	}
+}
+
+// sampleQualityJSON is the persisted-model JSON for WEBDL-1080p v2,
+// matching the fixtures' `new QualityModel(Quality.WEBDL1080p, new
+// Revision(2))`.
+var sampleQualityJSON = func() string {
+	b, _ := json.Marshal(quality.NewModelWithRevision(quality.WEBDL1080p, quality.Revision{Version: 2}))
+	return string(b)
+}()
 
 // ---------- helpers ----------
 

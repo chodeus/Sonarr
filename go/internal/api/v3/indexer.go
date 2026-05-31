@@ -131,11 +131,11 @@ type IndexerEmitter interface {
 //   - Implementation non-empty.
 //   - ConfigContract non-empty.
 //
-// The C# `Test()` call before Insert (gated by `Enable` + `!forceSave`)
-// is DEFERRED to slice 5.C2b — the Test endpoint hasn't ported yet.
-// 5.C2a accepts all valid rows; `?forceSave=true` is parsed and
-// ignored for forward-compat.
-func IndexerCreateHandler(svc IndexerWriter, emitter IndexerEmitter) http.Handler {
+// Mirrors C#: when the provider is Enable and forceSave isn't set, the
+// definition is Test()ed before Insert (`ProviderControllerBase.cs:85-88`).
+// `?forceSave=true` skips the test. A failing test returns the same 400
+// FluentValidation envelope as POST /indexer/test.
+func IndexerCreateHandler(svc IndexerWriter, emitter IndexerEmitter, tester IndexerTester) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := decodeIndexerBody(r)
 		if err != nil {
@@ -150,6 +150,12 @@ func IndexerCreateHandler(svc IndexerWriter, emitter IndexerEmitter) http.Handle
 		if err != nil {
 			httperr.BadRequest(w, fmt.Sprintf("indexer: invalid fields: %v", err))
 			return
+		}
+		forceSave, _ := strconv.ParseBool(r.URL.Query().Get("forceSave"))
+		if tester != nil && indexerEnabled(row) && !forceSave {
+			if runIndexerSaveTest(w, r, tester, row, body) {
+				return
+			}
 		}
 		saved, err := svc.Insert(r.Context(), row)
 		if err != nil {
@@ -171,7 +177,7 @@ func IndexerCreateHandler(svc IndexerWriter, emitter IndexerEmitter) http.Handle
 // Mirrors `ProviderControllerBase.UpdateProvider(id, resource)` at C#
 // :98-125. Same C# body-Id fallback ("// TODO: Remove fallback in
 // next API version bump") as the notification PUT.
-func IndexerUpdateHandler(svc IndexerWriter, emitter IndexerEmitter) http.Handler {
+func IndexerUpdateHandler(svc IndexerWriter, emitter IndexerEmitter, tester IndexerTester) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.PathValue("id"))
 		if err != nil || id <= 0 {
@@ -210,6 +216,15 @@ func IndexerUpdateHandler(svc IndexerWriter, emitter IndexerEmitter) http.Handle
 			return
 		}
 		row.ID = id
+		// Mirrors C#: test an enabled definition before persisting when
+		// forceSave isn't set AND the connection-relevant config changed
+		// (ProviderControllerBase.cs:108-117).
+		forceSave, _ := strconv.ParseBool(r.URL.Query().Get("forceSave"))
+		if tester != nil && indexerEnabled(row) && !forceSave && indexerConnectionChanged(existing, row) {
+			if runIndexerSaveTest(w, r, tester, row, body) {
+				return
+			}
+		}
 		if err := svc.Update(r.Context(), row); err != nil {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("indexer: update %d: %w", id, err), nil)
 			return
@@ -342,6 +357,62 @@ func fromIndexerResource(res IndexerResource, existing *indexers.Indexer) (*inde
 // projected to 400 with the C# unknown-implementation envelope.
 type IndexerTester interface {
 	Test(ctx context.Context, n *indexers.Indexer) ([]indexers.TestFailure, error)
+}
+
+// indexerEnabled mirrors C# `IndexerDefinition.Enable`
+// (`EnableRss || EnableAutomaticSearch || EnableInteractiveSearch`).
+func indexerEnabled(row *indexers.Indexer) bool {
+	rss := row.EnableRss != nil && *row.EnableRss
+	auto := row.EnableAutomaticSearch != nil && *row.EnableAutomaticSearch
+	return rss || auto || row.EnableInteractiveSearch
+}
+
+// indexerConnectionChanged reports whether the connection-relevant
+// fields (Settings + Implementation + ConfigContract) differ between
+// the persisted row and the incoming row. This stands in for C#'s
+// `!existing.Equals(def) || !existing.Settings.Equals(def.Settings)`
+// gate on the pre-save Test: only those three fields affect what
+// Provider.Test actually validates, so re-testing when only Name/
+// Priority/Tags/Enable flags change is unnecessary (and avoids blocking
+// an unchanged-connection save during a transient outage).
+func indexerConnectionChanged(existing, row *indexers.Indexer) bool {
+	return derefStr(existing.Settings) != derefStr(row.Settings) ||
+		existing.Implementation != row.Implementation ||
+		derefStr(existing.ConfigContract) != derefStr(row.ConfigContract)
+}
+
+// runIndexerSaveTest runs the pre-save provider Test and writes the
+// matching error response when it fails. Returns true when a response
+// was written (the caller must stop). Mirrors the IndexerTestHandler
+// projection: 400 unknown-implementation on ErrNotRegistered, 400
+// FluentValidation array on test failures, 500 on transport errors.
+func runIndexerSaveTest(w http.ResponseWriter, r *http.Request, tester IndexerTester, row *indexers.Indexer, body IndexerResource) bool {
+	failures, err := tester.Test(r.Context(), row)
+	if err != nil {
+		if errors.Is(err, indexers.ErrNotRegistered) {
+			httperr.WriteValidation(w, []httperr.Failure{{
+				PropertyName: "Implementation",
+				ErrorMessage: fmt.Sprintf("Unknown implementation %q (configContract %q)", body.Implementation, body.ConfigContract),
+				Severity:     "error",
+			}})
+			return true
+		}
+		httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("indexer: test: %w", err), nil)
+		return true
+	}
+	if len(failures) > 0 {
+		httperr.WriteValidation(w, indexerTestFailuresToFluentArray(failures))
+		return true
+	}
+	return false
+}
+
+// derefStr returns the string a *string points at, or "" when nil.
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // IndexerTestHandler returns POST /api/v3/indexer/test. Mirrors the

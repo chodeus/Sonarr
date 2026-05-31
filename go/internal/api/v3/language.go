@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
+	"sonarr.tv/sonarr/internal/httperr"
 	"sonarr.tv/sonarr/internal/language"
 )
 
@@ -111,6 +113,51 @@ func ToLanguageRefs(ids []int) []LanguageRef {
 		out = append(out, ToLanguageRef(id))
 	}
 	return out
+}
+
+// LanguageByIDHandler returns GET /api/v3/language/{id}. Mirrors
+// `LanguageController.GetResourceById(int id)` at
+// `src/Sonarr.Api.V3/Profiles/Languages/LanguageController.cs` which
+// projects the registry entry to a LanguageResource; an unknown id
+// resolves to 404 (the C# `(Language)id` cast throws → framework 404).
+// langs is captured by closure for test injection; production passes
+// language.All().
+func LanguageByIDHandler(langs []language.Language) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			httperr.BadRequest(w, "language: invalid id")
+			return
+		}
+		var matched *language.Language
+		for i := range langs {
+			if langs[i].ID == id {
+				cp := langs[i]
+				matched = &cp
+				break
+			}
+		}
+		if matched == nil {
+			// Defensive fallback to the global registry so a caller
+			// passing a partial slice still resolves canonical ids.
+			if l, ok := language.FindByID(id); ok {
+				matched = &l
+			}
+		}
+		if matched == nil {
+			httperr.NotFound(w, "language not found")
+			return
+		}
+		out := LanguageResource{
+			ID:        matched.ID,
+			Name:      matched.Name,
+			NameLower: strings.ToLower(matched.Name),
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		buf, _ := json.Marshal(out)
+		_, _ = w.Write(buf)
+	})
 }
 
 // LanguageHandler returns the http.Handler for GET /api/v3/language.

@@ -14,6 +14,7 @@ import (
 	"sonarr.tv/sonarr/internal/episodefiles"
 	"sonarr.tv/sonarr/internal/language"
 	"sonarr.tv/sonarr/internal/mediainfo"
+	"sonarr.tv/sonarr/internal/parser"
 	"sonarr.tv/sonarr/internal/quality"
 )
 
@@ -853,6 +854,38 @@ func TestEpisodeFileBulkUpdateHandler_PerIDOverrides(t *testing.T) {
 		case 2:
 			if f.SceneName != "old.2" || f.ReleaseGroup != "NEW2" {
 				t.Errorf("id=2: %+v", f)
+			}
+		}
+	}
+}
+
+func TestEpisodeFileBulkUpdateHandler_AppliesIndexerFlagsAndReleaseType(t *testing.T) {
+	t.Parallel()
+	w := &fakeEpisodeFileWriter{getMany: []episodefiles.File{
+		{ID: 1, IndexerFlags: 0, ReleaseType: 0},
+		{ID: 2, IndexerFlags: 7, ReleaseType: 3}, // entry omits both → preserved
+	}}
+	rr := httptest.NewRecorder()
+	// id=1 sets indexerFlags=4 + releaseType "singleEpisode"; id=2 omits both.
+	body := `[{"id":1,"seriesId":1,"seasonNumber":0,"relativePath":"","path":"","size":0,"dateAdded":"0001-01-01T00:00:00Z","indexerFlags":4,"releaseType":"singleEpisode"},{"id":2,"seriesId":1,"seasonNumber":0,"relativePath":"","path":"","size":0,"dateAdded":"0001-01-01T00:00:00Z"}]`
+	req := httptest.NewRequest(http.MethodPut, "/api/v3/episodefile/bulk", strings.NewReader(body))
+	EpisodeFileBulkUpdateHandler(w).ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
+	}
+	for _, f := range w.updatedMany {
+		switch f.ID {
+		case 1:
+			if f.IndexerFlags != 4 {
+				t.Errorf("id=1 IndexerFlags: got %d want 4", f.IndexerFlags)
+			}
+			if f.ReleaseType != int(parser.ReleaseTypeSingleEpisode) {
+				t.Errorf("id=1 ReleaseType: got %d want %d", f.ReleaseType, parser.ReleaseTypeSingleEpisode)
+			}
+		case 2:
+			// Omitted fields must be preserved (nil pointer / empty string).
+			if f.IndexerFlags != 7 || f.ReleaseType != 3 {
+				t.Errorf("id=2 should preserve IndexerFlags=7 ReleaseType=3: %+v", f)
 			}
 		}
 	}

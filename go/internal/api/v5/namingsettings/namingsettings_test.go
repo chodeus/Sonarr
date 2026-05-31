@@ -125,16 +125,24 @@ func TestUpdateHandler_CustomColonRequiresValue_400(t *testing.T) {
 	}
 }
 
-func TestExamplesHandler_DeferredEmptyShape(t *testing.T) {
+func TestExamplesHandler_RendersThroughV3Alias(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
+	// id absent → handler loads the persisted config (newSvc has real
+	// formats) and renders sample filenames via the v3 organizer.
 	namingsettings.ExamplesHandler(newSvc()).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v5/settings/naming/examples", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: %d", rr.Code)
 	}
-	// All fields omitempty → empty body when none are set.
-	if rr.Body.String() != "{}" {
-		t.Errorf("body: %q want {} (IFilenameSampleService DEFERRED)", rr.Body.String())
+	var got namingsettings.ExampleResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.SingleEpisodeExample == "" {
+		t.Errorf("v5 examples endpoint must render through the v3 alias; body=%s", rr.Body)
+	}
+	if got.SeriesFolderExample == "" {
+		t.Errorf("seriesFolderExample empty; body=%s", rr.Body)
 	}
 }
 

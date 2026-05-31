@@ -104,6 +104,78 @@ func (f *fakeCalendarListerWithEmbeds) GetFile(_ context.Context, id int) (*epis
 	return nil, episodefiles.ErrNotFound
 }
 
+func TestCalendarHandler_TagFilterAndSort(t *testing.T) {
+	t.Parallel()
+	utc := func(d int) *time.Time {
+		tm := time.Date(2026, 1, d, 0, 0, 0, 0, time.UTC)
+		return &tm
+	}
+	// ep10 (series 1, tag 5) airs later; ep20 (series 2, tag 9) airs
+	// earlier; ep30 (series 3, no tags) airs middle.
+	lister := &fakeCalendarListerWithEmbeds{
+		rows: []episodes.Episode{
+			{ID: 10, SeriesID: 1, AirDateUtc: utc(3)},
+			{ID: 20, SeriesID: 2, AirDateUtc: utc(1)},
+			{ID: 30, SeriesID: 3, AirDateUtc: utc(2)},
+		},
+		series: map[int]*series.Series{
+			1: {ID: 1, Tags: []int{5}},
+			2: {ID: 2, Tags: []int{9}},
+			3: {ID: 3, Tags: nil},
+		},
+	}
+
+	// No tags → all rows, sorted by AirDateUtc ascending (20,30,10).
+	t.Run("no tags sorts by airdate", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v3/calendar", nil)
+		rr := httptest.NewRecorder()
+		CalendarHandler(lister).ServeHTTP(rr, req)
+		var got []EpisodeResource
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		ids := []int{}
+		for _, e := range got {
+			ids = append(ids, e.ID)
+		}
+		if len(ids) != 3 || ids[0] != 20 || ids[1] != 30 || ids[2] != 10 {
+			t.Errorf("order: got %v want [20 30 10]", ids)
+		}
+	})
+
+	// tags=5 → only series 1's episode.
+	t.Run("tag filter keeps matching series", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v3/calendar?tags=5", nil)
+		rr := httptest.NewRecorder()
+		CalendarHandler(lister).ServeHTTP(rr, req)
+		var got []EpisodeResource
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != 10 {
+			t.Errorf("tag filter: got %+v want single id=10", got)
+		}
+	})
+
+	// tags=5,9 → series 1 and 2 (any-match), sorted (20 then 10).
+	t.Run("multi-tag any-match", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v3/calendar?tags=5,9", nil)
+		rr := httptest.NewRecorder()
+		CalendarHandler(lister).ServeHTTP(rr, req)
+		var got []EpisodeResource
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		ids := []int{}
+		for _, e := range got {
+			ids = append(ids, e.ID)
+		}
+		if len(ids) != 2 || ids[0] != 20 || ids[1] != 10 {
+			t.Errorf("multi-tag: got %v want [20 10]", ids)
+		}
+	})
+}
+
 // TestCalendarHandler_IncludeBranches_J376 pins the includeSeries /
 // includeEpisodeFile / includeEpisodeImages embeds: absent without the
 // params, all present (series/episodeFile/images) when set true and the

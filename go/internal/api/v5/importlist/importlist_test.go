@@ -287,8 +287,8 @@ func TestReexportedHandlers_NonNil(t *testing.T) {
 		{"List", ListHandler(w)},
 		{"ByID", ByIDHandler(w)},
 		{"Schema", SchemaHandler()},
-		{"Create", CreateHandler(w, em)},
-		{"Update", UpdateHandler(w, em)},
+		{"Create", CreateHandler(w, em, nil)},
+		{"Update", UpdateHandler(w, em, nil)},
 		{"TestAll", TestAllHandler(w, tester)},
 		{"RequestAction", RequestActionHandler(tester)},
 	}

@@ -470,7 +470,19 @@ func EpisodeFileBulkUpdateHandler(svc EpisodeFileWriter) http.Handler {
 					f.Quality = qualityStr
 				}
 				if entry.Languages != nil {
+					// languageIDsFromRefs already drops 'Original' per C#
+					// SetPropertiesBulk (a file can't be tagged Original).
 					f.Languages = languageIDsFromRefs(entry.Languages)
+				}
+				// J-port faithfulness: C# SetPropertiesBulk also applies
+				// IndexerFlags (int? → HasValue) and ReleaseType (enum? →
+				// non-null). Both were previously dropped by the Go bulk
+				// handler.
+				if entry.IndexerFlags != nil {
+					f.IndexerFlags = *entry.IndexerFlags
+				}
+				if entry.ReleaseType != "" {
+					f.ReleaseType = int(parser.ParseReleaseType(entry.ReleaseType))
 				}
 			}
 			ptrs[i] = &f

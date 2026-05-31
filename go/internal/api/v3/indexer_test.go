@@ -140,7 +140,7 @@ func TestIndexerCreateHandler_Success(t *testing.T) {
 	buf, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf))
 	rr := httptest.NewRecorder()
-	IndexerCreateHandler(w, em).ServeHTTP(rr, req)
+	IndexerCreateHandler(w, em, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -168,7 +168,7 @@ func TestIndexerCreateHandler_NameMissing_400(t *testing.T) {
 	body.Name = ""
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	IndexerCreateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf)))
+	IndexerCreateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf)))
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -180,7 +180,7 @@ func TestIndexerCreateHandler_ImplementationMissing_400(t *testing.T) {
 	body.Implementation = ""
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	IndexerCreateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf)))
+	IndexerCreateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf)))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
 	}
@@ -192,7 +192,7 @@ func TestIndexerCreateHandler_DuplicateName_400(t *testing.T) {
 	w := &fakeIndexerWriter{rows: []indexers.Indexer{{ID: 5, Name: "nyaa"}}}
 	buf, _ := json.Marshal(body)
 	rr := httptest.NewRecorder()
-	IndexerCreateHandler(w, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf)))
+	IndexerCreateHandler(w, &fakeIndexerEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf)))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -201,7 +201,7 @@ func TestIndexerCreateHandler_DuplicateName_400(t *testing.T) {
 func TestIndexerCreateHandler_MalformedJSON_400(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	IndexerCreateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader([]byte(`{bad`))))
+	IndexerCreateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader([]byte(`{bad`))))
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: %d", rr.Code)
 	}
@@ -220,7 +220,7 @@ func TestIndexerUpdateHandler_Success(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/v3/indexer/42", bytes.NewReader(buf))
 	req.SetPathValue("id", "42")
 	rr := httptest.NewRecorder()
-	IndexerUpdateHandler(w, em).ServeHTTP(rr, req)
+	IndexerUpdateHandler(w, em, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -240,7 +240,7 @@ func TestIndexerUpdateHandler_NotFound_404(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/v3/indexer/999", bytes.NewReader(buf))
 	req.SetPathValue("id", "999")
 	rr := httptest.NewRecorder()
-	IndexerUpdateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}).ServeHTTP(rr, req)
+	IndexerUpdateHandler(&fakeIndexerWriter{}, &fakeIndexerEmitter{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status: %d", rr.Code)
 	}
@@ -256,7 +256,7 @@ func TestIndexerUpdateHandler_BodyIDFallback(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/v3/indexer/999", bytes.NewReader(buf))
 	req.SetPathValue("id", "999")
 	rr := httptest.NewRecorder()
-	IndexerUpdateHandler(w, &fakeIndexerEmitter{}).ServeHTTP(rr, req)
+	IndexerUpdateHandler(w, &fakeIndexerEmitter{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -274,7 +274,7 @@ func TestIndexerUpdateHandler_OmittedFields_KeepsExistingSettings(t *testing.T) 
 	req := httptest.NewRequest(http.MethodPut, "/api/v3/indexer/1", bytes.NewReader(buf))
 	req.SetPathValue("id", "1")
 	rr := httptest.NewRecorder()
-	IndexerUpdateHandler(w, &fakeIndexerEmitter{}).ServeHTTP(rr, req)
+	IndexerUpdateHandler(w, &fakeIndexerEmitter{}, nil).ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -295,6 +295,76 @@ type fakeIndexerTester struct {
 func (f *fakeIndexerTester) Test(_ context.Context, n *indexers.Indexer) ([]indexers.TestFailure, error) {
 	f.seen = n
 	return f.result, f.err
+}
+
+func TestIndexerCreateHandler_PreSaveTestFailureBlocksInsert(t *testing.T) {
+	t.Parallel()
+	w := &fakeIndexerWriter{}
+	tester := &fakeIndexerTester{result: []indexers.TestFailure{{PropertyName: "BaseUrl", ErrorMessage: "unreachable"}}}
+	buf, _ := json.Marshal(validIndexerBody()) // enabled
+	rr := httptest.NewRecorder()
+	IndexerCreateHandler(w, &fakeIndexerEmitter{}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if tester.seen == nil {
+		t.Errorf("pre-save Test should have been invoked")
+	}
+	if len(w.rows) != 0 {
+		t.Errorf("insert must not happen when the pre-save test fails: %+v", w.rows)
+	}
+}
+
+func TestIndexerCreateHandler_PreSaveTestSuccessInserts(t *testing.T) {
+	t.Parallel()
+	w := &fakeIndexerWriter{}
+	tester := &fakeIndexerTester{} // no failures
+	buf, _ := json.Marshal(validIndexerBody())
+	rr := httptest.NewRecorder()
+	IndexerCreateHandler(w, &fakeIndexerEmitter{}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf)))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status: %d want 201; body=%s", rr.Code, rr.Body.String())
+	}
+	if tester.seen == nil || len(w.rows) != 1 {
+		t.Errorf("expected test invoked + row inserted: seen=%v rows=%d", tester.seen != nil, len(w.rows))
+	}
+}
+
+func TestIndexerCreateHandler_ForceSaveSkipsTest(t *testing.T) {
+	t.Parallel()
+	w := &fakeIndexerWriter{}
+	tester := &fakeIndexerTester{result: []indexers.TestFailure{{PropertyName: "BaseUrl", ErrorMessage: "unreachable"}}}
+	buf, _ := json.Marshal(validIndexerBody())
+	rr := httptest.NewRecorder()
+	IndexerCreateHandler(w, &fakeIndexerEmitter{}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer?forceSave=true", bytes.NewReader(buf)))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status: %d want 201 (forceSave bypasses test); body=%s", rr.Code, rr.Body.String())
+	}
+	if tester.seen != nil {
+		t.Errorf("forceSave must skip the pre-save test")
+	}
+	if len(w.rows) != 1 {
+		t.Errorf("row should be inserted under forceSave: %+v", w.rows)
+	}
+}
+
+func TestIndexerCreateHandler_DisabledSkipsTest(t *testing.T) {
+	t.Parallel()
+	w := &fakeIndexerWriter{}
+	tester := &fakeIndexerTester{result: []indexers.TestFailure{{PropertyName: "BaseUrl", ErrorMessage: "unreachable"}}}
+	body := validIndexerBody()
+	body.EnableRss = false
+	body.EnableAutomaticSearch = false
+	body.EnableInteractiveSearch = false
+	buf, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	IndexerCreateHandler(w, &fakeIndexerEmitter{}, tester).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v3/indexer", bytes.NewReader(buf)))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status: %d want 201; body=%s", rr.Code, rr.Body.String())
+	}
+	if tester.seen != nil {
+		t.Errorf("disabled provider must skip the pre-save test")
+	}
 }
 
 func TestIndexerTestHandler_Success_Returns200EmptyObject(t *testing.T) {

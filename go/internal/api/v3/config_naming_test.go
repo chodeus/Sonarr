@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -19,6 +20,110 @@ type fakeNamingGetter struct {
 
 func (f *fakeNamingGetter) GetConfig(context.Context) (*namingconfig.Config, error) {
 	return f.cfg, f.err
+}
+
+func TestNamingConfigExamplesHandler_RendersFromQuery(t *testing.T) {
+	t.Parallel()
+	// id != 0 → query format strings are used (no persisted fallback).
+	q := url.Values{}
+	q.Set("id", "1")
+	q.Set("renameEpisodes", "true")
+	q.Set("standardEpisodeFormat", "{Series Title} - S{season:00}E{episode:00} - {Episode Title}")
+	q.Set("dailyEpisodeFormat", "{Series Title} - {Air-Date} - {Episode Title}")
+	q.Set("animeEpisodeFormat", "{Series Title} - {absolute:000} - {Episode Title}")
+	q.Set("seriesFolderFormat", "{Series Title}")
+	q.Set("seasonFolderFormat", "Season {season:00}")
+	q.Set("specialsFolderFormat", "Specials")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/config/naming/examples?"+q.Encode(), nil)
+	rr := httptest.NewRecorder()
+	// getter is only consulted on id==0; pass a non-nil cfg defensively.
+	NamingConfigExamplesHandler(&fakeNamingGetter{cfg: &namingconfig.Config{ID: 1}}).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d want 200; body=%s", rr.Code, rr.Body)
+	}
+	var got NamingExampleResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.SingleEpisodeExample == "" {
+		t.Errorf("singleEpisodeExample empty; want rendered name")
+	}
+	if got.MultiEpisodeExample == "" {
+		t.Errorf("multiEpisodeExample empty")
+	}
+	if got.DailyEpisodeExample == "" {
+		t.Errorf("dailyEpisodeExample empty")
+	}
+	if got.AnimeEpisodeExample == "" {
+		t.Errorf("animeEpisodeExample empty")
+	}
+	// Folder examples are deterministic for these formats.
+	if got.SeasonFolderExample != "Season 01" {
+		t.Errorf("seasonFolderExample: got %q want %q", got.SeasonFolderExample, "Season 01")
+	}
+	if got.SpecialsFolderExample != "Specials" {
+		t.Errorf("specialsFolderExample: got %q want %q", got.SpecialsFolderExample, "Specials")
+	}
+	if got.SeriesFolderExample == "" {
+		t.Errorf("seriesFolderExample empty")
+	}
+	// The standard example must carry the S01E01 identifier.
+	if !strings.Contains(got.SingleEpisodeExample, "S01E01") {
+		t.Errorf("singleEpisodeExample missing S01E01: %q", got.SingleEpisodeExample)
+	}
+}
+
+func TestNamingConfigExamplesHandler_BlankFolderFormatsOmitted(t *testing.T) {
+	t.Parallel()
+	q := url.Values{}
+	q.Set("id", "1")
+	q.Set("renameEpisodes", "true")
+	q.Set("standardEpisodeFormat", "{Series Title} - S{season:00}E{episode:00}")
+	// no folder formats provided → those examples must be omitted
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/config/naming/examples?"+q.Encode(), nil)
+	rr := httptest.NewRecorder()
+	NamingConfigExamplesHandler(&fakeNamingGetter{cfg: &namingconfig.Config{ID: 1}}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var got NamingExampleResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.SeriesFolderExample != "" || got.SeasonFolderExample != "" || got.SpecialsFolderExample != "" {
+		t.Errorf("blank folder formats must omit folder examples: %+v", got)
+	}
+	// omitempty must drop the keys entirely.
+	if strings.Contains(rr.Body.String(), "seriesFolderExample") {
+		t.Errorf("blank seriesFolderExample key should be absent: %s", rr.Body)
+	}
+}
+
+func TestNamingConfigExamplesHandler_IDZeroUsesPersisted(t *testing.T) {
+	t.Parallel()
+	// id absent/0 → the handler loads the persisted config and ignores
+	// any query format strings.
+	persisted := &namingconfig.Config{
+		ID:                    1,
+		RenameEpisodes:        true,
+		StandardEpisodeFormat: "{Series Title} - S{season:00}E{episode:00}",
+		SeasonFolderFormat:    "Season {season:00}",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v3/config/naming/examples", nil)
+	rr := httptest.NewRecorder()
+	NamingConfigExamplesHandler(&fakeNamingGetter{cfg: persisted}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	var got NamingExampleResource
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.SingleEpisodeExample == "" || got.SeasonFolderExample != "Season 01" {
+		t.Errorf("persisted-config render: %+v", got)
+	}
 }
 
 func TestNamingConfigHandler_Defaults(t *testing.T) {
@@ -155,21 +260,14 @@ func TestNamingConfigUpdateHandler_SaveErrorIs500(t *testing.T) {
 
 // ----- GET /config/naming/examples -----
 
-func TestNamingConfigExamplesHandler_ReturnsEmptyObject(t *testing.T) {
+func TestNamingConfigExamplesHandler_PersistedLoadErrorIs500(t *testing.T) {
 	t.Parallel()
-	// DEFERRED state: handler returns NamingExampleResource{} with
-	// all fields omitted → body is "{}". Pins the wire shape while
-	// the FilenameSampleService port is pending.
+	// id==0 forces a persisted-config load; a getter error (or nil
+	// config) surfaces as 500 rather than panicking.
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v3/config/naming/examples", nil)
-	NamingConfigExamplesHandler(&fakeNamingGetter{}).ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status: %d", rr.Code)
-	}
-	if rr.Body.String() != "{}" {
-		t.Errorf("body: got %q want %q (DEFERRED placeholder)", rr.Body.String(), "{}")
-	}
-	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
-		t.Errorf("content-type: %q", ct)
+	NamingConfigExamplesHandler(&fakeNamingGetter{err: errors.New("boom")}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status: %d want 500", rr.Code)
 	}
 }

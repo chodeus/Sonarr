@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"sonarr.tv/sonarr/internal/episodefiles"
@@ -103,6 +104,46 @@ type EpisodeResource struct {
 // *episodes.Service.GetEpisodesBySeries satisfies it.
 type EpisodeBySeriesLister interface {
 	GetEpisodesBySeries(ctx context.Context, seriesID int) ([]episodes.Episode, error)
+}
+
+// The three optional-extension listers below back the non-seriesId
+// branches of `EpisodeController.GetEpisodes` (seasonNumber /
+// episodeIds / episodeFileId). They are optional so the narrow test
+// fixtures (which only implement EpisodeBySeriesLister) keep compiling;
+// production passes the episodesWithEpisodeFileLookup composite whose
+// embedded *episodes.Service satisfies all three.
+type episodesBySeasonLister interface {
+	GetEpisodesBySeason(ctx context.Context, seriesID, seasonNumber int) ([]episodes.Episode, error)
+}
+
+type episodesByIDsLister interface {
+	GetEpisodes(ctx context.Context, ids []int) ([]episodes.Episode, error)
+}
+
+type episodesByFileLister interface {
+	GetEpisodesByFileID(ctx context.Context, fileID int) ([]episodes.Episode, error)
+}
+
+// parseEpisodeIDList flattens repeated `episodeIds=1&episodeIds=2`
+// query values (each value optionally comma-separated) into an int
+// slice, matching ASP.NET's `[FromQuery]List<int>` binding plus the
+// comma-list tolerance some clients use.
+func parseEpisodeIDList(vals []string) ([]int, error) {
+	out := make([]int, 0, len(vals))
+	for _, v := range vals {
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			n, err := strconv.Atoi(part)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, n)
+		}
+	}
+	return out, nil
 }
 
 // EpisodeFileLookupForEpisode is the optional-extension interface
@@ -250,28 +291,76 @@ func ApplyEpisodeImages(res *EpisodeResource, e episodes.Episode, includeImages 
 
 // EpisodeListHandler returns the http.Handler for GET /api/v3/episode.
 // Mirrors `EpisodeController.GetEpisodes` at
-// `src/Sonarr.Api.V3/Episodes/EpisodeController.cs:35-66`. The full
-// C# controller dispatches on seriesId / episodeIds / episodeFileId
-// query params — this slice only ports the seriesId branch (the
-// recorded corpus uses seriesId=1). Other branches DEFERRED to a
-// follow-up.
+// `src/Sonarr.Api.V3/Episodes/EpisodeController.cs:28-49`, which
+// dispatches in precedence order:
 //
-// Missing seriesId returns 400 to match C#
-// `throw new BadRequestException("seriesId or episodeIds must be
-// provided")`.
+//	seriesId + seasonNumber → GetEpisodesBySeason
+//	seriesId                → GetEpisodeBySeries
+//	episodeIds[]            → GetEpisodes(ids)
+//	episodeFileId          → GetEpisodesByFileId
+//	(none)                 → 400 BadRequest
+//
+// The seasonNumber/episodeIds/episodeFileId branches use optional-
+// extension listers (see episodesBySeasonLister et al.); production's
+// composite satisfies all of them. Missing every selector returns 400
+// to match C# `throw new BadRequestException("seriesId or episodeIds
+// must be provided")`.
 func EpisodeListHandler(lister EpisodeBySeriesLister) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seriesIDStr := r.URL.Query().Get("seriesId")
-		if seriesIDStr == "" {
+		q := r.URL.Query()
+		ctx := r.Context()
+		var rows []episodes.Episode
+		var err error
+		switch {
+		case q.Get("seriesId") != "":
+			seriesID, convErr := strconv.Atoi(q.Get("seriesId"))
+			if convErr != nil {
+				httperr.BadRequest(w, "invalid seriesId")
+				return
+			}
+			if seasonStr := q.Get("seasonNumber"); seasonStr != "" {
+				season, sErr := strconv.Atoi(seasonStr)
+				if sErr != nil {
+					httperr.BadRequest(w, "invalid seasonNumber")
+					return
+				}
+				bySeason, ok := lister.(episodesBySeasonLister)
+				if !ok {
+					httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodes: seasonNumber filter unsupported by lister"), nil)
+					return
+				}
+				rows, err = bySeason.GetEpisodesBySeason(ctx, seriesID, season)
+			} else {
+				rows, err = lister.GetEpisodesBySeries(ctx, seriesID)
+			}
+		case len(q["episodeIds"]) > 0:
+			ids, convErr := parseEpisodeIDList(q["episodeIds"])
+			if convErr != nil {
+				httperr.BadRequest(w, "invalid episodeIds")
+				return
+			}
+			byIDs, ok := lister.(episodesByIDsLister)
+			if !ok {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodes: episodeIds filter unsupported by lister"), nil)
+				return
+			}
+			rows, err = byIDs.GetEpisodes(ctx, ids)
+		case q.Get("episodeFileId") != "":
+			fileID, convErr := strconv.Atoi(q.Get("episodeFileId"))
+			if convErr != nil {
+				httperr.BadRequest(w, "invalid episodeFileId")
+				return
+			}
+			byFile, ok := lister.(episodesByFileLister)
+			if !ok {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodes: episodeFileId filter unsupported by lister"), nil)
+				return
+			}
+			rows, err = byFile.GetEpisodesByFileID(ctx, fileID)
+		default:
 			httperr.BadRequest(w, "seriesId or episodeIds must be provided")
 			return
 		}
-		seriesID, err := strconv.Atoi(seriesIDStr)
-		if err != nil {
-			httperr.BadRequest(w, "invalid seriesId")
-			return
-		}
-		rows, err := lister.GetEpisodesBySeries(r.Context(), seriesID)
 		if err != nil {
 			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episodes: %w", err), nil)
 			return
@@ -416,6 +505,60 @@ func EpisodeMonitorHandler(svc EpisodeMonitorWriter) http.Handler {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusAccepted)
 		buf, _ := json.Marshal(out)
+		_, _ = w.Write(buf)
+	})
+}
+
+// EpisodeByIDPutHandler returns PUT /api/v3/episode/{id} — the
+// per-id monitored-set endpoint. Mirrors
+// `EpisodeController.SetEpisodeMonitored(int id, EpisodeResource)`
+// at `src/Sonarr.Api.V3/Episodes/EpisodeController.cs:51-60`:
+//
+//	_episodeService.SetEpisodeMonitored(id, resource.Monitored);
+//	return Accepted(resource);
+//
+// C# echoes the input resource with 202 Accepted; the Go-port sets the
+// flag then re-fetches and returns the canonical EpisodeResource (a
+// strictly-more-correct body that still agrees on Monitored) with the
+// same 202 status. Body is decoded leniently — only `monitored` is
+// read — so a full client EpisodeResource payload round-trips without
+// a DisallowUnknownFields rejection. 400 on invalid id / malformed
+// body; 404 on missing episode; 500 on service error.
+func EpisodeByIDPutHandler(svc EpisodeMonitorWriter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			httperr.BadRequest(w, "episode: invalid id")
+			return
+		}
+		var body struct {
+			Monitored bool `json:"monitored"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			httperr.BadRequest(w, fmt.Sprintf("episode: malformed body: %v", err))
+			return
+		}
+		ctx := r.Context()
+		if err := svc.SetEpisodeMonitored(ctx, id, body.Monitored); err != nil {
+			if errors.Is(err, episodes.ErrNotFound) {
+				httperr.NotFound(w, fmt.Sprintf("episode %d not found", id))
+				return
+			}
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episode: SetEpisodeMonitored %d: %w", id, err), nil)
+			return
+		}
+		rows, err := svc.GetEpisodes(ctx, []int{id})
+		if err != nil {
+			httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("episode: reload %d: %w", id, err), nil)
+			return
+		}
+		if len(rows) == 0 {
+			httperr.NotFound(w, fmt.Sprintf("episode %d not found after update", id))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		buf, _ := json.Marshal(ToEpisodeResource(rows[0]))
 		_, _ = w.Write(buf)
 	})
 }

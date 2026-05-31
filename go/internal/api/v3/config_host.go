@@ -330,9 +330,10 @@ func HostConfigHandler(getter HostConfigGetter) http.Handler {
 //
 // In production a small adapter combines *configfile.Provider and
 // *config.Provider — the same pattern the read-side HostConfigGetter
-// uses. The 5.B13d setter surface deliberately omits APIKey (rotated
-// via ResetApiKeyCommand only), Username/Password (UserService.Upsert
-// — DEFERRED), and TestId/PasswordConfirmation (not persisted).
+// uses. The setter surface omits APIKey (rotated via ResetApiKeyCommand
+// only) and TestId/PasswordConfirmation (not persisted). Username/
+// Password are persisted via the dedicated UpsertUser method below
+// (auth.Service.Upsert), not a per-field setter.
 type HostConfigWriter interface {
 	HostConfigGetter
 
@@ -373,6 +374,11 @@ type HostConfigWriter interface {
 	SetProxyPassword(ctx context.Context, v string) error
 	SetProxyBypassFilter(ctx context.Context, v string) error
 	SetProxyBypassLocalAddresses(ctx context.Context, v bool) error
+
+	// UpsertUser persists the Forms-auth credentials. Mirrors C#
+	// `_userService.Upsert(username, password)` — invoked only when both
+	// Username and Password are non-empty (HostConfigController.cs:130-134).
+	UpsertUser(ctx context.Context, username, password string) error
 }
 
 // urlBasePattern mirrors the C# ValidUrlBase regex check. The C#
@@ -392,12 +398,11 @@ var urlBasePattern = regexp.MustCompile(`^[A-Za-z0-9_\-./]*$`)
 // on whichever backend owns the key.
 //
 // The C# action also calls `_userService.Upsert(username, password)`
-// when both are non-empty; the Go port DEFERS this — Username/Password
-// validation is included (NotEmpty when AuthenticationMethod==Forms +
-// PasswordConfirmation must match Password) but the actual
-// UserService write is a follow-up slice once the users package
-// exposes an Upsert-with-hash entry point. The setter slice silently
-// skips Username/Password fields.
+// when both are non-empty; the Go port now does the same via
+// svc.UpsertUser (auth.Service.Upsert, PBKDF2 hash-aware) after the
+// field setters succeed. Username/Password validation is included
+// (NotEmpty when AuthenticationMethod==Forms + PasswordConfirmation
+// must match Password).
 //
 // Validation chain (cheap subset of C# SharedValidator at controller
 // :35-80):
@@ -423,11 +428,10 @@ var urlBasePattern = regexp.MustCompile(`^[A-Za-z0-9_\-./]*$`)
 // arm (C# `:64` — PEM or PKCS#12 load). Both are injectable via
 // [HostConfigOption] (WithFileChecker / WithCertValidator); when omitted
 // the production os-backed implementations are used, so neither check is
-// silently skipped. DEFERRED still: UserService.Upsert (needs a
-// hash-aware writer). PasswordConfirmation's
-// user-svc short-circuit ("if the stored user's password matches, ignore
-// the confirmation field") is also DEFERRED — the simpler equal-pair
-// check rejects mismatches.
+// silently skipped. UserService.Upsert is now wired (svc.UpsertUser).
+// PasswordConfirmation's user-svc short-circuit ("if the stored user's
+// password matches, ignore the confirmation field") remains DEFERRED —
+// the simpler equal-pair check rejects mismatches.
 func HostConfigUpdateHandler(svc HostConfigWriter, opts ...HostConfigOption) http.Handler {
 	checks := hostConfigChecks{fileExists: osFileExists, cert: osValidateCertificate}
 	for _, o := range opts {
@@ -546,6 +550,16 @@ func HostConfigUpdateHandler(svc HostConfigWriter, opts ...HostConfigOption) htt
 		for _, s := range setters {
 			if err := s.fn(); err != nil {
 				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("config/host: set %s: %w", s.name, err), nil)
+				return
+			}
+		}
+		// C#: _userService.Upsert(username, password) when both are
+		// non-empty (HostConfigController.cs:130-134). Validation already
+		// enforced PasswordConfirmation == Password and (under Forms auth)
+		// non-empty credentials.
+		if body.Username != "" && body.Password != "" {
+			if err := svc.UpsertUser(ctx, body.Username, body.Password); err != nil {
+				httperr.WriteErr(w, r, http.StatusInternalServerError, fmt.Errorf("config/host: upsert user: %w", err), nil)
 				return
 			}
 		}
