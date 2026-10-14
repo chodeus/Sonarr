@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 using NLog;
@@ -129,7 +130,8 @@ namespace NzbDrone.Core.Parser.TitleMatching
 
             var episode = matches.Single().Episode;
 
-            // The release can't exist before the event; a future match means the name fits another year.
+            // A release can't predate its event, but TheTVDB times every session at the series' air time, hours after
+            // an Asia-Pacific session has aired, so allow a day.
             if (!episode.AirDateUtc.HasValue || episode.AirDateUtc.Value > DateTime.UtcNow.AddDays(1))
             {
                 return null;
@@ -138,14 +140,26 @@ namespace NzbDrone.Core.Parser.TitleMatching
             return episode;
         }
 
-        // "Italian" in "Italian Grand Prix" names the event, not the audio.
+        // "Italian" in "Italian Grand Prix" names the event, not the audio, unless the release names it again.
         private static List<Language> WithoutEventLanguages(List<Language> languages, string release)
         {
-            var eventLanguages = TitleMatchVocabulary.Places
+            var placeNames = TitleMatchVocabulary.Places
                 .SelectMany(p => p)
                 .Where(n => TitleMatchVocabulary.ContainsPhrase(release, n))
+                .ToList();
+
+            // Only the first mention is the event; a second one is the release naming its language.
+            var withoutPlaceNames = placeNames.Aggregate($" {release} ", (title, name) =>
+            {
+                var index = title.IndexOf($" {name} ", StringComparison.Ordinal);
+
+                return index < 0 ? title : title.Remove(index, name.Length + 1);
+            });
+
+            var eventLanguages = placeNames
                 .SelectMany(LanguageParser.ParseLanguages)
                 .Where(l => l != Language.Unknown)
+                .Except(LanguageParser.ParseLanguages(withoutPlaceNames))
                 .ToList();
 
             var remaining = (languages ?? new List<Language>()).Except(eventLanguages).ToList();
@@ -180,26 +194,25 @@ namespace NzbDrone.Core.Parser.TitleMatching
         private List<Weekend> FindWeekends(Series series, string release, out int? round)
         {
             var roundMatch = RoundRegex.Match(release);
-            round = roundMatch.Success ? int.Parse(roundMatch.Groups["round"].Value) : null;
+            round = roundMatch.Success ? int.Parse(roundMatch.Groups["round"].Value, CultureInfo.InvariantCulture) : null;
 
-            foreach (Match yearMatch in YearRegex.Matches(release))
+            var yearMatches = YearRegex.Matches(release);
+            var years = yearMatches.Select(m => int.Parse(m.Groups["year"].Value, CultureInfo.InvariantCulture)).Distinct().ToList();
+
+            if (years.Count != 1)
             {
-                var episodes = _episodeService.GetEpisodesBySeason(series.Id, int.Parse(yearMatch.Groups["year"].Value));
-
-                if (episodes.Empty())
-                {
-                    continue;
-                }
-
-                if (yearMatch.Groups["round"].Success)
-                {
-                    round ??= int.Parse(yearMatch.Groups["round"].Value);
-                }
-
-                return GroupWeekends(episodes);
+                return new List<Weekend>();
             }
 
-            return new List<Weekend>();
+            var episodes = _episodeService.GetEpisodesBySeason(series.Id, years[0]);
+            var yearRound = yearMatches.FirstOrDefault(m => m.Groups["round"].Success);
+
+            if (yearRound != null)
+            {
+                round ??= int.Parse(yearRound.Groups["round"].Value, CultureInfo.InvariantCulture);
+            }
+
+            return GroupWeekends(episodes);
         }
 
         private static List<Weekend> GroupWeekends(List<Episode> episodes)
@@ -302,7 +315,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
             // Sprint weekends have one practice, which TheTVDB leaves unnumbered.
             var practices = weekend.Events.Where(e => e.Session != null && e.Session.StartsWith("practice")).ToList();
 
-            return releaseSession.StartsWith("practice") && practices.Count == 1 && practices[0] == titleEvent;
+            return releaseSession is "practice 1" or "practice" && practices.Count == 1 && practices[0] == titleEvent;
         }
 
         private class TitleEvent

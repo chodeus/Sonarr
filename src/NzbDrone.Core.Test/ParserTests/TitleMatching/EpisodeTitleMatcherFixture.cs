@@ -188,6 +188,7 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         }
 
         [TestCase("Formula1.2026.Singapore.Grand.Prix.1080p.WEB.H.264-BILLIE", 94)]
+        [TestCase("Formula1.2026.China.Grand.Prix.Practice.1080p.WEB.h264-BILLIE", 15)]
         [TestCase("Formula1_2026_China_Grand_Prix_Sprint_Race_1080p_WEB_h264-BILLIE", 17)]
         [TestCase("Formula1.2026.China.Grand.Prix.Qualifying.1080p.WEB.h264-BILLIE", 18)]
         [TestCase("Formula1.2026.Round17.Singapore.Race.F1LIVE.F1TV.WEB-DL.1080p.H264.English-MWR", 94)]
@@ -230,6 +231,12 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         [TestCase("Formula1.2026.Barcelona.Grand.Prix.Practice.1080p.WEB.H.264-BILLIE")]
         [TestCase("Formula1.2026.Grand.Prix.Race.1080p.WEB.H.264-BILLIE")]
         [TestCase("Formula1.S2026E89.1080p.ANTP.WEB-DL.AAC2.0.H.264-PlayWEB")]
+        [TestCase("Formula1.2026.Singapore.Grand.Prix.FP3.1080p.WEB.H.264-BILLIE")]
+        [TestCase("Formula1.2026.Singapore.Grand.Prix.Practice.4.1080p.WEB.H.264-BILLIE")]
+        [TestCase("Formula1.2026.Hungarian.Grand.Prix.Race.4.1080p.WEB.H.264-BILLIE")]
+        [TestCase("Formula1.2026.Singapore.Grand.Prix.Weekend.1080p.WEB.H.264-BILLIE")]
+        [TestCase("Formula1.2025.2026.Singapore.Grand.Prix.1080p.WEB.H.264-BILLIE")]
+        [TestCase("Formula1.2026.Singapore.Grand.Prix.2025.Rerun.1080p.WEB.H.264-BILLIE")]
         public void should_not_match_release(string title)
         {
             Subject.ParseEventTitle(Parse(title), _series).Should().BeNull();
@@ -274,6 +281,13 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
             parsedEpisodeInfo.Languages.Should().NotContain(Language.Unknown);
 
             Subject.ParseEventTitle(parsedEpisodeInfo, _series).Languages.Should().Equal(Language.Unknown);
+        }
+
+        [Test]
+        public void should_keep_event_language_the_release_names_again()
+        {
+            Subject.ParseEventTitle(Parse("Formula1.2026.Italian.Grand.Prix.ITALIAN.1080p.WEB.H.264-BILLIE"), _series)
+                   .Languages.Should().Equal(Language.Italian);
         }
 
         [Test]
