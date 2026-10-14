@@ -64,5 +64,13 @@ namespace NzbDrone.Api.Test.v3.ReleaseProfiles
         {
             GivenUpdate(0).IndexerIds.Should().BeEmpty();
         }
+
+        [Test]
+        public void should_clear_a_stored_zero_indexer_when_saved_with_zero()
+        {
+            _existing.IndexerIds = new List<int> { 0 };
+
+            GivenUpdate(0).IndexerIds.Should().BeEmpty();
+        }
     }
 }

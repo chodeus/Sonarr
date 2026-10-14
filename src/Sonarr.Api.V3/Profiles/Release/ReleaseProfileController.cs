@@ -71,7 +71,7 @@ namespace Sonarr.Api.V3.Profiles.Release
             var existing = _releaseProfileService.Get(resource.Id);
 
             // v3 only shows the first indexer, so keep the others when a client saves it back unchanged.
-            if (existing.IndexerIds.FirstOrDefault(0) == resource.IndexerId)
+            if (resource.IndexerId > 0 && existing.IndexerIds.FirstOrDefault(0) == resource.IndexerId)
             {
                 model.IndexerIds = existing.IndexerIds;
             }
