@@ -1,0 +1,70 @@
+# .coderabbit.yaml — CodeRabbit review config for chodeus/Sonarr (fork of Sonarr develop/v5, C#/.NET 10 + TypeScript UI)
+language: "en-US"
+
+reviews:
+  # assertive: chill passes diffs that assertive flags with Major findings; the path rules keep style nits out
+  profile: "assertive"
+  request_changes_workflow: false
+  pre_merge_checks:
+    # off: upstream Sonarr has no docstring convention, so a coverage warning is noise
+    docstrings:
+      mode: "off"
+  auto_review:
+    enabled: true
+    drafts: false
+    # PRs target develop or a stacked feature branch, never the default branch (custom, the image build).
+    base_branches:
+      - ".*"
+
+  path_filters:
+    - "!_output/**"
+    - "!_tests/**"
+    - "!_artifacts/**"
+    - "!**/bin/**"
+    - "!**/obj/**"
+
+  path_instructions:
+    - path: "src/**/*.cs"
+      instructions: |
+        Fork of Sonarr. Every feature branch is merged onto upstream develop every hour to
+        build an image, so changes must stay small and self-contained against upstream: prefer
+        new types over edits to upstream files, never reformat or reorder upstream code, and
+        keep existing public constructors, interfaces and method signatures unless the change
+        needs them. StyleCop and the analyzers run with warnings as errors, so do NOT report
+        style, ordering, naming or layout nits. Review logic, correctness and security:
+
+        - Parsing and matching must fail closed: an ambiguous or partial match returns no match,
+          never a guess, because a wrong match grabs and imports the wrong file.
+        - When episodes are mapped by anything other than the parsed numbers, the
+          ParsedEpisodeInfo that travels with the release must carry the same season and
+          episode numbers: the decision engine's search specifications compare them.
+        - Culture: string comparison and case folding use invariant or ordinal forms; dates and
+          numbers parse with CultureInfo.InvariantCulture.
+        - Regex: static and compiled when reused, no catastrophic backtracking on long release
+          names.
+        - Dependency injection: flag constructor cycles. ParsingService is built by every
+          indexer, and TagService depends on the indexer factory.
+        - Database: fork-only migrations are numbered from 900 so upstream's numbers can't
+          collide.
+        - Null-safety, swallowed exceptions, and 0, "" or an empty collection treated as "unset".
+        - Comments: navigational or gotcha only (1-2 lines, non-obvious why), matching the
+          file's density. Flag narrative or history comments.
+
+    - path: "src/*.Test/**/*.cs"
+      instructions: |
+        NUnit tests. Review whether each assertion verifies the behaviour its name claims, tests
+        weakened to pass (over-broad matchers, removed guards, swallowed exceptions), results
+        that depend on today's date or the machine's culture, and shared state leaking between
+        cases. Parser tests should use real release names. Ignore StyleCop-style nits.
+
+    - path: "frontend/**/*.{ts,tsx}"
+      instructions: |
+        TypeScript React UI. Flag new any/unknown or unchecked casts, effects with missing or
+        unstable dependencies, 0 or "" treated as absent, and strings missing from translations.
+        Ignore formatting that ESLint and Prettier already enforce.
+
+    - path: "**/*.{csproj,props,targets}"
+      instructions: |
+        Build definition. Flag anything that disables NuGet auditing inside the projects
+        (NuGetAudit=false, narrowed NuGetAuditMode, new NuGetAuditSuppress without a reason) and
+        version bumps into a release a live advisory database flags.
