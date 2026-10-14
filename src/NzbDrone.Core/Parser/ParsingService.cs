@@ -7,6 +7,7 @@ using NzbDrone.Common.Instrumentation.Extensions;
 using NzbDrone.Core.DataAugmentation.Scene;
 using NzbDrone.Core.IndexerSearch.Definitions;
 using NzbDrone.Core.Parser.Model;
+using NzbDrone.Core.Parser.TitleMatching;
 using NzbDrone.Core.Tv;
 
 namespace NzbDrone.Core.Parser
@@ -27,16 +28,19 @@ namespace NzbDrone.Core.Parser
         private readonly IEpisodeService _episodeService;
         private readonly ISeriesService _seriesService;
         private readonly ISceneMappingService _sceneMappingService;
+        private readonly IEpisodeTitleMatcher _episodeTitleMatcher;
         private readonly Logger _logger;
 
         public ParsingService(IEpisodeService episodeService,
                               ISeriesService seriesService,
                               ISceneMappingService sceneMappingService,
+                              IEpisodeTitleMatcher episodeTitleMatcher,
                               Logger logger)
         {
             _episodeService = episodeService;
             _seriesService = seriesService;
             _sceneMappingService = sceneMappingService;
+            _episodeTitleMatcher = episodeTitleMatcher;
             _logger = logger;
         }
 
@@ -233,6 +237,18 @@ namespace NzbDrone.Core.Parser
             {
                 remoteEpisode.Series = series;
 
+                // Replaces the parsed numbers too: search checks compare them, and in "2025x18" the 18 is the round.
+                var eventEpisodeInfo = _episodeTitleMatcher.ParseEventTitle(parsedEpisodeInfo, series);
+
+                if (eventEpisodeInfo != null)
+                {
+                    parsedEpisodeInfo = eventEpisodeInfo;
+                    remoteEpisode.ParsedEpisodeInfo = eventEpisodeInfo;
+                    remoteEpisode.MappedSeasonNumber = eventEpisodeInfo.SeasonNumber;
+                    remoteEpisode.SceneMapping = null;
+                    sceneSource = false;
+                }
+
                 // Non-official order doesn't support remapped season numbers, clearing it out
                 if (series.SeasonType != SeasonType.Official)
                 {
@@ -277,6 +293,8 @@ namespace NzbDrone.Core.Parser
 
                 return remoteEpisode.Episodes;
             }
+
+            parsedEpisodeInfo = _episodeTitleMatcher.ParseEventTitle(parsedEpisodeInfo, series) ?? parsedEpisodeInfo;
 
             if (!parsedEpisodeInfo.SeasonNumber.HasValue)
             {

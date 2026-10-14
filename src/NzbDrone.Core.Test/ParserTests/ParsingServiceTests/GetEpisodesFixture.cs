@@ -6,10 +6,13 @@ using FluentAssertions;
 using Moq;
 using NUnit.Framework;
 using NzbDrone.Core.DataAugmentation.Scene;
+using NzbDrone.Core.DecisionEngine;
+using NzbDrone.Core.DecisionEngine.Specifications.Search;
 using NzbDrone.Core.IndexerSearch.Definitions;
 using NzbDrone.Core.Languages;
 using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
+using NzbDrone.Core.Parser.TitleMatching;
 using NzbDrone.Core.Tv;
 using NzbDrone.Test.Common;
 
@@ -619,6 +622,84 @@ namespace NzbDrone.Core.Test.ParserTests.ParsingServiceTests
 
             Mocker.GetMock<IEpisodeService>()
                   .Verify(v => v.FindEpisode(_series.TvdbId, _parsedEpisodeInfo.SeasonNumber.Value, _parsedEpisodeInfo.EpisodeNumbers.First()), Times.Once());
+        }
+
+        private ParsedEpisodeInfo GivenEventEpisodeInfo(Episode episode)
+        {
+            var eventEpisodeInfo = new ParsedEpisodeInfo
+            {
+                SeriesTitle = _series.Title,
+                ReleaseTitle = "Formula1.2026.Singapore.Grand.Prix.1080p.WEB.H.264-BILLIE",
+                SeasonNumbers = [episode.SeasonNumber],
+                EpisodeNumbers = [episode.EpisodeNumber],
+                AbsoluteEpisodeNumbers = [],
+                Languages = [Language.Unknown]
+            };
+
+            Mocker.GetMock<IEpisodeTitleMatcher>()
+                  .Setup(s => s.ParseEventTitle(_parsedEpisodeInfo, _series))
+                  .Returns(eventEpisodeInfo);
+
+            return eventEpisodeInfo;
+        }
+
+        [Test]
+        public void should_map_release_to_episode_matched_by_title()
+        {
+            var episode = Builder<Episode>.CreateNew().With(e => e.SeasonNumber = 2026).With(e => e.EpisodeNumber = 94).Build();
+            var eventEpisodeInfo = GivenEventEpisodeInfo(episode);
+
+            Mocker.GetMock<IEpisodeService>()
+                  .Setup(s => s.FindEpisode(_series.Id, 2026, 94))
+                  .Returns(episode);
+
+            var remoteEpisode = Subject.Map(_parsedEpisodeInfo, _series);
+
+            remoteEpisode.Episodes.Should().ContainSingle().Which.Should().Be(episode);
+            remoteEpisode.ParsedEpisodeInfo.Should().Be(eventEpisodeInfo);
+            remoteEpisode.Languages.Should().Equal(Language.Unknown);
+        }
+
+        [Test]
+        public void should_pass_episode_search_check_when_matched_by_title()
+        {
+            var episode = Builder<Episode>.CreateNew().With(e => e.SeasonNumber = 2026).With(e => e.EpisodeNumber = 94).Build();
+            var searchCriteria = new SingleEpisodeSearchCriteria
+            {
+                Series = _series,
+                SeasonNumber = 2026,
+                EpisodeNumber = 94,
+                Episodes = [episode]
+            };
+
+            GivenEventEpisodeInfo(episode);
+
+            var remoteEpisode = Subject.Map(_parsedEpisodeInfo, _series.TvdbId, _series.TvRageId, _series.ImdbId, searchCriteria);
+
+            Mocker.Resolve<SingleEpisodeSearchMatchSpecification>()
+                  .IsSatisfiedBy(remoteEpisode, new ReleaseDecisionInformation(false, searchCriteria))
+                  .Accepted.Should().BeTrue();
+        }
+
+        [Test]
+        public void should_use_episode_matched_by_title_for_files()
+        {
+            var episode = Builder<Episode>.CreateNew().With(e => e.SeasonNumber = 2026).With(e => e.EpisodeNumber = 94).Build();
+            GivenEventEpisodeInfo(episode);
+
+            Subject.GetEpisodes(_parsedEpisodeInfo, _series, false);
+
+            Mocker.GetMock<IEpisodeService>()
+                  .Verify(v => v.FindEpisode(_series.Id, 2026, 94), Times.Once());
+        }
+
+        [Test]
+        public void should_use_parsed_numbers_when_title_does_not_match()
+        {
+            Subject.Map(_parsedEpisodeInfo, _series);
+
+            Mocker.GetMock<IEpisodeService>()
+                  .Verify(v => v.FindEpisode(_series.Id, 1, 1), Times.Once());
         }
     }
 }
