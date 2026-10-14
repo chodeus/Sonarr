@@ -1,0 +1,6 @@
+cache-page*.json
+meta.json.bak
+_src/
+sonarr.tar.gz
+smoketest.log
+_artifacts/

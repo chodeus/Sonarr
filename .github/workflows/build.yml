@@ -1,0 +1,181 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Merge Sources
+        run: ./build.sh source
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: _src/global.json
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: yarn
+          cache-dependency-path: _src/yarn.lock
+
+      - name: Compile
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: ./build.sh compile
+
+      - name: Upload Tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: sonarr-${{ github.sha }}
+          path: sonarr.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  image:
+    needs: compile
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download Tarball
+        uses: actions/download-artifact@v8
+        with:
+          name: sonarr-${{ github.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Metadata
+        id: meta
+        env:
+          BRANCH:     ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+          REPOSITORY: ${{ github.repository }}
+          SHA:        ${{ github.sha }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          IMAGE="ghcr.io/${REPOSITORY,,}"
+          VERSION=$(jq -re '.version' < meta.json)
+          {
+            echo "image-full=${IMAGE}:${BRANCH}-${SHA:0:7}-${RUN_NUMBER}-linux-amd64"
+            echo "image-branch=${IMAGE}:${BRANCH}"
+            echo "image-branch-sha=${IMAGE}:${BRANCH}-${SHA:0:7}"
+            echo "image-branch-version=${IMAGE}:${BRANCH}-${VERSION}"
+            echo "meta-created=$(date --utc --date=@"$(git show -s --format=%ct HEAD)" +'%Y-%m-%dT%H:%M:%S.000Z')"
+            echo "meta-source-url=${SERVER_URL}/${REPOSITORY}"
+            echo "meta-docs-url=${SERVER_URL}/${REPOSITORY}/tree/${BRANCH}"
+            echo "meta-version=${VERSION}"
+            echo 'build-args<<EOF'
+            jq -r 'to_entries[] | [(.key | ascii_upcase),.value] | join("=")' < meta.json | grep -v '__COMMAND'
+            echo "PACKAGE_VERSION=${BRANCH}-${VERSION}"
+            echo "IMAGE_STATS=$(jq -n --arg app "$(basename "${IMAGE}")" --arg image "${IMAGE}:${BRANCH}" --arg revision "${SHA:0:7}" --arg version "${VERSION}" '{app: $app, image: $image, revision: $revision, version: $version}' | base64 -w 0)"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build Image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./linux-amd64.Dockerfile
+          provenance: false
+          load: true
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta.outputs.image-full }}
+          labels: |
+            org.opencontainers.image.created=${{ steps.meta.outputs.meta-created }}
+            org.opencontainers.image.title=${{ steps.meta.outputs.image-branch }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ steps.meta.outputs.meta-source-url }}
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+            org.opencontainers.image.documentation=${{ steps.meta.outputs.meta-docs-url }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.meta-version }}
+          build-args: |
+            ${{ steps.meta.outputs.build-args }}
+
+      - name: Smoke Test
+        env:
+          IMAGE: ${{ steps.meta.outputs.image-full }}
+        run: |
+          test_url=$(jq -re '.test_url' < meta.json)
+          exitcode=0
+          docker run --quiet --network host -d --name service "${IMAGE}"
+          curl -fsSL --retry-all-errors --retry 60 --retry-max-time 120 -m 10 -b /dev/shm/cookie "${test_url}" --output /dev/null || exitcode=$?
+          docker logs service > smoketest.log 2>&1
+          exit ${exitcode}
+
+      - name: Tag Image
+        env:
+          IMAGE_FULL:           ${{ steps.meta.outputs.image-full }}
+          IMAGE_BRANCH:         ${{ steps.meta.outputs.image-branch }}
+          IMAGE_BRANCH_SHA:     ${{ steps.meta.outputs.image-branch-sha }}
+          IMAGE_BRANCH_VERSION: ${{ steps.meta.outputs.image-branch-version }}
+        run: docker buildx imagetools create --tag "${IMAGE_BRANCH}" --tag "${IMAGE_BRANCH_SHA}" --tag "${IMAGE_BRANCH_VERSION}" "${IMAGE_FULL}"
+
+      - name: Update packages.txt
+        env:
+          IMAGE: ${{ steps.meta.outputs.image-full }}
+        run: ./build.sh packages "${IMAGE}"
+
+      - name: Commit packages.txt
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages.txt
+          if git commit -m "Modified: packages.txt [skip ci]"; then
+            git pull --rebase --quiet origin "${BRANCH}"
+            git push origin "HEAD:${BRANCH}"
+          fi
+
+      - name: Upload Results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            packages.txt
+            smoketest.log
+
+  notify:
+    needs: [compile, image]
+    if: failure()
+    uses: chodeus/chodeus-ops/.github/workflows/notify-discord.yml@579feb04e3219248963bd27843298a8c2ea6b2fd # main
+    with:
+      event_type: workflow
+      status: failure
+      title: "❌ Sonarr image build failed: ${{ github.ref_name }}"
+      description: "No new image was published, so the running image stays on the last good build. If the Merge Sources step failed, rebase the branch it names onto develop; if compile failed, upstream develop changed code one of meta.json's `pr_branches` relies on."
+      commit_sha: ${{ github.sha }}
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}

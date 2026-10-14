@@ -1,0 +1,96 @@
+name: update
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: update-${{ github.ref_name }}
+
+permissions:
+  actions: write
+  contents: write
+  packages: read
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Login to ghcr.io
+        continue-on-error: true
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update meta.json
+        run: ./build.sh update
+
+      # Without this the build fails on the conflict while this job keeps committing
+      # fresh shas every hour, so the image silently stops tracking upstream.
+      - name: Verify the PR branch still merges
+        run: ./build.sh source
+
+      # Fails until the first image exists.
+      - name: Update packages.txt
+        continue-on-error: true
+        env:
+          BRANCH:     ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: ./build.sh packages "ghcr.io/${REPOSITORY,,}:${BRANCH}"
+
+      # A push with this token starts no workflow, so the build is dispatched explicitly.
+      - name: Commit Changes
+        env:
+          BRANCH:     ${{ github.ref_name }}
+          GH_TOKEN:   ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add meta.json packages.txt
+          if git commit -m "Modified: $(git diff --name-only --staged | paste -sd, - | sed 's/,/, /')"; then
+            git push origin "HEAD:${BRANCH}"
+            gh workflow run build.yml --repo "${REPOSITORY}" --ref "${BRANCH}"
+          fi
+
+  sync-develop:
+    runs-on: ubuntu-24.04
+    steps:
+      # The image reads upstream directly, so nothing else keeps the fork's develop current.
+      - name: Fast-forward develop to upstream
+        env:
+          GH_TOKEN:   ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: gh repo sync "${REPOSITORY}" --branch develop --source Sonarr/Sonarr
+
+  notify:
+    needs: update
+    if: failure()
+    uses: chodeus/chodeus-ops/.github/workflows/notify-discord.yml@579feb04e3219248963bd27843298a8c2ea6b2fd # main
+    with:
+      event_type: workflow
+      status: failure
+      title: "❌ Sonarr image updates stopped: ${{ github.ref_name }}"
+      description: "The hourly update failed, so the image is no longer tracking upstream develop or the base image. Most likely one of meta.json's `pr_branches` stopped merging cleanly: the build log names it; rebase that branch onto develop."
+      commit_sha: ${{ github.sha }}
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+  notify-sync:
+    needs: sync-develop
+    if: failure()
+    uses: chodeus/chodeus-ops/.github/workflows/notify-discord.yml@579feb04e3219248963bd27843298a8c2ea6b2fd # main
+    with:
+      event_type: workflow
+      status: failure
+      title: "❌ Sonarr fork develop sync failed"
+      description: "develop could not be fast-forwarded to Sonarr/Sonarr. If upstream changed a workflow file, the built-in token cannot push it: run `gh repo sync chodeus/Sonarr --branch develop` or use Sync fork on GitHub."
+      commit_sha: ${{ github.sha }}
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}

@@ -1,0 +1,21 @@
+# Sonarr custom build
+
+`ghcr.io/chodeus/sonarr:custom` is Sonarr's `develop` branch (v5) with the changes below merged in, on the hotio base image.
+
+## What it adds to Sonarr develop
+
+- **Title matching for event series** — branch [`feat/title-match`](https://github.com/chodeus/Sonarr/tree/feat/title-match), not submitted
+  - For series tagged `title-match`, a release named by event instead of episode number, such as `Formula1.2026.Singapore.Grand.Prix` or `Formula1.2026.Round17.Singapore.Race`, is matched to the episode whose title names the same place and session.
+  - The year picks the season. Round numbers (`Round17`, `R17`, `2026x17`) pick the weekend and must agree with the place. A name with no session word is the race.
+  - Shows, press conferences, testing and sibling series are never matched, and anything ambiguous is left unmatched.
+  - A nationality that names the event, such as "Italian" in "Italian Grand Prix", no longer counts as the release's audio language.
+  - Applies to grabs, searches and imports. Series without the tag are unchanged.
+
+## How the build works
+
+- Each change is its own branch off `develop` in [chodeus/Sonarr](https://github.com/chodeus/Sonarr).
+- `meta.json` lists them in `pr_branches`. The hourly `update` workflow records each branch's head in `pr_shas`, and any change to a branch, to upstream `develop` or to the base image triggers a build.
+- `build.sh source` merges the branches into `develop` in the listed order. If one no longer merges, the build fails and names it; rebase that branch onto `develop`.
+- `build.sh compile` follows upstream's own CI build. NuGet advisories are logged rather than fatal, because upstream suppresses them one at a time and a new one would otherwise stop every image update.
+- To add or drop a change, edit `pr_branches`.
+- Build-only migrations are numbered from 900 so upstream's own numbers can't collide.
