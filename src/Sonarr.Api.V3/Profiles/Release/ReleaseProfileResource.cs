@@ -71,7 +71,7 @@ namespace Sonarr.Api.V3.Profiles.Release
                 AirDateRestriction = resource.AirDateRestriction,
                 AirDateGracePeriod = resource.AirDateGracePeriod,
                 AllowSeasonPackWithoutAllEpisodesAired = resource.AllowSeasonPackWithoutAllEpisodesAired,
-                IndexerIds = new List<int> { resource.IndexerId },
+                IndexerIds = resource.IndexerId > 0 ? new List<int> { resource.IndexerId } : new List<int>(),
                 Tags = new HashSet<int>(resource.Tags),
                 ExcludedTags = new HashSet<int>(resource.ExcludedTags)
             };

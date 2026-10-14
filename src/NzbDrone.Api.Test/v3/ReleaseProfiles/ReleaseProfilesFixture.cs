@@ -49,5 +49,21 @@ namespace NzbDrone.Api.Test.v3.ReleaseProfiles
 
             Assert.Throws<BadRequestException>(() => resource.ToModel());
         }
+
+        [Test]
+        public void should_map_indexer_zero_to_any_indexer()
+        {
+            var resource = STJson.Deserialize<ReleaseProfileResource>("{ \"indexerId\": 0, \"ignored\": [ \"testa\" ] }");
+
+            resource.ToModel().IndexerIds.Should().BeEmpty();
+        }
+
+        [Test]
+        public void should_map_indexer_to_that_indexer_only()
+        {
+            var resource = STJson.Deserialize<ReleaseProfileResource>("{ \"indexerId\": 5, \"ignored\": [ \"testa\" ] }");
+
+            resource.ToModel().IndexerIds.Should().Equal(5);
+        }
     }
 }
