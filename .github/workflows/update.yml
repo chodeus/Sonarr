@@ -63,9 +63,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       # The image reads upstream directly, so nothing else keeps the fork's develop current.
+      # PAT with Workflows write: github.token can't push upstream's workflow-file changes.
       - name: Fast-forward develop to upstream
         env:
-          GH_TOKEN:   ${{ github.token }}
+          GH_TOKEN:   ${{ secrets.SYNC_TOKEN }}
           REPOSITORY: ${{ github.repository }}
         run: gh repo sync "${REPOSITORY}" --branch develop --source Sonarr/Sonarr
 
