@@ -10,6 +10,9 @@
   - Shows, press conferences, testing and sibling series are never matched, and anything ambiguous is left unmatched.
   - A nationality that names the event, such as "Italian" in "Italian Grand Prix", no longer counts as the release's audio language.
   - Applies to grabs, searches and imports. Series without the tag are unchanged.
+- **v3 release profiles on any indexer** — branch [`fix/v3-release-profile-any-indexer`](https://github.com/chodeus/Sonarr/tree/fix/v3-release-profile-any-indexer), not submitted
+  - A v3 API save with `indexerId: 0` means any indexer again. Stock v5 stores it as `[0]`, which matches no indexer, so the profile's "Must not contain" terms and air-date restriction silently stop applying.
+  - A v3 save that keeps the profile's first indexer keeps its full indexer list, and a profile already stored as `[0]` is repaired on its next v3 save with `indexerId: 0`.
 
 ## How the build works
 
