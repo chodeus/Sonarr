@@ -590,6 +590,22 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             Subject.Find("35238").RemoteEpisode.Series.Should().BeSameAs(series);
         }
 
+        [Test]
+        public void should_keep_the_previous_mapping_when_the_download_history_lookup_fails()
+        {
+            var series = new Series { Id = 5 };
+
+            GivenDownloadMappedByGrabHistory(series);
+
+            Mocker.GetMock<IDownloadHistoryService>()
+                  .Setup(s => s.GetLatestDownloadHistoryItem("35238"))
+                  .Throws(new InvalidOperationException("database is locked"));
+
+            Subject.Handle(new SeriesEditedEvent(series, series));
+
+            Subject.Find("35238").RemoteEpisode.Series.Should().BeSameAs(series);
+        }
+
         private void GivenDownloadMappedByGrabHistory(Series series)
         {
             GivenDownloadHistory();

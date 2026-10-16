@@ -118,15 +118,13 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                 HasNotifiedManualInteractionRequired = existingItem?.HasNotifiedManualInteractionRequired ?? false
             };
 
-            var downloadHistory = _downloadHistoryService.GetLatestDownloadHistoryItem(downloadItem.DownloadId);
+            var downloadHistory = MapRemoteEpisode(trackedDownload);
 
             if (downloadHistory != null)
             {
                 var state = GetStateFromHistory(downloadHistory.EventType);
                 trackedDownload.State = state;
             }
-
-            MapRemoteEpisode(trackedDownload, downloadHistory);
 
             LogItemChange(trackedDownload, existingItem?.DownloadItem, trackedDownload.DownloadItem);
 
@@ -160,12 +158,15 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             }
         }
 
-        private void MapRemoteEpisode(TrackedDownload trackedDownload, DownloadHistory downloadHistory)
+        private DownloadHistory MapRemoteEpisode(TrackedDownload trackedDownload)
         {
             var downloadItem = trackedDownload.DownloadItem;
+            DownloadHistory downloadHistory = null;
 
             try
             {
+                downloadHistory = _downloadHistoryService.GetLatestDownloadHistoryItem(downloadItem.DownloadId);
+
                 var parsedEpisodeInfo = Parser.Parser.ParseTitle(trackedDownload.DownloadItem.Title);
 
                 if (parsedEpisodeInfo != null)
@@ -253,6 +254,8 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
                 trackedDownload.Warn("Unable to parse episodes from title");
             }
+
+            return downloadHistory;
         }
 
         private void LogItemChange(TrackedDownload trackedDownload, DownloadClientItem existingItem, DownloadClientItem downloadItem)
@@ -275,7 +278,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
         private void UpdateCachedItem(TrackedDownload trackedDownload)
         {
-            MapRemoteEpisode(trackedDownload, _downloadHistoryService.GetLatestDownloadHistoryItem(trackedDownload.DownloadItem.DownloadId));
+            MapRemoteEpisode(trackedDownload);
         }
 
         private static TrackedDownloadState GetStateFromHistory(DownloadHistoryEventType eventType)
