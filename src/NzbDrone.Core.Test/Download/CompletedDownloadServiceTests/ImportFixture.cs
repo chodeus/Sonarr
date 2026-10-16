@@ -142,6 +142,29 @@ namespace NzbDrone.Core.Test.Download.CompletedDownloadServiceTests
         }
 
         [Test]
+        public void should_block_import_if_no_series_or_episodes_are_mapped()
+        {
+            _trackedDownload.RemoteEpisode = new RemoteEpisode { ParsedEpisodeInfo = new ParsedEpisodeInfo() };
+
+            Mocker.SetConstant<ITrackedDownloadAlreadyImported>(Mocker.Resolve<TrackedDownloadAlreadyImported>());
+
+            Mocker.GetMock<IHistoryService>()
+                  .Setup(s => s.FindByDownloadId(It.IsAny<string>()))
+                  .Returns(Builder<EpisodeHistory>.CreateListOfSize(2).BuildList());
+
+            Mocker.GetMock<IDownloadedEpisodesImportService>()
+                  .Setup(v => v.ProcessPath(It.IsAny<string>(), It.IsAny<ImportMode>(), It.IsAny<Series>(), It.IsAny<DownloadClientItem>()))
+                  .Returns(new List<ImportResult>
+                           {
+                               new ImportResult(new ImportDecision(null, new ImportRejection(ImportRejectionReason.UnknownSeries, "Unknown Series")), "Unknown Series")
+                           });
+
+            Subject.Import(_trackedDownload);
+
+            AssertNotImported();
+        }
+
+        [Test]
         public void should_not_mark_as_imported_if_no_episodes_were_parsed()
         {
             Mocker.GetMock<IDownloadedEpisodesImportService>()

@@ -30,6 +30,12 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                 return false;
             }
 
+            if (trackedDownload.RemoteEpisode.Episodes.Empty())
+            {
+                _logger.Trace("No episodes mapped for {0}", trackedDownload.DownloadItem.Title);
+                return false;
+            }
+
             var allEpisodesImportedInHistory = trackedDownload.RemoteEpisode.Episodes.All(e =>
             {
                 var lastHistoryItem = historyItems.FirstOrDefault(h => h.EpisodeId == e.Id);

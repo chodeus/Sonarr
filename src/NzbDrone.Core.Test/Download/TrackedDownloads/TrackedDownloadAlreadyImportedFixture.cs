@@ -67,6 +67,18 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
         }
 
         [Test]
+        public void should_return_false_if_no_episodes_are_mapped()
+        {
+            _historyItems.Add(Builder<EpisodeHistory>.CreateNew()
+                                                     .With(h => h.EventType = EpisodeHistoryEventType.Grabbed)
+                                                     .Build());
+
+            Subject.IsImported(_trackedDownload, _historyItems)
+                   .Should()
+                   .BeFalse();
+        }
+
+        [Test]
         public void should_return_false_if_single_episode_download_is_not_imported()
         {
             GivenEpisodes(1);
