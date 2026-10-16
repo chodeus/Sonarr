@@ -175,5 +175,34 @@ namespace NzbDrone.Core.Test.MediaFiles.EpisodeImport.Specifications
 
             Subject.IsSatisfiedBy(_localEpisode, null).Accepted.Should().BeFalse();
         }
+
+        [Test]
+        public void should_reject_if_episode_title_is_required_for_bulk_season_releases_and_episode_number_is_not_the_season_number()
+        {
+            var episode = _localEpisode.Episodes.First();
+            episode.SeasonNumber = 4;
+            episode.EpisodeNumber = 1;
+            episode.Title = "TBA";
+
+            Mocker.GetMock<IConfigService>()
+                  .Setup(s => s.EpisodeTitleRequired)
+                  .Returns(EpisodeTitleRequiredType.BulkSeasonReleases);
+
+            Mocker.GetMock<IEpisodeService>()
+                  .Setup(s => s.GetEpisodesBySeason(episode.SeriesId, 4))
+                  .Returns(Builder<Episode>.CreateListOfSize(8)
+                                           .All()
+                                           .With(e => e.AirDateUtc = episode.AirDateUtc)
+                                           .BuildList());
+
+            Mocker.GetMock<IEpisodeService>()
+                  .Setup(s => s.GetEpisodesBySeason(episode.SeriesId, 1))
+                  .Returns(Builder<Episode>.CreateListOfSize(8)
+                                           .All()
+                                           .With(e => e.AirDateUtc = episode.AirDateUtc.Value.AddYears(-3))
+                                           .BuildList());
+
+            Subject.IsSatisfiedBy(_localEpisode, null).Accepted.Should().BeFalse();
+        }
     }
 }
