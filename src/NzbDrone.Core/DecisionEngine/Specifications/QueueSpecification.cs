@@ -1,8 +1,11 @@
+using System;
 using System.Linq;
 using NLog;
+using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Configuration;
 using NzbDrone.Core.CustomFormats;
 using NzbDrone.Core.Download.TrackedDownloads;
+using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
 using NzbDrone.Core.Qualities;
 using NzbDrone.Core.Queue;
@@ -53,6 +56,11 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
                 if (queueItem.TrackedDownloadState == TrackedDownloadState.FailedPending)
                 {
                     continue;
+                }
+
+                if (IsSameRelease(subject.Release, queueItem))
+                {
+                    return DownloadSpecDecision.Reject(DownloadRejectionReason.QueueSameRelease, "Same release is already in queue: {0}", queueItem.Title);
                 }
 
                 var queuedItemCustomFormats = _formatService.ParseCustomFormat(remoteEpisode, (long)queueItem.Size);
@@ -110,6 +118,24 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
             }
 
             return DownloadSpecDecision.Accept();
+        }
+
+        private static bool IsSameRelease(ReleaseInfo release, Queue.Queue queueItem)
+        {
+            if (release == null)
+            {
+                return false;
+            }
+
+            if (release is TorrentInfo torrentInfo &&
+                torrentInfo.InfoHash.IsNotNullOrWhiteSpace() &&
+                torrentInfo.InfoHash.Equals(queueItem.DownloadId, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return release.Title.IsSameReleaseTitle(queueItem.Title) ||
+                   release.Title.IsSameReleaseTitle(queueItem.GrabbedTitle);
         }
     }
 }

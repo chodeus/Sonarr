@@ -162,6 +162,63 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
         }
 
         [Test]
+        public void should_keep_the_grab_event_without_taking_its_title_for_the_release()
+        {
+            var episodeHistory = new EpisodeHistory()
+            {
+                DownloadId = "35238",
+                SourceTitle = "TV Series S01 1080p AMZN WEB-DL DDPA5.1 H.264-RlsGroup",
+                SeriesId = 5,
+                EpisodeId = 4,
+                EventType = EpisodeHistoryEventType.Grabbed,
+            };
+
+            Mocker.GetMock<IHistoryService>()
+                .Setup(s => s.FindByDownloadId(It.Is<string>(sr => sr == "35238")))
+                .Returns([episodeHistory]);
+
+            var remoteEpisode = new RemoteEpisode
+            {
+                Series = new Series() { Id = 5 },
+                Episodes = [new Episode { Id = 4 }],
+                ParsedEpisodeInfo = new ParsedEpisodeInfo()
+                {
+                    SeriesTitle = "TV Series",
+                    SeasonNumbers = [1],
+                    ReleaseTitle = "TV.Series.S01.1080p.WEB-DL.DDP5.1.H.264-RlsGroup"
+                },
+                MappedSeasonNumber = 1
+            };
+
+            Mocker.GetMock<IParsingService>()
+                .Setup(s => s.Map(It.IsAny<ParsedEpisodeInfo>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<string>(), null))
+                .Returns(remoteEpisode);
+
+            var client = new DownloadClientDefinition()
+            {
+                Id = 1,
+                Protocol = DownloadProtocol.Torrent
+            };
+
+            var item = new DownloadClientItem()
+            {
+                Title = "TV.Series.S01.1080p.WEB-DL.DDP5.1.H.264-RlsGroup",
+                DownloadId = "35238",
+                DownloadClientInfo = new DownloadClientItemClientInfo
+                {
+                    Protocol = client.Protocol,
+                    Id = client.Id,
+                    Name = client.Name
+                }
+            };
+
+            var trackedDownload = Subject.TrackDownload(client, item);
+
+            trackedDownload.GrabbedEvent.Should().BeSameAs(episodeHistory);
+            trackedDownload.RemoteEpisode.Release.Title.Should().Be("TV.Series.S01.1080p.WEB-DL.DDP5.1.H.264-RlsGroup");
+        }
+
+        [Test]
         public void should_parse_as_special_when_source_title_parsing_fails()
         {
             var remoteEpisode = new RemoteEpisode

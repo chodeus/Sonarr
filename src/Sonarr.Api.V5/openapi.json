@@ -9247,6 +9247,7 @@
           "queueCustomFormatScoreIncrement",
           "queueUpgradesNotAllowed",
           "queuePropersDisabled",
+          "queueSameRelease",
           "raw",
           "mustContainMissing",
           "mustNotContainPresent",

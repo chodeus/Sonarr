@@ -191,6 +191,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
                     trackedDownload.Indexer = grabbedEvent?.Data?.GetValueOrDefault("indexer");
                     trackedDownload.Added = grabbedEvent?.Date;
+                    trackedDownload.GrabbedEvent = grabbedEvent;
 
                     if (parsedEpisodeInfo == null ||
                         trackedDownload.RemoteEpisode?.Series == null ||

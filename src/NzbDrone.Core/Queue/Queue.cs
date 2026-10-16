@@ -24,6 +24,7 @@ namespace NzbDrone.Core.Queue
         public QualityModel Quality { get; set; }
         public decimal Size { get; set; }
         public string Title { get; set; }
+        public string GrabbedTitle { get; set; }
         public decimal SizeLeft { get; set; }
         public TimeSpan? TimeLeft { get; set; }
         public DateTime? EstimatedCompletionTime { get; set; }

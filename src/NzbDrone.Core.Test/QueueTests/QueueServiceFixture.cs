@@ -6,6 +6,7 @@ using FluentAssertions;
 using NUnit.Framework;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.Download.TrackedDownloads;
+using NzbDrone.Core.History;
 using NzbDrone.Core.Parser.Model;
 using NzbDrone.Core.Queue;
 using NzbDrone.Core.Test.Framework;
@@ -61,6 +62,16 @@ namespace NzbDrone.Core.Test.QueueTests
             queue.Should().HaveCount(1);
 
             queue.All(v => v.Id > 0).Should().BeTrue();
+        }
+
+        [Test]
+        public void queue_items_should_carry_the_grabbed_title()
+        {
+            _trackedDownloads.First().GrabbedEvent = new EpisodeHistory { SourceTitle = "Series.Title.S01E01.1080p.WEB-DL.DDPA5.1.H.264-Group" };
+
+            Subject.Handle(new TrackedDownloadRefreshedEvent(_trackedDownloads));
+
+            Subject.GetQueue().Single().GrabbedTitle.Should().Be("Series.Title.S01E01.1080p.WEB-DL.DDPA5.1.H.264-Group");
         }
     }
 }

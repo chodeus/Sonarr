@@ -57,6 +57,7 @@ public enum DownloadRejectionReason
     QueueCustomFormatScoreIncrement,
     QueueUpgradesNotAllowed,
     QueuePropersDisabled,
+    QueueSameRelease,
     Raw,
     MustContainMissing,
     MustNotContainPresent,

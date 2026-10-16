@@ -6,6 +6,7 @@ using Moq;
 using NUnit.Framework;
 using NzbDrone.Core.Configuration;
 using NzbDrone.Core.CustomFormats;
+using NzbDrone.Core.DecisionEngine;
 using NzbDrone.Core.DecisionEngine.Specifications;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.Languages;
@@ -91,6 +92,41 @@ namespace NzbDrone.Core.Test.DecisionEngineTests
             Mocker.GetMock<ICustomFormatCalculationService>()
                   .Setup(x => x.ParseCustomFormat(It.IsAny<RemoteEpisode>(), It.IsAny<long>()))
                   .Returns(formats);
+        }
+
+        private void GivenLowerQualityQueueItem(string title, string grabbedTitle, string downloadId = "QUEUEDHASH")
+        {
+            var remoteEpisode = GivenLowerQualityQueuedEpisode();
+
+            Mocker.GetMock<IQueueService>()
+                .Setup(s => s.GetQueue())
+                .Returns(new List<Queue.Queue>
+                {
+                    new()
+                    {
+                        RemoteEpisode = remoteEpisode,
+                        Title = title,
+                        GrabbedTitle = grabbedTitle,
+                        DownloadId = downloadId,
+                        TrackedDownloadState = TrackedDownloadState.Downloading
+                    }
+                });
+        }
+
+        private RemoteEpisode GivenLowerQualityQueuedEpisode()
+        {
+            _series.QualityProfile.Value.Cutoff = Quality.Bluray1080p.Id;
+
+            return Builder<RemoteEpisode>.CreateNew()
+                                         .With(r => r.Series = _series)
+                                         .With(r => r.Episodes = new List<Episode> { _episode })
+                                         .With(r => r.ParsedEpisodeInfo = new ParsedEpisodeInfo
+                                                                          {
+                                                                              Quality = new QualityModel(Quality.SDTV),
+                                                                              Languages = new List<Language> { Language.Spanish }
+                                                                          })
+                                         .With(r => r.CustomFormats = new List<CustomFormat>())
+                                         .Build();
         }
 
         private void GivenQueue(IEnumerable<RemoteEpisode> remoteEpisodes, TrackedDownloadState trackedDownloadState = TrackedDownloadState.Downloading)
@@ -475,6 +511,75 @@ namespace NzbDrone.Core.Test.DecisionEngineTests
             GivenQueue(new List<RemoteEpisode> { remoteEpisode });
 
             Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeFalse();
+        }
+
+        [Test]
+        public void should_return_false_when_the_same_torrent_is_in_queue()
+        {
+            GivenLowerQualityQueueItem("Series.Title.S01E01.SDTV-Other", "Series.Title.S01E01.SDTV-Other", "CBC2F069FE8BB2F544EAE707D75BCD3DE9DCF951");
+            _remoteEpisode.Release = new TorrentInfo { Title = "Series.Title.S01E01.DVD-Group", InfoHash = "cbc2f069fe8bb2f544eae707d75bcd3de9dcf951" };
+
+            var decision = Subject.IsSatisfiedBy(_remoteEpisode, new());
+
+            decision.Accepted.Should().BeFalse();
+            decision.Reason.Should().Be(DownloadRejectionReason.QueueSameRelease);
+        }
+
+        [TestCase("Series.Title.S01E01.DVD.DDP5.1-Group")]
+        [TestCase("Series Title S01E01 DVD DDP5 1-Group")]
+        [TestCase("Series.Title.S01E01.DVD.DDP5.1-Group.mkv")]
+        [TestCase("series_title_s01e01_dvd_ddp5_1-group")]
+        public void should_return_false_when_release_title_matches_the_queued_download_name(string releaseTitle)
+        {
+            GivenLowerQualityQueueItem("Series.Title.S01E01.DVD.DDP5.1-Group", "Series.Title.S01E01.DVD.DDPA5.1-Group");
+            _remoteEpisode.Release = new ReleaseInfo { Title = releaseTitle };
+
+            var decision = Subject.IsSatisfiedBy(_remoteEpisode, new());
+
+            decision.Accepted.Should().BeFalse();
+            decision.Reason.Should().Be(DownloadRejectionReason.QueueSameRelease);
+        }
+
+        [Test]
+        public void should_return_false_when_release_title_matches_the_grabbed_title_of_the_queued_download()
+        {
+            GivenLowerQualityQueueItem("Series.Title.S01E01.DVD.DDP5.1-Group", "Series.Title.S01E01.DVD.DDPA5.1-Group");
+            _remoteEpisode.Release = new ReleaseInfo { Title = "Series Title S01E01 DVD DDPA5 1-Group" };
+
+            var decision = Subject.IsSatisfiedBy(_remoteEpisode, new());
+
+            decision.Accepted.Should().BeFalse();
+            decision.Reason.Should().Be(DownloadRejectionReason.QueueSameRelease);
+        }
+
+        [Test]
+        public void should_return_true_when_a_different_release_is_better_than_the_queued_one()
+        {
+            GivenLowerQualityQueueItem("Series.Title.S01E01.SDTV-Group", "Series.Title.S01E01.SDTV-Group");
+            _remoteEpisode.Release = new TorrentInfo { Title = "Series.Title.S01E01.DVD-Group", InfoHash = "1111111111111111111111111111111111111111" };
+
+            Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeTrue();
+        }
+
+        [Test]
+        public void should_compare_titles_when_the_torrent_has_no_hash()
+        {
+            GivenLowerQualityQueueItem("Series.Title.S01E01.DVD.DDP5.1-Group", "Series.Title.S01E01.DVD.DDPA5.1-Group");
+            _remoteEpisode.Release = new TorrentInfo { Title = "Series.Title.S01E01.DVD.DDP5.1-Group", InfoHash = null };
+
+            var decision = Subject.IsSatisfiedBy(_remoteEpisode, new());
+
+            decision.Accepted.Should().BeFalse();
+            decision.Reason.Should().Be(DownloadRejectionReason.QueueSameRelease);
+        }
+
+        [Test]
+        public void should_not_treat_missing_titles_as_the_same_release()
+        {
+            GivenLowerQualityQueueItem(null, null);
+            _remoteEpisode.Release = new ReleaseInfo { Title = "" };
+
+            Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeTrue();
         }
     }
 }

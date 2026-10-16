@@ -1,4 +1,5 @@
 using System;
+using NzbDrone.Core.History;
 using NzbDrone.Core.Indexers;
 using NzbDrone.Core.Parser.Model;
 
@@ -16,6 +17,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
         public DownloadProtocol Protocol { get; set; }
         public string Indexer { get; set; }
         public DateTime? Added { get; set; }
+        public EpisodeHistory GrabbedEvent { get; set; }
         public bool IsTrackable { get; set; }
         public bool HasNotifiedManualInteractionRequired { get; set; }
 
