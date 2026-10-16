@@ -46,7 +46,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                     }
 
                     // Republished events still carry the old name until the next refresh, so one attempt covers them
-                    _renameAttempts.Set(downloadItem.DownloadId, true, RenameRetryDelay);
+                    _renameAttempts.Set(AttemptKey(trackedDownload), true, RenameRetryDelay);
                     _downloadClientProvider.Get(trackedDownload.DownloadClient).RenameItem(downloadItem, trackedDownload.GrabbedEvent.SourceTitle);
                 }
                 catch (Exception e)
@@ -81,7 +81,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
             // Scores can still differ once renamed (client vs indexer size), so matching names must end it
             if (trackedDownload.DownloadItem.Title.IsSameReleaseTitle(grabbedEvent.SourceTitle) ||
-                _renameAttempts.Find(trackedDownload.DownloadItem.DownloadId))
+                _renameAttempts.Find(AttemptKey(trackedDownload)))
             {
                 return false;
             }
@@ -97,6 +97,11 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             var grabbedScore = qualityProfile.CalculateCustomFormatScore(_formatCalculator.ParseCustomFormat(grabbedEvent, remoteEpisode.Series));
 
             return grabbedScore > qualityProfile.CalculateCustomFormatScore(remoteEpisode.CustomFormats);
+        }
+
+        private static string AttemptKey(TrackedDownload trackedDownload)
+        {
+            return $"{trackedDownload.DownloadClient}_{trackedDownload.DownloadItem.DownloadId}";
         }
     }
 }

@@ -39,6 +39,13 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
         public DownloadSpecDecision IsSatisfiedBy(RemoteEpisode subject, ReleaseDecisionInformation information)
         {
             var queue = _queueService.GetQueue();
+            var sameTorrent = queue.FirstOrDefault(q => q.TrackedDownloadState != TrackedDownloadState.FailedPending && IsSameTorrent(subject.Release, q));
+
+            if (sameTorrent != null)
+            {
+                return DownloadSpecDecision.Reject(DownloadRejectionReason.QueueSameRelease, "Same release is already in queue: {0}", sameTorrent.Title);
+            }
+
             var matchingEpisode = queue.Where(q => q.RemoteEpisode?.Series != null &&
                                                    q.RemoteEpisode.Series.Id == subject.Series.Id &&
                                                    q.RemoteEpisode.Episodes.Select(e => e.Id).Intersect(subject.Episodes.Select(e => e.Id)).Any())
@@ -58,7 +65,7 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
                     continue;
                 }
 
-                if (IsSameRelease(subject.Release, queueItem))
+                if (IsSameTitle(subject.Release, queueItem))
                 {
                     return DownloadSpecDecision.Reject(DownloadRejectionReason.QueueSameRelease, "Same release is already in queue: {0}", queueItem.Title);
                 }
@@ -120,22 +127,17 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
             return DownloadSpecDecision.Accept();
         }
 
-        private static bool IsSameRelease(ReleaseInfo release, Queue.Queue queueItem)
+        private static bool IsSameTorrent(ReleaseInfo release, Queue.Queue queueItem)
         {
-            if (release == null)
-            {
-                return false;
-            }
+            return release is TorrentInfo torrentInfo &&
+                   torrentInfo.InfoHash.IsNotNullOrWhiteSpace() &&
+                   torrentInfo.InfoHash.Equals(queueItem.DownloadId, StringComparison.OrdinalIgnoreCase);
+        }
 
-            if (release is TorrentInfo torrentInfo &&
-                torrentInfo.InfoHash.IsNotNullOrWhiteSpace() &&
-                torrentInfo.InfoHash.Equals(queueItem.DownloadId, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            return release.Title.IsSameReleaseTitle(queueItem.Title) ||
-                   release.Title.IsSameReleaseTitle(queueItem.GrabbedTitle);
+        private static bool IsSameTitle(ReleaseInfo release, Queue.Queue queueItem)
+        {
+            return release != null &&
+                   (release.Title.IsSameReleaseTitle(queueItem.Title) || release.Title.IsSameReleaseTitle(queueItem.GrabbedTitle));
         }
     }
 }

@@ -305,6 +305,16 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
         }
 
         [Test]
+        public void should_track_attempts_per_download_client()
+        {
+            GivenGrabbedFormats(_atmos);
+
+            Refresh(GivenTrackedDownload(1, "HASH1"), GivenTrackedDownload(2, "HASH1"));
+
+            VerifyRenamed(Times.Exactly(2));
+        }
+
+        [Test]
         public void should_wait_before_retrying_a_failed_rename()
         {
             GivenGrabbedFormats(_atmos);

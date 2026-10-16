@@ -12,6 +12,7 @@ namespace NzbDrone.Core.Test.ParserTests
         [TestCase("Series.Title.S01E05.1080p.WEB-DL.AAC2.0.H.264-Group", "Series.Title.S01E05.1080p.WEB-DL.AAC2.0.H.264-Group.mkv")]
         [TestCase("Series Title S01E05 1080p WEB-DL DDP 5.1 Atmos H.264-Group", "series_title_s01e05_1080p_web-dl_ddp_5_1_atmos_h_264-group")]
         [TestCase("Series.Title.S01E05.2160p.WEB-DL.DV.HDR10+.H.265-Group", "Series.Title.S01E05.2160p.WEB-DL.DV.HDR10Plus.H.265-Group")]
+        [TestCase("Série.Title.S01E05.1080p.WEB-DL.H.264-Group", "Série.Title.S01E05.1080p.WEB-DL.H.264-Group")]
         public void should_treat_titles_that_differ_only_in_case_separators_or_extension_as_the_same(string title, string otherTitle)
         {
             title.IsSameReleaseTitle(otherTitle).Should().BeTrue();
@@ -25,6 +26,14 @@ namespace NzbDrone.Core.Test.ParserTests
         public void should_treat_titles_with_different_tokens_as_different(string title, string otherTitle)
         {
             title.IsSameReleaseTitle(otherTitle).Should().BeFalse();
+        }
+
+        [Test]
+        public void should_compare_a_title_with_invalid_unicode_without_throwing()
+        {
+            const string title = "Series\uD800.Title.S01E05.1080p.WEB-DL.H.264-Group";
+
+            title.IsSameReleaseTitle(title).Should().BeTrue();
         }
 
         [TestCase(null, null)]

@@ -561,6 +561,22 @@ namespace NzbDrone.Core.Test.DecisionEngineTests
             Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeTrue();
         }
 
+        [TestCase(TrackedDownloadState.Downloading, false)]
+        [TestCase(TrackedDownloadState.FailedPending, true)]
+        public void should_check_the_torrent_hash_against_queued_downloads_without_mapped_episodes(TrackedDownloadState state, bool accepted)
+        {
+            Mocker.GetMock<IQueueService>()
+                  .Setup(s => s.GetQueue())
+                  .Returns(new List<Queue.Queue>
+                  {
+                      new() { Title = "Unparsed torrent name", DownloadId = "CBC2F069FE8BB2F544EAE707D75BCD3DE9DCF951", TrackedDownloadState = state }
+                  });
+
+            _remoteEpisode.Release = new TorrentInfo { Title = "Series.Title.S01E01.DVD-Group", InfoHash = "cbc2f069fe8bb2f544eae707d75bcd3de9dcf951" };
+
+            Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().Be(accepted);
+        }
+
         [Test]
         public void should_compare_titles_when_the_torrent_has_no_hash()
         {

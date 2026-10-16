@@ -1,3 +1,5 @@
+using System;
+using System.Text;
 using System.Text.RegularExpressions;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.MediaFiles;
@@ -25,7 +27,20 @@ namespace NzbDrone.Core.Parser
 
             var withoutExtension = FileExtensions.RemoveFileExtension(title).Replace("+", "plus");
 
-            return SeparatorRegex.Replace(withoutExtension, string.Empty).ToLowerInvariant();
+            return SeparatorRegex.Replace(ComposeCharacters(withoutExtension), string.Empty).ToLowerInvariant();
+        }
+
+        // Normalize throws on invalid UTF-16 (a lone surrogate from a malformed feed); compare those as given
+        private static string ComposeCharacters(string title)
+        {
+            try
+            {
+                return title.Normalize(NormalizationForm.FormC);
+            }
+            catch (ArgumentException)
+            {
+                return title;
+            }
         }
     }
 }
