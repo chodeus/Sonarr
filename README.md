@@ -17,6 +17,10 @@
   - A queued download whose torrent name doesn't match the series, such as `The.Diplomat.S04…` for "The Diplomat (US)", keeps the series it was grabbed for when the series is edited. It used to lose it, stay in Importing for good, and let the season be grabbed again from another release.
   - A download with no episodes mapped is no longer counted as already imported.
   - Episode Title Required "Only for Bulk Season Releases" checks the episode's own season, not the season numbered like the episode.
+- **The same release isn't grabbed twice** — branch [`fix/same-release-regrab`](https://github.com/chodeus/Sonarr/tree/fix/same-release-regrab), not submitted
+  - A queued download is scored from its torrent name. When that name lacks tokens the grabbed title had, such as Atmos or HDR10+, the same release from another feed used to pass as an upgrade and be grabbed again while the first was still downloading.
+  - A release is now refused while a download with the same torrent hash, or the same title as its torrent name or grabbed title, is in the queue. Case, separators and a file extension are ignored. Scores are unchanged.
+  - New qBittorrent setting "Rename to Release Title", off by default: a downloading torrent is renamed to its grabbed title when that title scores higher, so the queue scores what was grabbed. Files inside aren't renamed.
 
 ## How the build works
 

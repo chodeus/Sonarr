@@ -1,7 +1,7 @@
 {
-  "pr_branches": "feat/title-match fix/v3-release-profile-any-indexer fix/blocked-import-retry",
+  "pr_branches": "feat/title-match fix/v3-release-profile-any-indexer fix/blocked-import-retry fix/same-release-regrab",
   "pr_repo": "chodeus/Sonarr",
-  "pr_shas": "99ab7fbf1beda14c9fca0053c935a0162e893848 b8cf5e7eecf35d1051afaaf2ce9793d9a70a3352 2ed7978af15cdbfcea05c8fc444176972d3c94df",
+  "pr_shas": "99ab7fbf1beda14c9fca0053c935a0162e893848 b8cf5e7eecf35d1051afaaf2ce9793d9a70a3352 2ed7978af15cdbfcea05c8fc444176972d3c94df bff8193e2c3ba57e76242a8839920625a8ca028a",
   "pr_shas__command": "repo=$(jq -re '.pr_repo' < meta.json) && for branch in $(jq -re '.pr_branches' < meta.json); do sha=$(git ls-remote --exit-code \"https://github.com/${repo}.git\" \"refs/heads/${branch}\" | cut -f1) && [[ -n ${sha} ]] || exit 1; echo \"${sha}\"; done | paste -sd ' ' -",
   "sonarr_branch": "develop",
   "sonarr_repo": "Sonarr/Sonarr",
@@ -12,7 +12,7 @@
   "upstream_tag": "alpinevpn",
   "upstream_tag_sha": "alpinevpn-826e0fd",
   "upstream_tag_sha__command": "json=$(cat meta.json) && upstream_image=$(jq -re '.upstream_image' <<< \"${json}\") && upstream_image_base=$(basename \"${upstream_image}\") && upstream_tag=$(jq -re '.upstream_tag' <<< \"${json}\") && tags_json=$(curl -fsSL \"https://hotio.dev/containers/${upstream_image_base}-tags.json\") && commit_sha=$(jq -re --arg tag \"${upstream_tag}\" '.[$tag].commit_sha' <<< \"${tags_json}\") && upstream_tag_sha=${upstream_tag}-${commit_sha:0:7} && echo \"${upstream_tag_sha}\"",
-  "version": "5.0.0-a2b6054-217add8",
+  "version": "5.0.0-a2b6054-750d620",
   "version__command": "sonarr_sha=$(jq -re '.sonarr_sha' < meta.json) && pr=$(jq -re '.pr_shas' < meta.json | git hash-object --stdin) && major=$(curl -fsSL \"https://raw.githubusercontent.com/$(jq -re '.sonarr_repo' < meta.json)/${sonarr_sha}/.github/workflows/build_v5.yml\" | sed -n \"s/^ *VERSION: *\\([0-9.]*\\).*/\\1/p\") && test -n \"${major}\" && echo \"${major}-${sonarr_sha:0:7}-${pr:0:7}\"",
   "version_branch": "develop"
 }
