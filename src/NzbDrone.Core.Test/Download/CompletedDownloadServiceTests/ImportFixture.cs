@@ -162,6 +162,7 @@ namespace NzbDrone.Core.Test.Download.CompletedDownloadServiceTests
             Subject.Import(_trackedDownload);
 
             AssertNotImported();
+            ExceptionVerification.ExpectedWarns(1);
         }
 
         [Test]
