@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using NLog;
 using NzbDrone.Common.Cache;
 using NzbDrone.Core.CustomFormats;
@@ -18,16 +19,19 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
         private readonly IProvideDownloadClient _downloadClientProvider;
         private readonly ICustomFormatCalculationService _formatCalculator;
+        private readonly IHistoryService _historyService;
         private readonly ICached<bool> _renameAttempts;
         private readonly Logger _logger;
 
         public GrabbedTitleRenameService(IProvideDownloadClient downloadClientProvider,
                                          ICustomFormatCalculationService formatCalculator,
+                                         IHistoryService historyService,
                                          ICacheManager cacheManager,
                                          Logger logger)
         {
             _downloadClientProvider = downloadClientProvider;
             _formatCalculator = formatCalculator;
+            _historyService = historyService;
             _renameAttempts = cacheManager.GetCache<bool>(GetType());
             _logger = logger;
         }
@@ -86,6 +90,22 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                 return false;
             }
 
+            if (!IsGrabbedTitleBetter(grabbedEvent, remoteEpisode))
+            {
+                return false;
+            }
+
+            if (!IsGrabbedForSameEpisodes(trackedDownload))
+            {
+                _logger.Debug("Not renaming {0}, its grabbed release title is for other episodes", trackedDownload.DownloadItem.Title);
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool IsGrabbedTitleBetter(EpisodeHistory grabbedEvent, RemoteEpisode remoteEpisode)
+        {
             var qualityProfile = remoteEpisode.Series.QualityProfile.Value;
             var qualityComparison = new QualityModelComparer(qualityProfile).Compare(grabbedEvent.Quality, remoteEpisode.ParsedEpisodeInfo.Quality);
 
@@ -97,6 +117,17 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             var grabbedScore = qualityProfile.CalculateCustomFormatScore(_formatCalculator.ParseCustomFormat(grabbedEvent, remoteEpisode.Series));
 
             return grabbedScore > qualityProfile.CalculateCustomFormatScore(remoteEpisode.CustomFormats);
+        }
+
+        // The next refresh maps the download by its new name, so a rename must not move it to other episodes
+        private bool IsGrabbedForSameEpisodes(TrackedDownload trackedDownload)
+        {
+            var remoteEpisode = trackedDownload.RemoteEpisode;
+            var grabs = _historyService.Find(trackedDownload.DownloadItem.DownloadId, EpisodeHistoryEventType.Grabbed);
+
+            return grabs.Any() &&
+                   grabs.All(h => h.SeriesId == remoteEpisode.Series.Id) &&
+                   grabs.Select(h => h.EpisodeId).ToHashSet().SetEquals(remoteEpisode.Episodes.Select(e => e.Id));
         }
 
         private static string AttemptKey(TrackedDownload trackedDownload)

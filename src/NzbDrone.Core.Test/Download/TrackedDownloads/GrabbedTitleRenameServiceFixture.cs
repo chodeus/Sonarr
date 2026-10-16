@@ -38,6 +38,7 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
 
             _series = new Series
             {
+                Id = 1,
                 QualityProfile = new QualityProfile
                 {
                     Items = Qualities.QualityFixture.GetDefaultQualities(),
@@ -52,6 +53,7 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
                   .Returns(_downloadClient.Object);
 
             GivenGrabbedFormats();
+            GivenGrabbedEpisodes(1, 1);
         }
 
         private void GivenGrabbedFormats(params CustomFormat[] formats)
@@ -59,6 +61,13 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             Mocker.GetMock<ICustomFormatCalculationService>()
                   .Setup(s => s.ParseCustomFormat(It.IsAny<EpisodeHistory>(), It.IsAny<Series>()))
                   .Returns(formats.ToList());
+        }
+
+        private void GivenGrabbedEpisodes(int seriesId, params int[] episodeIds)
+        {
+            Mocker.GetMock<IHistoryService>()
+                  .Setup(s => s.Find(It.IsAny<string>(), EpisodeHistoryEventType.Grabbed))
+                  .Returns(episodeIds.Select(id => new EpisodeHistory { SeriesId = seriesId, EpisodeId = id, EventType = EpisodeHistoryEventType.Grabbed }).ToList());
         }
 
         private TrackedDownload GivenTrackedDownload(int downloadClientId = 1, string downloadId = "HASH1")
@@ -82,6 +91,7 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
                 RemoteEpisode = new RemoteEpisode
                 {
                     Series = _series,
+                    Episodes = new List<Episode> { new() { Id = 1 } },
                     ParsedEpisodeInfo = new ParsedEpisodeInfo { Quality = new QualityModel(Quality.WEBDL1080p) },
                     CustomFormats = new List<CustomFormat>()
                 }
@@ -289,6 +299,38 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             Refresh(trackedDownload);
 
             VerifyRenamed(Times.Never());
+        }
+
+        [TestCase(1, new[] { 2 }, new[] { 1 })]
+        [TestCase(2, new[] { 1 }, new[] { 1 })]
+        [TestCase(1, new[] { 1, 2 }, new[] { 1 })]
+        [TestCase(1, new[] { 1 }, new[] { 1, 2 })]
+        [TestCase(1, new int[0], new int[0])]
+        public void should_not_rename_when_the_grab_was_for_other_episodes(int grabbedSeriesId, int[] grabbedEpisodeIds, int[] downloadEpisodeIds)
+        {
+            GivenGrabbedFormats(_atmos);
+            GivenGrabbedEpisodes(grabbedSeriesId, grabbedEpisodeIds);
+
+            var trackedDownload = GivenTrackedDownload();
+            trackedDownload.RemoteEpisode.Episodes = downloadEpisodeIds.Select(id => new Episode { Id = id }).ToList();
+
+            Refresh(trackedDownload);
+
+            VerifyRenamed(Times.Never());
+        }
+
+        [Test]
+        public void should_rename_a_multi_episode_download_grabbed_for_the_same_episodes()
+        {
+            GivenGrabbedFormats(_atmos);
+            GivenGrabbedEpisodes(1, 2, 1);
+
+            var trackedDownload = GivenTrackedDownload();
+            trackedDownload.RemoteEpisode.Episodes = new List<Episode> { new() { Id = 1 }, new() { Id = 2 } };
+
+            Refresh(trackedDownload);
+
+            VerifyRenamed(Times.Once());
         }
 
         [Test]

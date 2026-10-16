@@ -96,8 +96,11 @@ namespace NzbDrone.Core.Test.DecisionEngineTests
 
         private void GivenLowerQualityQueueItem(string title, string grabbedTitle, string downloadId = "QUEUEDHASH")
         {
-            var remoteEpisode = GivenLowerQualityQueuedEpisode();
+            GivenQueueItem(GivenLowerQualityQueuedEpisode(), title, grabbedTitle, downloadId);
+        }
 
+        private void GivenQueueItem(RemoteEpisode remoteEpisode, string title, string grabbedTitle, string downloadId = "QUEUEDHASH")
+        {
             Mocker.GetMock<IQueueService>()
                 .Setup(s => s.GetQueue())
                 .Returns(new List<Queue.Queue>
@@ -587,6 +590,34 @@ namespace NzbDrone.Core.Test.DecisionEngineTests
 
             decision.Accepted.Should().BeFalse();
             decision.Reason.Should().Be(DownloadRejectionReason.QueueSameRelease);
+        }
+
+        [Test]
+        public void should_return_false_when_the_grabbed_title_matches_but_the_download_name_maps_to_another_episode()
+        {
+            var queuedEpisode = GivenLowerQualityQueuedEpisode();
+            queuedEpisode.Episodes = new List<Episode> { new() { Id = 99, SeriesId = _series.Id } };
+
+            GivenQueueItem(queuedEpisode, "Series.Title.S01E02.DVD-Group", "Series.Title.S01E01.DVD-Group");
+            _remoteEpisode.Release = new ReleaseInfo { Title = "Series.Title.S01E01.DVD-Group" };
+
+            var decision = Subject.IsSatisfiedBy(_remoteEpisode, new());
+
+            decision.Accepted.Should().BeFalse();
+            decision.Reason.Should().Be(DownloadRejectionReason.QueueSameRelease);
+        }
+
+        [Test]
+        public void should_return_true_when_the_same_title_is_queued_for_another_series()
+        {
+            var queuedEpisode = GivenLowerQualityQueuedEpisode();
+            queuedEpisode.Series = _otherSeries;
+            queuedEpisode.Episodes = new List<Episode> { _otherEpisode };
+
+            GivenQueueItem(queuedEpisode, "Series.Title.S01E01.DVD-Group", "Series.Title.S01E01.DVD-Group");
+            _remoteEpisode.Release = new ReleaseInfo { Title = "Series.Title.S01E01.DVD-Group" };
+
+            Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeTrue();
         }
 
         [Test]

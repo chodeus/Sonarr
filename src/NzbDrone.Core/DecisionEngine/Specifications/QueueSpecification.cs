@@ -39,11 +39,11 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
         public DownloadSpecDecision IsSatisfiedBy(RemoteEpisode subject, ReleaseDecisionInformation information)
         {
             var queue = _queueService.GetQueue();
-            var sameTorrent = queue.FirstOrDefault(q => q.TrackedDownloadState != TrackedDownloadState.FailedPending && IsSameTorrent(subject.Release, q));
+            var sameRelease = queue.FirstOrDefault(q => q.TrackedDownloadState != TrackedDownloadState.FailedPending && IsSameRelease(subject, q));
 
-            if (sameTorrent != null)
+            if (sameRelease != null)
             {
-                return DownloadSpecDecision.Reject(DownloadRejectionReason.QueueSameRelease, "Same release is already in queue: {0}", sameTorrent.Title);
+                return DownloadSpecDecision.Reject(DownloadRejectionReason.QueueSameRelease, "Same release is already in queue: {0}", sameRelease.Title);
             }
 
             var matchingEpisode = queue.Where(q => q.RemoteEpisode?.Series != null &&
@@ -63,11 +63,6 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
                 if (queueItem.TrackedDownloadState == TrackedDownloadState.FailedPending)
                 {
                     continue;
-                }
-
-                if (IsSameTitle(subject.Release, queueItem))
-                {
-                    return DownloadSpecDecision.Reject(DownloadRejectionReason.QueueSameRelease, "Same release is already in queue: {0}", queueItem.Title);
                 }
 
                 var queuedItemCustomFormats = _formatService.ParseCustomFormat(remoteEpisode, (long)queueItem.Size);
@@ -125,6 +120,13 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
             }
 
             return DownloadSpecDecision.Accept();
+        }
+
+        // A title match skips the episode check: the queue maps episodes from the client name, which can differ from the grabbed title's
+        private static bool IsSameRelease(RemoteEpisode subject, Queue.Queue queueItem)
+        {
+            return IsSameTorrent(subject.Release, queueItem) ||
+                   (queueItem.RemoteEpisode?.Series?.Id == subject.Series.Id && IsSameTitle(subject.Release, queueItem));
         }
 
         private static bool IsSameTorrent(ReleaseInfo release, Queue.Queue queueItem)
