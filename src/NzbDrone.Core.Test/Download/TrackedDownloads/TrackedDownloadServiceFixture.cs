@@ -1,8 +1,10 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using FluentAssertions;
 using Moq;
 using NUnit.Framework;
+using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.Download.History;
 using NzbDrone.Core.Download.TrackedDownloads;
@@ -539,6 +541,92 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             Subject.Find("present").Should().NotBeNull();
             Subject.Find("missing").Should().BeNull();
             Subject.Find("other").Should().NotBeNull();
+        }
+
+        [Test]
+        public void should_keep_the_grab_history_mapping_when_the_series_is_edited()
+        {
+            var series = new Series { Id = 5 };
+
+            GivenDownloadMappedByGrabHistory(series);
+
+            Subject.Handle(new SeriesEditedEvent(series, series));
+
+            var remoteEpisode = Subject.Find("35238").RemoteEpisode;
+
+            remoteEpisode.Series.Id.Should().Be(5);
+            remoteEpisode.Episodes.Select(e => e.Id).Should().Equal(4);
+        }
+
+        [Test]
+        public void should_not_throw_when_a_deleted_series_still_has_grab_history()
+        {
+            var series = new Series { Id = 5 };
+
+            GivenDownloadMappedByGrabHistory(series);
+
+            Mocker.GetMock<IParsingService>()
+                  .Setup(s => s.Map(It.IsAny<ParsedEpisodeInfo>(), 5, It.IsAny<IEnumerable<int>>()))
+                  .Throws(new ModelNotFoundException(typeof(Series), 5));
+
+            Subject.Handle(new SeriesDeletedEvent([series], false, false));
+
+            Subject.Find("35238").RemoteEpisode.Series.Should().BeNull();
+        }
+
+        [Test]
+        public void should_keep_the_previous_mapping_when_remapping_fails()
+        {
+            var series = new Series { Id = 5 };
+
+            GivenDownloadMappedByGrabHistory(series);
+
+            Mocker.GetMock<IParsingService>()
+                  .Setup(s => s.Map(It.IsAny<ParsedEpisodeInfo>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<string>(), null))
+                  .Throws(new InvalidOperationException("database is locked"));
+
+            Subject.Handle(new SeriesEditedEvent(series, series));
+
+            Subject.Find("35238").RemoteEpisode.Series.Should().BeSameAs(series);
+        }
+
+        private void GivenDownloadMappedByGrabHistory(Series series)
+        {
+            GivenDownloadHistory();
+
+            Mocker.GetMock<IParsingService>()
+                  .Setup(s => s.Map(It.IsAny<ParsedEpisodeInfo>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<string>(), null))
+                  .Returns(() => new RemoteEpisode { ParsedEpisodeInfo = new ParsedEpisodeInfo { SeriesTitle = "TV Series", SeasonNumbers = [1] } });
+
+            Mocker.GetMock<IParsingService>()
+                  .Setup(s => s.Map(It.IsAny<ParsedEpisodeInfo>(), 5, It.IsAny<IEnumerable<int>>()))
+                  .Returns(() => new RemoteEpisode
+                  {
+                      Series = series,
+                      Episodes = [new Episode { Id = 4 }],
+                      ParsedEpisodeInfo = new ParsedEpisodeInfo { SeriesTitle = "TV Series", SeasonNumbers = [1] }
+                  });
+
+            var client = new DownloadClientDefinition
+            {
+                Id = 1,
+                Protocol = DownloadProtocol.Torrent
+            };
+
+            var item = new DownloadClientItem
+            {
+                Title = "TV.Series.S01.1080p.WEB-DL-GROUP",
+                DownloadId = "35238",
+                DownloadClientInfo = new DownloadClientItemClientInfo
+                {
+                    Protocol = client.Protocol,
+                    Id = client.Id
+                }
+            };
+
+            Subject.TrackDownload(client, item);
+
+            Subject.Find("35238").RemoteEpisode.Series.Should().BeSameAs(series);
         }
 
         private void GivenTrackedDownload(int downloadClientId, string downloadId)

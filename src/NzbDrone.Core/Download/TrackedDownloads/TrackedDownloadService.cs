@@ -118,16 +118,54 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                 HasNotifiedManualInteractionRequired = existingItem?.HasNotifiedManualInteractionRequired ?? false
             };
 
+            var downloadHistory = _downloadHistoryService.GetLatestDownloadHistoryItem(downloadItem.DownloadId);
+
+            if (downloadHistory != null)
+            {
+                var state = GetStateFromHistory(downloadHistory.EventType);
+                trackedDownload.State = state;
+            }
+
+            MapRemoteEpisode(trackedDownload, downloadHistory);
+
+            LogItemChange(trackedDownload, existingItem?.DownloadItem, trackedDownload.DownloadItem);
+
+            _cache.Set(trackedDownload.DownloadItem.DownloadId, trackedDownload);
+            return trackedDownload;
+        }
+
+        public List<TrackedDownload> GetTrackedDownloads()
+        {
+            return _cache.Values.ToList();
+        }
+
+        public void UpdateTrackable(List<TrackedDownload> trackedDownloads)
+        {
+            var untrackable = GetTrackedDownloads().ExceptBy(t => t.DownloadItem.DownloadId, trackedDownloads, t => t.DownloadItem.DownloadId, StringComparer.CurrentCulture).ToList();
+
+            foreach (var trackedDownload in untrackable)
+            {
+                trackedDownload.IsTrackable = false;
+            }
+        }
+
+        public void StopTrackingMissing(int downloadClientId, List<string> downloadIds)
+        {
+            var present = downloadIds.ToHashSet();
+            var missing = GetTrackedDownloads().Where(t => t.DownloadClient == downloadClientId && !present.Contains(t.DownloadItem.DownloadId));
+
+            foreach (var trackedDownload in missing)
+            {
+                _cache.Remove(trackedDownload.DownloadItem.DownloadId);
+            }
+        }
+
+        private void MapRemoteEpisode(TrackedDownload trackedDownload, DownloadHistory downloadHistory)
+        {
+            var downloadItem = trackedDownload.DownloadItem;
+
             try
             {
-                var downloadHistory = _downloadHistoryService.GetLatestDownloadHistoryItem(downloadItem.DownloadId);
-
-                if (downloadHistory != null)
-                {
-                    var state = GetStateFromHistory(downloadHistory.EventType);
-                    trackedDownload.State = state;
-                }
-
                 var parsedEpisodeInfo = Parser.Parser.ParseTitle(trackedDownload.DownloadItem.Title);
 
                 if (parsedEpisodeInfo != null)
@@ -135,6 +173,10 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                     trackedDownload.RemoteEpisode = downloadHistory is { EventType: DownloadHistoryEventType.DownloadImported }
                         ? _parsingService.Map(parsedEpisodeInfo, _seriesService.GetSeries(downloadHistory.SeriesId))
                         : _parsingService.Map(parsedEpisodeInfo, 0, 0, null);
+                }
+                else
+                {
+                    trackedDownload.RemoteEpisode = null;
                 }
 
                 var historyItems = _historyService.FindByDownloadId(downloadItem.DownloadId)
@@ -211,37 +253,6 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
                 trackedDownload.Warn("Unable to parse episodes from title");
             }
-
-            LogItemChange(trackedDownload, existingItem?.DownloadItem, trackedDownload.DownloadItem);
-
-            _cache.Set(trackedDownload.DownloadItem.DownloadId, trackedDownload);
-            return trackedDownload;
-        }
-
-        public List<TrackedDownload> GetTrackedDownloads()
-        {
-            return _cache.Values.ToList();
-        }
-
-        public void UpdateTrackable(List<TrackedDownload> trackedDownloads)
-        {
-            var untrackable = GetTrackedDownloads().ExceptBy(t => t.DownloadItem.DownloadId, trackedDownloads, t => t.DownloadItem.DownloadId, StringComparer.CurrentCulture).ToList();
-
-            foreach (var trackedDownload in untrackable)
-            {
-                trackedDownload.IsTrackable = false;
-            }
-        }
-
-        public void StopTrackingMissing(int downloadClientId, List<string> downloadIds)
-        {
-            var present = downloadIds.ToHashSet();
-            var missing = GetTrackedDownloads().Where(t => t.DownloadClient == downloadClientId && !present.Contains(t.DownloadItem.DownloadId));
-
-            foreach (var trackedDownload in missing)
-            {
-                _cache.Remove(trackedDownload.DownloadItem.DownloadId);
-            }
         }
 
         private void LogItemChange(TrackedDownload trackedDownload, DownloadClientItem existingItem, DownloadClientItem downloadItem)
@@ -264,11 +275,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
 
         private void UpdateCachedItem(TrackedDownload trackedDownload)
         {
-            var parsedEpisodeInfo = Parser.Parser.ParseTitle(trackedDownload.DownloadItem.Title);
-
-            trackedDownload.RemoteEpisode = parsedEpisodeInfo == null ? null : _parsingService.Map(parsedEpisodeInfo, 0, 0, null);
-
-            _aggregationService.Augment(trackedDownload.RemoteEpisode);
+            MapRemoteEpisode(trackedDownload, _downloadHistoryService.GetLatestDownloadHistoryItem(trackedDownload.DownloadItem.DownloadId));
         }
 
         private static TrackedDownloadState GetStateFromHistory(DownloadHistoryEventType eventType)
