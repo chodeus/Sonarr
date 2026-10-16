@@ -73,6 +73,18 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             }
         }
 
+        public override void RenameItem(DownloadClientItem downloadClientItem, string title)
+        {
+            // torrents/rename arrived with API v2 (qBittorrent 4.1)
+            if (!Settings.RenameToReleaseTitle || ProxyApiVersion < new Version(2, 0))
+            {
+                return;
+            }
+
+            Proxy.RenameTorrent(downloadClientItem.DownloadId.ToLowerInvariant(), title, Settings);
+            _logger.Info("Renamed torrent {0} to {1} in qBittorrent", downloadClientItem.Title, title);
+        }
+
         protected override string AddFromMagnetLink(RemoteEpisode remoteEpisode, string hash, string magnetLink)
         {
             if (!Proxy.GetConfig(Settings).DhtEnabled && !magnetLink.Contains("&tr="))

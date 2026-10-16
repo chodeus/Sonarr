@@ -347,6 +347,15 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             ProcessRequest(request, settings);
         }
 
+        public void RenameTorrent(string hash, string name, QBittorrentSettings settings)
+        {
+            var request = BuildRequest(settings).Resource("/api/v2/torrents/rename")
+                .Post()
+                .AddFormParameter("hash", hash)
+                .AddFormParameter("name", name);
+            ProcessRequest(request, settings);
+        }
+
         private static HttpRequestBuilder BuildRequest(QBittorrentSettings settings)
         {
             var requestBuilder = new HttpRequestBuilder(settings.UseSsl, settings.Host, settings.Port, settings.UrlBase)

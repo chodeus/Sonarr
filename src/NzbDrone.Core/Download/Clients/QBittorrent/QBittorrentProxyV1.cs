@@ -278,6 +278,11 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             // Not supported on api v1
         }
 
+        public void RenameTorrent(string hash, string name, QBittorrentSettings settings)
+        {
+            // Not supported on api v1
+        }
+
         private HttpRequestBuilder BuildRequest(QBittorrentSettings settings)
         {
             var requestBuilder = new HttpRequestBuilder(settings.UseSsl, settings.Host, settings.Port, settings.UrlBase)
