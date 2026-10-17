@@ -8,6 +8,7 @@ using NzbDrone.Common;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Instrumentation.Extensions;
+using NzbDrone.Core.DataAugmentation.Scene;
 using NzbDrone.Core.Exceptions;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MediaFiles.Events;
@@ -31,6 +32,7 @@ namespace NzbDrone.Core.Tv
         private readonly IProvideSeriesInfo _seriesInfo;
         private readonly IRenameEpisodeFileService _renameEpisodeFileService;
         private readonly IDiskProvider _diskProvider;
+        private readonly ISceneMappingService _sceneMappingService;
         private readonly IExecute<RefreshSeriesCommand> _refreshSeries;
         private readonly IEventAggregator _eventAggregator;
         private readonly Logger _logger;
@@ -41,6 +43,7 @@ namespace NzbDrone.Core.Tv
                                          IProvideSeriesInfo seriesInfo,
                                          IRenameEpisodeFileService renameEpisodeFileService,
                                          IDiskProvider diskProvider,
+                                         ISceneMappingService sceneMappingService,
                                          IExecute<RefreshSeriesCommand> refreshSeries,
                                          IEventAggregator eventAggregator,
                                          Logger logger)
@@ -51,6 +54,7 @@ namespace NzbDrone.Core.Tv
             _seriesInfo = seriesInfo;
             _renameEpisodeFileService = renameEpisodeFileService;
             _diskProvider = diskProvider;
+            _sceneMappingService = sceneMappingService;
             _refreshSeries = refreshSeries;
             _eventAggregator = eventAggregator;
             _logger = logger;
@@ -76,6 +80,11 @@ namespace NzbDrone.Core.Tv
             var tvdbIdMatches = matches.Where(m => RemoteEpisodeMatcher.IsMatchedByTvdbId(m.Key, m.Value)).ToList();
             var tvdbIdMatched = tvdbIdMatches.Select(m => m.Value).ToHashSet(ReferenceEqualityComparer.Instance);
 
+            // Other orders turn off XEM and scene-title seasons, which releases for this series are matched through
+            var leavingAiredOrder = series.SeasonType == SeasonType.Official && seasonType != SeasonType.Official;
+            var sceneNumberedEpisodes = leavingAiredOrder ? episodes.Count(IsSceneRenumbered) : 0;
+            var sceneSeasonTitles = leavingAiredOrder ? _sceneMappingService.FindByTvdbId(series.TvdbId).Count(m => m.SeasonNumber.HasValue || m.SceneSeasonNumber.HasValue) : 0;
+
             var episodesWithFiles = episodes.Where(e => e.EpisodeFileId > 0).ToList();
             var existingEpisodes = episodesWithFiles.ToLookup(e => e.EpisodeFileId, ToPreviewEpisode);
             var unmatchedFileIds = episodesWithFiles.Where(e => !tvdbIdMatched.Contains(e)).Select(e => e.EpisodeFileId).ToHashSet();
@@ -92,30 +101,26 @@ namespace NzbDrone.Core.Tv
             var renames = _renameEpisodeFileService.GetRenamePreviews(series, episodes, linkedFiles.Where(f => !unmatchedFileIds.Contains(f.Id)).ToList())
                                                    .ToDictionary(p => p.EpisodeFileId);
 
-            var previewFiles = linkedFiles.Select(f => new EpisodeOrderPreviewFile
-                {
-                    EpisodeFileId = f.Id,
-                    ExistingPath = f.RelativePath,
-                    NewPath = unmatchedFileIds.Contains(f.Id) ? null : renames.GetValueOrDefault(f.Id)?.NewPath ?? f.RelativePath,
-                    ExistingEpisodes = existingEpisodes[f.Id].OrderBy(e => e.SeasonNumber).ThenBy(e => e.EpisodeNumber).ToList(),
-                    NewEpisodes = unmatchedFileIds.Contains(f.Id)
-                        ? new List<EpisodeOrderPreviewEpisode>()
-                        : episodes.Where(e => e.EpisodeFileId == f.Id).Select(ToPreviewEpisode).OrderBy(e => e.SeasonNumber).ThenBy(e => e.EpisodeNumber).ToList(),
-                    Status = unmatchedFileIds.Contains(f.Id)
-                        ? EpisodeOrderPreviewFileStatus.Unmatched
-                        : renames.ContainsKey(f.Id) ? EpisodeOrderPreviewFileStatus.Renamed : EpisodeOrderPreviewFileStatus.Unchanged
-                })
+            var previewFiles = linkedFiles.Select(f => ToPreviewFile(f, episodes.Where(e => e.EpisodeFileId == f.Id).ToList(), existingEpisodes[f.Id], unmatchedFileIds.Contains(f.Id), renames.GetValueOrDefault(f.Id)))
                 .OrderBy(f => f.NewEpisodes.FirstOrDefault()?.SeasonNumber ?? int.MaxValue)
                 .ThenBy(f => f.NewEpisodes.FirstOrDefault()?.EpisodeNumber ?? int.MaxValue)
                 .ToList();
 
             MarkConflicts(series, previewFiles);
 
+            var refreshRequired = episodesWithFiles.Any(e => e.TvdbId == 0);
+
             return new EpisodeOrderPreview
             {
                 SeriesId = series.Id,
                 SeasonType = seasonType,
-                RefreshRequired = episodesWithFiles.Any(e => e.TvdbId == 0),
+                CanChange = !refreshRequired &&
+                            sceneNumberedEpisodes == 0 &&
+                            sceneSeasonTitles == 0 &&
+                            previewFiles.None(f => f.Status is EpisodeOrderPreviewFileStatus.Unmatched or EpisodeOrderPreviewFileStatus.Unnameable),
+                RefreshRequired = refreshRequired,
+                SceneNumberedEpisodes = sceneNumberedEpisodes,
+                SceneSeasonTitles = sceneSeasonTitles,
                 HasAbsoluteEpisodeNumbers = remoteEpisodes.Any(e => e.AbsoluteEpisodeNumber.HasValue),
                 EpisodesAdded = remoteEpisodes.Count - matches.Count,
                 EpisodesRemoved = episodes.Count - matches.Count,
@@ -128,33 +133,35 @@ namespace NzbDrone.Core.Tv
             var preview = Preview(message.SeriesId, message.SeasonType);
             var series = _seriesService.GetSeries(message.SeriesId);
 
-            if (preview.RefreshRequired)
+            if (!preview.CanChange)
             {
-                throw new CommandFailedException("Refresh {0} first so its episodes have TVDB IDs", series.Title);
+                throw new CommandFailedException(GetRefusal(preview, series.Title));
             }
 
-            var unmatchedCount = preview.Files.Count(f => f.Status == EpisodeOrderPreviewFileStatus.Unmatched);
+            var previousSeasonType = series.SeasonType;
 
-            if (unmatchedCount > 0)
+            if (previousSeasonType != message.SeasonType)
             {
-                throw new CommandFailedException("{0} episode files belong to episodes that aren't in the new episode order", unmatchedCount);
+                _logger.Info("Changing episode order for {0} from {1} to {2}", series, previousSeasonType, message.SeasonType);
+                SaveSeasonType(series, message.SeasonType);
             }
 
-            if (series.SeasonType != message.SeasonType)
+            try
             {
-                _logger.Info("Changing episode order for {0} from {1} to {2}", series, series.SeasonType, message.SeasonType);
-                series.SeasonType = message.SeasonType;
-                _seriesService.UpdateSeries(series, updateEpisodesToMatchSeason: false, publishUpdatedEvent: false);
+                Refresh(series.Id);
+
+                var notAppliedCount = CountNotApplied(series.Id, preview.Files, f => f.NewEpisodes);
+
+                if (notAppliedCount > 0)
+                {
+                    throw new InvalidOperationException($"The new episode order didn't apply to {notAppliedCount} episode files");
+                }
             }
-
-            _refreshSeries.Execute(new RefreshSeriesCommand(new List<int> { series.Id }) { Trigger = CommandTrigger.Manual });
-
-            var episodesByFile = _episodeService.GetEpisodeBySeries(series.Id).Where(e => e.EpisodeFileId > 0).ToLookup(e => e.EpisodeFileId);
-            var notAppliedCount = preview.Files.Count(f => !IsApplied(f, episodesByFile[f.EpisodeFileId]));
-
-            if (notAppliedCount > 0)
+            catch (Exception ex)
             {
-                throw new CommandFailedException("The new episode order didn't apply to {0} episode files, so no files were renamed", notAppliedCount);
+                Restore(series.Id, previousSeasonType, preview);
+
+                throw new CommandFailedException("Couldn't apply the new episode order to {0}, so it was put back on its previous order and no files were renamed", ex, series.Title);
             }
 
             if (!message.RenameFiles)
@@ -167,6 +174,73 @@ namespace NzbDrone.Core.Tv
 
             _logger.ProgressInfo("{0} episode files renamed for {1}", renamedCount, series.Title);
             _eventAggregator.PublishEvent(new RenameCompletedEvent());
+        }
+
+        private void Restore(int seriesId, string seasonType, EpisodeOrderPreview preview)
+        {
+            try
+            {
+                var series = _seriesService.GetSeries(seriesId);
+
+                if (series.SeasonType != seasonType)
+                {
+                    SaveSeasonType(series, seasonType);
+                }
+
+                // Matching by TVDB ID moves any renumbered episodes back with their files
+                Refresh(seriesId);
+
+                var notRestoredCount = CountNotApplied(seriesId, preview.Files, f => f.ExistingEpisodes);
+
+                if (notRestoredCount > 0)
+                {
+                    _logger.Error("{0} episode files of {1} still have the new episode numbers; refresh the series to finish restoring", notRestoredCount, series.Title);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Couldn't restore the previous episode order for series {0}; refresh it to finish restoring", seriesId);
+            }
+        }
+
+        private void SaveSeasonType(Series series, string seasonType)
+        {
+            series.SeasonType = seasonType;
+            _seriesService.UpdateSeries(series, updateEpisodesToMatchSeason: false, publishUpdatedEvent: false);
+        }
+
+        private void Refresh(int seriesId)
+        {
+            _refreshSeries.Execute(new RefreshSeriesCommand(new List<int> { seriesId }) { Trigger = CommandTrigger.Manual });
+        }
+
+        private int CountNotApplied(int seriesId, List<EpisodeOrderPreviewFile> files, Func<EpisodeOrderPreviewFile, List<EpisodeOrderPreviewEpisode>> expected)
+        {
+            var episodesByFile = _episodeService.GetEpisodeBySeries(seriesId).Where(e => e.EpisodeFileId > 0).ToLookup(e => e.EpisodeFileId);
+
+            return files.Count(f => !IsApplied(expected(f), episodesByFile[f.EpisodeFileId]));
+        }
+
+        private static string GetRefusal(EpisodeOrderPreview preview, string title)
+        {
+            if (preview.RefreshRequired)
+            {
+                return $"Refresh {title} first so its episodes have TVDB IDs";
+            }
+
+            if (preview.SceneNumberedEpisodes > 0 || preview.SceneSeasonTitles > 0)
+            {
+                return $"Releases for {title} are matched through XEM scene numbering and scene titles, which other episode orders turn off";
+            }
+
+            var unmatchedCount = preview.Files.Count(f => f.Status == EpisodeOrderPreviewFileStatus.Unmatched);
+
+            if (unmatchedCount > 0)
+            {
+                return $"{unmatchedCount} episode files belong to episodes that aren't in the new episode order";
+            }
+
+            return $"{preview.Files.Count(f => f.Status == EpisodeOrderPreviewFileStatus.Unnameable)} combined episode files can't be named for their episodes in the new episode order";
         }
 
         private int RenameFiles(Series series)
@@ -260,12 +334,64 @@ namespace NzbDrone.Core.Tv
             return false;
         }
 
-        private static bool IsApplied(EpisodeOrderPreviewFile file, IEnumerable<Episode> episodes)
+        private static bool IsApplied(List<EpisodeOrderPreviewEpisode> expected, IEnumerable<Episode> episodes)
         {
             var applied = episodes.Select(ToPreviewEpisode).OrderBy(e => e.SeasonNumber).ThenBy(e => e.EpisodeNumber).ToList();
 
-            return applied.Count == file.NewEpisodes.Count &&
-                   applied.Zip(file.NewEpisodes).All(p => p.First.SeasonNumber == p.Second.SeasonNumber && p.First.EpisodeNumber == p.Second.EpisodeNumber);
+            return applied.Count == expected.Count &&
+                   applied.Zip(expected).All(p => p.First.SeasonNumber == p.Second.SeasonNumber && p.First.EpisodeNumber == p.Second.EpisodeNumber);
+        }
+
+        private static EpisodeOrderPreviewFile ToPreviewFile(EpisodeFile file, List<Episode> newEpisodes, IEnumerable<EpisodeOrderPreviewEpisode> existingEpisodes, bool unmatched, RenameEpisodeFilePreview rename)
+        {
+            var newPath = unmatched ? null : rename?.NewPath ?? file.RelativePath;
+
+            return new EpisodeOrderPreviewFile
+            {
+                EpisodeFileId = file.Id,
+                ExistingPath = file.RelativePath,
+                NewPath = newPath,
+                ExistingEpisodes = existingEpisodes.OrderBy(e => e.SeasonNumber).ThenBy(e => e.EpisodeNumber).ToList(),
+                NewEpisodes = unmatched
+                    ? new List<EpisodeOrderPreviewEpisode>()
+                    : newEpisodes.Select(ToPreviewEpisode).OrderBy(e => e.SeasonNumber).ThenBy(e => e.EpisodeNumber).ToList(),
+                Status = unmatched ? EpisodeOrderPreviewFileStatus.Unmatched
+                    : !NameDescribesEpisodes(newPath, newEpisodes) ? EpisodeOrderPreviewFileStatus.Unnameable
+                    : rename != null ? EpisodeOrderPreviewFileStatus.Renamed
+                    : EpisodeOrderPreviewFileStatus.Unchanged
+            };
+        }
+
+        // Multi-episode styles write ranges and the first episode's season, so read the name back with the real parser
+        private static bool NameDescribesEpisodes(string relativePath, List<Episode> episodes)
+        {
+            if (episodes.Count < 2)
+            {
+                return true;
+            }
+
+            var parsed = Parser.Parser.ParsePath(relativePath);
+
+            if (parsed == null)
+            {
+                return false;
+            }
+
+            if (parsed.EpisodeNumbers.Any())
+            {
+                return episodes.All(e => e.SeasonNumber == parsed.SeasonNumber) &&
+                       parsed.EpisodeNumbers.Order().SequenceEqual(episodes.Select(e => e.EpisodeNumber).Order());
+            }
+
+            return parsed.AbsoluteEpisodeNumbers.Any() &&
+                   episodes.All(e => e.AbsoluteEpisodeNumber.HasValue) &&
+                   parsed.AbsoluteEpisodeNumbers.Order().SequenceEqual(episodes.Select(e => e.AbsoluteEpisodeNumber.Value).Order());
+        }
+
+        private static bool IsSceneRenumbered(Episode episode)
+        {
+            return (episode.SceneSeasonNumber.HasValue && (episode.SceneSeasonNumber != episode.SeasonNumber || episode.SceneEpisodeNumber != episode.EpisodeNumber)) ||
+                   (episode.SceneAbsoluteEpisodeNumber.HasValue && episode.SceneAbsoluteEpisodeNumber != episode.AbsoluteEpisodeNumber);
         }
 
         private static EpisodeOrderPreviewEpisode ToPreviewEpisode(Episode episode)

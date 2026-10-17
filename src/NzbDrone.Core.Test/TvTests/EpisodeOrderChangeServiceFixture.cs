@@ -1,11 +1,14 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using FluentAssertions;
 using Moq;
 using NUnit.Framework;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Extensions;
+using NzbDrone.Core.CustomFormats;
+using NzbDrone.Core.DataAugmentation.Scene;
 using NzbDrone.Core.Exceptions;
 using NzbDrone.Core.Languages;
 using NzbDrone.Core.MediaFiles;
@@ -13,6 +16,8 @@ using NzbDrone.Core.MediaFiles.Events;
 using NzbDrone.Core.Messaging.Commands;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.MetadataSource;
+using NzbDrone.Core.Organizer;
+using NzbDrone.Core.Qualities;
 using NzbDrone.Core.Test.Framework;
 using NzbDrone.Core.Tv;
 using NzbDrone.Core.Tv.Commands;
@@ -101,6 +106,10 @@ namespace NzbDrone.Core.Test.TvTests
             Mocker.GetMock<IExecute<RefreshSeriesCommand>>()
                   .Setup(s => s.Execute(It.IsAny<RefreshSeriesCommand>()))
                   .Callback(ApplyRemoteNumbering);
+
+            Mocker.GetMock<ISceneMappingService>()
+                  .Setup(s => s.FindByTvdbId(It.IsAny<int>()))
+                  .Returns(new List<SceneMapping>());
         }
 
         private List<RenameEpisodeFilePreview> BuildPreviews(List<Episode> episodes, List<EpisodeFile> files)
@@ -372,17 +381,6 @@ namespace NzbDrone.Core.Test.TvTests
         }
 
         [Test]
-        public void should_not_rename_when_the_new_order_did_not_apply()
-        {
-            Mocker.GetMock<IExecute<RefreshSeriesCommand>>()
-                  .Setup(s => s.Execute(It.IsAny<RefreshSeriesCommand>()));
-
-            Assert.Throws<CommandFailedException>(() => Execute());
-
-            Mocker.GetMock<IRenameEpisodeFileService>().Verify(s => s.RenameFiles(It.IsAny<List<EpisodeFile>>(), It.IsAny<Series>()), Times.Never());
-        }
-
-        [Test]
         public void should_not_rename_when_rename_files_is_off()
         {
             Execute(renameFiles: false);
@@ -416,6 +414,245 @@ namespace NzbDrone.Core.Test.TvTests
 
             Mocker.GetMock<IRenameEpisodeFileService>().Verify(s => s.RenameFiles(It.IsAny<List<EpisodeFile>>(), It.IsAny<Series>()), Times.Once());
             ExceptionVerification.ExpectedWarns(1);
+        }
+
+        private Series SeriesInfo()
+        {
+            return new Series
+            {
+                TvdbId = 1000,
+                Title = "Show",
+                Seasons = new List<Season> { new Season { SeasonNumber = 1 }, new Season { SeasonNumber = 2 } },
+                SeasonTypes = _series.SeasonTypes
+            };
+        }
+
+        private void GivenPersistedSeries()
+        {
+            Mocker.GetMock<ISeriesService>()
+                  .Setup(s => s.UpdateSeries(It.IsAny<Series>(), It.IsAny<bool>(), It.IsAny<bool>()))
+                  .Returns<Series, bool, bool>((series, updateEpisodes, publish) =>
+                  {
+                      _series.SeasonType = series.SeasonType;
+                      return series;
+                  });
+        }
+
+        private void GivenRealNaming()
+        {
+            var naming = NamingConfig.Default;
+            naming.RenameEpisodes = true;
+            naming.StandardEpisodeFormat = "{Series Title} - S{season:00}E{episode:00}";
+            naming.MultiEpisodeStyle = MultiEpisodeStyle.PrefixedRange;
+            naming.SeasonFolderFormat = "Season {season}";
+
+            Mocker.GetMock<INamingConfigService>().Setup(c => c.GetConfig()).Returns(naming);
+            Mocker.GetMock<IQualityDefinitionService>()
+                  .Setup(v => v.Get(It.IsAny<Quality>()))
+                  .Returns<Quality>(v => Quality.DefaultQualityDefinitions.First(c => c.Quality == v));
+            Mocker.GetMock<ICustomFormatService>().Setup(v => v.All()).Returns(new List<CustomFormat>());
+
+            Mocker.SetConstant<IBuildFileNames>(Mocker.Resolve<FileNameBuilder>());
+            Mocker.SetConstant<IRenameEpisodeFileService>(Mocker.Resolve<RenameEpisodeFileService>());
+
+            _series.SeasonFolder = true;
+        }
+
+        private void GivenCombinedFile()
+        {
+            _episodes[1].EpisodeFileId = 11;
+            _files.RemoveAll(f => f.Id == 12);
+            _files[0].RelativePath = "Season 1/Show - S01E01-E02.mkv";
+            _files[0].Quality = new QualityModel(Quality.HDTV720p);
+        }
+
+        [Test]
+        public void should_refuse_a_combined_file_whose_episodes_become_gapped()
+        {
+            GivenRealNaming();
+            GivenCombinedFile();
+            _remoteEpisodes = new List<Episode>
+            {
+                new Episode { TvdbId = 101, SeasonNumber = 1, EpisodeNumber = 1, Title = "A" },
+                new Episode { TvdbId = 103, SeasonNumber = 1, EpisodeNumber = 2, Title = "C" },
+                new Episode { TvdbId = 102, SeasonNumber = 1, EpisodeNumber = 3, Title = "B" }
+            };
+
+            var preview = Subject.Preview(1, "dvd");
+
+            PreviewFile(preview, 11).Status.Should().Be(EpisodeOrderPreviewFileStatus.Unnameable);
+            preview.CanChange.Should().BeFalse();
+        }
+
+        [Test]
+        public void should_refuse_a_combined_file_whose_episodes_split_across_seasons()
+        {
+            GivenRealNaming();
+            GivenCombinedFile();
+            _remoteEpisodes = new List<Episode>
+            {
+                new Episode { TvdbId = 101, SeasonNumber = 1, EpisodeNumber = 1, Title = "A" },
+                new Episode { TvdbId = 102, SeasonNumber = 2, EpisodeNumber = 3, Title = "B" },
+                new Episode { TvdbId = 103, SeasonNumber = 1, EpisodeNumber = 2, Title = "C" }
+            };
+
+            var preview = Subject.Preview(1, "dvd");
+
+            PreviewFile(preview, 11).Status.Should().Be(EpisodeOrderPreviewFileStatus.Unnameable);
+            preview.CanChange.Should().BeFalse();
+        }
+
+        [Test]
+        public void should_refuse_a_combined_file_whose_episode_numbers_stay_consecutive_across_seasons()
+        {
+            GivenRealNaming();
+            GivenCombinedFile();
+            _remoteEpisodes = new List<Episode>
+            {
+                new Episode { TvdbId = 101, SeasonNumber = 1, EpisodeNumber = 5, Title = "A" },
+                new Episode { TvdbId = 102, SeasonNumber = 2, EpisodeNumber = 6, Title = "B" },
+                new Episode { TvdbId = 103, SeasonNumber = 1, EpisodeNumber = 1, Title = "C" }
+            };
+
+            var preview = Subject.Preview(1, "dvd");
+
+            PreviewFile(preview, 11).Status.Should().Be(EpisodeOrderPreviewFileStatus.Unnameable);
+        }
+
+        [Test]
+        public void should_rename_a_combined_file_whose_episodes_stay_consecutive()
+        {
+            GivenRealNaming();
+            GivenCombinedFile();
+            _remoteEpisodes = new List<Episode>
+            {
+                new Episode { TvdbId = 101, SeasonNumber = 1, EpisodeNumber = 5, Title = "A" },
+                new Episode { TvdbId = 102, SeasonNumber = 1, EpisodeNumber = 6, Title = "B" },
+                new Episode { TvdbId = 103, SeasonNumber = 1, EpisodeNumber = 1, Title = "C" }
+            };
+
+            var preview = Subject.Preview(1, "dvd");
+
+            var file = PreviewFile(preview, 11);
+            file.Status.Should().Be(EpisodeOrderPreviewFileStatus.Renamed);
+            file.NewPath.Should().Be("Season 1/Show - S01E05-E06.mkv");
+            preview.CanChange.Should().BeTrue();
+        }
+
+        [Test]
+        public void should_refuse_to_change_the_order_when_a_combined_file_cannot_be_named()
+        {
+            GivenRealNaming();
+            GivenCombinedFile();
+            _remoteEpisodes[0].EpisodeNumber = 4;
+
+            Assert.Throws<CommandFailedException>(() => Execute());
+
+            Mocker.GetMock<ISeriesService>().Verify(s => s.UpdateSeries(It.IsAny<Series>(), It.IsAny<bool>(), It.IsAny<bool>()), Times.Never());
+        }
+
+        [Test]
+        public void should_restore_the_previous_order_when_the_refresh_fails_after_the_preview()
+        {
+            GivenPersistedSeries();
+            Mocker.SetConstant<IExecute<RefreshSeriesCommand>>(Mocker.Resolve<RefreshSeriesService>());
+
+            var airedEpisodes = _episodes.Select(e => new Episode { TvdbId = e.TvdbId, SeasonNumber = e.SeasonNumber, EpisodeNumber = e.EpisodeNumber, Title = e.Title }).ToList();
+            var dvdFetches = 0;
+
+            Mocker.GetMock<IProvideSeriesInfo>()
+                  .Setup(s => s.GetSeriesInfo(1000, It.IsAny<Language>(), "dvd"))
+                  .Returns(() => ++dvdFetches == 1 ? Tuple.Create(SeriesInfo(), _remoteEpisodes.JsonClone()) : throw new IOException("metadata unavailable after preview"));
+
+            Mocker.GetMock<IProvideSeriesInfo>()
+                  .Setup(s => s.GetSeriesInfo(1000, It.IsAny<Language>(), SeasonType.Official))
+                  .Returns(() => Tuple.Create(SeriesInfo(), airedEpisodes.JsonClone()));
+
+            Assert.Throws<CommandFailedException>(() => Execute());
+
+            dvdFetches.Should().Be(2);
+            _series.SeasonType.Should().Be(SeasonType.Official);
+            Mocker.GetMock<IRenameEpisodeFileService>().Verify(s => s.RenameFiles(It.IsAny<List<EpisodeFile>>(), It.IsAny<Series>()), Times.Never());
+            ExceptionVerification.ExpectedErrors(1);
+            ExceptionVerification.IgnoreWarns();
+        }
+
+        [Test]
+        public void should_restore_the_previous_order_when_the_new_order_did_not_apply()
+        {
+            GivenPersistedSeries();
+            Mocker.GetMock<IExecute<RefreshSeriesCommand>>()
+                  .Setup(s => s.Execute(It.IsAny<RefreshSeriesCommand>()));
+
+            Assert.Throws<CommandFailedException>(() => Execute());
+
+            _series.SeasonType.Should().Be(SeasonType.Official);
+            Mocker.GetMock<IExecute<RefreshSeriesCommand>>().Verify(s => s.Execute(It.IsAny<RefreshSeriesCommand>()), Times.Exactly(2));
+        }
+
+        [Test]
+        public void should_refuse_to_leave_aired_order_while_xem_renumbers_episodes()
+        {
+            _episodes[0].SceneSeasonNumber = 2;
+            _episodes[0].SceneEpisodeNumber = 1;
+
+            var preview = Subject.Preview(1, "dvd");
+
+            preview.SceneNumberedEpisodes.Should().Be(1);
+            preview.CanChange.Should().BeFalse();
+        }
+
+        [Test]
+        public void should_refuse_to_leave_aired_order_while_scene_titles_carry_seasons()
+        {
+            Mocker.GetMock<ISceneMappingService>()
+                  .Setup(s => s.FindByTvdbId(1000))
+                  .Returns(new List<SceneMapping> { new SceneMapping { Title = "Show Season One", SceneSeasonNumber = 1 } });
+
+            var preview = Subject.Preview(1, "dvd");
+
+            preview.SceneSeasonTitles.Should().Be(1);
+            preview.CanChange.Should().BeFalse();
+        }
+
+        [Test]
+        public void should_not_count_xem_numbering_that_matches_aired_order()
+        {
+            _episodes[0].SceneSeasonNumber = 1;
+            _episodes[0].SceneEpisodeNumber = 1;
+            Mocker.GetMock<ISceneMappingService>()
+                  .Setup(s => s.FindByTvdbId(1000))
+                  .Returns(new List<SceneMapping> { new SceneMapping { Title = "Show Alternate" } });
+
+            var preview = Subject.Preview(1, "dvd");
+
+            preview.SceneNumberedEpisodes.Should().Be(0);
+            preview.SceneSeasonTitles.Should().Be(0);
+            preview.CanChange.Should().BeTrue();
+        }
+
+        [Test]
+        public void should_allow_returning_to_aired_order_while_xem_renumbers_episodes()
+        {
+            _series.SeasonType = "dvd";
+            _episodes[0].SceneSeasonNumber = 2;
+            _episodes[0].SceneEpisodeNumber = 1;
+
+            var preview = Subject.Preview(1, SeasonType.Official);
+
+            preview.SceneNumberedEpisodes.Should().Be(0);
+            preview.CanChange.Should().BeTrue();
+        }
+
+        [Test]
+        public void should_refuse_to_change_the_order_while_xem_renumbers_episodes()
+        {
+            _episodes[0].SceneSeasonNumber = 2;
+            _episodes[0].SceneEpisodeNumber = 1;
+
+            Assert.Throws<CommandFailedException>(() => Execute()).Message.Should().Contain("XEM");
+
+            Mocker.GetMock<ISeriesService>().Verify(s => s.UpdateSeries(It.IsAny<Series>(), It.IsAny<bool>(), It.IsAny<bool>()), Times.Never());
         }
     }
 }

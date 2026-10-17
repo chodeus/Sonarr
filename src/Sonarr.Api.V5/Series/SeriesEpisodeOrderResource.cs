@@ -6,7 +6,10 @@ public class SeriesEpisodeOrderResource
 {
     public int SeriesId { get; set; }
     public string? SeasonType { get; set; }
+    public bool CanChange { get; set; }
     public bool RefreshRequired { get; set; }
+    public int SceneNumberedEpisodes { get; set; }
+    public int SceneSeasonTitles { get; set; }
     public bool HasAbsoluteEpisodeNumbers { get; set; }
     public int EpisodesAdded { get; set; }
     public int EpisodesRemoved { get; set; }
@@ -37,7 +40,10 @@ public static class SeriesEpisodeOrderResourceMapper
         {
             SeriesId = model.SeriesId,
             SeasonType = model.SeasonType,
+            CanChange = model.CanChange,
             RefreshRequired = model.RefreshRequired,
+            SceneNumberedEpisodes = model.SceneNumberedEpisodes,
+            SceneSeasonTitles = model.SceneSeasonTitles,
             HasAbsoluteEpisodeNumbers = model.HasAbsoluteEpisodeNumbers,
             EpisodesAdded = model.EpisodesAdded,
             EpisodesRemoved = model.EpisodesRemoved,
