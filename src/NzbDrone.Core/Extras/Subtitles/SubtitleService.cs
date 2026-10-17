@@ -13,6 +13,7 @@ using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MediaFiles.EpisodeImport;
 using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
+using NzbDrone.Core.Parser.TitleMatching;
 using NzbDrone.Core.Tv;
 
 namespace NzbDrone.Core.Extras.Subtitles
@@ -23,6 +24,7 @@ namespace NzbDrone.Core.Extras.Subtitles
         private readonly IDetectSample _detectSample;
         private readonly ISubtitleFileService _subtitleFileService;
         private readonly IMediaFileAttributeService _mediaFileAttributeService;
+        private readonly IEpisodeTitleMatcher _episodeTitleMatcher;
         private readonly Logger _logger;
 
         public SubtitleService(IConfigService configService,
@@ -31,6 +33,7 @@ namespace NzbDrone.Core.Extras.Subtitles
                                IDetectSample detectSample,
                                ISubtitleFileService subtitleFileService,
                                IMediaFileAttributeService mediaFileAttributeService,
+                               IEpisodeTitleMatcher episodeTitleMatcher,
                                Logger logger)
             : base(configService, diskProvider, diskTransferService, logger)
         {
@@ -38,6 +41,7 @@ namespace NzbDrone.Core.Extras.Subtitles
             _detectSample = detectSample;
             _subtitleFileService = subtitleFileService;
             _mediaFileAttributeService = mediaFileAttributeService;
+            _episodeTitleMatcher = episodeTitleMatcher;
             _logger = logger;
         }
 
@@ -132,8 +136,9 @@ namespace NzbDrone.Core.Extras.Subtitles
                         continue;
                     }
 
-                    // Season and episode match
+                    // Season and episode match, read as the import read the episode file
                     var fileEpisodeInfo = Parser.Parser.ParsePath(file) ?? new ParsedEpisodeInfo();
+                    fileEpisodeInfo = _episodeTitleMatcher.ParseEventTitle(fileEpisodeInfo, localEpisode.Series) ?? fileEpisodeInfo;
 
                     if (fileEpisodeInfo.EpisodeNumbers.Length == 0)
                     {

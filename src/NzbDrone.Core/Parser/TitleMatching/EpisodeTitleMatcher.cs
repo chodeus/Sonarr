@@ -7,6 +7,7 @@ using NLog;
 using NzbDrone.Common.Cache;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Languages;
+using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.Parser.Model;
 using NzbDrone.Core.Tags;
 using NzbDrone.Core.Tv;
@@ -15,10 +16,11 @@ namespace NzbDrone.Core.Parser.TitleMatching
 {
     public interface IEpisodeTitleMatcher
     {
+        // Null keeps the parsed numbers; a result without numbers means the release names no episode of the series
         ParsedEpisodeInfo ParseEventTitle(ParsedEpisodeInfo parsedEpisodeInfo, Series series);
     }
 
-    public class EpisodeTitleMatcher : IEpisodeTitleMatcher
+    public class EpisodeTitleMatcher : IEpisodeTitleMatcher, IHandle<TagsUpdatedEvent>
     {
         public const string TagLabel = "title-match";
 
@@ -26,6 +28,11 @@ namespace NzbDrone.Core.Parser.TitleMatching
         private static readonly Regex RoundRegex = new(@"\b(?:round ?|r)(?<round>\d{1,2})\b", RegexOptions.Compiled);
         private static readonly Regex GenericEventWords = new(@"\b(?:grand prix|gp|formula 1|formula1|f1)\b|\b(?:19|20)\d{2}\b", RegexOptions.Compiled);
         private static readonly Regex Spaces = new(@"\s+", RegexOptions.Compiled);
+        private static readonly Regex ExplicitEpisodeNumbering = new(@"\bs\d{1,4} ?e\d{1,4}\b", RegexOptions.Compiled);
+        private static readonly HashSet<string> LanguagePlaceNames = TitleMatchVocabulary.Places
+            .SelectMany(p => p)
+            .Where(n => LanguageParser.ParseLanguages(n).Any(l => l != Language.Unknown))
+            .ToHashSet();
         private static readonly TimeSpan WeekendGap = TimeSpan.FromDays(5);
 
         private readonly IEpisodeService _episodeService;
@@ -51,19 +58,46 @@ namespace NzbDrone.Core.Parser.TitleMatching
                 return null;
             }
 
-            var release = TitleMatchVocabulary.Normalize(parsedEpisodeInfo.ReleaseTitle);
-            var episode = FindEpisode(series, release);
-
-            if (episode == null)
+            // A special found by its TheTVDB title already names its episode
+            if (parsedEpisodeInfo.Special && parsedEpisodeInfo.SeasonNumber == 0)
             {
                 return null;
             }
 
+            var release = TitleMatchVocabulary.Normalize(parsedEpisodeInfo.ReleaseTitle);
+            var episode = FindEpisode(series, release, out var weekend);
+
+            if (episode == null)
+            {
+                // "S2026E94" is TheTVDB's numbering, as in Sonarr's own file names; in "2026x17" the 17 is the round
+                if (ExplicitEpisodeNumbering.IsMatch(release))
+                {
+                    return null;
+                }
+
+                _logger.Debug("'{0}' names no event of {1}, so it isn't mapped", parsedEpisodeInfo.ReleaseTitle, series.Title);
+
+                return WithNumbers(parsedEpisodeInfo, [], []);
+            }
+
             _logger.Debug("Matched '{0}' to {1}x{2:00} '{3}' by title", parsedEpisodeInfo.ReleaseTitle, episode.SeasonNumber, episode.EpisodeNumber, episode.Title);
 
+            var eventEpisodeInfo = WithNumbers(parsedEpisodeInfo, [episode.SeasonNumber], [episode.EpisodeNumber]);
+            eventEpisodeInfo.Languages = WithoutEventLanguages(parsedEpisodeInfo.Languages, release, weekend.Names);
+
+            return eventEpisodeInfo;
+        }
+
+        public void Handle(TagsUpdatedEvent message)
+        {
+            _tagCache.Clear();
+        }
+
+        private static ParsedEpisodeInfo WithNumbers(ParsedEpisodeInfo parsedEpisodeInfo, List<int> seasonNumbers, int[] episodeNumbers)
+        {
             var eventEpisodeInfo = parsedEpisodeInfo.JsonClone();
-            eventEpisodeInfo.SeasonNumbers = [episode.SeasonNumber];
-            eventEpisodeInfo.EpisodeNumbers = [episode.EpisodeNumber];
+            eventEpisodeInfo.SeasonNumbers = seasonNumbers;
+            eventEpisodeInfo.EpisodeNumbers = episodeNumbers;
             eventEpisodeInfo.AbsoluteEpisodeNumbers = [];
             eventEpisodeInfo.SpecialAbsoluteEpisodeNumbers = [];
             eventEpisodeInfo.AirDate = null;
@@ -76,13 +110,14 @@ namespace NzbDrone.Core.Parser.TitleMatching
             eventEpisodeInfo.IsMiniSeries = false;
             eventEpisodeInfo.SeasonPart = 0;
             eventEpisodeInfo.Special = false;
-            eventEpisodeInfo.Languages = WithoutEventLanguages(parsedEpisodeInfo.Languages, release);
 
             return eventEpisodeInfo;
         }
 
-        private Episode FindEpisode(Series series, string release)
+        private Episode FindEpisode(Series series, string release, out Weekend weekend)
         {
+            weekend = null;
+
             if (!IsSingleEvent(release, TitleMatchVocabulary.Normalize(series.Title)))
             {
                 return null;
@@ -90,13 +125,14 @@ namespace NzbDrone.Core.Parser.TitleMatching
 
             var releaseSession = ParseSession(release, out _, out var sessionCount);
 
-            if (sessionCount > 1)
+            // With no session word the release is the race only when it names the grand prix; otherwise it's an unlisted programme
+            if (sessionCount > 1 || (releaseSession == null && !TitleMatchVocabulary.GrandPrix.IsMatch(release)))
             {
                 return null;
             }
 
             var weekends = FindWeekends(series, release, out var round);
-            var matchedWeekends = weekends.Where(w => w.Names.Any(n => TitleMatchVocabulary.ContainsPhrase(release, n))).ToList();
+            var matchedWeekends = weekends.Where(w => w.Names.Any(n => MentionsPlace(release, n))).ToList();
 
             if (round.HasValue)
             {
@@ -120,8 +156,8 @@ namespace NzbDrone.Core.Parser.TitleMatching
                 return null;
             }
 
-            var weekend = matchedWeekends.Single();
-            var matches = weekend.Events.Where(e => SessionMatches(releaseSession, e, weekend)).ToList();
+            var matchedWeekend = matchedWeekends.Single();
+            var matches = matchedWeekend.Events.Where(e => SessionMatches(releaseSession, e, matchedWeekend)).ToList();
 
             if (matches.Count != 1)
             {
@@ -137,16 +173,24 @@ namespace NzbDrone.Core.Parser.TitleMatching
                 return null;
             }
 
+            weekend = matchedWeekend;
+
             return episode;
         }
 
-        // "Italian" in "Italian Grand Prix" names the event, not the audio, unless the release names it again.
-        private static List<Language> WithoutEventLanguages(List<Language> languages, string release)
+        // A place name that is also a language ("italian") names the event only before "grand prix"; elsewhere it's the audio
+        private static bool MentionsPlace(string release, string name)
         {
-            var placeNames = TitleMatchVocabulary.Places
-                .SelectMany(p => p)
-                .Where(n => TitleMatchVocabulary.ContainsPhrase(release, n))
-                .ToList();
+            return TitleMatchVocabulary.ContainsPhrase(release, name) &&
+                   (!LanguagePlaceNames.Contains(name) ||
+                    TitleMatchVocabulary.ContainsPhrase(release, $"{name} grand prix") ||
+                    TitleMatchVocabulary.ContainsPhrase(release, $"{name} gp"));
+        }
+
+        // "Italian" in "Italian Grand Prix" names the event, not the audio, unless the release names it again.
+        private static List<Language> WithoutEventLanguages(List<Language> languages, string release, string[] eventNames)
+        {
+            var placeNames = eventNames.Where(n => MentionsPlace(release, n)).ToList();
 
             // Only the first mention is the event; a second one is the release naming its language.
             var withoutPlaceNames = placeNames.Aggregate($" {release} ", (title, name) =>

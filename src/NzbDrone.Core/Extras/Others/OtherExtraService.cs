@@ -10,6 +10,7 @@ using NzbDrone.Core.Configuration;
 using NzbDrone.Core.Extras.Files;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.Parser.Model;
+using NzbDrone.Core.Parser.TitleMatching;
 using NzbDrone.Core.Tv;
 
 namespace NzbDrone.Core.Extras.Others
@@ -19,6 +20,7 @@ namespace NzbDrone.Core.Extras.Others
         private readonly IDiskProvider _diskProvider;
         private readonly IOtherExtraFileService _otherExtraFileService;
         private readonly IMediaFileAttributeService _mediaFileAttributeService;
+        private readonly IEpisodeTitleMatcher _episodeTitleMatcher;
         private readonly Logger _logger;
 
         public OtherExtraService(IConfigService configService,
@@ -26,12 +28,14 @@ namespace NzbDrone.Core.Extras.Others
                                  IDiskTransferService diskTransferService,
                                  IOtherExtraFileService otherExtraFileService,
                                  IMediaFileAttributeService mediaFileAttributeService,
+                                 IEpisodeTitleMatcher episodeTitleMatcher,
                                  Logger logger)
             : base(configService, diskProvider, diskTransferService, logger)
         {
             _diskProvider = diskProvider;
             _otherExtraFileService = otherExtraFileService;
             _mediaFileAttributeService = mediaFileAttributeService;
+            _episodeTitleMatcher = episodeTitleMatcher;
             _logger = logger;
         }
 
@@ -119,8 +123,9 @@ namespace NzbDrone.Core.Extras.Others
                         continue;
                     }
 
-                    // Season and episode match
+                    // Season and episode match, read as the import read the episode file
                     var fileEpisodeInfo = Parser.Parser.ParsePath(file) ?? new ParsedEpisodeInfo();
+                    fileEpisodeInfo = _episodeTitleMatcher.ParseEventTitle(fileEpisodeInfo, localEpisode.Series) ?? fileEpisodeInfo;
 
                     if (fileEpisodeInfo.EpisodeNumbers.Length == 0)
                     {

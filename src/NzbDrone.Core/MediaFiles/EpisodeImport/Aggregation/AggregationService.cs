@@ -9,6 +9,8 @@ using NzbDrone.Core.Download;
 using NzbDrone.Core.MediaFiles.EpisodeImport.Aggregation.Aggregators;
 using NzbDrone.Core.MediaFiles.MediaInfo;
 using NzbDrone.Core.Parser.Model;
+using NzbDrone.Core.Parser.TitleMatching;
+using NzbDrone.Core.Tv;
 
 namespace NzbDrone.Core.MediaFiles.EpisodeImport.Aggregation
 {
@@ -23,18 +25,21 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Aggregation
         private readonly IDiskProvider _diskProvider;
         private readonly IVideoFileInfoReader _videoFileInfoReader;
         private readonly IConfigService _configService;
+        private readonly IEpisodeTitleMatcher _episodeTitleMatcher;
         private readonly Logger _logger;
 
         public AggregationService(IEnumerable<IAggregateLocalEpisode> augmenters,
                                  IDiskProvider diskProvider,
                                  IVideoFileInfoReader videoFileInfoReader,
                                  IConfigService configService,
+                                 IEpisodeTitleMatcher episodeTitleMatcher,
                                  Logger logger)
         {
             _augmenters = augmenters.OrderBy(a => a.Order).ToList();
             _diskProvider = diskProvider;
             _videoFileInfoReader = videoFileInfoReader;
             _configService = configService;
+            _episodeTitleMatcher = episodeTitleMatcher;
             _logger = logger;
         }
 
@@ -54,6 +59,11 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Aggregation
 
             localEpisode.Size = _diskProvider.GetFileSize(localEpisode.Path);
             localEpisode.SceneName = localEpisode.SceneSource ? SceneNameCalculator.GetSceneName(localEpisode) : null;
+
+            // After the scene name, which reads FullSeason; the aggregators and import checks then all see the event's numbers and languages
+            localEpisode.FileEpisodeInfo = ParseEventTitle(localEpisode.FileEpisodeInfo, localEpisode.Series);
+            localEpisode.FolderEpisodeInfo = ParseEventTitle(localEpisode.FolderEpisodeInfo, localEpisode.Series);
+            localEpisode.DownloadClientEpisodeInfo = ParseEventTitle(localEpisode.DownloadClientEpisodeInfo, localEpisode.Series);
 
             if (isMediaFile && (!localEpisode.ExistingFile || _configService.EnableMediaInfo))
             {
@@ -75,6 +85,11 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Aggregation
             }
 
             return localEpisode;
+        }
+
+        private ParsedEpisodeInfo ParseEventTitle(ParsedEpisodeInfo parsedEpisodeInfo, Series series)
+        {
+            return _episodeTitleMatcher.ParseEventTitle(parsedEpisodeInfo, series) ?? parsedEpisodeInfo;
         }
     }
 }

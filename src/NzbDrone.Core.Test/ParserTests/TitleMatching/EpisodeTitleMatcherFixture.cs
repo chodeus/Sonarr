@@ -22,7 +22,7 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         private const int TitleMatchTagId = 7;
 
         // TheTVDB's 2026 Formula 1 season as published.
-        private static readonly (int Number, string AirDate, string Title)[] Season2026 =
+        internal static readonly (int Number, string AirDate, string Title)[] Season2026 =
         {
             (1, "2026-02-11", "Bahrain Pre-Season Testing 1 - Day 1"),
             (2, "2026-02-12", "Bahrain Pre-Season Testing 1 - Day 2"),
@@ -194,6 +194,7 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         [TestCase("Formula1.2026.Round17.Singapore.Race.F1LIVE.F1TV.WEB-DL.1080p.H264.English-MWR", 94)]
         [TestCase("Formula1.2026.Round05.Canada.Sprint.F1LIVE.F1TV.WEB-DL.1080p.H264.English-MWR", 32)]
         [TestCase("Formula1.2026.Round05.Canada.Sprint.Qualifying.F1TV.WEB-DL.2160p.HLG.h265.Multi-MWR", 31)]
+        [TestCase("Formula1.2026.Canadian.Grand.Prix.Sprint.Qualification.1080p.WEB.H.264-BILLIE", 31)]
         [TestCase("Formula1.2026.Canadian.Grand.Prix.1080p.WEB.H.264-BILLIE", 34)]
         [TestCase("Formula1.2026.Round06.Monaco.Qualifying.F1TV.WEB-DL.1080p.H264.English-MWR", 38)]
         [TestCase("Formula1.2026.Round07.Spain.Barcelona.FP2.F1TV.WEB-DL.1080p.H264.English-MWR", 41)]
@@ -207,7 +208,7 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         [TestCase("Formula1.2026.Round16.Bahrain.Race.F1LIVE.F1TV.WEB-DL.1080p.H264.English-MWR", 89)]
         [TestCase("Formula1.2026.Singapore.Grand.Prix.Practice.One.PROPER.1080p.WEB.H.264-BILLIE", 90)]
         [TestCase("Formula.1.2026x17.Singapore.Qualifying.SkyF1HD.1080p", 93)]
-        [TestCase("Sky Sports _ Formula1_2026_Singapore_Grand_Prix_UNCUT_1080p_AHDTV_x264-DARKSPORT", 94)]
+        [TestCase("Formula1.2026.Singapore.Grand.Prix.Qualification.1080p.WEB.H.264-BILLIE", 93)]
         public void should_match_release_to_episode_by_title(string title, int episodeNumber)
         {
             var eventEpisodeInfo = Subject.ParseEventTitle(Parse(title), _series);
@@ -230,16 +231,44 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         [TestCase("Formula1.2026.Singapore.Qualifying.And.Race.1080p.WEB.H.264-BILLIE")]
         [TestCase("Formula1.2026.Barcelona.Grand.Prix.Practice.1080p.WEB.H.264-BILLIE")]
         [TestCase("Formula1.2026.Grand.Prix.Race.1080p.WEB.H.264-BILLIE")]
-        [TestCase("Formula1.S2026E89.1080p.ANTP.WEB-DL.AAC2.0.H.264-PlayWEB")]
         [TestCase("Formula1.2026.Singapore.Grand.Prix.FP3.1080p.WEB.H.264-BILLIE")]
         [TestCase("Formula1.2026.Singapore.Grand.Prix.Practice.4.1080p.WEB.H.264-BILLIE")]
         [TestCase("Formula1.2026.Hungarian.Grand.Prix.Race.4.1080p.WEB.H.264-BILLIE")]
         [TestCase("Formula1.2026.Singapore.Grand.Prix.Weekend.1080p.WEB.H.264-BILLIE")]
         [TestCase("Formula1.2025.2026.Singapore.Grand.Prix.1080p.WEB.H.264-BILLIE")]
         [TestCase("Formula1.2026.Singapore.Grand.Prix.2025.Rerun.1080p.WEB.H.264-BILLIE")]
-        public void should_not_match_release(string title)
+        [TestCase("Formula1.2026.Round17.Singapore.Tech.Talk.F1TV.WEB-DL.1080p.H264.English-MWR")]
+        [TestCase("Formula1.2026.Round17.Singapore.Grid.Walk.F1TV.WEB-DL.1080p.H264.English-MWR")]
+        [TestCase("Formula.1.2026x17.Singapore.Press.Conference.SkyF1HD.1080p")]
+        [TestCase("Formula.1.2026.Gran.Premio.del.Belgio.Gara.ITALIAN.1080p.WEB.H264-GRP")]
+        [TestCase("Formula1.S2026.1080p.WEB.H.264-GRP")]
+        [TestCase("Formula1.2026.Qualifying.ITALIAN.1080p.WEB.H264-GRP")]
+        public void should_map_no_episode_when_release_names_no_event(string title)
+        {
+            ShouldMapNoEpisode(Subject.ParseEventTitle(Parse(title), _series));
+        }
+
+        [TestCase("Formula1.S2026E89.1080p.ANTP.WEB-DL.AAC2.0.H.264-PlayWEB")]
+        [TestCase("Formula 1 - S2026E94 - Singapore (Race) WEBDL-1080p")]
+        public void should_keep_explicit_episode_numbers(string title)
         {
             Subject.ParseEventTitle(Parse(title), _series).Should().BeNull();
+        }
+
+        [Test]
+        public void should_keep_special_found_by_its_title()
+        {
+            var special = new ParsedEpisodeInfo
+            {
+                ReleaseTitle = "Formula1.2026.The.Last.Lap.1080p.WEB.H264-GRP",
+                SeriesTitle = _series.Title,
+                SeasonNumber = 0,
+                EpisodeNumbers = new[] { 5 },
+                Languages = new List<Language> { Language.English },
+                Special = true
+            };
+
+            Subject.ParseEventTitle(special, _series).Should().BeNull();
         }
 
         [Test]
@@ -262,14 +291,14 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         }
 
         [Test]
-        public void should_not_match_event_that_has_not_aired()
+        public void should_map_no_episode_for_event_that_has_not_aired()
         {
             // Moves the whole weekend, so it stays one weekend.
             var singapore = _episodes.Where(e => e.EpisodeNumber >= 90 && e.EpisodeNumber <= 94).ToList();
             var shift = DateTime.UtcNow.AddDays(7) - singapore.Max(e => e.AirDateUtc.Value);
             singapore.ForEach(e => e.AirDateUtc += shift);
 
-            Subject.ParseEventTitle(Parse("Formula1.2026.Singapore.Grand.Prix.1080p.WEB.H.264-BILLIE"), _series).Should().BeNull();
+            ShouldMapNoEpisode(Subject.ParseEventTitle(Parse("Formula1.2026.Singapore.Grand.Prix.1080p.WEB.H.264-BILLIE"), _series));
         }
 
         [TestCase("Formula1.2026.Italian.Grand.Prix.1080p.WEB.H.264-BILLIE")]
@@ -299,7 +328,20 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
 
         private static ParsedEpisodeInfo Parse(string title)
         {
-            return Parser.Parser.ParseTitle(title) ?? new ParsedEpisodeInfo { ReleaseTitle = title, Languages = [Language.Unknown] };
+            var parsedEpisodeInfo = Parser.Parser.ParseTitle(title);
+            parsedEpisodeInfo.Should().NotBeNull("the matcher only sees titles the parser accepts");
+
+            return parsedEpisodeInfo;
+        }
+
+        private static void ShouldMapNoEpisode(ParsedEpisodeInfo eventEpisodeInfo)
+        {
+            eventEpisodeInfo.Should().NotBeNull();
+            eventEpisodeInfo.SeasonNumbers.Should().BeEmpty();
+            eventEpisodeInfo.EpisodeNumbers.Should().BeEmpty();
+            eventEpisodeInfo.AbsoluteEpisodeNumbers.Should().BeEmpty();
+            eventEpisodeInfo.FullSeason.Should().BeFalse();
+            eventEpisodeInfo.AirDate.Should().BeNull();
         }
     }
 }

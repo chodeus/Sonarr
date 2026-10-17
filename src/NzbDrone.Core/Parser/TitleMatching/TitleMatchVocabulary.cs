@@ -43,9 +43,9 @@ namespace NzbDrone.Core.Parser.TitleMatching
         // Most specific first: each match is removed before the next pattern runs.
         public static readonly IReadOnlyList<(string Session, Regex Pattern)> Sessions = new List<(string, Regex)>
         {
-            ("sprint qualifying", Pattern(@"\bsprint (?:qualifying|quali|shootout)\b|\bshootout\b")),
+            ("sprint qualifying", Pattern(@"\bsprint (?:qualifying|qualification|quali|shootout)\b|\bshootout\b")),
             ("sprint", Pattern(@"\bsprint(?: race)?\b")),
-            ("qualifying", Pattern(@"\b(?:qualifying|quali)\b")),
+            ("qualifying", Pattern(@"\b(?:qualifying|qualification|quali)\b")),
             ("practice {0}", Pattern(@"\b(?:free )?practice (?<number>[1-3])\b|\bfp(?<number>[1-3])\b")),
 
             // Matches no episode, so "Practice 4" can't fall through to a plain practice or race.
@@ -60,6 +60,8 @@ namespace NzbDrone.Core.Parser.TitleMatching
         public static readonly IReadOnlyList<string> MainSessions = new[] { "race" };
 
         public static readonly Regex Testing = Pattern(@"\b(?:testing|test|shakedown)\b");
+
+        public static readonly Regex GrandPrix = Pattern(@"\b(?:grand prix|gp)\b");
 
         public static readonly IReadOnlyList<string> NonEventWords = new[]
         {
