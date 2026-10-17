@@ -20,6 +20,8 @@ namespace NzbDrone.Core.MediaFiles
         List<RenameEpisodeFilePreview> GetRenamePreviews(int seriesId);
         List<RenameEpisodeFilePreview> GetRenamePreviews(int seriesId, int seasonNumber);
         List<RenameEpisodeFilePreview> GetRenamePreviews(List<int> seriesIds);
+        List<RenameEpisodeFilePreview> GetRenamePreviews(Series series, List<Episode> episodes, List<EpisodeFile> files);
+        List<RenamedEpisodeFile> RenameFiles(List<EpisodeFile> episodeFiles, Series series);
     }
 
     public class RenameEpisodeFileService : IRenameEpisodeFileService,
@@ -95,6 +97,11 @@ namespace NzbDrone.Core.MediaFiles
                 .ToList();
         }
 
+        public List<RenameEpisodeFilePreview> GetRenamePreviews(Series series, List<Episode> episodes, List<EpisodeFile> files)
+        {
+            return GetPreviews(series, episodes, files).ToList();
+        }
+
         private IEnumerable<RenameEpisodeFilePreview> GetPreviews(Series series, List<Episode> episodes, List<EpisodeFile> files)
         {
             foreach (var f in files)
@@ -127,7 +134,7 @@ namespace NzbDrone.Core.MediaFiles
             }
         }
 
-        private List<RenamedEpisodeFile> RenameFiles(List<EpisodeFile> episodeFiles, Series series)
+        public List<RenamedEpisodeFile> RenameFiles(List<EpisodeFile> episodeFiles, Series series)
         {
             var renamed = new List<RenamedEpisodeFile>();
 
