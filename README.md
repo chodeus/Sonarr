@@ -6,10 +6,11 @@
 
 - **Title matching for event series** — branch [`feat/title-match`](https://github.com/chodeus/Sonarr/tree/feat/title-match), not submitted
   - For series tagged `title-match`, a release named by event instead of episode number, such as `Formula1.2026.Singapore.Grand.Prix` or `Formula1.2026.Round17.Singapore.Race`, is matched to the episode whose title names the same place and session.
-  - The year picks the season. Round numbers (`Round17`, `R17`, `2026x17`) pick the weekend and must agree with the place. A name with no session word is the race.
+  - The year picks the season. Round numbers (`Round17`, `R17`, `2026x17`) pick the weekend and must agree with the place. A name with no session word is the race only if it says "Grand Prix" or "GP".
+  - A release that names no event maps to no episode instead of the parser's numbers. Explicit `S2026E94` numbering, Sonarr's own file names and specials found by their title keep their episode.
   - Shows, press conferences, testing and sibling series are never matched, and anything ambiguous is left unmatched.
-  - A nationality that names the event, such as "Italian" in "Italian Grand Prix", no longer counts as the release's audio language.
-  - Applies to grabs, searches and imports. Series without the tag are unchanged.
+  - A nationality that names the event, such as "Italian" in "Italian Grand Prix", no longer counts as the audio language of the release or its imported file. A language word on its own, such as ITALIAN on another event, is the audio language.
+  - Applies to grabs, searches, imports, and pairing subtitles and extras. Series without the tag are unchanged.
 - **v3 release profiles on any indexer** — branch [`fix/v3-release-profile-any-indexer`](https://github.com/chodeus/Sonarr/tree/fix/v3-release-profile-any-indexer), not submitted
   - A v3 API save with `indexerId: 0` means any indexer again. Stock v5 stores it as `[0]`, which matches no indexer, so the profile's "Must not contain" terms and air-date restriction silently stop applying.
   - A v3 save that keeps the profile's first indexer keeps its full indexer list, and a profile already stored as `[0]` is repaired on its next v3 save with `indexerId: 0`.
