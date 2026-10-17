@@ -112,6 +112,35 @@ namespace NzbDrone.Core.Test.TvTests
         }
 
         [Test]
+        public void should_keep_files_with_their_episodes_when_tvdb_numbering_changes()
+        {
+            var existingEpisodes = GetEpisodes();
+            var first = existingEpisodes.Single(e => e.SeasonNumber == 1 && e.EpisodeNumber == 1);
+            var second = existingEpisodes.Single(e => e.SeasonNumber == 1 && e.EpisodeNumber == 2);
+            first.Id = 1;
+            first.EpisodeFileId = 10;
+            second.Id = 2;
+            second.EpisodeFileId = 20;
+
+            Mocker.GetMock<IEpisodeService>().Setup(c => c.GetEpisodeBySeries(It.IsAny<int>()))
+                .Returns(existingEpisodes);
+
+            var remoteEpisodes = GetEpisodes();
+            var remoteFirst = remoteEpisodes.Single(e => e.TvdbId == first.TvdbId);
+            var remoteSecond = remoteEpisodes.Single(e => e.TvdbId == second.TvdbId);
+            remoteFirst.EpisodeNumber = 2;
+            remoteSecond.EpisodeNumber = 1;
+
+            Subject.RefreshEpisodeInfo(GetSeries(), remoteEpisodes);
+
+            first.TvdbId.Should().BeGreaterThan(0);
+            _insertedEpisodes.Should().BeEmpty();
+            _deletedEpisodes.Should().BeEmpty();
+            _updatedEpisodes.Should().Contain(e => e.Id == 1 && e.EpisodeFileId == 10 && e.SeasonNumber == 1 && e.EpisodeNumber == 2);
+            _updatedEpisodes.Should().Contain(e => e.Id == 2 && e.EpisodeFileId == 20 && e.SeasonNumber == 1 && e.EpisodeNumber == 1);
+        }
+
+        [Test]
         public void should_delete_duplicated_episodes_based_on_season_episode_number()
         {
             var duplicateEpisodes = GetEpisodes().Skip(5).Take(2).ToList();

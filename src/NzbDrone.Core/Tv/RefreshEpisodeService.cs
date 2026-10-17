@@ -38,14 +38,9 @@ namespace NzbDrone.Core.Tv
 
             var updateList = new List<Episode>();
             var newList = new List<Episode>();
-            var dupeFreeRemoteEpisodes = remoteEpisodes.DistinctBy(m => new { m.SeasonNumber, m.EpisodeNumber }).ToList();
-
-            if (series.SeriesType == SeriesTypes.Anime)
-            {
-                dupeFreeRemoteEpisodes = MapAbsoluteEpisodeNumbers(dupeFreeRemoteEpisodes);
-            }
-
+            var dupeFreeRemoteEpisodes = RemoteEpisodeMatcher.Distinct(series, remoteEpisodes);
             var orderedEpisodes = OrderEpisodes(series, dupeFreeRemoteEpisodes).ToList();
+            var matches = RemoteEpisodeMatcher.Match(orderedEpisodes, existingEpisodes);
             var episodesPerSeason = orderedEpisodes.GroupBy(s => s.SeasonNumber).ToDictionary(g => g.Key, g => g.Count());
             var latestSeason = seasons.MaxBy(s => s.SeasonNumber);
 
@@ -53,7 +48,7 @@ namespace NzbDrone.Core.Tv
             {
                 try
                 {
-                    var episodeToUpdate = existingEpisodes.FirstOrDefault(e => e.SeasonNumber == episode.SeasonNumber && e.EpisodeNumber == episode.EpisodeNumber);
+                    var episodeToUpdate = matches.GetValueOrDefault(episode);
 
                     if (episodeToUpdate != null)
                     {
@@ -76,21 +71,7 @@ namespace NzbDrone.Core.Tv
                     }
 
                     episodeToUpdate.SeriesId = series.Id;
-                    episodeToUpdate.TvdbId = episode.TvdbId;
-                    episodeToUpdate.EpisodeNumber = episode.EpisodeNumber;
-                    episodeToUpdate.SeasonNumber = episode.SeasonNumber;
-                    episodeToUpdate.AbsoluteEpisodeNumber = episode.AbsoluteEpisodeNumber;
-                    episodeToUpdate.AiredAfterSeasonNumber = episode.AiredAfterSeasonNumber;
-                    episodeToUpdate.AiredBeforeSeasonNumber = episode.AiredBeforeSeasonNumber;
-                    episodeToUpdate.AiredBeforeEpisodeNumber = episode.AiredBeforeEpisodeNumber;
-                    episodeToUpdate.Title = episode.Title ?? "TBA";
-                    episodeToUpdate.Overview = episode.Overview;
-                    episodeToUpdate.AirDate = episode.AirDate;
-                    episodeToUpdate.AirDateUtc = episode.AirDateUtc;
-                    episodeToUpdate.Runtime = episode.Runtime;
-                    episodeToUpdate.FinaleType = episode.FinaleType;
-                    episodeToUpdate.Ratings = episode.Ratings;
-                    episodeToUpdate.Images = episode.Images;
+                    RemoteEpisodeMatcher.Apply(episodeToUpdate, episode);
 
                     // TheTVDB has a severe lack of season/series finales, this helps smooth out that limitation so they can be displayed in the UI
                     if (series.Status == SeriesStatusType.Ended &&
@@ -223,16 +204,6 @@ namespace NzbDrone.Core.Tv
                     episode.AirDate = series.FirstAired.Value.ToString("yyyy-MM-dd");
                 }
             }
-        }
-
-        private List<Episode> MapAbsoluteEpisodeNumbers(List<Episode> remoteEpisodes)
-        {
-            // Return all episodes with no abs number, but distinct for those with abs number
-            return remoteEpisodes.Where(e => e.AbsoluteEpisodeNumber.HasValue)
-                                 .OrderByDescending(e => e.SeasonNumber)
-                                 .DistinctBy(e => e.AbsoluteEpisodeNumber.Value)
-                                 .Concat(remoteEpisodes.Where(e => !e.AbsoluteEpisodeNumber.HasValue))
-                                 .ToList();
         }
 
         private IEnumerable<Episode> OrderEpisodes(Series series, List<Episode> episodes)
