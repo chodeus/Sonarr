@@ -1,7 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import SeriesMonitorNewItemsOptionsPopoverContent from 'AddSeries/SeriesMonitorNewItemsOptionsPopoverContent';
 import CommandNames from 'Commands/CommandNames';
-import { useExecuteCommand } from 'Commands/useCommands';
 import Form from 'Components/Form/Form';
 import FormInput from 'Components/Form/FormInput';
 import FormInputButton from 'Components/Form/FormInputButton';
@@ -33,6 +38,7 @@ import { InputChanged } from 'typings/inputs';
 import selectSettings from 'Utilities/selectSettings';
 import translate from 'Utilities/String/translate';
 import EpisodeOrderChange from './EpisodeOrder/EpisodeOrderChange';
+import useChangeEpisodeOrder from './EpisodeOrder/useChangeEpisodeOrder';
 import useEpisodeOrderPreview from './EpisodeOrder/useEpisodeOrderPreview';
 import RootFolderModal from './RootFolder/RootFolderModal';
 import { RootFolderUpdated } from './RootFolder/RootFolderModalContent';
@@ -80,7 +86,15 @@ function EditSeriesModalContent({
 
   const { saveSeries, isSaving, saveError } = useSaveSeries(isPathChanging);
   const wasSaving = usePrevious(isSaving);
-  const executeCommand = useExecuteCommand();
+  const {
+    changeEpisodeOrder,
+    isChangingEpisodeOrder,
+    changeEpisodeOrderError,
+  } = useChangeEpisodeOrder();
+  const approvedOrderChangeRef = useRef<{
+    seasonType: string;
+    renameFiles: boolean;
+  } | null>(null);
 
   const pendingSeasonType = pendingChanges.seasonType ?? seasonType;
   const isSeasonTypeChanging = pendingSeasonType !== seasonType;
@@ -167,60 +181,60 @@ function EditSeriesModalContent({
     setIsConfirmMoveModalOpen(false);
   }, []);
 
-  const handleSavePress = useCallback(() => {
-    if (isPathChanging && !isConfirmMoveModalOpen) {
-      setIsConfirmMoveModalOpen(true);
-    } else {
-      setIsConfirmMoveModalOpen(false);
-
-      // Episode order changes through ChangeEpisodeOrder once the save succeeds
-      saveSeries({
-        ...series,
-        ...pendingChanges,
-        seasonType,
-      });
-    }
-  }, [
-    seasonType,
-    series,
-    isPathChanging,
-    isConfirmMoveModalOpen,
-    pendingChanges,
-    saveSeries,
-  ]);
-
-  const handleMoveSeriesPress = useCallback(() => {
-    setIsConfirmMoveModalOpen(false);
+  const startSave = useCallback(() => {
+    // The order sent after the save is the one previewed when Save was pressed; the PUT keeps the stored order
+    approvedOrderChangeRef.current = isSeasonTypeChanging
+      ? { seasonType: pendingSeasonType, renameFiles }
+      : null;
 
     saveSeries({
       ...series,
       ...pendingChanges,
       seasonType,
     });
-  }, [series, seasonType, pendingChanges, saveSeries]);
+  }, [
+    series,
+    seasonType,
+    pendingChanges,
+    isSeasonTypeChanging,
+    pendingSeasonType,
+    renameFiles,
+    saveSeries,
+  ]);
+
+  const handleSavePress = useCallback(() => {
+    if (isPathChanging && !isConfirmMoveModalOpen) {
+      setIsConfirmMoveModalOpen(true);
+    } else {
+      setIsConfirmMoveModalOpen(false);
+      startSave();
+    }
+  }, [isPathChanging, isConfirmMoveModalOpen, startSave]);
+
+  const handleMoveSeriesPress = useCallback(() => {
+    setIsConfirmMoveModalOpen(false);
+    startSave();
+  }, [startSave]);
 
   useEffect(() => {
     if (!isSaving && wasSaving && !saveError) {
-      if (isSeasonTypeChanging) {
-        executeCommand({
-          name: CommandNames.ChangeEpisodeOrder,
-          seriesId,
-          seasonType: pendingSeasonType,
-          renameFiles,
-        });
-      }
+      const orderChange = approvedOrderChangeRef.current;
 
-      onModalClose();
+      if (orderChange) {
+        changeEpisodeOrder(
+          { name: CommandNames.ChangeEpisodeOrder, seriesId, ...orderChange },
+          { onSuccess: onModalClose }
+        );
+      } else {
+        onModalClose();
+      }
     }
   }, [
     seriesId,
     isSaving,
     wasSaving,
     saveError,
-    isSeasonTypeChanging,
-    pendingSeasonType,
-    renameFiles,
-    executeCommand,
+    changeEpisodeOrder,
     onModalClose,
   ]);
 
@@ -393,8 +407,8 @@ function EditSeriesModalContent({
         <Button onPress={onModalClose}>{translate('Cancel')}</Button>
 
         <SpinnerErrorButton
-          error={saveError}
-          isSpinning={isSaving}
+          error={saveError ?? changeEpisodeOrderError}
+          isSpinning={isSaving || isChangingEpisodeOrder}
           isDisabled={!canSave}
           onPress={handleSavePress}
         >
