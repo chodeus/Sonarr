@@ -12,6 +12,9 @@ namespace NzbDrone.Core.Tv.Commands
 
         public override bool RequiresDiskAccess => true;
 
+        // A refresh running beside it writes back the series it read before the order changed
+        public override bool IsExclusive => true;
+
         public override bool IsLongRunning => true;
     }
 }
