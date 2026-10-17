@@ -80,10 +80,10 @@ namespace NzbDrone.Core.Tv
             var tvdbIdMatches = matches.Where(m => RemoteEpisodeMatcher.IsMatchedByTvdbId(m.Key, m.Value)).ToList();
             var tvdbIdMatched = tvdbIdMatches.Select(m => m.Value).ToHashSet(ReferenceEqualityComparer.Instance);
 
-            // Other orders turn off XEM and scene-title seasons, which releases for this series are matched through
+            // Other orders turn off XEM and scene-title seasons, which releases are matched through; a mapping season of -1 means all seasons
             var leavingAiredOrder = series.SeasonType == SeasonType.Official && seasonType != SeasonType.Official;
             var sceneNumberedEpisodes = leavingAiredOrder ? episodes.Count(IsSceneRenumbered) : 0;
-            var sceneSeasonTitles = leavingAiredOrder ? _sceneMappingService.FindByTvdbId(series.TvdbId).Count(m => m.SeasonNumber.HasValue || m.SceneSeasonNumber.HasValue) : 0;
+            var sceneSeasonTitles = leavingAiredOrder ? _sceneMappingService.FindByTvdbId(series.TvdbId).Count(m => (m.SeasonNumber ?? -1) != -1 || (m.SceneSeasonNumber ?? -1) != -1) : 0;
 
             var episodesWithFiles = episodes.Where(e => e.EpisodeFileId > 0).ToList();
             var existingEpisodes = episodesWithFiles.ToLookup(e => e.EpisodeFileId, ToPreviewEpisode);
@@ -110,14 +110,10 @@ namespace NzbDrone.Core.Tv
 
             var refreshRequired = episodesWithFiles.Any(e => e.TvdbId == 0);
 
-            return new EpisodeOrderPreview
+            var preview = new EpisodeOrderPreview
             {
                 SeriesId = series.Id,
                 SeasonType = seasonType,
-                CanChange = !refreshRequired &&
-                            sceneNumberedEpisodes == 0 &&
-                            sceneSeasonTitles == 0 &&
-                            previewFiles.None(f => f.Status is EpisodeOrderPreviewFileStatus.Unmatched or EpisodeOrderPreviewFileStatus.Unnameable),
                 RefreshRequired = refreshRequired,
                 SceneNumberedEpisodes = sceneNumberedEpisodes,
                 SceneSeasonTitles = sceneSeasonTitles,
@@ -126,6 +122,10 @@ namespace NzbDrone.Core.Tv
                 EpisodesRemoved = episodes.Count - matches.Count,
                 Files = previewFiles
             };
+
+            preview.Refusal = GetRefusal(preview, series.Title);
+
+            return preview;
         }
 
         public void Execute(ChangeEpisodeOrderCommand message)
@@ -135,7 +135,7 @@ namespace NzbDrone.Core.Tv
 
             if (!preview.CanChange)
             {
-                throw new CommandFailedException(GetRefusal(preview, series.Title));
+                throw new CommandFailedException(preview.Refusal);
             }
 
             var previousSeasonType = series.SeasonType;
@@ -216,9 +216,11 @@ namespace NzbDrone.Core.Tv
 
         private int CountNotApplied(int seriesId, List<EpisodeOrderPreviewFile> files, Func<EpisodeOrderPreviewFile, List<EpisodeOrderPreviewEpisode>> expected)
         {
+            var remainingFileIds = _mediaFileService.GetFilesBySeries(seriesId).Select(f => f.Id).ToHashSet();
             var episodesByFile = _episodeService.GetEpisodeBySeries(seriesId).Where(e => e.EpisodeFileId > 0).ToLookup(e => e.EpisodeFileId);
 
-            return files.Count(f => !IsApplied(expected(f), episodesByFile[f.EpisodeFileId]));
+            // The refresh's disk scan drops the records of files missing from disk, leaving nothing to apply to them
+            return files.Count(f => remainingFileIds.Contains(f.EpisodeFileId) && !IsApplied(expected(f), episodesByFile[f.EpisodeFileId]));
         }
 
         private static string GetRefusal(EpisodeOrderPreview preview, string title)
@@ -240,31 +242,51 @@ namespace NzbDrone.Core.Tv
                 return $"{unmatchedCount} episode files belong to episodes that aren't in the new episode order";
             }
 
-            return $"{preview.Files.Count(f => f.Status == EpisodeOrderPreviewFileStatus.Unnameable)} combined episode files can't be named for their episodes in the new episode order";
+            var unnameableCount = preview.Files.Count(f => f.Status == EpisodeOrderPreviewFileStatus.Unnameable);
+
+            if (unnameableCount > 0)
+            {
+                return $"{unnameableCount} combined episode files can't be named for their episodes in the new episode order";
+            }
+
+            return null;
         }
 
         private int RenameFiles(Series series)
         {
-            var renamedCount = 0;
-            var pendingIds = _renameEpisodeFileService.GetRenamePreviews(series.Id).Select(p => p.EpisodeFileId).ToList();
+            var renamedIds = new HashSet<int>();
 
-            // Repeat while the pending list shrinks, so a file whose destination another file is leaving gets its turn
-            while (pendingIds.Any())
+            // One file per free destination each pass, so a chain moves a step at a time and nothing is moved onto another file
+            while (true)
             {
-                renamedCount += _renameEpisodeFileService.RenameFiles(_mediaFileService.Get(pendingIds), series).Count;
+                var pending = _renameEpisodeFileService.GetRenamePreviews(series.Id).Where(p => !renamedIds.Contains(p.EpisodeFileId)).ToList();
+                var readyIds = pending.GroupBy(p => Path.Combine(series.Path, p.NewPath), PathEqualityComparer.Instance)
+                                      .Where(g => g.Count() == 1 && IsDestinationFree(series, g.Single()))
+                                      .Select(g => g.Single().EpisodeFileId)
+                                      .ToList();
 
-                var stillPendingIds = _renameEpisodeFileService.GetRenamePreviews(series.Id).Select(p => p.EpisodeFileId).ToList();
+                var renamed = readyIds.Any() ? _renameEpisodeFileService.RenameFiles(_mediaFileService.Get(readyIds), series) : new List<RenamedEpisodeFile>();
 
-                if (stillPendingIds.Count >= pendingIds.Count)
+                if (renamed.Empty())
                 {
-                    _logger.Warn("{0} episode files for {1} weren't renamed, their destinations are in use", stillPendingIds.Count, series.Title);
-                    break;
+                    if (pending.Any())
+                    {
+                        _logger.Warn("{0} episode files for {1} weren't renamed, their destinations are in use", pending.Count, series.Title);
+                    }
+
+                    return renamedIds.Count;
                 }
 
-                pendingIds = stillPendingIds;
+                renamedIds.UnionWith(renamed.Select(r => r.EpisodeFile.Id));
             }
+        }
 
-            return renamedCount;
+        private bool IsDestinationFree(Series series, RenameEpisodeFilePreview preview)
+        {
+            var destination = Path.Combine(series.Path, preview.NewPath);
+
+            // A case-only rename finds the file itself at its destination
+            return destination.PathEquals(Path.Combine(series.Path, preview.ExistingPath)) || !_diskProvider.FileExists(destination);
         }
 
         private void MarkConflicts(Series series, List<EpisodeOrderPreviewFile> files)

@@ -6,7 +6,8 @@ namespace NzbDrone.Core.Tv
     {
         public int SeriesId { get; set; }
         public string SeasonType { get; set; }
-        public bool CanChange { get; set; }
+        public string Refusal { get; set; }
+        public bool CanChange => Refusal == null;
         public bool RefreshRequired { get; set; }
         public int SceneNumberedEpisodes { get; set; }
         public int SceneSeasonTitles { get; set; }

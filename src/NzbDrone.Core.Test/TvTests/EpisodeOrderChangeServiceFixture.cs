@@ -147,8 +147,9 @@ namespace NzbDrone.Core.Test.TvTests
                     continue;
                 }
 
-                _files.Single(f => f.Id == preview.EpisodeFileId).RelativePath = preview.NewPath;
-                renamed.Add(new RenamedEpisodeFile { PreviousRelativePath = preview.ExistingPath });
+                var file = _files.Single(f => f.Id == preview.EpisodeFileId);
+                file.RelativePath = preview.NewPath;
+                renamed.Add(new RenamedEpisodeFile { EpisodeFile = file, PreviousRelativePath = preview.ExistingPath });
             }
 
             return renamed;
@@ -653,6 +654,43 @@ namespace NzbDrone.Core.Test.TvTests
             Assert.Throws<CommandFailedException>(() => Execute()).Message.Should().Contain("XEM");
 
             Mocker.GetMock<ISeriesService>().Verify(s => s.UpdateSeries(It.IsAny<Series>(), It.IsAny<bool>(), It.IsAny<bool>()), Times.Never());
+        }
+
+        [Test]
+        public void should_not_rename_files_that_share_a_destination()
+        {
+            Mocker.GetMock<IRenameEpisodeFileService>()
+                  .Setup(s => s.GetRenamePreviews(1))
+                  .Returns(() => _files.Select(f => new RenameEpisodeFilePreview { EpisodeFileId = f.Id, ExistingPath = f.RelativePath, NewPath = "Season 01/Same.mkv" }).ToList());
+
+            Execute();
+
+            Mocker.GetMock<IRenameEpisodeFileService>().Verify(s => s.RenameFiles(It.IsAny<List<EpisodeFile>>(), It.IsAny<Series>()), Times.Never());
+            ExceptionVerification.ExpectedWarns(1);
+        }
+
+        [Test]
+        public void should_rename_each_file_once_even_when_it_stays_pending()
+        {
+            var renameCalls = 0;
+
+            Mocker.GetMock<IRenameEpisodeFileService>()
+                  .Setup(s => s.GetRenamePreviews(1))
+                  .Returns(() => renameCalls < 3
+                      ? new List<RenameEpisodeFilePreview> { new RenameEpisodeFilePreview { EpisodeFileId = 11, ExistingPath = _files[0].RelativePath, NewPath = "Season 01/Elsewhere.mkv" } }
+                      : new List<RenameEpisodeFilePreview>());
+
+            Mocker.GetMock<IRenameEpisodeFileService>()
+                  .Setup(s => s.RenameFiles(It.IsAny<List<EpisodeFile>>(), It.IsAny<Series>()))
+                  .Returns<List<EpisodeFile>, Series>((files, series) =>
+                  {
+                      renameCalls++;
+                      return files.Select(f => new RenamedEpisodeFile { EpisodeFile = f }).ToList();
+                  });
+
+            Execute();
+
+            renameCalls.Should().Be(1);
         }
     }
 }
