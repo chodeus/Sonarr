@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using NLog;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.AutoTagging;
@@ -36,6 +38,7 @@ namespace NzbDrone.Core.Tv
         Series UpdateSeries(Series series, bool updateEpisodesToMatchSeason = true, bool publishUpdatedEvent = true);
         List<Series> UpdateSeries(List<Series> series, bool moveFiles);
         Series UpdateSeries(Series series, string sourcePath, string destinationPath, bool moveFiles);
+        void UpdateSeriesFields(Series series, params Expression<Func<Series, object>>[] fields);
         bool SeriesPathExists(string folder);
         void RemoveAddOptions(Series series);
         bool UpdateAutoTaggingTags(Series series);
@@ -411,6 +414,11 @@ namespace NzbDrone.Core.Tv
         public bool SeriesPathExists(string folder)
         {
             return _seriesRepository.SeriesPathExists(folder);
+        }
+
+        public void UpdateSeriesFields(Series series, params Expression<Func<Series, object>>[] fields)
+        {
+            _seriesRepository.SetFields(series, fields);
         }
 
         public void RemoveAddOptions(Series series)

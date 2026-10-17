@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Linq.Expressions;
 using NLog;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Instrumentation.Extensions;
@@ -19,6 +20,17 @@ namespace NzbDrone.Core.Tv
 {
     public class RefreshSeriesService : IExecute<RefreshSeriesCommand>
     {
+        // Must match what RefreshSeriesInfo sets: anything else on the series belongs to other writers
+        private static readonly Expression<Func<Series, object>>[] RefreshedFields =
+        {
+            s => s.TvdbId, s => s.Title, s => s.Year, s => s.TitleSlug, s => s.TvRageId, s => s.TvMazeId,
+            s => s.TmdbId, s => s.ImdbId, s => s.MalIds, s => s.AniListIds, s => s.AirTime, s => s.Overview,
+            s => s.OriginalLanguage, s => s.Status, s => s.CleanTitle, s => s.SortTitle, s => s.LastInfoSync,
+            s => s.Runtime, s => s.Images, s => s.Network, s => s.FirstAired, s => s.LastAired, s => s.Ratings,
+            s => s.Actors, s => s.Genres, s => s.Certification, s => s.OriginalCountry, s => s.OriginalTitle,
+            s => s.CleanOriginalTitle, s => s.SeasonTypes, s => s.Seasons, s => s.Tags
+        };
+
         private readonly IProvideSeriesInfo _seriesInfo;
         private readonly ISeriesService _seriesService;
         private readonly ISeriesTranslationService _seriesTranslationService;
@@ -55,8 +67,6 @@ namespace NzbDrone.Core.Tv
 
         private Series RefreshSeriesInfo(int seriesId)
         {
-            // Get the series before updating, that way any changes made to the series after the refresh started,
-            // but before this series was refreshed won't be lost.
             var series = _seriesService.GetSeries(seriesId);
 
             _logger.ProgressInfo("Updating {0}", series.Title);
@@ -75,13 +85,16 @@ namespace NzbDrone.Core.Tv
                 if (series.Status != SeriesStatusType.Deleted)
                 {
                     series.Status = SeriesStatusType.Deleted;
-                    _seriesService.UpdateSeries(series, publishUpdatedEvent: false);
+                    _seriesService.UpdateSeriesFields(series, s => s.Status);
                     _logger.Debug("Series marked as deleted on tvdb for {0}", series.Title);
                     _eventAggregator.PublishEvent(new SeriesUpdatedEvent(series));
                 }
 
                 throw;
             }
+
+            // Changes saved during the lookup (a finished move, a season toggled) are on the stored copy, not this one
+            series = _seriesService.GetSeries(seriesId);
 
             if (series.TvdbId != seriesInfo.TvdbId)
             {
@@ -119,19 +132,34 @@ namespace NzbDrone.Core.Tv
             series.CleanOriginalTitle = seriesInfo.CleanOriginalTitle;
             series.SeasonTypes = seriesInfo.SeasonTypes;
 
-            try
+            var fields = RefreshedFields.ToList();
+
+            // A pending move owns the path until it finishes
+            if (series.PendingPath.IsNullOrWhiteSpace())
             {
-                series.Path = new DirectoryInfo(series.Path).FullName;
-                series.Path = series.Path.GetActualCasing();
-            }
-            catch (Exception e)
-            {
-                _logger.Warn(e, "Couldn't update series path for " + series.Path);
+                var path = series.Path;
+
+                try
+                {
+                    path = new DirectoryInfo(path).FullName;
+                    path = path.GetActualCasing();
+                }
+                catch (Exception e)
+                {
+                    _logger.Warn(e, "Couldn't update series path for " + series.Path);
+                }
+
+                if (path != series.Path)
+                {
+                    series.Path = path;
+                    fields.Add(s => s.Path);
+                }
             }
 
             series.Seasons = UpdateSeasons(series, seriesInfo);
+            _seriesService.UpdateAutoTaggingTags(series);
 
-            _seriesService.UpdateSeries(series, publishUpdatedEvent: false);
+            _seriesService.UpdateSeriesFields(series, fields.ToArray());
             _seriesTranslationService.UpdateTranslations(series.Id, seriesInfo.Translations);
             _refreshEpisodeService.RefreshEpisodeInfo(series, episodes);
 
@@ -205,14 +233,20 @@ namespace NzbDrone.Core.Tv
             }
         }
 
-        private void UpdateTags(Series series)
+        // Callers can hold a copy read long before (a full refresh reads every series up front), so read it again
+        private void UpdateTags(int seriesId)
         {
-            var tagsUpdated = _seriesService.UpdateAutoTaggingTags(series);
+            var series = _seriesService.GetSeries(seriesId);
 
-            if (tagsUpdated)
+            if (!_seriesService.UpdateAutoTaggingTags(series))
             {
-                _seriesService.UpdateSeries(series);
+                return;
             }
+
+            var storedSeries = _seriesService.GetSeries(seriesId);
+
+            _seriesService.UpdateSeriesFields(series, s => s.Tags);
+            _eventAggregator.PublishEvent(new SeriesEditedEvent(series, storedSeries));
         }
 
         public void Execute(RefreshSeriesCommand message)
@@ -230,7 +264,7 @@ namespace NzbDrone.Core.Tv
                     try
                     {
                         series = RefreshSeriesInfo(seriesId);
-                        UpdateTags(series);
+                        UpdateTags(seriesId);
                         RescanSeries(series, isNew, trigger);
                     }
                     catch (SeriesNotFoundException)
@@ -244,7 +278,7 @@ namespace NzbDrone.Core.Tv
                     catch (Exception e)
                     {
                         _logger.Error(e, "Couldn't refresh info for {0}", series);
-                        UpdateTags(series);
+                        UpdateTags(seriesId);
                         RescanSeries(series, isNew, trigger);
 
                         // Mark the result as indeterminate so it's not marked as a full success,
@@ -276,13 +310,13 @@ namespace NzbDrone.Core.Tv
                             _logger.Error(e, "Couldn't refresh info for {0}", seriesLocal);
                         }
 
-                        UpdateTags(series);
+                        UpdateTags(series.Id);
                         RescanSeries(seriesLocal, false, trigger);
                     }
                     else
                     {
                         _logger.Info("Skipping refresh of series: {0}", seriesLocal.Title);
-                        UpdateTags(series);
+                        UpdateTags(series.Id);
                         RescanSeries(seriesLocal, false, trigger);
                     }
                 }
