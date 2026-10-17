@@ -31,8 +31,8 @@
 ## How the build works
 
 - Each change is its own branch off `develop` in [chodeus/Sonarr](https://github.com/chodeus/Sonarr).
-- `meta.json` lists them in `pr_branches`. The `update` workflow, every 3 hours, records each branch's head in `pr_shas`, and any change to a branch, to upstream `develop` or to the base image triggers a build.
+- `meta.json` lists them in `pr_branches`, each at the commit in `pr_shas`. The `update` workflow, every 3 hours, follows upstream `develop` and the base image, and a change to either triggers a build. It never moves `pr_shas`, so a branch can be pushed for review without reaching the image.
 - `build.sh source` merges the branches into `develop` in the listed order. If one no longer merges, the build fails and names it; rebase that branch onto `develop`.
 - `build.sh compile` follows upstream's own CI build. NuGet advisories are logged rather than fatal, because upstream suppresses them one at a time and a new one would otherwise stop every image update.
-- To add or drop a change, edit `pr_branches`.
+- Once a branch's review is clean, `./build.sh pin <branch>` records its head in `pr_shas` (adding the branch if it's new) and the push builds the image. To drop a change, remove it from both `pr_branches` and `pr_shas`.
 - Build-only migrations are numbered from 900 so upstream's own numbers can't collide.

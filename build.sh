@@ -2,6 +2,7 @@
 
 if [[ -z ${1:-} ]]; then
     echo "Usage: ./build.sh update"
+    echo "       ./build.sh pin <pr_branch>"
     echo "       ./build.sh source"
     echo "       ./build.sh migrations"
     echo "       ./build.sh compile"
@@ -31,6 +32,32 @@ if [[ ${1} == "update" ]]; then
     rm -f meta.json.bak cache-page*.json
 fi
 
+# The scheduled update never moves pr_shas, so a branch under review stays out of the image until pinned.
+if [[ ${1} == "pin" ]]; then
+    branch=${2:?Usage: ./build.sh pin <pr_branch>}
+    pr_repo=$(jq -re '.pr_repo' < meta.json)
+    sha=$(git ls-remote --exit-code "https://github.com/${pr_repo}.git" "refs/heads/${branch}" | cut -f1)
+    read -r -a pr_branches <<< "$(jq -re '.pr_branches' < meta.json)"
+    read -r -a pr_shas <<< "$(jq -re '.pr_shas' < meta.json)"
+    pinned=false
+    for i in "${!pr_branches[@]}"; do
+        if [[ ${pr_branches[i]} == "${branch}" ]]; then
+            pr_shas[i]=${sha}
+            pinned=true
+        fi
+    done
+    if [[ ${pinned} == false ]]; then
+        pr_branches+=("${branch}")
+        pr_shas+=("${sha}")
+    fi
+    json=$(jq --sort-keys --arg branches "${pr_branches[*]}" --arg shas "${pr_shas[*]}" '.pr_branches = $branches | .pr_shas = $shas' < meta.json)
+    printf '%s\n' "${json}" > meta.json
+    version=$(eval "$(jq -re '.version__command' < meta.json)")
+    json=$(jq --sort-keys --arg version "${version}" '.version = $version' < meta.json)
+    printf '%s\n' "${json}" > meta.json
+    echo "Pinned ${branch} at ${sha:0:9}: version ${version}"
+fi
+
 if [[ ${1} == "source" ]]; then
     sonarr_repo=$(jq -re '.sonarr_repo' < meta.json)
     sonarr_sha=$(jq -re '.sonarr_sha' < meta.json)
@@ -38,7 +65,7 @@ if [[ ${1} == "source" ]]; then
     read -r -a pr_branches <<< "$(jq -re '.pr_branches' < meta.json)"
     read -r -a pr_shas <<< "$(jq -re '.pr_shas' < meta.json)"
     if (( ${#pr_branches[@]} != ${#pr_shas[@]} )); then
-        echo "meta.json lists ${#pr_branches[@]} pr_branches but ${#pr_shas[@]} pr_shas: run ./build.sh update." >&2
+        echo "meta.json lists ${#pr_branches[@]} pr_branches but ${#pr_shas[@]} pr_shas: run ./build.sh pin <pr_branch>." >&2
         exit 1
     fi
     rm -rf _src

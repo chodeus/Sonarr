@@ -2,7 +2,6 @@
   "pr_branches": "feat/title-match fix/v3-release-profile-any-indexer fix/blocked-import-retry fix/same-release-regrab feat/episode-order-change",
   "pr_repo": "chodeus/Sonarr",
   "pr_shas": "99ab7fbf1beda14c9fca0053c935a0162e893848 b8cf5e7eecf35d1051afaaf2ce9793d9a70a3352 2ed7978af15cdbfcea05c8fc444176972d3c94df bff8193e2c3ba57e76242a8839920625a8ca028a 0a2fb3954f7d1d7aeb1d7d960d39661ed1ad672f",
-  "pr_shas__command": "repo=$(jq -re '.pr_repo' < meta.json) && for branch in $(jq -re '.pr_branches' < meta.json); do sha=$(git ls-remote --exit-code \"https://github.com/${repo}.git\" \"refs/heads/${branch}\" | cut -f1) && [[ -n ${sha} ]] || exit 1; echo \"${sha}\"; done | paste -sd ' ' -",
   "sonarr_branch": "develop",
   "sonarr_repo": "Sonarr/Sonarr",
   "sonarr_sha": "a2b6054a8f3746d149a811bddea2a8d063efc35e",
