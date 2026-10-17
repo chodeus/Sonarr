@@ -11,6 +11,8 @@ using NzbDrone.Common;
 using NzbDrone.Common.Cache;
 using NzbDrone.Common.Disk;
 using NzbDrone.Core.Download.Aggregation.Aggregators;
+using NzbDrone.Core.Download.History;
+using NzbDrone.Core.Extras.Files;
 using NzbDrone.Core.Extras.Others;
 using NzbDrone.Core.Extras.Subtitles;
 using NzbDrone.Core.Indexers;
@@ -20,10 +22,12 @@ using NzbDrone.Core.MediaFiles.EpisodeImport;
 using NzbDrone.Core.MediaFiles.EpisodeImport.Aggregation;
 using NzbDrone.Core.MediaFiles.EpisodeImport.Aggregation.Aggregators;
 using NzbDrone.Core.MediaFiles.EpisodeImport.Aggregation.Aggregators.Augmenters.Language;
+using NzbDrone.Core.MediaFiles.EpisodeImport.Aggregation.Aggregators.Augmenters.Quality;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
 using NzbDrone.Core.Parser.TitleMatching;
+using NzbDrone.Core.Qualities;
 using NzbDrone.Core.Tags;
 using NzbDrone.Core.Test.Framework;
 using NzbDrone.Core.Tv;
@@ -95,6 +99,8 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         private static IEnumerable<TestCaseData> MustMatchTitles()
         {
             yield return new TestCaseData("Formula1.2026.Singapore.Grand.Prix.1080p.WEB.H.264-BILLIE", 94);
+            yield return new TestCaseData("Formula1.2026.Singapore.GrandPrix.1080p.WEB.H264-GRP", 94);
+            yield return new TestCaseData("Formula1.2026.Italian.GrandPrix.1080p.WEB.H264-GRP", 74);
             yield return new TestCaseData("Formula1.2026.China.Grand.Prix.Practice.1080p.WEB.h264-BILLIE", 15);
             yield return new TestCaseData("Formula1_2026_China_Grand_Prix_Sprint_Race_1080p_WEB_h264-BILLIE", 17);
             yield return new TestCaseData("Formula1.2026.China.Grand.Prix.Qualifying.1080p.WEB.h264-BILLIE", 18);
@@ -154,10 +160,13 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
             localEpisode.Episodes.Select(e => e.EpisodeNumber).Should().Equal(94);
         }
 
-        [Test]
-        public void should_keep_episode_of_file_named_by_sonarr()
+        [TestCase("Formula 1 - S2026E14 - Australia (Race) WEBDL-1080p.mkv", 14)]
+        [TestCase("Formula 1 - 2026x94 - Singapore (Race) WEBDL-1080p.mkv", 94)]
+        [TestCase("Formula 1 - 2026x14 - Australia (Race) WEBDL-1080p.mkv", 14)]
+        [TestCase("Formula 1 - 2026x01 - Bahrain Pre-Season Testing 1 - Day 1 WEBDL-1080p.mkv", 1)]
+        public void should_keep_episode_of_file_named_by_sonarr(string fileName, int episodeNumber)
         {
-            var path = "/tv/Formula 1/Season 2026/Formula 1 - S2026E14 - Australia (Race) WEBDL-1080p.mkv".AsOsAgnostic();
+            var path = $"/tv/Formula 1/Season 2026/{fileName}".AsOsAgnostic();
 
             var localEpisode = Import(new LocalEpisode
             {
@@ -167,7 +176,131 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
                 FileEpisodeInfo = Parser.Parser.ParsePath(path)
             });
 
-            localEpisode.Episodes.Select(e => e.EpisodeNumber).Should().Equal(14);
+            localEpisode.Episodes.Select(e => e.EpisodeNumber).Should().Equal(episodeNumber);
+        }
+
+        [TestCase("Formula 1 - 2026x05 - Singapore (Race) WEBDL-1080p.mkv")]
+        [TestCase("Formula.1.2026x14.Australia.Race.Highlights.SkyF1HD.1080p.mkv")]
+        public void should_not_keep_parsed_numbers_unless_the_name_is_that_episode(string fileName)
+        {
+            var path = $"/tv/Formula 1/Season 2026/{fileName}".AsOsAgnostic();
+
+            var localEpisode = Import(new LocalEpisode
+            {
+                Path = path,
+                Series = _series,
+                ExistingFile = true,
+                FileEpisodeInfo = Parser.Parser.ParsePath(path)
+            });
+
+            localEpisode.Episodes.Should().BeEmpty();
+        }
+
+        [Test]
+        public void should_import_single_file_in_season_pack_by_its_own_name()
+        {
+            const string pack = "Formula.1.S2026.1080p.WEB-DL.H264-GRP";
+            var path = $"/downloads/{pack}/Formula1 2026 Singapore Grand Prix.mkv".AsOsAgnostic();
+
+            var localEpisode = Import(new LocalEpisode
+            {
+                Path = path,
+                Series = _series,
+                SceneSource = true,
+                FileEpisodeInfo = Parser.Parser.ParsePath(path),
+                FolderEpisodeInfo = Parser.Parser.ParseTitle(pack),
+                DownloadClientEpisodeInfo = Parser.Parser.ParseTitle(pack)
+            });
+
+            localEpisode.Episodes.Select(e => e.EpisodeNumber).Should().Equal(94);
+        }
+
+        [Test]
+        public void should_import_special_the_release_found_by_title()
+        {
+            const string name = "Formula.1.S2026.Special.The.Last.Lap.1080p.WEB.H264-GRP";
+            var special = new Episode { Id = 2005, SeriesId = _series.Id, SeasonNumber = 0, EpisodeNumber = 5, Title = "The Last Lap" };
+            _episodes.Add(special);
+
+            Mocker.GetMock<IEpisodeService>()
+                  .Setup(s => s.FindEpisodeByTitle(_series.Id, 0, It.Is<string>(t => t.Contains("Last.Lap"))))
+                  .Returns(special);
+
+            // DownloadDecisionMaker looks a possible special up by title before mapping it
+            var parsedEpisodeInfo = Parser.Parser.ParseTitle(name);
+            parsedEpisodeInfo.IsPossibleSpecialEpisode.Should().BeTrue();
+            var specialEpisodeInfo = Subject.ParseSpecialEpisodeTitle(parsedEpisodeInfo, name, 0, 0, null);
+            Subject.Map(specialEpisodeInfo, 0, 0, null).Episodes.Select(e => e.Id).Should().Equal(special.Id);
+
+            Import(Download(name)).Episodes.Select(e => e.Id).Should().Equal(special.Id);
+        }
+
+        [TestCase("Formula1.2026.Singapore.Grand.Prix.Qualifying.1080p.WEB.H264-GRP", 93)]
+        [TestCase("Formula1.2026.Singapore.Grand.Prix.1080p.WEB.H264-GRP", 94)]
+        public void should_match_when_a_sibling_session_has_no_air_date(string title, int episodeNumber)
+        {
+            _episodes.Single(e => e.EpisodeNumber == 92).AirDateUtc = null;
+
+            MapRelease(title).Episodes.Select(e => e.EpisodeNumber).Should().Equal(episodeNumber);
+        }
+
+        [Test]
+        public void should_keep_proper_revision_from_the_names()
+        {
+            var localEpisode = Import(Download("Formula1.2026.Singapore.Grand.Prix.PROPER.1080p.WEB.H.264-BILLIE"));
+
+            localEpisode.Quality.Quality.Should().Be(Quality.WEBDL1080p);
+            localEpisode.Quality.Revision.Version.Should().Be(2);
+        }
+
+        [Test]
+        public void should_contain_an_episode_lookup_failure_during_an_extras_scan()
+        {
+            Mocker.GetMock<IEpisodeService>()
+                  .Setup(s => s.GetEpisodesBySeason(_series.Id, It.IsAny<int>()))
+                  .Throws(new InvalidOperationException("database is locked"));
+            Mocker.GetMock<IEpisodeService>()
+                  .Setup(s => s.FindEpisode(_series.Id, It.IsAny<int>(), It.IsAny<int>()))
+                  .Throws(new InvalidOperationException("database is locked"));
+            Mocker.GetMock<IExtraFileService<SubtitleFile>>()
+                  .Setup(s => s.GetFilesBySeries(_series.Id))
+                  .Returns(new List<SubtitleFile>());
+
+            _series.Path = "/tv/Formula 1".AsOsAgnostic();
+            SetImportAggregators();
+            Mocker.SetConstant<IAggregationService>(Mocker.Resolve<AggregationService>());
+
+            var files = new[] { "/tv/Formula 1/Season 2026/Formula1.2026.Singapore.Grand.Prix.1080p.WEB.H.264-BILLIE.en.srt".AsOsAgnostic() }.ToList();
+
+            Mocker.Resolve<ExistingSubtitleImporter>().ProcessFiles(_series, files, new List<string>(), null).Should().BeEmpty();
+
+            ExceptionVerification.IgnoreWarns();
+        }
+
+        [Test]
+        public void should_match_once_a_tag_created_during_a_lookup_is_read_again()
+        {
+            var matcher = Mocker.Resolve<IEpisodeTitleMatcher>();
+            var parsedEpisodeInfo = Parser.Parser.ParseTitle("Formula1.2026.Singapore.Grand.Prix.1080p.WEB.H.264-BILLIE");
+            var reads = 0;
+
+            Mocker.GetMock<ITagRepository>()
+                  .Setup(s => s.FindByLabel(EpisodeTitleMatcher.TagLabel))
+                  .Returns(() =>
+                  {
+                      if (++reads > 1)
+                      {
+                          return _tag;
+                      }
+
+                      // The tag is created while this first lookup is still reading
+                      ((IHandle<TagsUpdatedEvent>)matcher).Handle(new TagsUpdatedEvent());
+
+                      return null;
+                  });
+
+            matcher.ParseEventTitle(parsedEpisodeInfo, _series).Should().BeNull();
+            matcher.ParseEventTitle(parsedEpisodeInfo, _series).Should().NotBeNull();
         }
 
         [TestCase("Formula1.2026.Round17.Singapore.Race.F1TV.WEB-DL.1080p.H264.German-MWR", "German")]
@@ -339,24 +472,38 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
 
         private LocalEpisode Import(LocalEpisode localEpisode)
         {
+            SetImportAggregators();
+
+            return Mocker.Resolve<AggregationService>().Augment(localEpisode, null);
+        }
+
+        private void SetImportAggregators()
+        {
             Mocker.SetConstant<IParsingService>(Subject);
 
-            var augmenters = new IAugmentLanguage[]
+            var languageAugmenters = new IAugmentLanguage[]
             {
                 new AugmentLanguageFromFileName(),
                 new AugmentLanguageFromFolder(),
                 new AugmentLanguageFromDownloadClientItem(),
                 new AugmentLanguageFromMediaInfo()
             };
+            var qualityAugmenters = new IAugmentQuality[]
+            {
+                new AugmentQualityFromFileName(),
+                new AugmentQualityFromFolder(),
+                new AugmentQualityFromDownloadClientItem(),
+                new AugmentQualityFromMediaInfo(LogManager.GetCurrentClassLogger()),
+                new AugmentQualityFromReleaseName(Mocker.Resolve<IDownloadHistoryService>())
+            };
             var aggregators = new IAggregateLocalEpisode[]
             {
                 Mocker.Resolve<AggregateEpisodes>(),
-                new AggregateLanguage(augmenters, LogManager.GetCurrentClassLogger())
+                new AggregateLanguage(languageAugmenters, LogManager.GetCurrentClassLogger()),
+                new AggregateQuality(qualityAugmenters, LogManager.GetCurrentClassLogger())
             };
 
             Mocker.SetConstant<IEnumerable<IAggregateLocalEpisode>>(aggregators);
-
-            return Mocker.Resolve<AggregationService>().Augment(localEpisode, null);
         }
     }
 }

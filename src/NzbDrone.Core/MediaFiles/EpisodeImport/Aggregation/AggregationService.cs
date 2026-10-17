@@ -61,9 +61,20 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Aggregation
             localEpisode.SceneName = localEpisode.SceneSource ? SceneNameCalculator.GetSceneName(localEpisode) : null;
 
             // After the scene name, which reads FullSeason; the aggregators and import checks then all see the event's numbers and languages
-            localEpisode.FileEpisodeInfo = ParseEventTitle(localEpisode.FileEpisodeInfo, localEpisode.Series);
-            localEpisode.FolderEpisodeInfo = ParseEventTitle(localEpisode.FolderEpisodeInfo, localEpisode.Series);
-            localEpisode.DownloadClientEpisodeInfo = ParseEventTitle(localEpisode.DownloadClientEpisodeInfo, localEpisode.Series);
+            try
+            {
+                var fileEpisodeInfo = ParseEventTitle(localEpisode.FileEpisodeInfo, localEpisode.Series);
+                var folderEpisodeInfo = ParseEventTitle(localEpisode.FolderEpisodeInfo, localEpisode.Series);
+                var downloadClientEpisodeInfo = ParseEventTitle(localEpisode.DownloadClientEpisodeInfo, localEpisode.Series);
+
+                localEpisode.FileEpisodeInfo = fileEpisodeInfo;
+                localEpisode.FolderEpisodeInfo = folderEpisodeInfo;
+                localEpisode.DownloadClientEpisodeInfo = downloadClientEpisodeInfo;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "Unable to match file '{0}' to an event of {1}", localEpisode.Path, localEpisode.Series);
+            }
 
             if (isMediaFile && (!localEpisode.ExistingFile || _configService.EnableMediaInfo))
             {

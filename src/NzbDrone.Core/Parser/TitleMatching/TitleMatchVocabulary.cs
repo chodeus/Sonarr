@@ -78,6 +78,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
 
         private static readonly Regex NonAlphanumeric = new(@"[^a-z0-9]+", RegexOptions.Compiled);
         private static readonly Regex NumberWords = new(@"\b(?<word>one|two|three)\b", RegexOptions.Compiled);
+        private static readonly Regex GrandPrixWord = new(@"\bgrandprix\b", RegexOptions.Compiled);
 
         private static readonly Dictionary<string, string> Numbers = new()
         {
@@ -89,6 +90,8 @@ namespace NzbDrone.Core.Parser.TitleMatching
         public static string Normalize(string title)
         {
             var normalized = NonAlphanumeric.Replace(title.ToLowerInvariant().RemoveDiacritics(), " ").Trim();
+
+            normalized = GrandPrixWord.Replace(normalized, "grand prix");
 
             return NumberWords.Replace(normalized, m => Numbers[m.Groups["word"].Value]);
         }

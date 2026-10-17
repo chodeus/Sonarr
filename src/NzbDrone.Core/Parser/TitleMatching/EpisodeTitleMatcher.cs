@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
 using NLog;
 using NzbDrone.Common.Cache;
 using NzbDrone.Common.Extensions;
@@ -39,6 +40,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
         private readonly ITagRepository _tagRepository;
         private readonly ICached<Tag> _tagCache;
         private readonly Logger _logger;
+        private int _tagVersion;
 
         public EpisodeTitleMatcher(IEpisodeService episodeService,
                                    ITagRepository tagRepository,
@@ -69,15 +71,15 @@ namespace NzbDrone.Core.Parser.TitleMatching
 
             if (episode == null)
             {
-                // "S2026E94" is TheTVDB's numbering, as in Sonarr's own file names; in "2026x17" the 17 is the round
-                if (ExplicitEpisodeNumbering.IsMatch(release))
+                // "S2026E94" is TheTVDB's numbering; in "2026x17" the 17 is the round, unless the name also carries that episode's title
+                if (ExplicitEpisodeNumbering.IsMatch(release) || NamesParsedEpisodes(parsedEpisodeInfo, series, release))
                 {
                     return null;
                 }
 
                 _logger.Debug("'{0}' names no event of {1}, so it isn't mapped", parsedEpisodeInfo.ReleaseTitle, series.Title);
 
-                return WithNumbers(parsedEpisodeInfo, [], []);
+                return WithoutNumbers(parsedEpisodeInfo);
             }
 
             _logger.Debug("Matched '{0}' to {1}x{2:00} '{3}' by title", parsedEpisodeInfo.ReleaseTitle, episode.SeasonNumber, episode.EpisodeNumber, episode.Title);
@@ -90,18 +92,29 @@ namespace NzbDrone.Core.Parser.TitleMatching
 
         public void Handle(TagsUpdatedEvent message)
         {
+            Interlocked.Increment(ref _tagVersion);
             _tagCache.Clear();
         }
 
-        private static ParsedEpisodeInfo WithNumbers(ParsedEpisodeInfo parsedEpisodeInfo, List<int> seasonNumbers, int[] episodeNumbers)
+        // Keeps the parse's flags, so a special or season pack is still handled as one
+        private static ParsedEpisodeInfo WithoutNumbers(ParsedEpisodeInfo parsedEpisodeInfo)
         {
             var eventEpisodeInfo = parsedEpisodeInfo.JsonClone();
-            eventEpisodeInfo.SeasonNumbers = seasonNumbers;
-            eventEpisodeInfo.EpisodeNumbers = episodeNumbers;
+            eventEpisodeInfo.SeasonNumbers = [];
+            eventEpisodeInfo.EpisodeNumbers = [];
             eventEpisodeInfo.AbsoluteEpisodeNumbers = [];
             eventEpisodeInfo.SpecialAbsoluteEpisodeNumbers = [];
             eventEpisodeInfo.AirDate = null;
             eventEpisodeInfo.DailyPart = null;
+
+            return eventEpisodeInfo;
+        }
+
+        private static ParsedEpisodeInfo WithNumbers(ParsedEpisodeInfo parsedEpisodeInfo, List<int> seasonNumbers, int[] episodeNumbers)
+        {
+            var eventEpisodeInfo = WithoutNumbers(parsedEpisodeInfo);
+            eventEpisodeInfo.SeasonNumbers = seasonNumbers;
+            eventEpisodeInfo.EpisodeNumbers = episodeNumbers;
             eventEpisodeInfo.FullSeason = false;
             eventEpisodeInfo.IsPartialSeason = false;
             eventEpisodeInfo.IsSeasonExtra = false;
@@ -178,6 +191,32 @@ namespace NzbDrone.Core.Parser.TitleMatching
             return episode;
         }
 
+        private bool NamesParsedEpisodes(ParsedEpisodeInfo parsedEpisodeInfo, Series series, string release)
+        {
+            if (!parsedEpisodeInfo.SeasonNumber.HasValue || parsedEpisodeInfo.EpisodeNumbers.Empty())
+            {
+                return false;
+            }
+
+            var remainder = $" {release} ";
+
+            foreach (var number in parsedEpisodeInfo.EpisodeNumbers)
+            {
+                var episode = _episodeService.FindEpisode(series.Id, parsedEpisodeInfo.SeasonNumber.Value, number);
+                var title = episode?.Title.IsNullOrWhiteSpace() == false ? TitleMatchVocabulary.Normalize(episode.Title) : null;
+
+                if (title == null || !TitleMatchVocabulary.ContainsPhrase(release, title))
+                {
+                    return false;
+                }
+
+                remainder = remainder.Replace($" {title} ", " ");
+            }
+
+            // "2026x14 Australia Race Highlights" carries the title but is another programme
+            return !NamesOtherProgramme(remainder.Trim(), TitleMatchVocabulary.Normalize(series.Title));
+        }
+
         // A place name that is also a language ("italian") names the event only before "grand prix"; elsewhere it's the audio
         private static bool MentionsPlace(string release, string name)
         {
@@ -218,21 +257,28 @@ namespace NzbDrone.Core.Parser.TitleMatching
                 return false;
             }
 
+            var version = Volatile.Read(ref _tagVersion);
             var tag = _tagCache.Get(TagLabel, () => _tagRepository.FindByLabel(TagLabel), TimeSpan.FromMinutes(5));
+
+            // A tag change during the read may have cached what the read saw before it
+            if (version != Volatile.Read(ref _tagVersion))
+            {
+                _tagCache.Remove(TagLabel);
+            }
 
             return tag != null && series.Tags.Contains(tag.Id);
         }
 
         private static bool IsSingleEvent(string release, string seriesTitle)
         {
-            if (TitleMatchVocabulary.Testing.IsMatch(release) ||
-                TitleMatchVocabulary.NonEventWords.Any(w => TitleMatchVocabulary.ContainsPhrase(release, w)))
-            {
-                return false;
-            }
+            return !TitleMatchVocabulary.Testing.IsMatch(release) && !NamesOtherProgramme(release, seriesTitle);
+        }
 
-            return !TitleMatchVocabulary.SiblingSeriesWords.Any(w => TitleMatchVocabulary.ContainsPhrase(release, w) &&
-                                                                     !TitleMatchVocabulary.ContainsPhrase(seriesTitle, w));
+        private static bool NamesOtherProgramme(string release, string seriesTitle)
+        {
+            return TitleMatchVocabulary.NonEventWords.Any(w => TitleMatchVocabulary.ContainsPhrase(release, w)) ||
+                   TitleMatchVocabulary.SiblingSeriesWords.Any(w => TitleMatchVocabulary.ContainsPhrase(release, w) &&
+                                                                    !TitleMatchVocabulary.ContainsPhrase(seriesTitle, w));
         }
 
         private List<Weekend> FindWeekends(Series series, string release, out int? round)
@@ -285,7 +331,8 @@ namespace NzbDrone.Core.Parser.TitleMatching
 
         private static TitleEvent ParseEvent(Episode episode)
         {
-            if (episode.Title.IsNullOrWhiteSpace())
+            // An undated episode can't have aired, and would split its weekend in two
+            if (episode.Title.IsNullOrWhiteSpace() || !episode.AirDateUtc.HasValue)
             {
                 return null;
             }
@@ -369,7 +416,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
                 Episode = episode;
                 Session = session;
                 Names = names;
-                AirDate = episode.AirDateUtc ?? DateTime.MaxValue;
+                AirDate = episode.AirDateUtc.Value;
             }
 
             public Episode Episode { get; }

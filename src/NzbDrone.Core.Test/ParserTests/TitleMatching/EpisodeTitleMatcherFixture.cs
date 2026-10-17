@@ -188,6 +188,7 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         }
 
         [TestCase("Formula1.2026.Singapore.Grand.Prix.1080p.WEB.H.264-BILLIE", 94)]
+        [TestCase("Formula1.2026.Singapore.GrandPrix.1080p.WEB.H264-GRP", 94)]
         [TestCase("Formula1.2026.China.Grand.Prix.Practice.1080p.WEB.h264-BILLIE", 15)]
         [TestCase("Formula1_2026_China_Grand_Prix_Sprint_Race_1080p_WEB_h264-BILLIE", 17)]
         [TestCase("Formula1.2026.China.Grand.Prix.Qualifying.1080p.WEB.h264-BILLIE", 18)]
@@ -340,7 +341,6 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
             eventEpisodeInfo.SeasonNumbers.Should().BeEmpty();
             eventEpisodeInfo.EpisodeNumbers.Should().BeEmpty();
             eventEpisodeInfo.AbsoluteEpisodeNumbers.Should().BeEmpty();
-            eventEpisodeInfo.FullSeason.Should().BeFalse();
             eventEpisodeInfo.AirDate.Should().BeNull();
         }
     }
