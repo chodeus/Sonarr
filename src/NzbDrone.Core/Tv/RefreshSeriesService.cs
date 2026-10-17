@@ -66,7 +66,7 @@ namespace NzbDrone.Core.Tv
             _logger = logger;
         }
 
-        private Series RefreshSeriesInfo(int seriesId)
+        private void RefreshSeriesInfo(int seriesId, bool lookedUpAgain = false)
         {
             var series = _seriesService.GetSeries(seriesId);
 
@@ -94,8 +94,23 @@ namespace NzbDrone.Core.Tv
                 throw;
             }
 
+            var lookedUp = series;
+
             // Changes saved during the lookup (a finished move, a season toggled) are on the stored copy, not this one
             series = _seriesService.GetSeries(seriesId);
+
+            // The lookup only fits the ID, language and episode order it asked for
+            if (series.TvdbId != lookedUp.TvdbId || series.Language != lookedUp.Language || series.SeasonType != lookedUp.SeasonType)
+            {
+                if (lookedUpAgain)
+                {
+                    _logger.Debug("{0} changed again during its lookup, leaving it for the next refresh", series.Title);
+                    return;
+                }
+
+                RefreshSeriesInfo(seriesId, true);
+                return;
+            }
 
             if (series.TvdbId != seriesInfo.TvdbId)
             {
@@ -165,8 +180,6 @@ namespace NzbDrone.Core.Tv
 
             _logger.Debug("Finished series refresh for {0}", series.Title);
             _eventAggregator.PublishEvent(new SeriesUpdatedEvent(series));
-
-            return series;
         }
 
         private List<Season> UpdateSeasons(Series series, Series seriesInfo)
@@ -233,30 +246,40 @@ namespace NzbDrone.Core.Tv
             }
         }
 
-        // Callers can hold a copy read long before (a full refresh reads every series up front), so read it again
-        private void UpdateTags(int seriesId)
+        // Callers can hold a copy read long before (a full refresh reads every series up front), so work from fresh reads
+        private void UpdateTagsAndRescan(int seriesId, bool isNew, CommandTrigger trigger)
         {
-            Series series;
-            Series storedSeries;
-
             try
             {
-                series = _seriesService.GetSeries(seriesId);
-                storedSeries = _seriesService.GetSeries(seriesId);
+                UpdateTags(_seriesService.GetSeries(seriesId));
+
+                // A move can finish while the tags are worked out, and scanning a path that's gone drops every episode file
+                RescanSeries(_seriesService.GetSeries(seriesId), isNew, trigger);
             }
             catch (ModelNotFoundException)
             {
-                _logger.Debug("Series {0} was deleted during the refresh, skipping its tags", seriesId);
-                return;
+                _logger.Debug("Series {0} was deleted during the refresh, skipping its tags and rescan", seriesId);
             }
+        }
+
+        private void UpdateTags(Series series)
+        {
+            var tagsBefore = new HashSet<int>(series.Tags);
 
             if (!_seriesService.UpdateAutoTaggingTags(series))
             {
                 return;
             }
 
-            _seriesService.UpdateSeriesFields(series, s => s.Tags);
-            _eventAggregator.PublishEvent(new SeriesEditedEvent(series, storedSeries));
+            // Apply the change to a fresh read, so a tag edit saved while the rules ran stays
+            var storedSeries = _seriesService.GetSeries(series.Id);
+            var updatedSeries = _seriesService.GetSeries(series.Id);
+
+            updatedSeries.Tags.ExceptWith(tagsBefore.Except(series.Tags).ToList());
+            updatedSeries.Tags.UnionWith(series.Tags.Except(tagsBefore).ToList());
+
+            _seriesService.UpdateSeriesFields(updatedSeries, s => s.Tags);
+            _eventAggregator.PublishEvent(new SeriesEditedEvent(updatedSeries, storedSeries));
         }
 
         public void Execute(RefreshSeriesCommand message)
@@ -273,9 +296,8 @@ namespace NzbDrone.Core.Tv
 
                     try
                     {
-                        series = RefreshSeriesInfo(seriesId);
-                        UpdateTags(seriesId);
-                        RescanSeries(series, isNew, trigger);
+                        RefreshSeriesInfo(seriesId);
+                        UpdateTagsAndRescan(seriesId, isNew, trigger);
                     }
                     catch (SeriesNotFoundException)
                     {
@@ -288,8 +310,7 @@ namespace NzbDrone.Core.Tv
                     catch (Exception e)
                     {
                         _logger.Error(e, "Couldn't refresh info for {0}", series);
-                        UpdateTags(seriesId);
-                        RescanSeries(series, isNew, trigger);
+                        UpdateTagsAndRescan(seriesId, isNew, trigger);
 
                         // Mark the result as indeterminate so it's not marked as a full success,
                         // but we can still process other series if needed.
@@ -308,7 +329,7 @@ namespace NzbDrone.Core.Tv
                     {
                         try
                         {
-                            seriesLocal = RefreshSeriesInfo(seriesLocal.Id);
+                            RefreshSeriesInfo(seriesLocal.Id);
                         }
                         catch (SeriesNotFoundException)
                         {
@@ -320,14 +341,12 @@ namespace NzbDrone.Core.Tv
                             _logger.Error(e, "Couldn't refresh info for {0}", seriesLocal);
                         }
 
-                        UpdateTags(series.Id);
-                        RescanSeries(seriesLocal, false, trigger);
+                        UpdateTagsAndRescan(series.Id, false, trigger);
                     }
                     else
                     {
                         _logger.Info("Skipping refresh of series: {0}", seriesLocal.Title);
-                        UpdateTags(series.Id);
-                        RescanSeries(seriesLocal, false, trigger);
+                        UpdateTagsAndRescan(series.Id, false, trigger);
                     }
                 }
             }

@@ -144,6 +144,90 @@ namespace NzbDrone.Core.Test.TvTests
             stored.Path.Should().Be(_newPath);
             stored.PendingPath.Should().BeNull();
             stored.Title.Should().Be("New Title");
+
+            Mocker.GetMock<IDiskScanService>()
+                  .Verify(v => v.Scan(It.Is<Series>(s => s.Path == _newPath)), Times.Once());
+            Mocker.GetMock<IDiskScanService>()
+                  .Verify(v => v.Scan(It.Is<Series>(s => s.Path == _oldPath)), Times.Never());
+        }
+
+        [Test]
+        public void should_keep_a_tag_saved_while_the_auto_tags_are_worked_out()
+        {
+            GivenLookup();
+            GivenAutoTag(5, () => SaveChange(s => s.Tags.Add(9)));
+
+            RefreshTheSeries();
+
+            AllStoredModels.Single().Tags.Should().BeEquivalentTo(new[] { 5, 9 });
+        }
+
+        [Test]
+        public void should_remove_the_tags_the_rules_take_off()
+        {
+            SaveChange(s => s.Tags = new HashSet<int> { 7 });
+
+            GivenLookup();
+
+            Mocker.GetMock<IAutoTaggingService>()
+                  .Setup(s => s.GetTagChanges(It.IsAny<Series>()))
+                  .Returns(new AutoTaggingChanges { TagsToRemove = new HashSet<int> { 7 } });
+
+            RefreshTheSeries();
+
+            AllStoredModels.Single().Tags.Should().BeEmpty();
+        }
+
+        [Test]
+        public void should_look_up_again_when_the_episode_order_changes_during_the_lookup()
+        {
+            var lookups = new List<string>();
+
+            Mocker.GetMock<IProvideSeriesInfo>()
+                  .Setup(s => s.GetSeriesInfo(_series.TvdbId, It.IsAny<Language>(), It.IsAny<string>()))
+                  .Returns<int, Language, string>((_, _, seasonType) =>
+                  {
+                      lookups.Add(seasonType);
+
+                      if (lookups.Count == 1)
+                      {
+                          SaveChange(s => s.SeasonType = "dvd");
+                      }
+
+                      return new Tuple<Series, List<Episode>>(_seriesInfo, new List<Episode>());
+                  });
+
+            RefreshTheSeries();
+
+            lookups.Should().Equal(_series.SeasonType, "dvd");
+
+            var stored = AllStoredModels.Single();
+            stored.SeasonType.Should().Be("dvd");
+            stored.Title.Should().Be("New Title");
+        }
+
+        [Test]
+        public void should_leave_the_series_when_its_episode_order_keeps_changing_during_the_lookup()
+        {
+            var lookups = 0;
+
+            Mocker.GetMock<IProvideSeriesInfo>()
+                  .Setup(s => s.GetSeriesInfo(_series.TvdbId, It.IsAny<Language>(), It.IsAny<string>()))
+                  .Returns(() =>
+                  {
+                      lookups++;
+                      SaveChange(s => s.SeasonType = $"order{lookups}");
+
+                      return new Tuple<Series, List<Episode>>(_seriesInfo, new List<Episode>());
+                  });
+
+            RefreshTheSeries();
+
+            lookups.Should().Be(2);
+
+            var stored = AllStoredModels.Single();
+            stored.SeasonType.Should().Be("order2");
+            stored.Title.Should().Be("Old Title");
         }
 
         [Test]
@@ -180,6 +264,8 @@ namespace NzbDrone.Core.Test.TvTests
 
             Mocker.GetMock<IDiskScanService>()
                   .Verify(v => v.Scan(It.Is<Series>(s => s.Id == other.Id)), Times.Once());
+            Mocker.GetMock<IDiskScanService>()
+                  .Verify(v => v.Scan(It.Is<Series>(s => s.Id == _series.Id)), Times.Never());
 
             Mocker.GetMock<IEventAggregator>()
                   .Verify(v => v.PublishEvent(It.IsAny<SeriesRefreshCompleteEvent>()), Times.Once());
@@ -209,6 +295,9 @@ namespace NzbDrone.Core.Test.TvTests
             Subject.Execute(new RefreshSeriesCommand(new List<int> { _series.Id, other.Id }));
 
             AllStoredModels.Single().Title.Should().Be("Other New Title");
+
+            Mocker.GetMock<IDiskScanService>()
+                  .Verify(v => v.Scan(It.Is<Series>(s => s.Id == _series.Id)), Times.Never());
 
             ExceptionVerification.ExpectedErrors(1);
         }
