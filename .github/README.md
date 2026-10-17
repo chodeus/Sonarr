@@ -2,7 +2,7 @@
 
 Part of the [custom Sonarr image](https://github.com/chodeus/Sonarr/tree/custom) (`ghcr.io/chodeus/sonarr:custom`), which merges this branch into `develop`. Reviewed in [#5](https://github.com/chodeus/Sonarr/pull/5).
 
-v5 picks an episode order (Aired, DVD, International, …) when a series is added, and Edit Series greys the setting out once the series has a file. Deleting and re-adding the series doesn't help: files are matched by the season and episode numbers in their names, so a file named in aired order lands on whichever episode holds that slot in the new order. Pokémon has 1,426 aired-order files; re-added in DVD order, 348 would sit on the wrong episode and 392 on none.
+v5 picks an episode order (Aired, DVD, International, …) when a series is added, and Edit Series greys the setting out once the series has a file. Deleting and re-adding the series doesn't help: files are matched by the season and episode numbers in their names, so a file named in aired order lands on whichever episode holds that slot in the new order. On a long-running anime with aired and DVD orders, a re-add in DVD order would put about a quarter of the files on the wrong episode and more than a quarter on none.
 
 Unlocking the setting isn't enough either. A refresh matches stored episodes to TVDB's by season and episode number, so switching the order rewrites every slot's metadata in place while each file stays on its old slot.
 
