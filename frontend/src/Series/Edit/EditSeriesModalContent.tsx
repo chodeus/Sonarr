@@ -94,7 +94,9 @@ function EditSeriesModalContent({
 
   const canSave =
     !isSeasonTypeChanging ||
-    (!isEpisodeOrderPreviewFetching && !!episodeOrderPreview?.canChange);
+    (!isEpisodeOrderPreviewFetching &&
+      !episodeOrderPreviewError &&
+      !!episodeOrderPreview?.canChange);
 
   const { settings, ...otherSettings } = useMemo(() => {
     return selectSettings(
