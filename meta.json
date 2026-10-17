@@ -4,14 +4,14 @@
   "pr_shas": "8d3b8c3526d31d066bfdf217cd844b5453424914 b8cf5e7eecf35d1051afaaf2ce9793d9a70a3352 2ed7978af15cdbfcea05c8fc444176972d3c94df bff8193e2c3ba57e76242a8839920625a8ca028a 0a2fb3954f7d1d7aeb1d7d960d39661ed1ad672f 0d68bbcf4d0a5f254e3d1a7e602bb254dc03017a",
   "sonarr_branch": "develop",
   "sonarr_repo": "Sonarr/Sonarr",
-  "sonarr_sha": "a2b6054a8f3746d149a811bddea2a8d063efc35e",
+  "sonarr_sha": "2b39049ee6e16e1b326792009ea4b985e29adf48",
   "sonarr_sha__command": "git ls-remote --exit-code \"https://github.com/$(jq -re '.sonarr_repo' < meta.json).git\" \"refs/heads/$(jq -re '.sonarr_branch' < meta.json)\" | cut -f1",
   "test_url": "http://localhost:8989/system/status",
   "upstream_image": "ghcr.io/hotio/base",
   "upstream_tag": "alpinevpn",
   "upstream_tag_sha": "alpinevpn-826e0fd",
   "upstream_tag_sha__command": "json=$(cat meta.json) && upstream_image=$(jq -re '.upstream_image' <<< \"${json}\") && upstream_image_base=$(basename \"${upstream_image}\") && upstream_tag=$(jq -re '.upstream_tag' <<< \"${json}\") && tags_json=$(curl -fsSL \"https://hotio.dev/containers/${upstream_image_base}-tags.json\") && commit_sha=$(jq -re --arg tag \"${upstream_tag}\" '.[$tag].commit_sha' <<< \"${tags_json}\") && upstream_tag_sha=${upstream_tag}-${commit_sha:0:7} && echo \"${upstream_tag_sha}\"",
-  "version": "5.0.0-a2b6054-5fd447c",
+  "version": "5.0.0-2b39049-5fd447c",
   "version__command": "sonarr_sha=$(jq -re '.sonarr_sha' < meta.json) && pr=$(jq -re '.pr_shas' < meta.json | git hash-object --stdin) && major=$(curl -fsSL \"https://raw.githubusercontent.com/$(jq -re '.sonarr_repo' < meta.json)/${sonarr_sha}/.github/workflows/build_v5.yml\" | sed -n \"s/^ *VERSION: *\\([0-9.]*\\).*/\\1/p\") && test -n \"${major}\" && echo \"${major}-${sonarr_sha:0:7}-${pr:0:7}\"",
   "version_branch": "develop"
 }
