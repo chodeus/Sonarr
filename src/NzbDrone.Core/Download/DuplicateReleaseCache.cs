@@ -1,7 +1,6 @@
 using System;
 using NzbDrone.Common.Cache;
 using NzbDrone.Common.Extensions;
-using NzbDrone.Core.Indexers;
 using NzbDrone.Core.Parser.Model;
 
 namespace NzbDrone.Core.Download
@@ -31,30 +30,25 @@ namespace NzbDrone.Core.Download
                 _cache.Set(HashKey(torrentInfo.InfoHash), downloadClient, Lifetime);
             }
 
-            var titleKey = TitleKey(release);
+            var listingKey = ListingKey(release);
 
-            if (titleKey != null)
+            if (listingKey != null)
             {
-                _cache.Set(titleKey, downloadClient, Lifetime);
+                _cache.Set(listingKey, downloadClient, Lifetime);
             }
         }
 
-        // Matches the way ReleaseComparer.SameTorrent matches a blocklisted torrent
+        // A known hash decides; otherwise only the same listing matches, never another one sharing its title
         public string Find(ReleaseInfo release)
         {
-            if (release.DownloadProtocol != DownloadProtocol.Torrent)
-            {
-                return null;
-            }
-
             if (release is TorrentInfo torrentInfo && torrentInfo.InfoHash.IsNotNullOrWhiteSpace())
             {
                 return _cache.Find(HashKey(torrentInfo.InfoHash));
             }
 
-            var titleKey = TitleKey(release);
+            var listingKey = ListingKey(release);
 
-            return titleKey == null ? null : _cache.Find(titleKey);
+            return listingKey == null ? null : _cache.Find(listingKey);
         }
 
         private static string HashKey(string infoHash)
@@ -62,10 +56,9 @@ namespace NzbDrone.Core.Download
             return $"hash:{infoHash.ToLowerInvariant()}";
         }
 
-        // By indexer name, as ReleaseComparer.HasSameIndexer: a pushed release Sonarr can't place has IndexerId 0
-        private static string TitleKey(ReleaseInfo release)
+        private static string ListingKey(ReleaseInfo release)
         {
-            return release.Indexer.IsNullOrWhiteSpace() ? null : $"title:{release.Indexer.ToLowerInvariant()}:{release.Title}";
+            return release.Guid.IsNullOrWhiteSpace() ? null : $"guid:{release.Guid}";
         }
     }
 }

@@ -245,7 +245,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
         {
             try
             {
-                return Proxy.IsTorrentLoaded(hash.ToLower(), Settings);
+                return Proxy.IsTorrentLoaded(hash.ToLowerInvariant(), Settings);
             }
             catch (Exception ex)
             {

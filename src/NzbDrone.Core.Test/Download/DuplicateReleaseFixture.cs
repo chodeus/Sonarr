@@ -40,7 +40,7 @@ namespace NzbDrone.Core.Test.Download
                   .Returns(new List<IDownloadClient> { _downloadClient.Object });
         }
 
-        private static RemoteEpisode RemoteEpisode(int indexerId, string infoHash, string indexer = null)
+        private static RemoteEpisode RemoteEpisode(int indexerId, string infoHash, string guid = null)
         {
             return new RemoteEpisode
             {
@@ -50,7 +50,8 @@ namespace NzbDrone.Core.Test.Download
                 Release = new TorrentInfo
                 {
                     Title = Title,
-                    Indexer = indexer ?? $"Indexer {indexerId}",
+                    Guid = guid ?? $"indexer{indexerId}-listing1",
+                    Indexer = $"Indexer {indexerId}",
                     IndexerId = indexerId,
                     InfoHash = infoHash,
                     DownloadUrl = $"https://indexer{indexerId}.test/download/1",
@@ -117,20 +118,28 @@ namespace NzbDrone.Core.Test.Download
         }
 
         [Test]
-        public async Task should_tell_trackers_sonarr_does_not_know_apart_by_name()
+        public async Task should_accept_another_listing_with_the_same_title_on_the_same_indexer()
         {
-            var fromTrackerA = RemoteEpisode(0, null, "Tracker A");
-            await GivenRefusedByTheClient(new ReleaseAlreadyInDownloadClientException(fromTrackerA.Release, "qBittorrent already has this torrent", null), fromTrackerA);
+            await GivenTheClientAlreadyHasIt();
 
-            Decide(RemoteEpisode(0, null, "tracker a")).Accepted.Should().BeFalse();
-            Decide(RemoteEpisode(0, null, "Tracker B")).Accepted.Should().BeTrue();
+            Decide(RemoteEpisode(7, null, "indexer7-listing2")).Accepted.Should().BeTrue();
         }
 
         [Test]
-        public async Task should_match_a_listing_with_no_indexer_name_by_hash_only()
+        public async Task should_tell_pushed_listings_apart_by_guid()
         {
-            var unnamed = RemoteEpisode(0, null, string.Empty);
-            await GivenRefusedByTheClient(new ReleaseAlreadyInDownloadClientException(unnamed.Release, "qBittorrent already has this torrent", null), unnamed);
+            var pushed = RemoteEpisode(0, null, "PUSH-https://tracker-a.test/download/1");
+            await GivenRefusedByTheClient(new ReleaseAlreadyInDownloadClientException(pushed.Release, "qBittorrent already has this torrent", null), pushed);
+
+            Decide(RemoteEpisode(0, null, "PUSH-https://tracker-a.test/download/1")).Accepted.Should().BeFalse();
+            Decide(RemoteEpisode(0, null, "PUSH-https://tracker-b.test/download/1")).Accepted.Should().BeTrue();
+        }
+
+        [Test]
+        public async Task should_match_a_listing_with_no_guid_by_hash_only()
+        {
+            var unidentified = RemoteEpisode(0, null, string.Empty);
+            await GivenRefusedByTheClient(new ReleaseAlreadyInDownloadClientException(unidentified.Release, "qBittorrent already has this torrent", null), unidentified);
 
             Decide(RemoteEpisode(0, null, string.Empty)).Accepted.Should().BeTrue();
             Decide(RemoteEpisode(0, Hash, string.Empty)).Accepted.Should().BeFalse();
