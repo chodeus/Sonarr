@@ -32,6 +32,10 @@
   - When qBittorrent refuses a torrent it already holds, such as one in a post-import category or one a cross-seed tool added, the release used to be grabbed and refused again on every RSS sync. It is now rejected with "qBittorrent already has this release".
   - Only the same torrent hash, or the same listing on the same indexer, is rejected; another release with the same title isn't.
   - Nothing is blocklisted. The rejection lives in memory for 12 hours, and each sync first asks qBittorrent whether it still has the torrent, so deleting it there lets the next sync grab the release.
+- **A series refresh keeps changes saved while it runs** — branch [`fix/refresh-keeps-concurrent-changes`](https://github.com/chodeus/Sonarr/tree/fix/refresh-keeps-concurrent-changes), not submitted
+  - A refresh used to save the whole series after its TheTVDB lookup, undoing anything saved meanwhile. A folder move got its old path and pending-move mark back (the series then looked mid-move until a restart), a season toggled during the lookup was switched back along with its episodes, and a profile change was lost.
+  - It now reads the series again after the lookup and saves only the fields it refreshes. If the ID, language or episode order changed during the lookup, it looks the series up again.
+  - Auto-tags are saved alone, keeping a tag edit made meanwhile. The rescan after a refresh reads the series again, so a move that finished is scanned at its new path: a scan of a folder that's gone drops every episode-file record.
 
 ## How the build works
 
