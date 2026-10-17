@@ -26,8 +26,9 @@ reviews:
   path_instructions:
     - path: "src/**/*.cs"
       instructions: |
-        Fork of Sonarr. Every feature branch is merged onto upstream develop every hour to
-        build an image, so changes must stay small and self-contained against upstream: prefer
+        Fork of Sonarr. The image build merges each listed feature branch, at a pinned commit,
+        onto upstream develop every 3 hours, so changes must stay small and self-contained
+        against upstream: prefer
         new types over edits to upstream files, never reformat or reorder upstream code, and
         keep existing public constructors, interfaces and method signatures unless the change
         needs them. StyleCop and the analyzers run with warnings as errors, so do NOT report
@@ -47,6 +48,15 @@ reviews:
         - Database: fork-only migrations are numbered from 900 so upstream's numbers can't
           collide.
         - Null-safety, swallowed exceptions, and 0, "" or an empty collection treated as "unset".
+        - Lost updates: code that reads an entity, does slow work (HTTP, disk, another command)
+          and then saves the whole object overwrites anything saved meanwhile. Commands overlap
+          unless both require disk access (a series refresh runs beside a folder move). Prefer
+          saving only the fields the code owns, and a fresh read for anything acting on a path.
+        - Failure after a save: for each write, what stays saved when a later step fails or a
+          callee catches and logs an error? Is it restored, or retried to the same end state?
+        - Callers' gates: early returns, caches and flags in callers that skip the changed code.
+        - Events: a changed save path must still publish the events its handlers rely on
+          (SeriesEditedEvent and SeriesBulkEditedEvent reach different handlers).
         - Comments: navigational or gotcha only (1-2 lines, non-obvious why), matching the
           file's density. Flag narrative or history comments.
 
@@ -56,6 +66,15 @@ reviews:
         weakened to pass (over-broad matchers, removed guards, swallowed exceptions), results
         that depend on today's date or the machine's culture, and shared state leaking between
         cases. Parser tests should use real release names. Ignore StyleCop-style nits.
+
+        - Tests build in Release by default, where an unexpected Warn or Error doesn't fail the
+          test (LoggingTest checks only in Debug), so a test of a path that logs one must assert
+          ExceptionVerification.ExpectedWarns or ExpectedErrors.
+        - A test whose only check is a Verify on a mocked service can't catch a bug in the real
+          implementation. Where the risk is persistence, the command queue or file naming, ask
+          for one test through the real service (DbTest with the real repository).
+        - NBuilder sets an enum to its first declared value (Series.Status is Deleted) and builds
+          dates in local time: flag tests that rely on builder defaults for the state they test.
 
     - path: "frontend/**/*.{ts,tsx}"
       instructions: |
