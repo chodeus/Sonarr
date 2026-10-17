@@ -28,6 +28,10 @@
   - The change is refused while any file belongs to an episode missing from the new order, a combined file couldn't be named for it, or episodes still lack TVDB IDs (refresh the series once after updating). Leaving Aired order is also refused while XEM or a scene title numbers the series' releases, since the other orders turn both off.
   - If the refresh after the change doesn't put every file where the preview said, the previous order is put back and no file is renamed.
   - Episodes now keep their TVDB IDs (stock v5 stores 0 for every episode), and a refresh follows an episode TVDB renumbers by ID, so its file stays with it.
+- **A torrent qBittorrent already has isn't retried every sync** — branch [`fix/qbit-duplicate-reject`](https://github.com/chodeus/Sonarr/tree/fix/qbit-duplicate-reject), not submitted
+  - When qBittorrent refuses a torrent it already holds, such as one in a post-import category or one a cross-seed tool added, the release used to be grabbed and refused again on every RSS sync. It is now rejected with "qBittorrent already has this release".
+  - Only the same torrent hash, or the same listing on the same indexer, is rejected; another release with the same title isn't.
+  - Nothing is blocklisted. The rejection lives in memory for 12 hours, and each sync first asks qBittorrent whether it still has the torrent, so deleting it there lets the next sync grab the release.
 
 ## How the build works
 
