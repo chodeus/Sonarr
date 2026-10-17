@@ -9,9 +9,10 @@ It happens when the copy qBittorrent holds sits in a category Sonarr's queue doe
 ## Changes
 
 - `QBittorrent` answers a 409 by asking qBittorrent whether it has that hash (`IsTorrentLoaded`). If it does, it throws `ReleaseAlreadyInDownloadClientException`, a kind of `DownloadClientRejectedReleaseException`, so everything that handled the rejection before still does. If the hash isn't there, or the check fails, the conflict stays a plain rejection.
-- `DownloadService` remembers that release for 12 hours (`DuplicateReleaseCache`, in memory; 12 hours is the window `HistorySpecification` gives a recent grab), by its hash and by the listing's GUID.
-- `AlreadyInDownloadClientSpecification` rejects a remembered release with "<client> already has this release". A listing with a hash matches by hash, whichever indexer lists it. One without a hash matches only the same listing (its GUID, which an RSS item keeps from sync to sync), so another torrent posted under the same title isn't affected. A listing with neither matches nothing.
-- Nothing is written to the blocklist or the database. After 12 hours, or a restart, Sonarr tries once more, and if qBittorrent still has the torrent the rejection starts again. Deleting the torrent from qBittorrent lets Sonarr grab it again within 12 hours.
+- `DownloadService` remembers that release for 12 hours (`DuplicateReleaseCache`, in memory; 12 hours is the window `HistorySpecification` gives a recent grab), by its hash and by the listing's GUID on that indexer.
+- `AlreadyInDownloadClientSpecification` rejects a remembered release with "<client> already has this release". A listing with a hash matches by hash, whichever indexer lists it. One without a hash matches only the same listing (its GUID on the same indexer and protocol, which an RSS item keeps from sync to sync), so another torrent posted under the same title isn't affected. A listing with neither matches nothing.
+- Before rejecting, Sonarr asks the client that refused it whether it still has the torrent. Once you delete it from qBittorrent, the next sync can grab the release again; if the client can't be asked, the release isn't rejected.
+- Nothing is written to the blocklist or the database. After 12 hours, or a restart, Sonarr tries once more, and if qBittorrent still has the torrent the rejection starts again.
 
 ## Tests
 

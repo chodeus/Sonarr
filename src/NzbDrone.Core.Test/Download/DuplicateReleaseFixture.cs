@@ -24,6 +24,7 @@ namespace NzbDrone.Core.Test.Download
         private const string Hash = "CBC2F069FE8BB2F544EAE707D75BCD3DE9DCF951";
 
         private Mock<IDownloadClient> _downloadClient;
+        private bool _stillHeld;
 
         [SetUp]
         public void Setup()
@@ -34,6 +35,14 @@ namespace NzbDrone.Core.Test.Download
             _downloadClient = new Mock<IDownloadClient>();
             _downloadClient.SetupGet(c => c.Definition).Returns(new DownloadClientDefinition { Id = 1, Name = "qBittorrent" });
             _downloadClient.SetupGet(c => c.Protocol).Returns(DownloadProtocol.Torrent);
+            _downloadClient.As<ITorrentPresenceCheck>()
+                           .Setup(c => c.HasTorrent(It.IsAny<string>()))
+                           .Returns(() => _stillHeld);
+            _stillHeld = true;
+
+            Mocker.GetMock<IProvideDownloadClient>()
+                  .Setup(p => p.Get(1))
+                  .Returns(_downloadClient.Object);
 
             Mocker.GetMock<IProvideDownloadClient>()
                   .Setup(p => p.GetDownloadClients(It.IsAny<DownloadProtocol>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<HashSet<int>>()))
@@ -143,6 +152,59 @@ namespace NzbDrone.Core.Test.Download
 
             Decide(RemoteEpisode(0, null, string.Empty)).Accepted.Should().BeTrue();
             Decide(RemoteEpisode(0, Hash, string.Empty)).Accepted.Should().BeFalse();
+        }
+
+        [Test]
+        public async Task should_ask_the_client_about_the_refused_torrent()
+        {
+            await GivenTheClientAlreadyHasIt();
+
+            Decide(RemoteEpisode(7, null));
+
+            _downloadClient.As<ITorrentPresenceCheck>().Verify(c => c.HasTorrent(Hash), Times.Once());
+        }
+
+        [Test]
+        public async Task should_accept_once_the_client_no_longer_has_the_torrent()
+        {
+            await GivenTheClientAlreadyHasIt();
+
+            _stillHeld = false;
+            Decide(RemoteEpisode(7, null)).Accepted.Should().BeTrue();
+
+            _stillHeld = true;
+            Decide(RemoteEpisode(7, null)).Accepted.Should().BeTrue();
+        }
+
+        [Test]
+        public async Task should_accept_when_the_client_cannot_be_checked()
+        {
+            await GivenTheClientAlreadyHasIt();
+
+            Mocker.GetMock<IProvideDownloadClient>()
+                  .Setup(p => p.Get(1))
+                  .Throws(new InvalidOperationException("the download client was removed"));
+
+            Decide(RemoteEpisode(7, null)).Accepted.Should().BeTrue();
+        }
+
+        [Test]
+        public async Task should_accept_the_same_guid_from_another_indexer()
+        {
+            await GivenTheClientAlreadyHasIt();
+
+            Decide(RemoteEpisode(9, null, "indexer7-listing1")).Accepted.Should().BeTrue();
+        }
+
+        [Test]
+        public async Task should_accept_a_usenet_listing_with_the_same_guid()
+        {
+            await GivenTheClientAlreadyHasIt();
+
+            var nzb = RemoteEpisode(7, null);
+            nzb.Release = new ReleaseInfo { Title = Title, Guid = "indexer7-listing1", Indexer = "Indexer 7", IndexerId = 7, DownloadProtocol = DownloadProtocol.Usenet, DownloadUrl = "https://indexer7.test/nzb/1" };
+
+            Decide(nzb).Accepted.Should().BeTrue();
         }
 
         [Test]

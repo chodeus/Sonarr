@@ -20,7 +20,7 @@ using NzbDrone.Core.Validation;
 
 namespace NzbDrone.Core.Download.Clients.QBittorrent
 {
-    public class QBittorrent : TorrentClientBase<QBittorrentSettings>
+    public class QBittorrent : TorrentClientBase<QBittorrentSettings>, ITorrentPresenceCheck
     {
         private readonly IQBittorrentProxySelector _proxySelector;
         private readonly ICached<SeedingTimeCacheEntry> _seedingTimeCache;
@@ -240,16 +240,16 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             return hash;
         }
 
-        // A failed check leaves the conflict a plain rejection, as before
-        private bool HasTorrent(string hash)
+        // A failed check counts as no: a conflict stays a plain rejection, and a remembered one is let through
+        public bool HasTorrent(string infoHash)
         {
             try
             {
-                return Proxy.IsTorrentLoaded(hash.ToLowerInvariant(), Settings);
+                return Proxy.IsTorrentLoaded(infoHash.ToLowerInvariant(), Settings);
             }
             catch (Exception ex)
             {
-                _logger.Debug(ex, "Unable to check whether qBittorrent already has {0}", hash);
+                _logger.Debug(ex, "Unable to check whether qBittorrent already has {0}", infoHash);
                 return false;
             }
         }

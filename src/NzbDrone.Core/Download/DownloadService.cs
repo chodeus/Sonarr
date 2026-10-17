@@ -170,7 +170,7 @@ namespace NzbDrone.Core.Download
             catch (ReleaseAlreadyInDownloadClientException)
             {
                 _logger.Debug("{0} already has {1}, so it won't be grabbed again for a while", downloadClient.Definition.Name, remoteEpisode);
-                _duplicateReleaseCache.Remember(remoteEpisode.Release, downloadClient.Definition.Name);
+                _duplicateReleaseCache.Remember(remoteEpisode.Release, downloadClient.Definition.Id, downloadClient.Definition.Name);
                 throw;
             }
             catch (DownloadClientRejectedReleaseException)
