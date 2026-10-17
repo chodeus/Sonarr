@@ -541,7 +541,7 @@
   "DownloadClientQbittorrentSettingsFirstAndLastFirstHelpText": "Download first and last pieces first (qBittorrent 4.1.0+)",
   "DownloadClientQbittorrentSettingsInitialStateHelpText": "Initial state for torrents added to qBittorrent. Note that Forced Torrents do not abide by seed restrictions",
   "DownloadClientQbittorrentSettingsRenameToReleaseTitle": "Rename to Release Title",
-  "DownloadClientQbittorrentSettingsRenameToReleaseTitleHelpText": "Until a torrent imports, rename it to the grabbed release title when that title has a higher quality, or the same quality and a higher custom format score, than the torrent's name. Files keep their names, but a single-episode import then scores the grabbed title. Not for releases matched to the series by ID (qBittorrent 4.1.0+)",
+  "DownloadClientQbittorrentSettingsRenameToReleaseTitleHelpText": "Until a torrent imports, rename it to the grabbed release title when that title has a higher quality, or the same quality and a higher custom format score, than the torrent's name. Files keep their names, but a single-episode import then scores the grabbed title. Not for releases matched to the series by ID. Needs qBittorrent 4.1.0 or newer.",
   "DownloadClientQbittorrentSettingsSequentialOrder": "Sequential Order",
   "DownloadClientQbittorrentSettingsSequentialOrderHelpText": "Download in sequential order (qBittorrent 4.1.0+)",
   "DownloadClientQbittorrentSettingsUseSslHelpText": "Use a secure connection. See Options -> Web UI -> 'Use HTTPS instead of HTTP' in qBittorrent.",
