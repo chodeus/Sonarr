@@ -237,6 +237,13 @@ namespace NzbDrone.Core.DataAugmentation.Xem
 
         public void Handle(SeriesUpdatedEvent message)
         {
+            // Clearing another order's numbering needs nothing from XEM, so an outage can't leave it in place
+            if (message.Series.SeasonType != SeasonType.Official)
+            {
+                PerformUpdate(message.Series);
+                return;
+            }
+
             if (_cache.IsExpired(TimeSpan.FromHours(3)))
             {
                 UpdateXemSeriesIds();

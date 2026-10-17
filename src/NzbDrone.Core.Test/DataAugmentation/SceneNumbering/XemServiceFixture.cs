@@ -152,6 +152,22 @@ namespace NzbDrone.Core.Test.DataAugmentation.SceneNumbering
         }
 
         [Test]
+        public void should_clear_scenenumbering_for_another_episode_order_while_xem_is_unavailable()
+        {
+            GivenExistingMapping();
+            _theXemSeriesIds.Clear();
+            _series.SeasonType = "dvd";
+
+            Subject.Handle(new SeriesUpdatedEvent(_series));
+
+            Mocker.GetMock<ISeriesService>()
+                  .Verify(v => v.UpdateSeries(It.Is<Series>(s => !s.UseSceneNumbering), It.IsAny<bool>(), It.IsAny<bool>()), Times.Once());
+
+            _episodes.Should().OnlyContain(e => e.SceneSeasonNumber == null && e.SceneEpisodeNumber == null);
+            ExceptionVerification.ExpectedWarns(0);
+        }
+
+        [Test]
         public void should_not_fetch_scenenumbering_when_series_uses_another_episode_order()
         {
             GivenTvdbMappings();
