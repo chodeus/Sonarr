@@ -16,6 +16,7 @@ import styles from './EpisodeOrderPreviewModalContent.module.css';
 
 const STATUS_ORDER: EpisodeOrderPreviewFileStatus[] = [
   'unmatched',
+  'unnameable',
   'conflict',
   'renamed',
 ];

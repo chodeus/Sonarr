@@ -4,7 +4,8 @@ export type EpisodeOrderPreviewFileStatus =
   | 'unchanged'
   | 'renamed'
   | 'conflict'
-  | 'unmatched';
+  | 'unmatched'
+  | 'unnameable';
 
 export interface EpisodeOrderPreviewEpisode {
   seasonNumber: number;
@@ -23,7 +24,10 @@ export interface EpisodeOrderPreviewFile {
 export interface EpisodeOrderPreview {
   seriesId: number;
   seasonType: string;
+  canChange: boolean;
   refreshRequired: boolean;
+  sceneNumberedEpisodes: number;
+  sceneSeasonTitles: number;
   hasAbsoluteEpisodeNumbers: boolean;
   episodesAdded: number;
   episodesRemoved: number;
@@ -45,10 +49,3 @@ const useEpisodeOrderPreview = (
 };
 
 export default useEpisodeOrderPreview;
-
-export function canChangeEpisodeOrder(preview: EpisodeOrderPreview) {
-  return (
-    !preview.refreshRequired &&
-    preview.files.every((file) => file.status !== 'unmatched')
-  );
-}

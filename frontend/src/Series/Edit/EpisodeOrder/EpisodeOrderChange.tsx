@@ -12,10 +12,7 @@ import { InputChanged } from 'typings/inputs';
 import { ApiError } from 'Utilities/Fetch/fetchJson';
 import translate from 'Utilities/String/translate';
 import EpisodeOrderPreviewModal from './EpisodeOrderPreviewModal';
-import {
-  canChangeEpisodeOrder,
-  EpisodeOrderPreview,
-} from './useEpisodeOrderPreview';
+import { EpisodeOrderPreview } from './useEpisodeOrderPreview';
 import styles from './EpisodeOrderChange.module.css';
 
 interface EpisodeOrderChangeProps {
@@ -47,6 +44,7 @@ function EpisodeOrderChange({
       unchanged: files.filter((f) => f.status === 'unchanged').length,
       conflict: files.filter((f) => f.status === 'conflict').length,
       unmatched: files.filter((f) => f.status === 'unmatched').length,
+      unnameable: files.filter((f) => f.status === 'unnameable').length,
     };
   }, [preview]);
 
@@ -70,8 +68,9 @@ function EpisodeOrderChange({
     );
   }
 
-  const canChange = canChangeEpisodeOrder(preview);
-  const hasChanges = counts.renamed + counts.conflict + counts.unmatched > 0;
+  const canChange = preview.canChange;
+  const hasChanges =
+    counts.renamed + counts.conflict + counts.unmatched + counts.unnameable > 0;
 
   return (
     <>
@@ -85,6 +84,23 @@ function EpisodeOrderChange({
         <Alert kind={kinds.DANGER}>
           {translate('EpisodeOrderUnmatchedFiles', {
             count: counts.unmatched,
+          })}
+        </Alert>
+      ) : null}
+
+      {preview.sceneNumberedEpisodes > 0 || preview.sceneSeasonTitles > 0 ? (
+        <Alert kind={kinds.DANGER}>
+          {translate('EpisodeOrderSceneNumbering', {
+            episodes: preview.sceneNumberedEpisodes,
+            titles: preview.sceneSeasonTitles,
+          })}
+        </Alert>
+      ) : null}
+
+      {counts.unnameable > 0 ? (
+        <Alert kind={kinds.DANGER}>
+          {translate('EpisodeOrderUnnameableFiles', {
+            count: counts.unnameable,
           })}
         </Alert>
       ) : null}

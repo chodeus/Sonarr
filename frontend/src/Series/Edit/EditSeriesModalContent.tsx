@@ -33,9 +33,7 @@ import { InputChanged } from 'typings/inputs';
 import selectSettings from 'Utilities/selectSettings';
 import translate from 'Utilities/String/translate';
 import EpisodeOrderChange from './EpisodeOrder/EpisodeOrderChange';
-import useEpisodeOrderPreview, {
-  canChangeEpisodeOrder,
-} from './EpisodeOrder/useEpisodeOrderPreview';
+import useEpisodeOrderPreview from './EpisodeOrder/useEpisodeOrderPreview';
 import RootFolderModal from './RootFolder/RootFolderModal';
 import { RootFolderUpdated } from './RootFolder/RootFolderModalContent';
 import styles from './EditSeriesModalContent.module.css';
@@ -96,9 +94,7 @@ function EditSeriesModalContent({
 
   const canSave =
     !isSeasonTypeChanging ||
-    (!isEpisodeOrderPreviewFetching &&
-      !!episodeOrderPreview &&
-      canChangeEpisodeOrder(episodeOrderPreview));
+    (!isEpisodeOrderPreviewFetching && !!episodeOrderPreview?.canChange);
 
   const { settings, ...otherSettings } = useMemo(() => {
     return selectSettings(

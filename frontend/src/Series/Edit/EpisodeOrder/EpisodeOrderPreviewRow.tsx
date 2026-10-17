@@ -43,6 +43,12 @@ function EpisodeOrderPreviewRow({
           </Label>
         ) : null}
 
+        {status === 'unnameable' ? (
+          <Label className={styles.status} kind={kinds.DANGER}>
+            {translate('EpisodeOrderCannotName')}
+          </Label>
+        ) : null}
+
         {status === 'unmatched' ? (
           <Label className={styles.status} kind={kinds.DANGER}>
             {translate('EpisodeOrderNotInOrder')}
