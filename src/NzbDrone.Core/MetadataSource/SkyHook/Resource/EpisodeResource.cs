@@ -1,9 +1,12 @@
 using System;
+using Newtonsoft.Json;
 
 namespace NzbDrone.Core.MetadataSource.SkyHook.Resource
 {
     public class EpisodeResource
     {
+        // SkyHook v2 sends the TVDB episode ID as metadataId
+        [JsonProperty("metadataId")]
         public int TvdbId { get; set; }
         public int SeasonNumber { get; set; }
         public int EpisodeNumber { get; set; }

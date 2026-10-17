@@ -95,6 +95,7 @@ namespace NzbDrone.Core.Test.MetadataSource.SkyHook
 
             // TODO: Is there a better way to validate that episode number or season number is greater than zero?
             (episode.EpisodeNumber + episode.SeasonNumber).Should().NotBe(0);
+            episode.TvdbId.Should().BeGreaterThan(0);
 
             episode.Should().NotBeNull();
 
