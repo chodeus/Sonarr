@@ -92,6 +92,11 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             }
             catch (DownloadClientException ex) when (ex.InnerException is HttpException httpException && httpException.Response.StatusCode is HttpStatusCode.Conflict)
             {
+                if (HasTorrent(hash))
+                {
+                    throw new ReleaseAlreadyInDownloadClientException(remoteEpisode.Release, "qBittorrent already has this torrent", ex);
+                }
+
                 throw new DownloadClientRejectedReleaseException(remoteEpisode.Release, "QBittorrent rejected the magnet link due to a conflict", ex);
             }
 
@@ -168,6 +173,11 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             }
             catch (DownloadClientException ex) when (ex.InnerException is HttpException httpException && httpException.Response.StatusCode is HttpStatusCode.Conflict)
             {
+                if (HasTorrent(hash))
+                {
+                    throw new ReleaseAlreadyInDownloadClientException(remoteEpisode.Release, "qBittorrent already has this torrent", ex);
+                }
+
                 throw new DownloadClientRejectedReleaseException(remoteEpisode.Release, "QBittorrent rejected the torrent file due to a conflict", ex);
             }
 
@@ -228,6 +238,20 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             }
 
             return hash;
+        }
+
+        // A failed check leaves the conflict a plain rejection, as before
+        private bool HasTorrent(string hash)
+        {
+            try
+            {
+                return Proxy.IsTorrentLoaded(hash.ToLower(), Settings);
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug(ex, "Unable to check whether qBittorrent already has {0}", hash);
+                return false;
+            }
         }
 
         protected bool WaitForTorrent(string hash)

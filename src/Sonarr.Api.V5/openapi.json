@@ -9266,7 +9266,8 @@
           "diskCustomFormatScoreIncrement",
           "diskUpgradesNotAllowed",
           "diskNotUpgrade",
-          "beforeAirDate"
+          "beforeAirDate",
+          "alreadyInDownloadClient"
         ],
         "type": "string"
       },

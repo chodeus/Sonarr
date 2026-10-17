@@ -31,6 +31,7 @@ namespace NzbDrone.Core.Download
         private readonly IRateLimitService _rateLimitService;
         private readonly IEventAggregator _eventAggregator;
         private readonly ISeedConfigProvider _seedConfigProvider;
+        private readonly IDuplicateReleaseCache _duplicateReleaseCache;
         private readonly Logger _logger;
 
         public DownloadService(IProvideDownloadClient downloadClientProvider,
@@ -40,6 +41,7 @@ namespace NzbDrone.Core.Download
                                IRateLimitService rateLimitService,
                                IEventAggregator eventAggregator,
                                ISeedConfigProvider seedConfigProvider,
+                               IDuplicateReleaseCache duplicateReleaseCache,
                                Logger logger)
         {
             _downloadClientProvider = downloadClientProvider;
@@ -49,6 +51,7 @@ namespace NzbDrone.Core.Download
             _rateLimitService = rateLimitService;
             _eventAggregator = eventAggregator;
             _seedConfigProvider = seedConfigProvider;
+            _duplicateReleaseCache = duplicateReleaseCache;
             _logger = logger;
         }
 
@@ -162,6 +165,12 @@ namespace NzbDrone.Core.Download
             catch (ReleaseBlockedException)
             {
                 _logger.Trace("Release {0} previously added to blocklist, not sending to download client again.", remoteEpisode);
+                throw;
+            }
+            catch (ReleaseAlreadyInDownloadClientException)
+            {
+                _logger.Debug("{0} already has {1}, so it won't be grabbed again for a while", downloadClient.Definition.Name, remoteEpisode);
+                _duplicateReleaseCache.Remember(remoteEpisode.Release, downloadClient.Definition.Name);
                 throw;
             }
             catch (DownloadClientRejectedReleaseException)
