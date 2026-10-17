@@ -134,6 +134,39 @@ namespace NzbDrone.Core.Test.DataAugmentation.SceneNumbering
         }
 
         [Test]
+        public void should_clear_scenenumbering_when_series_uses_another_episode_order()
+        {
+            GivenTvdbMappings();
+            GivenExistingMapping();
+            _series.SeasonType = "dvd";
+
+            Subject.Handle(new SeriesUpdatedEvent(_series));
+
+            Mocker.GetMock<IXemProxy>()
+                  .Verify(v => v.GetSceneTvdbMappings(It.IsAny<int>()), Times.Never());
+
+            Mocker.GetMock<ISeriesService>()
+                  .Verify(v => v.UpdateSeries(It.Is<Series>(s => !s.UseSceneNumbering), It.IsAny<bool>(), It.IsAny<bool>()), Times.Once());
+
+            _episodes.Should().OnlyContain(e => e.SceneSeasonNumber == null && e.SceneEpisodeNumber == null);
+        }
+
+        [Test]
+        public void should_not_fetch_scenenumbering_when_series_uses_another_episode_order()
+        {
+            GivenTvdbMappings();
+            _series.SeasonType = "dvd";
+
+            Subject.Handle(new SeriesUpdatedEvent(_series));
+
+            Mocker.GetMock<IXemProxy>()
+                  .Verify(v => v.GetSceneTvdbMappings(It.IsAny<int>()), Times.Never());
+
+            Mocker.GetMock<ISeriesService>()
+                  .Verify(v => v.UpdateSeries(It.IsAny<Series>(), It.IsAny<bool>(), It.IsAny<bool>()), Times.Never());
+        }
+
+        [Test]
         public void should_not_clear_scenenumbering_if_no_results_at_all_from_thexem()
         {
             GivenExistingMapping();
