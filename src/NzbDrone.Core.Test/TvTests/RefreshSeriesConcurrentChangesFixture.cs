@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using FizzWare.NBuilder;
 using FluentAssertions;
 using Moq;
@@ -210,6 +211,54 @@ namespace NzbDrone.Core.Test.TvTests
             AllStoredModels.Single().Title.Should().Be("Other New Title");
 
             ExceptionVerification.ExpectedErrors(1);
+        }
+
+        // Guards RefreshedFields: a field RefreshSeriesInfo sets but doesn't list would differ from the stored row
+        [Test]
+        public void should_save_every_field_the_lookup_sets()
+        {
+            Series refreshed = null;
+
+            Mocker.GetMock<IEventAggregator>()
+                  .Setup(s => s.PublishEvent(It.IsAny<SeriesUpdatedEvent>()))
+                  .Callback<SeriesUpdatedEvent>(e => refreshed = e.Series);
+
+            _seriesInfo = Builder<Series>.CreateListOfSize(2).Build().Last();
+            _seriesInfo.TvdbId = _series.TvdbId;
+            _seriesInfo.Status = SeriesStatusType.Ended;
+            _seriesInfo.FirstAired = new DateTime(2020, 1, 2, 0, 0, 0, DateTimeKind.Utc);
+            _seriesInfo.LastAired = new DateTime(2024, 5, 6, 0, 0, 0, DateTimeKind.Utc);
+            _seriesInfo.OriginalLanguage = Language.French;
+            _seriesInfo.MalIds = new HashSet<int> { 3 };
+            _seriesInfo.AniListIds = new HashSet<int> { 4 };
+            _seriesInfo.Images = new List<NzbDrone.Core.MediaCover.MediaCover> { Builder<NzbDrone.Core.MediaCover.MediaCover>.CreateNew().Build() };
+            _seriesInfo.Ratings = Builder<Ratings>.CreateNew().Build();
+            _seriesInfo.Genres = new List<string> { "Drama" };
+            _seriesInfo.Actors = new List<Actor> { Builder<Actor>.CreateNew().Build() };
+            _seriesInfo.SeasonTypes = new List<SeasonType> { Builder<SeasonType>.CreateNew().Build() };
+            _seriesInfo.Seasons = new List<Season> { new Season { SeasonNumber = 1 }, new Season { SeasonNumber = 3 } };
+
+            GivenLookup();
+
+            RefreshTheSeries();
+
+            var stored = AllStoredModels.Single();
+            var unsaved = typeof(Series).GetProperties()
+                                        .Where(p => p.CanWrite && p.Name is not (nameof(Series.Translations) or nameof(Series.RootFolderPath) or nameof(Series.QualityProfile)))
+                                        .Where(p => !SameValue(p.GetValue(refreshed), p.GetValue(stored)))
+                                        .Select(p => p.Name);
+
+            unsaved.Should().BeEmpty();
+        }
+
+        private static bool SameValue(object refreshed, object stored)
+        {
+            if (refreshed is DateTime a && stored is DateTime b)
+            {
+                return Math.Abs((a - b).TotalSeconds) < 1;
+            }
+
+            return JsonSerializer.Serialize(refreshed) == JsonSerializer.Serialize(stored);
         }
 
         [Test]
