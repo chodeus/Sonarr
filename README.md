@@ -14,14 +14,16 @@
 - **v3 release profiles on any indexer** — branch [`fix/v3-release-profile-any-indexer`](https://github.com/chodeus/Sonarr/tree/fix/v3-release-profile-any-indexer), not submitted
   - A v3 API save with `indexerId: 0` means any indexer again. Stock v5 stores it as `[0]`, which matches no indexer, so the profile's "Must not contain" terms and air-date restriction silently stop applying.
   - A v3 save that keeps the profile's first indexer keeps its full indexer list, and a profile already stored as `[0]` is repaired on its next v3 save with `indexerId: 0`.
-- **Blocked season packs import once their titles arrive** — branch [`fix/blocked-import-retry`](https://github.com/chodeus/Sonarr/tree/fix/blocked-import-retry), not submitted
+- **Blocked season packs import once their titles arrive** — branch [`fix/same-release-regrab`](https://github.com/chodeus/Sonarr/tree/fix/same-release-regrab), which also carries the next item, not submitted
   - A queued download whose torrent name doesn't match the series, such as `The.Diplomat.S04…` for "The Diplomat (US)", keeps the series it was grabbed for when the series is edited. It used to lose it, stay in Importing for good, and let the season be grabbed again from another release.
+  - When a refresh removes one of a waiting pack's episodes (TheTVDB dropping a TBA placeholder), the pack keeps its series and the other episodes. It used to lose the series until a restart.
+  - A remap that fails keeps the download's series and the reason its import is blocked. A download whose series was deleted is left with no series instead of pointing at it.
   - A download with no episodes mapped is no longer counted as already imported.
   - Episode Title Required "Only for Bulk Season Releases" checks the episode's own season, not the season numbered like the episode.
 - **The same release isn't grabbed twice** — branch [`fix/same-release-regrab`](https://github.com/chodeus/Sonarr/tree/fix/same-release-regrab), not submitted
   - A queued download is scored from its torrent name. When that name lacks tokens the grabbed title had, such as Atmos or HDR10+, the same release from another feed used to pass as an upgrade and be grabbed again while the first was still downloading.
   - A release is now refused while a download with the same torrent hash, or the same title as its torrent name or grabbed title, is in the queue. Case, separators and a file extension are ignored. Scores are unchanged.
-  - New qBittorrent setting "Rename to Release Title", off by default: a downloading torrent is renamed to its grabbed title when that title scores higher, so the queue scores what was grabbed. Files inside aren't renamed.
+  - New qBittorrent setting "Rename to Release Title", off by default: until a torrent imports, it's renamed to its grabbed title when that title scores higher, so the queue scores what was grabbed. Files inside aren't renamed. With the setting off, no rename checks run at all.
 - **Episode order changes after import** — branch [`feat/episode-order-change`](https://github.com/chodeus/Sonarr/tree/feat/episode-order-change), not submitted
   - Edit Series can change Episode Order (Aired, DVD, International, …) on a series that already has files. Stock v5 locks it once a file exists.
   - Choosing another order shows a preview first: how many files need a new name or folder, Show Changes with each file's existing and new path, and anything that blocks the change. Saving applies the order and, with Rename and Move Files (on by default), renames the files.
