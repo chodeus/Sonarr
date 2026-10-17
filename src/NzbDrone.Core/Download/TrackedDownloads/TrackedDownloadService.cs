@@ -5,6 +5,7 @@ using NLog;
 using NzbDrone.Common.Cache;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.CustomFormats;
+using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Download.Aggregation;
 using NzbDrone.Core.Download.History;
 using NzbDrone.Core.History;
@@ -38,6 +39,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
         private readonly IParsingService _parsingService;
         private readonly IHistoryService _historyService;
         private readonly ISeriesService _seriesService;
+        private readonly IEpisodeService _episodeService;
         private readonly IDownloadHistoryService _downloadHistoryService;
         private readonly IRemoteEpisodeAggregationService _aggregationService;
         private readonly ICustomFormatCalculationService _formatCalculator;
@@ -49,6 +51,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
         public TrackedDownloadService(IParsingService parsingService,
                                       IHistoryService historyService,
                                       ISeriesService seriesService,
+                                      IEpisodeService episodeService,
                                       IDownloadHistoryService downloadHistoryService,
                                       IRemoteEpisodeAggregationService aggregationService,
                                       ICustomFormatCalculationService formatCalculator,
@@ -59,6 +62,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             _parsingService = parsingService;
             _historyService = historyService;
             _seriesService = seriesService;
+            _episodeService = episodeService;
             _downloadHistoryService = downloadHistoryService;
             _aggregationService = aggregationService;
             _formatCalculator = formatCalculator;
@@ -118,11 +122,17 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                 HasNotifiedManualInteractionRequired = existingItem?.HasNotifiedManualInteractionRequired ?? false
             };
 
-            var downloadHistory = MapRemoteEpisode(trackedDownload);
+            var mapping = MapRemoteEpisode(trackedDownload);
+            mapping.ApplyTo(trackedDownload);
 
-            if (downloadHistory != null)
+            if (mapping.Failure != null)
             {
-                var state = GetStateFromHistory(downloadHistory.EventType);
+                trackedDownload.Warn(new TrackedDownloadStatusMessage(trackedDownload.DownloadItem.Title, mapping.Failure));
+            }
+
+            if (mapping.DownloadHistory != null)
+            {
+                var state = GetStateFromHistory(mapping.DownloadHistory.EventType);
                 trackedDownload.State = state;
             }
 
@@ -158,26 +168,36 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             }
         }
 
-        private DownloadHistory MapRemoteEpisode(TrackedDownload trackedDownload)
+        // Builds the mapping on its own objects and never throws; callers apply it, so a reader never sees half a remap
+        private DownloadMapping MapRemoteEpisode(TrackedDownload trackedDownload)
         {
             var downloadItem = trackedDownload.DownloadItem;
-            DownloadHistory downloadHistory = null;
+            var mapping = new DownloadMapping
+            {
+                RemoteEpisode = trackedDownload.RemoteEpisode,
+                Indexer = trackedDownload.Indexer,
+                Added = trackedDownload.Added
+            };
 
             try
             {
-                downloadHistory = _downloadHistoryService.GetLatestDownloadHistoryItem(downloadItem.DownloadId);
+                mapping.DownloadHistory = _downloadHistoryService.GetLatestDownloadHistoryItem(downloadItem.DownloadId);
 
                 var parsedEpisodeInfo = Parser.Parser.ParseTitle(trackedDownload.DownloadItem.Title);
 
                 if (parsedEpisodeInfo != null)
                 {
-                    trackedDownload.RemoteEpisode = downloadHistory is { EventType: DownloadHistoryEventType.DownloadImported }
-                        ? _parsingService.Map(parsedEpisodeInfo, _seriesService.GetSeries(downloadHistory.SeriesId))
+                    var importedSeries = mapping.DownloadHistory is { EventType: DownloadHistoryEventType.DownloadImported }
+                        ? FindSeries(mapping.DownloadHistory.SeriesId)
+                        : null;
+
+                    mapping.RemoteEpisode = importedSeries != null
+                        ? _parsingService.Map(parsedEpisodeInfo, importedSeries)
                         : _parsingService.Map(parsedEpisodeInfo, 0, 0, null);
                 }
                 else
                 {
-                    trackedDownload.RemoteEpisode = null;
+                    mapping.RemoteEpisode = null;
                 }
 
                 var historyItems = _historyService.FindByDownloadId(downloadItem.DownloadId)
@@ -189,55 +209,54 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                     var firstHistoryItem = historyItems.First();
                     var grabbedEvent = historyItems.FirstOrDefault(v => v.EventType == EpisodeHistoryEventType.Grabbed);
 
-                    trackedDownload.Indexer = grabbedEvent?.Data?.GetValueOrDefault("indexer");
-                    trackedDownload.Added = grabbedEvent?.Date;
+                    mapping.Indexer = grabbedEvent?.Data?.GetValueOrDefault("indexer");
+                    mapping.Added = grabbedEvent?.Date;
 
                     if (parsedEpisodeInfo == null ||
-                        trackedDownload.RemoteEpisode?.Series == null ||
-                        trackedDownload.RemoteEpisode.Episodes.Empty())
+                        mapping.RemoteEpisode?.Series == null ||
+                        mapping.RemoteEpisode.Episodes.Empty())
                     {
                         // Try parsing the original source title and if that fails, try parsing it as a special
                         // TODO: Pass the TVDB ID and TVRage IDs in as well so we have a better chance for finding the item
                         parsedEpisodeInfo = Parser.Parser.ParseTitle(firstHistoryItem.SourceTitle) ??
                                             _parsingService.ParseSpecialEpisodeTitle(parsedEpisodeInfo, firstHistoryItem.SourceTitle, 0, 0, null);
 
-                        if (parsedEpisodeInfo != null)
+                        var episodeIds = GrabbedEpisodeIds(firstHistoryItem.SeriesId, historyItems);
+
+                        if (parsedEpisodeInfo != null && episodeIds != null)
                         {
-                            trackedDownload.RemoteEpisode = _parsingService.Map(parsedEpisodeInfo,
-                                firstHistoryItem.SeriesId,
-                                historyItems.Where(v => v.EventType == EpisodeHistoryEventType.Grabbed)
-                                    .Select(h => h.EpisodeId).Distinct());
+                            mapping.RemoteEpisode = _parsingService.Map(parsedEpisodeInfo, firstHistoryItem.SeriesId, episodeIds);
                         }
                     }
 
-                    if (trackedDownload.RemoteEpisode != null)
+                    if (mapping.RemoteEpisode != null)
                     {
-                        trackedDownload.RemoteEpisode.Release ??= new ReleaseInfo();
-                        trackedDownload.RemoteEpisode.Release.Indexer = trackedDownload.Indexer;
-                        trackedDownload.RemoteEpisode.Release.Title = trackedDownload.RemoteEpisode.ParsedEpisodeInfo?.ReleaseTitle;
+                        mapping.RemoteEpisode.Release ??= new ReleaseInfo();
+                        mapping.RemoteEpisode.Release.Indexer = mapping.Indexer;
+                        mapping.RemoteEpisode.Release.Title = mapping.RemoteEpisode.ParsedEpisodeInfo?.ReleaseTitle;
 
                         if (Enum.TryParse(grabbedEvent?.Data?.GetValueOrDefault("indexerFlags"), true, out IndexerFlags flags))
                         {
-                            trackedDownload.RemoteEpisode.Release.IndexerFlags = flags;
+                            mapping.RemoteEpisode.Release.IndexerFlags = flags;
                         }
 
-                        if (downloadHistory != null)
+                        if (mapping.DownloadHistory != null)
                         {
-                            trackedDownload.RemoteEpisode.Release.IndexerId = downloadHistory.IndexerId;
+                            mapping.RemoteEpisode.Release.IndexerId = mapping.DownloadHistory.IndexerId;
                         }
                     }
                 }
 
-                if (trackedDownload.RemoteEpisode != null)
+                if (mapping.RemoteEpisode != null)
                 {
-                    _aggregationService.Augment(trackedDownload.RemoteEpisode);
+                    _aggregationService.Augment(mapping.RemoteEpisode);
 
                     // Calculate custom formats
-                    trackedDownload.RemoteEpisode.CustomFormats = _formatCalculator.ParseCustomFormat(trackedDownload.RemoteEpisode, downloadItem.TotalSize);
+                    mapping.RemoteEpisode.CustomFormats = _formatCalculator.ParseCustomFormat(mapping.RemoteEpisode, downloadItem.TotalSize);
                 }
 
                 // Track it so it can be displayed in the queue even though we can't determine which series it is for
-                if (trackedDownload.RemoteEpisode == null)
+                if (mapping.RemoteEpisode == null)
                 {
                     _logger.Trace("No Episode found for download '{0}'", trackedDownload.DownloadItem.Title);
                 }
@@ -246,16 +265,47 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             {
                 _logger.Debug(e, "Found multiple series for " + downloadItem.Title);
 
-                trackedDownload.Warn("Unable to import automatically, found multiple series: {0}", string.Join(", ", e.Series));
+                mapping.Failure = $"Unable to import automatically, found multiple series: {string.Join(", ", e.Series)}";
             }
             catch (Exception e)
             {
                 _logger.Debug(e, "Failed to find episode for " + downloadItem.Title);
 
-                trackedDownload.Warn("Unable to parse episodes from title");
+                mapping.Failure = "Unable to parse episodes from title";
             }
 
-            return downloadHistory;
+            return mapping;
+        }
+
+        // TheTVDB can drop a grabbed episode (a TBA placeholder) while the pack waits, and mapping a missing ID throws.
+        // Null when the series is gone.
+        private List<int> GrabbedEpisodeIds(int seriesId, List<EpisodeHistory> historyItems)
+        {
+            if (FindSeries(seriesId) == null)
+            {
+                return null;
+            }
+
+            var grabbed = historyItems.Where(v => v.EventType == EpisodeHistoryEventType.Grabbed)
+                                      .Select(h => h.EpisodeId)
+                                      .ToHashSet();
+
+            return _episodeService.GetEpisodeBySeries(seriesId)
+                                  .Select(e => e.Id)
+                                  .Where(grabbed.Contains)
+                                  .ToList();
+        }
+
+        private Series FindSeries(int seriesId)
+        {
+            try
+            {
+                return _seriesService.GetSeries(seriesId);
+            }
+            catch (ModelNotFoundException)
+            {
+                return null;
+            }
         }
 
         private void LogItemChange(TrackedDownload trackedDownload, DownloadClientItem existingItem, DownloadClientItem downloadItem)
@@ -276,9 +326,15 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             }
         }
 
+        // A failed remap keeps the previous mapping and status: the queue keeps its series and the reason it's blocked
         private void UpdateCachedItem(TrackedDownload trackedDownload)
         {
-            MapRemoteEpisode(trackedDownload);
+            var mapping = MapRemoteEpisode(trackedDownload);
+
+            if (mapping.Failure == null)
+            {
+                mapping.ApplyTo(trackedDownload);
+            }
         }
 
         private static TrackedDownloadState GetStateFromHistory(DownloadHistoryEventType eventType)
@@ -399,6 +455,22 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                 cachedItems.ForEach(UpdateCachedItem);
 
                 _eventAggregator.PublishEvent(new TrackedDownloadRefreshedEvent(GetTrackedDownloads()));
+            }
+        }
+
+        private class DownloadMapping
+        {
+            public DownloadHistory DownloadHistory { get; set; }
+            public RemoteEpisode RemoteEpisode { get; set; }
+            public string Indexer { get; set; }
+            public DateTime? Added { get; set; }
+            public string Failure { get; set; }
+
+            public void ApplyTo(TrackedDownload trackedDownload)
+            {
+                trackedDownload.RemoteEpisode = RemoteEpisode;
+                trackedDownload.Indexer = Indexer;
+                trackedDownload.Added = Added;
             }
         }
     }

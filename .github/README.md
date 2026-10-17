@@ -13,19 +13,21 @@ A season pack grabbed as soon as it airs is held back while its episode titles a
 ## Changes
 
 - `TrackDownload`'s mapping (download history read, title, grab history fallback, release info, aggregation, custom formats) moves into `MapRemoteEpisode`, which returns the download history so `TrackDownload` still sets the state from it. `UpdateCachedItem` calls the same method. Queued downloads keep their series, episodes and custom format score after series events.
-- The mapping's existing try/catch now covers the update path as well, so no exception leaves a series event handler and skips the remaining downloads. A failure keeps the result of the last step that finished:
-  - download history read or title lookup fails: the previous mapping stays;
-  - grab history lookup fails: the title step's result stays, which is no mapping when the title doesn't parse, as before. That lookup throws when the data is gone (a series deleted, or an episode removed, while its grab history still exists), and keeping the previous mapping there would point the download at them.
+- The mapping is built on its own objects and applied once it's complete, so another thread reading the queue sees the old mapping or the new one, never a half-built one with no series.
+- Its error handling covers the update path as well, so no exception leaves a series event handler and skips the remaining downloads. A remap that fails keeps the download's previous mapping and status messages, so an import-blocked download keeps its series and the reason it's blocked. A new download that can't be mapped shows the warning, as before.
+- The grab history fallback maps the grabbed episodes that still exist. TheTVDB can remove a grabbed episode (a TBA placeholder, say) while the pack waits, and looking up a missing ID used to throw, leaving the download with no series for good. The series is looked up without throwing, so a download whose series was deleted, imported or not, is left with no series instead of pointing at it.
 - `IsImported` returns false when no episodes are mapped.
 - `EpisodeTitleSpecification` looks up the episode's season.
 
 ## Tests
 
-- `TrackedDownloadServiceFixture`: a download mapped through its grab history keeps its series and episodes after `SeriesEditedEvent`; a failing title lookup or download history read keeps the previous mapping; a `SeriesDeletedEvent` whose history lookup throws leaves the title mapping and doesn't throw.
+- `TrackedDownloadServiceFixture`: a download mapped through its grab history keeps its series and episodes after `SeriesEditedEvent`; a failing title lookup or download history read keeps the previous mapping; a `SeriesDeletedEvent` for a series that's gone leaves the title mapping and doesn't throw.
+- `TrackedDownloadServiceRemapFixture` runs the remap through the real `ParsingService`, `SeriesService`, `EpisodeService` and database: an import-blocked season pack keeps its series, the 7 remaining episodes and its blocked reason when a refresh removes one of its 8; a remap that fails partway keeps the previous mapping and reason; an imported download whose series is deleted is left with no series; a reader during a remap sees the previous mapping; a new download that can't be mapped shows the warning.
 - `TrackedDownloadAlreadyImportedFixture`: history but no mapped episodes is not imported.
 - `ImportFixture`: a download with no series or episodes, grab history and an Unknown Series result ends `ImportBlocked` without `DownloadCompletedEvent`, using the real `TrackedDownloadAlreadyImported`.
 - `EpisodeTitleSpecificationFixture`: S04E01 with a TBA title, in a season of 8 episodes that aired together, is rejected while season 1 aired years earlier.
-- Run with `dotnet test` over these four fixtures (58 tests): all new tests pass, and each fix undone on its own makes its tests fail. Eight existing `CompletedDownloadServiceTests` fail on an unexpected "Import blocked" Warn, which upstream ae7a61c10 added to `SetStateToImportBlocked` without updating them; this PR leaves them as they are.
+- These five fixtures run 54 tests. All the new ones pass, and each fix undone on its own makes its tests fail (5 mutations of the remap changes). The 6 that fail are existing `ImportFixture` tests that fail the same way on unmodified develop: upstream ae7a61c10 added an "Import blocked" Warn to `SetStateToImportBlocked` without updating them, and this PR leaves them as they are.
+- The full Core suite passes (5,424 tests) apart from 12 that fail the same way on unmodified develop (those `CompletedDownloadServiceTests`, Deluge reconnect and two `InitialUserServiceFixture` seed tests), and so does `ContainerFixture`.
 
 ## Summary by CodeRabbit
 

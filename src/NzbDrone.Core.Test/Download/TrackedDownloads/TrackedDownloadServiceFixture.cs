@@ -23,6 +23,18 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
     [TestFixture]
     public class TrackedDownloadServiceFixture : CoreTest<TrackedDownloadService>
     {
+        [SetUp]
+        public void Setup()
+        {
+            Mocker.GetMock<ISeriesService>()
+                  .Setup(s => s.GetSeries(It.IsAny<int>()))
+                  .Returns<int>(id => new Series { Id = id });
+
+            Mocker.GetMock<IEpisodeService>()
+                  .Setup(s => s.GetEpisodeBySeries(It.IsAny<int>()))
+                  .Returns(new List<Episode> { new Episode { Id = 4 } });
+        }
+
         private void GivenDownloadHistory()
         {
             Mocker.GetMock<IHistoryService>()
@@ -565,8 +577,8 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
 
             GivenDownloadMappedByGrabHistory(series);
 
-            Mocker.GetMock<IParsingService>()
-                  .Setup(s => s.Map(It.IsAny<ParsedEpisodeInfo>(), 5, It.IsAny<IEnumerable<int>>()))
+            Mocker.GetMock<ISeriesService>()
+                  .Setup(s => s.GetSeries(5))
                   .Throws(new ModelNotFoundException(typeof(Series), 5));
 
             Subject.Handle(new SeriesDeletedEvent([series], false, false));
