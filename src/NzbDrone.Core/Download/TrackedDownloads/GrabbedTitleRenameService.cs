@@ -69,6 +69,12 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                 return false;
             }
 
+            // Before the history and custom format work below, which would otherwise run for every torrent
+            if (_downloadClientProvider.Get(trackedDownload.DownloadClient)?.CanRenameItem != true)
+            {
+                return false;
+            }
+
             var grabbedEvent = trackedDownload.GrabbedEvent;
             var remoteEpisode = trackedDownload.RemoteEpisode;
 

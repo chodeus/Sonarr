@@ -73,10 +73,12 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             }
         }
 
+        // torrents/rename arrived with API v2 (qBittorrent 4.1)
+        public override bool CanRenameItem => Settings.RenameToReleaseTitle && ProxyApiVersion >= new Version(2, 0);
+
         public override void RenameItem(DownloadClientItem downloadClientItem, string title)
         {
-            // torrents/rename arrived with API v2 (qBittorrent 4.1)
-            if (!Settings.RenameToReleaseTitle || ProxyApiVersion < new Version(2, 0))
+            if (!CanRenameItem)
             {
                 return;
             }

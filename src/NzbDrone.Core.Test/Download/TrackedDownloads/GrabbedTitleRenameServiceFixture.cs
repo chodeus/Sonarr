@@ -47,6 +47,7 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             };
 
             _downloadClient = new Mock<IDownloadClient>();
+            _downloadClient.Setup(c => c.CanRenameItem).Returns(true);
 
             Mocker.GetMock<IProvideDownloadClient>()
                   .Setup(s => s.Get(It.IsAny<int>()))
@@ -354,6 +355,36 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
             Refresh(GivenTrackedDownload(1, "HASH1"), GivenTrackedDownload(2, "HASH1"));
 
             VerifyRenamed(Times.Exactly(2));
+        }
+
+        [Test]
+        public void should_skip_the_history_and_scores_when_the_client_cannot_rename()
+        {
+            GivenGrabbedFormats(_atmos);
+            _downloadClient.Setup(c => c.CanRenameItem).Returns(false);
+
+            Refresh(GivenTrackedDownload());
+
+            _downloadClient.Verify(c => c.RenameItem(It.IsAny<DownloadClientItem>(), It.IsAny<string>()), Times.Never());
+            Mocker.GetMock<IHistoryService>().Verify(s => s.Find(It.IsAny<string>(), It.IsAny<EpisodeHistoryEventType>()), Times.Never());
+            Mocker.GetMock<ICustomFormatCalculationService>().Verify(s => s.ParseCustomFormat(It.IsAny<EpisodeHistory>(), It.IsAny<Series>()), Times.Never());
+        }
+
+        [Test]
+        public void should_rename_once_the_client_can_after_it_could_not()
+        {
+            GivenGrabbedFormats(_atmos);
+            var trackedDownload = GivenTrackedDownload();
+
+            _downloadClient.Setup(c => c.CanRenameItem).Returns(false);
+            Refresh(trackedDownload);
+
+            _downloadClient.Verify(c => c.RenameItem(It.IsAny<DownloadClientItem>(), It.IsAny<string>()), Times.Never());
+
+            _downloadClient.Setup(c => c.CanRenameItem).Returns(true);
+            Refresh(trackedDownload);
+
+            _downloadClient.Verify(c => c.RenameItem(It.IsAny<DownloadClientItem>(), GrabbedTitle), Times.Once());
         }
 
         [Test]

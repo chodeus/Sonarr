@@ -30,7 +30,7 @@ namespace NzbDrone.Core.Parser
             return SeparatorRegex.Replace(ComposeCharacters(withoutExtension), string.Empty).ToLowerInvariant();
         }
 
-        // Normalize throws on invalid UTF-16 (a lone surrogate from a malformed feed); compare those as given
+        // Normalize throws on invalid UTF-16 (a lone surrogate from a malformed feed); skip composing, the separator pass drops it
         private static string ComposeCharacters(string title)
         {
             try
