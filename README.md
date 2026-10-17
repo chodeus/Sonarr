@@ -24,7 +24,8 @@
 - **Episode order changes after import** — branch [`feat/episode-order-change`](https://github.com/chodeus/Sonarr/tree/feat/episode-order-change), not submitted
   - Edit Series can change Episode Order (Aired, DVD, International, …) on a series that already has files. Stock v5 locks it once a file exists.
   - Choosing another order shows a preview first: how many files need a new name or folder, Show Changes with each file's existing and new path, and anything that blocks the change. Saving applies the order and, with Rename and Move Files (on by default), renames the files.
-  - The change is refused while any file belongs to an episode missing from the new order, or while episodes still lack TVDB IDs (refresh the series once after updating).
+  - The change is refused while any file belongs to an episode missing from the new order, a combined file couldn't be named for it, or episodes still lack TVDB IDs (refresh the series once after updating). Leaving Aired order is also refused while XEM or a scene title numbers the series' releases, since the other orders turn both off.
+  - If the refresh after the change doesn't put every file where the preview said, the previous order is put back and no file is renamed.
   - Episodes now keep their TVDB IDs (stock v5 stores 0 for every episode), and a refresh follows an episode TVDB renumbers by ID, so its file stays with it.
 
 ## How the build works
