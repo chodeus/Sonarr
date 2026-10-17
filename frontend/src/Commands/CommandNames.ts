@@ -1,6 +1,7 @@
 enum CommandNames {
   ApplicationUpdate = 'ApplicationUpdate',
   Backup = 'Backup',
+  ChangeEpisodeOrder = 'ChangeEpisodeOrder',
   ClearBlocklist = 'ClearBlocklist',
   ClearLog = 'ClearLog',
   CutoffUnmetEpisodeSearch = 'CutoffUnmetEpisodeSearch',

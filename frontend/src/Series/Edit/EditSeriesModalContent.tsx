@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import SeriesMonitorNewItemsOptionsPopoverContent from 'AddSeries/SeriesMonitorNewItemsOptionsPopoverContent';
+import CommandNames from 'Commands/CommandNames';
+import { useExecuteCommand } from 'Commands/useCommands';
 import Form from 'Components/Form/Form';
 import FormInput from 'Components/Form/FormInput';
 import FormInputButton from 'Components/Form/FormInputButton';
@@ -24,12 +26,16 @@ import {
   tooltipPositions,
 } from 'Helpers/Props';
 import MoveSeriesModal from 'Series/MoveSeries/MoveSeriesModal';
-import Series, { Statistics } from 'Series/Series';
+import Series from 'Series/Series';
 import SeriesMovePending from 'Series/SeriesMovePending';
 import { useSaveSeries, useSingleSeries } from 'Series/useSeries';
 import { InputChanged } from 'typings/inputs';
 import selectSettings from 'Utilities/selectSettings';
 import translate from 'Utilities/String/translate';
+import EpisodeOrderChange from './EpisodeOrder/EpisodeOrderChange';
+import useEpisodeOrderPreview, {
+  canChangeEpisodeOrder,
+} from './EpisodeOrder/useEpisodeOrderPreview';
 import RootFolderModal from './RootFolder/RootFolderModal';
 import { RootFolderUpdated } from './RootFolder/RootFolderModalContent';
 import styles from './EditSeriesModalContent.module.css';
@@ -61,10 +67,7 @@ function EditSeriesModalContent({
     pendingPath,
     tags,
     rootFolderPath: initialRootFolderPath,
-    statistics = {} as Statistics,
   } = series;
-
-  const { episodeFileCount = 0 } = statistics;
 
   const { pendingChanges, setPendingChange } = usePendingChangesStore<Series>(
     {}
@@ -79,6 +82,23 @@ function EditSeriesModalContent({
 
   const { saveSeries, isSaving, saveError } = useSaveSeries(isPathChanging);
   const wasSaving = usePrevious(isSaving);
+  const executeCommand = useExecuteCommand();
+
+  const pendingSeasonType = pendingChanges.seasonType ?? seasonType;
+  const isSeasonTypeChanging = pendingSeasonType !== seasonType;
+  const [renameFiles, setRenameFiles] = useState(true);
+
+  const {
+    data: episodeOrderPreview,
+    isFetching: isEpisodeOrderPreviewFetching,
+    error: episodeOrderPreviewError,
+  } = useEpisodeOrderPreview(seriesId, pendingSeasonType, isSeasonTypeChanging);
+
+  const canSave =
+    !isSeasonTypeChanging ||
+    (!isEpisodeOrderPreviewFetching &&
+      !!episodeOrderPreview &&
+      canChangeEpisodeOrder(episodeOrderPreview));
 
   const { settings, ...otherSettings } = useMemo(() => {
     return selectSettings(
@@ -118,6 +138,13 @@ function EditSeriesModalContent({
     [setPendingChange]
   );
 
+  const handleRenameFilesChange = useCallback(
+    ({ value }: InputChanged<boolean>) => {
+      setRenameFiles(value);
+    },
+    []
+  );
+
   const handleRootFolderPress = useCallback(() => {
     setIsRootFolderModalOpen(true);
   }, []);
@@ -148,12 +175,15 @@ function EditSeriesModalContent({
     } else {
       setIsConfirmMoveModalOpen(false);
 
+      // Episode order changes through ChangeEpisodeOrder once the save succeeds
       saveSeries({
         ...series,
         ...pendingChanges,
+        seasonType,
       });
     }
   }, [
+    seasonType,
     series,
     isPathChanging,
     isConfirmMoveModalOpen,
@@ -167,14 +197,34 @@ function EditSeriesModalContent({
     saveSeries({
       ...series,
       ...pendingChanges,
+      seasonType,
     });
-  }, [series, pendingChanges, saveSeries]);
+  }, [series, seasonType, pendingChanges, saveSeries]);
 
   useEffect(() => {
     if (!isSaving && wasSaving && !saveError) {
+      if (isSeasonTypeChanging) {
+        executeCommand({
+          name: CommandNames.ChangeEpisodeOrder,
+          seriesId,
+          seasonType: pendingSeasonType,
+          renameFiles,
+        });
+      }
+
       onModalClose();
     }
-  }, [isSaving, wasSaving, saveError, onModalClose]);
+  }, [
+    seriesId,
+    isSaving,
+    wasSaving,
+    saveError,
+    isSeasonTypeChanging,
+    pendingSeasonType,
+    renameFiles,
+    executeCommand,
+    onModalClose,
+  ]);
 
   return (
     <ModalContent onModalClose={onModalClose}>
@@ -270,12 +320,24 @@ function EditSeriesModalContent({
               name="seasonType"
               {...settings.seasonType}
               seasonTypes={seasonTypes}
-              isDisabled={!seasonTypes.length || episodeFileCount > 0}
+              isDisabled={!seasonTypes.length}
               includeNoChange={false}
               includeMixed={false}
               onChange={handleInputChange}
             />
           </FormRow>
+
+          {isSeasonTypeChanging ? (
+            <EpisodeOrderChange
+              seriesPath={path}
+              seriesType={settings.seriesType.value}
+              preview={episodeOrderPreview}
+              isFetching={isEpisodeOrderPreviewFetching}
+              error={episodeOrderPreviewError}
+              renameFiles={renameFiles}
+              onRenameFilesChange={handleRenameFilesChange}
+            />
+          ) : null}
 
           <FormRow size={sizes.MEDIUM}>
             <FormLabel>
@@ -335,6 +397,7 @@ function EditSeriesModalContent({
         <SpinnerErrorButton
           error={saveError}
           isSpinning={isSaving}
+          isDisabled={!canSave}
           onPress={handleSavePress}
         >
           {translate('Save')}
