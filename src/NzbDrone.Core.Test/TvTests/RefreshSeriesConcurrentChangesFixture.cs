@@ -11,6 +11,7 @@ using NzbDrone.Core.AutoTagging;
 using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Exceptions;
 using NzbDrone.Core.Languages;
+using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.MetadataSource;
 using NzbDrone.Core.Test.Framework;
@@ -131,7 +132,7 @@ namespace NzbDrone.Core.Test.TvTests
         }
 
         [Test]
-        public void should_keep_a_change_saved_after_the_lookup_was_read_back()
+        public void should_keep_a_change_saved_while_the_auto_tags_are_worked_out()
         {
             GivenLookup();
             GivenAutoTag(5, FinishTheMove);
@@ -145,20 +146,70 @@ namespace NzbDrone.Core.Test.TvTests
         }
 
         [Test]
-        public void should_save_the_auto_tags_before_announcing_the_refresh()
+        public void should_save_and_announce_auto_tag_changes_after_a_refresh()
         {
-            HashSet<int> storedTags = null;
-
-            Mocker.GetMock<IEventAggregator>()
-                  .Setup(s => s.PublishEvent(It.IsAny<SeriesUpdatedEvent>()))
-                  .Callback(() => storedTags = Mocker.Resolve<ISeriesRepository>().Get(_series.Id).Tags);
-
             GivenLookup();
             GivenAutoTag(5);
 
             RefreshTheSeries();
 
-            storedTags.Should().Contain(5);
+            AllStoredModels.Single().Tags.Should().Contain(5);
+
+            Mocker.GetMock<IEventAggregator>()
+                  .Verify(v => v.PublishEvent(It.Is<SeriesEditedEvent>(e => e.Series.Tags.Contains(5) && !e.OldSeries.Tags.Contains(5))), Times.Once());
+        }
+
+        [Test]
+        public void should_finish_a_full_refresh_when_a_series_is_deleted_after_the_library_was_read()
+        {
+            var other = Db.Insert(Builder<Series>.CreateNew()
+                                                 .With(s => s.TvdbId = _series.TvdbId + 1)
+                                                 .With(s => s.TitleSlug = "other")
+                                                 .With(s => s.Path = @"C:\Test\TV\Other".AsOsAgnostic())
+                                                 .With(s => s.SortTitle = "zzz")
+                                                 .With(s => s.Status = SeriesStatusType.Continuing)
+                                                 .BuildNew());
+
+            Mocker.GetMock<ICheckIfSeriesShouldBeRefreshed>()
+                  .Setup(s => s.ShouldRefresh(It.Is<Series>(c => c.Id == _series.Id)))
+                  .Callback(() => Mocker.Resolve<ISeriesRepository>().Delete(_series.Id))
+                  .Returns(false);
+
+            Subject.Execute(new RefreshSeriesCommand());
+
+            Mocker.GetMock<IDiskScanService>()
+                  .Verify(v => v.Scan(It.Is<Series>(s => s.Id == other.Id)), Times.Once());
+
+            Mocker.GetMock<IEventAggregator>()
+                  .Verify(v => v.PublishEvent(It.IsAny<SeriesRefreshCompleteEvent>()), Times.Once());
+        }
+
+        [Test]
+        public void should_refresh_the_next_series_when_one_is_deleted_during_its_lookup()
+        {
+            var other = Db.Insert(Builder<Series>.CreateNew()
+                                                 .With(s => s.TvdbId = _series.TvdbId + 1)
+                                                 .With(s => s.TitleSlug = "other")
+                                                 .With(s => s.Path = @"C:\Test\TV\Other".AsOsAgnostic())
+                                                 .With(s => s.Status = SeriesStatusType.Continuing)
+                                                 .With(s => s.Language = Language.English)
+                                                 .With(s => s.Seasons = new List<Season>())
+                                                 .BuildNew());
+
+            var otherInfo = other.JsonClone();
+            otherInfo.Title = "Other New Title";
+
+            GivenLookup(() => Mocker.Resolve<ISeriesRepository>().Delete(_series.Id));
+
+            Mocker.GetMock<IProvideSeriesInfo>()
+                  .Setup(s => s.GetSeriesInfo(other.TvdbId, It.IsAny<Language>(), It.IsAny<string>()))
+                  .Returns(new Tuple<Series, List<Episode>>(otherInfo, new List<Episode>()));
+
+            Subject.Execute(new RefreshSeriesCommand(new List<int> { _series.Id, other.Id }));
+
+            AllStoredModels.Single().Title.Should().Be("Other New Title");
+
+            ExceptionVerification.ExpectedErrors(1);
         }
 
         [Test]

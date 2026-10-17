@@ -7,6 +7,7 @@ using NLog;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Instrumentation.Extensions;
 using NzbDrone.Core.Configuration;
+using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Exceptions;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MediaFiles.Events;
@@ -28,7 +29,7 @@ namespace NzbDrone.Core.Tv
             s => s.OriginalLanguage, s => s.Status, s => s.CleanTitle, s => s.SortTitle, s => s.LastInfoSync,
             s => s.Runtime, s => s.Images, s => s.Network, s => s.FirstAired, s => s.LastAired, s => s.Ratings,
             s => s.Actors, s => s.Genres, s => s.Certification, s => s.OriginalCountry, s => s.OriginalTitle,
-            s => s.CleanOriginalTitle, s => s.SeasonTypes, s => s.Seasons, s => s.Tags
+            s => s.CleanOriginalTitle, s => s.SeasonTypes, s => s.Seasons
         };
 
         private readonly IProvideSeriesInfo _seriesInfo;
@@ -157,7 +158,6 @@ namespace NzbDrone.Core.Tv
             }
 
             series.Seasons = UpdateSeasons(series, seriesInfo);
-            _seriesService.UpdateAutoTaggingTags(series);
 
             _seriesService.UpdateSeriesFields(series, fields.ToArray());
             _seriesTranslationService.UpdateTranslations(series.Id, seriesInfo.Translations);
@@ -236,14 +236,24 @@ namespace NzbDrone.Core.Tv
         // Callers can hold a copy read long before (a full refresh reads every series up front), so read it again
         private void UpdateTags(int seriesId)
         {
-            var series = _seriesService.GetSeries(seriesId);
+            Series series;
+            Series storedSeries;
+
+            try
+            {
+                series = _seriesService.GetSeries(seriesId);
+                storedSeries = _seriesService.GetSeries(seriesId);
+            }
+            catch (ModelNotFoundException)
+            {
+                _logger.Debug("Series {0} was deleted during the refresh, skipping its tags", seriesId);
+                return;
+            }
 
             if (!_seriesService.UpdateAutoTaggingTags(series))
             {
                 return;
             }
-
-            var storedSeries = _seriesService.GetSeries(seriesId);
 
             _seriesService.UpdateSeriesFields(series, s => s.Tags);
             _eventAggregator.PublishEvent(new SeriesEditedEvent(series, storedSeries));

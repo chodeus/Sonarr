@@ -12,10 +12,11 @@ The auto-tag step after a refresh has the same problem with a wider window. When
 
 ## Changes
 
-- `RefreshSeriesInfo` looks up TheTVDB with the series it read first, then reads the series again and applies the lookup to that copy. It saves only the fields the refresh sets (`RefreshedFields`: the TheTVDB metadata, the seasons and the auto-tags) through the new `SeriesService.UpdateSeriesFields`. A path, pending move, profile, monitoring or episode order saved meanwhile stays. Existing seasons keep the monitoring stored for them, and a refresh no longer re-monitors episodes.
+- `RefreshSeriesInfo` looks up TheTVDB with the series it read first, then reads the series again and applies the lookup to that copy. It saves only the fields the refresh sets (`RefreshedFields`: the TheTVDB metadata and the seasons) through the new `SeriesService.UpdateSeriesFields`. A path, pending move, profile, monitoring or episode order saved meanwhile stays. Existing seasons take their monitoring from the second read, so a change saved during the lookup stays too, and a refresh no longer re-monitors episodes. Between the second read and the save, the refresh only applies the lookup in memory and tidies the path.
 - The path is still tidied (made absolute and, on Windows, given its real casing), but it's saved only when that changes it and no move is pending. A pending move owns the path until it finishes.
 - A series TheTVDB no longer has is marked deleted by saving its status alone.
-- `UpdateTags` reads the series by ID, applies the auto-tag changes and saves the tags alone. It still publishes `SeriesEditedEvent`, with the stored series as the old one, so queued and pending downloads pick up the new tags.
+- Auto-tags are worked out after the refresh has saved, by `UpdateTags`. It reads the series by ID, applies the changes and saves the tags alone, then publishes `SeriesEditedEvent` with the stored series as the old one, so the UI and queued and pending downloads pick up the new tags. Before, a refresh that succeeded saved its tag changes without that event.
+- A series deleted while a refresh runs is skipped by the tag step, and the refresh goes on to the next series, as it did before this change.
 
 ## Tests
 
@@ -24,8 +25,9 @@ The auto-tag step after a refresh has the same problem with a wider window. When
   - a season unmonitored: it stays unmonitored, and its episodes aren't re-monitored;
   - a profile and monitoring change;
   - a series TheTVDB no longer has;
+  - a move that finishes while the auto-tags are worked out;
   - a failed lookup whose auto-tags change;
   - a full refresh that read every series first.
-- It also checks that the auto-tags are saved before `SeriesUpdatedEvent` goes out, that a tidied path is saved, and that a pending move's path is left alone.
+- It also checks that auto-tag changes are saved and announced with `SeriesEditedEvent`, that a tidied path is saved, that a pending move's path is left alone, and that a refresh carries on past a series deleted after a full refresh read the library or during its own lookup.
 - `RefreshSeriesServiceFixture` checks the field-level save in place of `UpdateSeries`.
-- The full Core suite passes (5,421 tests), and so does `ContainerFixture`. The 12 that fail (9 `CompletedDownloadServiceTests`, Deluge reconnect and two `InitialUserServiceFixture` seed tests) fail the same way on unmodified develop, on Warns from upstream code those tests don't expect. 8 of the 10 new tests fail on the code before this change; the other two check behaviour it keeps (auto-tags saved before `SeriesUpdatedEvent`, and a tidied path saved). Each guarantee was broken on purpose (12 mutations), and a test failed every time.
+- The full Core suite passes (5,423 tests), and so does `ContainerFixture`. The 12 that fail (9 `CompletedDownloadServiceTests`, Deluge reconnect and two `InitialUserServiceFixture` seed tests) fail the same way on unmodified develop, on Warns from upstream code those tests don't expect. 9 of the 12 new tests fail on the code before this change; the other three check behaviour it keeps (a tidied path saved, and a refresh carrying on past a deleted series). Each guarantee was broken on purpose (11 mutations), and a test failed every time.
