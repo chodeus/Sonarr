@@ -24,6 +24,9 @@ namespace NzbDrone.Core.Profiles.Delay
         private readonly IDelayProfileRepository _repo;
         private readonly ICached<DelayProfile> _bestForTagsCache;
 
+        // Add, Update, Delete and Reorder each read orders, then write them back
+        private readonly object _syncRoot = new object();
+
         public DelayProfileService(IDelayProfileRepository repo, ICacheManager cacheManager)
         {
             _repo = repo;
@@ -32,39 +35,57 @@ namespace NzbDrone.Core.Profiles.Delay
 
         public DelayProfile Add(DelayProfile profile)
         {
-            profile.Order = _repo.Count();
+            lock (_syncRoot)
+            {
+                var all = All();
 
-            var result = _repo.Insert(profile);
-            _bestForTagsCache.Clear();
+                if (ProfileOrder.MakeRoom(all, p => p.Order, (p, order) => p.Order = order))
+                {
+                    _repo.SetFields(all, p => p.Order);
+                }
 
-            return result;
+                profile.Order = ProfileOrder.Next(all, p => p.Order);
+
+                var result = _repo.Insert(profile);
+                _bestForTagsCache.Clear();
+
+                return result;
+            }
         }
 
         public DelayProfile Update(DelayProfile profile)
         {
-            var result = _repo.Update(profile);
-            _bestForTagsCache.Clear();
-            return result;
+            lock (_syncRoot)
+            {
+                // Order only changes through Reorder
+                profile.Order = profile.Id == ProfileOrder.DefaultProfileId ? int.MaxValue : _repo.Get(profile.Id).Order;
+
+                var result = _repo.Update(profile);
+                _bestForTagsCache.Clear();
+                return result;
+            }
         }
 
         public void Delete(int id)
         {
-            _repo.Delete(id);
-
-            var all = All().OrderBy(d => d.Order).ToList();
-
-            for (var i = 0; i < all.Count; i++)
+            lock (_syncRoot)
             {
-                if (all[i].Id == 1)
+                try
                 {
-                    continue;
+                    _repo.Delete(id);
+
+                    var all = All();
+                    ProfileOrder.Renumber(all, p => p.Order, (p, order) => p.Order = order);
+
+                    // Only the order column, so a save of another profile isn't reverted
+                    _repo.SetFields(all, p => p.Order);
                 }
-
-                all[i].Order = i + 1;
+                finally
+                {
+                    // The delete has committed even when the renumber fails
+                    _bestForTagsCache.Clear();
+                }
             }
-
-            _repo.UpdateMany(all);
-            _bestForTagsCache.Clear();
         }
 
         public List<DelayProfile> All()
@@ -103,66 +124,18 @@ namespace NzbDrone.Core.Profiles.Delay
 
         public List<DelayProfile> Reorder(int id, int? afterId)
         {
-            var all = All().OrderBy(d => d.Order)
-                           .ToList();
-
-            var moving = all.SingleOrDefault(d => d.Id == id);
-            var after = afterId.HasValue ? all.SingleOrDefault(d => d.Id == afterId) : null;
-
-            if (moving == null)
+            lock (_syncRoot)
             {
-                // TODO: This should throw
-                return all;
+                var all = All();
+
+                if (ProfileOrder.Reorder(all, id, afterId, p => p.Order, (p, order) => p.Order = order))
+                {
+                    _repo.SetFields(all, p => p.Order);
+                    _bestForTagsCache.Clear();
+                }
+
+                return All();
             }
-
-            var afterOrder = GetAfterOrder(moving, after);
-            var afterCount = afterOrder + 2;
-            var movingOrder = moving.Order;
-
-            foreach (var delayProfile in all)
-            {
-                if (delayProfile.Id == 1)
-                {
-                    continue;
-                }
-
-                if (delayProfile.Id == id)
-                {
-                    delayProfile.Order = afterOrder + 1;
-                }
-                else if (delayProfile.Id == after?.Id)
-                {
-                    delayProfile.Order = afterOrder;
-                }
-                else if (delayProfile.Order > afterOrder)
-                {
-                    delayProfile.Order = afterCount;
-                    afterCount++;
-                }
-                else if (delayProfile.Order > movingOrder)
-                {
-                    delayProfile.Order--;
-                }
-            }
-
-            _repo.UpdateMany(all);
-
-            return All();
-        }
-
-        private int GetAfterOrder(DelayProfile moving, DelayProfile after)
-        {
-            if (after == null)
-            {
-                return 0;
-            }
-
-            if (moving.Order < after.Order)
-            {
-                return after.Order - 1;
-            }
-
-            return after.Order;
         }
     }
 }

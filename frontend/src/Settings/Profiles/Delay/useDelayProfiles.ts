@@ -1,8 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useMemo } from 'react';
 import ModelBase from 'App/ModelBase';
+import useApiMutation from 'Helpers/Hooks/useApiMutation';
 import {
-  useDeleteProvider,
   useManageProviderSettings,
   useProviderSettings,
 } from 'Settings/useProviderSettings';
@@ -101,11 +101,27 @@ export const useManageDelayProfile = (id: number | undefined) => {
 };
 
 export const useDeleteDelayProfile = (id: number) => {
-  const result = useDeleteProvider<DelayProfile>(id, PATH);
+  const queryClient = useQueryClient();
+
+  const { mutate, isPending, error } = useApiMutation<void, void>({
+    path: `${PATH}/${id}`,
+    method: 'DELETE',
+    mutationOptions: {
+      onSuccess: () => {
+        queryClient.setQueryData<DelayProfile[]>([PATH], (oldData = []) =>
+          oldData.filter((item) => item.id !== id)
+        );
+
+        // The server renumbers the profiles left after a delete
+        queryClient.invalidateQueries({ queryKey: [PATH] });
+      },
+    },
+  });
 
   return {
-    ...result,
-    deleteDelayProfile: result.deleteProvider,
+    deleteDelayProfile: mutate,
+    isDeleting: isPending,
+    deleteError: error,
   };
 };
 
