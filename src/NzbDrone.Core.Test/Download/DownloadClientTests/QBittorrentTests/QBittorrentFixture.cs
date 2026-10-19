@@ -582,6 +582,69 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
             Assert.ThrowsAsync<DownloadClientRejectedReleaseException>(async () => await Subject.Download(CreateRemoteEpisode(), CreateIndexer()));
         }
 
+        private void GivenFailsWhenAdding(bool torrentLoaded)
+        {
+            Mocker.GetMock<IQBittorrentProxy>()
+                  .Setup(s => s.AddTorrentFromFile(It.IsAny<string>(), It.IsAny<byte[]>(), It.IsAny<TorrentSeedConfiguration>(), It.IsAny<QBittorrentSettings>()))
+                  .Throws(new QBittorrentAddFailedException("Download client failed to add torrent"));
+
+            Mocker.GetMock<IQBittorrentProxy>()
+                  .Setup(s => s.AddTorrentFromUrl(It.IsAny<string>(), It.IsAny<TorrentSeedConfiguration>(), It.IsAny<QBittorrentSettings>()))
+                  .Throws(new QBittorrentAddFailedException("Download client failed to add torrent by url"));
+
+            Mocker.GetMock<IQBittorrentProxy>()
+                  .Setup(s => s.IsTorrentLoaded(It.IsAny<string>(), It.IsAny<QBittorrentSettings>()))
+                  .Returns(torrentLoaded);
+        }
+
+        [Test]
+        public void Download_should_report_a_torrent_file_the_client_already_has_when_it_replies_fails()
+        {
+            GivenFailsWhenAdding(true);
+
+            var remoteEpisode = CreateRemoteEpisode();
+            remoteEpisode.Release = new TorrentInfo { Title = _title, DownloadUrl = _downloadUrl, DownloadProtocol = DownloadProtocol.Torrent };
+
+            Assert.ThrowsAsync<ReleaseAlreadyInDownloadClientException>(async () => await Subject.Download(remoteEpisode, CreateIndexer()));
+
+            Mocker.GetMock<IQBittorrentProxy>()
+                  .Verify(s => s.IsTorrentLoaded("cbc2f069fe8bb2f544eae707d75bcd3de9dcf951", It.IsAny<QBittorrentSettings>()), Times.Once());
+        }
+
+        [Test]
+        public void Download_should_report_a_magnet_link_the_client_already_has_when_it_replies_fails()
+        {
+            GivenFailsWhenAdding(true);
+
+            var remoteEpisode = CreateRemoteEpisode();
+            remoteEpisode.Release.DownloadUrl = "magnet:?xt=urn:btih:ZPBPA2P6ROZPKRHK44D5OW6NHXU5Z6KR&tr=udp://abc";
+
+            Assert.ThrowsAsync<ReleaseAlreadyInDownloadClientException>(async () => await Subject.Download(remoteEpisode, CreateIndexer()));
+
+            Mocker.GetMock<IQBittorrentProxy>()
+                  .Verify(s => s.IsTorrentLoaded("cbc2f069fe8bb2f544eae707d75bcd3de9dcf951", It.IsAny<QBittorrentSettings>()), Times.Once());
+        }
+
+        [Test]
+        public void Download_should_keep_a_fails_reply_for_a_torrent_the_client_lacks_as_a_failed_add()
+        {
+            GivenFailsWhenAdding(false);
+
+            Assert.ThrowsAsync<QBittorrentAddFailedException>(async () => await Subject.Download(CreateRemoteEpisode(), CreateIndexer()));
+        }
+
+        [Test]
+        public void Download_should_keep_a_fails_reply_as_a_failed_add_when_the_client_cannot_be_asked()
+        {
+            GivenFailsWhenAdding(true);
+
+            Mocker.GetMock<IQBittorrentProxy>()
+                  .Setup(s => s.IsTorrentLoaded(It.IsAny<string>(), It.IsAny<QBittorrentSettings>()))
+                  .Throws(new DownloadClientException("qBittorrent is restarting"));
+
+            Assert.ThrowsAsync<QBittorrentAddFailedException>(async () => await Subject.Download(CreateRemoteEpisode(), CreateIndexer()));
+        }
+
         [Test]
         public void Download_should_refuse_magnet_if_no_trackers_provided_and_dht_is_disabled()
         {

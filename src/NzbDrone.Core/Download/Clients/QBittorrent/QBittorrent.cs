@@ -90,6 +90,16 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             {
                 Proxy.AddTorrentFromUrl(magnetLink, addHasSetShareLimits && setShareLimits ? remoteEpisode.SeedConfiguration : null, Settings);
             }
+            catch (QBittorrentAddFailedException ex)
+            {
+                // Older qBittorrent versions answer a torrent they already have with "Fails." instead of 409
+                if (HasTorrent(hash))
+                {
+                    throw new ReleaseAlreadyInDownloadClientException(remoteEpisode.Release, "qBittorrent already has this torrent", ex);
+                }
+
+                throw;
+            }
             catch (DownloadClientException ex) when (ex.InnerException is HttpException httpException && httpException.Response.StatusCode is HttpStatusCode.Conflict)
             {
                 if (HasTorrent(hash))
@@ -170,6 +180,16 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             try
             {
                 Proxy.AddTorrentFromFile(filename, fileContent, addHasSetShareLimits ? remoteEpisode.SeedConfiguration : null, Settings);
+            }
+            catch (QBittorrentAddFailedException ex)
+            {
+                // Older qBittorrent versions answer a torrent they already have with "Fails." instead of 409
+                if (HasTorrent(hash))
+                {
+                    throw new ReleaseAlreadyInDownloadClientException(remoteEpisode.Release, "qBittorrent already has this torrent", ex);
+                }
+
+                throw;
             }
             catch (DownloadClientException ex) when (ex.InnerException is HttpException httpException && httpException.Response.StatusCode is HttpStatusCode.Conflict)
             {

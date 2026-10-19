@@ -161,7 +161,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             // Note: Older qbit versions returned nothing, so we can't do != "Ok." here.
             if (result == "Fails.")
             {
-                throw new DownloadClientException("Download client failed to add torrent by url");
+                throw new QBittorrentAddFailedException("Download client failed to add torrent by url");
             }
         }
 
@@ -183,7 +183,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             // Note: Current qbit versions return nothing, so we can't do != "Ok." here.
             if (result == "Fails.")
             {
-                throw new DownloadClientException("Download client failed to add torrent");
+                throw new QBittorrentAddFailedException("Download client failed to add torrent");
             }
         }
 
