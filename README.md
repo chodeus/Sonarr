@@ -38,6 +38,10 @@
   - A refresh used to save the whole series after its TheTVDB lookup, undoing anything saved meanwhile. A folder move got its old path and pending-move mark back (the series then looked mid-move until a restart), a season toggled during the lookup was switched back along with its episodes, and a profile change was lost.
   - It now reads the series again after the lookup and saves only the fields it refreshes. If the ID, language or episode order changed during the lookup, it looks the series up again.
   - Auto-tags are saved alone, keeping a tag edit made meanwhile. The rescan after a refresh reads the series again, so a move that finished is scanned at its new path: a scan of a folder that's gone drops every episode-file record.
+- **Delay profile saves, reorders and deletes don't undo each other** — branch [`fix/delay-profile-order`](https://github.com/chodeus/Sonarr/tree/fix/delay-profile-order), not submitted
+  - A reorder used to put back any profile saved while it ran. A save wrote the order its edit form had loaded, so saving after a reorder made elsewhere moved the profile back, and two profiles could share an order.
+  - Reorder and delete now save only the order, and a save keeps the stored order. A new profile goes after the highest order, and the default profile stays last.
+  - The 30-second best-profile cache is cleared after every change, including a reorder and a delete whose renumber fails, so releases aren't held by an old ranking or a deleted profile. The settings page reloads the profiles after a delete.
 
 ## How the build works
 
