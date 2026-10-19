@@ -16,11 +16,11 @@ namespace NzbDrone.Core.Profiles
             return all.Where(p => p.Id != DefaultProfileId).Select(getOrder).DefaultIfEmpty(0).Max() + 1;
         }
 
-        // Older reorders could leave a tagged profile at int.MaxValue, where Next overflows or ties the default
+        // Older reorders could leave a tagged profile at int.MaxValue, where Next overflows or ties the default, and older saves could move the default
         public static bool MakeRoom<T>(List<T> all, Func<T, int> getOrder, Action<T, int> setOrder)
             where T : ModelBase
         {
-            if (!all.Any(p => p.Id != DefaultProfileId && getOrder(p) >= int.MaxValue - 1))
+            if (!all.Any(p => p.Id == DefaultProfileId ? getOrder(p) != int.MaxValue : getOrder(p) >= int.MaxValue - 1))
             {
                 return false;
             }

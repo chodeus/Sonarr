@@ -37,10 +37,22 @@ namespace NzbDrone.Core.Test.Profiles.Delay
             return new DelayProfileService(repo, new CacheManager());
         }
 
-        private Mock<IDelayProfileRepository> Forwarding(Action<IList<DelayProfile>> beforeManyWrite = null)
+        private Mock<IDelayProfileRepository> Forwarding(Action<IList<DelayProfile>> beforeManyWrite = null, Action afterFirstRead = null)
         {
             var mock = new Mock<IDelayProfileRepository>();
-            mock.Setup(r => r.All()).Returns(() => _realRepo.All());
+            var read = false;
+            mock.Setup(r => r.All()).Returns(() =>
+            {
+                var snapshot = _realRepo.All().ToList();
+
+                if (afterFirstRead != null && !read)
+                {
+                    read = true;
+                    afterFirstRead();
+                }
+
+                return snapshot;
+            });
             mock.Setup(r => r.Get(It.IsAny<int>())).Returns<int>(id => _realRepo.Get(id));
             mock.Setup(r => r.Insert(It.IsAny<DelayProfile>())).Returns<DelayProfile>(p => _realRepo.Insert(p));
             mock.Setup(r => r.Update(It.IsAny<DelayProfile>())).Returns<DelayProfile>(p => _realRepo.Update(p));
@@ -128,6 +140,36 @@ namespace NzbDrone.Core.Test.Profiles.Delay
             Task.WaitAll(new[] { add1, add2 }, TimeSpan.FromSeconds(10)).Should().BeTrue();
 
             _realRepo.All().Where(p => p.Id != 1).Select(p => p.Order).Should().BeEquivalentTo(new[] { 1, 2, 3 });
+        }
+
+        [Test]
+        public void add_should_clear_the_cache_when_the_insert_fails_after_a_renumber()
+        {
+            var legacy = InsertProfile(int.MaxValue, 5);
+
+            var repo = Forwarding();
+            repo.Setup(r => r.Insert(It.IsAny<DelayProfile>())).Throws(new InvalidOperationException("database is locked"));
+            var subject = NewService(repo.Object);
+
+            subject.BestForTags(new HashSet<int> { 5 }).Id.Should().Be(1);
+
+            Assert.Throws<InvalidOperationException>(() => subject.Add(new DelayProfile { Tags = new HashSet<int> { 6 } }));
+
+            _realRepo.Get(legacy.Id).Order.Should().Be(1);
+            subject.BestForTags(new HashSet<int> { 5 }).Id.Should().Be(legacy.Id);
+        }
+
+        [Test]
+        public void add_should_put_a_default_stored_out_of_place_back_last()
+        {
+            var seeded = _realRepo.Get(1);
+            seeded.Order = 0;
+            _realRepo.SetFields(seeded, p => p.Order);
+
+            var added = Subject.Add(new DelayProfile { Tags = new HashSet<int> { 5 } });
+
+            _realRepo.Get(1).Order.Should().Be(int.MaxValue);
+            Subject.BestForTags(new HashSet<int> { 5 }).Id.Should().Be(added.Id);
         }
 
         [Test]
@@ -371,6 +413,50 @@ namespace NzbDrone.Core.Test.Profiles.Delay
 
             Subject.BestForTags(new HashSet<int> { 5 }).Id.Should().Be(1);
             _realRepo.Get(b.Id).Order.Should().Be(1);
+        }
+
+        [Test]
+        public void best_for_tags_should_not_cache_the_ranking_a_concurrent_reorder_replaced()
+        {
+            var a = InsertProfile(1, 5);
+            var b = InsertProfile(2, 5);
+
+            DelayProfileService subject = null;
+            Task reorder = null;
+            var repo = Forwarding(afterFirstRead: () =>
+            {
+                // Unserialised, the reorder commits and clears the cache here, before the old read is stored
+                reorder = Task.Run(() => subject.Reorder(b.Id, null));
+                reorder.Wait(TimeSpan.FromMilliseconds(500));
+            });
+            subject = NewService(repo.Object);
+
+            subject.BestForTags(new HashSet<int> { 5 }).Id.Should().Be(a.Id);
+            reorder.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            subject.BestForTags(new HashSet<int> { 5 }).Id.Should().Be(b.Id);
+        }
+
+        [Test]
+        public void best_for_tags_should_not_cache_a_profile_a_concurrent_delete_removed()
+        {
+            var a = InsertProfile(1, 5);
+            InsertProfile(2, 5);
+
+            DelayProfileService subject = null;
+            Task delete = null;
+            var repo = Forwarding(afterFirstRead: () =>
+            {
+                delete = Task.Run(() => subject.Delete(a.Id));
+                delete.Wait(TimeSpan.FromMilliseconds(500));
+            });
+            subject = NewService(repo.Object);
+
+            subject.BestForTags(new HashSet<int> { 5 }).Id.Should().Be(a.Id);
+            delete.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            _realRepo.Find(a.Id).Should().BeNull();
+            subject.BestForTags(new HashSet<int> { 5 }).Id.Should().NotBe(a.Id);
         }
 
         [Test]

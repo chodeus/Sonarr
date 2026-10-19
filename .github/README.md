@@ -11,10 +11,10 @@ Delay profiles are ranked by `Order`: tagged profiles 1 to n, and the default pr
 
 ## Changes
 
-- `ProfileOrder` owns the numbering. Reorder and renumber give tagged profiles 1 to n and keep the default last. A move after the default now goes last instead of tying it, an unknown `afterId` still moves the profile first, and moving the default or a profile after itself changes nothing. A new profile gets the highest order plus one. If a tagged profile holds `int.MaxValue` or `int.MaxValue - 1`, where that would overflow or tie the default, the profiles are renumbered first.
-- Reorder and Delete save only the `Order` column. Reorder clears the cache when it changes anything, and Delete clears it in a `finally`.
+- `ProfileOrder` owns the numbering. Reorder and renumber give tagged profiles 1 to n and keep the default last. A move after the default now goes last instead of tying it, an unknown `afterId` still moves the profile first, and moving the default or a profile after itself changes nothing. A new profile gets the highest order plus one. If a tagged profile holds `int.MaxValue` or `int.MaxValue - 1`, where that would overflow or tie the default, or the default isn't last (an older save could store the order the client sent for it), the profiles are renumbered first.
+- Reorder and Delete save only the `Order` column. Reorder clears the cache when it changes anything, and Add and Delete clear it in a `finally`, since a renumber or delete can commit before a later step fails.
 - Update keeps the stored order: only Reorder changes it, and the default stays last.
-- Add, Update, Delete and Reorder hold one lock (the service is a singleton), since each reads the orders and writes them back.
+- Add, Update, Delete and Reorder hold one lock (the service is a singleton), since each reads the orders and writes them back. The best-profile lookup takes the same lock, so a writer's cache clear can't land between the lookup's read and its store.
 - The settings page fetches the delay profiles again after a delete, so it shows the renumbered orders.
 
 ## Tests
@@ -22,9 +22,10 @@ Delay profiles are ranked by `Order`: tagged profiles 1 to n, and the default pr
 - `DelayProfileServiceDbFixture` runs the real service over the real repository and SQLite database. The mock only forwards to the repository, or adds a second writer.
   - A default-profile save landing in the middle of a reorder's or a delete's write.
   - An update and a reorder from two requests at once, a delete and a reorder at once, and two adds at once.
-  - An edit loaded before a reorder, the default profile's order (including one an older save stored first), and the cache after a failed renumber and after a reorder.
+  - An edit loaded before a reorder, and the default profile's order, including one an older save stored first, on Update and on Add.
+  - The cache after a failed renumber, after a reorder, after an insert that fails once Add has renumbered, and when a lookup's read races a reorder or a delete.
   - New profiles after a profile at `int.MaxValue` and after a gap, and dense orders after a reorder and a delete.
 - `ProfileOrderFixture` covers moves up, down, first, last, after an unknown profile, and moves that change nothing, plus renumbering, the next order and making room.
 - The existing `DelayProfileServiceFixture` reorder tests pass unchanged.
-- Against the unmodified service, 13 of the new database tests fail. Each guard was then broken on purpose (15 mutations: each lock, each column-only write, the cache clears, the stored order, the default's order, the next order and making room, and three in `ProfileOrder`), and its tests failed every time.
+- Against the unmodified service, 17 of the new database tests fail. Each guard was then broken on purpose (18 mutations: each lock, including the lookup's, each column-only write, each cache clear, the stored order, the default's order, the next order and making room, and four in `ProfileOrder`), and its tests failed every time.
 - The settings page change is checked by lint and the type check only. The frontend has no unit tests.

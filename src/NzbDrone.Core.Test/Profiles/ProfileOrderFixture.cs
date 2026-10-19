@@ -138,6 +138,16 @@ namespace NzbDrone.Core.Test.Profiles
         }
 
         [Test]
+        public void make_room_should_put_a_default_out_of_place_back_last()
+        {
+            _profiles[0].Order = 0;
+
+            MakeRoom().Should().BeTrue();
+
+            _profiles.Select(p => p.Order).Should().Equal(int.MaxValue, 1, 2, 3);
+        }
+
+        [Test]
         public void make_room_should_leave_orders_alone_below_the_default()
         {
             _profiles[2].Order = int.MaxValue - 2;
