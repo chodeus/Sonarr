@@ -2,8 +2,8 @@
   /* Surfaces */
   --paper: oklch(97% 0.010 260);
   --pageBackground: var(--paper);
-  --paperWarm: oklch(88% 0.014 260);
-  --paperCard: oklch(94% 0.011 260);
+  --paperWarm: oklch(92% 0.012 260);
+  --paperCard: oklch(95% 0.010 260);
   --hairline: oklch(84% 0.012 260);
   --hairlineStrong: oklch(76% 0.014 260);
 
@@ -20,7 +20,7 @@
 
   /* Status */
   --statusAiring: oklch(62% 0.105 195);
-  --statusUpcoming: oklch(72% 0.130 65);
+  --statusUpcoming: oklch(74% 0.145 75);
   --statusFinished: oklch(60% 0.008 260);
   --statusHiatus: oklch(58% 0.008 260);
   --statusMissing: oklch(58% 0.165 28);
@@ -37,7 +37,7 @@
   --selectedColor: oklch(78% 0.130 215);
   --successColor: oklch(62% 0.115 148);
   --dangerColor: oklch(58% 0.165 28);
-  --warningColor: oklch(72% 0.130 65);
+  --warningColor: oklch(74% 0.145 75);
   --infoColor: oklch(50% 0.130 215);
   --purple: oklch(54% 0.200 305);
   --pink: oklch(74% 0.180 0);
@@ -53,8 +53,8 @@
   --themeDarkColor: oklch(18% 0.014 260);
   --themeLightColor: oklch(32% 0.012 260);
   --pageFooterBackground: var(--paperWarm);
-  --torrentColor: oklch(62% 0.115 148);
-  --usenetColor: oklch(85% 0.100 215);
+  --torrentColor: oklch(70% 0.120 175);
+  --usenetColor: oklch(68% 0.130 265);
   --inverseLabelColor: oklch(90% 0.007 260);
   --inverseLabelTextColor: oklch(32% 0.012 260);
   --disabledLabelColor: oklch(72% 0.007 260);
@@ -164,11 +164,9 @@
   --popoverTitleBorderColor: var(--hairline);
   --popoverBodyBackgroundColor: var(--paper);
   --popoverShadowColor: oklch(0% 0 0 / 0.18);
-  --popoverArrowBorderColor: var(--paper);
   --popoverTitleBackgroundInverseColor: oklch(18% 0.014 260);
   --popoverTitleBorderInverseColor: oklch(32% 0.012 260);
   --popoverShadowInverseColor: oklch(0% 0 0 / 0.32);
-  --popoverArrowBorderInverseColor: oklch(18% 0.014 260 / 0.92);
 
   /* Calendar, series, progress */
   --calendarTodayBackgroundColor: oklch(94% 0.006 240);
@@ -244,7 +242,7 @@
 
   /* Status */
   --statusAiring: oklch(66% 0.105 195);
-  --statusUpcoming: oklch(76% 0.120 65);
+  --statusUpcoming: oklch(82% 0.150 80);
   --statusFinished: oklch(60% 0.008 260);
   --statusHiatus: oklch(58% 0.008 260);
   --statusMissing: oklch(62% 0.150 28);
@@ -261,7 +259,7 @@
   --selectedColor: oklch(82% 0.115 215);
   --successColor: oklch(66% 0.115 148);
   --dangerColor: oklch(62% 0.150 28);
-  --warningColor: oklch(76% 0.120 65);
+  --warningColor: oklch(82% 0.150 80);
   --infoColor: oklch(82% 0.115 215);
   --purple: oklch(58% 0.190 305);
   --pink: oklch(74% 0.180 0);
@@ -277,8 +275,8 @@
   --themeDarkColor: oklch(27% 0.014 260);
   --themeLightColor: oklch(29% 0.015 260);
   --pageFooterBackground: oklch(0% 0 0 / 0.25);
-  --torrentColor: oklch(72% 0.165 148);
-  --usenetColor: oklch(82% 0.140 215);
+  --torrentColor: oklch(74% 0.135 175);
+  --usenetColor: oklch(70% 0.150 265);
   --inverseLabelColor: oklch(36% 0.016 260);
   --inverseLabelTextColor: oklch(90% 0.007 260);
   --disabledLabelColor: oklch(53% 0.011 260);
@@ -388,11 +386,9 @@
   --popoverTitleBorderColor: oklch(36% 0.016 260);
   --popoverBodyBackgroundColor: oklch(29% 0.015 260);
   --popoverShadowColor: oklch(0% 0 0 / 0.32);
-  --popoverArrowBorderColor: oklch(29% 0.015 260);
   --popoverTitleBackgroundInverseColor: oklch(90% 0.007 260);
   --popoverTitleBorderInverseColor: oklch(66% 0.011 260);
   --popoverShadowInverseColor: oklch(0% 0 0 / 0.32);
-  --popoverArrowBorderInverseColor: oklch(90% 0.007 260 / 0.92);
 
   /* Calendar, series, progress */
   --calendarTodayBackgroundColor: var(--paperWarm);

@@ -84,7 +84,7 @@ function EditSeriesModalContent({
   );
   const [isConfirmMoveModalOpen, setIsConfirmMoveModalOpen] = useState(false);
 
-  const { saveSeries, isSaving, saveError } = useSaveSeries(isPathChanging);
+  const { saveSeries, isSaving, saveError } = useSaveSeries();
   const wasSaving = usePrevious(isSaving);
   const {
     changeEpisodeOrder,
@@ -181,26 +181,33 @@ function EditSeriesModalContent({
     setIsConfirmMoveModalOpen(false);
   }, []);
 
-  const startSave = useCallback(() => {
-    // The order sent after the save is the one previewed when Save was pressed; the PUT keeps the stored order
-    approvedOrderChangeRef.current = isSeasonTypeChanging
-      ? { seasonType: pendingSeasonType, renameFiles }
-      : null;
+  // Files move only when the user confirmed it in the move modal
+  const startSave = useCallback(
+    (moveFiles = false) => {
+      // The order sent after the save is the one previewed when Save was pressed; the PUT keeps the stored order
+      approvedOrderChangeRef.current = isSeasonTypeChanging
+        ? { seasonType: pendingSeasonType, renameFiles }
+        : null;
 
-    saveSeries({
-      ...series,
-      ...pendingChanges,
+      saveSeries(
+        {
+          ...series,
+          ...pendingChanges,
+          seasonType,
+        },
+        moveFiles
+      );
+    },
+    [
+      series,
       seasonType,
-    });
-  }, [
-    series,
-    seasonType,
-    pendingChanges,
-    isSeasonTypeChanging,
-    pendingSeasonType,
-    renameFiles,
-    saveSeries,
-  ]);
+      pendingChanges,
+      isSeasonTypeChanging,
+      pendingSeasonType,
+      renameFiles,
+      saveSeries,
+    ]
+  );
 
   const handleSavePress = useCallback(() => {
     if (isPathChanging && !isConfirmMoveModalOpen) {
@@ -213,7 +220,7 @@ function EditSeriesModalContent({
 
   const handleMoveSeriesPress = useCallback(() => {
     setIsConfirmMoveModalOpen(false);
-    startSave();
+    startSave(true);
   }, [startSave]);
 
   useEffect(() => {
