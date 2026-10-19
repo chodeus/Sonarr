@@ -460,6 +460,72 @@ namespace NzbDrone.Core.Test.Profiles.Delay
         }
 
         [Test]
+        public void cached_lookup_should_not_wait_for_another_lookups_database_read()
+        {
+            InsertProfile(1, 5);
+            var b = InsertProfile(2, 6);
+
+            var inRead = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            var hold = false;
+            var repo = Forwarding();
+            repo.Setup(r => r.All()).Returns(() =>
+            {
+                var snapshot = _realRepo.All().ToList();
+
+                if (hold)
+                {
+                    inRead.Set();
+                    release.Wait(TimeSpan.FromSeconds(5));
+                }
+
+                return snapshot;
+            });
+            var subject = NewService(repo.Object);
+
+            subject.BestForTags(new HashSet<int> { 6 }).Id.Should().Be(b.Id);
+
+            hold = true;
+            var miss = Task.Run(() => subject.BestForTags(new HashSet<int> { 5 }));
+            inRead.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            var hit = Task.Run(() => subject.BestForTags(new HashSet<int> { 6 }));
+            var finished = hit.Wait(TimeSpan.FromMilliseconds(500));
+            release.Set();
+            miss.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            finished.Should().BeTrue();
+            hit.Result.Id.Should().Be(b.Id);
+        }
+
+        [Test]
+        public void cached_lookup_should_not_wait_for_a_writer()
+        {
+            InsertProfile(1, 5);
+            var b = InsertProfile(2, 6);
+
+            var inWrite = new ManualResetEventSlim();
+            var release = new ManualResetEventSlim();
+            var subject = NewService(Forwarding(_ =>
+            {
+                inWrite.Set();
+                release.Wait(TimeSpan.FromSeconds(5));
+            }).Object);
+
+            subject.BestForTags(new HashSet<int> { 6 }).Id.Should().Be(b.Id);
+
+            var reorder = Task.Run(() => subject.Reorder(b.Id, null));
+            inWrite.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            var hit = Task.Run(() => subject.BestForTags(new HashSet<int> { 6 }));
+            var finished = hit.Wait(TimeSpan.FromMilliseconds(500));
+            release.Set();
+            reorder.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            finished.Should().BeTrue();
+        }
+
+        [Test]
         public void reorder_and_delete_should_persist_dense_orders_with_the_default_last()
         {
             var a = InsertProfile(4, 5);

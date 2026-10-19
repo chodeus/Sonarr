@@ -117,8 +117,14 @@ namespace NzbDrone.Core.Profiles.Delay
         public DelayProfile BestForTags(HashSet<int> tagIds)
         {
             var key = "-" + tagIds.Select(v => v.ToString()).Join(",");
+            var cached = _bestForTagsCache.Find(key);
 
-            // Under the writers' lock, so their cache clear can't land between this read and its store
+            if (cached != null)
+            {
+                return cached;
+            }
+
+            // Misses read and store under the writers' lock, so their cache clear can't land in between
             lock (_syncRoot)
             {
                 return _bestForTagsCache.Get(key, () => FetchBestForTags(tagIds), TimeSpan.FromSeconds(30));
