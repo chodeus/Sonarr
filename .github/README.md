@@ -8,7 +8,6 @@ Unlocking the setting isn't enough either. A refresh matches stored episodes to 
 
 ## Changes
 
-- **Episode TVDB IDs.** SkyHook v2 returns each episode's TVDB ID as `metadataId`, and `EpisodeResource` still read `tvdbId`, so every episode refreshed since the v2 switch has `TvdbId` 0 (Kodi `uniqueid`, webhooks and import-list episode matching all read it). The resource now reads `metadataId`.
 - **Refresh matches by TVDB ID first** (`RemoteEpisodeMatcher`), then by season and episode number for the rest, so an episode TVDB moves keeps its record, file, history and monitoring. Episodes with ID 0 match by slot as before and pick up their IDs. The dedupe and field copy move out of `RefreshEpisodeService` into the same type, so the preview applies them exactly as a refresh does.
 - **File seasons follow their episodes.** `EpisodeFileSeasonService` sets `EpisodeFile.SeasonNumber` to its episodes' lowest season after a refresh. Season statistics, Plex metadata, Trakt and extras read it.
 - **XEM** treats a non-aired order as having no mappings, so the scene numbering left over from aired order is cleared instead of used for searches. This runs before XEM's availability checks, so an outage can't keep it in place.
@@ -27,5 +26,5 @@ The v5 PUT validator and the v3 API are unchanged, so a PUT still can't change t
 - `EpisodeOrderChangeServiceFixture`: preview numbers and paths, nothing saved, unknown orders, unmatched and refresh-required files, each conflict kind, the XEM and scene-title refusals, and the command's refusals, save → refresh → rename order, rename off and chained renames. Combined files go through the real `RenameEpisodeFileService`, `FileNameBuilder` and parser: gapped, split across seasons, consecutive numbers in two seasons, and consecutive. A refresh that fails after a successful preview goes through the real `RefreshSeriesService` and must leave the previous order.
 - `ChangeEpisodeOrderCommandFixture`: the real `CommandQueue` holds the change back while a series refresh runs, and holds a refresh back while the change runs.
 - `EpisodeOrderChangeRealServicesFixture`: the whole chain below the command is real (refresh, episode refresh, disk scan, table cleanup, rename, move, transfer, scene mappings), with only the database, SkyHook and the file system simulated. It covers a file missing from disk, a chained rename across season folders that must log no errors, and all-season scene titles.
-- `SkyHookProxyFixture` asserts real episodes carry a TVDB ID.
+- `SkyHookProxyFixture` asserts real episodes carry a TVDB ID, since matching by ID depends on it. SkyHook v2 has sent the ID as `metadataId` and now sends it as `tvdbId`, which upstream reads; this check caught the switch.
 - In Debug, 2,923 tests pass across the DataAugmentation, MediaFiles, MetadataSource, TvTests, Organizer, Messaging and Parser namespaces. Each guard was broken on purpose (46 mutations over three rounds) and its target tests failed every time.
