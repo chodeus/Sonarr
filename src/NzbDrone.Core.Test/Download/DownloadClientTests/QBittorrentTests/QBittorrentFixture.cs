@@ -553,7 +553,8 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
             var remoteEpisode = CreateRemoteEpisode();
             remoteEpisode.Release = new TorrentInfo { Title = _title, DownloadUrl = _downloadUrl, DownloadProtocol = DownloadProtocol.Torrent };
 
-            Assert.ThrowsAsync<ReleaseAlreadyInDownloadClientException>(async () => await Subject.Download(remoteEpisode, CreateIndexer()));
+            Assert.ThrowsAsync<ReleaseAlreadyInDownloadClientException>(async () => await Subject.Download(remoteEpisode, CreateIndexer()))
+                  .InfoHash.Should().Be("CBC2F069FE8BB2F544EAE707D75BCD3DE9DCF951");
 
             Mocker.GetMock<IQBittorrentProxy>()
                   .Verify(s => s.IsTorrentLoaded("cbc2f069fe8bb2f544eae707d75bcd3de9dcf951", It.IsAny<QBittorrentSettings>()), Times.Once());
@@ -568,7 +569,8 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
             var remoteEpisode = CreateRemoteEpisode();
             remoteEpisode.Release.DownloadUrl = "magnet:?xt=urn:btih:ZPBPA2P6ROZPKRHK44D5OW6NHXU5Z6KR&tr=udp://abc";
 
-            Assert.ThrowsAsync<ReleaseAlreadyInDownloadClientException>(async () => await Subject.Download(remoteEpisode, CreateIndexer()));
+            Assert.ThrowsAsync<ReleaseAlreadyInDownloadClientException>(async () => await Subject.Download(remoteEpisode, CreateIndexer()))
+                  .InfoHash.Should().Be("CBC2F069FE8BB2F544EAE707D75BCD3DE9DCF951");
         }
 
         [Test]
@@ -640,7 +642,8 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
             var remoteEpisode = CreateRemoteEpisode();
             remoteEpisode.Release = new TorrentInfo { Title = _title, DownloadUrl = _downloadUrl, DownloadProtocol = DownloadProtocol.Torrent };
 
-            Assert.ThrowsAsync<ReleaseAlreadyInDownloadClientException>(async () => await Subject.Download(remoteEpisode, CreateIndexer()));
+            Assert.ThrowsAsync<ReleaseAlreadyInDownloadClientException>(async () => await Subject.Download(remoteEpisode, CreateIndexer()))
+                  .InfoHash.Should().Be("CBC2F069FE8BB2F544EAE707D75BCD3DE9DCF951");
 
             Mocker.GetMock<IQBittorrentProxy>()
                   .Verify(s => s.IsTorrentLoaded("cbc2f069fe8bb2f544eae707d75bcd3de9dcf951", It.IsAny<QBittorrentSettings>()), Times.Once());
@@ -654,7 +657,8 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
             var remoteEpisode = CreateRemoteEpisode();
             remoteEpisode.Release.DownloadUrl = "magnet:?xt=urn:btih:ZPBPA2P6ROZPKRHK44D5OW6NHXU5Z6KR&tr=udp://abc";
 
-            Assert.ThrowsAsync<ReleaseAlreadyInDownloadClientException>(async () => await Subject.Download(remoteEpisode, CreateIndexer()));
+            Assert.ThrowsAsync<ReleaseAlreadyInDownloadClientException>(async () => await Subject.Download(remoteEpisode, CreateIndexer()))
+                  .InfoHash.Should().Be("CBC2F069FE8BB2F544EAE707D75BCD3DE9DCF951");
 
             Mocker.GetMock<IQBittorrentProxy>()
                   .Verify(s => s.IsTorrentLoaded("cbc2f069fe8bb2f544eae707d75bcd3de9dcf951", It.IsAny<QBittorrentSettings>()), Times.Once());

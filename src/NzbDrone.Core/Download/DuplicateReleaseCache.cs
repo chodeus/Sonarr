@@ -8,7 +8,7 @@ namespace NzbDrone.Core.Download
 {
     public interface IDuplicateReleaseCache
     {
-        void Remember(ReleaseInfo release, int downloadClientId, string downloadClient);
+        void Remember(ReleaseInfo release, string infoHash, int downloadClientId, string downloadClient);
         string Find(ReleaseInfo release);
     }
 
@@ -28,9 +28,8 @@ namespace NzbDrone.Core.Download
             _logger = logger;
         }
 
-        public void Remember(ReleaseInfo release, int downloadClientId, string downloadClient)
+        public void Remember(ReleaseInfo release, string infoHash, int downloadClientId, string downloadClient)
         {
-            var infoHash = (release as TorrentInfo)?.InfoHash;
             var duplicate = new DuplicateRelease(downloadClientId, downloadClient, infoHash);
 
             if (infoHash.IsNotNullOrWhiteSpace())

@@ -95,7 +95,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
                 // Older qBittorrent versions answer a torrent they already have with "Fails." instead of 409
                 if (HasTorrent(hash))
                 {
-                    throw new ReleaseAlreadyInDownloadClientException(remoteEpisode.Release, "qBittorrent already has this torrent", ex);
+                    throw new ReleaseAlreadyInDownloadClientException(remoteEpisode.Release, hash, "qBittorrent already has this torrent", ex);
                 }
 
                 throw;
@@ -104,7 +104,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             {
                 if (HasTorrent(hash))
                 {
-                    throw new ReleaseAlreadyInDownloadClientException(remoteEpisode.Release, "qBittorrent already has this torrent", ex);
+                    throw new ReleaseAlreadyInDownloadClientException(remoteEpisode.Release, hash, "qBittorrent already has this torrent", ex);
                 }
 
                 throw new DownloadClientRejectedReleaseException(remoteEpisode.Release, "QBittorrent rejected the magnet link due to a conflict", ex);
@@ -186,7 +186,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
                 // Older qBittorrent versions answer a torrent they already have with "Fails." instead of 409
                 if (HasTorrent(hash))
                 {
-                    throw new ReleaseAlreadyInDownloadClientException(remoteEpisode.Release, "qBittorrent already has this torrent", ex);
+                    throw new ReleaseAlreadyInDownloadClientException(remoteEpisode.Release, hash, "qBittorrent already has this torrent", ex);
                 }
 
                 throw;
@@ -195,7 +195,7 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
             {
                 if (HasTorrent(hash))
                 {
-                    throw new ReleaseAlreadyInDownloadClientException(remoteEpisode.Release, "qBittorrent already has this torrent", ex);
+                    throw new ReleaseAlreadyInDownloadClientException(remoteEpisode.Release, hash, "qBittorrent already has this torrent", ex);
                 }
 
                 throw new DownloadClientRejectedReleaseException(remoteEpisode.Release, "QBittorrent rejected the torrent file due to a conflict", ex);

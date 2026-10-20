@@ -167,10 +167,10 @@ namespace NzbDrone.Core.Download
                 _logger.Trace("Release {0} previously added to blocklist, not sending to download client again.", remoteEpisode);
                 throw;
             }
-            catch (ReleaseAlreadyInDownloadClientException)
+            catch (ReleaseAlreadyInDownloadClientException ex)
             {
                 _logger.Debug("{0} already has {1}, so it won't be grabbed again for a while", downloadClient.Definition.Name, remoteEpisode);
-                _duplicateReleaseCache.Remember(remoteEpisode.Release, downloadClient.Definition.Id, downloadClient.Definition.Name);
+                _duplicateReleaseCache.Remember(remoteEpisode.Release, ex.InfoHash, downloadClient.Definition.Id, downloadClient.Definition.Name);
                 throw;
             }
             catch (DownloadClientRejectedReleaseException)
