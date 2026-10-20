@@ -151,7 +151,9 @@ namespace NzbDrone.Core.Test.Profiles.Delay
             repo.Setup(r => r.Insert(It.IsAny<DelayProfile>())).Throws(new InvalidOperationException("database is locked"));
             var subject = NewService(repo.Object);
 
-            subject.BestForTags(new HashSet<int> { 5 }).Order.Should().Be(int.MaxValue);
+            var cached = subject.BestForTags(new HashSet<int> { 5 });
+            cached.Id.Should().Be(legacy.Id);
+            cached.Order.Should().Be(int.MaxValue);
 
             Assert.Throws<InvalidOperationException>(() => subject.Add(new DelayProfile { Tags = new HashSet<int> { 6 } }));
 
