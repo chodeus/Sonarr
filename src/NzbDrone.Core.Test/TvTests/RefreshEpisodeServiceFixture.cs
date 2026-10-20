@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using FizzWare.NBuilder;
 using FluentAssertions;
 using Moq;
@@ -63,8 +64,8 @@ namespace NzbDrone.Core.Test.TvTests
             Mocker.GetMock<IEpisodeService>().Setup(c => c.InsertMany(It.IsAny<List<Episode>>()))
                 .Callback<List<Episode>>(e => _insertedEpisodes = e);
 
-            Mocker.GetMock<IEpisodeService>().Setup(c => c.UpdateMany(It.IsAny<List<Episode>>()))
-                .Callback<List<Episode>>(e => _updatedEpisodes = e);
+            Mocker.GetMock<IEpisodeService>().Setup(c => c.UpdateEpisodeFields(It.IsAny<List<Episode>>(), It.IsAny<Expression<Func<Episode, object>>[]>()))
+                .Callback<List<Episode>, Expression<Func<Episode, object>>[]>((e, _) => _updatedEpisodes = e);
 
             Mocker.GetMock<IEpisodeService>().Setup(c => c.DeleteMany(It.IsAny<List<Episode>>()))
                 .Callback<List<Episode>>(e => _deletedEpisodes = e);

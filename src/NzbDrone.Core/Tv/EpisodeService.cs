@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using NLog;
 using NzbDrone.Common.Cache;
 using NzbDrone.Core.Configuration;
@@ -37,6 +38,7 @@ namespace NzbDrone.Core.Tv
         List<Episode> EpisodesBetweenDates(DateTime start, DateTime end, bool includeUnmonitored, bool includeSpecials);
         void InsertMany(List<Episode> episodes);
         void UpdateMany(List<Episode> episodes);
+        void UpdateEpisodeFields(List<Episode> episodes, params Expression<Func<Episode, object>>[] fields);
         void DeleteMany(List<Episode> episodes);
         void SetEpisodeMonitoredBySeason(int seriesId, int seasonNumber, bool monitored);
         List<int> SetEpisodeMonitoredBySeries(int seriesId, MonitorTypes monitor, int firstSeason, int lastSeason);
@@ -222,6 +224,11 @@ namespace NzbDrone.Core.Tv
         public void UpdateMany(List<Episode> episodes)
         {
             _episodeRepository.UpdateMany(episodes);
+        }
+
+        public void UpdateEpisodeFields(List<Episode> episodes, params Expression<Func<Episode, object>>[] fields)
+        {
+            _episodeRepository.SetFields(episodes, fields);
         }
 
         public void DeleteMany(List<Episode> episodes)

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using NLog;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Messaging.Events;
@@ -15,6 +16,14 @@ namespace NzbDrone.Core.Tv
 
     public class RefreshEpisodeService : IRefreshEpisodeService
     {
+        // Must match what RefreshEpisodeInfo sets on an existing episode: anything else belongs to other writers
+        private static readonly Expression<Func<Episode, object>>[] RefreshedFields =
+        {
+            e => e.SeriesId, e => e.TvdbId, e => e.EpisodeNumber, e => e.SeasonNumber, e => e.AbsoluteEpisodeNumber,
+            e => e.AiredAfterSeasonNumber, e => e.AiredBeforeSeasonNumber, e => e.AiredBeforeEpisodeNumber, e => e.Title,
+            e => e.Overview, e => e.AirDate, e => e.AirDateUtc, e => e.Runtime, e => e.FinaleType, e => e.Ratings, e => e.Images
+        };
+
         private readonly IEpisodeService _episodeService;
         private readonly IEventAggregator _eventAggregator;
         private readonly Logger _logger;
@@ -125,7 +134,7 @@ namespace NzbDrone.Core.Tv
             AdjustDirectToDvdAirDate(series, allEpisodes);
 
             _episodeService.DeleteMany(existingEpisodes);
-            _episodeService.UpdateMany(updateList);
+            _episodeService.UpdateEpisodeFields(updateList, RefreshedFields);
             _episodeService.InsertMany(newList);
 
             _eventAggregator.PublishEvent(new EpisodeInfoRefreshedEvent(series, newList, updateList, existingEpisodes));
