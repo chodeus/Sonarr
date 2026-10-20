@@ -519,8 +519,17 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
             id.Should().Be(expectedHash);
         }
 
+        private void GivenApiVersion(Version version)
+        {
+            Mocker.GetMock<IQBittorrentProxySelector>()
+                  .Setup(s => s.GetApiVersion(It.IsAny<QBittorrentSettings>(), It.IsAny<bool>()))
+                  .Returns(version);
+        }
+
         private void GivenConflictWhenAdding(bool torrentLoaded)
         {
+            GivenApiVersion(new Version(2, 0));
+
             var conflict = new DownloadClientException("Failed to add torrent", new HttpException(new HttpResponse(new HttpRequest("http://127.0.0.1:2222/api/v2/torrents/add"), new HttpHeader(), Array.Empty<byte>(), HttpStatusCode.Conflict)));
 
             Mocker.GetMock<IQBittorrentProxy>()
@@ -584,6 +593,8 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
 
         private void GivenFailsWhenAdding(bool torrentLoaded)
         {
+            GivenApiVersion(new Version(2, 0));
+
             Mocker.GetMock<IQBittorrentProxy>()
                   .Setup(s => s.AddTorrentFromFile(It.IsAny<string>(), It.IsAny<byte[]>(), It.IsAny<TorrentSeedConfiguration>(), It.IsAny<QBittorrentSettings>()))
                   .Throws(new QBittorrentAddFailedException("Download client failed to add torrent"));
@@ -595,6 +606,30 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
             Mocker.GetMock<IQBittorrentProxy>()
                   .Setup(s => s.IsTorrentLoaded(It.IsAny<string>(), It.IsAny<QBittorrentSettings>()))
                   .Returns(torrentLoaded);
+        }
+
+        [Test]
+        public void Download_should_report_a_conflict_as_a_plain_rejection_on_api_v1()
+        {
+            GivenConflictWhenAdding(true);
+            GivenApiVersion(new Version(1, 2));
+
+            Assert.ThrowsAsync<DownloadClientRejectedReleaseException>(async () => await Subject.Download(CreateRemoteEpisode(), CreateIndexer()));
+
+            Mocker.GetMock<IQBittorrentProxy>()
+                  .Verify(s => s.IsTorrentLoaded(It.IsAny<string>(), It.IsAny<QBittorrentSettings>()), Times.Never());
+        }
+
+        [Test]
+        public void HasTorrent_should_answer_no_on_api_v1()
+        {
+            GivenApiVersion(new Version(1, 2));
+
+            Mocker.GetMock<IQBittorrentProxy>()
+                  .Setup(s => s.IsTorrentLoaded(It.IsAny<string>(), It.IsAny<QBittorrentSettings>()))
+                  .Returns(true);
+
+            Subject.HasTorrent("CBC2F069FE8BB2F544EAE707D75BCD3DE9DCF951").Should().BeFalse();
         }
 
         [Test]

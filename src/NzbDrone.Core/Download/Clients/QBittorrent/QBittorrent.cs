@@ -265,6 +265,12 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
         {
             try
             {
+                // API v1's torrent check can't tell a missing torrent apart
+                if (ProxyApiVersion < new Version(2, 0))
+                {
+                    return false;
+                }
+
                 return Proxy.IsTorrentLoaded(infoHash.ToLowerInvariant(), Settings);
             }
             catch (Exception ex)
