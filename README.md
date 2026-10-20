@@ -32,6 +32,7 @@
   - A refresh follows an episode TVDB renumbers by its TVDB ID, so its file stays with it.
 - **A torrent qBittorrent already has isn't retried every sync** — branch [`fix/qbit-duplicate-reject`](https://github.com/chodeus/Sonarr/tree/fix/qbit-duplicate-reject), not submitted
   - When qBittorrent refuses a torrent it already holds, such as one in a post-import category or one a cross-seed tool added, the release used to be grabbed and refused again on every RSS sync. It is now rejected with "qBittorrent already has this release".
+  - Older qBittorrent versions answer with "Fails." instead of a conflict. That reply gets the same check: it's treated as a duplicate only when qBittorrent has the torrent, and any other failed add is reported as before.
   - Only the same torrent hash, or the same listing on the same indexer, is rejected; another release with the same title isn't.
   - Nothing is blocklisted. The rejection lives in memory for 12 hours, and each sync first asks qBittorrent whether it still has the torrent, so deleting it there lets the next sync grab the release.
 - **A series refresh keeps changes saved while it runs** — branch [`fix/refresh-keeps-concurrent-changes`](https://github.com/chodeus/Sonarr/tree/fix/refresh-keeps-concurrent-changes), not submitted
