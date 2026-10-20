@@ -228,14 +228,24 @@ namespace NzbDrone.Core.Test.TvTests
             NLog.LogManager.Configuration.AddRuleForAllLevels(memory);
             NLog.LogManager.ReconfigExistingLoggers();
 
-            var preview = Subject.Preview(1, "dvd");
-            preview.Files.Should().OnlyContain(f => f.Status == EpisodeOrderPreviewFileStatus.Renamed);
-            preview.CanChange.Should().BeTrue();
+            try
+            {
+                var preview = Subject.Preview(1, "dvd");
+                preview.Files.Should().OnlyContain(f => f.Status == EpisodeOrderPreviewFileStatus.Renamed);
+                preview.CanChange.Should().BeTrue();
 
-            Execute();
+                Execute();
 
-            _disk.Should().BeEquivalentTo(new[] { SeriesPath + "/Season 2/Show - S02E01.mkv", SeriesPath + "/Season 2/Show - S02E02.mkv" });
-            memory.Logs.Where(l => l.StartsWith("Error|")).Should().BeEmpty();
+                _disk.Should().BeEquivalentTo(new[] { SeriesPath + "/Season 2/Show - S02E01.mkv", SeriesPath + "/Season 2/Show - S02E02.mkv" });
+                memory.Logs.Where(l => l.StartsWith("Error|")).Should().BeEmpty();
+            }
+            finally
+            {
+                var rule = NLog.LogManager.Configuration.LoggingRules.Single(r => r.Targets.Contains(memory));
+                NLog.LogManager.Configuration.LoggingRules.Remove(rule);
+                NLog.LogManager.ReconfigExistingLoggers();
+            }
+
             ExceptionVerification.IgnoreWarns();
             ExceptionVerification.IgnoreErrors();
         }
