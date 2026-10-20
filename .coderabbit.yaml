@@ -1,5 +1,5 @@
 # .coderabbit.yaml — CodeRabbit review config for chodeus/Sonarr (fork of Sonarr develop/v5, C#/.NET 10 + TypeScript UI)
-# Kept on custom, the default branch, so review branches don't carry a copy (a copy in a branch overrides this one).
+# Master copy on custom. Each review branch must carry this file: CodeRabbit reads it from the PR's branch, else the central chodeus/coderabbit config (Lidarr's rules).
 language: "en-US"
 
 reviews:
