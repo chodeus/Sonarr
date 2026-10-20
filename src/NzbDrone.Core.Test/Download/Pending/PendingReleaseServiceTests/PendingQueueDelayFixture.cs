@@ -75,6 +75,17 @@ namespace NzbDrone.Core.Test.Download.Pending.PendingReleaseServiceTests
                   .Returns(DateTime.UtcNow);
         }
 
+        // The pending list is static: leave it empty for the next fixture
+        [TearDown]
+        public void ClearPendingReleases()
+        {
+            Mocker.GetMock<IPendingReleaseRepository>()
+                  .Setup(s => s.All())
+                  .Returns(new List<PendingRelease>());
+
+            Subject.Handle(new ApplicationStartedEvent());
+        }
+
         [Test]
         public void queue_eta_should_follow_the_tagged_profile_when_the_default_is_stored_out_of_place()
         {
