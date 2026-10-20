@@ -553,7 +553,7 @@ namespace NzbDrone.Core.Download.Pending
 
         private int GetDelay(RemoteEpisode remoteEpisode)
         {
-            var delayProfile = _delayProfileService.AllForTags(remoteEpisode.Series.Tags).OrderBy(d => d.Order).First();
+            var delayProfile = _delayProfileService.BestForTags(remoteEpisode.Series.Tags);
             var delay = delayProfile.GetProtocolDelay(remoteEpisode.Release.DownloadProtocol);
             var minimumAge = _configService.MinimumAge;
 
