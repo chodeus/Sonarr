@@ -1,7 +1,7 @@
 {
   "pr_branches": "feat/title-match fix/v3-release-profile-any-indexer fix/same-release-regrab feat/episode-order-change fix/qbit-duplicate-reject fix/refresh-keeps-concurrent-changes fix/delay-profile-order",
   "pr_repo": "chodeus/Sonarr",
-  "pr_shas": "8d3b8c3526d31d066bfdf217cd844b5453424914 b8cf5e7eecf35d1051afaaf2ce9793d9a70a3352 734958aa7acce950cb7c0c1f730e1f17a46ef6b3 94c7a2de8f4335b6bb7213c88582250bada1c0bd 6b0a2bb17c3c833f57fcef85ef039153219f46db 2571439358da6fd4c506fa9f639d35ea8ee6deb6 ea65411a8c4c511904b73e20547412d9cefe8455",
+  "pr_shas": "8d3b8c3526d31d066bfdf217cd844b5453424914 b8cf5e7eecf35d1051afaaf2ce9793d9a70a3352 734958aa7acce950cb7c0c1f730e1f17a46ef6b3 5a6cc54369890e77ff7f8ef52144289e7de848f5 a062097041a11a475a43245e1ba2cbcfb23c158c 5434ac903a7f3dde0b8409145f26c0f56a566a11 5d18ac0be2d35237745c710ae27495a944f02868",
   "sonarr_branch": "develop",
   "sonarr_repo": "Sonarr/Sonarr",
   "sonarr_sha": "7ccafd3a13b737aca0619d4eb0d985c89c00df73",
@@ -11,7 +11,7 @@
   "upstream_tag": "alpinevpn",
   "upstream_tag_sha": "alpinevpn-6ec0342",
   "upstream_tag_sha__command": "json=$(cat meta.json) && upstream_image=$(jq -re '.upstream_image' <<< \"${json}\") && upstream_image_base=$(basename \"${upstream_image}\") && upstream_tag=$(jq -re '.upstream_tag' <<< \"${json}\") && tags_json=$(curl -fsSL \"https://hotio.dev/containers/${upstream_image_base}-tags.json\") && commit_sha=$(jq -re --arg tag \"${upstream_tag}\" '.[$tag].commit_sha' <<< \"${tags_json}\") && upstream_tag_sha=${upstream_tag}-${commit_sha:0:7} && echo \"${upstream_tag_sha}\"",
-  "version": "5.0.0-7ccafd3-d95f7c1",
+  "version": "5.0.0-7ccafd3-95196d5",
   "version__command": "sonarr_sha=$(jq -re '.sonarr_sha' < meta.json) && pr=$(jq -re '.pr_shas' < meta.json | git hash-object --stdin) && major=$(curl -fsSL \"https://raw.githubusercontent.com/$(jq -re '.sonarr_repo' < meta.json)/${sonarr_sha}/.github/workflows/build_v5.yml\" | sed -n \"s/^ *VERSION: *\\([0-9.]*\\).*/\\1/p\") && test -n \"${major}\" && echo \"${major}-${sonarr_sha:0:7}-${pr:0:7}\"",
   "version_branch": "develop"
 }

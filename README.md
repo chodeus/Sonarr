@@ -34,15 +34,17 @@
   - When qBittorrent refuses a torrent it already holds, such as one in a post-import category or one a cross-seed tool added, the release used to be grabbed and refused again on every RSS sync. It is now rejected with "qBittorrent already has this release".
   - Older qBittorrent versions answer with "Fails." instead of a conflict. That reply gets the same check: it's treated as a duplicate only when qBittorrent has the torrent, and any other failed add is reported as before.
   - Only the same torrent hash, or the same listing on the same indexer, is rejected; another release with the same title isn't.
-  - Nothing is blocklisted. The rejection lives in memory for 12 hours, and each sync first asks qBittorrent whether it still has the torrent, so deleting it there lets the next sync grab the release.
+  - Nothing is blocklisted. The rejection lives in memory for 12 hours, and each sync first asks qBittorrent whether it still has the torrent, so deleting it there lets the next sync grab the release. A refusal for the same release that arrives while that check runs is kept.
 - **A series refresh keeps changes saved while it runs** — branch [`fix/refresh-keeps-concurrent-changes`](https://github.com/chodeus/Sonarr/tree/fix/refresh-keeps-concurrent-changes), not submitted
   - A refresh used to save the whole series after its TheTVDB lookup, undoing anything saved meanwhile. A folder move got its old path and pending-move mark back (the series then looked mid-move until a restart), a season toggled during the lookup was switched back along with its episodes, and a profile change was lost.
   - It now reads the series again after the lookup and saves only the fields it refreshes. If the ID, language or episode order changed during the lookup, it looks the series up again.
   - Auto-tags are saved alone, keeping a tag edit made meanwhile. The rescan after a refresh reads the series again, so a move that finished is scanned at its new path: a scan of a folder that's gone drops every episode-file record.
+  - The episode refresh that follows saves only the episode columns it refreshes, so a monitor change, an import linking a file or a search time saved meanwhile stays.
 - **Delay profile saves, reorders and deletes don't undo each other** — branch [`fix/delay-profile-order`](https://github.com/chodeus/Sonarr/tree/fix/delay-profile-order), not submitted
   - A reorder used to put back any profile saved while it ran. A save wrote the order its edit form had loaded, so saving after a reorder made elsewhere moved the profile back, and two profiles could share an order.
   - Reorder and delete now save only the order, and a save keeps the stored order. A new profile goes after the highest order, and the default profile stays last.
   - The 30-second best-profile cache is cleared after every change, including a reorder and a delete whose renumber fails, so releases aren't held by an old ranking or a deleted profile. The settings page reloads the profiles after a delete.
+  - The best-profile lookup, and the queue's estimated time for a held release, rank the default profile last even when an older save stored it out of place or a tagged profile shares its order.
 
 ## How the build works
 
