@@ -151,12 +151,12 @@ namespace NzbDrone.Core.Test.Profiles.Delay
             repo.Setup(r => r.Insert(It.IsAny<DelayProfile>())).Throws(new InvalidOperationException("database is locked"));
             var subject = NewService(repo.Object);
 
-            subject.BestForTags(new HashSet<int> { 5 }).Id.Should().Be(1);
+            subject.BestForTags(new HashSet<int> { 5 }).Order.Should().Be(int.MaxValue);
 
             Assert.Throws<InvalidOperationException>(() => subject.Add(new DelayProfile { Tags = new HashSet<int> { 6 } }));
 
             _realRepo.Get(legacy.Id).Order.Should().Be(1);
-            subject.BestForTags(new HashSet<int> { 5 }).Id.Should().Be(legacy.Id);
+            subject.BestForTags(new HashSet<int> { 5 }).Order.Should().Be(1);
         }
 
         [Test]
@@ -413,6 +413,25 @@ namespace NzbDrone.Core.Test.Profiles.Delay
 
             Subject.BestForTags(new HashSet<int> { 5 }).Id.Should().Be(1);
             _realRepo.Get(b.Id).Order.Should().Be(1);
+        }
+
+        [Test]
+        public void best_for_tags_should_rank_a_default_stored_out_of_place_last()
+        {
+            var seeded = _realRepo.Get(1);
+            seeded.Order = 0;
+            _realRepo.SetFields(seeded, p => p.Order);
+            var tagged = InsertProfile(1, 5);
+
+            Subject.BestForTags(new HashSet<int> { 5 }).Id.Should().Be(tagged.Id);
+        }
+
+        [Test]
+        public void best_for_tags_should_rank_a_tagged_profile_holding_the_maximum_order_above_the_default()
+        {
+            var legacy = InsertProfile(int.MaxValue, 5);
+
+            Subject.BestForTags(new HashSet<int> { 5 }).Id.Should().Be(legacy.Id);
         }
 
         [Test]

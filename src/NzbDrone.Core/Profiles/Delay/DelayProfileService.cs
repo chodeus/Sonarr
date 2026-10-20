@@ -135,7 +135,7 @@ namespace NzbDrone.Core.Profiles.Delay
         {
             return _repo.All()
                         .Where(r => r.Tags.Intersect(tagIds).Any() || r.Tags.Empty())
-                        .OrderBy(d => d.Order).First();
+                        .OrderBy(d => d.Id == ProfileOrder.DefaultProfileId).ThenBy(d => d.Order).First();
         }
 
         public List<DelayProfile> Reorder(int id, int? afterId)
