@@ -191,6 +191,30 @@ namespace NzbDrone.Core.Test.Download
         }
 
         [Test]
+        public async Task should_keep_a_refusal_made_while_the_client_is_rechecked()
+        {
+            await GivenTheClientAlreadyHasIt();
+
+            var rechecks = 0;
+            _downloadClient.As<ITorrentPresenceCheck>()
+                           .Setup(c => c.HasTorrent(It.IsAny<string>()))
+                           .Returns(() =>
+                           {
+                               if (rechecks++ > 0)
+                               {
+                                   return true;
+                               }
+
+                               Assert.ThrowsAsync<ReleaseAlreadyInDownloadClientException>(() => Subject.DownloadReport(RemoteEpisode(7, null), null));
+
+                               return false;
+                           });
+
+            Decide(RemoteEpisode(7, null)).Accepted.Should().BeTrue();
+            Decide(RemoteEpisode(7, null)).Accepted.Should().BeFalse();
+        }
+
+        [Test]
         public async Task should_accept_when_the_client_cannot_be_checked()
         {
             await GivenTheClientAlreadyHasIt();

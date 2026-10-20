@@ -21,6 +21,9 @@ namespace NzbDrone.Core.Download
         private readonly ICached<DuplicateRelease> _cache;
         private readonly Logger _logger;
 
+        // Remember's writes and Find's removal; never held across the client check
+        private readonly object _lock = new object();
+
         public DuplicateReleaseCache(IProvideDownloadClient downloadClientProvider, ICacheManager cacheManager, Logger logger)
         {
             _downloadClientProvider = downloadClientProvider;
@@ -31,17 +34,19 @@ namespace NzbDrone.Core.Download
         public void Remember(ReleaseInfo release, string infoHash, int downloadClientId, string downloadClient)
         {
             var duplicate = new DuplicateRelease(downloadClientId, downloadClient, infoHash);
-
-            if (infoHash.IsNotNullOrWhiteSpace())
-            {
-                _cache.Set(HashKey(infoHash), duplicate, Lifetime);
-            }
-
             var listingKey = ListingKey(release);
 
-            if (listingKey != null)
+            lock (_lock)
             {
-                _cache.Set(listingKey, duplicate, Lifetime);
+                if (infoHash.IsNotNullOrWhiteSpace())
+                {
+                    _cache.Set(HashKey(infoHash), duplicate, Lifetime);
+                }
+
+                if (listingKey != null)
+                {
+                    _cache.Set(listingKey, duplicate, Lifetime);
+                }
             }
         }
 
@@ -64,7 +69,14 @@ namespace NzbDrone.Core.Download
                 return duplicate.DownloadClient;
             }
 
-            _cache.Remove(key);
+            // A refusal remembered during the check replaced this entry, and it stays
+            lock (_lock)
+            {
+                if (ReferenceEquals(_cache.Find(key), duplicate))
+                {
+                    _cache.Remove(key);
+                }
+            }
 
             return null;
         }
