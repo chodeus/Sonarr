@@ -252,6 +252,7 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         [TestCase("Formula1.2026.Round17.Singapore.Race.Grid.Walk.F1TV.WEB-DL.1080p.H264.English-MWR")]
         [TestCase("Formula1.2026x16.Round17.Singapore.Race.F1TV.WEB-DL.1080p.H264.English-MWR")]
         [TestCase("Formula1.2026.Round16.Round17.Singapore.Race.F1TV.WEB-DL.1080p.H264.English-MWR")]
+        [TestCase("Formula1.2026.Spain.Barcelona.Grand.Prix.Qualifying.1080p.WEB.H.264-BILLIE")]
         public void should_map_no_episode_when_release_names_no_event(string title)
         {
             ShouldMapNoEpisode(Subject.ParseEventTitle(Parse(title), _series));

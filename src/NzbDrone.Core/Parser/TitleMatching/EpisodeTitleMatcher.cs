@@ -180,9 +180,9 @@ namespace NzbDrone.Core.Parser.TitleMatching
 
                 matchedWeekends = new List<Weekend> { roundWeekend };
             }
-            else if (matchedWeekends.Count > 1)
+            else if (matchedWeekends.Count > 1 && matchedWeekends.All(w => w.Names.SequenceEqual(matchedWeekends[0].Names)))
             {
-                // Weekends can share a venue's names (Bahrain and Sakhir, 2020); TheTVDB's own place tells them apart
+                // One venue's weekends share its names (Bahrain and Sakhir, 2020); TheTVDB's own place tells them apart
                 var byOwnPlace = matchedWeekends.Where(w => w.Places.Any(p => TitleMatchVocabulary.ContainsPhrase(release, p))).ToList();
                 matchedWeekends = byOwnPlace.Count == 1 ? byOwnPlace : matchedWeekends;
             }
