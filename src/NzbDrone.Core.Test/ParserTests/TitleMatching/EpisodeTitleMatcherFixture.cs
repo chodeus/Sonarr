@@ -363,6 +363,39 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
             Subject.ParseEventTitle(Parse("Formula1.2020.Bahrain.Grand.Prix.1080p.WEB.H.264-BILLIE"), _series).EpisodeNumbers.Should().Equal(2);
         }
 
+        [TestCase("Formula1.2020.Round01.Bahrain.Race.F1TV.WEB-DL.1080p.H264.English-MWR", 3)]
+        [TestCase("Formula1.2020.Bahrain.Grand.Prix.1080p.WEB.H.264-BILLIE", 3)]
+        [TestCase("Formula1.2020.Round02.Sakhir.Race.F1TV.WEB-DL.1080p.H264.English-MWR", 8)]
+        [TestCase("Formula1.2020.Sakhir.Grand.Prix.1080p.WEB.H.264-BILLIE", 8)]
+        [TestCase("Formula1.2020.Round03.Abu.Dhabi.Race.F1TV.WEB-DL.1080p.H264.English-MWR", 10)]
+        public void should_count_a_sprint_weekend_after_a_race_at_its_venue_as_a_new_round(string title, int episodeNumber)
+        {
+            GivenSeason(2020,
+                        ("2020-11-27", "Bahrain (Practice 1)"),
+                        ("2020-11-28", "Bahrain (Qualifying)"),
+                        ("2020-11-29", "Bahrain (Race)"),
+                        ("2020-12-04", "Sakhir (Practice)"),
+                        ("2020-12-04", "Sakhir (Sprint Qualifying)"),
+                        ("2020-12-05", "Sakhir (Sprint)"),
+                        ("2020-12-05", "Sakhir (Qualifying)"),
+                        ("2020-12-06", "Sakhir (Race)"),
+                        ("2020-12-11", "Abu Dhabi (Practice 1)"),
+                        ("2020-12-13", "Abu Dhabi (Race)"));
+
+            Subject.ParseEventTitle(Parse(title), _series).EpisodeNumbers.Should().Equal(episodeNumber);
+        }
+
+        [Test]
+        public void should_keep_an_audio_language_named_after_a_round_confirmed_place()
+        {
+            GivenSeason(2019, ("2019-03-17", "Australia (Race)"), ("2019-03-31", "Japan (Race)"), ("2019-04-14", "Italy (Race)"));
+
+            var eventEpisodeInfo = Subject.ParseEventTitle(Parse("Formula1.2019.Round02.Japan.Race.F1TV.WEB-DL.1080p.H264.Japanese-MWR"), _series);
+
+            eventEpisodeInfo.EpisodeNumbers.Should().Equal(2);
+            eventEpisodeInfo.Languages.Should().Contain(Language.Japanese);
+        }
+
         [Test]
         public void should_keep_a_venue_titled_two_ways_as_one_round()
         {
@@ -396,6 +429,19 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
                         ("2019-03-31", "Brazil (Race)"));
 
             Subject.ParseEventTitle(Parse("Formula1.2019.Round02.Brazil.Race.F1TV.WEB-DL.1080p.H264.English-MWR"), _series).EpisodeNumbers.Should().Equal(5);
+        }
+
+        [Test]
+        public void should_not_split_a_weekend_that_lists_its_race_twice()
+        {
+            GivenSeason(2019,
+                        ("2019-03-17", "Australia (Race)"),
+                        ("2019-03-29", "Mexico (Practice 1)"),
+                        ("2019-03-31", "Mexico City (Race)"),
+                        ("2019-03-31", "Mexico (Race)"),
+                        ("2019-04-14", "Brazil (Race)"));
+
+            Subject.ParseEventTitle(Parse("Formula1.2019.Round03.Brazil.Race.F1TV.WEB-DL.1080p.H264.English-MWR"), _series).EpisodeNumbers.Should().Equal(5);
         }
 
         [Test]

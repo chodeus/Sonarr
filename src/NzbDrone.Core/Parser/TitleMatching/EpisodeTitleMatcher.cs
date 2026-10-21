@@ -161,8 +161,13 @@ namespace NzbDrone.Core.Parser.TitleMatching
                 // A place that is also a language ("Japan") may be the audio, so it names the event once the round agrees
                 if (matchedWeekends.Empty())
                 {
-                    namesEvent = n => TitleMatchVocabulary.ContainsPhrase(release, n);
-                    matchedWeekends = roundWeekend.Names.Any(namesEvent) ? new List<Weekend> { roundWeekend } : matchedWeekends;
+                    // Only the first of its names is the event, so a later one ("Japan ... Japanese") stays the audio
+                    var firstName = roundWeekend.Names.Where(n => TitleMatchVocabulary.ContainsPhrase(release, n))
+                                                      .OrderBy(n => $" {release} ".IndexOf($" {n} ", StringComparison.Ordinal))
+                                                      .FirstOrDefault();
+
+                    namesEvent = n => n == firstName;
+                    matchedWeekends = firstName != null ? new List<Weekend> { roundWeekend } : matchedWeekends;
                 }
 
                 if (!matchedWeekends.Contains(roundWeekend))
@@ -328,11 +333,11 @@ namespace NzbDrone.Core.Parser.TitleMatching
 
                 foreach (var titleEvent in place.OrderBy(e => e.AirDate))
                 {
-                    // A session repeating under another of the venue's names is a second event there (Bahrain and Sakhir, 2020)
-                    var secondEvent = weekend != null && !weekend.Places.Contains(titleEvent.Place) &&
-                                      weekend.Events.Any(e => e.Session == titleEvent.Session);
+                    // A race ends its weekend: one venue can host two in a row (Bahrain and Sakhir, 2020), only five days apart
+                    var afterRace = weekend != null &&
+                                    weekend.Events.Any(e => TitleMatchVocabulary.MainSessions.Contains(e.Session) && e.AirDate.Date < titleEvent.AirDate.Date);
 
-                    if (weekend == null || secondEvent || titleEvent.AirDate - weekend.Events.Last().AirDate > WeekendGap)
+                    if (weekend == null || afterRace || titleEvent.AirDate - weekend.Events.Last().AirDate > WeekendGap)
                     {
                         weekend = new Weekend(titleEvent.Names);
                         weekends.Add(weekend);
