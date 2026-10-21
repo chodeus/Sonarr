@@ -61,6 +61,7 @@ export interface ReplacementTag<T extends TagBase> {
 }
 
 export interface TagInputProps<T extends TagBase> {
+  id?: string;
   className?: string;
   inputContainerClassName?: string;
   name: string;
@@ -91,7 +92,7 @@ function TagInput<T extends TagBase>({
   tags,
   tagList,
   allowNew = true,
-  kind = 'info',
+  kind = 'default',
   placeholder = '',
   delimiters = ['Tab', 'Enter', ' ', ','],
   minQueryLength = 1,

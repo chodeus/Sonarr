@@ -14082,6 +14082,10 @@
           "enableColorImpairedMode": {
             "type": "boolean"
           },
+          "headerColor": {
+            "type": "string",
+            "nullable": true
+          },
           "theme": {
             "type": "string",
             "nullable": true
