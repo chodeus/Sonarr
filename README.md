@@ -6,7 +6,8 @@
 
 - **Title matching for event series** — branch [`feat/title-match`](https://github.com/chodeus/Sonarr/tree/feat/title-match), not submitted
   - For series tagged `title-match`, a release named by event instead of episode number, such as `Formula1.2026.Singapore.Grand.Prix` or `Formula1.2026.Round17.Singapore.Race`, is matched to the episode whose title names the same place and session.
-  - The year picks the season. Round numbers (`Round17`, `R17`, `2026x17`) pick the weekend and must agree with the place. A name with no session word is the race only if it says "Grand Prix" or "GP".
+  - The year picks the season. Round numbers (`Round17`, `R17`, `2026x17`) confirm the weekend the named place gives and must agree with it; a round with no place matches nothing, since TheTVDB's weekends can drift from the real rounds. A name with no session word is the race only if it says "Grand Prix" or "GP".
+  - Weekends follow each season's TheTVDB episodes: a venue hosting two events in a row is two rounds (Bahrain and Sakhir, 2020), and a misdated session stays in its weekend. Grid walks and tech talks never match.
   - A release that names no event maps to no episode instead of the parser's numbers. Explicit `S2026E94` numbering, Sonarr's own file names and specials found by their title keep their episode.
   - Shows, press conferences, testing and sibling series are never matched, and anything ambiguous is left unmatched.
   - A nationality that names the event, such as "Italian" in "Italian Grand Prix", no longer counts as the audio language of the release or its imported file. A language word on its own, such as ITALIAN on another event, is the audio language.
