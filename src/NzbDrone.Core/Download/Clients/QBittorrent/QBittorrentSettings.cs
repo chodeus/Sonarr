@@ -86,7 +86,10 @@ namespace NzbDrone.Core.Download.Clients.QBittorrent
         [FieldDefinition(15, Label = "DownloadClientQbittorrentSettingsAddSeriesTags", Type = FieldType.Checkbox, HelpText = "DownloadClientQbittorrentSettingsAddSeriesTagsHelpText")]
         public bool AddSeriesTags { get; set; }
 
-        [FieldDefinition(16, Label = "DownloadClientQbittorrentSettingsRenameToReleaseTitle", Type = FieldType.Checkbox, HelpText = "DownloadClientQbittorrentSettingsRenameToReleaseTitleHelpText")]
+        [FieldDefinition(16, Label = "DownloadClientQbittorrentSettingsSeedTimeType", Type = FieldType.Select, SelectOptions = typeof(QBittorrentSeedTimeType), Advanced = true, HelpText = "DownloadClientQbittorrentSettingsSeedTimeTypeHelpText")]
+        public int SeedTimeType { get; set; }
+
+        [FieldDefinition(17, Label = "DownloadClientQbittorrentSettingsRenameToReleaseTitle", Type = FieldType.Checkbox, HelpText = "DownloadClientQbittorrentSettingsRenameToReleaseTitleHelpText")]
         public bool RenameToReleaseTitle { get; set; }
 
         public override NzbDroneValidationResult Validate()

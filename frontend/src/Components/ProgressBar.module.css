@@ -19,15 +19,16 @@
 }
 
 .primary {
-  background-color: color-mix(in oklab, var(--accent) 80%, oklch(0% 0 0));
+  background-color: var(--progressBarPrimaryColor);
 }
 
 .danger {
-  background-color: color-mix(in oklab, var(--dangerColor) 80%, oklch(0% 0 0));
+  background-color: var(--progressBarDangerColor);
+  background-image: var(--progressBarDangerPattern);
 }
 
 .success {
-  background-color: color-mix(in oklab, var(--successColor) 80%, oklch(0% 0 0));
+  background-color: var(--progressBarSuccessColor);
 }
 
 .purple {
@@ -35,7 +36,8 @@
 }
 
 .warning {
-  background-color: color-mix(in oklab, var(--warningColor) 80%, oklch(0% 0 0));
+  background-color: var(--progressBarWarningColor);
+  background-image: var(--progressBarWarningPattern);
 }
 
 .info {
