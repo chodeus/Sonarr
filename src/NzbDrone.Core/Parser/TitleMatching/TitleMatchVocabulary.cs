@@ -45,7 +45,9 @@ namespace NzbDrone.Core.Parser.TitleMatching
         {
             ("sprint qualifying", Pattern(@"\bsprint (?:qualifying|qualification|quali|shootout)\b|\bshootout\b")),
             ("sprint", Pattern(@"\bsprint(?: race)?\b")),
-            ("qualifying", Pattern(@"\b(?:qualifying|qualification|quali)\b")),
+
+            // TheTVDB titles some Singapore weekends "Quallifying"
+            ("qualifying", Pattern(@"\b(?:qualifying|quallifying|qualification|quali)\b")),
             ("practice {0}", Pattern(@"\b(?:free )?practice (?<number>[1-3])\b|\bfp(?<number>[1-3])\b")),
 
             // Matches no episode, so "Practice 4" can't fall through to a plain practice or race.
@@ -67,7 +69,8 @@ namespace NzbDrone.Core.Parser.TitleMatching
         {
             "show", "press", "conference", "notebook", "build up", "buildup", "highlights", "onboard", "preview",
             "review", "analysis", "interview", "kids", "paddock", "debrief", "report", "full event", "full events",
-            "full race events", "weekend", "startline", "finishline", "ozetler"
+            "full race events", "weekend", "startline", "finishline", "ozetler", "grid walk", "gridwalk", "tech talk",
+            "techtalk"
         };
 
         public static readonly IReadOnlyList<string> SiblingSeriesWords = new[]

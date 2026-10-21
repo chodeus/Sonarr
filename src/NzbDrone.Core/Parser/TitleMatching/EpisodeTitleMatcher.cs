@@ -147,6 +147,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
             var weekends = FindWeekends(series, release, out var round);
             var matchedWeekends = weekends.Where(w => w.Names.Any(n => MentionsPlace(release, n))).ToList();
 
+            // TheTVDB's weekends can drift from the real rounds, so a round confirms or narrows a named place, never picks one
             if (round.HasValue)
             {
                 if (round.Value < 1 || round.Value > weekends.Count)
@@ -156,7 +157,12 @@ namespace NzbDrone.Core.Parser.TitleMatching
 
                 var roundWeekend = weekends[round.Value - 1];
 
-                if (matchedWeekends.Any() && !matchedWeekends.Contains(roundWeekend))
+                // A place that is also a language ("Japan") may be the audio, so it names the event once the round agrees
+                var named = matchedWeekends.Any()
+                    ? matchedWeekends.Contains(roundWeekend)
+                    : roundWeekend.Names.Any(n => TitleMatchVocabulary.ContainsPhrase(release, n));
+
+                if (!named)
                 {
                     return null;
                 }
@@ -310,7 +316,8 @@ namespace NzbDrone.Core.Parser.TitleMatching
             var events = episodes.Select(ParseEvent).Where(e => e != null).ToList();
             var weekends = new List<Weekend>();
 
-            foreach (var place in events.GroupBy(e => e.Names[0]))
+            // By TheTVDB's own place, not its known names: one season can hold two events at a venue (Bahrain and Sakhir, 2020)
+            foreach (var place in events.GroupBy(e => e.Place))
             {
                 Weekend weekend = null;
 
@@ -352,7 +359,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
                 return null;
             }
 
-            return new TitleEvent(episode, session, PlaceNames(place));
+            return new TitleEvent(episode, session, place, PlaceNames(place));
         }
 
         private static string[] PlaceNames(string place)
@@ -404,23 +411,25 @@ namespace NzbDrone.Core.Parser.TitleMatching
             }
 
             // Sprint weekends have one practice, which TheTVDB leaves unnumbered.
-            var practices = weekend.Events.Where(e => e.Session != null && e.Session.StartsWith("practice")).ToList();
+            var practices = weekend.Events.Where(e => e.Session != null && e.Session.StartsWith("practice", StringComparison.Ordinal)).ToList();
 
             return releaseSession is "practice 1" or "practice" && practices.Count == 1 && practices[0] == titleEvent;
         }
 
         private class TitleEvent
         {
-            public TitleEvent(Episode episode, string session, string[] names)
+            public TitleEvent(Episode episode, string session, string place, string[] names)
             {
                 Episode = episode;
                 Session = session;
+                Place = place;
                 Names = names;
                 AirDate = episode.AirDateUtc.Value;
             }
 
             public Episode Episode { get; }
             public string Session { get; }
+            public string Place { get; }
             public string[] Names { get; }
             public DateTime AirDate { get; }
         }

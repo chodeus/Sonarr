@@ -207,6 +207,8 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         [TestCase("Formula1.2026.Italian.Grand.Prix.1080p.WEB.H.264-BILLIE", 74)]
         [TestCase("Formula1.2026.Round14.Spain.Madrid.Race.F1TV.WEB-DL.1080p.H264.English-MWR", 79)]
         [TestCase("Formula1.2026.Round16.Bahrain.Race.F1LIVE.F1TV.WEB-DL.1080p.H264.English-MWR", 89)]
+        [TestCase("Formula1.2026.Round15.Azerbaijan.Race.SKY.F1TV.WEB-DL.1080p.H264.English-MWR", 84)]
+        [TestCase("Formula1.2026.Round03.Japan.Race.F1TV.WEB-DL.1080p.H264.English-MWR", 24)]
         [TestCase("Formula1.2026.Singapore.Grand.Prix.Practice.One.PROPER.1080p.WEB.H.264-BILLIE", 90)]
         [TestCase("Formula.1.2026x17.Singapore.Qualifying.SkyF1HD.1080p", 93)]
         [TestCase("Formula1.2026.Singapore.Grand.Prix.Qualification.1080p.WEB.H.264-BILLIE", 93)]
@@ -244,6 +246,10 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         [TestCase("Formula.1.2026.Gran.Premio.del.Belgio.Gara.ITALIAN.1080p.WEB.H264-GRP")]
         [TestCase("Formula1.S2026.1080p.WEB.H.264-GRP")]
         [TestCase("Formula1.2026.Qualifying.ITALIAN.1080p.WEB.H264-GRP")]
+        [TestCase("Formula1.2026.Round17.Race.F1TV.WEB-DL.1080p.H264.English-MWR")]
+        [TestCase("Formula1.2026.Round04.Japan.Race.F1TV.WEB-DL.1080p.H264.English-MWR")]
+        [TestCase("Formula1.2026.Singapore.Grand.Prix.Tech.Talk.1080p.WEB.H.264-GRP")]
+        [TestCase("Formula1.2026.Round17.Singapore.Race.Grid.Walk.F1TV.WEB-DL.1080p.H264.English-MWR")]
         public void should_map_no_episode_when_release_names_no_event(string title)
         {
             ShouldMapNoEpisode(Subject.ParseEventTitle(Parse(title), _series));
@@ -325,6 +331,47 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         {
             Subject.ParseEventTitle(Parse("Formula1.2026.Round17.Singapore.Race.F1LIVE.F1TV.WEB-DL.1080p.H264.English-MWR"), _series)
                    .Languages.Should().Equal(Language.English);
+        }
+
+        [Test]
+        public void should_count_two_events_at_one_venue_as_two_rounds()
+        {
+            GivenSeason(2020,
+                        ("2020-11-27", "Bahrain (Practice 1)"),
+                        ("2020-11-29", "Bahrain (Race)"),
+                        ("2020-12-04", "Sakhir (Practice 1)"),
+                        ("2020-12-06", "Sakhir (Race)"),
+                        ("2020-12-11", "Abu Dhabi (Practice 1)"),
+                        ("2020-12-13", "Abu Dhabi (Race)"));
+
+            Subject.ParseEventTitle(Parse("Formula1.2020.Round02.Sakhir.Race.F1TV.WEB-DL.1080p.H264.English-MWR"), _series).EpisodeNumbers.Should().Equal(4);
+            Subject.ParseEventTitle(Parse("Formula1.2020.Round03.Abu.Dhabi.Race.F1TV.WEB-DL.1080p.H264.English-MWR"), _series).EpisodeNumbers.Should().Equal(6);
+        }
+
+        [Test]
+        public void should_read_quallifying_as_qualifying()
+        {
+            GivenSeason(2018, ("2018-09-14", "Singapore (Practice 1)"), ("2018-09-15", "Singapore (Quallifying)"), ("2018-09-16", "Singapore (Race)"));
+
+            Subject.ParseEventTitle(Parse("Formula1.2018.Singapore.Grand.Prix.Qualifying.1080p.WEB.H.264-GRP"), _series).EpisodeNumbers.Should().Equal(2);
+            Subject.ParseEventTitle(Parse("Formula1.2018.Singapore.Grand.Prix.1080p.WEB.H.264-GRP"), _series).EpisodeNumbers.Should().Equal(3);
+        }
+
+        private void GivenSeason(int season, params (string AirDate, string Title)[] episodes)
+        {
+            var seasonEpisodes = episodes.Select((e, i) => new Episode
+            {
+                Id = 5000 + i,
+                SeriesId = _series.Id,
+                SeasonNumber = season,
+                EpisodeNumber = i + 1,
+                Title = e.Title,
+                AirDateUtc = DateTime.Parse(e.AirDate, CultureInfo.InvariantCulture)
+            }).ToList();
+
+            Mocker.GetMock<IEpisodeService>()
+                  .Setup(s => s.GetEpisodesBySeason(_series.Id, season))
+                  .Returns(seasonEpisodes);
         }
 
         private static ParsedEpisodeInfo Parse(string title)
