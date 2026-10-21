@@ -250,6 +250,8 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         [TestCase("Formula1.2026.Round04.Japan.Race.F1TV.WEB-DL.1080p.H264.English-MWR")]
         [TestCase("Formula1.2026.Singapore.Grand.Prix.Tech.Talk.1080p.WEB.H.264-GRP")]
         [TestCase("Formula1.2026.Round17.Singapore.Race.Grid.Walk.F1TV.WEB-DL.1080p.H264.English-MWR")]
+        [TestCase("Formula1.2026x16.Round17.Singapore.Race.F1TV.WEB-DL.1080p.H264.English-MWR")]
+        [TestCase("Formula1.2026.Round16.Round17.Singapore.Race.F1TV.WEB-DL.1080p.H264.English-MWR")]
         public void should_map_no_episode_when_release_names_no_event(string title)
         {
             ShouldMapNoEpisode(Subject.ParseEventTitle(Parse(title), _series));
@@ -333,6 +335,17 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
                    .Languages.Should().Equal(Language.English);
         }
 
+        [TestCase("Formula1.2026.Round15.Azerbaijan.Race.SKY.F1TV.WEB-DL.1080p.H264.English-MWR", 84)]
+        [TestCase("Formula1.2026.Round03.Japan.Race.F1TV.WEB-DL.1080p.H264.English-MWR", 24)]
+        [TestCase("Formula1.2026.Round10.Spa.Francorchamps.Race.F1TV.WEB-DL.1080p.H264.English-MWR", 59)]
+        public void should_not_take_language_from_a_place_the_round_confirms(string title, int episodeNumber)
+        {
+            var eventEpisodeInfo = Subject.ParseEventTitle(Parse(title), _series);
+
+            eventEpisodeInfo.EpisodeNumbers.Should().Equal(episodeNumber);
+            eventEpisodeInfo.Languages.Should().Equal(Language.English);
+        }
+
         [Test]
         public void should_count_two_events_at_one_venue_as_two_rounds()
         {
@@ -346,6 +359,43 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
 
             Subject.ParseEventTitle(Parse("Formula1.2020.Round02.Sakhir.Race.F1TV.WEB-DL.1080p.H264.English-MWR"), _series).EpisodeNumbers.Should().Equal(4);
             Subject.ParseEventTitle(Parse("Formula1.2020.Round03.Abu.Dhabi.Race.F1TV.WEB-DL.1080p.H264.English-MWR"), _series).EpisodeNumbers.Should().Equal(6);
+            Subject.ParseEventTitle(Parse("Formula1.2020.Sakhir.Grand.Prix.1080p.WEB.H.264-BILLIE"), _series).EpisodeNumbers.Should().Equal(4);
+            Subject.ParseEventTitle(Parse("Formula1.2020.Bahrain.Grand.Prix.1080p.WEB.H.264-BILLIE"), _series).EpisodeNumbers.Should().Equal(2);
+        }
+
+        [Test]
+        public void should_keep_a_venue_titled_two_ways_as_one_round()
+        {
+            GivenSeason(2019,
+                        ("2019-03-15", "Australia (Practice 1)"),
+                        ("2019-03-17", "Australia (Race)"),
+                        ("2019-03-29", "Mexico (Practice 1)"),
+                        ("2019-03-31", "Mexico City (Race)"),
+                        ("2019-04-12", "Brazil (Practice 1)"),
+                        ("2019-04-14", "Brazil (Race)"));
+            GivenSeason(1998,
+                        ("1998-03-07", "Australia (Qualifying)"),
+                        ("1998-03-08", "Australian Grand Prix (Race)"),
+                        ("1998-03-28", "Brazil (Qualifying)"),
+                        ("1998-03-29", "Brazil (Race)"));
+
+            Subject.ParseEventTitle(Parse("Formula1.2019.Round03.Brazil.Race.F1TV.WEB-DL.1080p.H264.English-MWR"), _series).EpisodeNumbers.Should().Equal(6);
+            Subject.ParseEventTitle(Parse("Formula1.2019.Round02.Mexico.Race.F1TV.WEB-DL.1080p.H264.English-MWR"), _series).EpisodeNumbers.Should().Equal(4);
+            Subject.ParseEventTitle(Parse("Formula1.2019.Mexico.Grand.Prix.1080p.WEB.H.264-BILLIE"), _series).EpisodeNumbers.Should().Equal(4);
+            Subject.ParseEventTitle(Parse("Formula1.1998.Round02.Brazil.Race.F1TV.WEB-DL.1080p.H264.English-MWR"), _series).EpisodeNumbers.Should().Equal(4);
+        }
+
+        [Test]
+        public void should_not_split_a_weekend_that_lists_a_session_twice()
+        {
+            GivenSeason(2019,
+                        ("2019-03-15", "Australia (Practice 1)"),
+                        ("2019-03-15", "Australia (Practice 1)"),
+                        ("2019-03-17", "Australia (Race)"),
+                        ("2019-03-29", "Brazil (Practice 1)"),
+                        ("2019-03-31", "Brazil (Race)"));
+
+            Subject.ParseEventTitle(Parse("Formula1.2019.Round02.Brazil.Race.F1TV.WEB-DL.1080p.H264.English-MWR"), _series).EpisodeNumbers.Should().Equal(5);
         }
 
         [Test]

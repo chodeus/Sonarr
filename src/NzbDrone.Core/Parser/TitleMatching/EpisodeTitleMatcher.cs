@@ -67,7 +67,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
             }
 
             var release = TitleMatchVocabulary.Normalize(parsedEpisodeInfo.ReleaseTitle);
-            var episode = FindEpisode(series, release, out var weekend);
+            var episode = FindEpisode(series, release, out var eventNames);
 
             if (episode == null)
             {
@@ -85,7 +85,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
             _logger.Debug("Matched '{0}' to {1}x{2:00} '{3}' by title", parsedEpisodeInfo.ReleaseTitle, episode.SeasonNumber, episode.EpisodeNumber, episode.Title);
 
             var eventEpisodeInfo = WithNumbers(parsedEpisodeInfo, [episode.SeasonNumber], [episode.EpisodeNumber]);
-            eventEpisodeInfo.Languages = WithoutEventLanguages(parsedEpisodeInfo.Languages, release, weekend.Names);
+            eventEpisodeInfo.Languages = WithoutEventLanguages(parsedEpisodeInfo.Languages, release, eventNames);
 
             return eventEpisodeInfo;
         }
@@ -127,9 +127,9 @@ namespace NzbDrone.Core.Parser.TitleMatching
             return eventEpisodeInfo;
         }
 
-        private Episode FindEpisode(Series series, string release, out Weekend weekend)
+        private Episode FindEpisode(Series series, string release, out string[] eventNames)
         {
-            weekend = null;
+            eventNames = null;
 
             if (!IsSingleEvent(release, TitleMatchVocabulary.Normalize(series.Title)))
             {
@@ -145,7 +145,8 @@ namespace NzbDrone.Core.Parser.TitleMatching
             }
 
             var weekends = FindWeekends(series, release, out var round);
-            var matchedWeekends = weekends.Where(w => w.Names.Any(n => MentionsPlace(release, n))).ToList();
+            Func<string, bool> namesEvent = n => MentionsPlace(release, n);
+            var matchedWeekends = weekends.Where(w => w.Names.Any(namesEvent)).ToList();
 
             // TheTVDB's weekends can drift from the real rounds, so a round confirms or narrows a named place, never picks one
             if (round.HasValue)
@@ -158,16 +159,24 @@ namespace NzbDrone.Core.Parser.TitleMatching
                 var roundWeekend = weekends[round.Value - 1];
 
                 // A place that is also a language ("Japan") may be the audio, so it names the event once the round agrees
-                var named = matchedWeekends.Any()
-                    ? matchedWeekends.Contains(roundWeekend)
-                    : roundWeekend.Names.Any(n => TitleMatchVocabulary.ContainsPhrase(release, n));
+                if (matchedWeekends.Empty())
+                {
+                    namesEvent = n => TitleMatchVocabulary.ContainsPhrase(release, n);
+                    matchedWeekends = roundWeekend.Names.Any(namesEvent) ? new List<Weekend> { roundWeekend } : matchedWeekends;
+                }
 
-                if (!named)
+                if (!matchedWeekends.Contains(roundWeekend))
                 {
                     return null;
                 }
 
                 matchedWeekends = new List<Weekend> { roundWeekend };
+            }
+            else if (matchedWeekends.Count > 1)
+            {
+                // Weekends can share a venue's names (Bahrain and Sakhir, 2020); TheTVDB's own place tells them apart
+                var byOwnPlace = matchedWeekends.Where(w => w.Places.Any(p => TitleMatchVocabulary.ContainsPhrase(release, p))).ToList();
+                matchedWeekends = byOwnPlace.Count == 1 ? byOwnPlace : matchedWeekends;
             }
 
             if (matchedWeekends.Count != 1)
@@ -192,7 +201,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
                 return null;
             }
 
-            weekend = matchedWeekend;
+            eventNames = matchedWeekend.Names.Where(namesEvent).ToArray();
 
             return episode;
         }
@@ -235,7 +244,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
         // "Italian" in "Italian Grand Prix" names the event, not the audio, unless the release names it again.
         private static List<Language> WithoutEventLanguages(List<Language> languages, string release, string[] eventNames)
         {
-            var placeNames = eventNames.Where(n => MentionsPlace(release, n)).ToList();
+            var placeNames = eventNames.ToList();
 
             // Only the first mention is the event; a second one is the release naming its language.
             var withoutPlaceNames = placeNames.Aggregate($" {release} ", (title, name) =>
@@ -289,26 +298,23 @@ namespace NzbDrone.Core.Parser.TitleMatching
 
         private List<Weekend> FindWeekends(Series series, string release, out int? round)
         {
-            var roundMatch = RoundRegex.Match(release);
-            round = roundMatch.Success ? int.Parse(roundMatch.Groups["round"].Value, CultureInfo.InvariantCulture) : null;
-
             var yearMatches = YearRegex.Matches(release);
+            var rounds = RoundRegex.Matches(release).Select(m => m.Groups["round"].Value)
+                                   .Concat(yearMatches.Where(m => m.Groups["round"].Success).Select(m => m.Groups["round"].Value))
+                                   .Select(r => int.Parse(r, CultureInfo.InvariantCulture))
+                                   .Distinct()
+                                   .ToList();
             var years = yearMatches.Select(m => int.Parse(m.Groups["year"].Value, CultureInfo.InvariantCulture)).Distinct().ToList();
 
-            if (years.Count != 1)
+            round = rounds.Count == 1 ? rounds[0] : null;
+
+            // Two different rounds can't both be right
+            if (years.Count != 1 || rounds.Count > 1)
             {
                 return new List<Weekend>();
             }
 
-            var episodes = _episodeService.GetEpisodesBySeason(series.Id, years[0]);
-            var yearRound = yearMatches.FirstOrDefault(m => m.Groups["round"].Success);
-
-            if (yearRound != null)
-            {
-                round ??= int.Parse(yearRound.Groups["round"].Value, CultureInfo.InvariantCulture);
-            }
-
-            return GroupWeekends(episodes);
+            return GroupWeekends(_episodeService.GetEpisodesBySeason(series.Id, years[0]));
         }
 
         private static List<Weekend> GroupWeekends(List<Episode> episodes)
@@ -316,20 +322,24 @@ namespace NzbDrone.Core.Parser.TitleMatching
             var events = episodes.Select(ParseEvent).Where(e => e != null).ToList();
             var weekends = new List<Weekend>();
 
-            // By TheTVDB's own place, not its known names: one season can hold two events at a venue (Bahrain and Sakhir, 2020)
-            foreach (var place in events.GroupBy(e => e.Place))
+            foreach (var place in events.GroupBy(e => e.Names[0]))
             {
                 Weekend weekend = null;
 
                 foreach (var titleEvent in place.OrderBy(e => e.AirDate))
                 {
-                    if (weekend == null || titleEvent.AirDate - weekend.Events.Last().AirDate > WeekendGap)
+                    // A session repeating under another of the venue's names is a second event there (Bahrain and Sakhir, 2020)
+                    var secondEvent = weekend != null && !weekend.Places.Contains(titleEvent.Place) &&
+                                      weekend.Events.Any(e => e.Session == titleEvent.Session);
+
+                    if (weekend == null || secondEvent || titleEvent.AirDate - weekend.Events.Last().AirDate > WeekendGap)
                     {
                         weekend = new Weekend(titleEvent.Names);
                         weekends.Add(weekend);
                     }
 
                     weekend.Events.Add(titleEvent);
+                    weekend.Places.Add(titleEvent.Place);
                 }
             }
 
@@ -442,6 +452,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
             }
 
             public string[] Names { get; }
+            public HashSet<string> Places { get; } = new();
             public List<TitleEvent> Events { get; } = new();
         }
     }
