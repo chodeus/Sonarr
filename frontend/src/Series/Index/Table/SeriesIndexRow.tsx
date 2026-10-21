@@ -8,7 +8,6 @@ import HeartRating from 'Components/HeartRating';
 import IconButton from 'Components/Link/IconButton';
 import Link from 'Components/Link/Link';
 import SpinnerIconButton from 'Components/Link/SpinnerIconButton';
-import SeriesTagList from 'Components/SeriesTagList';
 import RelativeDateCell from 'Components/Table/Cells/RelativeDateCell';
 import VirtualTableRowCell from 'Components/Table/Cells/VirtualTableRowCell';
 import VirtualTableSelectCell from 'Components/Table/Cells/VirtualTableSelectCell';
@@ -20,6 +19,7 @@ import DeleteSeriesModal from 'Series/Delete/DeleteSeriesModal';
 import EditSeriesModal from 'Series/Edit/EditSeriesModal';
 import { Statistics } from 'Series/Series';
 import SeriesBanner from 'Series/SeriesBanner';
+import SeriesMovePending from 'Series/SeriesMovePending';
 import { useSeriesTableOptions } from 'Series/seriesOptionsStore';
 import SeriesTitleLink from 'Series/SeriesTitleLink';
 import { SelectStateInputProps } from 'typings/props';
@@ -31,6 +31,7 @@ import useSeriesIndexItem from '../useSeriesIndexItem';
 import hasGrowableColumns from './hasGrowableColumns';
 import SeasonsCell from './SeasonsCell';
 import SeriesStatusCell from './SeriesStatusCell';
+import TagsCell from './TagsCell';
 import styles from './SeriesIndexRow.module.css';
 
 interface SeriesIndexRowProps {
@@ -127,6 +128,7 @@ function SeriesIndexRow(props: SeriesIndexRowProps) {
     status,
     path,
     titleSlug,
+    pendingPath,
     previousAiring,
     added,
     statistics = {} as Statistics,
@@ -279,7 +281,7 @@ function SeriesIndexRow(props: SeriesIndexRowProps) {
             // @ts-ignore ts(2739)
             <RelativeDateCell
               key={name}
-              className={classNames(styles[name], styles.nextAiringMono)}
+              className={styles[name]}
               date={nextAiring}
               component={VirtualTableRowCell}
             />
@@ -419,6 +421,13 @@ function SeriesIndexRow(props: SeriesIndexRowProps) {
           return (
             <VirtualTableRowCell key={name} className={styles[name]}>
               {path}
+
+              {pendingPath ? (
+                <SeriesMovePending
+                  className={styles.movePendingIcon}
+                  pendingPath={pendingPath}
+                />
+              ) : null}
             </VirtualTableRowCell>
           );
         }
@@ -433,7 +442,7 @@ function SeriesIndexRow(props: SeriesIndexRowProps) {
 
         if (name === 'averageSizePerEpisode') {
           const averageSize =
-            totalEpisodeCount > 0 ? sizeOnDisk / totalEpisodeCount : 0;
+            episodeFileCount > 0 ? sizeOnDisk / episodeFileCount : 0;
 
           return (
             <VirtualTableRowCell key={name} className={styles[name]}>
@@ -521,11 +530,7 @@ function SeriesIndexRow(props: SeriesIndexRowProps) {
         }
 
         if (name === 'tags') {
-          return (
-            <VirtualTableRowCell key={name} className={styles[name]}>
-              <SeriesTagList tags={tags} />
-            </VirtualTableRowCell>
-          );
+          return <TagsCell key={name} className={styles[name]} tags={tags} />;
         }
 
         if (name === 'useSceneNumbering') {

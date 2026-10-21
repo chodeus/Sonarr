@@ -214,7 +214,7 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         {
             var eventEpisodeInfo = Subject.ParseEventTitle(Parse(title), _series);
 
-            eventEpisodeInfo.SeasonNumber.Should().Be(2026);
+            eventEpisodeInfo.SeasonNumbers.Should().Equal(2026);
             eventEpisodeInfo.EpisodeNumbers.Should().Equal(episodeNumber);
             eventEpisodeInfo.ReleaseTitle.Should().Be(title);
         }
@@ -263,7 +263,7 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
             {
                 ReleaseTitle = "Formula1.2026.The.Last.Lap.1080p.WEB.H264-GRP",
                 SeriesTitle = _series.Title,
-                SeasonNumber = 0,
+                SeasonNumbers = [0],
                 EpisodeNumbers = new[] { 5 },
                 Languages = new List<Language> { Language.English },
                 Special = true

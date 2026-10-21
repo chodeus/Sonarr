@@ -21,13 +21,31 @@
   margin-top: 10px;
 }
 
-@media (--breakpointLarge) {
-  .tableContainer {
-    overflow-x: auto;
-  }
+.tableContainer {
+  overflow: auto hidden;
+  scrollbar-width: none;
 
-  .table {
-    min-width: 100%;
-    width: max-content;
+  &::-webkit-scrollbar {
+    display: none;
   }
+}
+
+.scrollbar {
+  @add-mixin scrollbar;
+  @add-mixin scrollbarTrack;
+  @add-mixin scrollbarThumb;
+
+  position: sticky;
+  bottom: 0;
+  overflow: auto hidden;
+  background-color: var(--modalBackgroundColor);
+}
+
+.scrollbarContent {
+  height: 1px;
+}
+
+.table {
+  min-width: 100%;
+  width: max-content;
 }

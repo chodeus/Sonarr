@@ -5,11 +5,12 @@ import styles from './ModalHeader.module.css';
 
 interface ModalHeaderProps extends React.HTMLAttributes<HTMLDivElement> {
   children: ReactNode;
+  subtitle?: ReactNode;
 }
 
 const ModalHeader = forwardRef(
   (
-    { className, children, ...otherProps }: ModalHeaderProps,
+    { className, children, subtitle, ...otherProps }: ModalHeaderProps,
     ref: ForwardedRef<HTMLDivElement>
   ) => {
     const { headerId } = useModalContext();
@@ -20,8 +21,11 @@ const ModalHeader = forwardRef(
         id={headerId}
         className={classNames(styles.modalHeader, className)}
         {...otherProps}
+        role="heading"
+        aria-level={2}
       >
         {children}
+        {subtitle ? <span className={styles.subtitle}>{subtitle}</span> : null}
       </div>
     );
   }

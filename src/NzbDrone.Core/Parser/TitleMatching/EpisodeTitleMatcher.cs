@@ -61,7 +61,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
             }
 
             // A special found by its TheTVDB title already names its episode
-            if (parsedEpisodeInfo.Special && parsedEpisodeInfo.SeasonNumber == 0)
+            if (parsedEpisodeInfo.Special && parsedEpisodeInfo.SeasonNumbers.FirstOrDefault(-1) == 0)
             {
                 return null;
             }
@@ -193,7 +193,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
 
         private bool NamesParsedEpisodes(ParsedEpisodeInfo parsedEpisodeInfo, Series series, string release)
         {
-            if (!parsedEpisodeInfo.SeasonNumber.HasValue || parsedEpisodeInfo.EpisodeNumbers.Empty())
+            if (parsedEpisodeInfo.SeasonNumbers.Empty() || parsedEpisodeInfo.EpisodeNumbers.Empty())
             {
                 return false;
             }
@@ -202,7 +202,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
 
             foreach (var number in parsedEpisodeInfo.EpisodeNumbers)
             {
-                var episode = _episodeService.FindEpisode(series.Id, parsedEpisodeInfo.SeasonNumber.Value, number);
+                var episode = _episodeService.FindEpisode(series.Id, parsedEpisodeInfo.SeasonNumbers.First(), number);
                 var title = episode?.Title.IsNullOrWhiteSpace() == false ? TitleMatchVocabulary.Normalize(episode.Title) : null;
 
                 if (title == null || !TitleMatchVocabulary.ContainsPhrase(release, title))

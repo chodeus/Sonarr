@@ -25,6 +25,7 @@ import {
 } from 'Helpers/Props';
 import MoveSeriesModal from 'Series/MoveSeries/MoveSeriesModal';
 import Series, { Statistics } from 'Series/Series';
+import SeriesMovePending from 'Series/SeriesMovePending';
 import { useSaveSeries, useSingleSeries } from 'Series/useSeries';
 import { InputChanged } from 'typings/inputs';
 import selectSettings from 'Utilities/selectSettings';
@@ -57,6 +58,7 @@ function EditSeriesModalContent({
     seasonTypes,
     language,
     path,
+    pendingPath,
     tags,
     rootFolderPath: initialRootFolderPath,
     statistics = {} as Statistics,
@@ -75,7 +77,7 @@ function EditSeriesModalContent({
   );
   const [isConfirmMoveModalOpen, setIsConfirmMoveModalOpen] = useState(false);
 
-  const { saveSeries, isSaving, saveError } = useSaveSeries(isPathChanging);
+  const { saveSeries, isSaving, saveError } = useSaveSeries();
   const wasSaving = usePrevious(isSaving);
 
   const { settings, ...otherSettings } = useMemo(() => {
@@ -162,10 +164,13 @@ function EditSeriesModalContent({
   const handleMoveSeriesPress = useCallback(() => {
     setIsConfirmMoveModalOpen(false);
 
-    saveSeries({
-      ...series,
-      ...pendingChanges,
-    });
+    saveSeries(
+      {
+        ...series,
+        ...pendingChanges,
+      },
+      true
+    );
   }, [series, pendingChanges, saveSeries]);
 
   useEffect(() => {
@@ -276,7 +281,16 @@ function EditSeriesModalContent({
           </FormRow>
 
           <FormRow size={sizes.MEDIUM}>
-            <FormLabel>{translate('Path')}</FormLabel>
+            <FormLabel>
+              {translate('Path')}
+
+              {pendingPath ? (
+                <SeriesMovePending
+                  className={styles.labelIcon}
+                  pendingPath={pendingPath}
+                />
+              ) : null}
+            </FormLabel>
 
             <FormInput
               type={inputTypes.PATH}

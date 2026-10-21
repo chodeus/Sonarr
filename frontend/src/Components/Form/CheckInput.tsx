@@ -4,6 +4,7 @@ import Icon from 'Components/Icon';
 import { icons } from 'Helpers/Props';
 import { Kind } from 'Helpers/Props/kinds';
 import { CheckInputChanged } from 'typings/inputs';
+import { useFormInputGroup } from './FormInputGroupContext';
 import FormInputHelpText from './FormInputHelpText';
 import styles from './CheckInput.module.css';
 
@@ -12,6 +13,7 @@ interface ChangeEvent<T = Element> extends SyntheticEvent<T, MouseEvent> {
 }
 
 export interface CheckInputProps {
+  id?: string;
   ariaLabel?: string;
   className?: string;
   containerClassName?: string;
@@ -27,7 +29,9 @@ export interface CheckInputProps {
 }
 
 function CheckInput(props: CheckInputProps) {
+  const formInputGroup = useFormInputGroup();
   const {
+    id,
     ariaLabel,
     className = styles.input,
     containerClassName = styles.container,
@@ -108,8 +112,11 @@ function CheckInput(props: CheckInputProps) {
           ref={inputRef}
           className={styles.checkbox}
           type="checkbox"
+          id={id}
           name={name}
           aria-label={ariaLabel}
+          aria-describedby={formInputGroup?.describedBy}
+          aria-invalid={formInputGroup?.hasError || undefined}
           checked={isChecked}
           disabled={isDisabled}
           onChange={handleChange}
