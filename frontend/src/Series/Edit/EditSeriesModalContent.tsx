@@ -226,6 +226,7 @@ function EditSeriesModalContent({
   useEffect(() => {
     if (!isSaving && wasSaving && !saveError) {
       const orderChange = approvedOrderChangeRef.current;
+      approvedOrderChangeRef.current = null;
 
       if (orderChange) {
         changeEpisodeOrder(

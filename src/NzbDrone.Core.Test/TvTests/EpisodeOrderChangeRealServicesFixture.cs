@@ -13,6 +13,7 @@ using NzbDrone.Core.Languages;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.MediaFiles.Events;
 using NzbDrone.Core.Messaging.Commands;
+using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.MetadataSource;
 using NzbDrone.Core.Organizer;
 using NzbDrone.Core.Qualities;
@@ -246,6 +247,29 @@ namespace NzbDrone.Core.Test.TvTests
                 NLog.LogManager.ReconfigExistingLoggers();
             }
 
+            ExceptionVerification.IgnoreWarns();
+            ExceptionVerification.IgnoreErrors();
+        }
+
+        [Test]
+        public void should_announce_each_pass_of_a_chained_rename_in_order()
+        {
+            GivenEpisodes(Ep(101, 1, 1, 11), Ep(102, 2, 1, 12));
+            _files = new List<EpisodeFile> { File(11, "Season 1/Show - S01E01.mkv"), File(12, "Season 2/Show - S02E01.mkv") };
+            _aired = new List<Episode> { Remote(101, 1, 1), Remote(102, 2, 1) };
+            _dvd = new List<Episode> { Remote(101, 2, 1), Remote(102, 2, 2) };
+
+            var passes = new List<List<string>>();
+            Mocker.GetMock<IEventAggregator>()
+                  .Setup(s => s.PublishEvent(It.IsAny<SeriesRenamedEvent>()))
+                  .Callback<SeriesRenamedEvent>(e => passes.Add(e.RenamedFiles.Select(r => r.PreviousRelativePath).ToList()));
+
+            Execute();
+
+            // Extras follow the files on each event and never overwrite, so a file's must move before the next file takes its name
+            passes.Should().BeEquivalentTo(
+                new[] { new List<string> { "Season 2/Show - S02E01.mkv" }, new List<string> { "Season 1/Show - S01E01.mkv" } },
+                o => o.WithStrictOrdering());
             ExceptionVerification.IgnoreWarns();
             ExceptionVerification.IgnoreErrors();
         }
