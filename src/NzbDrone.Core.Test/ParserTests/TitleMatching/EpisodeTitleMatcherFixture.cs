@@ -432,6 +432,18 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
         }
 
         [Test]
+        public void should_keep_a_session_misdated_after_its_race_in_its_weekend()
+        {
+            GivenSeason(2015,
+                        ("2015-08-21", "Belgium (Practice 1)"),
+                        ("2015-08-23", "Belgium (Race)"),
+                        ("2015-08-25", "Belgium (Qualifying)"),
+                        ("2015-09-06", "Italy (Race)"));
+
+            Subject.ParseEventTitle(Parse("Formula1.2015.Round02.Italy.Race.F1TV.WEB-DL.1080p.H264.English-MWR"), _series).EpisodeNumbers.Should().Equal(4);
+        }
+
+        [Test]
         public void should_not_split_a_weekend_that_lists_its_race_twice()
         {
             GivenSeason(2019,

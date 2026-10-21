@@ -34,7 +34,10 @@ namespace NzbDrone.Core.Parser.TitleMatching
             .SelectMany(p => p)
             .Where(n => LanguageParser.ParseLanguages(n).Any(l => l != Language.Unknown))
             .ToHashSet();
-        private static readonly TimeSpan WeekendGap = TimeSpan.FromDays(5);
+
+        // A weekend's sessions sit at most two days apart, even with TheTVDB's odd misdated one; one venue's next weekend
+        // is five or more away (Bahrain and Sakhir, 2020)
+        private static readonly TimeSpan WeekendGap = TimeSpan.FromDays(3);
 
         private readonly IEpisodeService _episodeService;
         private readonly ITagRepository _tagRepository;
@@ -333,11 +336,7 @@ namespace NzbDrone.Core.Parser.TitleMatching
 
                 foreach (var titleEvent in place.OrderBy(e => e.AirDate))
                 {
-                    // A race ends its weekend: one venue can host two in a row (Bahrain and Sakhir, 2020), only five days apart
-                    var afterRace = weekend != null &&
-                                    weekend.Events.Any(e => TitleMatchVocabulary.MainSessions.Contains(e.Session) && e.AirDate.Date < titleEvent.AirDate.Date);
-
-                    if (weekend == null || afterRace || titleEvent.AirDate - weekend.Events.Last().AirDate > WeekendGap)
+                    if (weekend == null || titleEvent.AirDate - weekend.Events.Last().AirDate > WeekendGap)
                     {
                         weekend = new Weekend(titleEvent.Names);
                         weekends.Add(weekend);
