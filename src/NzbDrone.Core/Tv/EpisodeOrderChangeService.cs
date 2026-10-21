@@ -401,7 +401,7 @@ namespace NzbDrone.Core.Tv
 
             if (parsed.EpisodeNumbers.Any())
             {
-                return episodes.All(e => e.SeasonNumber == parsed.SeasonNumber) &&
+                return episodes.All(e => e.SeasonNumber == parsed.SeasonNumbers.FirstOrDefault(-1)) &&
                        parsed.EpisodeNumbers.Order().SequenceEqual(episodes.Select(e => e.EpisodeNumber).Order());
             }
 
