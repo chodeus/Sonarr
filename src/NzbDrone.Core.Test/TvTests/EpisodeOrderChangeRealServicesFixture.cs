@@ -25,7 +25,9 @@ using NzbDrone.Test.Common;
 
 namespace NzbDrone.Core.Test.TvTests
 {
+    // The simulated disk keys paths with "/"
     [TestFixture]
+    [Platform(Exclude = "Win")]
     public class EpisodeOrderChangeRealServicesFixture : DbTest<EpisodeOrderChangeService, Episode>
     {
         private const string SeriesPath = "/tv/Show";
