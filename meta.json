@@ -9,7 +9,7 @@
   "test_url": "http://localhost:8989/system/status",
   "upstream_image": "ghcr.io/hotio/base",
   "upstream_tag": "alpinevpn",
-  "upstream_tag_sha": "alpinevpn-4779a3c",
+  "upstream_tag_sha": "alpinevpn-edf68a4",
   "upstream_tag_sha__command": "json=$(cat meta.json) && upstream_image=$(jq -re '.upstream_image' <<< \"${json}\") && upstream_image_base=$(basename \"${upstream_image}\") && upstream_tag=$(jq -re '.upstream_tag' <<< \"${json}\") && tags_json=$(curl -fsSL \"https://hotio.dev/containers/${upstream_image_base}-tags.json\") && commit_sha=$(jq -re --arg tag \"${upstream_tag}\" '.[$tag].commit_sha' <<< \"${tags_json}\") && upstream_tag_sha=${upstream_tag}-${commit_sha:0:7} && echo \"${upstream_tag_sha}\"",
   "version": "5.0.0-a6171f0-db97d9b",
   "version__command": "sonarr_sha=$(jq -re '.sonarr_sha' < meta.json) && pr=$(jq -re '.pr_shas' < meta.json | git hash-object --stdin) && major=$(curl -fsSL \"https://raw.githubusercontent.com/$(jq -re '.sonarr_repo' < meta.json)/${sonarr_sha}/.github/workflows/build_v5.yml\" | sed -n \"s/^ *VERSION: *\\([0-9.]*\\).*/\\1/p\") && test -n \"${major}\" && echo \"${major}-${sonarr_sha:0:7}-${pr:0:7}\"",
