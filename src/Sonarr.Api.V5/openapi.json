@@ -58,6 +58,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "rememberMe",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "responses": {
@@ -94,7 +102,7 @@
                     "type": "string"
                   },
                   "rememberMe": {
-                    "type": "string"
+                    "type": "boolean"
                   }
                 }
               },
@@ -11007,10 +11015,6 @@
             "type": "string",
             "nullable": true
           },
-          "codecId": {
-            "type": "string",
-            "nullable": true
-          },
           "profile": {
             "type": "string",
             "nullable": true
@@ -11523,11 +11527,6 @@
             },
             "nullable": true
           },
-          "seasonNumber": {
-            "type": "integer",
-            "format": "int32",
-            "nullable": true
-          },
           "episodeNumbers": {
             "type": "array",
             "items": {
@@ -11647,11 +11646,6 @@
           },
           "fullSeason": {
             "type": "boolean"
-          },
-          "seasonNumber": {
-            "type": "integer",
-            "format": "int32",
-            "nullable": true
           },
           "seasonNumbers": {
             "type": "array",
