@@ -61,6 +61,7 @@ fi
 if [[ ${1} == "source" ]]; then
     sonarr_repo=$(jq -re '.sonarr_repo' < meta.json)
     sonarr_sha=$(jq -re '.sonarr_sha' < meta.json)
+    sonarr_branch=$(jq -re '.sonarr_branch' < meta.json)
     pr_repo=$(jq -re '.pr_repo' < meta.json)
     read -r -a pr_branches <<< "$(jq -re '.pr_branches' < meta.json)"
     read -r -a pr_shas <<< "$(jq -re '.pr_shas' < meta.json)"
@@ -78,7 +79,7 @@ if [[ ${1} == "source" ]]; then
     # Merged in pr_branches order, so a failure names the branch that stopped fitting.
     for i in "${!pr_branches[@]}"; do
         if ! git -C _src -c user.name=build -c user.email=build@localhost merge --quiet --no-edit "${pr_shas[i]}"; then
-            echo "${pr_repo} ${pr_branches[i]}@${pr_shas[i]:0:7} does not merge cleanly into ${sonarr_repo}@${sonarr_sha:0:7} after the branches listed before it: rebase it." >&2
+            echo "${pr_repo} ${pr_branches[i]}@${pr_shas[i]:0:7} does not merge cleanly into ${sonarr_repo}@${sonarr_sha:0:7} after the branches listed before it: merge ${sonarr_repo} ${sonarr_branch} into it, then pin it." >&2
             exit 1
         fi
     done
