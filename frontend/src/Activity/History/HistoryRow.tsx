@@ -134,7 +134,6 @@ function HistoryRow(props: HistoryRowProps) {
                 episodeEntity={episodeEntities.EPISODES}
                 seriesId={series.id}
                 episodeTitle={episode.title}
-                showOpenSeriesButton={true}
               />
             </TableRowCell>
           );
@@ -225,6 +224,7 @@ function HistoryRow(props: HistoryRowProps) {
               <IconButton
                 name={icons.INFO}
                 aria-label={translate('Details')}
+                size={16}
                 onPress={handleDetailsPress}
               />
             </TableRowCell>

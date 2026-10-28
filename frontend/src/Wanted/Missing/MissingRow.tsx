@@ -119,7 +119,6 @@ function MissingRow({
                 seriesId={series.id}
                 episodeEntity="wanted.missing"
                 episodeTitle={title}
-                showOpenSeriesButton={true}
               />
             </TableRowCell>
           );
@@ -157,9 +156,11 @@ function MissingRow({
               key={name}
               episodeId={id}
               seriesId={series.id}
+              seriesTitle={series.title}
+              seasonNumber={seasonNumber}
+              episodeNumber={episodeNumber}
               episodeTitle={title}
               episodeEntity="wanted.missing"
-              showOpenSeriesButton={true}
             />
           );
         }

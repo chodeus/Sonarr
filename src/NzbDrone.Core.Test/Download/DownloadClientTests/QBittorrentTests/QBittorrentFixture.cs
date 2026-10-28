@@ -162,6 +162,13 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
                 .Returns(files);
         }
 
+        private void GivenApiVersion(Version version)
+        {
+            Mocker.GetMock<IQBittorrentProxy>()
+                .Setup(v => v.GetApiVersion(It.IsAny<QBittorrentSettings>()))
+                .Returns(version);
+        }
+
         [Test]
         public void error_item_should_have_required_properties()
         {
@@ -495,6 +502,118 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
             result.OutputPath.FullPath.Should().Be(torrent.ContentPath);
         }
 
+        [TestCase("pausedUP")]
+        [TestCase("stoppedUP")]
+        public void should_use_root_path_when_qbit_created_a_subfolder(string state)
+        {
+            var torrent = new QBittorrentTorrent
+            {
+                Hash = "HASH",
+                Name = "Droned.S01E01",
+                Size = 1000,
+                Progress = 1.0,
+                Eta = 8640000,
+                State = state,
+                Label = "",
+                SavePath = @"C:\Torrents".AsOsAgnostic(),
+                ContentPath = @"C:\Torrents\Droned.S01E01\Droned.S01E01.rar".AsOsAgnostic(),
+                RootPath = @"C:\Torrents\Droned.S01E01".AsOsAgnostic()
+            };
+
+            GivenTorrents(new List<QBittorrentTorrent> { torrent });
+            GivenApiVersion(new Version(2, 11, 2));
+
+            var item = Subject.GetItems().Single();
+
+            item.Status.Should().Be(DownloadItemStatus.Completed);
+            item.OutputPath.FullPath.Should().Be(torrent.RootPath);
+        }
+
+        [TestCase(null, "pausedUP")]
+        [TestCase("", "pausedUP")]
+        [TestCase(null, "stoppedUP")]
+        [TestCase("", "stoppedUP")]
+        public void should_use_content_path_when_root_path_is_missing(string rootPath, string state)
+        {
+            // "Don't create subfolder" leaves root_path empty. A single-file torrent then
+            // reports content_path as the file sitting in the save directory.
+            var torrent = new QBittorrentTorrent
+            {
+                Hash = "HASH",
+                Name = "Droned.S01E01.rar",
+                Size = 1000,
+                Progress = 1.0,
+                Eta = 8640000,
+                State = state,
+                Label = "",
+                SavePath = @"C:\Torrents".AsOsAgnostic(),
+                ContentPath = @"C:\Torrents\Droned.S01E01.rar".AsOsAgnostic(),
+                RootPath = rootPath
+            };
+
+            GivenTorrents(new List<QBittorrentTorrent> { torrent });
+            GivenApiVersion(new Version(2, 11, 2));
+
+            var item = Subject.GetItems().Single();
+
+            item.Status.Should().Be(DownloadItemStatus.Completed);
+            item.OutputPath.FullPath.Should().Be(torrent.ContentPath);
+        }
+
+        [TestCase("pausedUP")]
+        [TestCase("stoppedUP")]
+        public void should_ignore_root_path_before_api_2_11_2(string state)
+        {
+            var torrent = new QBittorrentTorrent
+            {
+                Hash = "HASH",
+                Name = "Droned.S01E01",
+                Size = 1000,
+                Progress = 1.0,
+                Eta = 8640000,
+                State = state,
+                Label = "",
+                SavePath = @"C:\Torrents".AsOsAgnostic(),
+                ContentPath = @"C:\Torrents\Droned.S01E01\Droned.S01E01.rar".AsOsAgnostic(),
+                RootPath = @"C:\Torrents\Droned.S01E01".AsOsAgnostic()
+            };
+
+            GivenTorrents(new List<QBittorrentTorrent> { torrent });
+            GivenApiVersion(new Version(2, 6, 1));
+
+            var item = Subject.GetItems().Single();
+
+            item.Status.Should().Be(DownloadItemStatus.Completed);
+            item.OutputPath.FullPath.Should().Be(torrent.ContentPath);
+        }
+
+        [Test]
+        public void should_warn_when_stripped_multifile_content_path_is_the_save_path()
+        {
+            var savePath = @"C:\Torrents".AsOsAgnostic();
+            var torrent = new QBittorrentTorrent
+            {
+                Hash = "HASH",
+                Name = "Droned.S01",
+                Size = 1000,
+                Progress = 1.0,
+                Eta = 8640000,
+                State = "stoppedUP",
+                Label = "",
+                SavePath = savePath,
+                ContentPath = savePath,
+                RootPath = ""
+            };
+
+            GivenTorrents(new List<QBittorrentTorrent> { torrent });
+            GivenApiVersion(new Version(2, 11, 2));
+
+            var item = Subject.GetItems().Single();
+
+            item.Status.Should().Be(DownloadItemStatus.Warning);
+            item.OutputPath.IsEmpty.Should().BeTrue();
+        }
+
         [Test]
         public async Task Download_should_return_unique_id()
         {
@@ -520,7 +639,7 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
             id.Should().Be(expectedHash);
         }
 
-        private void GivenApiVersion(Version version)
+        private void GivenProxySelectorApiVersion(Version version)
         {
             Mocker.GetMock<IQBittorrentProxySelector>()
                   .Setup(s => s.GetApiVersion(It.IsAny<QBittorrentSettings>(), It.IsAny<bool>()))
@@ -529,7 +648,7 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
 
         private void GivenConflictWhenAdding(bool torrentLoaded)
         {
-            GivenApiVersion(new Version(2, 0));
+            GivenProxySelectorApiVersion(new Version(2, 0));
 
             var conflict = new DownloadClientException("Failed to add torrent", new HttpException(new HttpResponse(new HttpRequest("http://127.0.0.1:2222/api/v2/torrents/add"), new HttpHeader(), Array.Empty<byte>(), HttpStatusCode.Conflict)));
 
@@ -596,7 +715,7 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
 
         private void GivenFailsWhenAdding(bool torrentLoaded)
         {
-            GivenApiVersion(new Version(2, 0));
+            GivenProxySelectorApiVersion(new Version(2, 0));
 
             Mocker.GetMock<IQBittorrentProxy>()
                   .Setup(s => s.AddTorrentFromFile(It.IsAny<string>(), It.IsAny<byte[]>(), It.IsAny<TorrentSeedConfiguration>(), It.IsAny<QBittorrentSettings>()))
@@ -615,7 +734,7 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
         public void Download_should_report_a_conflict_as_a_plain_rejection_on_api_v1()
         {
             GivenConflictWhenAdding(true);
-            GivenApiVersion(new Version(1, 2));
+            GivenProxySelectorApiVersion(new Version(1, 2));
 
             Assert.ThrowsAsync<DownloadClientRejectedReleaseException>(async () => await Subject.Download(CreateRemoteEpisode(), CreateIndexer()));
 
@@ -626,7 +745,7 @@ namespace NzbDrone.Core.Test.Download.DownloadClientTests.QBittorrentTests
         [Test]
         public void HasTorrent_should_answer_no_on_api_v1()
         {
-            GivenApiVersion(new Version(1, 2));
+            GivenProxySelectorApiVersion(new Version(1, 2));
 
             Mocker.GetMock<IQBittorrentProxy>()
                   .Setup(s => s.IsTorrentLoaded(It.IsAny<string>(), It.IsAny<QBittorrentSettings>()))

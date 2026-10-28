@@ -7,6 +7,7 @@ import TableRowCell from 'Components/Table/Cells/TableRowCell';
 import { EpisodeEntity } from 'Episode/useEpisode';
 import useModalOpenState from 'Helpers/Hooks/useModalOpenState';
 import { icons } from 'Helpers/Props';
+import padNumber from 'Utilities/Number/padNumber';
 import translate from 'Utilities/String/translate';
 import EpisodeDetailsModal from './EpisodeDetailsModal';
 import styles from './EpisodeSearchCell.module.css';
@@ -15,16 +16,20 @@ interface EpisodeSearchCellProps {
   episodeId: number;
   episodeEntity: EpisodeEntity;
   seriesId: number;
+  seriesTitle: string;
+  seasonNumber: number;
+  episodeNumber: number;
   episodeTitle: string;
-  showOpenSeriesButton: boolean;
 }
 
 function EpisodeSearchCell({
   episodeId,
   episodeEntity,
   seriesId,
+  seriesTitle,
+  seasonNumber,
+  episodeNumber,
   episodeTitle,
-  showOpenSeriesButton,
 }: EpisodeSearchCellProps) {
   const isSearching = useCommandExecuting(CommandNames.EpisodeSearch, {
     episodeIds: [episodeId],
@@ -34,6 +39,18 @@ function EpisodeSearchCell({
 
   const [isDetailsModalOpen, setDetailsModalOpen, setDetailsModalClosed] =
     useModalOpenState(false);
+
+  const episode = `${seasonNumber}x${padNumber(episodeNumber, 2)}`;
+  const automaticSearchLabel = translate('AutomaticSearchForEpisode', {
+    seriesTitle,
+    episode,
+    episodeTitle,
+  });
+  const interactiveSearchLabel = translate('InteractiveSearchForEpisode', {
+    seriesTitle,
+    episode,
+    episodeTitle,
+  });
 
   const handleSearchPress = useCallback(() => {
     executeCommand({
@@ -46,17 +63,16 @@ function EpisodeSearchCell({
     <TableRowCell className={styles.episodeSearchCell}>
       <SpinnerIconButton
         name={icons.SEARCH}
-        size={14}
         isSpinning={isSearching}
-        title={translate('AutomaticSearch')}
+        title={automaticSearchLabel}
+        aria-label={automaticSearchLabel}
         onPress={handleSearchPress}
       />
 
       <IconButton
         name={icons.INTERACTIVE}
-        size={14}
-        title={translate('InteractiveSearch')}
-        aria-label={translate('InteractiveSearch')}
+        title={interactiveSearchLabel}
+        aria-label={interactiveSearchLabel}
         onPress={setDetailsModalOpen}
       />
 
@@ -68,7 +84,6 @@ function EpisodeSearchCell({
         episodeTitle={episodeTitle}
         selectedTab="search"
         startInteractiveSearch={true}
-        showOpenSeriesButton={showOpenSeriesButton}
         onModalClose={setDetailsModalClosed}
       />
     </TableRowCell>
