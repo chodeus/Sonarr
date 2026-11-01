@@ -94,6 +94,7 @@
     <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-j9gm-c75j-xc9q" />
     <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-jjfr-hcj7-qf5w" />
     <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-wmxv-xphr-5c9g" />
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-v76p-62qx-wwq2" />
   </ItemGroup>
 
   <!-- Set the AssemblyConfiguration attribute for projects -->
@@ -133,7 +134,7 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
     <PackageReference Include="NUnit" Version="4.6.1" />
     <PackageReference Include="NUnit3TestAdapter" Version="6.3.1" />
-    <PackageReference Include="NunitXml.TestLogger" Version="8.0.0" />
+    <PackageReference Include="NunitXml.TestLogger" Version="8.1.0" />
   </ItemGroup>
 
   <PropertyGroup Condition="'$(SonarrProject)'=='true' and '$(EnableAnalyzers)'=='false'">

@@ -30,14 +30,9 @@ import Tooltip from 'Components/Tooltip/Tooltip';
 import useEpisodes from 'Episode/useEpisodes';
 import useEpisodeFiles from 'EpisodeFile/useEpisodeFiles';
 import usePrevious from 'Helpers/Hooks/usePrevious';
-import {
-  icons,
-  kinds,
-  sizes,
-  sortDirections,
-  tooltipPositions,
-} from 'Helpers/Props';
+import { icons, kinds, sizes, tooltipPositions } from 'Helpers/Props';
 import InteractiveImportModal from 'InteractiveImport/InteractiveImportModal';
+import { manageEpisodesOptionsStore } from 'InteractiveImport/interactiveImportOptionsStore';
 import useCountryName from 'Internationalization/useCountryName';
 import OrganizePreviewModal from 'Organize/OrganizePreviewModal';
 import DeleteSeriesModal from 'Series/Delete/DeleteSeriesModal';
@@ -48,12 +43,12 @@ import { Image, SeriesStatus, Statistics } from 'Series/Series';
 import SeriesGenres from 'Series/SeriesGenres';
 import SeriesPoster from 'Series/SeriesPoster';
 import { getSeriesStatusDetails } from 'Series/SeriesStatus';
-import useSeries, {
+import {
+  useSeriesIndex,
   useSingleSeries,
   useToggleSeriesMonitored,
 } from 'Series/useSeries';
 import QualityProfileName from 'Settings/Profiles/Quality/QualityProfileName';
-import sortByProp from 'Utilities/Array/sortByProp';
 import { findCommand, isCommandExecuting } from 'Utilities/Command';
 import formatBytes from 'Utilities/Number/formatBytes';
 import {
@@ -61,6 +56,7 @@ import {
   unregisterPagePopulator,
 } from 'Utilities/pagePopulator';
 import filterAlternateTitles from 'Utilities/Series/filterAlternateTitles';
+import getSeriesPath from 'Utilities/Series/getSeriesPath';
 import translate from 'Utilities/String/translate';
 import toggleSelected from 'Utilities/Table/toggleSelected';
 import SeriesAlternateTitles from './SeriesAlternateTitles';
@@ -110,7 +106,7 @@ function SeriesDetails({ seriesId }: SeriesDetailsProps) {
   const series = useSingleSeries(seriesId);
   const { toggleSeriesMonitored, isTogglingSeriesMonitored } =
     useToggleSeriesMonitored(seriesId);
-  const { data: allSeries } = useSeries();
+  const { data: allSeries } = useSeriesIndex();
 
   const monitored = series?.monitored ?? false;
 
@@ -192,10 +188,7 @@ function SeriesDetails({ seriesId }: SeriesDetailsProps) {
   }, [seriesId, commands]);
 
   const { nextSeries, previousSeries } = useMemo(() => {
-    const sortedSeries = [...allSeries].sort(sortByProp('sortTitle'));
-    const seriesIndex = sortedSeries.findIndex(
-      (series) => series.id === seriesId
-    );
+    const seriesIndex = allSeries.findIndex((series) => series.id === seriesId);
 
     if (seriesIndex === -1) {
       return {
@@ -204,16 +197,18 @@ function SeriesDetails({ seriesId }: SeriesDetailsProps) {
       };
     }
 
-    const nextSeries = sortedSeries[seriesIndex + 1] ?? sortedSeries[0];
+    const nextSeries = allSeries[seriesIndex + 1] ?? allSeries[0];
     const previousSeries =
-      sortedSeries[seriesIndex - 1] ?? sortedSeries[sortedSeries.length - 1];
+      allSeries[seriesIndex - 1] ?? allSeries[allSeries.length - 1];
 
     return {
       nextSeries: {
+        id: nextSeries.id,
         title: nextSeries.title,
         titleSlug: nextSeries.titleSlug,
       },
       previousSeries: {
+        id: previousSeries.id,
         title: previousSeries.title,
         titleSlug: previousSeries.titleSlug,
       },
@@ -642,7 +637,7 @@ function SeriesDetails({ seriesId }: SeriesDetailsProps) {
                         aria-label={translate('SeriesDetailsGoTo', {
                           title: previousSeries.title,
                         })}
-                        to={`/series/${previousSeries.titleSlug}`}
+                        to={getSeriesPath(previousSeries)}
                       />
                     ) : null}
 
@@ -657,7 +652,7 @@ function SeriesDetails({ seriesId }: SeriesDetailsProps) {
                         aria-label={translate('SeriesDetailsGoTo', {
                           title: nextSeries.title,
                         })}
-                        to={`/series/${nextSeries.titleSlug}`}
+                        to={getSeriesPath(nextSeries)}
                       />
                     ) : null}
                   </div>
@@ -671,11 +666,7 @@ function SeriesDetails({ seriesId }: SeriesDetailsProps) {
                   ) : null}
 
                   {ratings.value ? (
-                    <HeartRating
-                      rating={ratings.value}
-                      votes={ratings.votes}
-                      iconSize={14}
-                    />
+                    <HeartRating rating={ratings.value} votes={ratings.votes} />
                   ) : null}
 
                   {genres.length ? (
@@ -961,8 +952,7 @@ function SeriesDetails({ seriesId }: SeriesDetailsProps) {
             seriesId={seriesId}
             title={title}
             folder={path}
-            initialSortKey="relativePath"
-            initialSortDirection={sortDirections.DESCENDING}
+            optionsStore={manageEpisodesOptionsStore}
             showSeries={false}
             allowSeriesChange={false}
             showDelete={true}

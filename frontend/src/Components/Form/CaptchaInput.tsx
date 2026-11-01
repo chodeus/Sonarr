@@ -5,12 +5,14 @@ import Icon from 'Components/Icon';
 import usePrevious from 'Helpers/Hooks/usePrevious';
 import { icons } from 'Helpers/Props';
 import { InputChanged } from 'typings/inputs';
+import translate from 'Utilities/String/translate';
 import FormInputButton from './FormInputButton';
 import TextInput from './TextInput';
 import useCaptcha from './useCaptcha';
 import styles from './CaptchaInput.module.css';
 
 export interface CaptchaInputProps {
+  id?: string;
   className?: string;
   name: string;
   value?: string;
@@ -22,6 +24,7 @@ export interface CaptchaInputProps {
 }
 
 function CaptchaInput({
+  id,
   className = styles.input,
   name,
   value = '',
@@ -79,6 +82,7 @@ function CaptchaInput({
     <div>
       <div className={styles.captchaInputWrapper}>
         <TextInput
+          id={id}
           className={classNames(
             className,
             styles.hasButton,
@@ -90,7 +94,11 @@ function CaptchaInput({
           onChange={onChange}
         />
 
-        <FormInputButton onPress={handleRefreshPress}>
+        <FormInputButton
+          title={translate('RefreshCaptcha')}
+          aria-label={translate('RefreshCaptcha')}
+          onPress={handleRefreshPress}
+        >
           <Icon name={icons.REFRESH} isSpinning={refreshing} />
         </FormInputButton>
       </div>

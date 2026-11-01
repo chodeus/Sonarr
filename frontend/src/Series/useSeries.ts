@@ -104,10 +104,10 @@ const SORT_PREDICATES = {
   },
 
   averageSizePerEpisode: (item: Series, _: SortDirection) => {
-    const totalEpisodeCount = item.statistics?.totalEpisodeCount ?? 0;
+    const episodeFileCount = item.statistics?.episodeFileCount ?? 0;
 
-    return totalEpisodeCount > 0
-      ? (item.statistics?.sizeOnDisk ?? 0) / totalEpisodeCount
+    return episodeFileCount > 0
+      ? (item.statistics?.sizeOnDisk ?? 0) / episodeFileCount
       : 0;
   },
 
@@ -294,10 +294,10 @@ const FILTER_PREDICATES = {
     type: FilterType
   ) => {
     const predicate = getFilterTypePredicate(type);
-    const totalEpisodeCount = item.statistics?.totalEpisodeCount ?? 0;
+    const episodeFileCount = item.statistics?.episodeFileCount ?? 0;
     const averageSize =
-      totalEpisodeCount > 0
-        ? (item.statistics?.sizeOnDisk ?? 0) / totalEpisodeCount
+      episodeFileCount > 0
+        ? (item.statistics?.sizeOnDisk ?? 0) / episodeFileCount
         : 0;
     return predicate(averageSize, filterValue);
   },
@@ -757,18 +757,20 @@ interface SaveSeriesEditorPayload {
   applyTags?: string;
 }
 
-export const useSaveSeries = (moveFiles?: boolean) => {
+export const useSaveSeries = () => {
   const queryClient = useQueryClient();
 
   const { mutate, isPending, error } = useApiMutation<
     Series,
-    SaveSeriesRequest
+    SaveSeriesRequest,
+    { data: SaveSeriesRequest; moveFiles: boolean }
   >({
     path: '/series',
-    queryParams: {
-      moveFiles,
-    },
     method: 'PUT',
+    getRequest: ({ data, moveFiles }) => ({
+      body: data,
+      queryParams: { moveFiles },
+    }),
     mutationOptions: {
       onSuccess: (updatedSeries) => {
         queryClient.setQueryData<Series[]>(['/series'], (oldSeries) => {
@@ -792,18 +794,24 @@ export const useSaveSeries = (moveFiles?: boolean) => {
   });
 
   const saveSeries = useCallback(
-    ({
-      alternateTitles,
-      images,
-      seasons,
-      seasonTypes,
-      statistics,
-      translations,
-      ...payload
-    }: SaveSeriesPayload) => {
+    (
+      {
+        alternateTitles,
+        images,
+        seasons,
+        seasonTypes,
+        statistics,
+        translations,
+        ...payload
+      }: SaveSeriesPayload,
+      moveFiles = false
+    ) => {
       mutate({
-        ...payload,
-        seasons: seasons?.map(({ statistics, ...season }) => season),
+        data: {
+          ...payload,
+          seasons: seasons?.map(({ statistics, ...season }) => season),
+        },
+        moveFiles,
       });
     },
     [mutate]
@@ -963,10 +971,12 @@ export const useUpdateSeriesMonitor = (
             return oldSeries;
           }
 
+          const updatedSeriesById = new Map(
+            variables.series.map((s) => [s.id, s])
+          );
+
           return oldSeries.map((series) => {
-            const updatedSeries = variables.series.find(
-              (s) => s.id === series.id
-            );
+            const updatedSeries = updatedSeriesById.get(series.id);
 
             if (!updatedSeries) {
               return series;
@@ -1019,10 +1029,12 @@ export const useSaveSeriesEditor = () => {
             return oldSeries;
           }
 
+          const updatedSeriesById = new Map(
+            updatedSeries.map((updated) => [updated.id, updated])
+          );
+
           return oldSeries.map((series) => {
-            const updatedSeriesData = updatedSeries.find(
-              (updated) => updated.id === series.id
-            );
+            const updatedSeriesData = updatedSeriesById.get(series.id);
 
             if (updatedSeriesData) {
               const {

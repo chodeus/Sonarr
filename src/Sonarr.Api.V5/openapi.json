@@ -58,6 +58,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "rememberMe",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "responses": {
@@ -94,7 +102,7 @@
                     "type": "string"
                   },
                   "rememberMe": {
-                    "type": "string"
+                    "type": "boolean"
                   }
                 }
               },
@@ -10372,6 +10380,7 @@
           "plex",
           "trakt",
           "simkl",
+          "tmdb",
           "other",
           "advanced"
         ],
@@ -11007,10 +11016,6 @@
             "type": "string",
             "nullable": true
           },
-          "codecId": {
-            "type": "string",
-            "nullable": true
-          },
           "profile": {
             "type": "string",
             "nullable": true
@@ -11523,11 +11528,6 @@
             },
             "nullable": true
           },
-          "seasonNumber": {
-            "type": "integer",
-            "format": "int32",
-            "nullable": true
-          },
           "episodeNumbers": {
             "type": "array",
             "items": {
@@ -11647,11 +11647,6 @@
           },
           "fullSeason": {
             "type": "boolean"
-          },
-          "seasonNumber": {
-            "type": "integer",
-            "format": "int32",
-            "nullable": true
           },
           "seasonNumbers": {
             "type": "array",
@@ -12084,11 +12079,10 @@
             },
             "nullable": true
           },
-          "seasonNumbers": {
+          "seasons": {
             "type": "array",
             "items": {
-              "type": "integer",
-              "format": "int32"
+              "$ref": "#/components/schemas/QueueSeasonResource"
             },
             "nullable": true
           },
@@ -12230,6 +12224,24 @@
               "$ref": "#/components/schemas/QueueResource"
             },
             "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "QueueSeasonResource": {
+        "type": "object",
+        "properties": {
+          "seasonNumber": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "episodeCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "episodesWithFilesCount": {
+            "type": "integer",
+            "format": "int32"
           }
         },
         "additionalProperties": false
@@ -12753,7 +12765,8 @@
           "unknown",
           "singleEpisode",
           "multiEpisode",
-          "seasonPack"
+          "seasonPack",
+          "multiSeasonPack"
         ],
         "type": "string"
       },
@@ -14080,6 +14093,10 @@
           },
           "enableColorImpairedMode": {
             "type": "boolean"
+          },
+          "headerColor": {
+            "type": "string",
+            "nullable": true
           },
           "theme": {
             "type": "string",

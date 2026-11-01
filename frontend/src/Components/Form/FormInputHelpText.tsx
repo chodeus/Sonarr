@@ -1,8 +1,9 @@
 import classNames from 'classnames';
-import React from 'react';
+import React, { useEffect, useId } from 'react';
 import Icon from 'Components/Icon';
 import Link from 'Components/Link/Link';
 import { icons } from 'Helpers/Props';
+import { useFormRow } from './FormRowContext';
 import styles from './FormInputHelpText.module.css';
 
 interface FormInputHelpTextProps {
@@ -24,19 +25,46 @@ function FormInputHelpText({
   isWarning = false,
   isCheckInput = false,
 }: FormInputHelpTextProps) {
+  const formRow = useFormRow();
+  const generatedId = useId();
+  const inputId = formRow?.id;
+  const formRowType = formRow?.type;
+  const addDescriptionId = formRow?.addDescriptionId;
+  const removeDescriptionId = formRow?.removeDescriptionId;
+  const isCheckboxHelpText =
+    inputId && formRowType === 'check' && !isError && !isWarning;
+
+  useEffect(() => {
+    if (
+      !inputId ||
+      isCheckboxHelpText ||
+      !text ||
+      !addDescriptionId ||
+      !removeDescriptionId
+    ) {
+      return;
+    }
+
+    addDescriptionId(generatedId);
+
+    return () => {
+      removeDescriptionId(generatedId);
+    };
+  }, [
+    addDescriptionId,
+    generatedId,
+    inputId,
+    isCheckboxHelpText,
+    removeDescriptionId,
+    text,
+  ]);
+
   if (!text) {
     return null;
   }
 
-  return (
-    <div
-      className={classNames(
-        className,
-        isError && styles.isError,
-        isWarning && styles.isWarning,
-        isCheckInput && styles.isCheckInput
-      )}
-    >
+  const content = (
+    <>
       {text}
 
       {link ? (
@@ -52,6 +80,27 @@ function FormInputHelpText({
           title={tooltip}
         />
       ) : null}
+    </>
+  );
+
+  const helpTextClassName = classNames(
+    className,
+    isError && styles.isError,
+    isWarning && styles.isWarning,
+    isCheckInput && styles.isCheckInput
+  );
+
+  return isCheckboxHelpText ? (
+    <label className={helpTextClassName} htmlFor={inputId}>
+      {content}
+    </label>
+  ) : (
+    <div
+      id={inputId ? generatedId : undefined}
+      className={helpTextClassName}
+      role={isError ? 'alert' : undefined}
+    >
+      {content}
     </div>
   );
 }

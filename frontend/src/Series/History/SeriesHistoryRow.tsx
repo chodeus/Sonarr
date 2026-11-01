@@ -101,6 +101,11 @@ function SeriesHistoryRow({
     return null;
   }
 
+  const detailsLabel = translate('DetailsForTitle', { title: sourceTitle });
+  const markAsFailedLabel = translate('MarkAsFailedWithTitle', {
+    title: sourceTitle,
+  });
+
   return (
     <TableRow>
       <HistoryEventTypeCell eventType={eventType} data={data} />
@@ -144,6 +149,7 @@ function SeriesHistoryRow({
       <TableRowCell className={styles.actions}>
         <Popover
           anchor={<Icon name={icons.INFO} />}
+          accessibleLabel={detailsLabel}
           title={title}
           body={
             <HistoryDetails
@@ -158,10 +164,9 @@ function SeriesHistoryRow({
 
         {eventType === 'grabbed' ? (
           <IconButton
-            title={translate('MarkAsFailed')}
-            aria-label={translate('MarkAsFailed')}
+            title={markAsFailedLabel}
+            aria-label={markAsFailedLabel}
             name={icons.REMOVE}
-            size={14}
             onPress={handleMarkAsFailedPress}
           />
         ) : null}

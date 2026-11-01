@@ -79,6 +79,8 @@ function HistoryRow(props: HistoryRowProps) {
     return null;
   }
 
+  const detailsLabel = translate('DetailsForTitle', { title: sourceTitle });
+
   return (
     <TableRow>
       {columns.map((column) => {
@@ -102,6 +104,7 @@ function HistoryRow(props: HistoryRowProps) {
           return (
             <TableRowCell key={name}>
               <SeriesTitleLink
+                seriesId={series.id}
                 titleSlug={series.titleSlug}
                 title={series.title}
               />
@@ -134,7 +137,6 @@ function HistoryRow(props: HistoryRowProps) {
                 episodeEntity={episodeEntities.EPISODES}
                 seriesId={series.id}
                 episodeTitle={episode.title}
-                showOpenSeriesButton={true}
               />
             </TableRowCell>
           );
@@ -224,7 +226,9 @@ function HistoryRow(props: HistoryRowProps) {
             <TableRowCell key={name} className={styles.details}>
               <IconButton
                 name={icons.INFO}
-                aria-label={translate('Details')}
+                title={detailsLabel}
+                aria-label={detailsLabel}
+                size={16}
                 onPress={handleDetailsPress}
               />
             </TableRowCell>

@@ -1,18 +1,24 @@
+import {
+  useFloating,
+  useInteractions,
+  useListNavigation,
+  useRole,
+} from '@floating-ui/react';
+import classNames from 'classnames';
 import { ExtendedKeyboardEvent } from 'mousetrap';
 import React, {
-  FormEvent,
+  ChangeEvent,
   KeyboardEvent,
-  SyntheticEvent,
+  MouseEvent,
+  TouchEvent,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
 } from 'react';
-import Autosuggest, {
-  RenderSuggestionsContainerParams,
-} from 'react-autosuggest';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useDebouncedCallback } from 'use-debounce';
 import Icon from 'Components/Icon';
 import LoadingIndicator from 'Components/Loading/LoadingIndicator';
@@ -21,6 +27,7 @@ import { icons } from 'Helpers/Props';
 import Series from 'Series/Series';
 import useSeries from 'Series/useSeries';
 import { Tag, useTagList } from 'Tags/useTags';
+import getSeriesPath from 'Utilities/Series/getSeriesPath';
 import translate from 'Utilities/String/translate';
 import SeriesSearchResult from './SeriesSearchResult';
 import styles from './SeriesSearchInput.module.css';
@@ -40,6 +47,7 @@ interface AddNewSeriesSuggestion {
 export interface SuggestedSeries
   extends Pick<
     Series,
+    | 'id'
     | 'title'
     | 'titleSlug'
     | 'sortTitle'
@@ -69,12 +77,17 @@ interface Section {
   suggestions: SeriesSuggestion[] | AddNewSeriesSuggestion[];
 }
 
+function isModifiedClick(event: MouseEvent) {
+  return event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+}
+
 function useSeriesSuggestions(tagList: ReadonlyArray<Tag>) {
   const { data: allSeries = [] } = useSeries();
 
   return useMemo(() => {
     return allSeries.map((series): SuggestedSeries => {
       const {
+        id,
         title,
         titleSlug,
         sortTitle,
@@ -89,6 +102,7 @@ function useSeriesSuggestions(tagList: ReadonlyArray<Tag>) {
       } = series;
 
       return {
+        id,
         title,
         titleSlug,
         sortTitle,
@@ -119,16 +133,38 @@ function SeriesSearchInput() {
   const series = useSeriesSuggestions(tagList);
   const navigate = useNavigate();
   const { bindShortcut, unbindShortcut } = useKeyboardShortcuts();
+  const sectionId = useId();
 
   const [value, setValue] = useState('');
   const [requestLoading, setRequestLoading] = useState(false);
   const [suggestions, setSuggestions] = useState<SeriesSuggestion[]>([]);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
-  const autosuggestRef = useRef<Autosuggest>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<Array<HTMLElement | null>>([]);
   const worker = useRef<Worker | null>(null);
   const isLoading = useRef(false);
   const requestValue = useRef<string | null>(null);
+
+  const isOpen = value.trim().length > 0;
+
+  const { refs, context } = useFloating({
+    open: isOpen,
+  });
+
+  const listNavigation = useListNavigation(context, {
+    listRef,
+    activeIndex,
+    virtual: true,
+    loop: true,
+    onNavigate: setActiveIndex,
+  });
+
+  const role = useRole(context, { role: 'combobox' });
+
+  const { getReferenceProps, getFloatingProps, getItemProps } = useInteractions(
+    [listNavigation, role]
+  );
 
   const suggestionGroups = useMemo(() => {
     const result: Section[] = [];
@@ -154,6 +190,8 @@ function SeriesSearchInput() {
     return result;
   }, [suggestions, value]);
 
+  const addNewPath = `/add/new?term=${encodeURIComponent(value)}`;
+
   const handleSuggestionsReceived = useCallback(
     (message: { data: { value: string; suggestions: SeriesSuggestion[] } }) => {
       const { value, suggestions } = message.data;
@@ -163,11 +201,13 @@ function SeriesSearchInput() {
         setRequestLoading(false);
       } else if (value === requestValue.current) {
         setSuggestions(suggestions);
+        setActiveIndex(null);
         requestValue.current = null;
         setRequestLoading(false);
         isLoading.current = false;
       } else {
         setSuggestions(suggestions);
+        setActiveIndex(null);
         setRequestLoading(true);
 
         worker.current?.postMessage({ value: requestValue.current });
@@ -192,6 +232,7 @@ function SeriesSearchInput() {
   const reset = useCallback(() => {
     setValue('');
     setSuggestions([]);
+    setActiveIndex(null);
     isLoading.current = false;
   }, []);
 
@@ -200,81 +241,22 @@ function SeriesSearchInput() {
     inputRef.current?.focus();
   }, []);
 
-  const getSectionSuggestions = useCallback((section: Section) => {
-    return section.suggestions;
-  }, []);
-
-  const renderSectionTitle = useCallback((section: Section) => {
-    return (
-      <div className={styles.sectionTitle}>
-        {section.title}
-
-        {section.loading && (
-          <LoadingIndicator
-            className={styles.loading}
-            rippleClassName={styles.ripple}
-            size={20}
-          />
-        )}
-      </div>
-    );
-  }, []);
-
-  const renderSuggestionsContainer = useCallback(
-    ({ containerProps, children }: RenderSuggestionsContainerParams) => {
-      const { key, ...otherContainerProps } = containerProps;
-
-      return (
-        <div className={children ? styles.dropdown : undefined}>
-          <div key={key} {...otherContainerProps}>
-            {children}
-          </div>
-        </div>
-      );
-    },
-    []
-  );
-
-  const getSuggestionValue = useCallback(({ title }: { title: string }) => {
-    return title;
-  }, []);
-
-  const renderSuggestion = useCallback(
-    (
-      item: AddNewSeriesSuggestion | SeriesSuggestion,
-      { query }: { query: string }
-    ) => {
-      if ('type' in item) {
-        return (
-          <div className={styles.addNewSeriesSuggestion}>
-            {translate('SearchForQuery', { query })}
-          </div>
-        );
-      }
-
-      return <SeriesSearchResult {...item.item} match={item.matches[0]} />;
-    },
-    []
-  );
-
   const handleChange = useCallback(
-    (
-      _event: FormEvent<HTMLElement>,
-      {
-        newValue,
-        method,
-      }: {
-        newValue: string;
-        method: 'down' | 'up' | 'escape' | 'enter' | 'click' | 'type';
-      }
-    ) => {
-      if (method === 'up' || method === 'down') {
-        return;
-      }
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const newValue = event.target.value;
 
       setValue(newValue);
+      setActiveIndex(null);
+
+      if (newValue.trim().length) {
+        isLoading.current = true;
+        requestSuggestions(newValue);
+      } else {
+        setSuggestions([]);
+        isLoading.current = false;
+      }
     },
-    []
+    [requestSuggestions]
   );
 
   const handleKeyDown = useCallback(
@@ -292,19 +274,12 @@ function SeriesSearchInput() {
         return;
       }
 
-      if (!autosuggestRef.current) {
-        return;
-      }
-
       if (!inputRef.current?.value) {
         return;
       }
 
-      const { highlightedSectionIndex, highlightedSuggestionIndex } =
-        autosuggestRef.current.state;
-
-      if (!suggestions.length || highlightedSectionIndex) {
-        navigate(`/add/new?term=${encodeURIComponent(value)}`);
+      if (!suggestions.length || activeIndex === suggestions.length) {
+        navigate(addNewPath);
 
         inputRef.current?.blur();
         reset();
@@ -316,71 +291,54 @@ function SeriesSearchInput() {
       // otherwise go to the selected series.
 
       const selectedSuggestion =
-        highlightedSuggestionIndex == null
-          ? suggestions[0]
-          : suggestions[highlightedSuggestionIndex];
+        activeIndex == null ? suggestions[0] : suggestions[activeIndex];
 
-      navigate(`/series/${selectedSuggestion.item.titleSlug}`);
+      navigate(getSeriesPath(selectedSuggestion.item));
 
       inputRef.current?.blur();
       reset();
     },
-    [value, suggestions, navigate, reset]
+    [activeIndex, addNewPath, suggestions, navigate, reset]
   );
 
   const handleBlur = useCallback(() => {
     reset();
   }, [reset]);
 
-  const handleSuggestionsFetchRequested = useCallback(
-    ({ value }: { value: string }) => {
-      isLoading.current = true;
+  const handleTouchEnd = useCallback((event: TouchEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
 
-      requestSuggestions(value);
-    },
-    [requestSuggestions]
-  );
+    if (!event.cancelable || document.activeElement === input) {
+      return;
+    }
 
-  const handleSuggestionsClearRequested = useCallback(() => {
-    setSuggestions([]);
-    isLoading.current = false;
+    event.preventDefault();
+    input.focus({ preventScroll: true });
   }, []);
 
-  const handleSuggestionSelected = useCallback(
-    (
-      _event: SyntheticEvent,
-      { suggestion }: { suggestion: SeriesSuggestion | AddNewSeriesSuggestion }
-    ) => {
-      if ('type' in suggestion) {
-        navigate(`/add/new?term=${encodeURIComponent(value)}`);
-      } else {
-        setValue('');
-        navigate(`/series/${suggestion.item.titleSlug}`);
+  const handleDropdownMouseDown = useCallback((event: MouseEvent) => {
+    event.preventDefault();
+  }, []);
+
+  const handleSuggestionClick = useCallback(
+    (event: MouseEvent) => {
+      if (isModifiedClick(event)) {
+        return;
       }
+
+      inputRef.current?.blur();
+      reset();
     },
-    [value, navigate]
+    [reset]
   );
 
-  const inputProps = {
-    ref: inputRef,
-    className: styles.input,
-    name: 'seriesSearch',
-    value,
-    placeholder: translate('Search'),
-    autoComplete: 'off',
-    spellCheck: false,
-    onChange: handleChange,
-    onKeyDown: handleKeyDown,
-    onBlur: handleBlur,
-  };
-
-  const theme = {
-    container: styles.container,
-    suggestionsContainer: styles.seriesContainer,
-    suggestionsList: styles.list,
-    suggestion: styles.listItem,
-    suggestionHighlighted: styles.highlighted,
-  };
+  const setInputRef = useCallback(
+    (node: HTMLInputElement | null) => {
+      inputRef.current = node;
+      refs.setReference(node);
+    },
+    [refs]
+  );
 
   useEffect(() => {
     worker.current = new Worker(new URL('./fuse.worker.ts', import.meta.url), {
@@ -425,27 +383,107 @@ function SeriesSearchInput() {
     };
   }, [bindShortcut, unbindShortcut, focusInput]);
 
+  let itemIndex = 0;
+
   return (
     <div className={styles.wrapper}>
       <div className={styles.inputWrapper}>
         <Icon className={styles.searchIcon} name={icons.SEARCH} />
 
-        <Autosuggest
-          ref={autosuggestRef}
-          inputProps={inputProps}
-          theme={theme}
-          focusInputOnSuggestionClick={false}
-          multiSection={true}
-          suggestions={suggestionGroups}
-          getSectionSuggestions={getSectionSuggestions}
-          renderSectionTitle={renderSectionTitle}
-          renderSuggestionsContainer={renderSuggestionsContainer}
-          getSuggestionValue={getSuggestionValue}
-          renderSuggestion={renderSuggestion}
-          onSuggestionSelected={handleSuggestionSelected}
-          onSuggestionsFetchRequested={handleSuggestionsFetchRequested}
-          onSuggestionsClearRequested={handleSuggestionsClearRequested}
-        />
+        <div className={styles.container}>
+          <input
+            {...getReferenceProps({
+              ref: setInputRef,
+              className: styles.input,
+              type: 'text',
+              name: 'seriesSearch',
+              value,
+              placeholder: translate('Search'),
+              autoComplete: 'off',
+              spellCheck: false,
+              onChange: handleChange,
+              onKeyDown: handleKeyDown,
+              onBlur: handleBlur,
+              onTouchEnd: handleTouchEnd,
+            })}
+          />
+
+          {isOpen ? (
+            <div
+              className={styles.dropdown}
+              onMouseDown={handleDropdownMouseDown}
+            >
+              <div
+                {...getFloatingProps({
+                  ref: refs.setFloating,
+                  className: styles.seriesContainer,
+                })}
+              >
+                {suggestionGroups.map((section, sectionIndex) => {
+                  const titleId = `${sectionId}-${sectionIndex}`;
+
+                  return (
+                    <div
+                      key={section.title}
+                      role="group"
+                      aria-labelledby={titleId}
+                    >
+                      <div id={titleId} className={styles.sectionTitle}>
+                        {section.title}
+
+                        {section.loading && (
+                          <LoadingIndicator
+                            className={styles.loading}
+                            rippleClassName={styles.ripple}
+                            size={12}
+                          />
+                        )}
+                      </div>
+
+                      {section.suggestions.map((item) => {
+                        const index = itemIndex++;
+                        const isActive = index === activeIndex;
+                        const isAddNew = 'type' in item;
+
+                        return (
+                          <Link
+                            key={isAddNew ? ADD_NEW_TYPE : item.item.id}
+                            {...getItemProps({
+                              ref: (node: HTMLAnchorElement | null) => {
+                                listRef.current[index] = node;
+                              },
+                              active: isActive,
+                              selected: isActive,
+                            })}
+                            className={classNames(
+                              styles.listItem,
+                              isActive && styles.highlighted,
+                              isAddNew && styles.addNewSeriesSuggestion
+                            )}
+                            to={
+                              isAddNew ? addNewPath : getSeriesPath(item.item)
+                            }
+                            tabIndex={-1}
+                            onClick={handleSuggestionClick}
+                          >
+                            {isAddNew ? (
+                              translate('SearchForQuery', { query: value })
+                            ) : (
+                              <SeriesSearchResult
+                                {...item.item}
+                                match={item.matches[0]}
+                              />
+                            )}
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );

@@ -23,11 +23,13 @@ import Autosuggest, {
 } from 'react-autosuggest';
 import usePrevious from 'Helpers/Hooks/usePrevious';
 import { InputChanged } from 'typings/inputs';
+import { useFormInputGroup } from './FormInputGroupContext';
 import styles from './AutoSuggestInput.module.css';
 
 interface AutoSuggestInputProps<T>
   extends Omit<AutosuggestPropsBase<T>, 'renderInputComponent' | 'inputProps'> {
   forwardedRef?: MutableRefObject<Autosuggest<T> | null>;
+  id?: string;
   className?: string;
   inputContainerClassName?: string;
   name: string;
@@ -57,9 +59,11 @@ interface AutoSuggestInputProps<T>
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function AutoSuggestInput<T = any>(props: AutoSuggestInputProps<T>) {
+  const formInputGroup = useFormInputGroup();
   const {
     // TODO: forwaredRef should be replaces with React.forwardRef
     forwardedRef,
+    id,
     className = styles.input,
     inputContainerClassName = styles.inputContainer,
     name,
@@ -175,6 +179,9 @@ function AutoSuggestInput<T = any>(props: AutoSuggestInputProps<T>) {
   );
 
   const inputProps = {
+    id,
+    'aria-describedby': formInputGroup?.describedBy,
+    'aria-invalid': formInputGroup?.hasError || undefined,
     className: classNames(
       className,
       hasError && styles.hasError,

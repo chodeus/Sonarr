@@ -17,9 +17,11 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import Icon from 'Components/Icon';
+import IconButton from 'Components/Link/IconButton';
 import Link from 'Components/Link/Link';
 import LoadingIndicator from 'Components/Loading/LoadingIndicator';
 import Modal from 'Components/Modal/Modal';
@@ -30,12 +32,15 @@ import ArrayElement from 'typings/Helpers/ArrayElement';
 import { EnhancedSelectInputChanged, InputChanged } from 'typings/inputs';
 import { isMobile as isMobileUtil } from 'Utilities/browser';
 import * as keyCodes from 'Utilities/Constants/keyCodes';
+import translate from 'Utilities/String/translate';
+import { useFormInputGroup } from '../FormInputGroupContext';
 import TextInput from '../TextInput';
 import HintedSelectInputOption from './HintedSelectInputOption';
 import HintedSelectInputSelectedValue from './HintedSelectInputSelectedValue';
 import styles from './EnhancedSelectInput.module.css';
 
 const DROPDOWN_VIEWPORT_MARGIN = 12;
+const TYPE_AHEAD_RESET_MS = 1000;
 
 function isArrowKey(keyCode: number) {
   return keyCode === keyCodes.UP_ARROW || keyCode === keyCodes.DOWN_ARROW;
@@ -86,6 +91,49 @@ function nextIndex<T extends EnhancedSelectInputValue<V>, V>(
   return findIndex(selectedIndex, 1, values);
 }
 
+function findMatchIndex<T extends EnhancedSelectInputValue<V>, V>(
+  search: string,
+  start: number,
+  values: T[]
+) {
+  for (let i = 0; i < values.length; i++) {
+    const index = (Math.max(start, 0) + i) % values.length;
+    const option = values[index];
+
+    if (
+      !option.isDisabled &&
+      !option.isHidden &&
+      option.value.toLowerCase().startsWith(search)
+    ) {
+      return index;
+    }
+  }
+
+  return null;
+}
+
+// A single or repeated character cycles through matches, like a native select,
+// unless an option starts with the whole query (e.g. "ee")
+function findTypeAheadIndex<T extends EnhancedSelectInputValue<V>, V>(
+  query: string,
+  selectedIndex: number,
+  values: T[]
+) {
+  if (query.length > 1) {
+    const index = findMatchIndex(query, selectedIndex, values);
+
+    if (index !== null) {
+      return index;
+    }
+  }
+
+  if ([...query].every((c) => c === query[0])) {
+    return findMatchIndex(query[0], selectedIndex + 1, values);
+  }
+
+  return null;
+}
+
 function getSelectedIndex<T extends EnhancedSelectInputValue<V>, V>(
   value: V,
   values: T[]
@@ -127,6 +175,7 @@ export interface EnhancedSelectInputProps<
   T extends EnhancedSelectInputValue<V>,
   V
 > {
+  id?: string;
   className?: string;
   disabledClassName?: string;
   name: string;
@@ -149,7 +198,9 @@ export interface EnhancedSelectInputProps<
 function EnhancedSelectInput<T extends EnhancedSelectInputValue<V>, V>(
   props: EnhancedSelectInputProps<T, V>
 ) {
+  const formInputGroup = useFormInputGroup();
   const {
+    id,
     className = styles.enhancedSelect,
     disabledClassName = styles.isDisabled,
     name,
@@ -175,6 +226,8 @@ function EnhancedSelectInput<T extends EnhancedSelectInputValue<V>, V>(
   );
   const [isOpen, setIsOpen] = useState(false);
   const isMobile = useMemo(() => isMobileUtil(), []);
+  const typeAheadQuery = useRef('');
+  const typeAheadTimeout = useRef<ReturnType<typeof setTimeout>>();
 
   const isMultiSelect = Array.isArray(value);
   const selectedOption = getSelectedOption(selectedIndex, values);
@@ -190,7 +243,7 @@ function EnhancedSelectInput<T extends EnhancedSelectInputValue<V>, V>(
     [isMobile]
   );
 
-  const { refs, context, floatingStyles } = useFloating({
+  const { refs, context, floatingStyles, isPositioned } = useFloating({
     middleware: [
       flip({
         crossAxis: false,
@@ -310,6 +363,36 @@ function EnhancedSelectInput<T extends EnhancedSelectInputValue<V>, V>(
       let nextIsOpen: boolean | null = null;
       let nextSelectedIndex: number | null = null;
 
+      const isTypeAheadKey =
+        event.key.length === 1 &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        (event.key !== ' ' || typeAheadQuery.current !== '');
+
+      if (isTypeAheadKey) {
+        event.preventDefault();
+
+        clearTimeout(typeAheadTimeout.current);
+        typeAheadQuery.current += event.key.toLowerCase();
+        typeAheadTimeout.current = setTimeout(() => {
+          typeAheadQuery.current = '';
+        }, TYPE_AHEAD_RESET_MS);
+
+        nextSelectedIndex = findTypeAheadIndex(
+          typeAheadQuery.current,
+          selectedIndex,
+          values
+        );
+
+        if (nextSelectedIndex !== null) {
+          setIsOpen(true);
+          setSelectedIndex(nextSelectedIndex);
+        }
+
+        return;
+      }
+
       if (!isOpen) {
         if (isArrowKey(keyCode)) {
           event.preventDefault();
@@ -400,8 +483,25 @@ function EnhancedSelectInput<T extends EnhancedSelectInputValue<V>, V>(
   useEffect(() => {
     if (isOpen) {
       onOpen?.();
+    } else {
+      clearTimeout(typeAheadTimeout.current);
+      typeAheadQuery.current = '';
     }
   }, [isOpen, onOpen]);
+
+  useEffect(() => {
+    if (isPositioned) {
+      refs.floating.current?.children[selectedIndex]?.scrollIntoView({
+        block: 'nearest',
+      });
+    }
+  }, [isPositioned, selectedIndex, refs]);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(typeAheadTimeout.current);
+    };
+  }, []);
 
   return (
     <>
@@ -409,6 +509,7 @@ function EnhancedSelectInput<T extends EnhancedSelectInputValue<V>, V>(
         {isEditable && typeof value === 'string' ? (
           <div className={styles.editableContainer}>
             <TextInput
+              id={id}
               className={className}
               name={name}
               value={value}
@@ -437,6 +538,9 @@ function EnhancedSelectInput<T extends EnhancedSelectInputValue<V>, V>(
           </div>
         ) : (
           <Link
+            id={id}
+            aria-describedby={formInputGroup?.describedBy}
+            aria-invalid={formInputGroup?.hasError || undefined}
             className={classNames(
               className,
               hasError && styles.hasError,
@@ -499,6 +603,7 @@ function EnhancedSelectInput<T extends EnhancedSelectInputValue<V>, V>(
                   id={v.key}
                   depth={depth}
                   isSelected={isSelectedItem(index, value, values)}
+                  isFocused={index === selectedIndex}
                   isDisabled={parentSelected}
                   isMultiSelect={isMultiSelect}
                   {...valueOptions}
@@ -532,12 +637,14 @@ function EnhancedSelectInput<T extends EnhancedSelectInputValue<V>, V>(
                   <div className={styles.mobileTitle}>{modalTitle}</div>
                 ) : null}
 
-                <Link
+                <IconButton
                   className={styles.mobileCloseButton}
+                  name={icons.CLOSE}
+                  size={18}
+                  title={translate('CloseOptions')}
+                  aria-label={translate('CloseOptions')}
                   onPress={handleOptionsModalClose}
-                >
-                  <Icon name={icons.CLOSE} size={18} />
-                </Link>
+                />
               </div>
 
               {values.map((v, index) => {

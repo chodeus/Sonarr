@@ -73,7 +73,15 @@
 
   /* Z-indexes */
   --pageJumpBarZIndex: 10;
+  --pageHeaderZIndex: 50;
   --sidebarZIndex: 100;
   --modalZIndex: 1000;
   --popperZIndex: 2000;
+}
+
+@media (--breakpointSmall) {
+  :root {
+    --headerHeight: 48px;
+    --modalBodyPadding: 15px;
+  }
 }
