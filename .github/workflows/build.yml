@@ -51,7 +51,7 @@ jobs:
     needs: compile
     runs-on: ubuntu-24.04
     env:
-      PUBLISH: ${{ github.ref_name == 'custom' }}
+      PUBLISH: ${{ github.ref == 'refs/heads/custom' }}
     permissions:
       contents: write
       packages: write
@@ -182,8 +182,8 @@ jobs:
     with:
       event_type: workflow
       status: failure
-      title: "❌ Sonarr ${{ github.ref_name == 'custom' && 'image' || 'branch' }} build failed: ${{ github.ref_name }}"
-      description: "${{ github.ref_name == 'custom' && 'No new image was published, so the running image stays on the last good build. If the Merge Sources step failed, rebase the branch it names onto develop; if compile failed, upstream develop changed code one of meta.json''s `pr_branches` relies on.' || 'This branch never publishes, so the running image is untouched. On a Renovate branch the update breaks the build or the smoke test: fix or close its PR.' }}"
+      title: "❌ Sonarr ${{ github.ref == 'refs/heads/custom' && 'image' || 'branch' }} build failed: ${{ github.ref_name }}"
+      description: "${{ github.ref == 'refs/heads/custom' && 'No new image was published, so the running image stays on the last good build. If the Merge Sources step failed, rebase the branch it names onto develop; if compile failed, upstream develop changed code one of meta.json''s `pr_branches` relies on.' || 'This branch never publishes, so the running image is untouched. Check the failed step: a failure a Renovate update caused means fixing or closing its PR.' }}"
       commit_sha: ${{ github.sha }}
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
