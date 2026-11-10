@@ -48,7 +48,7 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
                 }
 
                 var historyForEpisode = _historyService.FindByEpisodeId(episode.Id);
-                var imported = FindImportOfFile(historyForEpisode, episode.EpisodeFileId);
+                var imported = FindImportOfFile(historyForEpisode, episode.EpisodeFileId) ?? FindImportOfLastGrab(historyForEpisode);
 
                 if (imported == null)
                 {
@@ -57,9 +57,7 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
 
                 var release = subject.Release;
 
-                if (release is TorrentInfo torrentInfo &&
-                    torrentInfo.InfoHash.IsNotNullOrWhiteSpace() &&
-                    torrentInfo.InfoHash.Equals(imported.DownloadId, StringComparison.OrdinalIgnoreCase))
+                if (release is TorrentInfo torrentInfo && IsSameDownload(torrentInfo.InfoHash, imported.DownloadId))
                 {
                     _logger.Debug("Has same torrent hash as a grabbed and imported release");
                     return DownloadSpecDecision.Reject(DownloadRejectionReason.AlreadyImportedSameHash, "Has same torrent hash as a grabbed and imported release");
@@ -77,7 +75,7 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
             return DownloadSpecDecision.Accept();
         }
 
-        // The file on disk, not the last grab: a later grab may have failed, and an equal quality can still score lower once imported
+        // The file's own import, not the last grab's: a later grab may have failed
         private static EpisodeHistory FindImportOfFile(List<EpisodeHistory> history, int episodeFileId)
         {
             var fileId = episodeFileId.ToString();
@@ -86,17 +84,27 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
                                                h.Data?.GetValueOrDefault(EpisodeHistory.FILE_ID) == fileId);
         }
 
+        // A rescan can re-create the file record under a new ID that no import names
+        private static EpisodeHistory FindImportOfLastGrab(List<EpisodeHistory> history)
+        {
+            var lastGrabbed = history.FirstOrDefault(h => h.EventType == EpisodeHistoryEventType.Grabbed);
+
+            return lastGrabbed == null
+                ? null
+                : history.FirstOrDefault(h => h.EventType == EpisodeHistoryEventType.DownloadFolderImported && IsSameDownload(h.DownloadId, lastGrabbed.DownloadId));
+        }
+
         private static IEnumerable<string> GetReleaseTitles(List<EpisodeHistory> history, EpisodeHistory imported)
         {
-            // Without a download ID, grabs can't be tied to this import
-            if (imported.DownloadId.IsNullOrWhiteSpace())
-            {
-                return new[] { imported.SourceTitle };
-            }
-
-            return history.Where(h => h.EventType == EpisodeHistoryEventType.Grabbed && h.DownloadId == imported.DownloadId)
+            return history.Where(h => h.EventType == EpisodeHistoryEventType.Grabbed && IsSameDownload(h.DownloadId, imported.DownloadId))
                           .Select(h => h.SourceTitle)
                           .Append(imported.SourceTitle);
+        }
+
+        // Without an ID, nothing ties a grab to an import
+        private static bool IsSameDownload(string downloadId, string otherDownloadId)
+        {
+            return downloadId.IsNotNullOrWhiteSpace() && downloadId.Equals(otherDownloadId, StringComparison.OrdinalIgnoreCase);
         }
     }
 }

@@ -198,15 +198,39 @@ namespace NzbDrone.Core.Test.DecisionEngineTests
         }
 
         [Test]
-        public void should_be_accepted_if_no_download_import_produced_the_file()
+        public void should_be_rejected_by_the_last_imported_grab_if_no_import_names_the_file()
         {
             var downloadId = Guid.NewGuid().ToString().ToUpper();
 
             GivenHistoryItem(downloadId, TITLE, _hdtv720p, EpisodeHistoryEventType.Grabbed);
-            GivenHistoryItem(downloadId, TITLE, _hdtv1080p, EpisodeHistoryEventType.DownloadFolderImported, fileId: 2);
+            GivenHistoryItem(downloadId, TITLE, _hdtv720p, EpisodeHistoryEventType.DownloadFolderImported, fileId: 2);
+            GivenReleaseTitle(TITLE);
+
+            Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeFalse();
+        }
+
+        [Test]
+        public void should_be_accepted_if_no_import_names_the_file_and_the_last_grab_was_not_imported()
+        {
+            var importedId = Guid.NewGuid().ToString().ToUpper();
+            var lastId = Guid.NewGuid().ToString().ToUpper();
+
+            GivenHistoryItem(lastId, "Series.Title.S01E01.720p.HDTV.x264-Other", _hdtv720p, EpisodeHistoryEventType.Grabbed);
+            GivenHistoryItem(importedId, TITLE, _hdtv720p, EpisodeHistoryEventType.DownloadFolderImported, fileId: 2);
+            GivenHistoryItem(importedId, TITLE, _hdtv720p, EpisodeHistoryEventType.Grabbed);
             GivenReleaseTitle(TITLE);
 
             Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeTrue();
+        }
+
+        [Test]
+        public void should_tie_grabs_to_the_import_whatever_the_download_id_case()
+        {
+            GivenHistoryItem("abcdef0123456789", "Series.Title.S01E01.720p.HDTV.AAC2.0.x264-Sonarr", _hdtv720p, EpisodeHistoryEventType.Grabbed);
+            GivenHistoryItem("ABCDEF0123456789", TITLE, _hdtv720p, EpisodeHistoryEventType.DownloadFolderImported);
+            GivenReleaseTitle("Series.Title.S01E01.720p.HDTV.AAC2.0.x264-Sonarr");
+
+            Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeFalse();
         }
 
         [Test]

@@ -126,7 +126,7 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             return grabbedScore > qualityProfile.CalculateCustomFormatScore(remoteEpisode.CustomFormats);
         }
 
-        // Import never reads the grabbed title, so a single file named like an unparseable client name blocks;
+        // Import never reads the grabbed title, so an unparseable client name can leave it nothing to read;
         // the remap then fell back to the grabbed title, which can't score better than itself
         private static bool IsOnlyGrabbedTitleReadable(string clientTitle, string grabbedTitle)
         {
