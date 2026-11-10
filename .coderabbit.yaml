@@ -13,7 +13,7 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
-    # PRs target develop or a stacked feature branch, never the default branch (custom, the image build).
+    # Source PRs target develop or a stacked feature branch; image-build PRs target custom, the default branch.
     base_branches:
       - ".*"
 
@@ -88,3 +88,62 @@ reviews:
         Build definition. Flag anything that disables NuGet auditing inside the projects
         (NuGetAudit=false, narrowed NuGetAuditMode, new NuGetAuditSuppress without a reason) and
         version bumps into a release a live advisory database flags.
+
+    - path: "{build.sh,linux-amd64.Dockerfile}"
+      instructions: |
+        Image build, on the custom branch only. build.sh merges meta.json's pr_branches, each at
+        its pinned pr_sha, onto upstream develop at sonarr_sha, checks migration numbers and
+        compiles; the Dockerfile puts the result on the hotio base image.
+
+        - A failed step must stop the build. Flag a swallowed exit status, a failure lost inside
+          a pipeline or a command substitution, and any path that leaves meta.json half updated
+          (update restores its backup on ERR).
+        - pr_branches and pr_shas are parallel space-separated lists: every edit keeps them the
+          same length and order. Only pin moves a pr_sha; the scheduled update must not.
+        - The migration check must keep failing the build when a PR migration is not above
+          upstream's newest, or when two branches share a number. Numbers compare in base 10.
+        - Branch names and meta.json values are data: quote every expansion, and flag a new
+          eval of anything but a __command value from meta.json.
+        - Dockerfile: the base stays ${UPSTREAM_IMAGE}:${UPSTREAM_TAG_SHA} from meta.json, never
+          a floating tag. Flag a remote script piped into a shell, and files left writable by
+          group or other in the app directory.
+
+    - path: "meta.json"
+      instructions: |
+        Pins for the image. The update job rewrites sonarr_sha, upstream_tag_sha and version
+        every 3 hours, so flag a hand edit to those that the PR does not explain. pr_branches
+        and pr_shas must have the same number of entries in the same order, each pr_sha a full
+        commit id on pr_repo. A changed __command value is run through eval by build.sh: review
+        it as code.
+
+    - path: "root/**"
+      instructions: |
+        s6-overlay service scripts copied into the image. The app starts through s6-setuidgid as
+        the hotio user, never as root, with umask taken from UMASK. Flag a run script that can
+        exit 0 without starting the app, and a path not built from APP_DIR or CONFIG_DIR.
+
+    - path: ".github/workflows/{build,update}.yml"
+      instructions: |
+        Image workflows on custom. build.yml runs on every push to any branch; update.yml runs
+        every 3 hours.
+
+        - In build.yml only the publish job, gated on refs/heads/custom, may hold contents: write
+          or packages: write. Branch builds stay read-only, so a Renovate update is tested
+          without being able to publish.
+        - The image pushed must be the one the image job smoke-tested, passed on as an artifact,
+          never a rebuild.
+        - A push made with the built-in token starts no workflow, so update.yml dispatches
+          build.yml itself, and the packages.txt commit carries [skip ci]. Flag a change that
+          breaks either, or that makes the two loop.
+        - A failure must reach the notify job. Flag continue-on-error on a step whose failure
+          should stop the image, and untrusted values put into `run:` through ${{ }}.
+        - New third-party actions are pinned by commit SHA.
+
+    - path: "**"
+      instructions: |
+        Applies to every file:
+        - Review correctness, security and data loss. Do not flag stylistic preferences that are
+          consistent across the file, or code the change did not touch unless the change makes
+          it wrong.
+        - A comment, log message or UI label that disagrees with what the code does is a
+          correctness finding: report it and say which side is wrong.
