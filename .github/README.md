@@ -4,7 +4,7 @@ Part of the [custom Sonarr image](https://github.com/chodeus/Sonarr/tree/custom)
 
 ## Blocked season packs
 
-A season pack grabbed as soon as it airs is held back while its episode titles are still TBA (Media Management → Episode Title Required). It should import by itself once a series refresh brings in the titles. Three bugs stopped that from happening.
+A season pack grabbed as soon as it airs is held back while its episode titles are still TBA (Media Management → Episode Title Required); the check only holds episodes that aired in the last 48 hours. It should import by itself once a series refresh brings in the titles, or once that window passes. Three bugs stopped that from happening.
 
 **The queued download lost its series.** On series and episode events (edit, bulk edit, add, delete, episode removed), `TrackedDownloadService.UpdateCachedItem` remapped each queued download from the download client's title only. `TrackDownload` falls back to the grab history when that title doesn't match a series, but the update path had its own copy of the mapping without that fallback. A torrent named `The.Diplomat.S04…` for the series "The Diplomat (US)" was mapped when first tracked, then lost its series and episodes after the next series event. The queue showed it with no series, so nothing covered those episodes and the season was grabbed again from another release.
 
@@ -15,7 +15,7 @@ A season pack grabbed as soon as it airs is held back while its episode titles a
 ### Changes
 
 - `TrackDownload`'s mapping (download history read, title, grab history fallback, release info, aggregation, custom formats) moves into `MapRemoteEpisode`, which returns the download history so `TrackDownload` still sets the state from it. `UpdateCachedItem` calls the same method. Queued downloads keep their series, episodes and custom format score after series events.
-- The mapping is built on its own objects and applied once it's complete, so another thread reading the queue sees the old mapping or the new one, never a half-built one with no series.
+- The mapping is built on its own objects and applied once it's complete. `RemoteEpisode` is replaced in one assignment, so another thread reading the queue sees the old one or the new one, never a half-built one with no series; the indexer, added date and grab event are set separately right after it.
 - Its error handling covers the update path as well, so no exception leaves a series event handler and skips the remaining downloads. A remap that fails keeps the download's previous mapping and status messages, so an import-blocked download keeps its series and the reason it's blocked. A new download that can't be mapped shows the warning, as before.
 - The grab history fallback maps the grabbed episodes that still exist. TheTVDB can remove a grabbed episode (a TBA placeholder, say) while the pack waits, and looking up a missing ID used to throw, leaving the download with no series for good. The series is looked up without throwing, so a download whose series was deleted, imported or not, is left with no series instead of pointing at it.
 - `IsImported` returns false when no episodes are mapped.
