@@ -48,7 +48,7 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
                 }
 
                 var historyForEpisode = _historyService.FindByEpisodeId(episode.Id);
-                var imported = FindImportOfFile(historyForEpisode, episode.EpisodeFileId) ?? FindImportOfLastGrab(historyForEpisode);
+                var imported = FindImportOfFile(historyForEpisode, episode.EpisodeFileId) ?? FindLastImport(historyForEpisode);
 
                 if (imported == null)
                 {
@@ -85,13 +85,9 @@ namespace NzbDrone.Core.DecisionEngine.Specifications
         }
 
         // A rescan can re-create the file record under a new ID that no import names
-        private static EpisodeHistory FindImportOfLastGrab(List<EpisodeHistory> history)
+        private static EpisodeHistory FindLastImport(List<EpisodeHistory> history)
         {
-            var lastGrabbed = history.FirstOrDefault(h => h.EventType == EpisodeHistoryEventType.Grabbed);
-
-            return lastGrabbed == null
-                ? null
-                : history.FirstOrDefault(h => h.EventType == EpisodeHistoryEventType.DownloadFolderImported && IsSameDownload(h.DownloadId, lastGrabbed.DownloadId));
+            return history.FirstOrDefault(h => h.EventType == EpisodeHistoryEventType.DownloadFolderImported);
         }
 
         private static IEnumerable<string> GetReleaseTitles(List<EpisodeHistory> history, EpisodeHistory imported)

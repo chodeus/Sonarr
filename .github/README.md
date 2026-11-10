@@ -48,6 +48,7 @@ No score is changed here. A duplicate is refused because it is the same release,
   - Skipped when the grab matched the series by ID: the import finds the series by the client name, and an indexer title Sonarr can't parse to the series would block it.
   - Skipped when the names already match, because the two scores can still differ after a rename (the client's size against the indexer's), and for downloads whose client couldn't be reached.
   - Attempts for one download are 15 minutes apart, so events republished with the old name before the next refresh don't rename twice, and a failing client isn't retried on every refresh.
+  - Also renamed, whatever the score, when the client name doesn't parse and the grabbed title does: import never reads the grabbed title, so it would stay blocked.
 
 ### Tests
 
@@ -56,6 +57,12 @@ No score is changed here. A duplicate is refused because it is the same release,
 - `TrackedDownloadServiceFixture`: the grab event is kept and the release title still comes from the client name. `QueueServiceFixture`: queue items carry the grabbed title.
 - `GrabbedTitleRenameServiceFixture`: renames on a higher score or quality; not on an equal or lower score, nor a lower quality with a higher score; import-blocked yes; import pending, importing and failed-pending no; no usenet, no unreachable client, no grab history, no partly mapped download, no ID-matched grab; no grab history for another series, other episodes, only some of the episodes or none, while a multi-episode grab for the same episodes renames; names that already match; a republished event renames once; attempts are kept per download client; a failure waits; one failing download doesn't stop the rest; a client that can't rename gets no history lookup or score work, and renames on the next refresh once it can. Release builds don't fail a test on an unexpected warning, so these assert no warnings.
 - `QBittorrentRenameFixture`: renames with a lower-case hash when the setting is on; nothing when it is off or on API v1; a rejected rename is left to the caller.
+
+## Same release after import, and unreadable torrent names
+
+- `AlreadyImportedSpecification` compared only the last grab, and skipped when its grabbed and imported qualities matched. A failed later grab, or a file whose custom formats score lower than its release title (an HEVC file named h264), let the same release be grabbed again after import. It now finds the import behind the episode's current file (history `fileId`), falling back to the most recent import when a rescan re-created the file record, and refuses that release by hash or by name (`IsSameReleaseTitle`) at any quality. No score changes.
+- "Rename to Release Title" never fired when the torrent name doesn't parse: the remap had parsed the grabbed title, so it scored against itself, and import never reads the grabbed title, so a single-file torrent named that way stayed blocked ("Unable to parse file"). It now also renames when only the grabbed title parses.
+- Tests: `AlreadyImportedSpecificationFixture` (same release at equal quality, a later failed grab, the imported name, a file from another release, the fallback after a failed grab, download IDs in either case, an import without an ID); `AlreadyImportedSpecificationHistoryFixture` writes imports through `HistoryService` and reads them back from the database, where keys are camel-cased, including a rescan followed by a failed grab; `GrabbedTitleRenameServiceFixture` (only the grabbed title parses, neither does, other episodes). Each new guard was broken on purpose and failed its test.
 
 ## Both
 
