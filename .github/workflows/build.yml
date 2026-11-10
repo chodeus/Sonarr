@@ -46,15 +46,15 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Every branch builds and smoke-tests the image; only custom publishes it (a Renovate branch proves its update works).
+  # Every branch builds and smoke-tests the image with a read-only token, so a Renovate update is proven before it merges.
   image:
     needs: compile
     runs-on: ubuntu-24.04
-    env:
-      PUBLISH: ${{ github.ref == 'refs/heads/custom' }}
-    permissions:
-      contents: write
-      packages: write
+    outputs:
+      image-full:           ${{ steps.meta.outputs.image-full }}
+      image-branch:         ${{ steps.meta.outputs.image-branch }}
+      image-branch-sha:     ${{ steps.meta.outputs.image-branch-sha }}
+      image-branch-version: ${{ steps.meta.outputs.image-branch-version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -66,14 +66,6 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
-
-      - name: Login to ghcr.io
-        if: env.PUBLISH == 'true'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Metadata
         id: meta
@@ -110,7 +102,6 @@ jobs:
           file: ./linux-amd64.Dockerfile
           provenance: false
           load: true
-          push: ${{ env.PUBLISH == 'true' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: ${{ steps.meta.outputs.image-full }}
@@ -136,23 +127,80 @@ jobs:
           docker logs service > smoketest.log 2>&1
           exit ${exitcode}
 
-      - name: Tag Image
-        if: env.PUBLISH == 'true'
+      - name: Save Image
+        if: github.ref == 'refs/heads/custom'
         env:
-          IMAGE_FULL:           ${{ steps.meta.outputs.image-full }}
-          IMAGE_BRANCH:         ${{ steps.meta.outputs.image-branch }}
-          IMAGE_BRANCH_SHA:     ${{ steps.meta.outputs.image-branch-sha }}
-          IMAGE_BRANCH_VERSION: ${{ steps.meta.outputs.image-branch-version }}
+          IMAGE: ${{ steps.meta.outputs.image-full }}
+        run: docker save "${IMAGE}" | gzip > image.tar.gz
+
+      - name: Upload Image
+        if: github.ref == 'refs/heads/custom'
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-${{ github.sha }}
+          path: image.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload Results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-${{ github.sha }}
+          if-no-files-found: warn
+          path: smoketest.log
+
+  # Only custom gets the write token: it pushes the image the image job tested.
+  publish:
+    needs: image
+    if: github.ref == 'refs/heads/custom'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download Image
+        uses: actions/download-artifact@v8
+        with:
+          name: image-${{ github.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Image
+        env:
+          IMAGE_FULL: ${{ needs.image.outputs.image-full }}
+        run: |
+          docker load --quiet < image.tar.gz
+          rm image.tar.gz
+          docker push --quiet "${IMAGE_FULL}"
+
+      - name: Tag Image
+        env:
+          IMAGE_FULL:           ${{ needs.image.outputs.image-full }}
+          IMAGE_BRANCH:         ${{ needs.image.outputs.image-branch }}
+          IMAGE_BRANCH_SHA:     ${{ needs.image.outputs.image-branch-sha }}
+          IMAGE_BRANCH_VERSION: ${{ needs.image.outputs.image-branch-version }}
         run: docker buildx imagetools create --tag "${IMAGE_BRANCH}" --tag "${IMAGE_BRANCH_SHA}" --tag "${IMAGE_BRANCH_VERSION}" "${IMAGE_FULL}"
 
       - name: Update packages.txt
-        if: env.PUBLISH == 'true'
         env:
-          IMAGE: ${{ steps.meta.outputs.image-full }}
+          IMAGE: ${{ needs.image.outputs.image-full }}
         run: ./build.sh packages "${IMAGE}"
 
       - name: Commit packages.txt
-        if: env.PUBLISH == 'true'
         env:
           BRANCH: ${{ github.ref_name }}
         run: |
@@ -164,19 +212,8 @@ jobs:
             git push origin "HEAD:${BRANCH}"
           fi
 
-      - name: Upload Results
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: results-${{ github.sha }}
-          if-no-files-found: warn
-          path: |
-            packages.txt
-            smoketest.log
-
   notify:
-    needs: [compile, image]
+    needs: [compile, image, publish]
     if: failure()
     uses: chodeus/chodeus-ops/.github/workflows/notify-discord.yml@579feb04e3219248963bd27843298a8c2ea6b2fd # main
     with:
