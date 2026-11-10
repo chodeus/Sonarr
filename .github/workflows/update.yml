@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   update:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -60,7 +60,7 @@ jobs:
           fi
 
   sync-develop:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # The image reads upstream directly, so nothing else keeps the fork's develop current.
       # PAT with Workflows write: github.token can't push upstream's workflow-file changes.
