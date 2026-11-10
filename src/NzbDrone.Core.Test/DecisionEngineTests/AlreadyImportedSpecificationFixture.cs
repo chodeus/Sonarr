@@ -75,16 +75,30 @@ namespace NzbDrone.Core.Test.DecisionEngineTests
                   .Returns(false);
         }
 
-        private void GivenHistoryItem(string downloadId, string sourceTitle, QualityModel quality, EpisodeHistoryEventType eventType)
+        private void GivenHistoryItem(string downloadId, string sourceTitle, QualityModel quality, EpisodeHistoryEventType eventType, int fileId = 1)
         {
-            _history.Add(new EpisodeHistory
-                         {
-                             DownloadId = downloadId,
-                             SourceTitle = sourceTitle,
-                             Quality = quality,
-                             Date = DateTime.UtcNow,
-                             EventType = eventType
-                         });
+            var history = new EpisodeHistory
+            {
+                DownloadId = downloadId,
+                SourceTitle = sourceTitle,
+                Quality = quality,
+                Date = DateTime.UtcNow,
+                EventType = eventType
+            };
+
+            if (eventType == EpisodeHistoryEventType.DownloadFolderImported)
+            {
+                history.Data.Add(EpisodeHistory.FILE_ID, fileId.ToString());
+            }
+
+            _history.Add(history);
+        }
+
+        private void GivenReleaseTitle(string title)
+        {
+            _remoteEpisode.Release = Builder<ReleaseInfo>.CreateNew()
+                                                         .With(r => r.Title = title)
+                                                         .Build();
         }
 
         [Test]
@@ -118,12 +132,79 @@ namespace NzbDrone.Core.Test.DecisionEngineTests
         }
 
         [Test]
-        public void should_be_accepted_if_grabbed_and_imported_quality_is_the_same()
+        public void should_be_accepted_if_the_release_is_not_the_imported_release()
         {
             var downloadId = Guid.NewGuid().ToString().ToUpper();
 
             GivenHistoryItem(downloadId, TITLE, _hdtv720p, EpisodeHistoryEventType.Grabbed);
             GivenHistoryItem(downloadId, TITLE, _hdtv720p, EpisodeHistoryEventType.DownloadFolderImported);
+            GivenReleaseTitle("Series.Title.S01E01.720p.HDTV.x264-Other");
+
+            Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeTrue();
+        }
+
+        [Test]
+        public void should_be_rejected_if_the_same_release_was_imported_with_the_same_quality()
+        {
+            var downloadId = Guid.NewGuid().ToString().ToUpper();
+
+            GivenHistoryItem(downloadId, TITLE, _hdtv720p, EpisodeHistoryEventType.Grabbed);
+            GivenHistoryItem(downloadId, TITLE, _hdtv720p, EpisodeHistoryEventType.DownloadFolderImported);
+            GivenReleaseTitle("series.title.s01e01.720p.hdtv.x264-sonarr.mkv");
+
+            Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeFalse();
+        }
+
+        [Test]
+        public void should_be_rejected_if_a_later_grab_of_the_episode_failed()
+        {
+            var importedId = Guid.NewGuid().ToString().ToUpper();
+            var failedId = Guid.NewGuid().ToString().ToUpper();
+
+            GivenHistoryItem(failedId, TITLE, _hdtv720p, EpisodeHistoryEventType.DownloadFailed);
+            GivenHistoryItem(failedId, TITLE, _hdtv720p, EpisodeHistoryEventType.Grabbed);
+            GivenHistoryItem(importedId, TITLE, _hdtv720p, EpisodeHistoryEventType.DownloadFolderImported);
+            GivenHistoryItem(importedId, TITLE, _hdtv720p, EpisodeHistoryEventType.Grabbed);
+            GivenReleaseTitle(TITLE);
+
+            Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeFalse();
+        }
+
+        [Test]
+        public void should_be_rejected_if_release_title_matches_the_imported_name_instead_of_the_grabbed_one()
+        {
+            var downloadId = Guid.NewGuid().ToString().ToUpper();
+
+            GivenHistoryItem(downloadId, "Series.Title.S01E01.720p.HDTV.AAC2.0.x264-Sonarr", _hdtv720p, EpisodeHistoryEventType.Grabbed);
+            GivenHistoryItem(downloadId, TITLE, _hdtv720p, EpisodeHistoryEventType.DownloadFolderImported);
+            GivenReleaseTitle(TITLE);
+
+            Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeFalse();
+        }
+
+        [Test]
+        public void should_be_accepted_if_the_file_on_disk_came_from_another_release()
+        {
+            var currentId = Guid.NewGuid().ToString().ToUpper();
+            var replacedId = Guid.NewGuid().ToString().ToUpper();
+
+            GivenHistoryItem(currentId, "Series.Title.S01E01.720p.HDTV.x264-Other", _hdtv720p, EpisodeHistoryEventType.DownloadFolderImported, fileId: 1);
+            GivenHistoryItem(currentId, "Series.Title.S01E01.720p.HDTV.x264-Other", _hdtv720p, EpisodeHistoryEventType.Grabbed);
+            GivenHistoryItem(replacedId, TITLE, _hdtv720p, EpisodeHistoryEventType.DownloadFolderImported, fileId: 2);
+            GivenHistoryItem(replacedId, TITLE, _hdtv720p, EpisodeHistoryEventType.Grabbed);
+            GivenReleaseTitle(TITLE);
+
+            Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeTrue();
+        }
+
+        [Test]
+        public void should_be_accepted_if_no_download_import_produced_the_file()
+        {
+            var downloadId = Guid.NewGuid().ToString().ToUpper();
+
+            GivenHistoryItem(downloadId, TITLE, _hdtv720p, EpisodeHistoryEventType.Grabbed);
+            GivenHistoryItem(downloadId, TITLE, _hdtv1080p, EpisodeHistoryEventType.DownloadFolderImported, fileId: 2);
+            GivenReleaseTitle(TITLE);
 
             Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeTrue();
         }
@@ -145,17 +226,11 @@ namespace NzbDrone.Core.Test.DecisionEngineTests
         }
 
         [Test]
-        public void should_be_accepted_if_grabbed_download_does_not_have_an_id()
+        public void should_be_accepted_if_the_import_has_no_download_id_to_tie_it_to_a_grab()
         {
-            var downloadId = Guid.NewGuid().ToString().ToUpper();
-
             GivenHistoryItem(null, TITLE, _hdtv720p, EpisodeHistoryEventType.Grabbed);
-            GivenHistoryItem(downloadId, TITLE, _hdtv1080p, EpisodeHistoryEventType.DownloadFolderImported);
-
-            _remoteEpisode.Release = Builder<TorrentInfo>.CreateNew()
-                                                         .With(t => t.DownloadProtocol = DownloadProtocol.Torrent)
-                                                         .With(t => t.InfoHash = downloadId)
-                                                         .Build();
+            GivenHistoryItem(null, "Series.Title.S01E01.720p.HDTV.x264-Other", _hdtv720p, EpisodeHistoryEventType.DownloadFolderImported);
+            GivenReleaseTitle(TITLE);
 
             Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeTrue();
         }
@@ -182,11 +257,12 @@ namespace NzbDrone.Core.Test.DecisionEngineTests
             var downloadId = Guid.NewGuid().ToString().ToUpper();
 
             GivenHistoryItem(downloadId, TITLE, _hdtv720p, EpisodeHistoryEventType.Grabbed);
-            GivenHistoryItem(downloadId, TITLE, _hdtv1080p, EpisodeHistoryEventType.DownloadFolderImported);
+            GivenHistoryItem(downloadId, "Series.Title.S01E01.720p.HDTV.x264-Sonarr-Renamed", _hdtv1080p, EpisodeHistoryEventType.DownloadFolderImported);
 
             _remoteEpisode.Release = Builder<TorrentInfo>.CreateNew()
                                                          .With(t => t.DownloadProtocol = DownloadProtocol.Torrent)
-                                                         .With(t => t.InfoHash = downloadId)
+                                                         .With(t => t.InfoHash = null)
+                                                         .With(t => t.Title = TITLE)
                                                          .Build();
 
             Subject.IsSatisfiedBy(_remoteEpisode, new()).Accepted.Should().BeFalse();

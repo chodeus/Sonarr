@@ -96,7 +96,8 @@ namespace NzbDrone.Core.Download.TrackedDownloads
                 return false;
             }
 
-            if (!IsGrabbedTitleBetter(grabbedEvent, remoteEpisode))
+            if (!IsGrabbedTitleBetter(grabbedEvent, remoteEpisode) &&
+                !IsOnlyGrabbedTitleReadable(trackedDownload.DownloadItem.Title, grabbedEvent.SourceTitle))
             {
                 return false;
             }
@@ -123,6 +124,13 @@ namespace NzbDrone.Core.Download.TrackedDownloads
             var grabbedScore = qualityProfile.CalculateCustomFormatScore(_formatCalculator.ParseCustomFormat(grabbedEvent, remoteEpisode.Series));
 
             return grabbedScore > qualityProfile.CalculateCustomFormatScore(remoteEpisode.CustomFormats);
+        }
+
+        // Import never reads the grabbed title, so a single file named like an unparseable client name blocks;
+        // the remap then fell back to the grabbed title, which can't score better than itself
+        private static bool IsOnlyGrabbedTitleReadable(string clientTitle, string grabbedTitle)
+        {
+            return Parser.Parser.ParseTitle(clientTitle) == null && Parser.Parser.ParseTitle(grabbedTitle) != null;
         }
 
         // The next refresh maps the download by its new name, so a rename must not move it to other episodes

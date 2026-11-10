@@ -24,6 +24,7 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
     public class GrabbedTitleRenameServiceFixture : CoreTest<GrabbedTitleRenameService>
     {
         private const string GrabbedTitle = "Series.Title.S01E01.1080p.WEB-DL.DDPA5.1.H.264-Group";
+        private const string UnparseableTitle = "XY100 - XYSP00 - A Special – Its Title!.mkv";
 
         private CustomFormat _atmos;
         private Series _series;
@@ -126,6 +127,43 @@ namespace NzbDrone.Core.Test.Download.TrackedDownloads
         public void should_not_rename_when_both_titles_score_the_same()
         {
             Refresh(GivenTrackedDownload());
+
+            VerifyRenamed(Times.Never());
+        }
+
+        [Test]
+        public void should_rename_when_only_the_grabbed_title_can_be_parsed()
+        {
+            var trackedDownload = GivenTrackedDownload();
+            trackedDownload.DownloadItem.Title = UnparseableTitle;
+
+            Refresh(trackedDownload);
+
+            _downloadClient.Verify(c => c.RenameItem(It.Is<DownloadClientItem>(i => i.DownloadId == "HASH1"), GrabbedTitle), Times.Once());
+            ExceptionVerification.ExpectedWarns(0);
+        }
+
+        [Test]
+        public void should_not_rename_when_neither_title_can_be_parsed()
+        {
+            var trackedDownload = GivenTrackedDownload();
+            trackedDownload.DownloadItem.Title = UnparseableTitle;
+            trackedDownload.GrabbedEvent.SourceTitle = "XY101 - XYSP01 - Another Special!";
+
+            Refresh(trackedDownload);
+
+            VerifyRenamed(Times.Never());
+        }
+
+        [Test]
+        public void should_not_rename_an_unparseable_download_grabbed_for_other_episodes()
+        {
+            GivenGrabbedEpisodes(1, 2);
+
+            var trackedDownload = GivenTrackedDownload();
+            trackedDownload.DownloadItem.Title = UnparseableTitle;
+
+            Refresh(trackedDownload);
 
             VerifyRenamed(Times.Never());
         }

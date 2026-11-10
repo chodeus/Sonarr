@@ -15,6 +15,7 @@ namespace NzbDrone.Core.History
         public const string RELEASE_GROUP = "releaseGroup";
         public const string SIZE = "size";
         public const string INDEXER = "indexer";
+        public const string FILE_ID = "fileId";
 
         public EpisodeHistory()
         {
