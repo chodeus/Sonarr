@@ -76,14 +76,14 @@ jobs:
           SHA:        ${{ github.sha }}
           SERVER_URL: ${{ github.server_url }}
         run: |
-          BRANCH="${BRANCH//[^A-Za-z0-9._-]/-}"
+          TAG="${BRANCH//[^A-Za-z0-9._-]/-}"
           IMAGE="ghcr.io/${REPOSITORY,,}"
           VERSION=$(jq -re '.version' < meta.json)
           {
-            echo "image-full=${IMAGE}:${BRANCH}-${SHA:0:7}-${RUN_NUMBER}-linux-amd64"
-            echo "image-branch=${IMAGE}:${BRANCH}"
-            echo "image-branch-sha=${IMAGE}:${BRANCH}-${SHA:0:7}"
-            echo "image-branch-version=${IMAGE}:${BRANCH}-${VERSION}"
+            echo "image-full=${IMAGE}:${TAG}-${SHA:0:7}-${RUN_NUMBER}-linux-amd64"
+            echo "image-branch=${IMAGE}:${TAG}"
+            echo "image-branch-sha=${IMAGE}:${TAG}-${SHA:0:7}"
+            echo "image-branch-version=${IMAGE}:${TAG}-${VERSION}"
             echo "meta-created=$(date --utc --date=@"$(git show -s --format=%ct HEAD)" +'%Y-%m-%dT%H:%M:%S.000Z')"
             echo "meta-source-url=${SERVER_URL}/${REPOSITORY}"
             echo "meta-docs-url=${SERVER_URL}/${REPOSITORY}/tree/${BRANCH}"
@@ -91,7 +91,7 @@ jobs:
             echo 'build-args<<EOF'
             jq -r 'to_entries[] | [(.key | ascii_upcase),.value] | join("=")' < meta.json | grep -v '__COMMAND'
             echo "PACKAGE_VERSION=${BRANCH}-${VERSION}"
-            echo "IMAGE_STATS=$(jq -n --arg app "$(basename "${IMAGE}")" --arg image "${IMAGE}:${BRANCH}" --arg revision "${SHA:0:7}" --arg version "${VERSION}" '{app: $app, image: $image, revision: $revision, version: $version}' | base64 -w 0)"
+            echo "IMAGE_STATS=$(jq -n --arg app "$(basename "${IMAGE}")" --arg image "${IMAGE}:${TAG}" --arg revision "${SHA:0:7}" --arg version "${VERSION}" '{app: $app, image: $image, revision: $revision, version: $version}' | base64 -w 0)"
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
@@ -220,7 +220,7 @@ jobs:
       event_type: workflow
       status: failure
       title: "❌ Sonarr ${{ github.ref == 'refs/heads/custom' && 'image' || 'branch' }} build failed: ${{ github.ref_name }}"
-      description: "${{ github.ref == 'refs/heads/custom' && 'A failure before Tag Image leaves `:custom` on the last good build; a later one means `:custom` moved but packages.txt is behind. If the Merge Sources step failed, rebase the branch it names onto develop; if compile failed, upstream develop changed code one of meta.json''s `pr_branches` relies on.' || 'This branch never publishes, so the running image is untouched. Check the failed step: a failure a Renovate update caused means fixing or closing its PR.' }}"
+      description: "${{ github.ref == 'refs/heads/custom' && 'A failure before Tag Image leaves `:custom` on the last good build; a later one means `:custom` moved and packages.txt may be behind. Check the failed step first: if Merge Sources names a branch, rebase it onto develop; a compile failure most often means upstream develop changed code one of meta.json''s `pr_branches` relies on.' || 'This branch never publishes, so the running image is untouched. Check the failed step: a failure a Renovate update caused means fixing or closing its PR.' }}"
       commit_sha: ${{ github.sha }}
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
