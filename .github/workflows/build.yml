@@ -46,12 +46,15 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Every branch builds and smoke-tests the image with a read-only token, so a Renovate update is proven before it merges.
   image:
     needs: compile
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-      packages: write
+    outputs:
+      image-full:           ${{ steps.meta.outputs.image-full }}
+      image-branch:         ${{ steps.meta.outputs.image-branch }}
+      image-branch-sha:     ${{ steps.meta.outputs.image-branch-sha }}
+      image-branch-version: ${{ steps.meta.outputs.image-branch-version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -64,13 +67,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Login to ghcr.io
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Create Metadata
         id: meta
         env:
@@ -80,13 +76,14 @@ jobs:
           SHA:        ${{ github.sha }}
           SERVER_URL: ${{ github.server_url }}
         run: |
+          TAG="${BRANCH//[^A-Za-z0-9._-]/-}"
           IMAGE="ghcr.io/${REPOSITORY,,}"
           VERSION=$(jq -re '.version' < meta.json)
           {
-            echo "image-full=${IMAGE}:${BRANCH}-${SHA:0:7}-${RUN_NUMBER}-linux-amd64"
-            echo "image-branch=${IMAGE}:${BRANCH}"
-            echo "image-branch-sha=${IMAGE}:${BRANCH}-${SHA:0:7}"
-            echo "image-branch-version=${IMAGE}:${BRANCH}-${VERSION}"
+            echo "image-full=${IMAGE}:${TAG}-${SHA:0:7}-${RUN_NUMBER}-linux-amd64"
+            echo "image-branch=${IMAGE}:${TAG}"
+            echo "image-branch-sha=${IMAGE}:${TAG}-${SHA:0:7}"
+            echo "image-branch-version=${IMAGE}:${TAG}-${VERSION}"
             echo "meta-created=$(date --utc --date=@"$(git show -s --format=%ct HEAD)" +'%Y-%m-%dT%H:%M:%S.000Z')"
             echo "meta-source-url=${SERVER_URL}/${REPOSITORY}"
             echo "meta-docs-url=${SERVER_URL}/${REPOSITORY}/tree/${BRANCH}"
@@ -94,7 +91,7 @@ jobs:
             echo 'build-args<<EOF'
             jq -r 'to_entries[] | [(.key | ascii_upcase),.value] | join("=")' < meta.json | grep -v '__COMMAND'
             echo "PACKAGE_VERSION=${BRANCH}-${VERSION}"
-            echo "IMAGE_STATS=$(jq -n --arg app "$(basename "${IMAGE}")" --arg image "${IMAGE}:${BRANCH}" --arg revision "${SHA:0:7}" --arg version "${VERSION}" '{app: $app, image: $image, revision: $revision, version: $version}' | base64 -w 0)"
+            echo "IMAGE_STATS=$(jq -n --arg app "$(basename "${IMAGE}")" --arg image "${IMAGE}:${TAG}" --arg revision "${SHA:0:7}" --arg version "${VERSION}" '{app: $app, image: $image, revision: $revision, version: $version}' | base64 -w 0)"
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
@@ -105,7 +102,6 @@ jobs:
           file: ./linux-amd64.Dockerfile
           provenance: false
           load: true
-          push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: ${{ steps.meta.outputs.image-full }}
@@ -131,17 +127,77 @@ jobs:
           docker logs service > smoketest.log 2>&1
           exit ${exitcode}
 
+      - name: Save Image
+        if: github.ref == 'refs/heads/custom'
+        env:
+          IMAGE: ${{ steps.meta.outputs.image-full }}
+        run: docker save "${IMAGE}" | gzip > image.tar.gz
+
+      - name: Upload Image
+        if: github.ref == 'refs/heads/custom'
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-${{ github.sha }}
+          path: image.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload Results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-${{ github.sha }}
+          if-no-files-found: warn
+          path: smoketest.log
+
+  # Only custom gets the write token: it pushes the image the image job tested.
+  publish:
+    needs: image
+    if: github.ref == 'refs/heads/custom'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download Image
+        uses: actions/download-artifact@v8
+        with:
+          name: image-${{ github.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Image
+        env:
+          IMAGE_FULL: ${{ needs.image.outputs.image-full }}
+        run: |
+          docker load --quiet < image.tar.gz
+          rm image.tar.gz
+          docker push --quiet "${IMAGE_FULL}"
+
       - name: Tag Image
         env:
-          IMAGE_FULL:           ${{ steps.meta.outputs.image-full }}
-          IMAGE_BRANCH:         ${{ steps.meta.outputs.image-branch }}
-          IMAGE_BRANCH_SHA:     ${{ steps.meta.outputs.image-branch-sha }}
-          IMAGE_BRANCH_VERSION: ${{ steps.meta.outputs.image-branch-version }}
+          IMAGE_FULL:           ${{ needs.image.outputs.image-full }}
+          IMAGE_BRANCH:         ${{ needs.image.outputs.image-branch }}
+          IMAGE_BRANCH_SHA:     ${{ needs.image.outputs.image-branch-sha }}
+          IMAGE_BRANCH_VERSION: ${{ needs.image.outputs.image-branch-version }}
         run: docker buildx imagetools create --tag "${IMAGE_BRANCH}" --tag "${IMAGE_BRANCH_SHA}" --tag "${IMAGE_BRANCH_VERSION}" "${IMAGE_FULL}"
 
       - name: Update packages.txt
         env:
-          IMAGE: ${{ steps.meta.outputs.image-full }}
+          IMAGE: ${{ needs.image.outputs.image-full }}
         run: ./build.sh packages "${IMAGE}"
 
       - name: Commit packages.txt
@@ -156,26 +212,15 @@ jobs:
             git push origin "HEAD:${BRANCH}"
           fi
 
-      - name: Upload Results
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: results-${{ github.sha }}
-          if-no-files-found: warn
-          path: |
-            packages.txt
-            smoketest.log
-
   notify:
-    needs: [compile, image]
+    needs: [compile, image, publish]
     if: failure()
     uses: chodeus/chodeus-ops/.github/workflows/notify-discord.yml@579feb04e3219248963bd27843298a8c2ea6b2fd # main
     with:
       event_type: workflow
       status: failure
-      title: "❌ Sonarr image build failed: ${{ github.ref_name }}"
-      description: "No new image was published, so the running image stays on the last good build. If the Merge Sources step failed, rebase the branch it names onto develop; if compile failed, upstream develop changed code one of meta.json's `pr_branches` relies on."
+      title: "❌ Sonarr ${{ github.ref == 'refs/heads/custom' && 'image' || 'branch' }} build failed: ${{ github.ref_name }}"
+      description: "${{ github.ref == 'refs/heads/custom' && 'A failure before Tag Image leaves `:custom` on the last good build; a later one means `:custom` moved and packages.txt may be behind. Check the failed step first: if Merge Sources names a branch, rebase it onto develop; a compile failure most often means upstream develop changed code one of meta.json''s `pr_branches` relies on.' || 'This branch never publishes, so the running image is untouched. Check the failed step: a failure a Renovate update caused means fixing or closing its PR.' }}"
       commit_sha: ${{ github.sha }}
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
