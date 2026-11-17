@@ -77,5 +77,6 @@ public enum DownloadRejectionReason
     DiskCustomFormatScoreIncrement,
     DiskUpgradesNotAllowed,
     DiskNotUpgrade,
-    BeforeAirDate
+    BeforeAirDate,
+    MultipleSeries
 }

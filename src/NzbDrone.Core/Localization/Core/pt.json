@@ -60,10 +60,6 @@
     "Agenda": "Agenda",
     "AirDate": "Data de Transmissão",
     "Airs": "Exibições",
-    "AirsDateAtTimeOn": "{date} às {time} em {networkLabel}",
-    "AirsTbaOn": "TBA em {networkLabel}",
-    "AirsTimeOn": "{time} em {networkLabel}",
-    "AirsTomorrowOn": "Amanhã às {time} em {networkLabel}",
     "All": "Todos",
     "AllFiles": "Todos os Arquivos",
     "AllResultsAreHiddenByTheAppliedFilter": "Todos os resultados foram ocultados pelo filtro aplicado",
@@ -760,5 +756,6 @@
     "SeriesLoadError": "Não foi possível carregar a Série",
     "SeriesMatchType": "Tipo de correspondência da série",
     "SeriesMonitoring": "Monitorização da Série",
+    "SeriesMovePending": "À espera de {appName} para mover o {path}",
     "UpdateMechanismHelpText": "Use o atualizador do {appName} ou um script"
 }

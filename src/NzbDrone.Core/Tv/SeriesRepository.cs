@@ -9,13 +9,15 @@ namespace NzbDrone.Core.Tv
     public interface ISeriesRepository : IBasicRepository<Series>
     {
         bool SeriesPathExists(string path);
-        Series FindByTitle(string cleanTitle);
-        Series FindByTitle(string cleanTitle, int year);
+        List<Series> FindAllByTitle(string cleanTitle);
+        List<Series> FindAllByTitle(string cleanTitle, int year);
         List<Series> FindByTitleInexact(string cleanTitle);
         Series FindByTvdbId(int tvdbId);
-        Series FindByTvRageId(int tvRageId);
-        Series FindByImdbId(string imdbId);
+        List<Series> FindByTvRageId(int tvRageId);
+        List<Series> FindByImdbId(string imdbId);
         Series FindByPath(string path);
+        List<Series> FindByIds(List<int> ids);
+        List<Series> FindByStatus(SeriesStatusType status);
         Dictionary<int, int> AllSeriesTvdbIds();
         Dictionary<int, string> AllSeriesPaths();
         Dictionary<int, List<int>> AllSeriesTags();
@@ -34,23 +36,23 @@ namespace NzbDrone.Core.Tv
             return Query(c => c.Path == path).Any();
         }
 
-        public Series FindByTitle(string cleanTitle)
+        public List<Series> FindAllByTitle(string cleanTitle)
         {
             cleanTitle = cleanTitle.ToLowerInvariant();
 
             var series = Query(s => s.CleanOriginalTitle == cleanTitle || s.CleanTitle == cleanTitle)
                                         .ToList();
 
-            return ReturnSingleSeriesOrThrow(PreferCleanTitleMatches(series, cleanTitle));
+            return PreferCleanTitleMatches(series, cleanTitle);
         }
 
-        public Series FindByTitle(string cleanTitle, int year)
+        public List<Series> FindAllByTitle(string cleanTitle, int year)
         {
             cleanTitle = cleanTitle.ToLowerInvariant();
 
             var series = Query(s => (s.CleanOriginalTitle == cleanTitle || s.CleanTitle == cleanTitle) && s.Year == year).ToList();
 
-            return ReturnSingleSeriesOrThrow(PreferCleanTitleMatches(series, cleanTitle));
+            return PreferCleanTitleMatches(series, cleanTitle);
         }
 
         public List<Series> FindByTitleInexact(string cleanTitle)
@@ -70,20 +72,30 @@ namespace NzbDrone.Core.Tv
             return Query(s => s.TvdbId == tvdbId).SingleOrDefault();
         }
 
-        public Series FindByTvRageId(int tvRageId)
+        public List<Series> FindByTvRageId(int tvRageId)
         {
-            return Query(s => s.TvRageId == tvRageId).SingleOrDefault();
+            return Query(s => s.TvRageId == tvRageId).ToList();
         }
 
-        public Series FindByImdbId(string imdbId)
+        public List<Series> FindByImdbId(string imdbId)
         {
-            return Query(s => s.ImdbId == imdbId).SingleOrDefault();
+            return Query(s => s.ImdbId == imdbId).ToList();
         }
 
         public Series FindByPath(string path)
         {
             return Query(s => s.Path == path)
                         .FirstOrDefault();
+        }
+
+        public List<Series> FindByIds(List<int> ids)
+        {
+            return Query(s => ids.Contains(s.Id));
+        }
+
+        public List<Series> FindByStatus(SeriesStatusType status)
+        {
+            return Query(s => s.Status == status);
         }
 
         public Dictionary<int, int> AllSeriesTvdbIds()
@@ -132,21 +144,6 @@ namespace NzbDrone.Core.Tv
             var exactMatches = series.Where(s => s.CleanTitle == cleanTitle).ToList();
 
             return exactMatches.Count > 0 ? exactMatches : series;
-        }
-
-        private Series ReturnSingleSeriesOrThrow(List<Series> series)
-        {
-            if (series.Count == 0)
-            {
-                return null;
-            }
-
-            if (series.Count == 1)
-            {
-                return series.First();
-            }
-
-            throw new MultipleSeriesFoundException(series, "Expected one series, but found {0}. Matching series: {1}", series.Count, string.Join(", ", series));
         }
     }
 }

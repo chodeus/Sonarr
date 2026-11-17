@@ -108,7 +108,7 @@ namespace NzbDrone.Core.Parser.Model
 
                 if (FullSeason)
                 {
-                    return Model.ReleaseType.SeasonPack;
+                    return IsMultiSeason ? Model.ReleaseType.MultiSeasonPack : Model.ReleaseType.SeasonPack;
                 }
 
                 return Model.ReleaseType.Unknown;
@@ -125,14 +125,7 @@ namespace NzbDrone.Core.Parser.Model
             }
             else if (FullSeason)
             {
-                if (IsMultiSeason)
-                {
-                    episodeString = string.Format("Season {0:00}-{1:00}", SeasonNumbers.First(), SeasonNumbers.Last());
-                }
-                else
-                {
-                    episodeString = SeasonNumbers.Any() ? string.Format("Season {0:00}", SeasonNumbers.First()) : "[Unknown Season]";
-                }
+                episodeString = SeasonNumbers.Any() ? SeasonNumbersFormatter.Format(SeasonNumbers, "00") : "[Unknown Season]";
             }
             else if (EpisodeNumbers != null && EpisodeNumbers.Any())
             {

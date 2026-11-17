@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using NLog;
@@ -17,17 +18,19 @@ namespace NzbDrone.Core.Tv
     {
         Series GetSeries(int seriesId);
         List<Series> GetSeries(IEnumerable<int> seriesIds);
+        List<Series> FindSeries(IEnumerable<int> seriesIds);
         Series AddSeries(Series newSeries);
         List<Series> AddSeries(List<Series> newSeries);
         Series FindByTvdbId(int tvdbId);
-        Series FindByTvRageId(int tvRageId);
-        Series FindByImdbId(string imdbId);
-        Series FindByTitle(string title);
-        Series FindByTitle(string title, int year);
+        List<Series> FindByTvRageId(int tvRageId);
+        List<Series> FindByImdbId(string imdbId);
+        List<Series> FindAllByTitle(string title);
+        List<Series> FindAllByTitle(string title, int year);
         Series FindByTitleInexact(string title);
         Series FindByPath(string path);
         void DeleteSeries(List<int> seriesIds, bool deleteFiles, bool addImportListExclusion);
         List<Series> GetAllSeries();
+        List<Series> GetSeriesByStatus(SeriesStatusType status);
         Dictionary<int, int> AllSeriesTvdbIds();
         Dictionary<int, string> GetAllSeriesPaths();
         Dictionary<int, List<int>> GetAllSeriesTags();
@@ -79,6 +82,11 @@ namespace NzbDrone.Core.Tv
             return _seriesRepository.Get(seriesIds).ToList();
         }
 
+        public List<Series> FindSeries(IEnumerable<int> seriesIds)
+        {
+            return _seriesRepository.FindByIds(seriesIds.ToList());
+        }
+
         public Series AddSeries(Series newSeries)
         {
             _seriesRepository.Insert(newSeries);
@@ -100,19 +108,19 @@ namespace NzbDrone.Core.Tv
             return _seriesRepository.FindByTvdbId(tvRageId);
         }
 
-        public Series FindByTvRageId(int tvRageId)
+        public List<Series> FindByTvRageId(int tvRageId)
         {
             return _seriesRepository.FindByTvRageId(tvRageId);
         }
 
-        public Series FindByImdbId(string imdbId)
+        public List<Series> FindByImdbId(string imdbId)
         {
             return _seriesRepository.FindByImdbId(imdbId);
         }
 
-        public Series FindByTitle(string title)
+        public List<Series> FindAllByTitle(string title)
         {
-            return _seriesRepository.FindByTitle(title.CleanSeriesTitle());
+            return _seriesRepository.FindAllByTitle(title.CleanSeriesTitle());
         }
 
         public Series FindByTitleInexact(string title)
@@ -134,13 +142,15 @@ namespace NzbDrone.Core.Tv
 
             // build ordered list of series by position in the search string
             var query =
-                list.Select(series => new
-                {
-                    position = cleanTitle.IndexOf(series.CleanTitle),
-                    length = series.CleanTitle.Length,
-                    series = series
-                })
-                    .Where(s => (s.position >= 0))
+                list.SelectMany(series => new[] { series.CleanTitle, series.CleanOriginalTitle }
+                        .Where(t => t.IsNotNullOrWhiteSpace())
+                        .Select(t => new
+                        {
+                            position = cleanTitle.IndexOf(t, StringComparison.Ordinal),
+                            length = t.Length,
+                            series = series
+                        }))
+                    .Where(s => s.position >= 0)
                     .ToList()
                     .OrderBy(s => s.position)
                     .ThenByDescending(s => s.length)
@@ -149,6 +159,12 @@ namespace NzbDrone.Core.Tv
             // get the leftmost series that is the longest
             // series are usually the first thing in release title, so we select the leftmost and longest match
             var match = query.First().series;
+
+            if (query.Skip(1).Any(s => s.position == query[0].position && s.length == query[0].length && s.series != match))
+            {
+                _logger.Debug("Multiple series equally match title {0}, unable to select one", title);
+                return null;
+            }
 
             _logger.Debug("Multiple series matched {0} from title {1}", match.Title, title);
             foreach (var entry in list)
@@ -164,9 +180,9 @@ namespace NzbDrone.Core.Tv
             return _seriesRepository.FindByPath(path);
         }
 
-        public Series FindByTitle(string title, int year)
+        public List<Series> FindAllByTitle(string title, int year)
         {
-            return _seriesRepository.FindByTitle(title.CleanSeriesTitle(), year);
+            return _seriesRepository.FindAllByTitle(title.CleanSeriesTitle(), year);
         }
 
         public void DeleteSeries(List<int> seriesIds, bool deleteFiles, bool addImportListExclusion)
@@ -179,6 +195,11 @@ namespace NzbDrone.Core.Tv
         public List<Series> GetAllSeries()
         {
             return _seriesRepository.All().ToList();
+        }
+
+        public List<Series> GetSeriesByStatus(SeriesStatusType status)
+        {
+            return _seriesRepository.FindByStatus(status);
         }
 
         public Dictionary<int, int> AllSeriesTvdbIds()

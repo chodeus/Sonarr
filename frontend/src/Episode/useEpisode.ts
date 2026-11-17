@@ -137,6 +137,8 @@ export const useToggleEpisodesMonitored = (queryKey: QueryKey) => {
             });
           }
         );
+
+        queryClient.invalidateQueries({ queryKey });
       },
     },
   });
@@ -153,7 +155,7 @@ const DEFAULT_EPISODES: Episode[] = [];
 
 export const useEpisodesWithIds = (episodeIds: number[]) => {
   const queryClient = useQueryClient();
-  const queryKey = getQueryKey('episodes');
+  const queryKey = episodeQueryKeyStore((state) => state.episodes);
 
   return queryKey
     ? queryClient

@@ -2,14 +2,12 @@ import classNames from 'classnames';
 import React, { useCallback, useState } from 'react';
 import CommandNames from 'Commands/CommandNames';
 import { useExecuteCommand } from 'Commands/useCommands';
-import IconButton from 'Components/Link/IconButton';
 import Link from 'Components/Link/Link';
-import SpinnerIconButton from 'Components/Link/SpinnerIconButton';
-import { icons } from 'Helpers/Props';
 import DeleteSeriesModal from 'Series/Delete/DeleteSeriesModal';
 import EditSeriesModal from 'Series/Edit/EditSeriesModal';
 import SeriesIndexProgressBar from 'Series/Index/ProgressBar/SeriesIndexProgressBar';
 import SeriesIndexPosterSelect from 'Series/Index/Select/SeriesIndexPosterSelect';
+import SeriesIndexActions from 'Series/Index/SeriesIndexActions';
 import SeriesIndexTags from 'Series/Index/SeriesIndexTags';
 import { SeriesStatus, Statistics } from 'Series/Series';
 import {
@@ -20,6 +18,7 @@ import SeriesPoster from 'Series/SeriesPoster';
 import { useUiSettingsValues } from 'Settings/UI/useUiSettings';
 import formatDateTime from 'Utilities/Date/formatDateTime';
 import getRelativeDate from 'Utilities/Date/getRelativeDate';
+import getSeriesPath from 'Utilities/Series/getSeriesPath';
 import translate from 'Utilities/String/translate';
 import useSeriesIndexItem from '../useSeriesIndexItem';
 import SeriesIndexPosterInfo from './SeriesIndexPosterInfo';
@@ -146,7 +145,7 @@ function SeriesIndexPoster(props: SeriesIndexPosterProps) {
     sizeOnDisk = 0,
   } = statistics;
 
-  const link = `/series/${titleSlug}`;
+  const link = getSeriesPath({ id: seriesId, titleSlug });
 
   const elementStyle = {
     width: `${posterWidth}px`,
@@ -167,33 +166,16 @@ function SeriesIndexPoster(props: SeriesIndexPosterProps) {
         ) : null}
 
         <div className={styles.controls}>
-          <SpinnerIconButton
+          <SeriesIndexActions
+            title={title}
             className={styles.action}
-            name={icons.REFRESH}
-            title={translate('RefreshSeries')}
-            isSpinning={isRefreshingSeries}
+            showSearchAction={showSearchAction}
+            isRefreshingSeries={isRefreshingSeries}
+            isSearchingSeries={isSearchingSeries}
             tabIndex={-1}
-            onPress={onRefreshPress}
-          />
-
-          {showSearchAction ? (
-            <SpinnerIconButton
-              className={styles.action}
-              name={icons.SEARCH}
-              title={translate('SearchForMonitoredEpisodes')}
-              isSpinning={isSearchingSeries}
-              tabIndex={-1}
-              onPress={onSearchPress}
-            />
-          ) : null}
-
-          <IconButton
-            className={styles.action}
-            name={icons.EDIT}
-            title={translate('EditSeries')}
-            aria-label={translate('EditSeries')}
-            tabIndex={-1}
-            onPress={onEditSeriesPress}
+            onRefreshPress={onRefreshPress}
+            onSearchPress={onSearchPress}
+            onEditSeriesPress={onEditSeriesPress}
           />
         </div>
 
