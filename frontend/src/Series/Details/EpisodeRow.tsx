@@ -86,6 +86,7 @@ function EpisodeRow({
   onMonitorEpisodePress,
 }: EpisodeRowProps) {
   const {
+    title: seriesTitle,
     useSceneNumbering,
     monitored: seriesMonitored,
     seriesType,
@@ -117,9 +118,8 @@ function EpisodeRow({
             <TableRowCell key={name} className={styles.monitored}>
               <MonitorToggleButton
                 monitored={monitored}
-                isDisabled={!seriesMonitored}
+                isDisabled={!seriesMonitored && !monitored}
                 isSaving={isSaving}
-                size={14}
                 onPress={handleMonitorEpisodePress}
               />
             </TableRowCell>
@@ -161,7 +161,6 @@ function EpisodeRow({
                 episodeTitle={title}
                 episodeEntity="episodes"
                 finaleType={finaleType}
-                showOpenSeriesButton={false}
               />
             </TableRowCell>
           );
@@ -284,7 +283,7 @@ function EpisodeRow({
             <TableRowCell key={name} className={styles.indexerFlags}>
               {episodeFile?.indexerFlags ? (
                 <Popover
-                  anchor={<Icon name={icons.FLAG} kind="default" size={14} />}
+                  anchor={<Icon name={icons.FLAG} kind="default" />}
                   title={translate('IndexerFlags')}
                   body={
                     <IndexerFlags indexerFlags={episodeFile?.indexerFlags} />
@@ -311,8 +310,10 @@ function EpisodeRow({
               episodeId={id}
               episodeEntity="episodes"
               seriesId={seriesId}
+              seriesTitle={seriesTitle}
+              seasonNumber={seasonNumber}
+              episodeNumber={episodeNumber}
               episodeTitle={title}
-              showOpenSeriesButton={false}
             />
           );
         }

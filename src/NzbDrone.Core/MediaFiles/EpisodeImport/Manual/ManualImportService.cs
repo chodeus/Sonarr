@@ -102,7 +102,7 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Manual
                         Series = series,
                         SeasonNumber = null,
                         Episodes = new List<Episode>(),
-                        ReleaseGroup = string.Empty,
+                        ReleaseGroup = null,
                         Quality = new QualityModel(Quality.Unknown),
                         Languages = new List<Language> { Language.Unknown },
                         Size = _diskProvider.GetFileSize(file),
@@ -158,9 +158,7 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Manual
             {
                 var downloadClientItem = GetTrackedDownload(downloadId)?.DownloadItem;
                 var episodes = _episodeService.GetEpisodes(episodeIds);
-                var finalReleaseGroup = releaseGroup.IsNullOrWhiteSpace()
-                    ? Parser.ReleaseGroupParser.ParseReleaseGroup(path)
-                    : releaseGroup;
+                var finalReleaseGroup = releaseGroup ?? Parser.ReleaseGroupParser.ParseReleaseGroup(path);
                 var finalQuality = quality.Quality == Quality.Unknown ? QualityParser.ParseQuality(path) : quality;
                 var finalLanguages =
                     languages?.Count <= 1 && (languages?.SingleOrDefault() ?? Language.Unknown) == Language.Unknown
@@ -197,7 +195,12 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Manual
                 localEpisode.IndexerFlags = (IndexerFlags)indexerFlags;
                 localEpisode.ReleaseType = releaseType;
 
-                return MapItem(_importDecisionMaker.GetDecision(localEpisode, downloadClientItem), rootFolder, downloadId, null);
+                var decision = _importDecisionMaker.GetDecision(localEpisode, downloadClientItem);
+
+                // The user picked the episodes, so the season no longer has to come from the file name
+                var rejections = decision.Rejections.Where(r => r.Reason != ImportRejectionReason.MultiSeason).ToArray();
+
+                return MapItem(new ImportDecision(localEpisode, rejections), rootFolder, downloadId, null);
             }
 
             // This case will happen if the user selected a season, but didn't select the episodes in the season then changed the language or quality.
@@ -220,7 +223,7 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Manual
                     SceneSource = SceneSource(series, rootFolder),
                     ExistingFile = series.Path.IsParentPath(path),
                     Size = _diskProvider.GetFileSize(path),
-                    ReleaseGroup = releaseGroup.IsNullOrWhiteSpace() ? Parser.ReleaseGroupParser.ParseReleaseGroup(path) : releaseGroup,
+                    ReleaseGroup = releaseGroup ?? Parser.ReleaseGroupParser.ParseReleaseGroup(path),
                     Languages = languages?.Count <= 1 && (languages?.SingleOrDefault() ?? Language.Unknown) == Language.Unknown ? LanguageParser.ParseLanguages(path) : languages,
                     Quality = quality.Quality == Quality.Unknown ? QualityParser.ParseQuality(path) : quality,
                     IndexerFlags = (IndexerFlags)indexerFlags,
@@ -246,14 +249,7 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Manual
             }
             else
             {
-                try
-                {
-                    series = _parsingService.GetSeries(directoryInfo.Name);
-                }
-                catch (MultipleSeriesFoundException e)
-                {
-                    _logger.Warn(e, "Unable to find series from title");
-                }
+                series = _parsingService.GetSeries(directoryInfo.Name);
             }
 
             if (downloadId.IsNotNullOrWhiteSpace())
@@ -305,14 +301,20 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Manual
                 var trackedDownload = GetTrackedDownload(downloadId);
                 var relativeFile = baseFolder.GetRelativePath(file);
 
+                var candidateMatches = new List<List<Series>>();
+
                 if (series == null)
                 {
-                    series = _parsingService.GetSeries(relativeFile.Split('\\', '/')[0]);
+                    var folderMatch = _parsingService.GetSeriesMatch(relativeFile.Split('\\', '/')[0]);
+                    series = folderMatch.Series;
+                    candidateMatches.Add(folderMatch.AmbiguousSeries);
                 }
 
                 if (series == null)
                 {
-                    series = _parsingService.GetSeries(relativeFile);
+                    var fileMatch = _parsingService.GetSeriesMatch(relativeFile);
+                    series = fileMatch.Series;
+                    candidateMatches.Add(fileMatch.AmbiguousSeries);
                 }
 
                 if (trackedDownload != null && series == null)
@@ -326,9 +328,18 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Manual
 
                     if (relativeParseInfo != null)
                     {
-                        series = _seriesService.FindByTitle(relativeParseInfo.SeriesTitle);
+                        var titleMatches = _seriesService.FindAllByTitle(relativeParseInfo.SeriesTitle);
+
+                        if (titleMatches.Count == 1)
+                        {
+                            series = titleMatches.First();
+                        }
+
+                        candidateMatches.Add(titleMatches);
                     }
                 }
+
+                candidateMatches.Add(trackedDownload?.RemoteEpisode?.AmbiguousSeries);
 
                 if (series == null)
                 {
@@ -339,8 +350,13 @@ namespace NzbDrone.Core.MediaFiles.EpisodeImport.Manual
                     localEpisode.Languages = LanguageParser.ParseLanguages(file);
                     localEpisode.Size = _diskProvider.GetFileSize(file);
 
-                    return MapItem(new ImportDecision(localEpisode,
-                        new ImportRejection(ImportRejectionReason.UnknownSeries, "Unknown Series")),
+                    var ambiguousSeries = candidateMatches.FirstOrDefault(c => c.IsAmbiguous());
+
+                    var rejection = ambiguousSeries != null
+                        ? new ImportRejection(ImportRejectionReason.MultipleSeries, ambiguousSeries.ToAmbiguousSeriesMessage())
+                        : new ImportRejection(ImportRejectionReason.UnknownSeries, "Unknown Series");
+
+                    return MapItem(new ImportDecision(localEpisode, rejection),
                         rootFolder,
                         downloadId,
                         null);

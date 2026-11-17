@@ -88,6 +88,7 @@ function CutoffUnmetRow({
           return (
             <TableRowCell key={name}>
               <SeriesTitleLink
+                seriesId={series.id}
                 titleSlug={series.titleSlug}
                 title={series.title}
               />
@@ -121,7 +122,6 @@ function CutoffUnmetRow({
                 seriesId={series.id}
                 episodeEntity="wanted.cutoffUnmet"
                 episodeTitle={title}
-                showOpenSeriesButton={true}
               />
             </TableRowCell>
           );
@@ -175,9 +175,11 @@ function CutoffUnmetRow({
               key={name}
               episodeId={id}
               seriesId={series.id}
+              seriesTitle={series.title}
+              seasonNumber={seasonNumber}
+              episodeNumber={episodeNumber}
               episodeTitle={title}
               episodeEntity="wanted.cutoffUnmet"
-              showOpenSeriesButton={true}
             />
           );
         }
