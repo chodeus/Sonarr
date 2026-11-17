@@ -300,7 +300,11 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
                   });
 
             matcher.ParseEventTitle(parsedEpisodeInfo, _series).Should().BeNull();
-            matcher.ParseEventTitle(parsedEpisodeInfo, _series).Should().NotBeNull();
+
+            var eventEpisodeInfo = matcher.ParseEventTitle(parsedEpisodeInfo, _series);
+
+            eventEpisodeInfo.Should().NotBeNull();
+            eventEpisodeInfo.EpisodeNumbers.Should().Equal(94);
         }
 
         [TestCase("Formula1.2026.Round17.Singapore.Race.F1TV.WEB-DL.1080p.H264.German-MWR", "German")]
