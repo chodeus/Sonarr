@@ -48,7 +48,8 @@ namespace NzbDrone.Core.Test.ParserTests
             parsedEpisodeInfo.IsPossibleSpecialEpisode.Should().BeTrue();
         }
 
-        [TestCase(new[] { 1, 2, 3 }, "Season 01-03")]
+        [TestCase(new[] { 1, 2, 3 }, "Seasons 01-03")]
+        [TestCase(new[] { 1, 3, 5 }, "Seasons 01, 03, 05")]
         [TestCase(new[] { 2 }, "Season 02")]
         [TestCase(new int[0], "[Unknown Season]")]
         public void should_format_full_season(int[] seasonNumbers, string expected)
@@ -56,6 +57,15 @@ namespace NzbDrone.Core.Test.ParserTests
             var parsedEpisodeInfo = new ParsedEpisodeInfo { SeriesTitle = "Series Title", SeasonNumbers = [.. seasonNumbers], FullSeason = true };
 
             parsedEpisodeInfo.ToString().Should().Contain(expected);
+        }
+
+        [TestCase("Series.Title.S01-S03.1080p.BluRay.x264-RlsGrp", ReleaseType.MultiSeasonPack)]
+        [TestCase("Series.Title.S01.1080p.BluRay.x264-RlsGrp", ReleaseType.SeasonPack)]
+        [TestCase("Series.Title.S01E01-E02.1080p.BluRay.x264-RlsGrp", ReleaseType.MultiEpisode)]
+        [TestCase("Series.Title.S01E01.1080p.BluRay.x264-RlsGrp", ReleaseType.SingleEpisode)]
+        public void should_get_release_type(string title, ReleaseType expected)
+        {
+            Parser.Parser.ParseTitle(title).ReleaseType.Should().Be(expected);
         }
 
         [Test]

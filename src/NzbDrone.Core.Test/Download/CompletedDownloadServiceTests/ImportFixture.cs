@@ -61,8 +61,8 @@ namespace NzbDrone.Core.Test.Download.CompletedDownloadServiceTests
                   .Returns(new EpisodeHistory());
 
             Mocker.GetMock<IParsingService>()
-                  .Setup(s => s.GetSeries("Drone.S01E01.HDTV"))
-                  .Returns(remoteEpisode.Series);
+                  .Setup(s => s.GetSeriesMatch("Drone.S01E01.HDTV"))
+                  .Returns(new FindSeriesResult(remoteEpisode.Series, SeriesMatchType.Title));
 
             Mocker.GetMock<IHistoryService>()
                   .Setup(s => s.FindByDownloadId(It.IsAny<string>()))
@@ -98,19 +98,43 @@ namespace NzbDrone.Core.Test.Download.CompletedDownloadServiceTests
                .Returns(new EpisodeHistory() { SourceTitle = "Droned S01E01" });
 
             Mocker.GetMock<IParsingService>()
-               .Setup(s => s.GetSeries(It.IsAny<string>()))
-               .Returns((Series)null);
+               .Setup(s => s.GetSeriesMatch(It.IsAny<string>()))
+               .Returns(new FindSeriesResult((Series)null, SeriesMatchType.Title));
 
             Mocker.GetMock<IParsingService>()
-                .Setup(s => s.GetSeries("Droned S01E01"))
-                .Returns(BuildRemoteEpisode().Series);
+                .Setup(s => s.GetSeriesMatch("Droned S01E01"))
+                .Returns(new FindSeriesResult(BuildRemoteEpisode().Series, SeriesMatchType.Title));
+        }
+
+        private List<Episode> GivenMultiSeasonDownload()
+        {
+            _trackedDownload.DownloadItem.Title = "Drone.S01-S03.1080p.BluRay";
+
+            var episodes = Enumerable.Range(1, 3)
+                .SelectMany(s => Enumerable.Range(1, 2).Select(e => new Episode { Id = (s * 10) + e, SeasonNumber = s, EpisodeNumber = e }))
+                .ToList();
+
+            _trackedDownload.RemoteEpisode.ParsedEpisodeInfo = Parser.Parser.ParseTitle(_trackedDownload.DownloadItem.Title);
+            _trackedDownload.RemoteEpisode.Episodes = episodes;
+
+            return episodes;
+        }
+
+        private void GivenImportedEpisodes(IEnumerable<Episode> episodes)
+        {
+            Mocker.GetMock<IDownloadedEpisodesImportService>()
+                  .Setup(v => v.ProcessPath(It.IsAny<string>(), It.IsAny<ImportMode>(), It.IsAny<Series>(), It.IsAny<DownloadClientItem>()))
+                  .Returns(episodes.Select(e => new ImportResult(
+                          new ImportDecision(
+                              new LocalEpisode { Path = $@"C:\TestPath\Droned.S{e.SeasonNumber:00}E{e.EpisodeNumber:00}.mkv", Episodes = new List<Episode> { e } })))
+                      .ToList());
         }
 
         private void GivenSeriesMatch()
         {
             Mocker.GetMock<IParsingService>()
-                  .Setup(s => s.GetSeries(It.IsAny<string>()))
-                  .Returns(_trackedDownload.RemoteEpisode.Series);
+                  .Setup(s => s.GetSeriesMatch(It.IsAny<string>()))
+                  .Returns(new FindSeriesResult(_trackedDownload.RemoteEpisode.Series, SeriesMatchType.Title));
         }
 
         [Test]
@@ -308,6 +332,32 @@ namespace NzbDrone.Core.Test.Download.CompletedDownloadServiceTests
             Mocker.GetMock<ITrackedDownloadAlreadyImported>()
                   .Setup(s => s.IsImported(It.IsAny<TrackedDownload>(), It.IsAny<List<EpisodeHistory>>()))
                   .Returns(true);
+
+            Subject.Import(_trackedDownload);
+
+            AssertImported();
+        }
+
+        [Test]
+        public void should_not_mark_multi_season_download_as_imported_if_only_first_season_was_imported()
+        {
+            var episodes = GivenMultiSeasonDownload();
+
+            GivenImportedEpisodes(episodes.Where(e => e.SeasonNumber == 1));
+
+            Subject.Import(_trackedDownload);
+
+            AssertNotImported();
+
+            ExceptionVerification.ExpectedWarns(1);
+        }
+
+        [Test]
+        public void should_mark_multi_season_download_as_imported_if_all_seasons_were_imported()
+        {
+            var episodes = GivenMultiSeasonDownload();
+
+            GivenImportedEpisodes(episodes);
 
             Subject.Import(_trackedDownload);
 

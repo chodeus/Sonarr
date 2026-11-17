@@ -1,4 +1,6 @@
+using System.Linq;
 using FluentAssertions;
+using NLog;
 using NUnit.Framework;
 using NzbDrone.Common.Instrumentation;
 
@@ -21,6 +23,9 @@ namespace NzbDrone.Common.Test.InstrumentationTests
         [TestCase(@"http://nzb.su/rss?t=-2&dl=1&i=37292&r=2b51db35e1910123321025a12b9933d2")]
         [TestCase(@"https://b-hd.me/torrent/download/auto.343756.is1t1pl127p1sfwur8h4kgyhg1wcsn05")]
         [TestCase(@"https://b-hd.me/torrent/download/a-slug-in-the-url.343756.is1t1pl127p1sfwur8h4kgyhg1wcsn05")]
+
+        // JSON-escaped query string
+        [TestCase(@"{""value"":""http://127.0.0.1:9696/1/api?t=caps\u0026apikey=mySecret\u0026extended=1""}")]
 
         // NzbGet
         [TestCase(@"{ ""Name"" : ""ControlUsername"", ""Value"" : ""mySecret"" }, { ""Name"" : ""ControlPassword"", ""Value"" : ""mySecret"" }, ")]
@@ -148,6 +153,30 @@ namespace NzbDrone.Common.Test.InstrumentationTests
             var cleansedMessage = CleanseLogMessage.Cleanse(message);
 
             cleansedMessage.Should().Be(message);
+        }
+
+        [Test]
+        public void should_cleanse_rendered_log_event()
+        {
+            var logEvent = new LogEventInfo(LogLevel.Info, "Test", "http://127.0.0.1:1234/api/call?vv=1&apikey=mySecret");
+
+            var cleansedMessage = CleanseLogMessage.Cleanse(logEvent, e => $"{e.Level}|{e.LoggerName}|{e.FormattedMessage}");
+
+            cleansedMessage.Should().Be("Info|Test|http://127.0.0.1:1234/api/call?vv=1&apikey=(removed)");
+        }
+
+        [TestCase("a", 256000)]
+        [TestCase("a.", 128000)]
+        [TestCase("/rss", 16000)]
+        [TestCase("&", 64000)]
+        [TestCase("?", 64000)]
+        public void should_cleanse_pathological_message_without_timing_out(string repeated, int count)
+        {
+            var message = "Unable to parse '" + string.Concat(Enumerable.Repeat(repeated, count)) + "'";
+
+            var cleansedMessage = CleanseLogMessage.Cleanse(message);
+
+            cleansedMessage.Should().NotContain("timed out");
         }
     }
 }

@@ -233,6 +233,12 @@ export const FILTER_BUILDER: FilterBuilderProp<Release>[] = [
     valueType: filterBuilderValueTypes.BOOL,
   },
   {
+    name: 'multiSeason',
+    label: () => translate('MultiSeasonPack'),
+    type: filterBuilderTypes.EXACT,
+    valueType: filterBuilderValueTypes.BOOL,
+  },
+  {
     name: 'episodeRequested',
     label: () => translate('EpisodeRequested'),
     type: filterBuilderTypes.EXACT,
@@ -251,6 +257,14 @@ const FILTER_PREDICATES = {
 
   fullSeason: (item: Release, value: boolean, type: FilterType) => {
     return applyFilterPredicate(item.parsedInfo.fullSeason, value, type);
+  },
+
+  multiSeason: (item: Release, value: boolean, type: FilterType) => {
+    return applyFilterPredicate(
+      item.parsedInfo.fullSeason && item.parsedInfo.seasonNumbers.length > 1,
+      value,
+      type
+    );
   },
 
   indexerId: (item: Release, value: number, type: FilterType) => {
@@ -558,6 +572,19 @@ export const setReleaseSort = (
   sortDirection: SortDirection | undefined
 ) => {
   releaseStore.setState((state) => applySort(state, sortKey, sortDirection));
+};
+
+export const FIXED_SORT_DIRECTIONS: Record<string, SortDirection> = {
+  history: 'ascending',
+  rejections: 'ascending',
+  releaseWeight: 'ascending',
+};
+
+export const useReleaseSort = () => {
+  const sortKey = releaseStore((state) => state.sortKey);
+  const sortDirection = releaseStore((state) => state.sortDirection);
+
+  return { sortKey, sortDirection };
 };
 
 const applyFilterPredicate = <T>(itemValue: T, value: T, type: FilterType) => {

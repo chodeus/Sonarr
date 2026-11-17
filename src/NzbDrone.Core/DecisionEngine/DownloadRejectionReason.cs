@@ -77,5 +77,6 @@ public enum DownloadRejectionReason
     DiskUpgradesNotAllowed,
     DiskNotUpgrade,
     BeforeAirDate,
+    MultipleSeries,
     AlreadyInDownloadClient
 }

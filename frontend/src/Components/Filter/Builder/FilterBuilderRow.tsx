@@ -175,9 +175,24 @@ function FilterBuilderRow<T>({
     .sort(sortByProp('value'));
 
   const ValueComponent = getRowValueConnector(selectedFilterBuilderProp);
+  const selectedFilterLabel = selectedFilterBuilderProp?.label;
+  const addFilterLabel = translate('AddFilterCondition');
+
+  const filterLabel =
+    typeof selectedFilterLabel === 'function'
+      ? selectedFilterLabel()
+      : selectedFilterLabel;
+
+  const removeFilterLabel = filterLabel
+    ? translate('RemoveFilterConditionWithName', {
+        name: filterLabel,
+        index: index + 1,
+        count: filterCount,
+      })
+    : translate('RemoveFilterCondition');
 
   const handleFilterKeyChange = useCallback(
-    ({ value: key }: InputChanged<FilterBuilderTypes>) => {
+    ({ value: key }: InputChanged<string>) => {
       const selected = getselectedFilterBuilderProp(filterBuilderProps, key);
 
       if (!selected) {
@@ -187,7 +202,7 @@ function FilterBuilderRow<T>({
       const type = getDefaultFilterType(selected);
 
       const filter = {
-        key,
+        key: key as FilterBuilderTypes,
         value: getDefaultFilterValue(selected),
         type,
       };
@@ -199,7 +214,7 @@ function FilterBuilderRow<T>({
   );
 
   const handleFilterTypeChange = useCallback(
-    ({ value }: InputChanged<FilterType>) => {
+    ({ value }: InputChanged<string>) => {
       if (filterKey == null || filterValue == null || filterType == null) {
         return;
       }
@@ -207,7 +222,7 @@ function FilterBuilderRow<T>({
       const filter: PropertyFilter = {
         key: filterKey,
         value: filterValue,
-        type: value,
+        type: value as FilterType,
       };
 
       onFilterChange(index, filter);
@@ -305,14 +320,16 @@ function FilterBuilderRow<T>({
       <div className={styles.actionsContainer}>
         <IconButton
           name={icons.SUBTRACT}
-          aria-label={translate('Remove')}
+          title={removeFilterLabel}
+          aria-label={removeFilterLabel}
           isDisabled={filterCount === 1}
           onPress={handleRemovePress}
         />
 
         <IconButton
           name={icons.ADD}
-          aria-label={translate('Add')}
+          title={addFilterLabel}
+          aria-label={addFilterLabel}
           onPress={handleAddPress}
         />
       </div>
