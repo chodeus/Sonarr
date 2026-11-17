@@ -83,8 +83,8 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
                   .Returns(() => _tag);
 
             Mocker.GetMock<ISeriesService>()
-                  .Setup(s => s.FindByTitle(It.IsAny<string>()))
-                  .Returns((string title) => title.CleanSeriesTitle() == _series.CleanTitle ? _series : null);
+                  .Setup(s => s.FindAllByTitle(It.IsAny<string>()))
+                  .Returns((string title) => title.CleanSeriesTitle() == _series.CleanTitle ? new List<Series> { _series } : new List<Series>());
 
             Mocker.GetMock<IEpisodeService>()
                   .Setup(s => s.GetEpisodesBySeason(_series.Id, It.IsAny<int>()))
