@@ -9275,6 +9275,7 @@
           "diskUpgradesNotAllowed",
           "diskNotUpgrade",
           "beforeAirDate",
+          "multipleSeries",
           "alreadyInDownloadClient"
         ],
         "type": "string"
@@ -10425,7 +10426,8 @@
           "notRevisionUpgrade",
           "notCustomFormatUpgrade",
           "notCustomFormatUpgradeAfterRename",
-          "multiSeason"
+          "multiSeason",
+          "multipleSeries"
         ],
         "type": "string"
       },
