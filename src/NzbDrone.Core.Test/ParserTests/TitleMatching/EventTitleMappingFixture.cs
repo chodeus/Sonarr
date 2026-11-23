@@ -490,7 +490,7 @@ namespace NzbDrone.Core.Test.ParserTests.TitleMatching
                 new AugmentLanguageFromFileName(),
                 new AugmentLanguageFromFolder(),
                 new AugmentLanguageFromDownloadClientItem(),
-                new AugmentLanguageFromMediaInfo()
+                new AugmentLanguageFromMediaInfo(LogManager.GetCurrentClassLogger())
             };
             var qualityAugmenters = new IAugmentQuality[]
             {
